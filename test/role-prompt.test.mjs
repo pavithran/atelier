@@ -48,7 +48,7 @@ test("atelier guide --role ROLE prints the default text, and the plain guide is 
 const ORCHESTRATE_RULES = [
   /builders from several companies, chosen by tier/,
   /reviewed by a model from another\s+company/,
-  /Never override[^.]*except on the owner's own\s+confirmation/,
+  /Never override[^.]*except on the developer's own\s+confirmation/,
   /Judge each review finding against the code[^.]*record every\s+verdict/,
   /`atelier finding \.\.\. --as H\/M`, naming yourself/,
   /Land one task at a time[^.]*--reviewer H\/M/,

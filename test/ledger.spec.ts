@@ -218,7 +218,7 @@ it("a protected path is accepted only after an independent approval", async () =
   await L.addEvidence(observed("t1", H1, ["src/ledger.ts", "AGENTS.md"]));
   await L.submit("t1", A);
 
-  await refusal(L.accept("t1", B), "not_project_owner", /only the project owner accepts/);
+  await refusal(L.accept("t1", B), "not_project_owner", /only the developer accepts/);
   await refusal(L.accept("t1", "owner"), "not_ready", /touches a protected path/);
   await refusal(L.addReview(review("t1", A, H1, true)), "self_review", /cannot review their own/);
   await L.addReview(review("t1", "codex/opus-5.5", H1, true));
@@ -228,7 +228,7 @@ it("a protected path is accepted only after an independent approval", async () =
   const accepted = await L.accept("t1", "owner");
   expect(accepted).toMatchObject({ state: "accepted", acceptedHead: H1, owner: A });
 
-  await refusal(L.merged("t1", B, "m1", true), "not_project_owner", /only the project owner merges/);
+  await refusal(L.merged("t1", B, "m1", true), "not_project_owner", /only the developer merges/);
   const merged = await L.merged("t1", "owner", "m1", true);
   expect(merged).toMatchObject({ state: "merged", owner: null });
 });
@@ -254,7 +254,7 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect((await L.inbox(new Date().toISOString())).map((e) => `${e.itemId}:${e.kind}`)).toEqual(["t1:assess"]);
 
   // The override is the owner's alone and needs a reason.
-  await refusal(L.accept("t1", B, H1, reason), "not_project_owner", /only the project owner accepts/);
+  await refusal(L.accept("t1", B, H1, reason), "not_project_owner", /only the developer accepts/);
   for (const blank of ["", "   "]) await refusal(L.accept("t1", "owner", H1, blank), "override_reason", /needs a reason/);
   // It waives the missing review and nothing else, and a refused one leaves no record.
   await L.addReview(review("t1", B, H1, false, "unsafe"));
@@ -274,10 +274,10 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   // permission from the task's page the override is refused, naming the page
   // and the button, and nothing is recorded; with it, given for this head
   // with a factor no agent holds, the override goes through and spends it.
-  await refusal(L.accept("t1", "owner", H2, reason), "override_unconfirmed", /needs the owner's confirmation: open \/p\/override\/t1 as the owner, press "Allow an override from the command line" confirming as the owner, then run the command again within 15 minutes; the owner token alone does not confirm it/);
+  await refusal(L.accept("t1", "owner", H2, reason), "override_unconfirmed", /needs the developer's confirmation: open \/p\/override\/t1 as the developer, press "Allow an override from the command line" confirming as the developer, then run the command again within 15 minutes; the owner token alone does not confirm it/);
   expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
-  await refusal(L.confirmOverride("t1", B, H2, "secret"), "not_project_owner", /only the project owner allows an override/);
-  await refusal(L.confirmOverride("t1", "owner", H2, "session" as never), "override_unconfirmed", /only with the owner's Access identity or the confirmation secret/);
+  await refusal(L.confirmOverride("t1", B, H2, "secret"), "not_project_owner", /only the developer allows an override/);
+  await refusal(L.confirmOverride("t1", "owner", H2, "session" as never), "override_unconfirmed", /only with the developer's Access identity or the confirmation secret/);
   const allowed = await L.confirmOverride("t1", "owner", H2, "secret");
   expect(allowed.overrideConfirmation).toMatchObject({ head: H2, by: "owner", factor: "secret" });
   expect(Date.parse(allowed.overrideConfirmation!.until) - Date.parse(allowed.overrideConfirmation!.at)).toBe(15 * 60 * 1000);
@@ -295,9 +295,9 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect((await L.reviewsFor("t1")).filter((r) => r.head === H2)).toEqual([]);
   // The inbox and the brief show it with its reason.
   expect((await L.inbox(new Date().toISOString())).map((e) => [e.kind, e.reason])).toEqual([
-    ["merge", `accepted, with the independent review overridden by the project owner: ${reason}; run \`atelier merge\` in the project checkout`],
+    ["merge", `accepted, with the independent review overridden by the developer: ${reason}; run \`atelier merge\` in the project checkout`],
   ]);
-  expect(briefFor(await L.detail("t1") as never).evidence).toContain(`The project owner overrode the independent review at this revision: ${reason}.`);
+  expect(briefFor(await L.detail("t1") as never).evidence).toContain(`The developer overrode the independent review at this revision: ${reason}.`);
 
   // A later push needs a review or another override.
   await L.recordPush("t1", A, H3, H3);
@@ -393,7 +393,7 @@ it("exactly one owner: claims are serialised, scoped and eligible", async () => 
   await L.newItem("Third", ["docs/**"], "owner");
 
   await L.claim("t1", A);
-  await refusal(L.claim("t1", B), "owned", /t1 is owned by claude-code\/opus-5\.5/);
+  await refusal(L.claim("t1", B), "owned", /t1 is held by claude-code\/opus-5\.5/);
 
   // Two claims racing on one item: the Durable Object handles one at a time,
   // so one lands and the other is refused; there is never a second owner.
@@ -452,14 +452,14 @@ it("ownership moves by handoff, ends by release or abandonment", async () => {
   const moved = await L.handoff("t1", A, B, "off to a second opinion");
   expect(moved).toMatchObject({ owner: B, state: "claimed" });
 
-  await refusal(L.recordPush("t1", A, H2, H2), "not_owner", /claude-code\/opus-5\.5 does not own t1 \(owner: codex\/gpt-5\.5\)/);
+  await refusal(L.recordPush("t1", A, H2, H2), "not_owner", /claude-code\/opus-5\.5 does not hold t1 \(holder: codex\/gpt-5\.5\)/);
   await L.recordPush("t1", B, H2, H2);
   await L.release("t1", B, "parked");
   expect(await L.item("t1")).toMatchObject({ state: "open", owner: null });
 
   await L.newItem("Two", ["docs/**"], "owner");
   await L.claim("t2", A);
-  await refusal(L.abandon("t2", A, "not mine to end"), "not_project_owner", /only the project owner abandons/);
+  await refusal(L.abandon("t2", A, "not mine to end"), "not_project_owner", /only the developer abandons/);
   expect(await L.abandon("t2", "owner", "obsolete")).toMatchObject({ state: "abandoned", owner: null });
 });
 
@@ -479,7 +479,7 @@ it("the owner returns accepted work to a builder without losing reviews or accep
     const move = () => action === "handoff"
       ? L.handoff("t1", "owner", B, "Resolve main conflict")
       : L.dispatch("t1", "owner", { job: "merge-main", head: H2, agent: "codex", model: "gpt-5.5" });
-    await refusal(L.handoff("t1", A, B, "Not the project owner"), "not_project_owner", /only the project owner/);
+    await refusal(L.handoff("t1", A, B, "Not the developer"), "not_project_owner", /only the developer/);
     await L.beginLanding("t1", "owner", H1);
     await refusal(move(), "landing", /holds the landing lease/);
     expect(await L.events("t1")).toEqual(history);
@@ -630,14 +630,14 @@ it("t371: a permission for an override is spent by one override, lapses with the
   await L.editItem("t1", "owner", { accept: ["Keeps the prompts", "And the README"] });
   expect((await L.item("t1")).state).toBe("submitted");
   expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
-  await refusal(L.accept("t1", "owner", H1, "No other family"), "override_unconfirmed", /needs the owner's confirmation/);
+  await refusal(L.accept("t1", "owner", H1, "No other family"), "override_unconfirmed", /needs the developer's confirmation/);
   // Given again, then the head moves: the permission names the old head.
   await L.confirmOverride("t1", "owner", H1, "access");
   await L.recordPush("t1", A, H2, H2);
   await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
   await L.submit("t1", A);
   expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1 });
-  await refusal(L.accept("t1", "owner", H2, "No other family"), "override_unconfirmed", /needs the owner's confirmation/);
+  await refusal(L.accept("t1", "owner", H2, "No other family"), "override_unconfirmed", /needs the developer's confirmation/);
   // Where another family has approved there is nothing to allow an override of.
   await L.newItem("Touch another protected path", ["AGENTS.md"], "owner");
   await L.claim("t2", A);
@@ -721,7 +721,7 @@ it("HTTP review and acceptance preserve the displayed revision through successfu
  expect((await post('accept','')).status).toBe(409);
  const bearer=await post('override','No model of another family is available');
  expect(bearer.status).toBe(403);
- expect(await bearer.text()).toMatch(/needs the owner(&#39;|'|&#x27;)s own sign-in, not the owner token/);
+ expect(await bearer.text()).toMatch(/needs the developer(&#39;|'|&#x27;)s own sign-in, not the owner token/);
  expect((await post('allow-override','')).status).toBe(403);
  expect((await L.item('t1')).state).toBe('submitted');
  const cookie={cookie:await signIn('fixture-token',bindings)};
@@ -736,7 +736,7 @@ it("HTTP review and acceptance preserve the displayed revision through successfu
 it("dispatch queues an open task for a kind of runner, and only a matching runner claims it", async () => {
   const L = await setup("dispatch-flow");
   const item = await L.newItem("Tidy the guide", ["docs/**"], "owner");
-  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the project owner dispatches/);
+  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the developer dispatches/);
 
   const queued = await L.dispatch(item.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "small task" });
   expect(queued.dispatch).toMatchObject({ to: "home", agent: "opencode", model: "glm-5.3-flash", by: "owner", note: "small task" });
@@ -804,7 +804,7 @@ it("the owner can dispatch a held task, which releases its holder and queues it 
   await L.submit(item.id, A);
   await L.addReview(review(item.id, B, H1, false));
   expect((await L.item(item.id)).state).toBe("submitted");
-  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the project owner dispatches/);
+  await refusal(L.dispatch(item.id, A, { to: "home" }), "not_project_owner", /only the developer dispatches/);
   const queued = await L.dispatch(item.id, "owner", { to: "home", note: "address the review" });
   expect(queued).toMatchObject({ state: "open", owner: null, head: H1, dispatch: { to: "home", note: "address the review" } });
   expect((await L.waiting()).map((i) => i.id)).toEqual([item.id]);
@@ -1055,7 +1055,7 @@ it("a push to an accepted task withdraws the acceptance, and only its owner can 
   expect(reopened).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
   const last = ((await L.events("t1")) as unknown as { kind: string; data: unknown }[]).find((e) => e.kind === "push.observed");
   expect(last?.data).toMatchObject({ head: H2, approvalInvalidated: true });
-  await refusal(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null), "not_owner", /does not own/);
+  await refusal(L.recordPush("t1", "codex/someone-else", "9".repeat(40), null), "not_owner", /does not hold/);
 });
 
 it("a merge holds a landing lease: no push over the revision being merged, and the record names that revision", async () => {
@@ -1068,14 +1068,14 @@ it("a merge holds a landing lease: no push over the revision being merged, and t
   await L.submit("t1", A);
   await L.accept("t1", "owner", H1);
   // Only the task's owner may push to an accepted task.
-  await refusal(L.recordPush("t1", "codex/someone-else", H2, null), "not_owner", /does not own/);
+  await refusal(L.recordPush("t1", "codex/someone-else", H2, null), "not_owner", /does not hold/);
   await refusal(L.beginLanding("t1", "owner", H2), "acceptance_changed", /no longer accepted at bbbbbbbb/);
   await L.beginLanding("t1", "owner", H1);
   // While landing, the owner's push is refused and a push event changes nothing.
   await refusal(L.recordPush("t1", A, H2, H2), "landing", /being merged at aaaaaaaa/);
   expect(await L.observePush("t1", H2, H1)).toMatchObject({ state: "accepted", head: H1, acceptedHead: H1 });
   // The lease has no expiry: only the owner can end it, and then a push is taken again.
-  await refusal(L.cancelLanding("t1", A), "not_project_owner", /only the project owner/);
+  await refusal(L.cancelLanding("t1", A), "not_project_owner", /only the developer/);
   await L.cancelLanding("t1", "owner");
   expect(await L.recordPush("t1", A, H2, H2)).toMatchObject({ state: "claimed", head: H2, acceptedHead: null });
   await L.recordPush("t1", A, H1, H1);
@@ -1263,7 +1263,7 @@ it("governed policy persists across init and gates claims, handoffs, reviews and
   await L.addReview(review("t1", "opencode/glm-5.3", H1, true));
   await refusal(L.accept("t1", "owner"), "not_ready", /different model than every contributor/);
   await L.addReview(review("t1", B, H1, true));
-  await refusal(L.accept("t1", B), "not_project_owner", /only the project owner/);
+  await refusal(L.accept("t1", B), "not_project_owner", /only the developer/);
   expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
   await L.initProject({ name: "governed", repo: "governed", reset: false, agents: {} }, "owner");
   expect((await L.project()).policy.agents).toEqual({});
@@ -1316,7 +1316,7 @@ it("a blocked task keeps its owner and fork, refuses every move but abandon, and
   await L.claim(t1, A);
   await L.setFork(t1, "blocked--t1", H0, A);
   await L.recordPush(t1, A, H1, null);
-  await refusal(L.block(t1, B, "not mine"), "not_owner", /does not own t1/);
+  await refusal(L.block(t1, B, "not mine"), "not_owner", /does not hold t1/);
   await refusal(L.block(t1, A, "   "), "block_reason", /a block needs a reason/);
   const blocked = await L.block(t1, A, " waiting on the API key\u0007");
   expect(blocked).toMatchObject({ state: "blocked", owner: A, fork: "blocked--t1", head: H1, blocked: { reason: "waiting on the API key", by: A, from: "claimed" } });
@@ -1331,9 +1331,9 @@ it("a blocked task keeps its owner and fork, refuses every move but abandon, and
     [() => L.release(t1, A, "giving up"), "blocked", /Run atelier unblock t1 first/],
     [() => L.claim(t1, A), "blocked", /Run atelier unblock t1 first/],
     [() => L.claim(t1, B), "blocked", /Run atelier unblock t1 first/],
-    [() => L.dispatch(t1, "owner", {}), "not_open", /owned by claude-code/],
+    [() => L.dispatch(t1, "owner", {}), "not_open", /held by claude-code/],
     [() => L.block(t1, "owner", "again"), "already_blocked", /already blocked: waiting on the API key/],
-    [() => L.unblock(t1, B), "not_owner", /does not own t1/],
+    [() => L.unblock(t1, B), "not_owner", /does not hold t1/],
   ];
   for (const [move, code, detail] of moves) await refusal(move(), code, detail);
   expect((await L.item(t1)).head).toBe(H1);
@@ -1353,7 +1353,7 @@ it("a blocked task keeps its owner and fork, refuses every move but abandon, and
   // An open task the owner blocks leaves the runner queue, and is back in it once unblocked.
   const t2 = (await L.newItem("Later", ["docs/**"], "owner")).id;
   await L.dispatch(t2, "owner", { to: "home" });
-  await refusal(L.block(t2, A, "not mine"), "not_owner", /owner: nobody/);
+  await refusal(L.block(t2, A, "not mine"), "not_owner", /holder: nobody/);
   expect((await L.block(t2, "owner", "waiting on t1")).blocked).toMatchObject({ by: "owner", from: "open" });
   expect(await L.waiting()).toEqual([]);
   await refusal(L.claim(t2, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" }), "blocked", /waiting on t1/);
@@ -1362,7 +1362,7 @@ it("a blocked task keeps its owner and fork, refuses every move but abandon, and
 
   // A task blocked in review returns to review; closing a blocked task ends the block with it.
   await L.submit(t1, A);
-  await L.block(t1, "owner", "the owner is away");
+  await L.block(t1, "owner", "the developer is away");
   expect((await L.unblock(t1, A)).state).toBe("submitted");
   await L.block(t1, A, "needs a decision");
   const closed = await L.abandon(t1, "owner", "superseded");
@@ -1377,7 +1377,7 @@ it("the framing is stored with the item, carried by its brief, and edited only b
   expect(item).toMatchObject({ nonGoals: ["no new routes"], stopWhen: ["a check fails twice"], nextGate: "design review" });
   expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
 
-  await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the project owner edits/);
+  await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the developer edits/);
   await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate/);
   // A field given replaces; one left out is kept; an empty list or a null gate clears.
   const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
@@ -1396,7 +1396,7 @@ it("the framing is stored with the item, carried by its brief, and edited only b
 it("the owner changes a live task's scope, an empty list clears it, and the change is recorded", async () => {
   const L = await setup("rescope");
   const item = await L.newItem("Wide", [], "owner");
-  await refusal(L.editItem(item.id, A, {}, ["src/**"]), "not_project_owner", /only the project owner edits/);
+  await refusal(L.editItem(item.id, A, {}, ["src/**"]), "not_project_owner", /only the developer edits/);
   expect((await L.editItem(item.id, "owner", {}, ["src/**", "test/**"])).scope).toEqual(["src/**", "test/**"]);
   // The same scope again records nothing new; a field beside it is kept.
   await L.editItem(item.id, "owner", { nextGate: "review" }, ["src/**", "test/**"]);

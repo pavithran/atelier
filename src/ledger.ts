@@ -519,11 +519,11 @@ function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "revie
   const actor = record.reroutes[route.key];
   const change = record.reviewers?.[route.key];
   let out = route;
-  if (actor) out = { ...out, builder: { actor, reasons: ["Rerouted by the project owner"] }, alternates: out.alternates.filter((a) => a.actor !== actor) };
+  if (actor) out = { ...out, builder: { actor, reasons: ["Rerouted by the developer"] }, alternates: out.alternates.filter((a) => a.actor !== actor) };
   if (change) {
     out = {
       ...out,
-      reviewer: { actor: change.actor, reasons: [change.by ? `Named by the project owner in place of ${change.from ?? "no reviewer"}` : `Picked by the plan in place of ${change.from ?? "no reviewer"}: ${change.reason}`] },
+      reviewer: { actor: change.actor, reasons: [change.by ? `Named by the developer in place of ${change.from ?? "no reviewer"}` : `Picked by the plan in place of ${change.from ?? "no reviewer"}: ${change.reason}`] },
       reviewerChange: { from: change.from, reason: change.reason, at: change.at },
     };
   }
@@ -1467,7 +1467,7 @@ export class Ledger extends DurableObject<Env> {
   // runs one call at a time, so no other init can change the project between
   // the read and the write.
   initProject(init: ProjectInit, actor: string): ProjectRecord {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner initializes policy", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer initializes policy", 403);
     if (init.postMerge !== undefined) init = { ...init, postMerge: parsePostMerge(init.postMerge, actor, new Date().toISOString()) };
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     const at = new Date().toISOString();
@@ -1541,7 +1541,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   admitReviewer(name: string, active: boolean, reason: string, actor: string, pool: ModelEntry[]): ReviewerAdmission {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner admits or withdraws reviewers", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer admits or withdraws reviewers", 403);
     this.project();
     if (typeof reason !== "string" || !reason.trim()) throw new RuleError("bad_reason", "say why this reviewer is admitted or withdrawn", 400);
     assertLength(reason, REASON_MAX, "the admission reason");
@@ -1603,7 +1603,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   saveArea(actor: string, name: unknown, purpose: unknown, id?: string): Area {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner changes areas", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer changes areas", 403);
     const clean = (v: unknown, max: number) => {
       if (typeof v !== "string" || !v.trim() || v.trim().length > max || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(v)) throw new RuleError("bad_area", `area name and purpose must be single lines of at most ${max} characters`, 400);
       return v.trim();
@@ -1625,7 +1625,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   removeArea(id: string, actor: string): void {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner removes areas", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer removes areas", 403);
     this.assertArea(id);
     this.ctx.storage.transactionSync(() => {
       const at = new Date().toISOString();
@@ -1716,7 +1716,7 @@ export class Ledger extends DurableObject<Env> {
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
   editItem(id: string, actor: string, fields: ItemFields, scope?: string[]): Item & { criteriaChange?: CriteriaChange } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
     const areaOnly = fields.area !== undefined && Object.keys(fields).every((key) => key === "area") && scope === undefined;
@@ -2118,7 +2118,7 @@ export class Ledger extends DurableObject<Env> {
   // assignment. Share the token slot so the next claim revokes the port token.
   reserveOwnerPort(id: string, actor: string) {
     const item = this.item(id);
-    if (!ownerPortAllowed(item, actor, this.owner)) throw new RuleError("owner_port", "only the project owner may port to an open, unclaimed task", 403);
+    if (!ownerPortAllowed(item, actor, this.owner)) throw new RuleError("owner_port", "only the developer may port to an open, unclaimed task", 403);
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
     const row = this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
     const generation = crypto.randomUUID();
@@ -2203,7 +2203,7 @@ export class Ledger extends DurableObject<Env> {
       this.dropToken(id, token);
       this.dropRunnerJobs(id);
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
-      this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
+      this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the developer" }, d.at);
     }
     this.setDispatch(id, d, d.at);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}) }, d.at);
@@ -2216,7 +2216,7 @@ export class Ledger extends DurableObject<Env> {
   // override sent as a dispatch (t491), the answer names the core-file hold
   // released, if one held it.
   releaseHold(id: string, actor: string, input: Record<string, unknown>): Item & { retainedDispatch: true; releasedCoreHold?: CoreHold } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
     assertNotTerminal(item);
@@ -2249,7 +2249,7 @@ export class Ledger extends DurableObject<Env> {
   // What a dispatch checks alone, so the caller can revoke a holder's token
   // only for a dispatch that will be made.
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403);
     const item = this.item(id);
     assertNotTerminal(item);
     this.assertNotPlanned(item);
@@ -2286,7 +2286,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   undispatch(id: string, actor: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner withdraws a dispatch", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a dispatch", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
     if (!item.dispatch) throw new RuleError("not_dispatched", `${id} is not queued for a runner, so there is no dispatch to withdraw`);
@@ -2799,7 +2799,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" && item.state !== "merged") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
     // The holder under another letter case, profile or registered name is still the holder.
-    if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
+    if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "a holder cannot review their own item", 403);
     if (r.head !== item.head) throw new RuleError("stale_head", "review is for an older head", 409);
     // The review is bound to the criteria the reviewer was given, as it names
     // them; one that names none, or criteria the task no longer has, is
@@ -2949,7 +2949,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private acceptedReworkAllowed(item: Item, actor: string): void {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner sends accepted work back to building", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer sends accepted work back to building", 403);
     this.assertNotPlanned(item);
     const landing = this.landing(item.id);
     if (landing) throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease; finish atelier merge ${item.id}, or cancel an unpublished merge with atelier merge ${item.id} --cancel before sending it back to building`, 409);
@@ -3063,7 +3063,7 @@ export class Ledger extends DurableObject<Env> {
   // flags themselves stay on the item, marked cleared, as the record of what
   // the scan found.
   clearSecret(id: string, actor: string, reason: unknown, proved = false): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner clears a secret flag", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer clears a secret flag", 403);
     const text = secretClearReason(reason);
     const item = this.item(id);
     // A scan still pending is not a flag: nothing has been judged yet, so
@@ -3096,7 +3096,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private abandonAllowed(id: string, actor: string, note: string, deliveredBy?: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner abandons", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer abandons", 403);
     assertLength(note, NOTE_MAX, "the abandonment note");
     const item = this.item(id);
     // A task closed as delivered by another names a task that has merged.
@@ -3171,7 +3171,7 @@ export class Ledger extends DurableObject<Env> {
   // reviewer) refuse the acceptance rather than accept under criteria the
   // owner never read (t457).
   accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
@@ -3204,7 +3204,7 @@ export class Ledger extends DurableObject<Env> {
     // override or another blocker are told first, so the owner is sent to
     // the page only for an override that is ready to be made.
     if (override && !confirmedBy && !confirmation) {
-      throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403);
+      throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403);
     }
     if (override) {
       // The permission, when one was used, is spent: one confirmation, one override.
@@ -3247,8 +3247,8 @@ export class Ledger extends DurableObject<Env> {
   // since there would be nothing to allow. `criteria`, the binding the page
   // showed, is checked here as accept checks it (t457).
   confirmOverride(id: string, actor: string, expected: string | undefined, factor: OwnerFactor, criteria?: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner allows an override", 403);
-    if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the owner's Access identity or the confirmation secret", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer allows an override", 403);
+    if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the developer's Access identity or the confirmation secret", 403);
     const policy = this.project().policy;
     assertOverridesAllowed(policy);
     const item = this.item(id);
@@ -3296,7 +3296,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   cancelLanding(id: string, actor: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403);
     const run = this.postMergeRun(id);
     if (run && (run.after || !["reserved", "complete"].includes(run.state))) throw new RuleError("post_merge_blocked", "a recorded merge cannot release its post-merge reservation", 409);
     if (run?.state === "reserved") { run.state = "complete"; this.savePostMerge(run, actor, "cancelled"); }
@@ -3307,7 +3307,7 @@ export class Ledger extends DurableObject<Env> {
   beginLanding(id: string, actor: string, head: string, before?: string, generation?: number): Item {
     this.assertPostMergeFree(id);
     this.assertNoRefreshPush(id);
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403);
     const item = this.item(id);
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409);
@@ -3395,7 +3395,7 @@ export class Ledger extends DurableObject<Env> {
   // cleared when the task closes, like the rest of its landing state (see
   // merged and abandon).
   setLandingWorkflow(id: string, instance: string, actor: string, checks: "local" | "container" | LandingWorkflowOptions = "container"): LandingWorkflowRecord {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     this.item(id);
     const record = landingWorkflowRecord(instance, typeof checks === "string" ? { checks } : checks);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
@@ -3411,7 +3411,7 @@ export class Ledger extends DurableObject<Env> {
   // `owner` and creates `to`; every other is answered the record as it
   // stands, whose options are the ones `to` is created with.
   claimLandingWorkflow(id: string, from: string | null, to: string, actor: string, options: LandingWorkflowOptions, replaced?: { from: string; reason: string; detail: string }): { owner: boolean; record: LandingWorkflowRecord | null } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     this.item(id);
     const current = this.landingWorkflowOf(id);
     if ((current?.instance ?? null) !== from) return { owner: false, record: current };
@@ -3453,7 +3453,7 @@ export class Ledger extends DurableObject<Env> {
 
   // Remove only the missing instance that the owner actually read.
   clearLandingWorkflow(id: string, instance: string, actor: string): void {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     if (this.landingWorkflowOf(id)?.instance !== instance) return;
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
   }
@@ -3536,7 +3536,7 @@ export class Ledger extends DurableObject<Env> {
   // pre-reviews the live lease calls for (schedulePrereviews), which never
   // fails the ask.
   async queueProjectLanding(id: string, actor: string, leave = false, instance?: string): Promise<{ lease: LandingLease | null; waiting: WaitingLanding[] }> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     const item = this.item(id);
     this.fenceLandingInstance(id, instance);
     if (!leave) this.assertNotFenced(id);
@@ -3566,7 +3566,7 @@ export class Ledger extends DurableObject<Env> {
   async beginProjectLanding(id: string, actor: string, instance?: string): Promise<{ item: Item; expired: LandingLease | null }> {
     this.assertPostMergeFree(id);
     this.assertNoRefreshPush(id);
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     const item = this.item(id);
     this.fenceLandingInstance(id, instance);
     this.assertNotFenced(id);
@@ -3616,7 +3616,7 @@ export class Ledger extends DurableObject<Env> {
   // is held for another task or by nobody, which tells the landing it no
   // longer holds the project.
   async renewProjectLanding(id: string, actor: string, instance?: string): Promise<LandingLease> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     this.fenceLandingInstance(id, instance);
     const at = new Date().toISOString();
     const held = this.projectLanding();
@@ -3648,7 +3648,7 @@ export class Ledger extends DurableObject<Env> {
   // part merges into its plan's branch, not the baseline the merge reads,
   // so none is recorded for one.
   confirmLeaseMain(id: string, actor: string, main: string, instance?: string): { main: string; head: string } | null {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     if (!/^[a-f0-9]{40,64}$/.test(main)) throw new RuleError("bad_main", "main must be the commit hash the landing confirmed", 400);
     this.fenceLandingInstance(id, instance);
     const held = this.projectLanding();
@@ -3673,7 +3673,7 @@ export class Ledger extends DurableObject<Env> {
   // landing whose lease lapsed and was taken over must not free the
   // landing that took it, or two landings would run at once.
   cancelProjectLanding(id: string, actor: string, instance?: string): { held: boolean; lease: LandingLease | null } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer ends a landing lease", 403);
     if (!id) throw new RuleError("bad_item", "a cancel names the task whose landing lease it releases: { cancel: true, item: ID }", 400);
     this.fenceLandingInstance(id, instance);
     const held = this.projectLanding();
@@ -3964,7 +3964,7 @@ export class Ledger extends DurableObject<Env> {
     const admission = reviewerAdmission(actor, policy);
     if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
     if (admission?.active) actor = admissionActor(actor, admission);
-    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
+    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "a holder cannot review their own item", 403);
     if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot pre-review it`, 403);
     // The company restriction in force now binds, as for a gate request (t394).
     const foreign = companyRefusal(actor, singleFamily(policy));
@@ -4074,7 +4074,7 @@ export class Ledger extends DurableObject<Env> {
     this.expirePrereviewClaims(Date.now());
     const row = this.sql.exec(`SELECT * FROM prereviews WHERE id = ? AND item = ?`, prereviewId(request), itemId).toArray()[0];
     if (!row) throw new RuleError("no_request", `no pre-review request ${request} of ${itemId}`, 404);
-    if (!proved) throw new RuleError("not_proved", "a pre-review verdict is recorded only under the reviewer's own token, never the owner's", 403);
+    if (!proved) throw new RuleError("not_proved", "a pre-review verdict is recorded only under the reviewer's own token, never the developer's", 403);
     const at = new Date().toISOString();
     if (row.state !== "claimed" || !sameActor(row.claimedBy as string, by)) {
       // The same verdict delivered again is the first one, already applied.
@@ -4224,7 +4224,7 @@ export class Ledger extends DurableObject<Env> {
       let item: Item;
       try { item = this.item(id); } catch { return []; }
       if (item.state === "merged" || item.state === "abandoned") return [];
-      return [{ project, itemId: id, title: item.title, kind: "blocked" as const, reason: `owner action needed: ${fenceText(id, fence)}`, weight: 70 }];
+      return [{ project, itemId: id, title: item.title, kind: "blocked" as const, reason: `developer action needed: ${fenceText(id, fence)}`, weight: 70 }];
     });
   }
 
@@ -4271,14 +4271,14 @@ export class Ledger extends DurableObject<Env> {
   }
 
   preparePostMerge(item: string, runId: string, paths: string[], actor: string): PostMergeRun {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner executes post-merge work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer executes post-merge work", 403);
     const run = this.postMergeRun(item);
     if (!run || run.id !== runId) throw new RuleError("stale_run", "post-merge run changed", 409);
     preparePostMerge(run, paths); this.savePostMerge(run, actor, "prepared"); return run;
   }
 
   postMergeAction(item: string, actor: string, input: { run: string; action: string; attempt?: string; passed?: boolean; output?: unknown; commandOutcome?: Attempt["commandOutcome"]; publication?: Attempt["publication"]; reason?: unknown; resolution?: unknown }, deployment?: Attempt["deployment"]): PostMergeRun {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner executes or reconciles post-merge work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer executes or reconciles post-merge work", 403);
     const run = this.postMergeRun(item);
     if (!run || run.id !== input.run) throw new RuleError("stale_run", "post-merge run changed", 409);
     const at = new Date().toISOString();
@@ -4293,7 +4293,7 @@ export class Ledger extends DurableObject<Env> {
   // it took and what it settled, recorded as a land.* event for the
   // integration record (t186) to read the cost of landing a task.
   landEvent(id: string, actor: string, step: string, ms: number, data: Record<string, unknown>, proved = false): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a landing's steps", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a landing's steps", 403);
     if (!LAND_STEPS.has(step)) throw new RuleError("bad_step", `"${step}" is not a step of a landing; one of ${[...LAND_STEPS].join(", ")}`, 400);
     if (!Number.isFinite(ms) || ms < 0 || ms > 86_400_000) throw new RuleError("bad_ms", "ms must be the step's duration in milliseconds, a day at most", 400);
     const clean = cleanLandData(data);
@@ -4303,7 +4303,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   merged(id: string, actor: string, mergeCommit: string, observed: boolean, acceptedHead?: string | null): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer merges", 403);
     const item = this.item(id);
     if (item.state === "merged" && this.events(id).some((e) => e.kind === "item.merged" && e.data.mergeCommit === mergeCommit)) return item;
     if (!observed) throw new RuleError("unverified_merge", "merge commit is not on the baseline");
@@ -4371,7 +4371,7 @@ export class Ledger extends DurableObject<Env> {
   // checked against this task's own verdicts and revisions (linkVerdict) and
   // recorded with the defect, which counts it against the model that acted.
   traceDefect(id: string, actor: string, note: string, foundIn: string | null, contradicts: Contradicts | null = null): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner traces a defect to a change", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer traces a defect to a change", 403);
     const item = this.item(id);
     if (!item.acceptedHead) {
       throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
@@ -4414,7 +4414,7 @@ export class Ledger extends DurableObject<Env> {
   // review, its reviewer and the verdict event's sequence number, the number
   // a defect names to contradict it.
   addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string, select: { reviewSeq?: unknown; reviewer?: unknown } = {}, acting: string | null = null): { review: number; by: string; event: number } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a verdict on a finding", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a verdict on a finding", 403);
     if (!["confirmed", "refuted", "fixed"].includes(verdict)) throw new RuleError("bad_finding", "a finding's verdict is confirmed, refuted or fixed", 400);
     if (typeof head !== "string" || !/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_finding", "--head must be the full revision the review was made at", 400);
     if (!Number.isInteger(index) || index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
@@ -4468,7 +4468,7 @@ export class Ledger extends DurableObject<Env> {
   // never change. Without `apply` nothing is written, and the answer says
   // what matches and what would be annotated.
   annotateServed(sel: ServedSelection, actor: string, apply: boolean): { matched: ServedMatch[]; pending: number; annotated: number; applied: boolean } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records which model served an event", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records which model served an event", 403);
     this.project();
     const events = this.sql.exec(`SELECT * FROM events WHERE (at >= ? AND at < ?) OR kind = ? ORDER BY seq`, sel.from, sel.to, SERVED).toArray()
       .map((r) => ({ seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string, actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }));
@@ -4613,7 +4613,7 @@ export class Ledger extends DurableObject<Env> {
   // yet (the owner publishes after), so the merge is not observed on the
   // baseline, and the event says it landed fast.
   landedFast(id: string, actor: string, body: Record<string, unknown>): { item: Item; receipt: FastReceipt } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands in fast mode", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands in fast mode", 403);
     const at = new Date().toISOString();
     const receipt = fastReceipt(body, this.mode(), actor, at);
     const item = this.item(id);
@@ -4944,7 +4944,7 @@ export class Ledger extends DurableObject<Env> {
   // a plan job only when it says it runs one (assign, src/dispatch/rules.ts).
   // The default planner is one a live runner offers, read from the index.
   async newPlan(goal: unknown, scope: string[], actor: string, planner: string | null, pool: ModelEntry[]): Promise<{ item: Item; planner: string; reasons: string[] }> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner starts a plan", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer starts a plan", 403);
     const text = cleanGoal(goal);
     const policy = this.project().policy;
     const active = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned') LIMIT 1`).toArray()[0];
@@ -4956,7 +4956,7 @@ export class Ledger extends DurableObject<Env> {
     if (planner !== null) {
       chosen = namedActor(planner, policy, "planner", this.owner);
       this.assertStanding(chosen, "plan", pool);
-      reasons = ["Named by the project owner"];
+      reasons = ["Named by the developer"];
     } else {
       const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers());
       if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model`, 409);
@@ -5096,7 +5096,7 @@ export class Ledger extends DurableObject<Env> {
   // plan order, the tick dispatches what may start, all in one transaction,
   // and the alarm is set for the deadline.
   async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[], offers: readonly SeenOffer[] | null = null): Promise<{ item: Item; parts: Item[] }> {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner approves a plan", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer approves a plan", 403);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     // The plan item must be unheld: a planner that still holds its claim would
@@ -5169,7 +5169,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   reroutePlan(id: string, actor: string, to: unknown): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner reroutes a plan's work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer reroutes a plan's work", 403);
     const item = this.item(id);
     const policy = this.project().policy;
     const at = new Date().toISOString();
@@ -5179,7 +5179,7 @@ export class Ledger extends DurableObject<Env> {
       const d = this.planDispatch(planner, actor, at);
       this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner }, at);
       record.planner = planner;
-      record.plannerReasons = ["Rerouted by the project owner"];
+      record.plannerReasons = ["Rerouted by the developer"];
       this.askPlanner(id, record, d);
       return this.item(id);
     }
@@ -5230,11 +5230,11 @@ export class Ledger extends DurableObject<Env> {
       const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
       if (asked && sameActor(asked, reviewer)) continue;
       this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
-      this.log(item.id, actor, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at);
+      this.log(item.id, actor, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: `the developer named ${reviewer} to review it` }, at);
     }
-    (record.reviewers ??= {})[key] = { actor: reviewer, from, reason: "named by the project owner", at, by: actor };
+    (record.reviewers ??= {})[key] = { actor: reviewer, from, reason: "named by the developer", at, by: actor };
     this.savePlanRecord(plan.id, record);
-    this.log(item.id, actor, "plan.reviewer_changed", { from, to: reviewer, reason: "named by the project owner" }, at);
+    this.log(item.id, actor, "plan.reviewer_changed", { from, to: reviewer, reason: "named by the developer" }, at);
     if (item.state === "blocked" && item.blocked?.by === ORCHESTRATOR) {
       this.update(item.id, { state: "submitted", blocked: null }, at);
       this.log(item.id, actor, "item.unblocked", { reason: item.blocked.reason, to: "submitted" }, at);
@@ -5244,7 +5244,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   retryPlan(id: string, actor: string): Item {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner retries a plan's work", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer retries a plan's work", 403);
     const item = this.item(id);
     const at = new Date().toISOString();
     if (item.kind === "plan") {
@@ -5265,7 +5265,7 @@ export class Ledger extends DurableObject<Env> {
   // abandoned, each with its workspace and the write token recorded for it.
   // The route revokes those tokens, then asks for the stop with their ids.
   stopTargets(id: string, actor: string): { id: string; fork: string | null; tokenId: string | null }[] {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner stops a plan", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer stops a plan", 403);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     const open = this.planParts(id).filter((p) => p.state !== "merged" && p.state !== "abandoned");
@@ -5492,7 +5492,7 @@ export class Ledger extends DurableObject<Env> {
 
   // A plan not yet approved, open and held by nobody, for a decision about its planner.
   private planningPlan(id: string, actor: string, verb: "revise" | "reroute" | "retry"): { item: Item; record: PlanRecord } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the project owner may ${verb} a plan`, 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the developer may ${verb} a plan`, 403);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
     const record = this.planRecord(id);
@@ -5958,7 +5958,7 @@ export class Ledger extends DurableObject<Env> {
     if (!runners) return null;
     const names = runners.join(", ");
     this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, request);
-    this.log(id, actor, "review.withdrawn", { head, reviewer: asked, request, runners, reason: `every runner that offers ${asked} skipped review request ${request} (${names}); the owner asked again` }, at, proved);
+    this.log(id, actor, "review.withdrawn", { head, reviewer: asked, request, runners, reason: `every runner that offers ${asked} skipped review request ${request} (${names}); the developer asked again` }, at, proved);
     return `The earlier request at this head (${request}) was withdrawn: every runner that offers ${asked} had skipped it (${names}), so the review is asked anew for them to serve.`;
   }
 
@@ -6044,7 +6044,7 @@ export class Ledger extends DurableObject<Env> {
     // open at an old head; this closes them on the first claim.
     const closed = item.head ? this.withdrawStaleRequests(itemId, item.head, new Date().toISOString()) : [];
     if (item.state !== "merged" && item.head) this.reaskReview(itemId, new Date().toISOString());
-    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
+    if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "a holder cannot review their own item", 403);
     if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
     // The company restriction in force now binds, whatever it was when the
     // request was made (t394).
@@ -6191,7 +6191,7 @@ export class Ledger extends DurableObject<Env> {
   // every runner offering its reviewer has skipped is withdrawn and asked
   // anew (renewSkippedRequest), so the runners serve the new request.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
     const item = this.reviewItem(id);
     this.keepPool(pool);
     if (item.state === "merged") wanted = true;
@@ -6224,7 +6224,7 @@ export class Ledger extends DurableObject<Env> {
       if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models`, 409);
       if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
       if ((!admission && !entries.length) || !mayAssess(reviewer, policy, this.owner)) {
-        throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the owner can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403);
+        throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the developer can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403);
       }
       if (admission?.active) {
         const entry = pool.find((m) => m.id === admission.id);
@@ -6261,7 +6261,7 @@ export class Ledger extends DurableObject<Env> {
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         if (asked && sameActor(asked, reviewer)) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
-        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
+        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the developer named ${reviewer} to review it` }, at, proved);
       }
     }
     // A request at this head whose reviewer has replied to it with no verdict
@@ -6282,7 +6282,7 @@ export class Ledger extends DurableObject<Env> {
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         if (!asked || sameActor(asked, reviewer) || !unread.some((u) => sameActor(u.by, asked))) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
-        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, request: r.id as number, reason: `${asked} replied with no verdict the server could read, and the project owner named ${reviewer} to review it` }, at, proved);
+        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, request: r.id as number, reason: `${asked} replied with no verdict the server could read, and the developer named ${reviewer} to review it` }, at, proved);
       }
     }
     // An open request at this head that every runner offering its reviewer
@@ -6697,7 +6697,7 @@ export class Ledger extends DurableObject<Env> {
   // rejection's blocking findings wait for the owner, and when no reviewer
   // can be shown independent of the authors.
   requestCriteriaReview(id: string, actor: string, reviewer: string | null, pool: readonly ModelEntry[], proved = false): { requested: boolean; reason: string; rev: number; reviewer?: string; request?: number } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review of a task's acceptance criteria", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review of a task's acceptance criteria", 403);
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its criteria are no longer reviewed`);
     if (reviewer !== null && !validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
@@ -6725,17 +6725,17 @@ export class Ledger extends DurableObject<Env> {
     if (status.need === "none") {
       // Criteria the item has but no revision records: filed before revisions
       // were kept, so no author is known. The owner's edit records one.
-      if (criteriaOf(item) !== NO_CRITERIA) throw new RuleError("no_criteria_reviewer", `${item.id}'s acceptance criteria cannot be reviewed: ${attributionRefusal([], this.owner)}. Edit them (atelier edit ${item.id} --accept "TEXT"), which records the owner as their author`, 409);
+      if (criteriaOf(item) !== NO_CRITERIA) throw new RuleError("no_criteria_reviewer", `${item.id}'s acceptance criteria cannot be reviewed: ${attributionRefusal([], this.owner)}. Edit them (atelier edit ${item.id} --accept "TEXT"), which records the developer as their author`, 409);
       throw new RuleError("no_criteria", `${item.id} has no acceptance criteria to review: give them with atelier edit ${item.id} --accept "TEXT"`, 409);
     }
-    if (status.need === "owner") throw new RuleError("criteria_rejected", `${item.id}'s acceptance criteria are not reviewed again until the project owner answers the findings: ${status.reason}`, 409);
+    if (status.need === "owner") throw new RuleError("criteria_rejected", `${item.id}'s acceptance criteria are not reviewed again until the developer answers the findings: ${status.reason}`, 409);
     if (status.need === "wait") {
       // A named reviewer replaces an unclaimed request for another; a claimed
       // one, or no name, leaves the live request standing.
       const live = this.criteriaReviewsFor(item.id).find((r) => r.rev === rev && (r.state === "open" || r.state === "claimed"));
       if (!reviewer || !live || live.state !== "open" || sameActor(live.reviewer, reviewer)) return { requested: false, reason: status.reason, rev, reviewer: live?.reviewer, request: live?.id };
-      this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, `the project owner named ${reviewer} instead`, at, live.id);
-      this.log(item.id, by, "criteria_review.withdrawn", { review: live.id, rev, reviewer: live.reviewer, reason: `the project owner named ${reviewer} instead` }, at, proved);
+      this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, `the developer named ${reviewer} instead`, at, live.id);
+      this.log(item.id, by, "criteria_review.withdrawn", { review: live.id, rev, reviewer: live.reviewer, reason: `the developer named ${reviewer} instead` }, at, proved);
     }
     const authors = authorsOf(this.criteriaRevisions(item.id));
     const policy = this.project().policy;
@@ -6750,7 +6750,7 @@ export class Ledger extends DurableObject<Env> {
       if (refusal) throw new RuleError("no_criteria_reviewer", `${reviewer} cannot review ${item.id}'s acceptance criteria: ${refusal}`, 409);
       this.assertCriteriaAssessor(reviewer, item.id);
       chosen = reviewer;
-      reasons = ["Named by the project owner"];
+      reasons = ["Named by the developer"];
     } else {
       const pick = pickCriteriaReviewer({
         authors, pool: withStanding(pool, standing), policy, owner: this.owner, allowPaid, previous: status.previousReviewer,
@@ -6977,7 +6977,7 @@ export class Ledger extends DurableObject<Env> {
   // revision counts only once every blocking finding of it is settled, and a
   // rejection whose blocking findings are all settled is reviewed again.
   resolveCriteriaFinding(id: string, actor: string, review: number, index: number, verdict: string, note: string): CriteriaResolution {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner answers a finding of a criteria review", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer answers a finding of a criteria review", 403);
     if (!RESOLUTION_VERDICTS.includes(verdict as ResolutionVerdict)) throw new RuleError("bad_finding", `a finding's verdict is ${RESOLUTION_VERDICTS.join(", ")}`, 400);
     assertLength(note, NOTE_MAX, "the note");
     this.item(id);
@@ -7031,7 +7031,7 @@ export class Ledger extends DurableObject<Env> {
         this.blockPart(p, planId, `${Ledger.CRITERIA_BLOCK} of part ${p.partKey} cannot be reviewed: ${err.message}. Name a reviewer with atelier criteria-review ${p.id} --reviewer H/M`, at);
       }
     } else if (status.need === "owner" || status.need === "none") {
-      this.blockPart(p, planId, `${Ledger.CRITERIA_BLOCK} of part ${p.partKey} wait for the project owner: ${status.reason}`, at);
+      this.blockPart(p, planId, `${Ledger.CRITERIA_BLOCK} of part ${p.partKey} wait for the developer: ${status.reason}`, at);
     }
     return true;
   }
@@ -7207,8 +7207,8 @@ export class Ledger extends DurableObject<Env> {
   planRefresh(id: string, actor: string, mainHead: string, holds: boolean, token?: string | null): Item {
     const { plan, record, reopening } = this.refreshAllowed(id, actor, mainHead, holds);
     const at = new Date().toISOString();
-    if (reopening) this.reopenPlan(plan, actor, at, token, "the project owner asked for a refresh");
-    this.dispatchRefresh(id, record, mainHead, actor, at, "the project owner asked for a refresh");
+    if (reopening) this.reopenPlan(plan, actor, at, token, "the developer asked for a refresh");
+    this.dispatchRefresh(id, record, mainHead, actor, at, "the developer asked for a refresh");
     return this.item(id);
   }
 
@@ -7225,7 +7225,7 @@ export class Ledger extends DurableObject<Env> {
   // its landing lease is held: a merge holding the lease may already be on
   // the baseline, so it is cancelled first.
   private refreshScope(id: string, actor: string, what: string): { plan: Item; record: PlanRecord; reopening: boolean } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the project owner ${what}`, 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403);
     const plan = this.planItem(id);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${id} is ${plan.state}`);
     const record = this.planRecord(id);
@@ -7352,7 +7352,7 @@ export class Ledger extends DurableObject<Env> {
     const key = mergeMainKey(mainHead);
     if (addedPart(record, key) || this.planParts(id).some((p) => p.partKey === key)) return null;
     const spec = mergeMainPart(mainHead, scope);
-    const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the project owner with plan refresh --resolve" } } : spec;
+    const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the developer with plan refresh --resolve" } } : spec;
     const [route] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
       pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers: offers !== null ? offers : await this.routingOffers(),
       precision: this.reviewPrecision(at),
@@ -7379,8 +7379,8 @@ export class Ledger extends DurableObject<Env> {
   async planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown, offers: readonly SeenOffer[] | null = null, token?: string | null): Promise<Item> {
     const { plan, record, reopening, builder } = this.resolveAllowed(id, actor, mainHead, holds, to);
     const at = new Date().toISOString();
-    if (reopening) this.reopenPlan(plan, actor, at, token, "the project owner asked to resolve main into the branch");
-    await this.addMergeMain(id, record, mainHead, mergeMainScope("", record.scope), actor, at, "the project owner asked to resolve main into the branch", builder, offers);
+    if (reopening) this.reopenPlan(plan, actor, at, token, "the developer asked to resolve main into the branch");
+    await this.addMergeMain(id, record, mainHead, mergeMainScope("", record.scope), actor, at, "the developer asked to resolve main into the branch", builder, offers);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -7440,7 +7440,7 @@ export class Ledger extends DurableObject<Env> {
       // actor claims the plan item by hand: only the plan job's dispatch lets
       // the routed planner claim it.
       if (item.dispatch?.job !== "plan") {
-        throw new RuleError("not_dispatched", `${item.id}'s plan job has left the queue, so it cannot be claimed by hand; it waits for the owner's decision. See atelier plan show ${item.id}`, 409);
+        throw new RuleError("not_dispatched", `${item.id}'s plan job has left the queue, so it cannot be claimed by hand; it waits for the developer's decision. See atelier plan show ${item.id}`, 409);
       }
     }
   }
@@ -7521,7 +7521,7 @@ export class Ledger extends DurableObject<Env> {
   // The owner's atelier refreshes --enqueue: main's head as the Worker read
   // it now, noted and queued for every task that should take it.
   queueRefreshes(actor: string, mainHead: string): { queued: number; mainHead: string } {
-    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner queues refreshes", 403);
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer queues refreshes", 403);
     const at = new Date().toISOString();
     if (!HASH.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
     this.setMainHead(mainHead, at);
@@ -7750,7 +7750,7 @@ export class Ledger extends DurableObject<Env> {
     const pushing = lease?.pushing;
     if (lease && pushing) {
       const live = leaseLive(lease, Date.now());
-      throw new RuleError("refresh_pushing", `${pushing.by ?? lease.by} announced a push of main merged into ${id} as ${pushing.head.slice(0, 8)} and has not recorded it; ${live ? `its lease runs until ${lease.until}, then ${INTEGRATOR} reconciles the push` : `its lease lapsed, and ${INTEGRATOR}'s next refresh job reconciles the push`}. The owner may release it once the lease lapses: atelier refresh-lease ${id} --release ${lease.id} --reason TEXT`, 409);
+      throw new RuleError("refresh_pushing", `${pushing.by ?? lease.by} announced a push of main merged into ${id} as ${pushing.head.slice(0, 8)} and has not recorded it; ${live ? `its lease runs until ${lease.until}, then ${INTEGRATOR} reconciles the push` : `its lease lapsed, and ${INTEGRATOR}'s next refresh job reconciles the push`}. The developer may release it once the lease lapses: atelier refresh-lease ${id} --release ${lease.id} --reason TEXT`, 409);
     }
   }
 

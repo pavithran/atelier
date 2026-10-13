@@ -7,7 +7,7 @@ const spec: CommandSpec = {
     {
       group: "Owner", line: 2, slot: 20,
       form: "criteria-finding ID --review N --index N --verdict confirmed|refuted|fixed [--note TEXT]",
-      about: "The project owner answers one finding of a criteria review: refuted, that it was wrong; fixed, that it is answered; confirmed, that it stands and the criteria still need the change. Refuted and fixed settle a finding. An approval of the revision counts only once every blocking finding on it is settled, and a rejection whose blocking findings are all settled is reviewed again rather than changed. `--review` names the criteria review and `--index` the finding's position in it, one based. Build and code-review briefs carry the findings with these answers.",
+      about: "The developer answers one finding of a criteria review: refuted, that it was wrong; fixed, that it is answered; confirmed, that it stands and the criteria still need the change. Refuted and fixed settle a finding. An approval of the revision counts only once every blocking finding on it is settled, and a rejection whose blocking findings are all settled is reviewed again rather than changed. `--review` names the criteria review and `--index` the finding's position in it, one based. Build and code-review briefs carry the findings with these answers.",
     },
   ],
   flags: {

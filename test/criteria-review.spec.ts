@@ -170,10 +170,10 @@ it("a rejection waits for the owner's resolutions; a failed or lapsed review app
   const first = await reviewed(L, id, false, [blocker(), { file: "criterion-1", line: null, severity: "follow-up", text: "Say which search." }]);
   expect(first.reviewer).toBe(GLM);
   expect(await status(L, id)).toMatchObject({ approved: false, need: "owner" });
-  await refusal(L.dispatch(id, "owner", { to: "home" }), "criteria_unreviewed", /a blocking finding the project owner has not settled/);
-  await refusal(L.requestCriteriaReview(id, "owner", null, POOL), "criteria_rejected", /not reviewed again until the project owner answers the findings/);
+  await refusal(L.dispatch(id, "owner", { to: "home" }), "criteria_unreviewed", /a blocking finding the developer has not settled/);
+  await refusal(L.requestCriteriaReview(id, "owner", null, POOL), "criteria_rejected", /not reviewed again until the developer answers the findings/);
   // Only the owner answers, on a finding that exists, with a known verdict.
-  await refusal(L.resolveCriteriaFinding(id, GPT, first.request, 1, "refuted", ""), "not_project_owner", /only the project owner/);
+  await refusal(L.resolveCriteriaFinding(id, GPT, first.request, 1, "refuted", ""), "not_project_owner", /only the developer/);
   await refusal(L.resolveCriteriaFinding(id, "owner", first.request, 3, "refuted", ""), "no_finding", /has 2 findings; --index 3/);
   await refusal(L.resolveCriteriaFinding(id, "owner", first.request, 1, "ignored", ""), "bad_finding", /confirmed, refuted, fixed/);
   // Confirmed leaves it standing; refuted settles it, and round 2 goes back to the same reviewer.
@@ -202,7 +202,7 @@ it("a rejection waits for the owner's resolutions; a failed or lapsed review app
   const fourth = await L.requestCriteriaReview(id, "owner", null, POOL);
   expect(fourth.reviewer).toBe(GPT);
   const claim4 = await L.claimCriteriaReview(id, GPT, RUNNER) as unknown as CriteriaReviewClaim;
-  await L.addCriteriaReview({ itemId: id, by: GPT, rev: claim4.rev, criteria: claim4.criteria, request: claim4.request, approve: true, summary: "Clear with the owner's answer." }, true);
+  await L.addCriteriaReview({ itemId: id, by: GPT, rev: claim4.rev, criteria: claim4.criteria, request: claim4.request, approve: true, summary: "Clear with the developer's answer." }, true);
   expect((await status(L, id)).approved).toBe(true);
   // The build goes, and the builder's brief carries every review with the
   // owner's resolutions, so the questioned readings travel with the task.
@@ -467,7 +467,7 @@ it("a criteria review flags a criterion the builder cannot verify as the owner's
   await refusal(L.addCriteriaReview({ ...verdict, checks: [{ criterion: 0, by: "owner", text: "A." }] }, true), "bad_checks", /the criterion its number from 1/);
   expect((await L.criteriaReviewsFor(id)).at(-1)?.state).toBe("claimed");
   // The flag is recorded with the approval, which stands: a check blocks nothing.
-  const check = { criterion: 2, by: "owner" as const, text: "Signing in needs a real account; the owner signs in after deploy and sees the banner." };
+  const check = { criterion: 2, by: "owner" as const, text: "Signing in needs a real account; the developer signs in after deploy and sees the banner." };
   const recorded = await L.addCriteriaReview({ ...verdict, checks: [check] }, true);
   expect(recorded).toMatchObject({ state: "approved", checks: [check] });
   expect(await status(L, id)).toMatchObject({ approved: true, need: "none" });
@@ -479,7 +479,7 @@ it("a criteria review flags a criterion the builder cannot verify as the owner's
   await L.claim(id, OPUS, RUNNER);
   const brief = await L.jobBrief(id, OPUS);
   expect(brief.text).toContain("### Checks after deploy");
-  expect(brief.text).toContain("criterion-2: the project owner's check. Signing in needs a real account; the owner signs in after deploy and sees the banner.");
+  expect(brief.text).toContain("criterion-2: the developer's check. Signing in needs a real account; the developer signs in after deploy and sees the banner.");
   expect(brief.text).toContain("Builder: build for it and say in your summary what you built and what remains to be checked after deploy; do not claim to have verified it");
   // The code review's claim carries the review with its check, and its brief lets the reviewer defer that criterion alone.
   await L.setFork(id, `fork-${id}`, H0, OPUS);
@@ -551,7 +551,7 @@ it("a criteria reviewer the owner's standing holds from reviewing is refused whe
   const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
   const paused: ModelEntry = { ...entry("glm-5.3", "zcode"), state: "paused", stateAt: AT, note: "AI Studio down" };
   const pool = [paused, entry("gpt-6-astra", "codex"), entry("opus-5.5", "claude-code")];
-  await refusal(L.requestCriteriaReview(id, "owner", GLM, pool), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-10 \(the owner's standing\): AI Studio down; name another, or change its standing with atelier models set/);
+  await refusal(L.requestCriteriaReview(id, "owner", GLM, pool), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-10 \(the developer's standing\): AI Studio down; name another, or change its standing with atelier models set/);
   expect(await L.criteriaReviewsFor(id)).toEqual([]);
   // The owner alone wrote the criteria; glm, first by model id, is held, so the pick passes to gpt.
   const asked = await L.requestCriteriaReview(id, "owner", null, pool);
@@ -561,7 +561,7 @@ it("a criteria reviewer the owner's standing holds from reviewing is refused whe
   // With every model held, the refusal says so for each.
   const { id: other } = await L.newItem("Slower search", ["src/**"], "owner", { accept: ["Search answers within 400 ms"] });
   const allHeld = pool.map((e) => ({ ...e, state: "reserved" as const, stateAt: AT, note: "credits" }));
-  await refusal(L.requestCriteriaReview(other, "owner", null, allHeld), "no_criteria_reviewer", /reserved since 2026-10-10 \(the owner's standing\): credits/);
+  await refusal(L.requestCriteriaReview(other, "owner", null, allHeld), "no_criteria_reviewer", /reserved since 2026-10-10 \(the developer's standing\): credits/);
   expect(await L.criteriaReviewsFor(other)).toEqual([]);
 });
 
@@ -628,8 +628,8 @@ it("a part blocked for want of a criteria reviewer is unblocked and dispatched o
 // withdraws it; and a verdict from a model held since it claimed is refused,
 // records nothing, and withdraws the claim, so another may be asked.
 const HELD = [
-  ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /zcode\/glm-5\.3 is paused since 2026-10-10 \(the owner's standing\): AI Studio down/],
-  ["reserved", { state: "reserved", stateAt: AT, note: "credits" }, /zcode\/glm-5\.3 is reserved since 2026-10-10 \(the owner's standing\): credits/],
+  ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /zcode\/glm-5\.3 is paused since 2026-10-10 \(the developer's standing\): AI Studio down/],
+  ["reserved", { state: "reserved", stateAt: AT, note: "credits" }, /zcode\/glm-5\.3 is reserved since 2026-10-10 \(the developer's standing\): credits/],
   ["build-only", { roles: ["build"] }, /zcode\/glm-5\.3 is not a reviewer; its roles are build/],
 ] as const;
 const holdingGlm = (change: Partial<ModelEntry>) => POOL.map((e) => e.id === "glm-5.3" ? { ...e, ...change } : e);

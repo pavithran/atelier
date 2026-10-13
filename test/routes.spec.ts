@@ -736,7 +736,7 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
   // The server takes the confirmation secret as the owner's factor (t371);
   // `bare` is one with neither it nor Access, which can confirm no override.
-  const SECRET = "owner-only-word-no-session-holds";
+  const SECRET = "developer-only-word-no-session-holds";
   const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: SECRET } as typeof env;
   const bare = { ...testEnv, ARTIFACTS } as typeof env;
   const as = (bearer: string, actor: string | null, on = bindings) => (method: string, path: string, body?: unknown) =>
@@ -774,19 +774,19 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   // what to set. One permission takes one override, for 15 minutes.
   const unconfirmed = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(unconfirmed.status).toBe(403);
-  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the owner's confirmation: open https://atelier.test/p/${name}/t1 as the owner, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the owner token alone does not confirm it` });
+  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the developer's confirmation: open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the owner token alone does not confirm it` });
   expect((await L.item("t1")).state).toBe("submitted");
   // On a server with neither Access nor a secret, the refusal says what to set.
   const nowhere = await as(TOKEN, "owner", bare)("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(nowhere.status).toBe(403);
-  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the owner, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the owner token alone does not confirm it`);
+  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the developer, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the owner token alone does not confirm it`);
   const page = (headers: Record<string, string>, on = bindings, confirmation?: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/allow-override`, {
     method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "", ...(confirmation === undefined ? {} : { confirmation }) }),
   }), on);
   // The owner token as a bearer is refused, even with the secret.
   const byBearer = await page({ authorization: `Bearer ${TOKEN}` }, bindings, SECRET);
   expect(byBearer.status).toBe(403);
-  expect(await byBearer.text()).toMatch(/needs the owner(&#39;|'|&#x27;)s own sign-in, not the owner token/);
+  expect(await byBearer.text()).toMatch(/needs the developer(&#39;|'|&#x27;)s own sign-in, not the owner token/);
   // A session alone, which that token buys at /login, is refused without the secret, or with a wrong one.
   const cookie = await signIn(TOKEN, bindings);
   const noSecret = await page({ cookie });
@@ -838,14 +838,14 @@ it("t371: a project that forbids overrides refuses them through the API and the 
   await L.submit("t1", A);
   const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
   // A server that takes the confirmation secret, given: the prohibition is told even to a confirmed owner.
-  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "owner-only-word" } as typeof env;
+  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "developer-only-word" } as typeof env;
   const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
   }), bindings);
   expect([api.status, (await api.json() as { error: string }).error]).toEqual([403, "override_forbidden"]);
   const cookie = await signIn(TOKEN, bindings);
   const page = (verb: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/${verb}`, {
-    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "No other family", confirmation: "owner-only-word" }),
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "No other family", confirmation: "developer-only-word" }),
   }), bindings);
   for (const verb of ["allow-override", "override"]) {
     const res = await page(verb);
@@ -902,7 +902,7 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
   const name = "standing-route", agent = "codex/gpt-6-astra", head = "a".repeat(40);
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  await L.newItem("Ready for the owner", ["src/**"], "owner");
+  await L.newItem("Ready for the developer", ["src/**"], "owner");
   await L.claim("t1", agent);
   await L.setFork("t1", `${name}--t1`, "0".repeat(40), agent);
   await L.recordPush("t1", agent, head, head);
@@ -1096,7 +1096,7 @@ it("sessions record, clean, cap and read newest first, and only the project owne
   expect(note.data.next.length).toBe(2000);
   expect(note.data.checks[0].grade).toBe("reported");
   // Any token can send any actor until task t43 limits an agent's token to its own, so an agent's name on a note proves nothing.
-  const refused = await call("POST", path, "codex/gpt-6-astra", { ...input, summary: "Not the owner" });
+  const refused = await call("POST", path, "codex/gpt-6-astra", { ...input, summary: "Not the developer" });
   expect(refused.status).toBe(403);
   expect(((await refused.json()) as { error: string }).error).toBe("not_project_owner");
   expect((await call("POST", path, "someone-else", input)).status).toBe(403);
@@ -1314,12 +1314,12 @@ it("the holder blocks and unblocks through the API, only the owner edits the fra
 
   await L.claim(created.id, "codex/gpt-6");
   expect((await call("POST", at("block"), "codex/gpt-6", {})).status).toBe(400);
-  const blocked = await call("POST", at("block"), "codex/gpt-6", { reason: "waiting on the owner" });
+  const blocked = await call("POST", at("block"), "codex/gpt-6", { reason: "waiting on the developer" });
   expect(blocked.status).toBe(200);
   expect((await blocked.json() as { state: string; blocked: { by: string } })).toMatchObject({ state: "blocked", blocked: { by: "codex/gpt-6" } });
   const submit = await call("POST", at("submit"), "codex/gpt-6", {});
   expect(submit.status).toBe(409);
-  expect((await submit.json() as { error: string; detail: string })).toMatchObject({ error: "blocked", detail: `${created.id} is blocked: waiting on the owner. Run atelier unblock ${created.id} first` });
+  expect((await submit.json() as { error: string; detail: string })).toMatchObject({ error: "blocked", detail: `${created.id} is blocked: waiting on the developer. Run atelier unblock ${created.id} first` });
 
   expect((await call("POST", at("edit"), "codex/gpt-6", { nextGate: "x" })).status).toBe(403);
   const edited = await call("POST", at("edit"), "owner", { stopWhen: ["a test is red"], nextGate: null });
@@ -1329,7 +1329,7 @@ it("the holder blocks and unblocks through the API, only the owner edits the fra
   const brief = await (await call("GET", at("brief"), "owner")).json() as { nonGoals: string[]; stopWhen: string[]; recommendation: { verdict: string; reason: string } };
   expect([brief.nonGoals, brief.stopWhen]).toEqual([["no b"], ["a test is red"]]);
   expect(brief.recommendation.verdict).toBe("decide");
-  expect(brief.recommendation.reason).toMatch(/^codex\/gpt-6 blocked it: waiting on the owner\. Clear that, then run atelier unblock/);
+  expect(brief.recommendation.reason).toMatch(/^codex\/gpt-6 blocked it: waiting on the developer\. Clear that, then run atelier unblock/);
 
   expect((await call("POST", at("unblock"), "owner", {})).status).toBe(200);
   expect((await (await call("GET", `/projects/routes-c/items/${created.id}`, "owner")).json() as { item: { state: string } }).item.state).toBe("claimed");

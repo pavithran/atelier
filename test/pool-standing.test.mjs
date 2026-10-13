@@ -21,8 +21,8 @@ const item = { id: 't1', title: 'Improve formatting', scope: ['docs/**'], owner:
 const policy = { eligible: ['codex', 'claude-code', 'gemini-cli'], checks: [], protected: [] };
 const input = (pool) => ({ item, project: 'p', pool, policy, sources: [], runs: [] });
 const HELD = [
-  ['paused', { state: 'paused', stateAt: AT, note: 'AI Studio down' }, /paused since 2026-10-09 \(the owner's standing\): AI Studio down/],
-  ['reserved', { state: 'reserved', stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-09 \(the owner's standing\): astra's credits/],
+  ['paused', { state: 'paused', stateAt: AT, note: 'AI Studio down' }, /paused since 2026-10-09 \(the developer's standing\): AI Studio down/],
+  ['reserved', { state: 'reserved', stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-09 \(the developer's standing\): astra's credits/],
   ['review-only', { roles: ['review'] }, /not a builder; its roles are review/],
 ];
 

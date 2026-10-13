@@ -201,7 +201,7 @@ export function addressRefusal(policy: CommitIdentityPolicy, email: string | nul
 }
 
 export const NO_IDENTITY = (project: string) =>
-  `${project} has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL [--agent-email EMAIL ...] (docs/setup.md, "Commit identity")`;
+  `${project} has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL [--agent-email EMAIL ...] (docs/setup.md, "Commit identity")`;
 
 // One side of an identity Git resolves (git var GIT_AUTHOR_IDENT): the name
 // and address, null for one Git would not give without guessing, and the

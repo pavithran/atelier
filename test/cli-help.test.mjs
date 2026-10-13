@@ -109,7 +109,7 @@ test("session commands are listed and the guide teaches both boundaries", () => 
 test("guide keeps the rule that the project checkout is never edited directly", () => {
   const text = run(["guide"]).stdout;
   assert.match(text, /Never edit the project checkout directly\./);
-  assert.match(text, /For each session the project owner runs in the registered checkout:/, "the session steps say whose checkout work they are for");
+  assert.match(text, /For each session the developer runs in the registered checkout:/, "the session steps say whose checkout work they are for");
 });
 
 test("guide teaches filing, relay blocks and private saved copies", () => {

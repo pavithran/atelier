@@ -136,7 +136,7 @@ function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: st
     if (given && sameString(given, (env as unknown as Settings).OVERRIDE_SECRET!.trim())) return "secret";
     throw new RuleError("override_unconfirmed", `an override of the independent review needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
   }
-  throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
+  throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
 }
 
 function thresholds(env: Env): Thresholds {
@@ -227,7 +227,7 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
       const title = anon
         ? projectKind(record.policy.checks, await rootFiles(env, record.repo))
         : titleOf(record);
-      const opts = { redact: true, ownerLabel: ownerName(env) || "The owner", anon };
+      const opts = { redact: true, ownerLabel: ownerName(env) || "The developer", anon };
       const cut = events.length >= STORY_EVENTS;
       const story = buildStory(p.name, items, events, owner, cut, title, opts);
       let pulse = buildPulse(events, owner, now, cut);
@@ -307,7 +307,7 @@ async function showcase(env: Env, url: URL): Promise<Response> {
 async function loginPage(env: Env, error?: string, status = 200): Promise<Response> {
   const shown = await liveShowcase(env).catch(() => []);
   const backdrop = shown.length
-    ? { stories: await backdropStories(env, shown), owner: ownerActor(env), who: ownerName(env) || "The owner" }
+    ? { stories: await backdropStories(env, shown), owner: ownerActor(env), who: ownerName(env) || "The developer" }
     : undefined;
   return html(renderLogin(error, shown.length > 0, backdrop), status);
 }
@@ -573,7 +573,7 @@ function movedTo(url: URL, parts: string[]): Response {
 }
 
 function requireOwner(env: Env, actor: string) {
-  if (actor !== ownerActor(env)) throw new RuleError("not_project_owner", "only the project owner can do this", 403);
+  if (actor !== ownerActor(env)) throw new RuleError("not_project_owner", "only the developer can do this", 403);
 }
 
 function codeOf(err: unknown): string {
@@ -1800,7 +1800,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // returned, so its plaintext reaches no one.
       if (!await L.recordToken(id, actor, generation, replaces, w.tokenId)) {
         await revoke(env, fork, w.tokenId);
-        throw new RuleError("claim_superseded", `${id} changed owner or was claimed again while this claim's token was made; no token was issued`, 409);
+        throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409);
       }
       const b = await mint(env, p.repo, "read", branch);
       return json({
@@ -1822,7 +1822,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { item, generation, replaces } = await L.takeFast(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
       await revoke(env, item.fork, replaces);
       if (!await L.recordToken(id, actor, generation, replaces, null)) {
-        throw new RuleError("claim_superseded", `${id} changed owner or was claimed again while this fast take was made`, 409);
+        throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this fast take was made`, 409);
       }
       const p = await L.project();
       const branch = await projectBranch(env, p);
@@ -1990,7 +1990,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const p = await L.project();
       if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
       const refused = [...(p.policy.prepare ? [p.policy.prepare.command] : []), ...p.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
-      if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}. The project owner replaces it with atelier init --check; until then the container runs nothing.`, 409);
+      if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}. The developer replaces it with atelier init --check; until then the container runs nothing.`, 409);
       // The run is named and the runner records to the Ledger by the key, so a
       // run started under one of the project's names is read under any other.
       const runId = `${ref.key}:${id}:${item.head.slice(0, 12)}:${Date.now()}`;
@@ -2600,7 +2600,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
-          throw new RuleError(rule.code, `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env))}`, rule.status);
+          throw new RuleError(rule.code, `an override of the independent review needs the developer's confirmation: ${overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env))}`, rule.status);
         }
         throw err;
       }
@@ -2731,7 +2731,7 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
   const { env, actor, body } = c;
   if (sub === undefined) {
     const post = await L.postPlan(id, actor, body, !!c.token);
-    if (post.valid) return json({ ...post, next: `the owner reads it with atelier plan show ${id} and approves that hash; release the plan item when done` });
+    if (post.valid) return json({ ...post, next: `the developer reads it with atelier plan show ${id} and approves that hash; release the plan item when done` });
     return json({ error: "invalid_plan", detail: `the plan was refused (attempt ${post.attempt} of ${post.attempts}): ${post.errors.join("; ")}`, ...post }, 422);
   }
   requireOwner(env, actor);
@@ -3231,7 +3231,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // buys, they are refused as the API's override is.
       let factor: OwnerFactor | undefined;
       if (verb === "override" || verb === "allow-override") {
-        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
         factor = ownerFactorIn(env, c, form, project, id);
       }
       // A change of owner takes the write token with it, as on the API routes:
@@ -3748,7 +3748,7 @@ export default {
         const actor = token?.runner ? declared ?? token.actor : token?.actor ?? declared ?? "";
         if (!validActor(actor)) {
           if (token?.runner) throw runnerDenied(token);
-          return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
+          return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the developer's actor" }, 400);
         }
         // The acting harness/model is checked here, for every route, so a
         // malformed name, or one an agent or runner token sends, is refused

@@ -240,7 +240,7 @@ export function prereviewRecovery(v: Omit<PrereviewView, "recovery">): string {
     case "claimed": return `none: ${by} is reviewing the merged tree${v.runner ? ` on ${v.runner}` : ""}; the landing never waits for it`;
     case "passed": return "none: the queue position stands";
     case "blocked": return v.ownerAction
-      ? `owner action needed: ${v.ownerAction}; once the findings are addressed, atelier unblock ${v.item}, then atelier land ${v.item}`
+      ? `developer action needed: ${v.ownerAction}; once the findings are addressed, atelier unblock ${v.item}, then atelier land ${v.item}`
       : `rework: the builder addresses the blocking findings; then atelier unblock ${v.item} and atelier land ${v.item} again`;
     case "conflict": return `the landing will meet the same conflict merging main${v.files.length ? ` in ${v.files.join(", ")}` : ""}: resolve it in the workspace, or send it to the builder with atelier dispatch ${v.item} --job merge-main; the queue position stands`;
     case "preparation": return `the merged tree's preparation failed (${v.detail ?? "no detail"}); the landing prepares it again and will stop there if it still fails; the queue position stands`;

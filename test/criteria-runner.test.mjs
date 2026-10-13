@@ -198,7 +198,7 @@ test("runReview lets the code reviewer defer a criterion the claim's criteria re
   const flagged = await run(claimWith([{ criterion: 2, by: "owner", text: "Signing in needs a real account." }]), deferred);
   assert.equal(flagged.state.phase, "reviewed", flagged.state.reason);
   assert.ok(flagged.brief.includes("### Checks after deploy"), flagged.brief);
-  assert.ok(flagged.brief.includes("criterion-2: the project owner's check. Signing in needs a real account."));
+  assert.ok(flagged.brief.includes("criterion-2: the developer's check. Signing in needs a real account."));
   assert.ok(flagged.brief.includes("Criterion 2 was flagged by the review of the acceptance criteria as a check after deploy"));
   const approved = flagged.calls.find((c) => c.argv?.[0] === "review").argv;
   assert.ok(approved.includes("--approve"), approved.join(" "));

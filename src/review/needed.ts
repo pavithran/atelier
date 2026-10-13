@@ -190,7 +190,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // reviews were bound, neither ends the need nor blocks it.
   const atHead = countingReviews(reviews, bindingOf(item), policy, owner);
   const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts));
-  if (!input.postMerge && rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
+  if (!input.postMerge && rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the developer" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);
   const single = singleFamily(policy);
   if (input.tier) {
@@ -200,7 +200,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     if (independent) return no(`${independent.by}, ${single ? `a different ${single} model from every contributor` : "of another family than every contributor"}, approved ${short(head)}`);
   } else if (!input.wanted) {
     const g = gate(item, policy, [...input.evidence], reviews, owner);
-    if (g.overridden) return no(`the project owner overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
+    if (g.overridden) return no(`the developer overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
     if (!g.needsAssessor) {
       const approvers = atHead.filter((r) => independentApproval(r, kind === "protected" ? "protected" : "coordinated", contributors, owner, single)).map((r) => r.by);
       return no(`the gate already counts an independent approval of ${short(head)} (${approvers.join(", ")})`);
@@ -246,7 +246,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
       ? `a protected change needs an independent review, and none is recorded at ${short(head)}`
       : basis === "coordinated"
         ? `this project's execution policy needs another agent's review of a coordinated change, and none is recorded at ${short(head)}`
-        : `the project owner asked for a review of ${short(head)}, whether or not the gate needs one`;
+        : `the developer asked for a review of ${short(head)}, whether or not the gate needs one`;
   return {
     needed: true,
     reason: last ? `${why}; round ${round}, after ${last.by} rejected ${short(last.head)}` : why,

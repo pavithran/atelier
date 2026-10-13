@@ -101,9 +101,9 @@ test("the default planner skips a paused or reserved model and one without the p
   const paused = entry("glm-5.3", { harness: "zcode", state: "paused", stateAt: AT, note: "source down" });
   const pick = pickPlanner([paused, gpt], [], policy);
   assert.equal(pick.actor, "codex/gpt-6-astra");
-  assert.deepEqual(pick.passedOver, [{ actor: "zcode/glm-5.3", reasons: ["paused since 2026-10-06 (the owner's standing): source down"] }]);
+  assert.deepEqual(pick.passedOver, [{ actor: "zcode/glm-5.3", reasons: ["paused since 2026-10-06 (the developer's standing): source down"] }]);
   const reserved = entry("glm-5.3", { harness: "zcode", state: "reserved", note: "astra's credits" });
-  assert.deepEqual(pickPlanner([reserved, gpt], [], policy).passedOver, [{ actor: "zcode/glm-5.3", reasons: ["reserved since 2026-10-06 (the owner's standing): astra's credits"] }]);
+  assert.deepEqual(pickPlanner([reserved, gpt], [], policy).passedOver, [{ actor: "zcode/glm-5.3", reasons: ["reserved since 2026-10-06 (the developer's standing): astra's credits"] }]);
   // A model whose roles lack plan is never the planner.
   const buildOnly = entry("glm-5.3", { harness: "zcode", roles: ["build"] });
   const roles = pickPlanner([buildOnly, gpt], [], policy);

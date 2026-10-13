@@ -159,7 +159,7 @@ test("a check's class: a refusal beats anything recorded, then the record, then 
   ];
   assert.equal(checkClassOf({ checkClasses: recorded }, "npx wrangler deploy").class, "refused");
   assert.deepEqual(checkClassOf({ checkClasses: recorded }, "./check.sh"), { command: "./check.sh", class: "read-only", by: "owner", note: "PAVI: builds and runs the tests" });
-  assert.equal(classText(checkClassOf({ checkClasses: recorded }, "./check.sh")), "read-only, declared by the project owner: PAVI: builds and runs the tests");
+  assert.equal(classText(checkClassOf({ checkClasses: recorded }, "./check.sh")), "read-only, declared by the developer: PAVI: builds and runs the tests");
   assert.equal(classText(checkClassOf({}, "npm test")), "read-only, a known build or test command");
   assert.match(classText(checkClassOf({}, "./check.sh")), /^undeclared: .*still run.*--declare-read-only/);
   assert.match(classText(checkClassOf({}, "npm run deploy")), /^refused, because it runs a script whose name says it deploys or publishes \(npm run deploy\); Atelier will not run it/);

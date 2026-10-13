@@ -89,7 +89,7 @@ it("the owner's set reaches every project's ledger, which then refuses the model
   const listed = await (await call("GET", "/models", "owner")).json() as ModelEntry[];
   expect(listed.find((m) => m.id === "gpt-6-astra")).toMatchObject({ state: "reserved", tier: "frontier", stateAt: body.stateAt });
 
-  await refusal(L.dispatch(task.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" }), "model_held", /codex\/gpt-6-astra is reserved since \d{4}-\d{2}-\d{2} \(the owner's standing\): astra's credits/);
+  await refusal(L.dispatch(task.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" }), "model_held", /codex\/gpt-6-astra is reserved since \d{4}-\d{2}-\d{2} \(the developer's standing\): astra's credits/);
   expect((await L.item(task.id)).dispatch).toBeNull();
 
   // Available again but kept to reviewing: still refused as a builder.
@@ -131,8 +131,8 @@ const withdrawn = async (L: ReturnType<typeof ledger>, id: string) => ((await L.
 
 it("a pool change withdraws a standalone task's unclaimed review request to a model now paused, reserved or kept from reviewing, and the next landing asks another", async () => {
   for (const [name, change, reason] of [
-    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-05 \(the owner's standing\): AI Studio down/],
-    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-05 \(the owner's standing\): astra's credits/],
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-05 \(the developer's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-05 \(the developer's standing\): astra's credits/],
     ["build-only", { roles: ["build"] }, /codex\/gpt-6-astra is not a reviewer; its roles are build/],
   ] as const) {
     const { L, id } = await submitted(`standalone-held-${name}`);
@@ -166,7 +166,7 @@ it("a review request made before its model was held is refused at claim and with
   const pool = holding({ state: "reserved", stateAt: AT, note: "astra's credits" });
   await L.requestReview(other.id, "owner", GLM, pool);
   expect(await open(L, id)).toEqual([expect.objectContaining({ state: "open" })]);
-  await refusal(L.claimReview(id, GPT, RUNNER), "model_held", new RegExp(`codex/gpt-6-astra is reserved since 2026-10-05 \\(the owner's standing\\): astra's credits; its review of ${id} is withdrawn`));
+  await refusal(L.claimReview(id, GPT, RUNNER), "model_held", new RegExp(`codex/gpt-6-astra is reserved since 2026-10-05 \\(the developer's standing\\): astra's credits; its review of ${id} is withdrawn`));
   expect(await open(L, id)).toEqual([]);
   expect((await withdrawn(L, id)).map((e) => e.data)).toEqual([expect.objectContaining({ head: H1, reviewer: GPT, reason: expect.stringMatching(/reserved since 2026-10-05/) })]);
   expect(await L.requestReview(id, "owner", null, pool)).toMatchObject({ requested: true, reviewer: GLM });
@@ -179,8 +179,8 @@ it("a review request made before its model was held is refused at claim and with
 // then waits for the owner to dispatch it again; a plan is blocked until the
 // owner reroutes its planner.
 const HELD = [
-  ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-05 \(the owner's standing\): AI Studio down/],
-  ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-05 \(the owner's standing\): astra's credits/],
+  ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-05 \(the developer's standing\): AI Studio down/],
+  ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-05 \(the developer's standing\): astra's credits/],
 ] as const;
 const undispatched = async (L: ReturnType<typeof ledger>, id: string) => ((await L.events(id)) as unknown as Event[]).filter((e) => e.kind === "item.undispatched");
 
@@ -381,7 +381,7 @@ it("a dispatch that names a model reads the pool again, so a ledger the pool cha
   await I.setModel("gpt-6-luna", { state: "paused", note: "AI Studio down" }, AT);
   const held = await send();
   expect(held.status).toBe(409);
-  expect(await held.json()).toMatchObject({ error: "model_held", detail: expect.stringMatching(/codex\/gpt-6-luna is paused since 2026-10-05 \(the owner's standing\): AI Studio down/) });
+  expect(await held.json()).toMatchObject({ error: "model_held", detail: expect.stringMatching(/codex\/gpt-6-luna is paused since 2026-10-05 \(the developer's standing\): AI Studio down/) });
   expect((await L.item(id)).dispatch).toBeNull();
   // The ledger keeps what it read, so a claim by hand is refused too.
   await refusal(L.claim(id, LUNA, RUNNER), "model_held", /codex\/gpt-6-luna is paused since 2026-10-05/);

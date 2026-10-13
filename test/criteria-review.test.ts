@@ -99,8 +99,8 @@ test("the pick asks the previous round's reviewer first, passes over refused, pa
 // claim was the one review request whose company nobody judged.
 test("the pick passes over a model the owner's standing holds from reviewing, and says why", () => {
   const held: [string, Partial<ModelEntry>, RegExp][] = [
-    ["paused", { state: "paused", stateAt: T, note: "AI Studio down" }, /paused since 2026-10-10 \(the owner's standing\): AI Studio down/],
-    ["reserved", { state: "reserved", stateAt: T, note: "astra's credits" }, /reserved since 2026-10-10 \(the owner's standing\): astra's credits/],
+    ["paused", { state: "paused", stateAt: T, note: "AI Studio down" }, /paused since 2026-10-10 \(the developer's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: T, note: "astra's credits" }, /reserved since 2026-10-10 \(the developer's standing\): astra's credits/],
     ["build-only", { roles: ["build"] }, /not a reviewer; its roles are build/],
   ];
   for (const [name, change, why] of held) {
@@ -202,7 +202,7 @@ test("the criteria brief carries the task, the numbered criteria, the authors, e
   assert.ok(brief.includes("another family than every model that wrote these criteria (claude-code/opus-5.5)"));
   assert.ok(brief.includes("This is round 2"));
   assert.ok(brief.includes("1. Search is fast\n2. Results are correct"));
-  assert.ok(brief.includes("Authors of the criteria, by revision: owner (the project owner), claude-code/opus-5.5 (anthropic)."));
+  assert.ok(brief.includes("Authors of the criteria, by revision: owner (the developer), claude-code/opus-5.5 (anthropic)."));
   assert.ok(brief.includes("## Earlier criteria reviews"));
   assert.ok(brief.includes("Review 1, revision 1 (this revision): codex/gpt-6-astra rejected."));
   assert.ok(brief.includes("- finding 1: refuted"));
@@ -244,12 +244,12 @@ const check = (criterion: number, by: PostDeployCheck["by"] = "owner", text = "N
 const errorOf = (parsed: ReturnType<typeof parseVerdict>): string => (parsed.ok ? "" : parsed.error);
 
 test("parseVerdict reads CHECK lines only when asked, one per criterion, naming the criterion and who checks it", () => {
-  const reply = "VERDICT: APPROVE\nSUMMARY: Clear, one needs the deployed app.\nCHECK: criterion-2 owner Signing in needs a real account; the owner signs in after deploy and sees the banner.\nCHECK: 3 orchestrator The smoke check calls /health on the deployed worker.";
+  const reply = "VERDICT: APPROVE\nSUMMARY: Clear, one needs the deployed app.\nCHECK: criterion-2 owner Signing in needs a real account; the developer signs in after deploy and sees the banner.\nCHECK: 3 orchestrator The smoke check calls /health on the deployed worker.";
   const read = parseVerdict(reply, 0, { checks: true });
   assert.equal(read.ok, true);
   if (!read.ok) return;
   assert.deepEqual(read.checks, [
-    { criterion: 2, by: "owner", text: "Signing in needs a real account; the owner signs in after deploy and sees the banner." },
+    { criterion: 2, by: "owner", text: "Signing in needs a real account; the developer signs in after deploy and sees the banner." },
     { criterion: 3, by: "orchestrator", text: "The smoke check calls /health on the deployed worker." },
   ]);
   assert.deepEqual(read.findings, []);
@@ -282,7 +282,7 @@ test("parseVerdict reads CHECK lines only when asked, one per criterion, naming 
 
 test("parseVerdict lets a code review defer only a criterion the criteria review flagged, and an approval stands on met and deferred lines", () => {
   const approve = (lines: string, deferred: number[] = []) => parseVerdict(`VERDICT: APPROVE\nSUMMARY: Fine.\n${lines}`, 2, { deferred });
-  const ok = approve("CRITERION 1: met — Broke the timing test and watched it fail.\nCRITERION 2: deferred — The banner is wired to the session; the owner sees it once signed in after deploy.", [2]);
+  const ok = approve("CRITERION 1: met — Broke the timing test and watched it fail.\nCRITERION 2: deferred — The banner is wired to the session; the developer sees it once signed in after deploy.", [2]);
   assert.equal(ok.ok, true, JSON.stringify(ok));
   // Deferred on a criterion nobody flagged is refused, whatever the verdict.
   assert.match(errorOf(approve("CRITERION 1: met — Ran it.\nCRITERION 2: deferred — Could not run it.")), /criterion 2 is not a check after deploy the review of the acceptance criteria flagged, so it cannot be deferred/);
@@ -349,7 +349,7 @@ test("the findings section tells the builder and the code reviewer which criteri
   assert.ok(text.includes("check after deploy: criterion-2 owner Needs a signed-in browser against the deployed app."));
   assert.ok(text.includes("### Checks after deploy"));
   assert.ok(text.includes("The criteria review flagged these criteria of revision 1 as ones the builder cannot verify in its workspace"));
-  assert.ok(text.includes("criterion-1: the orchestrator's check. The smoke check probes the deployed route.\ncriterion-2: the project owner's check. Needs a signed-in browser against the deployed app."));
+  assert.ok(text.includes("criterion-1: the orchestrator's check. The smoke check probes the deployed route.\ncriterion-2: the developer's check. Needs a signed-in browser against the deployed app."));
   assert.ok(text.includes("Builder: build for each and say in your summary what you built and what remains to be checked after deploy; do not claim to have verified them"));
   assert.ok(text.includes("Reviewer of the change: judge what was built for each, and write its CRITERION line as deferred rather than unmet; the criterion is not a ground for rejection."));
   // Checks of an earlier revision are listed with their review, but stand for nothing now.

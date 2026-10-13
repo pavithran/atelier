@@ -223,7 +223,7 @@ it("plan refresh --resolve adds the part for main's head without a refresh, to t
   await L.claim(id, INTEGRATOR, RUNNER, true);
   await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
   await L.release(id, INTEGRATOR, "refresh failed");
-  await refusal(L.planResolve(id, PLANNER, M1, false, undefined), "not_project_owner", /only the project owner/);
+  await refusal(L.planResolve(id, PLANNER, M1, false, undefined), "not_project_owner", /only the developer/);
   await refusal(L.planResolve(a, "owner", M1, false, undefined), "not_a_plan", /part of/);
   await refusal(L.planResolve(id, "owner", M1, true, undefined), "up_to_date", /already holds main's head 11111111/);
   await refusal(L.planResolve(id, "owner", "nope", false, undefined), "bad_head", /full commit hash/);

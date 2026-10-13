@@ -97,7 +97,7 @@ it("the default planner is one a live runner offers; a named planner is the owne
   await L.stopPlan(again.item.id, "owner", "done");
   // A named planner needs no offer: the owner claims the plan by hand.
   const named = await L.newPlan("Named", ["src/**"], "owner", "zcode/glm-5.3", POOL);
-  expect([named.planner, named.reasons]).toEqual(["zcode/glm-5.3", ["Named by the project owner"]]);
+  expect([named.planner, named.reasons]).toEqual(["zcode/glm-5.3", ["Named by the developer"]]);
 });
 
 it("a runner's ask is recorded with when it asked, and the owner alone reads the offers", async () => {

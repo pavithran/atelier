@@ -269,9 +269,9 @@ it("a builder no live runner offers is not handed the rework: the owner is told 
   const d = await L.detail(t2) as unknown as { item: { state: string; owner: string }; prereviews: PrereviewView[] };
   expect(d.item).toMatchObject({ state: "submitted", owner: OPUS });
   expect(d.prereviews[0].ownerAction).toMatch(/no live runner home:studio offers claude-code\/opus-5\.5 for building/);
-  expect(d.prereviews[0].recovery).toMatch(/^owner action needed/);
+  expect(d.prereviews[0].recovery).toMatch(/^developer action needed/);
   const inbox = (await L.inbox(new Date().toISOString())) as unknown as InboxEntry[];
-  expect(inbox.find((e) => e.itemId === t2 && e.kind === "blocked")?.reason).toMatch(/owner action needed/);
+  expect(inbox.find((e) => e.itemId === t2 && e.kind === "blocked")?.reason).toMatch(/developer action needed/);
 });
 
 it("a result whose head, main, criteria or contributors moved is stale and changes nothing", async () => {
