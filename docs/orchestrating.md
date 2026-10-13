@@ -858,7 +858,11 @@ merges each SHA in order with `git merge --no-ff`, regenerates the
 generated files and commits them, runs the typecheck, scans every file
 each of the batch's commits adds or changes for credentials with the
 server's own scanner (a file it cannot read as text stops the batch, as it
-blocks a push), and runs the tests once for the whole batch. If any step
+blocks a push), and runs the tests once for the whole batch. After the
+tests, every object the scan read (those the batch reuses from earlier
+history included) and every object new to the batch must still be there
+and hash to its id; a missing or changed one stops the batch, named by its
+path. If any step
 fails, main is reset to where it started and nothing is recorded; if main
 cannot be put back, fast land says so, with main's head and the command
 that restores it.
