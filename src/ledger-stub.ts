@@ -60,7 +60,13 @@ export function guardLedger<T extends Stub>(stub: T, name: string, deployed: str
     get(target, prop) {
       const value = (target as Record<PropertyKey, unknown>)[prop];
       if (typeof prop !== "string" || PASS.has(prop) || typeof value !== "function") return value;
-      return (...args: unknown[]) => call(prop, ...args).catch((err: unknown) => { throw updating(err); });
+      // Call the method this read found, on the stub: reading the property
+      // again could find another (a stub may answer each read afresh).
+      return (...args: unknown[]) => {
+        let result: Promise<unknown>;
+        try { result = Promise.resolve(Reflect.apply(value as Call, target, args)); } catch (err) { result = Promise.reject(err); }
+        return result.catch((err: unknown) => { throw updating(err); });
+      };
     },
   });
 }
