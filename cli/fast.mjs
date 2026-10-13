@@ -9,8 +9,9 @@
 // server's push scan reads them), and one run of the test
 // command. Anything that fails resets main to where it started, so main is
 // never left half-merged. Only on success are the receipts recorded, one per
-// task, through `record`. It never pushes or deploys; the caller prints the
-// owner's next commands.
+// task, through `record`, after they are written under .git so a failed one
+// can be finished with recordPending (t602). It never pushes or deploys; the
+// caller prints the owner's next commands.
 //
 // The default test run (t588) is in a temporary clean clone of the batch's
 // head, as atelier check runs a check: the owner's checkout can hold stray
@@ -25,9 +26,9 @@
 // temporary repository with stand-in commands and a stand-in recorder.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
@@ -403,8 +404,11 @@ const hasCommit = (cwd, sha) => runGit(cwd, ["cat-file", "-e", `${sha}^{commit}`
 // runs the test command in a temporary clean clone of the batch's head after
 // that setup (testInCleanClone); without it the test runs in the checkout.
 // `sources` maps a task to the local clone its commit is fetched from when the
-// checkout lacks it (readySources). Returns { ok, start, head, landed, failure }.
-export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, log = () => {} }) {
+// checkout lacks it (readySources). `note` is kept in the receipts file
+// (the project and reviewer, for atelier fast record). Returns { ok, start,
+// head, landed, failure }, and once the batch landed, the tasks recorded
+// and unrecorded and `pending`, the receipts file while any is unrecorded.
+export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -454,7 +458,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   // developer's files and Keychain.
   const env = checkEnv();
   const merged = [];
-  let failure = null, tests = null, scanned = null, read = new Set();
+  let failure = null, tests = null, scanned = null, read = new Set(), file = null, pending = null;
   try {
     for (const { id, sha } of pairs) {
       if (sources[id] && !hasCommit(cwd, sha)) {
@@ -577,19 +581,109 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       if (lost.length) failure = { step: "checkout changed", detail: `main moved: ${scanned.slice(0, 12)} does not hold ${lost.map((m) => `${m.id} (its commit ${m.commit.slice(0, 12)} merged as ${m.mergeCommit.slice(0, 12)})`).join(", ")}` };
     }
     if (failure) return { ok: false, start, ...restore(), landed: [], failure };
+    // The receipts are written before any is posted (finding 9); a write
+    // that fails rolls the batch back like any other step, as nothing is
+    // recorded yet.
+    pending = { version: 1, ...note, start, head: scanned, receipts: merged.map((m) => ({ task: m.id, commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests, recorded: false })) };
+    file = join(pendingDir(cwd), `${start}..${scanned}.json`);
+    writePending(file, pending);
   } catch (err) {
     return { ok: false, start, ...restore(), landed: [], failure: { step: err?.step ?? "error", detail: err?.message ?? String(err) } };
   }
   // Main holds the checked batch now. A receipt the server refuses leaves it
-  // so (the merges passed); the caller names what was and was not recorded.
+  // so (the merges passed); the receipts file says what was and was not
+  // recorded, and recordPending finishes it (Astra's audit of 2026-10-13,
+  // finding 9).
   const head = scanned;
+  const done = await postReceipts(file, pending, record);
+  return { start, head, ...done };
+}
+
+// The receipts of a batch that landed, kept under the checkout's .git
+// directory until every one is recorded (Astra's audit of 2026-10-13,
+// finding 9): fast land posts them one by one after the merges, so a
+// network or server failure part way left main holding the batch with no
+// way to record the rest, since landing again refuses a task already
+// recorded and a commit main already holds. The file is written before any
+// receipt is posted, each receipt is marked once the server answers, and
+// the file is removed when all are. `atelier fast record` resumes it.
+export function pendingDir(cwd) {
+  return join(git(cwd, "rev-parse", "--absolute-git-dir"), "atelier-fast-land");
+}
+
+function writePending(file, data) {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(`${file}.tmp`, `${JSON.stringify(data, null, 2)}\n`);
+  renameSync(`${file}.tmp`, file);
+}
+
+// Posts each receipt not yet recorded, in order, marking it in the file as
+// the server answers, and removes the file when all are recorded. Never
+// merges. Answers { ok, landed, already, recorded, unrecorded, pending,
+// failure }: landed are the receipts this call recorded, already those an
+// earlier run had.
+async function postReceipts(file, data, record) {
+  const already = data.receipts.filter((x) => x.recorded).map((x) => x.task);
   const landed = [];
-  for (const m of merged) {
-    const receipt = { commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests };
-    try { landed.push({ ...m, receipt, answer: await record(m.id, receipt) }); }
-    catch (err) { return { ok: false, start, head, landed, failure: { step: `record ${m.id}`, detail: err?.message ?? String(err), merged: true } }; }
+  const tally = () => ({ recorded: data.receipts.filter((x) => x.recorded).map((x) => x.task), unrecorded: data.receipts.filter((x) => !x.recorded).map((x) => x.task) });
+  for (const x of data.receipts) {
+    if (x.recorded) continue;
+    const receipt = { commit: x.commit, mergeCommit: x.mergeCommit, builder: x.builder, tests: x.tests };
+    let answer;
+    try { answer = await record(x.task, receipt); }
+    catch (err) { return { ok: false, landed, already, ...tally(), pending: file, failure: { step: `record ${x.task}`, detail: err?.message ?? String(err), merged: true } }; }
+    x.recorded = true;
+    landed.push({ id: x.task, commit: x.commit, mergeCommit: x.mergeCommit, builder: x.builder, receipt, answer });
+    if (data.receipts.some((y) => !y.recorded)) writePending(file, data);
   }
-  return { ok: true, start, head, landed, failure: null };
+  rmSync(file, { force: true });
+  return { ok: true, landed, already, ...tally(), pending: null, failure: null };
+}
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// Resumes a batch whose receipts did not all post: reads the receipts file
+// (`file`, or the only one under pendingDir), checks that main still holds
+// each receipt not yet recorded as fast land left it, and posts only those.
+// It refuses, posting nothing, when main no longer holds a receipt's merge
+// commit, the merge's second parent is not the task's commit, the merge is
+// not the task's, or the commit's Agent line names another builder.
+export async function recordPending({ cwd, file, record }) {
+  return postPending(readPending(cwd, file), record);
+}
+
+// recordPending's reading and checks, apart, so the command can read the
+// project and reviewer the file names before anything is posted. Answers
+// { file, project, reviewer, data }, or throws, naming every problem.
+export function readPending(cwd, file) {
+  if (!file) {
+    const dir = pendingDir(cwd);
+    const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).sort() : [];
+    if (!files.length) throw new Error(`no fast landing waits to be recorded in ${dir}`);
+    if (files.length > 1) throw new Error(`more than one fast landing waits to be recorded; name one: ${files.map((f) => join(dir, f)).join(", ")}`);
+    file = join(dir, files[0]);
+  }
+  let data;
+  try { data = JSON.parse(readFileSync(file, "utf8")); } catch (err) { throw new Error(`${file} cannot be read as a fast landing's receipts: ${err?.message ?? err}`); }
+  const valid = (x) => /^t\d+$/.test(x?.task) && FULL_SHA.test(x.commit) && FULL_SHA.test(x.mergeCommit) && typeof x.builder === "string" && typeof x.recorded === "boolean";
+  if (data?.version !== 1 || !Array.isArray(data.receipts) || !data.receipts.length || !data.receipts.every(valid)) throw new Error(`${file} is not a fast landing's receipts file`);
+  const main = git(cwd, "rev-parse", "--verify", "refs/heads/main");
+  const problems = [];
+  for (const x of data.receipts.filter((r) => !r.recorded)) {
+    const merge = x.mergeCommit.slice(0, 12);
+    if (runGit(cwd, ["merge-base", "--is-ancestor", x.mergeCommit, main]).status !== 0) { problems.push(`main no longer holds ${x.task}'s merge commit ${merge} (main is at ${main.slice(0, 12)})`); continue; }
+    const parents = git(cwd, "rev-list", "--parents", "-n", "1", x.mergeCommit).split(" ").slice(1);
+    if (parents.length !== 2 || parents[1] !== x.commit) problems.push(`${merge} is not a merge of ${x.task}'s commit ${x.commit.slice(0, 12)}`);
+    else if (!git(cwd, "log", "-1", "--format=%s", x.mergeCommit).startsWith(`Merge ${x.task}:`)) problems.push(`${merge} is not the merge of ${x.task}`);
+    else if (agentOfMessage(git(cwd, "log", "-1", "--format=%B", x.commit)) !== x.builder) problems.push(`${x.task}'s commit ${x.commit.slice(0, 12)} does not name ${x.builder} as its builder`);
+  }
+  if (problems.length) throw new Error(`nothing was recorded: ${problems.join("; ")}`);
+  return { file, project: typeof data.project === "string" ? data.project : null, reviewer: typeof data.reviewer === "string" ? data.reviewer : null, data };
+}
+
+// Posts the receipts readPending read (recordPending's second half).
+export async function postPending(kept, record) {
+  return { file: kept.file, project: kept.project, reviewer: kept.reviewer, ...(await postReceipts(kept.file, kept.data, record)) };
 }
 
 export const DEFAULT_REGEN = (cwd) => existsSync(join(cwd, "bin/orchestrate/regen-fixtures.sh")) ? "zsh bin/orchestrate/regen-fixtures.sh" : null;
