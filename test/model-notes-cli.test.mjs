@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
+import { modelCardView } from "../src/models/cards.ts";
 
 // atelier models note and models show, against a stub server that answers as
 // the pool does: entries carry their notes, oldest first (t406). The stub
@@ -21,6 +22,12 @@ const pool = [
   { id: "gemini-3", harness: "gemini-cli", where: "cloud", provider: "google", family: "google", aliases: [], note: "", addedBy: "owner", addedAt: NOTE.at },
 ];
 
+// models show also reads the model's vendor cards (t625); none here. The
+// stub answers /cards as the server does (modelCardView), over the pool it
+// is serving, so the entries it names are the ones the server would.
+const noCards = (path, served) => modelCardView([], Array.isArray(served) ? served : pool, decodeURIComponent(path.split("/")[3]));
+const CARDLESS = "  No vendor cards yet. Record one: atelier models card ID --file card.json";
+
 async function stub(t, answer) {
   const requests = [];
   const server = createServer(async (req, res) => {
@@ -28,7 +35,7 @@ async function stub(t, answer) {
     for await (const chunk of req) raw += chunk;
     if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : undefined });
-    const { status = 200, data } = answer(req.method, req.url);
+    const { status = 200, data } = req.url.endsWith("/cards") ? { data: noCards(req.url, answer("GET", "/api/models").data) } : answer(req.method, req.url);
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });
@@ -82,7 +89,7 @@ test("models show prints a model with its notes, oldest first, and says when it 
   assert.equal(shown.status, 0, shown.output);
   const lines = shown.output.trim().split("\n");
   assert.match(lines[0], /^home  codex\/gpt-6\.1-sol  openai/);
-  assert.deepEqual(lines.slice(1), ["  2026-10-01 by owner: Stalls on long refactors.", "  2026-10-09 by owner on atelier/t406: Commits without the full suite."]);
+  assert.deepEqual(lines.slice(1), ["  2026-10-01 by owner: Stalls on long refactors.", "  2026-10-09 by owner on atelier/t406: Commits without the full suite.", CARDLESS]);
 
   const bare = await f.run(["models", "show", "gemini-3"]);
   assert.equal(bare.status, 0, bare.output);
@@ -98,7 +105,7 @@ test("models show names a task by its project's current name, after a rename", a
   const f = await stub(t, () => ({ data: [{ ...pool[0], notes: [renamed] }] }));
   const shown = await f.run(["models", "show", "gpt-6.1-sol"]);
   assert.equal(shown.status, 0, shown.output);
-  assert.deepEqual(shown.output.trim().split("\n").slice(1), ["  2026-10-09 by owner on atelier/t406: Commits without the full suite."]);
+  assert.deepEqual(shown.output.trim().split("\n").slice(1), ["  2026-10-09 by owner on atelier/t406: Commits without the full suite.", CARDLESS]);
 });
 
 test("models lists the pool with each model's notes beneath its line, oldest first", async (t) => {

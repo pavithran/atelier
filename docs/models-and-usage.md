@@ -45,6 +45,49 @@ endpoint or Keychain entry) clears its status until it is checked again.
 An endpoint carrying a query string, or a Keychain entry name that looks
 like a key, is refused.
 
+## Vendor model cards
+
+Atelier keeps what each vendor claims about a model beside its own record
+of the model's work, so the two can be compared. `atelier models card`
+records a card read from a JSON file or standard input: the source's https
+URL, the day it was read, its publication date when it gives one, and its
+claims, each a benchmark (with its version or subset), a score and its unit,
+and the conditions it was measured under: the harness or scaffold, the
+effort, and any other details. The card's limitations are kept apart from
+its claims.
+
+```text
+atelier models card opus-5.5 --file card.json
+atelier models card --file docs/model-cards/2026-10-13.json
+atelier models card opus-5.5 --withdraw c12 --reason "The vendor withdrew the page."
+atelier models show opus-5.5
+```
+
+A list of cards names each card's model in `"model"`. Every card in a list
+is checked before any is sent, and a card sent again is answered with the
+one already recorded, so a list can be sent again after a failure. Cards are
+the developer's alone, are never changed once recorded, and carry an id and
+the server's time. A card that corrects a misreading names the card it
+corrects (`"corrects": "c12"`), and one that replaces it with a newer source
+names the card it supersedes (`"supersedes": "c12"`); both keep the old card
+in the history, as a withdrawal does.
+
+A card is filed under the key its model's name gives, from the name alone:
+the harness is cut off, letter case is ignored, and a name the registry
+knows (such as `claude-opus-5-5`) is its registry model (`opus-5.5`). So
+`claude-code/opus-5.5` and `antigravity/opus-5.5` share one set of cards.
+Pool aliases are not read: adding, moving or removing an alias, or taking a
+model out of the pool and adding it back, never moves a card. A name neither
+the registry nor the pool knows is kept as it is, and `atelier models card`
+says so. Only cards of the same model can correct, supersede or withdraw a
+card. `atelier models show` prints the cards oldest first, then the active
+claims that give one benchmark different scores under the same conditions
+(a conflict, with both sources) and those that differ only under different
+conditions, which are not conflicts. The registry's static priors are
+printed after them as priors. A card is the vendor's word, not a
+measurement Atelier made: nothing that routes or suggests a model reads it.
+`docs/model-cards/2026-10-13.json` holds the cards read on 2026-10-13.
+
 ## Each model's reliability
 
 The Models page and the Usage page show each model's record across every
