@@ -22,6 +22,7 @@
 
 import { FALLBACK, orderByAssignment, type Assignment, type AssignmentOutcome } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
+import { offering, type SeenOffer } from "../dispatch/rules.ts";
 import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
@@ -51,6 +52,11 @@ export interface PickInput {
   // puts its eligible choices first within the tier and within the pool;
   // it adds no model to the tier and moves none that fails a rule.
   assigned?: readonly Assignment[];
+  // The runners' offers as the index recorded them: a model no live runner
+  // offers for the review job is passed over, since its review would wait
+  // unclaimed (gpt-6-astra's review of t622, finding 6). With no live runner,
+  // or none given, nothing is restricted.
+  offers?: readonly SeenOffer[] | null;
 }
 
 // The invariant: unpicked is null exactly when reviewer is set.
@@ -194,6 +200,15 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   } else {
     const refusal = eligibility(actor, policy, input.owner ?? DEFAULT_OWNER);
     if (refusal) failed.push(`${refusal}, so the ledger would refuse its review`);
+  }
+
+  // Any live runner that offers the model for the review job, home or cloud:
+  // where the request is sent is the ledger's to decide.
+  const reviewOffer = input.offers ? offering({ to: "any", job: "review" }, input.offers) : null;
+  if (reviewOffer) {
+    const runners = reviewOffer.actors.get(actor.toLowerCase());
+    if (runners) passed.push(`Offered for the review job by ${[...new Set(runners)].join(", ")}`);
+    else failed.push(`no live runner offers ${actor} for the review job: ${reviewOffer.instead.join("; ")}`);
   }
 
   const status = entry.status;

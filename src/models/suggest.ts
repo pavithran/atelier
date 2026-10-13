@@ -5,6 +5,7 @@ import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEv
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
+import { liveOffers, offeredActors, type SeenOffer } from "../dispatch/rules.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
@@ -18,6 +19,10 @@ export interface SuggestionInput extends SuggestionRecords {
   // The role assignments standing now (src/models/assignments.ts); those of
   // this project (by its key, `project`) and of every project bear here.
   assignments?: readonly Assignment[];
+  // The runners' offers as the index recorded them. A model no live runner
+  // offers is passed over, since no runner could claim its dispatch; with no
+  // live runner, or none read, nothing is restricted (as plan routing does).
+  offers?: readonly SeenOffer[] | null;
 }
 const actorOf = (m: ModelEntry) => `${m.harness}/${m.id}`;
 const keysOf = (m: ModelEntry) => new Set([m.id, ...m.aliases].map(modelKey));
@@ -73,10 +78,15 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   const why = (rejections >= 2 ? "Two rejections require a frontier builder." : strict ? "Security, concurrency or gate work requires a frontier builder." : "Eligible pool models ranked by recorded successful and failed outcomes.")
     + (single ? ` This project runs in single-family mode (${single}), so only ${single}'s models are considered.` : "");
   const excluded: string[] = [];
+  // gpt-6-astra's review of t622, finding 6: without the offers, a standing
+  // assignment could suggest a model nobody can claim over a live one.
+  const live = input.offers ? liveOffers(input.offers) : [];
+  const offered = live.length ? offeredActors(live) : null;
   const refusalOf = (entry: ModelEntry): string => {
     const actor = actorOf(entry);
     const held = standingRefusal(entry, "build");
     if (held) return held;
+    if (offered && !offered.has(actor.toLowerCase())) return `no live runner offers ${actor}, so no runner could claim its dispatch`;
     if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
     if (strict && !frontier(entry)) return "not frontier";
     if (stalledBuilder(entry, input)) return "two consecutive stalled builds; no successful build since";

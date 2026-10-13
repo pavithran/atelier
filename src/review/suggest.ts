@@ -23,6 +23,7 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
     allowPaid: false, owner: input.owner, avoid, precision, previous: input.previous ?? null, tier: input.tier,
     // Security, concurrency or gate work reads security-review, docs alone
     // claims-review, and both then review (src/models/assignments.ts).
+    offers: input.offers,
     assigned: applicableAssignments(input.assignments ?? [], input.project, reviewRoles({ sensitive: sensitive(input.item), docs: docsOnly(input.item.scope) })),
     // Preserve outcome order between equal precision terms.
     recordOrder: ordered.map(({ entry }) => actorOf(entry)),

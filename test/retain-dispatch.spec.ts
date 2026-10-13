@@ -189,6 +189,10 @@ it("fresh overrides, absent holds and ordinary redispatch keep their defaults", 
 });
 it("a first overlap override asking for a suggestion still gets one from the pool", async () => {
   const { path } = await setup("retain-fresh-suggest");
+  // The suggestion passes over a model no live runner offers (t622, finding
+  // 6 of gpt-6-astra's review); earlier tests here left home:retain offering
+  // one model only, so it offers the pool again first.
+  expect((await call("POST", "/queue", { runner: "home:retain", agents: [{ agent: "codex", models: POOL.map((m) => m.id) }] })).status).toBe(200);
   const res = await call("POST", path, { overlapOk: true, suggest: true });
   expect(res.status, await res.clone().text()).toBe(200);
   const answer = await res.json() as Answer & { suggestion?: { actor: string } };

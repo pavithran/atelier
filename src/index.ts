@@ -2092,8 +2092,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // restrictions unless named, so it asks for no suggestion.
       if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
         requireOwner(env, actor);
-        const [pool, track, item, p, assignments] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments()]);
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments }, body);
+        const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers }, body);
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
