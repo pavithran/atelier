@@ -16,6 +16,7 @@ import {
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
+  standingReview,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
@@ -67,6 +68,11 @@ import {
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
 import { linkVerdict, type Contradicts } from "./models/judgement.ts";
+import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
+import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
+import { parseReport } from "./refresh/mechanical.ts";
+import { pickResolver, resolverRefusal } from "./refresh/resolver.ts";
+import { refreshReview } from "./refresh/review.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -249,6 +255,9 @@ export interface ProjectInit {
   triage?: string | null;
   // The top review tier; an empty list clears it (see ProjectPolicy.reviewTier).
   reviewTier?: string[];
+  // The resolver set for refreshes' mechanical conflicts; an empty list
+  // clears it (see ProjectPolicy.resolvers).
+  resolvers?: string[];
   protected?: string[];
   agents?: ProjectPolicy["agents"];
   execution?: ProjectPolicy["execution"];
@@ -397,6 +406,32 @@ export const RUN_REPORTS = 1000;
 // is routed on, as the Models page reads a project's record.
 const RECORD_EVENTS = 1000;
 
+// Recovery waits at least this long after a push announcement. The runner
+// bounds Git pushes to two minutes; landing stays fenced until the push is
+// reconciled (by its announcer or the integrator) or the owner releases it
+// with a reason, even after this deadline or the lease expires.
+const REFRESH_PUSH_MS = 5 * 60_000;
+
+// A task's refresh target as the owner reads it (atelier refreshes, t462).
+export interface RefreshView {
+  item: string;
+  title: string;
+  state: ItemState;
+  owner: string | null;
+  head: string | null;
+  standing: RefreshStanding;
+  target: RefreshTarget;
+  last: RefreshResult | null;
+}
+
+// The harness/model actors live runners offer, each once.
+function offerActors(offers: readonly RunnerOffer[]): string[] {
+  return [...new Set(offers.flatMap((o) => o.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`))))];
+}
+
+// A runner's reason as a refresh records it: one line, at most REASON_MAX.
+const cleanReason = (value: unknown): string => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, REASON_MAX);
+
 // What posting a plan document comes to: a new proposal and its hash, or the
 // errors that refused it, with which of the planner's attempts this is.
 export type PlanPost =
@@ -506,6 +541,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
   const triage = i.triage === undefined ? p?.triage : i.triage ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
+  const resolvers = i.resolvers ?? p?.resolvers ?? [];
   const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
   // A switch of model policy is stamped with this init's time; an init that
   // names none keeps the recorded one, and reset drops it with the rest.
@@ -531,6 +567,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(reviewBar ? { reviewBar } : {}),
       ...(triage ? { triage } : {}),
       ...(reviewTier.length ? { reviewTier: [...reviewTier] } : {}),
+      ...(resolvers.length ? { resolvers: [...resolvers] } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
@@ -644,6 +681,10 @@ export class Ledger extends DurableObject<Env> {
     // An item's events are read by its id (item(), and the queue's push
     // actors), so the log is not scanned whole for each read.
     this.sql.exec(`CREATE INDEX IF NOT EXISTS events_item ON events (item_id)`);
+    // The refresh queue (t462): one target per task, and each settled
+    // refresh under its key (src/refresh/queue.ts).
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_targets (item TEXT PRIMARY KEY, json TEXT NOT NULL)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_results (key TEXT PRIMARY KEY, item TEXT NOT NULL, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
@@ -1718,12 +1759,12 @@ export class Ledger extends DurableObject<Env> {
   item(id: string): Item {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("no_item", `no item ${id}`, 404);
-    const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`, id).toArray();
+    const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed') ORDER BY seq`, id).toArray();
     return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
   }
 
   items(): Item[] {
-    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`).toArray();
+    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed') ORDER BY seq`).toArray();
     const histories = new Map<string, Parameters<typeof pushActors>[0]>();
     for (const row of events) {
       const id = row.item_id as string;
@@ -2324,7 +2365,7 @@ export class Ledger extends DurableObject<Env> {
   private withPushActors(rows: Row[]): Item[] {
     const ids = JSON.stringify(rows.map((r) => r.id as string));
     const histories = new Map<string, Parameters<typeof pushActors>[0]>();
-    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE item_id IN (SELECT value FROM json_each(?)) AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed') ORDER BY seq`, ids).toArray();
+    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE item_id IN (SELECT value FROM json_each(?)) AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed') ORDER BY seq`, ids).toArray();
     for (const row of events) {
       const id = row.item_id as string;
       const history = histories.get(id) ?? [];
@@ -2388,16 +2429,17 @@ export class Ledger extends DurableObject<Env> {
     if (base && this.item(id).kind === "plan") this.setMainHead(base, at);
   }
 
-  // A part's fork forked again from its plan's branch at `base`, as the
-  // claim route does for a part whose fork holds nothing beyond the commit
-  // it forked from (docs/orchestrator.md, section 5). The Ledger takes it
-  // only from the part's holder, for the fork and base the Worker read, and
-  // while no head of its own is recorded; the new base is its head.
+  // A part's fork forked again from its plan's branch at `base`, or a
+  // task's from main's (t462), as the claim route does for a fork that
+  // holds nothing beyond the commit it forked from (docs/orchestrator.md,
+  // section 5). The Ledger takes it only from the holder, for the fork and
+  // base the Worker read, and while no head of its own is recorded; the new
+  // base is its head. A plan's fork is never moved.
   moveFork(id: string, actor: string, fork: string, from: string | null, base: string, proved = false): void {
     const at = new Date().toISOString();
     const item = this.item(id);
-    if (item.kind !== "part" || item.owner !== actor || item.fork !== fork || item.base !== from || (item.head && item.head !== item.base)) {
-      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to the plan's branch; claim it again`, 409);
+    if (item.kind === "plan" || item.owner !== actor || item.fork !== fork || item.base !== from || (item.head && item.head !== item.base)) {
+      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409);
     }
     this.update(id, { base, head: base }, at);
     this.log(id, actor, "fork.moved", { fork, from, base }, at, proved);
@@ -3135,6 +3177,7 @@ export class Ledger extends DurableObject<Env> {
 
   beginLanding(id: string, actor: string, head: string, before?: string, generation?: number): Item {
     this.assertPostMergeFree(id);
+    this.assertNoRefreshPush(id);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
     const item = this.item(id);
     if (item.state !== "accepted" || item.acceptedHead !== head) {
@@ -3393,6 +3436,7 @@ export class Ledger extends DurableObject<Env> {
 
   async beginProjectLanding(id: string, actor: string, instance?: string): Promise<{ item: Item; expired: LandingLease | null }> {
     this.assertPostMergeFree(id);
+    this.assertNoRefreshPush(id);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
     const item = this.item(id);
     this.fenceLandingInstance(id, instance);
@@ -4160,6 +4204,9 @@ export class Ledger extends DurableObject<Env> {
     // the plan's own work landing while it still builds, and is not
     // recorded, or the plan would refresh against a head its part made.
     if (item.kind !== "part") this.setMainHead(mergeCommit, at);
+    // Every other unfinished task with a branch of its own takes the new
+    // main (t462). A part's merge is its plan's work, as above.
+    if (item.kind !== "part") this.enqueueRefreshes(mergeCommit, at);
     // A plan's merge lands its parts too: each integrated part is marked
     // merged with the plan it landed through (docs/orchestrator.md, section 5).
     if (item.kind === "plan") {
@@ -6740,10 +6787,20 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('main-head', ?)`, JSON.stringify({ head, at }));
   }
 
+  // Main's head as last observed, for GET /api/version (t556): the commit
+  // a runner reloads to, which moves with every merge the ledger records.
+  observedMain(): string | null {
+    return this.mainHead();
+  }
+
   // The Worker reports main's head as it read it from the baseline.
+  // A head that moved since the last observation queues the refreshes of
+  // every task that should take it (t462), as a recorded merge does.
   noteMainHead(head: string): void {
     if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
-    this.setMainHead(head, new Date().toISOString());
+    const at = new Date().toISOString(), before = this.mainHead();
+    this.setMainHead(head, at);
+    if (before !== head) this.enqueueRefreshes(head, at);
   }
 
   // Puts the plan item's refresh job in the queue for the integrator, to
@@ -7012,6 +7069,458 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "plan") {
       throw new RuleError("plan_dispatch", `${item.id} is a plan; its planner is dispatched by atelier plan, and again by atelier plan revise, reroute or retry`, 409);
     }
+  }
+
+  // ── task refresh (t462, src/refresh/) ────────────────────────────────────
+  // Every unfinished task with a branch of its own stays merged with main:
+  // when main advances (a merge recorded here, or main's head read where it
+  // moved outside Atelier, noteMainHead), each such task gets a refresh
+  // target naming main's new head, coalesced with any older one
+  // (src/refresh/queue.ts). The integrator merges it in a workspace of its
+  // own under a lease, and the Ledger takes its reports only while the task
+  // is still at the head the lease found and nothing busies it
+  // (src/refresh/standing.ts): a builder at work, a block, a runner's
+  // rebuild, a review under way or a landing. A refresh never takes the
+  // task's ownership, never accepts it and never lands it: it records a new
+  // head, as a push does, and the gate decides the rest.
+
+  private refreshTargetOf(id: string): RefreshTarget | null {
+    const row = this.sql.exec(`SELECT json FROM refresh_targets WHERE item = ?`, id).toArray()[0];
+    return row ? JSON.parse(row.json as string) as RefreshTarget : null;
+  }
+
+  private saveRefreshTarget(id: string, target: RefreshTarget | null): void {
+    if (target) this.sql.exec(`INSERT OR REPLACE INTO refresh_targets (item, json) VALUES (?, ?)`, id, JSON.stringify(target));
+    else this.sql.exec(`DELETE FROM refresh_targets WHERE item = ?`, id);
+  }
+
+  private refreshResultOf(key: string): RefreshResult | null {
+    const row = this.sql.exec(`SELECT json FROM refresh_results WHERE key = ?`, key).toArray()[0];
+    return row ? JSON.parse(row.json as string) as RefreshResult : null;
+  }
+
+  private saveRefreshResult(result: RefreshResult): void {
+    this.sql.exec(`INSERT OR REPLACE INTO refresh_results (key, item, json) VALUES (?, ?, ?)`, result.key, result.item, JSON.stringify(result));
+  }
+
+  // The task's standing now: what the Ledger knows beside the item is
+  // whether it is landing (its merge lease, or the project's landing lease
+  // live on it) and whether a reviewer holds a claim on its head.
+  private refreshStandingOf(item: Item, at = new Date().toISOString()): RefreshStanding {
+    const held = this.projectLanding();
+    const landing = !!this.landing(item.id) || (!!held && held.item === item.id && this.landingLive(held, at));
+    const reviewing = !!item.head && this.sql.exec(`SELECT 1 FROM review_requests WHERE item = ? AND state = 'claimed' AND head = ?`, item.id, item.head).toArray().length > 0;
+    return refreshStanding(item, { landing, reviewing });
+  }
+
+  // Main advanced to `mainHead`: every task with a branch of its own,
+  // unfinished and outside a plan, is queued to take it; a task already
+  // queued for an older head has it replaced. A finished task's target is
+  // dropped. The same head again changes nothing. Answers how many targets
+  // were made or moved.
+  private enqueueRefreshes(mainHead: string, at: string): number {
+    let changed = 0;
+    for (const item of this.items()) {
+      const prior = this.refreshTargetOf(item.id);
+      const standing = this.refreshStandingOf(item, at);
+      if (!queuedStanding(standing)) { if (prior && !prior.lease) this.saveRefreshTarget(item.id, null); continue; }
+      const next = enqueue(prior, item.id, mainHead, at);
+      if (!next.changed) continue;
+      this.saveRefreshTarget(item.id, next.target);
+      this.log(item.id, ORCHESTRATOR, "refresh.queued", { mainHead, ...(prior ? { replaced: prior.mainHead } : {}), ...(standing.kind === "deferred" ? { deferred: standing.reason } : {}) }, at);
+      changed++;
+    }
+    return changed;
+  }
+
+  // The owner's atelier refreshes --enqueue: main's head as the Worker read
+  // it now, noted and queued for every task that should take it.
+  queueRefreshes(actor: string, mainHead: string): { queued: number; mainHead: string } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner queues refreshes", 403);
+    const at = new Date().toISOString();
+    if (!HASH.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
+    this.setMainHead(mainHead, at);
+    return { queued: this.enqueueRefreshes(mainHead, at), mainHead };
+  }
+
+  // A target whose task left the head it waited at (a builder's push after
+  // a conflict went back to it) is queued again, as read.
+  private currentTarget(item: Item, at: string): RefreshTarget | null {
+    const target = this.refreshTargetOf(item.id);
+    if (!target) return null;
+    const moved = headMoved(target, item.head, at);
+    if (moved !== target) this.saveRefreshTarget(item.id, moved);
+    return moved;
+  }
+
+  // The refresh queue as the owner reads it (atelier refreshes): each
+  // target with its task's standing, so a busy or blocked task says why its
+  // refresh waits, and the last outcome recorded for it.
+  refreshQueue(): RefreshView[] {
+    const at = new Date().toISOString();
+    const rows = this.sql.exec(`SELECT item FROM refresh_targets ORDER BY CAST(SUBSTR(item, 2) AS INTEGER)`).toArray();
+    return rows.map((r) => {
+      const item = this.item(r.item as string);
+      const target = this.currentTarget(item, at)!;
+      const last = this.sql.exec(`SELECT json FROM refresh_results WHERE item = ? ORDER BY rowid DESC LIMIT 1`, item.id).toArray()[0];
+      return { item: item.id, title: item.title, state: item.state, owner: item.owner, head: item.head, standing: this.refreshStandingOf(item, at), target, last: last ? JSON.parse(last.json as string) as RefreshResult : null };
+    });
+  }
+
+  // The jobs the refresh queue offers runners now, as queue items: a
+  // task-refresh job for each queued target whose task may be refreshed,
+  // for the integrator, and a task-resolve job for each mechanical conflict
+  // waiting for its resolver. A target waiting for want of a resolver takes
+  // `offer`'s resolver when it is eligible now, so a wait ends as soon as a
+  // runner offering one asks.
+  refreshJobs(offer: RunnerOffer | null = null): Item[] {
+    const at = new Date().toISOString(), now = Date.parse(at);
+    const jobs: Item[] = [];
+    for (const r of this.sql.exec(`SELECT item FROM refresh_targets ORDER BY CAST(SUBSTR(item, 2) AS INTEGER)`).toArray()) {
+      const item = this.item(r.item as string);
+      let target = this.currentTarget(item, at)!;
+      if (leaseLive(target.lease, now) || this.refreshStandingOf(item, at).kind !== "eligible") continue;
+      if (target.state === "waiting" && offer && (offer.jobs ?? []).includes("task-resolve")) {
+        const pick = this.pickRefreshResolver(item, target.expectedHead ?? item.head ?? "", offerActors([offer]));
+        if (pick.actor) {
+          target = { ...target, state: "resolve", resolver: pick.actor, wait: null, updatedAt: at };
+          this.saveRefreshTarget(item.id, target);
+          this.log(item.id, ORCHESTRATOR, "refresh.resolver", { resolver: pick.actor, provider: pick.provider, mainHead: target.mainHead }, at);
+        }
+      }
+      // A lapsed lease's announced push is the integrator's to reconcile,
+      // whoever announced it (takeLease).
+      const job = target.state === "queued" || (target.state === "leased" && (target.lease?.job === "refresh" || !!target.lease?.pushing)) ? "task-refresh" as const
+        : target.state === "resolve" || (target.state === "leased" && target.lease?.job === "resolve") ? "task-resolve" as const : null;
+      if (!job || (offer && !(offer.jobs ?? []).includes(job))) continue;
+      const [agent, model] = job === "task-resolve" && target.resolver ? [target.resolver.slice(0, target.resolver.indexOf("/")), target.resolver.slice(target.resolver.indexOf("/") + 1)] : ["atelier", "integrator"];
+      jobs.push({ ...item, dispatch: { to: "home", agent, model, by: ORCHESTRATOR, at: target.updatedAt, note: `refresh from main at ${target.mainHead.slice(0, 8)}`, job, head: target.mainHead, expectedHead: item.head ?? undefined } });
+    }
+    return jobs;
+  }
+
+  // The resolver for a task's mechanical conflicts among `candidates`
+  // (src/refresh/resolver.ts): one of the project's configured resolvers,
+  // independent of every approval standing at `head`, which the refresh
+  // would otherwise leave reviewed by a model it shares a family with.
+  private pickRefreshResolver(item: Item, head: string, candidates: string[]) {
+    return pickResolver(candidates, this.resolverContext(item, head));
+  }
+
+  // What a resolver's eligibility is judged against now: the configured
+  // set, single-family mode, and the approvals standing at `head`.
+  private resolverContext(item: Item, head: string) {
+    const policy = this.project().policy;
+    const binding = { head, criteria: criteriaOf(item) };
+    const retained = this.reviewsFor(item.id).filter((r) => r.approve && standingReview(r, binding));
+    return { configured: policy.resolvers ?? [], retained, single: singleFamily(policy) };
+  }
+
+  // A lease on a task's refresh (the integrator's task-refresh job) or on
+  // its mechanical conflicts (the resolver's task-resolve job), at the
+  // task's head now. Refused while the task is busy or blocked, with why.
+  leaseRefresh(id: string, actor: string, runner: string | null, job: RefreshJob): { item: Item; lease: RefreshLease; contributors: string[]; resolvers: string[]; retained: { by: string; head: string }[]; revoke: string | null } {
+    if (job === "refresh" && actor !== INTEGRATOR) throw new RuleError("not_integrator", `only ${INTEGRATOR} runs a task's refresh`, 403);
+    const at = new Date().toISOString();
+    const item = this.item(id);
+    const target = this.currentTarget(item, at);
+    if (!target) throw new RuleError("no_refresh", `${id} has no refresh queued`, 409);
+    const standing = this.refreshStandingOf(item, at);
+    if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409);
+    const lease = takeLease(target, { job, actor, runner, head: item.head!, now: Date.parse(at), id: crypto.randomUUID(), same: sameActor });
+    // The resolver chosen for the conflicts is judged again as it takes them:
+    // the policy may have dropped it or changed family mode, or an approval
+    // it is not independent of may have come, while it waited. One no longer
+    // eligible leaves the conflicts waiting for another, saying why. A lease
+    // resuming the checks of a merge already recorded resolves nothing.
+    if (lease.job === "resolve" && !lease.checking && !lease.pushing) {
+      const why = resolverRefusal(actor, this.resolverContext(item, item.head!));
+      if (why) {
+        const wait = `${actor} may no longer resolve it: ${why}`;
+        this.saveRefreshTarget(id, { ...target, state: "waiting", resolver: null, wait, updatedAt: at });
+        this.log(id, ORCHESTRATOR, "refresh.waiting", { mainHead: target.mainHead, head: item.head, wait, refusals: [{ actor, why }] }, at);
+        throw new RuleError("not_resolver", wait, 403);
+      }
+    }
+    this.saveRefreshTarget(id, { ...target, state: "leased", lease, updatedAt: at });
+    this.log(id, actor, "refresh.leased", { job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, ...(lease.checking ? { checking: lease.checking } : {}), ...(runner ? { runner } : {}) }, at);
+    const binding = { head: item.head, criteria: criteriaOf(item) };
+    return {
+      item, lease, contributors: contributorsOf(item), resolvers: this.project().policy.resolvers ?? [],
+      retained: this.reviewsFor(id).filter((r) => r.approve && standingReview(r, binding)).map((r) => ({ by: r.by, head: r.head })),
+      // The token of a lease that lapsed, its runner gone, revoked now.
+      revoke: target.lease?.tokenId ?? null,
+    };
+  }
+
+  // The fork write token minted for a lease, kept so it is revoked when the
+  // lease settles. False when the lease is no longer the target's (it
+  // lapsed and another runner took it), and the caller revokes it at once.
+  recordRefreshToken(id: string, lease: string, tokenId: string): boolean {
+    const target = this.refreshTargetOf(id);
+    if (!target?.lease || target.lease.id !== lease) return false;
+    this.saveRefreshTarget(id, { ...target, lease: { ...target.lease, tokenId } });
+    return true;
+  }
+
+  // The leaseholder keeps its lease through a long run (a resolver's
+  // harness, the required checks): its term starts again from now. Refused
+  // once the lease is no longer its own (it lapsed and another runner took
+  // it, or it settled), so the job stops rather than report under it.
+  renewRefreshLease(id: string, actor: string, leaseId: string): RefreshLease {
+    const target = this.refreshTargetOf(id);
+    const lease = target?.lease;
+    if (!lease || lease.id !== leaseId) throw new RuleError("lease_lost", `${id} has no refresh lease ${leaseId}; it lapsed or another runner took it`, 409);
+    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
+    const next = renewLease(lease, Date.now());
+    this.saveRefreshTarget(id, { ...target!, lease: next });
+    return next;
+  }
+
+  // What a leaseholder whose report went unanswered reads to say where its
+  // push stands: the task's head as recorded now, and whether its lease is
+  // still live and waiting on checks at a recorded head. A push is never
+  // taken back; one not yet recorded stays fenced until the next lease
+  // reconciles it (takeLease, in src/refresh/queue.ts).
+  refreshLeaseStatus(id: string, actor: string, leaseId: string): { head: string | null; lease: boolean; checking: string | null } {
+    const item = this.item(id);
+    const lease = this.refreshTargetOf(id)?.lease;
+    const own = !!lease && lease.id === leaseId && sameActor(lease.by, actor);
+    return { head: item.head, lease: own, checking: own ? lease!.checking ?? null : null };
+  }
+
+  // The leaseholder gives its lease back with no outcome: a provider's
+  // usage limit stopped its harness, or the job failed before it could
+  // report anything else (a git or detector failure, say). The target is as
+  // it was before the lease (afterRelease), the reason is in the task's log,
+  // and the lease's token is revoked. A lease already gone answers
+  // released: false, so a retry does no harm; one pushing or checking a
+  // recorded head is not given back, since its head is already reported.
+  // The owner alone may release an announced push nobody reconciled, once
+  // its lease has lapsed and the push's window has passed, saying why: the
+  // landing fence then ends, the refresh is queued again, and what the fork
+  // holds is the owner's to check (releasePushFence).
+  releaseRefreshLease(id: string, actor: string, leaseId: string, reason: string, providerLimit = false): { item: Item; released: boolean; revoke: string | null } {
+    const at = new Date().toISOString();
+    const item = this.item(id);
+    const target = this.refreshTargetOf(id);
+    const lease = target?.lease;
+    if (!lease || lease.id !== leaseId) return { item, released: false, revoke: null };
+    if (lease.pushing && actor === this.owner && !sameActor(lease.by, actor)) return this.releasePushFence(item, target!, lease, reason, at);
+    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
+    if (lease.pushing) throw new RuleError("refresh_pushing", "the announced push must be reconciled before releasing its lease", 409);
+    if (lease.checking) throw new RuleError("refresh_recorded", `${id}'s refresh is recorded at ${lease.checking.slice(0, 8)} and waits for its checks; report them with refresh-checked`, 409);
+    this.saveRefreshTarget(id, afterRelease(target!, lease, at));
+    this.log(id, actor, "refresh.released", { job: lease.job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, reason: cleanReason(reason), ...(providerLimit ? { providerLimit: true } : {}) }, at);
+    return { item, released: true, revoke: lease.tokenId ?? null };
+  }
+
+  // The owner ends a fence no refresh reconciled: refused while the lease
+  // is live or the push's window is open, since its holder may still be
+  // pushing, and without a reason. The target settles as superseded, so the
+  // task is refreshed again from the head the ledger records.
+  private releasePushFence(item: Item, target: RefreshTarget, lease: RefreshLease, reason: string, at: string): { item: Item; released: boolean; revoke: string | null } {
+    const why = cleanReason(reason), now = Date.parse(at), pushing = lease.pushing!;
+    if (!why) throw new RuleError("reason_required", `say why ${item.id}'s announced push is released: --reason TEXT`, 400);
+    if (leaseLive(lease, now) || Date.parse(pushing.until) > now) {
+      const until = new Date(Math.max(Date.parse(lease.until), Date.parse(pushing.until))).toISOString();
+      throw new RuleError("refresh_leased", `${lease.by} may still be pushing ${pushing.head.slice(0, 8)} to ${item.id}'s fork; its lease and push window end at ${until}, and the push may be released after that`, 409);
+    }
+    this.saveRefreshTarget(item.id, afterSettle(target, lease, "superseded", at));
+    this.log(item.id, this.owner, "refresh.push_released", { lease: lease.id, head: pushing.head, announcedBy: pushing.by ?? lease.by, mainHead: lease.mainHead, from: lease.expectedHead, reason: why }, at);
+    return { item: this.item(item.id), released: true, revoke: lease.tokenId ?? null };
+  }
+
+  // The leaseholder is about to push `head`, the refreshed merge, to the
+  // task's fork. Taken only while the task is still at the head the lease
+  // found and may be refreshed; until the push is reconciled no landing of
+  // the task begins (assertNoRefreshPush), so a landing never starts under
+  // a push it would then be overtaken by, nor a push under a landing.
+  refreshPushing(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; head: string }): RefreshLease {
+    const at = new Date().toISOString();
+    const item = this.item(id);
+    const target = this.refreshTargetOf(id);
+    const lease = reportedLease(target, { item: id, actor, ...report });
+    if (!HASH.test(report.head)) throw new RuleError("bad_head", "head must be the full hash of the refreshed merge", 400);
+    if (!leaseLive(lease, Date.parse(at))) throw new RuleError("lease_lost", "the refresh lease expired before its push", 409);
+    if (lease.checking) throw new RuleError("refresh_recorded", "the refresh already waits for checks", 409);
+    if (item.head !== report.expectedHead) throw new RuleError("head_moved", `${id} moved from ${report.expectedHead.slice(0, 8)} to ${(item.head ?? "").slice(0, 8)} under the lease; nothing may be pushed over it`, 409);
+    const standing = this.refreshStandingOf(item, at);
+    if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409);
+    if (lease.pushing) {
+      if (lease.pushing.head !== report.head) throw new RuleError("refresh_pushing", "another head is already announced", 409);
+      return lease;
+    }
+    const next = { ...lease, pushing: { head: report.head, until: new Date(Date.parse(at) + REFRESH_PUSH_MS).toISOString(), by: lease.by, job: lease.job } };
+    this.saveRefreshTarget(id, { ...target!, lease: next, updatedAt: at });
+    return next;
+  }
+
+  // Called where a landing begins: refused while a refresh's announced push
+  // to the task's fork is not reconciled, however long that takes, saying
+  // who announced it, when its lease lapses and the integrator reconciles
+  // it, and the owner's command that releases it.
+  private assertNoRefreshPush(id: string): void {
+    const lease = this.refreshTargetOf(id)?.lease;
+    const pushing = lease?.pushing;
+    if (lease && pushing) {
+      const live = leaseLive(lease, Date.now());
+      throw new RuleError("refresh_pushing", `${pushing.by ?? lease.by} announced a push of main merged into ${id} as ${pushing.head.slice(0, 8)} and has not recorded it; ${live ? `its lease runs until ${lease.until}, then ${INTEGRATOR} reconciles the push` : `its lease lapsed, and ${INTEGRATOR}'s next refresh job reconciles the push`}. The owner may release it once the lease lapses: atelier refresh-lease ${id} --release ${lease.id} --reason TEXT`, 409);
+    }
+  }
+
+  // A verified refresh (the Worker read the merge on the fork: its parents
+  // are the head the lease found and main's head, and it is the fork's head)
+  // or, with no head, the Worker's finding that the task's head already
+  // holds main. The task's head becomes the merge as a push would make it;
+  // an accepted task goes back to submitted, since its acceptance named
+  // another revision; the review request at the old head is carried to the
+  // new one, which needs its own review (src/refresh/review.ts). A resolver's
+  // refresh records the resolver, as its merge commit's Agent line names it,
+  // among the task's contributors. A repeated report answers the recorded
+  // outcome. With required checks, the lease stays open while its holder
+  // runs them at the new head (refreshChecked).
+  taskRefreshed(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; head: string | null; agent: string | null; diffBefore?: string | null; diffAfter?: string | null; transformations?: string[] }, verified: boolean): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
+    const key = resultKey(id, report.expectedHead, report.mainHead);
+    const recorded = this.refreshResultOf(key);
+    if (recorded && recorded.by === actor && (recorded.head ?? null) === (report.head ?? null)) return { item: this.item(id), result: recorded, replay: true };
+    if (!verified) throw new RuleError("unverified_merge", "the refresh is not on the task's fork", 409);
+    const at = new Date().toISOString();
+    const item = this.item(id);
+    const target = this.refreshTargetOf(id)!;
+    const lease = reportedLease(target, { item: id, actor, lease: report.lease, mainHead: report.mainHead, expectedHead: report.expectedHead });
+    const standing = this.refreshStandingOf(item, at);
+    if (standing.kind !== "eligible" && !(standing.kind === "deferred" && standing.busy === "reviewing")) throw new RuleError("refresh_deferred", standing.reason, 409);
+    if (!report.head && (lease.pushing || lease.checking)) throw new RuleError("refresh_pending", "the announced head must be recorded and checked", 409);
+    if (!report.head && item.head !== report.expectedHead) throw new RuleError("head_moved", "the task moved under its refresh", 409);
+    if (!report.head) {
+      if (lease.job !== "refresh") throw new RuleError("no_head", "a resolver reports the merge it made", 400);
+      const result: RefreshResult = { key, item: id, outcome: "held", mainHead: report.mainHead, expectedHead: report.expectedHead, head: null, by: actor, at };
+      this.saveRefreshResult(result);
+      this.saveRefreshTarget(id, afterSettle(target, lease, "held", at));
+      this.log(id, actor, "refresh.held", { mainHead: report.mainHead, head: report.expectedHead }, at);
+      return { item, result, revoke: lease.tokenId ?? null };
+    }
+    // The merge commit's Agent line names who made it: the integrator for a
+    // clean merge, the leased resolver for a resolved one, and no one else.
+    // A push the integrator reconciles was made by whoever announced it.
+    const madeIn = lease.pushing?.job ?? lease.job, maker = madeIn === "resolve" ? lease.pushing?.by ?? lease.by : INTEGRATOR;
+    const resolver = madeIn === "resolve" ? maker : null;
+    if (!report.agent || !sameActor(report.agent, maker)) {
+      throw new RuleError("bad_agent", `the refreshed merge's Agent line names ${report.agent ?? "nobody"}, not ${maker}, who made it`, 409);
+    }
+    // The fork's head may have been recorded already, from the push event
+    // (observePush); any other head is a push the lease did not make.
+    if (item.head !== report.expectedHead && item.head !== report.head) {
+      throw new RuleError("head_moved", `${id} moved to ${(item.head ?? "").slice(0, 8)} under the refresh; the refresh is not recorded`, 409);
+    }
+    const review = refreshReview({ state: item.state, diffBefore: report.diffBefore ?? null, diffAfter: report.diffAfter ?? null, resolver });
+    const accepted = item.state === "accepted" || item.acceptedHead !== null;
+    this.update(id, { head: report.head, last_push_at: at, ...(accepted ? { state: "submitted", accepted_head: null } : {}) }, at);
+    this.log(id, actor, "item.refreshed", {
+      mainHead: report.mainHead, from: report.expectedHead, head: report.head, job: lease.job, agent: report.agent,
+      ...(resolver ? { resolver, transformations: (report.transformations ?? []).slice(0, 10) } : {}),
+      ...(report.diffBefore ? { diffBefore: report.diffBefore } : {}), ...(report.diffAfter ? { diffAfter: report.diffAfter } : {}),
+      diffChanged: review.diffChanged, ...(accepted ? { approvalInvalidated: true } : {}), review: review.why,
+    }, at);
+    const checking = this.project().policy.checks.length > 0;
+    const result: RefreshResult = { key, item: id, outcome: "refreshed", mainHead: report.mainHead, expectedHead: report.expectedHead, head: report.head, by: actor, at, resolver, ...(checking ? { reason: "checks pending" } : {}) };
+    this.saveRefreshResult(result);
+    this.saveRefreshTarget(id, checking ? checksPending(target, lease, report.head, at) : afterSettle(target, lease, "refreshed", at));
+    this.reaskReview(id, at);
+    return { item: this.item(id), result, revoke: checking ? null : lease.tokenId ?? null };
+  }
+
+  // Whether `actor` may record observed checks at `head` of `id`: the
+  // holder of the lease whose refresh made that head, while it runs them.
+  refreshChecker(id: string, actor: string, head: string): boolean {
+    const lease = this.refreshTargetOf(id)?.lease;
+    return !!lease && lease.checking === head && sameActor(lease.by, actor) && this.item(id).head === head;
+  }
+
+  // The refreshed head's required checks ran (atelier check, by the
+  // leaseholder): passed, the refresh is done; failed, the task goes back to
+  // its builder with the failure, its head as refreshed and the failing
+  // evidence standing in the gate. Either way the lease is settled.
+  refreshChecked(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; passed: boolean; reason: string }): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
+    const key = resultKey(id, report.expectedHead, report.mainHead);
+    const recorded = this.refreshResultOf(key);
+    if (!recorded || recorded.outcome !== "refreshed" && recorded.outcome !== "checks") throw new RuleError("no_refresh", `${id} has no refresh from ${report.expectedHead.slice(0, 8)} with main at ${report.mainHead.slice(0, 8)} recorded`, 409);
+    if (recorded.reason !== "checks pending") return { item: this.item(id), result: recorded, replay: true };
+    const at = new Date().toISOString();
+    const target = this.refreshTargetOf(id)!;
+    const lease = reportedLease(target, { item: id, actor, lease: report.lease, mainHead: report.mainHead, expectedHead: report.expectedHead });
+    const reason = cleanReason(report.reason);
+    const result: RefreshResult = { ...recorded, outcome: report.passed ? "refreshed" : "checks", reason: report.passed ? null : reason || "the required checks failed", at };
+    this.saveRefreshResult(result);
+    this.saveRefreshTarget(id, afterSettle(target, lease, result.outcome, at));
+    if (!report.passed) {
+      const item = this.item(id);
+      this.log(id, actor, "refresh.checks_failed", { mainHead: report.mainHead, head: recorded.head, builder: item.owner ?? this.lastBuilder(id), reason: result.reason }, at);
+    } else this.log(id, actor, "refresh.checked", { mainHead: report.mainHead, head: recorded.head }, at);
+    return { item: this.item(id), result, revoke: lease.tokenId ?? null };
+  }
+
+  // A refresh that ended without a new head: the integrator found the
+  // conflicts all mechanical (a resolver is chosen, or the refresh waits for
+  // one, saying why), or not (the conflict goes back to the builder with
+  // the merge base, both heads, the paths and the hunks); or the task moved
+  // under the lease, or its push was refused because the fork moved
+  // (superseded: queued again from the new head). A repeated report answers
+  // the recorded outcome.
+  taskRefreshFailed(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; outcome: string; reason: string; report?: unknown }, offers: readonly SeenOffer[] | null = null): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
+    const outcome = report.outcome;
+    if (!["mechanical", "returned", "superseded"].includes(outcome)) throw new RuleError("bad_outcome", "outcome must be mechanical, returned or superseded", 400);
+    const key = resultKey(id, report.expectedHead, report.mainHead);
+    const recorded = this.refreshResultOf(key);
+    if (recorded && recorded.by === actor && (recorded.outcome === outcome || (outcome === "mechanical" && ["mechanical", "waiting"].includes(recorded.outcome)))) return { item: this.item(id), result: recorded, replay: true };
+    const at = new Date().toISOString();
+    const item = this.item(id);
+    const target = this.refreshTargetOf(id);
+    const lease = reportedLease(target, { item: id, actor, lease: report.lease, mainHead: report.mainHead, expectedHead: report.expectedHead });
+    const reason = cleanReason(report.reason);
+    const conflict = report.report === undefined || report.report === null ? null : parseReport(report.report);
+    if (typeof conflict === "string") throw new RuleError("bad_report", conflict, 400);
+    if (conflict && (conflict.head !== report.expectedHead || conflict.main !== report.mainHead)) throw new RuleError("bad_report", "the conflict report must name the lease's heads", 400);
+    const base = { key, item: id, mainHead: report.mainHead, expectedHead: report.expectedHead, head: null, by: actor, at };
+    if (outcome === "superseded") {
+      // Kept apart from the idempotence record: the same lease cannot settle
+      // twice, and the task is tried again from wherever it is now.
+      this.saveRefreshTarget(id, afterSettle(target!, lease, "superseded", at));
+      this.log(id, actor, "refresh.superseded", { mainHead: report.mainHead, head: report.expectedHead, reason }, at);
+      return { item, result: { ...base, outcome: "superseded", reason }, revoke: lease.tokenId ?? null };
+    }
+    if (outcome === "returned") {
+      if (!conflict) throw new RuleError("bad_report", "a conflict returned to the builder needs its report: the merge base, both heads, the paths and the hunks", 400);
+      if (conflict.kind === "mechanical") throw new RuleError("bad_report", "a mechanical conflict goes to a resolver, not back to the builder", 400);
+      const builder = item.owner ?? this.lastBuilder(id);
+      const result: RefreshResult = { ...base, outcome: "returned", reason: reason || `${conflict.kind} conflict in ${conflict.files.map((f) => f.path).join(", ")}` };
+      this.saveRefreshResult(result);
+      this.saveRefreshTarget(id, afterSettle(target!, lease, "returned", at, { report: conflict }));
+      this.log(id, actor, "refresh.returned", { mainHead: report.mainHead, head: report.expectedHead, base: conflict.base, builder, kind: conflict.kind, paths: conflict.files.map((f) => f.path), reason: result.reason }, at);
+      return { item, result, revoke: lease.tokenId ?? null };
+    }
+    if (lease.job !== "refresh") throw new RuleError("bad_outcome", "a resolver either resolves the conflicts or returns them to the builder", 400);
+    const pick = this.pickRefreshResolver(item, report.expectedHead, offers ? offerActors(liveOffers(offers).filter((o) => (o.jobs ?? []).includes("task-resolve"))) : this.project().policy.resolvers ?? []);
+    if (pick.actor === null) {
+      const result: RefreshResult = { ...base, outcome: "waiting", resolver: null, reason: pick.wait };
+      this.saveRefreshResult(result);
+      this.saveRefreshTarget(id, afterSettle(target!, lease, "waiting", at, { wait: pick.wait, report: conflict }));
+      this.log(id, actor, "refresh.waiting", { mainHead: report.mainHead, head: report.expectedHead, wait: pick.wait, refusals: pick.refusals.slice(0, 10) }, at);
+      return { item, result, revoke: lease.tokenId ?? null };
+    }
+    const result: RefreshResult = { ...base, outcome: "mechanical", resolver: pick.actor, reason: reason || null };
+    this.saveRefreshResult(result);
+    this.saveRefreshTarget(id, afterSettle(target!, lease, "mechanical", at, { resolver: pick.actor }));
+    this.log(id, actor, "refresh.resolver", { resolver: pick.actor, provider: pick.provider, mainHead: report.mainHead, head: report.expectedHead }, at);
+    return { item, result, revoke: lease.tokenId ?? null };
+  }
+
+  // The builder a conflict goes back to when nobody holds the task now: the
+  // last actor to claim it.
+  private lastBuilder(id: string): string | null {
+    const row = this.sql.exec(`SELECT actor FROM events WHERE item_id = ? AND kind = 'item.claimed' AND actor NOT LIKE 'atelier/%' ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+    return row ? row.actor as string : null;
   }
 
   // One Ledger change takes one timestamp, `at`, and passes it to update and

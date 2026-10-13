@@ -1,0 +1,7 @@
+export function limit() {
+<<<<<<< HEAD
+  return 20;
+=======
+  return 30;
+>>>>>>> 1111111
+}
