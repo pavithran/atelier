@@ -222,3 +222,31 @@ test("suggestBuilder: a build assignment orders eligible builders; an explicit -
   // Another project's assignment does not bear here.
   assert.equal(suggestBuilder({ ...base, assignments: [assigned("build", ["claude-code/opus-5.5"], "other")] }).actor, "antigravity/gemini-4-argon");
 });
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 6: dispatch suggestions
+// and automatic standalone reviews were chosen without runner offers, so an
+// assignment could pick a model no live runner offers over a live one, and
+// queue work nobody could claim.
+const live = (agents: { agent: string; models: string[] }[], jobs = ["build", "review"]) =>
+  [{ runner: "cloud:atelier", kind: "cloud" as const, agents, jobs, at: new Date().toISOString() }];
+
+test("suggestBuilder: an assigned model no live runner offers is passed over for one that is offered", () => {
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] };
+  const a = assigned("build", ["claude-code/opus-5.5", "codex/gpt-6-astra"]);
+  const offers = live([{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "antigravity", models: ["gemini-4-argon"] }]);
+  const pick = suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers });
+  assert.equal(pick.actor, "codex/gpt-6-astra");
+  said(pick.reasons, /claude-code\/opus-5.5: no live runner offers claude-code\/opus-5.5/);
+  // With no live runner, nothing is known to be offered, and the pool stands.
+  assert.equal(suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers: [] }).actor, "claude-code/opus-5.5");
+});
+
+test("pickReviewer and suggestReviewer: an assigned reviewer no live runner offers for the review job is passed over", () => {
+  const a = assigned("review", ["codex/gpt-6-astra"]);
+  const offers = live([{ agent: "antigravity", models: ["gemini-4-argon"] }, { agent: "codex", models: ["gpt-6-astra"] }], ["build"]).concat(live([{ agent: "antigravity", models: ["gemini-4-argon"] }], ["review"]));
+  const pick = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: [a], offers });
+  assert.equal(pick.reviewer?.actor, "antigravity/gemini-4-argon");
+  said(pick.assignment?.lines, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the review job/);
+  const item = { id: "t1", title: "Rename a helper", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] };
+  assert.equal(suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers }).actor, "antigravity/gemini-4-argon");
+});

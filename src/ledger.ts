@@ -6450,7 +6450,7 @@ export class Ledger extends DurableObject<Env> {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
       const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined, assignments: this.heldAssignments() },
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined, assignments: this.heldAssignments(), offers },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");
@@ -6465,6 +6465,7 @@ export class Ledger extends DurableObject<Env> {
         owner: this.owner,
         precision: this.reviewPrecision(at),
         assigned: this.reviewAssigned(item),
+        offers,
       });
       if (!pick.reviewer) {
         const single = singleFamily(policy);
