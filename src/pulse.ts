@@ -7,7 +7,7 @@
 
 import type { LedgerEvent, ProjectRecord } from "./ledger.ts";
 import type { Item } from "./rules.ts";
-import { DECISIONS, isAtelier, QUIET, servedCounts, vendorOf, type ShowcaseCounts, type Vendor } from "./graph.ts";
+import { DECISIONS, isAtelier, QUIET, vendorOf, type ShowcaseCounts, type Vendor } from "./graph.ts";
 import { dayOf } from "./time.ts";
 
 export const PULSE_DAYS = 14;
@@ -85,7 +85,7 @@ export function buildPulse(events: LedgerEvent[], owner: string, now: Date, cut 
 
 // The same pulse from the Ledger's counts (Ledger.showcaseCounts), which
 // cover every event of the window however busy the record is, so nothing
-// in it is cut. Each half-hour's count falls on its day in the owner's zone.
+// in it is cut. The Ledger has already placed each count on its day in the owner's zone.
 export function pulseFromCounts(c: ShowcaseCounts, owner: string, now: Date, days = PULSE_DAYS): Pulse {
   const keys = windowDays(now, days);
   const index = new Map(keys.map((k, i) => [k, i]));
@@ -93,9 +93,8 @@ export function pulseFromCounts(c: ShowcaseCounts, owner: string, now: Date, day
     days: keys.map((day) => ({ day, byVendor: {}, moves: 0, decisions: 0 })),
     moves: 0, decisions: 0, merges: 0, sentBack: 0, agents: [], byVendor: {}, lastAt: c.last, cut: false,
   };
-  const rows = servedCounts(c).recent.sort((a, b) => a.at.localeCompare(b.at));
-  for (const r of rows) {
-    const slot = index.get(dayOf(r.at));
+  for (const r of [...c.days].sort((a, b) => a.day.localeCompare(b.day))) {
+    const slot = index.get(r.day);
     if (slot === undefined) continue;
     const day = pulse.days[slot];
     if (r.kind === "item.merged") pulse.merges += r.n;

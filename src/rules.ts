@@ -250,6 +250,10 @@ export interface Evidence {
   at: string;
   changedPaths?: string[] | null;  // observed checks record what the item actually changes
   outputTail?: string;
+  // The lines naming the failure, read by `atelier check` from the whole
+  // output of a failed run on a machine whose tail was cut (t569,
+  // collectFailureLines in src/check-failure.ts), kept beside the tail.
+  failureLines?: string;
   // The whole output of an observed check, kept in R2 by reference (src/large.ts)
   // when it is longer than the tail kept inline; `outputTail` is its end. Only
   // Atelier's own runs record one: the sandbox runner stores the log as it

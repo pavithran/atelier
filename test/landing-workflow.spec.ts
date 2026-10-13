@@ -987,3 +987,77 @@ it("two landings wait for their reviews at once with no lease held; the rejected
   expect(await L.landingWorkflowOf(b.id)).toMatchObject({ stage: "failed", detail: expect.stringMatching(/rejected/) });
   expect(await L.readProjectLanding()).toBeNull();
 });
+
+// t574: t573 at cc688bac waited 62 minutes (05:20-06:22 EDT) on
+// opencode/glm-5.3, whose replies had no VERDICT line, until "no verdict from
+// opencode/glm-5.3 within 1 hours"; naming codex/gpt-6-astra then was refused
+// as "already requested from opencode/glm-5.3" while review-claim said no
+// request was open. A reply with no readable verdict now ends the wait at
+// once, and naming another reviewer replaces the request it left.
+const refused = (p: Promise<unknown>) => p.then(() => "resolved", (e: unknown) => String((e as Error)?.message ?? e));
+
+it("a reply with no readable verdict ends the review wait at once, and another reviewer named replaces the request (t574)", async () => {
+  const project = "wf-unparsable", instance = "wf-unparsable-1";
+  const { L, id } = await pushedTask(project, instance);
+  const glm = "opencode/glm-5.3", gpt = "codex/gpt-6-astra";
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.putModel({ id: "glm-5.3", harness: "opencode", where: "home", provider: "subscription", aliases: [], family: familyOf("glm-5.3"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }, { agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: H2 });
+  });
+  // An hour's wait: only the unreadable reply can end it in this test.
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer: glm, pollMs: 10, reviewTimeoutMs: 3_600_000 } });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: false });
+  await until(() => L.reviewWaiting(), (rows) => rows.length > 0);
+  const claim = await L.claimReview(id, glm, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  // While the runner holds the claim, review-claim names it rather than
+  // saying only that no request is open.
+  expect(await refused(L.claimReview(id, glm, { runner: "home:desk", kind: "home" }, true))).toMatch(/^404\|no_review\|.*request \d+ is claimed by opencode\/glm-5\.3/);
+  // The reply closes the claimed request, and the same reviewer is asked
+  // again under a new number, as unparsableReview releases.
+  expect(await L.unparsableReview(id, glm, H1, "no VERDICT line", "I looked at it and it seems fine.", true, claim.request)).toEqual({ released: true });
+  await wf.waitForStatus("errored");
+  const detail = (await L.landingWorkflowOf(id))!.detail;
+  expect(detail).toMatch(/^opencode\/glm-5\.3 replied to the review of t\d+ at aaaaaaaa with no verdict the server could read \(no VERDICT line\)/);
+  expect(detail).toMatch(/atelier land t\d+ --workflow --reviewer H\/M/);
+  expect((await kinds(L, id))).toContain("land.review");
+  // The runner claims the re-asked request again; naming another reviewer
+  // replaces it, claimed as it is, instead of being refused.
+  const again = await L.claimReview(id, glm, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  expect(again.request).toBeGreaterThan(claim.request);
+  const pool = await index.models();
+  const asked = await L.requestReview(id, "owner", gpt, pool, true, false, undefined, await index.runnerOffers());
+  expect(asked).toMatchObject({ needed: true, reviewer: gpt });
+  const withdrawn = ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "review.withdrawn").at(-1);
+  expect(withdrawn).toMatchObject({ data: { reviewer: glm, request: again.request } });
+  // The run holding the withdrawn claim cannot record a verdict under it.
+  expect(await refused(L.renewReview(id, glm, again.request))).toMatch(/stale_request/);
+});
+
+it("a review request withdrawn with no verdict ends the wait at once, naming the command that asks the same reviewer again (t574)", async () => {
+  const project = "wf-no-request", instance = "wf-no-request-1";
+  const { L, id } = await pushedTask(project, instance);
+  const gpt = "codex/gpt-6-astra";
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: H2 });
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer: gpt, pollMs: 10, reviewTimeoutMs: 3_600_000 } });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: false });
+  await until(() => L.reviewWaiting(), (rows) => rows.length > 0);
+  // Closed with nothing asked in its place, as a request withdrawn from a
+  // model the owner has since held is.
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => { state.storage.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE state = 'open'`); });
+  await wf.waitForStatus("errored");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/^no review request of t\d+ at aaaaaaaa is open or claimed and no verdict was given, so none will come; t\d+ stays submitted\. Run atelier land t\d+ --workflow --reviewer codex\/gpt-6-astra to ask again/);
+});

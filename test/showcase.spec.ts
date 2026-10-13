@@ -372,3 +372,38 @@ it("the showcase counts the whole record, not the most recent events, and tells 
   expect(story).not.toContain("t2");
   expect(story).toContain("sent it back");
 });
+
+// t578's first deploy left every project out when its whole-record counts
+// failed, behind a catch that logged nothing. A project whose counts cannot
+// be read is still shown, from its recent events, and the error is logged.
+it("a project whose whole-record counts fail is still shown, from its recent events, and the error is logged", async () => {
+  const name = "counts-fail";
+  const record = { name, repo: name, title: "Counts Fail", policy: { checks: [], protected: [] }, createdAt: time };
+  await L(name).setProject(record, "owner");
+  await I().registerProject(record);
+  await L(name).newItem("Mend the gate", [], "owner");
+  await L(name).claim("t1", "codex/gpt-6");
+  // The Ledger's counts fail for this test alone; the method is restored after it.
+  type Proto = { showcaseCounts: (...a: unknown[]) => unknown };
+  const real = await runInDurableObject(L(name), async (instance: object) => {
+    const proto = Object.getPrototypeOf(instance) as Proto;
+    const was = proto.showcaseCounts;
+    proto.showcaseCounts = () => { throw new Error("no such table: events_fake"); };
+    return was;
+  });
+  for (const e of await I().showcaseEntries()) await I().removeShowcase(e.name);
+  await I().setShowcase(name, "named");
+  const logged: string[] = [];
+  const error = console.error;
+  console.error = (...a: unknown[]) => { logged.push(a.join(" ")); };
+  try {
+    const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
+    expect(body).not.toContain("could not be read just now");
+    expect(body).toContain("<h3>Counts Fail</h3>");
+    expect(body).toContain("gpt-6 took t1");
+  } finally {
+    console.error = error;
+    await runInDurableObject(L(name), async (instance: object) => { (Object.getPrototypeOf(instance) as Proto).showcaseCounts = real; });
+  }
+  expect(logged.join("\n")).toContain("showcase: the whole-record counts of counts-fail could not be read: no such table: events_fake");
+});
