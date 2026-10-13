@@ -113,3 +113,90 @@ export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_
     say(`Step ${i + 1} of ${steps.length}: the baseline holds ${branch} up to commit ${position} of ${total} (${commit.slice(0, 8)}).`);
   }
 }
+
+// A task's push answered 413 (t577). The runner route, like any HTTP remote
+// with a body limit in front of it, refuses a pack over that limit with
+// "RPC failed; HTTP 413", and a runner's finish then stranded the build: t544
+// on home:studio-3 pushed ~96 regenerated PNGs in one pack, the claim was
+// preserved, and nothing was submitted for seven hours. Pushing the
+// first-parent commits one at a time got all but one through.
+export const refused413 = (text) => /(?:HTTP|returned error:)\s*413\b/i.test(String(text ?? ""));
+
+const SHORT = (sha) => String(sha).slice(0, 8);
+const mb = (bytes) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+// What a commit brings that `prev` lacks: the object count and the sum of
+// their sizes as Git stores them (git cat-file's objectsize:disk), which is
+// about the size of the pack a push of that commit sends.
+export function commitWeight(git, cwd, commit, prev) {
+  const listed = git(["rev-list", "--objects", commit, ...(prev ? [`^${prev}`] : [])], { cwd, allowFail: true });
+  const names = listed.status === 0 ? String(listed.stdout).split("\n").map((l) => l.split(" ")[0]).filter(Boolean) : [];
+  if (!names.length) return { objects: 0, bytes: 0 };
+  const sized = git(["cat-file", "--batch-check=%(objectsize:disk)"], { cwd, allowFail: true, input: `${names.join("\n")}\n` });
+  const bytes = sized.status === 0 ? String(sized.stdout).split("\n").map(Number).filter(Number.isFinite).reduce((a, b) => a + b, 0) : 0;
+  return { objects: names.length, bytes };
+}
+
+// Pushes HEAD to `remote`'s `branch` one first-parent commit at a time,
+// oldest first, after a push of the whole answered 413. Each step moves the
+// branch to a commit whose first parent the remote already holds, so every
+// step is a fast-forward. A step that answers 413 itself is a commit too
+// large on its own: it is pushed once to `fallback` (the fork's own URL, for
+// a workspace on the runner route) when one is given, and otherwise the
+// push stops with the commit, its size and `ownerHint`. `git` is the CLI's
+// helper; each call passes `opts` (token, env) through. Returns the commits
+// pushed; throws with a message for the caller to print.
+export function pushCommitsInTurn(git, cwd, { remote, branch, opts = {}, say = () => {}, fallback = null, ownerHint = "", refusal = "" }) {
+  const run = (args, extra = {}) => git(args, { cwd, ...opts, ...extra, allowFail: true });
+  const out = (r) => String(r.stdout ?? "").trim();
+  const told = (r) => { let t = String(r.stderr || r.stdout || r.error?.message || "").trim(); if (opts.token) t = t.split(opts.token).join("[redacted]"); return t; };
+  const tipOf = () => {
+    const r = run(["ls-remote", remote, `refs/heads/${branch}`]);
+    if (r.status !== 0) return { error: told(r) || `git ls-remote exited with status ${r.status}` };
+    return { tip: /^([0-9a-f]{40,64})\s/.exec(String(r.stdout ?? ""))?.[1] ?? null };
+  };
+  const ancestor = (older, newer) => run(["merge-base", "--is-ancestor", older, newer]).status === 0;
+  const head = out(run(["rev-parse", "--verify", "HEAD^{commit}"]));
+  const read = tipOf();
+  if (read.error) throw new Error(`the push answered 413, and ${branch} could not be read from the remote afterwards, so the commits cannot be pushed one at a time:\n${indent(read.error)}`);
+  const held = read.tip;
+  if (held === head) return [];
+  if (held && !ancestor(held, head)) throw new Error(`the push answered 413, and the remote's ${branch} (${SHORT(held)}) is not an ancestor of HEAD, so the commits cannot be pushed one at a time as fast-forwards.`);
+  const line = out(run(["rev-list", "--first-parent", "--reverse", head, ...(held ? [`^${held}`] : [])])).split("\n").filter(Boolean);
+  const steps = held ? line.filter((c) => ancestor(held, c)) : line;
+  if (!steps.length || steps.at(-1) !== head) steps.push(head);
+  say(`The push of ${branch} answered 413 (too large for one request)${refusal ? `:\n${indent(refusal)}` : "."}\nPushing the ${steps.length} unpushed first-parent commit${steps.length === 1 ? "" : "s"} one at a time, oldest first.`);
+
+  let prev = held;
+  const pushed = [];
+  for (const [i, commit] of steps.entries()) {
+    const spec = `${commit}:refs/heads/${branch}`;
+    const r = run(["push", "--quiet", "--recurse-submodules=no", remote, spec]);
+    if (r.status !== 0 && tipOf().tip !== commit) {
+      const why = told(r);
+      if (!refused413(why)) throw new Error(`the push of commit ${i + 1} of ${steps.length} (${SHORT(commit)}) failed; the remote holds ${branch} at ${prev ? SHORT(prev) : "nothing yet"}.\ngit said:\n${indent(why)}`);
+      const { objects, bytes } = commitWeight(git, cwd, commit, prev);
+      const subject = out(run(["log", "-1", "--format=%s", commit]));
+      const weight = `${objects} object${objects === 1 ? "" : "s"}, about ${mb(bytes)} as git stores them`;
+      let viaFork = false;
+      if (fallback) {
+        say(`Commit ${SHORT(commit)} ("${subject}") answered 413 on its own (${weight}); pushing it once to the fork's own URL.`);
+        const f = run(["push", "--quiet", "--recurse-submodules=no", fallback, spec]);
+        viaFork = f.status === 0 || tipOf().tip === commit;
+        if (!viaFork) say(`The push to the fork's own URL failed too:\n${indent(told(f))}`);
+      }
+      if (!viaFork) {
+        throw new Error([
+          `commit ${SHORT(commit)} ("${subject}") is too large to push on its own: ${weight}. The push answered 413 even for this one commit.`,
+          `${i} of ${steps.length} unpushed commit${steps.length === 1 ? "" : "s"} went through; the remote holds ${branch} at ${prev ? SHORT(prev) : "nothing yet"}.`,
+          ...(ownerHint ? [ownerHint] : []),
+          `git said:\n${indent(why)}`,
+        ].join("\n"));
+      }
+    }
+    prev = commit;
+    pushed.push(commit);
+    say(`Pushed commit ${i + 1} of ${steps.length} (${SHORT(commit)}).`);
+  }
+  return pushed;
+}
