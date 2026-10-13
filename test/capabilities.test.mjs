@@ -329,6 +329,15 @@ test("fast take, fast ready and fast status require the fast build by name, whic
   assert.equal(ROUTE_LEVEL, 28);
 });
 
+// t591: the infrastructure_miss run report is published by name, and no job
+// requires it: a runner starts against a server without it (the live one
+// until its deploy) and sends the review skip there instead.
+test("the infrastructure_miss run report is a named capability no runner job requires (t591)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "runs.infrastructure-miss.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("runs.infrastructure-miss.v1"));
+  for (const job of Object.keys(JOB_CAPABILITIES)) assert.ok(!JOB_CAPABILITIES[job].includes("runs.infrastructure-miss.v1"), job);
+});
+
 test("models set requires the pool's standing by name, which no legacy level guarantees (t389)", () => {
   assert.equal(CAPABILITIES.find((c) => c.name === "models.standing.v1")?.level, undefined);
   assert.ok(SERVER_CAPABILITIES.includes("models.standing.v1"));

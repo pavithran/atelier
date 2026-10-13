@@ -30,6 +30,13 @@ import { SERVED, servedActor, servedBy } from "./served.ts";
 
 export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "harness_failed", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge", "validation_blocked"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
+// A run that ended on the infrastructure, not on the model (t591): a review
+// job whose merge commit no source held. The runner reports it so the miss
+// is on record with what was missing, and it counts against no model: not
+// in its record, its speed, the stall exclusion nor the dispatch skip.
+export const INFRASTRUCTURE_OUTCOMES = ["infrastructure_miss"] as const;
+export type InfrastructureOutcome = (typeof INFRASTRUCTURE_OUTCOMES)[number];
+export const isInfrastructureOutcome = (outcome: string): outcome is InfrastructureOutcome => (INFRASTRUCTURE_OUTCOMES as readonly string[]).includes(outcome);
 export const RUN_ROLES = ["build", "plan", "review"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
 
@@ -96,7 +103,7 @@ interface KindBin {
 export interface RunReport {
   actor: string;            // harness/model, the agent the runner ran
   role: RunRole;
-  outcome: RunOutcome;
+  outcome: RunOutcome | InfrastructureOutcome;
   project: string | null;
   item: string | null;
   detail: string;
@@ -220,7 +227,7 @@ export function buildReliability(projects: readonly ProjectEvents[], runs: reado
   const kindsByProject = new Map<string, Map<string, WorkKind>>();
   for (const { project, events } of projects) kindsByProject.set(project, replay(project, events, owner, get, binOf, recordTiming));
   for (const run of runs) {
-    if (!isAgent(run.actor, owner)) continue;
+    if (!isAgent(run.actor, owner) || isInfrastructureOutcome(run.outcome)) continue;
     const r = get(run.actor, run.project ?? undefined);
     r.runs[run.outcome]++;
     if (run.role === "review" && run.outcome !== "validation_blocked") r.unfinishedReviews++;
@@ -581,12 +588,12 @@ export function cleanRun(body: Record<string, unknown>, at: string, runner: stri
   const role = body.role === undefined ? "build" : str(body.role);
   if (!RUN_ROLES.includes(role as RunRole)) throw bad("role must be build, plan or review");
   const outcome = str(body.outcome);
-  if (!RUN_OUTCOMES.includes(outcome as RunOutcome)) throw bad(`outcome must be one of ${RUN_OUTCOMES.join(", ")}`);
+  if (!RUN_OUTCOMES.includes(outcome as RunOutcome) && !isInfrastructureOutcome(outcome)) throw bad(`outcome must be one of ${[...RUN_OUTCOMES, ...INFRASTRUCTURE_OUTCOMES].join(", ")}`);
   const project = body.project === undefined || body.project === null ? null : str(body.project).trim();
   if (project !== null && !PROJECT.test(project)) throw bad("project must be a project's name");
   const item = body.item === undefined || body.item === null ? null : str(body.item).trim();
   if (item !== null && !ITEM.test(item)) throw bad("item must be a task id such as t12");
-  return { actor, role: role as RunRole, outcome: outcome as RunOutcome, project, item, detail: plain(str(body.detail), 300), runner, at };
+  return { actor, role: role as RunRole, outcome: outcome as RunOutcome | InfrastructureOutcome, project, item, detail: plain(str(body.detail), 300), runner, at };
 }
 
 // ── defects ────────────────────────────────────────────────────────────────

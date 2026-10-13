@@ -152,6 +152,27 @@ test("runs the runners reported: stalled, timed out and refused per model, and r
   assert.equal(rel.size, 2);
 });
 
+// t591: a review job whose merge commit no source held is the infrastructure's
+// miss, not the reviewer's. The run report names the missing commit, and the
+// model's record, its speed, the stall exclusion and the dispatch skip count
+// nothing of it (codex/gpt-6-astra's review of t591, finding 1).
+test("an infrastructure miss is a run report that changes no model's record", async () => {
+  const miss = cleanRun({ actor: "codex/gpt-6-astra", role: "review", outcome: "infrastructure_miss", project: "a", item: "t9", detail: `the merge commit ${H1} is not in the baseline` }, "2026-10-13T12:00:00.000Z", "home:studio");
+  assert.equal(miss.outcome, "infrastructure_miss");
+  assert.match(miss.detail, new RegExp(H1));
+  const base = [run({ outcome: "refused", role: "review", actor: "codex/gpt-6-astra" })];
+  const without = one(buildReliability([], base, OWNER), "gpt-6-astra");
+  const withMiss = one(buildReliability([], [...base, miss, miss], OWNER), "gpt-6-astra");
+  assert.deepEqual(withMiss, without);
+  assert.deepEqual(outcomesOf(withMiss), outcomesOf(without));
+  assert.equal(buildReliability([], [miss], OWNER).size, 0, "a miss alone makes no record");
+  const { buildSpeed } = await import("../src/models/speed.ts");
+  const speedOf = (runs: RunReport[]) => buildSpeed([], runs, OWNER, Date.parse("2026-10-13T13:00:00.000Z")).models;
+  assert.deepEqual(speedOf([...base, miss]), speedOf(base));
+  const { skippedBy } = await import("../src/dispatch/rules.ts");
+  assert.deepEqual(skippedBy([{ ...miss, role: "build" }, { ...miss, role: "build" }], "a", "t9"), []);
+});
+
 test("a plan harness failure is counted as harness_failed, not refused", () => {
   const rel = buildReliability([], [run({ outcome: "harness_failed", role: "plan", detail: "the CLI is too old" })], OWNER);
   const opus = one(rel, "opus-5.5");
