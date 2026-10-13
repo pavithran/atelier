@@ -82,7 +82,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
     // agent may mint already exposes; status and unwrap read it.
     // decisions are the owner's standing decisions, which every agent of
     // the project is to know (src/decisions.ts); only the owner writes them.
-    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions", "board", "areas"].includes(section);
+    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions", "board", "areas", "refreshes"].includes(section);
     return section === "baseline-token" && method === "POST" && body.scope !== "write";
   }
   if (section !== "items" || !id) return false;
@@ -91,7 +91,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   // criteria reviewer's claim, verdict and failure (t438); asking for one
   // and resolving its findings stay the owner's.
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,

@@ -1,0 +1,10 @@
+function a() {
+<<<<<<< HEAD
+  return 1;   
+
+||||||| merged common ancestors
+  return 1;
+=======
+  return 2;
+>>>>>>> 1111111
+}

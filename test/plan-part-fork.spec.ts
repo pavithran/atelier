@@ -330,3 +330,52 @@ it("a fork left at an earlier head of the plan's branch is forked again at its h
   expect(art.calls).toEqual({ forks: [bFork], deletes: [bFork] });
   expect(await L.item(b)).toMatchObject({ base: MB, head: MB });
 });
+
+// A task outside a plan is moved the same way from main (t462): one claimed
+// and released with no commits is branchless, which the task refresh leaves
+// for its next claim to start from main as main is then.
+async function ordinary(name: string) {
+  const record = { name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() };
+  const L = ledger(name);
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const { id } = await L.newItem("Work", ["src/**"], "owner");
+  const heads = new Map([[record.repo, H0]]);
+  const parents = new Map<string, string>();
+  const art = artifacts(heads, parents);
+  expect((await claim(name, id, PLANNER, art.ARTIFACTS)).status).toBe(200);
+  const fork = `${name}--${id}`;
+  expect(await L.item(id)).toMatchObject({ fork, base: H0, head: H0 });
+  return { L, id, fork, heads, parents, art, repo: record.repo };
+}
+
+it("a task claimed and released with no commits, claimed again after main moved, starts from main's head", async () => {
+  const name = "pf-task-moved";
+  const { L, id, fork, heads, parents, art, repo } = await ordinary(name);
+  await L.release(id, PLANNER, "no new commit");
+  expect((await L.refreshQueue()).map((r) => r.item)).toEqual([]);
+  heads.set(repo, MA);
+  parents.set(MA, H0);
+  await L.noteMainHead(MA);
+  art.calls.forks.length = 0;
+  expect((await claim(name, id, PLANNER, art.ARTIFACTS)).status).toBe(200);
+  expect(heads.get(fork)).toBe(MA);
+  expect(art.calls).toEqual({ forks: [fork], deletes: [fork] });
+  expect(await L.item(id)).toMatchObject({ fork, base: MA, head: MA, owner: PLANNER, state: "claimed" });
+  expect((await moves(L, id)).map((e) => e.data)).toEqual([{ fork, from: H0, base: MA }]);
+});
+
+it("a task with commits of its own keeps its fork when main has moved", async () => {
+  const name = "pf-task-own";
+  const { L, id, fork, heads, parents, art, repo } = await ordinary(name);
+  heads.set(fork, PART_B);
+  await L.recordPush(id, PLANNER, PART_B, PART_B);
+  await L.release(id, PLANNER, "stepping away");
+  heads.set(repo, MA);
+  parents.set(MA, H0);
+  art.calls.forks.length = 0;
+  expect((await claim(name, id, PLANNER, art.ARTIFACTS)).status).toBe(200);
+  expect(heads.get(fork)).toBe(PART_B);
+  expect(art.calls).toEqual({ forks: [], deletes: [] });
+  expect(await L.item(id)).toMatchObject({ base: H0, head: PART_B });
+});
