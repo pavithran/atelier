@@ -1611,10 +1611,44 @@ export function orderJobs(tasks) {
 // owner asks for after editing them, as counting them under the task did.
 export function failureKey(task) {
   const job = task.item.dispatch?.job;
+  // A merged task's post-merge review (t591, fourth review) counts by its
+  // task and head alone: each release of it makes the request anew under
+  // another number, which would start the count fresh on every poll.
+  if (job === "review" && task.item.state === "merged") return JSON.stringify([task.project, task.item.id, task.item.head]);
   if (job === "review" || job === PREREVIEW_JOB) return JSON.stringify([task.project, task.item.id, task.item.head, task.item.request]);
   if (job === "criteria-review") return JSON.stringify([task.project, task.item.id, "criteria-review", task.item.request]);
   return taskKey(task);
 }
+
+// The key under which a runner keeps a post-merge review whose merge commit
+// no source held (t591): the review's task and head, never its request
+// number, since every release makes the request anew under another number,
+// and keying by it let both review runners claim the same missing merge on
+// every poll for hours (13 requests, 2026-10-13).
+export function missingKey(task) {
+  return JSON.stringify([task.project, task.item.id, task.item.head]);
+}
+
+// How often a runner reads the baseline's head for the reviews it keeps
+// waiting on a missing merge commit (t591): a review is claimed again once
+// the head has moved, and read no more often than this.
+export const MISSING_RECHECK_MS = 5 * 60_000;
+
+// The capability a server takes the infrastructure_miss run report under
+// (src/capability-declarations.ts).
+export const INFRASTRUCTURE_MISS = "runs.infrastructure-miss.v1";
+
+// How many times a runner sends an infrastructure_miss report the server
+// did not take before it gives the report up (t591): with the skip reports'
+// backoff, about half an hour of polls.
+export const MISS_REPORT_TRIES = 8;
+
+// How many times a runner serves a post-merge review whose baseline it could
+// not fetch before it passes the review by until the baseline moves (t591),
+// as the three infrastructure failures in a row that skip any other job;
+// between tries it waits fetchRetryPolls(failures) polls.
+export const FETCH_TRIES = 3;
+export const fetchRetryPolls = (failures) => Math.min(2 ** (failures - 1), 10);
 
 // The job an assignment is, as the offer names jobs: the dispatch's own, the
 // merge jobs a build carries (a task's merge-main under "merge-main-task",
@@ -1640,7 +1674,7 @@ export function jobOf(task) {
 // request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO, preclaimed = null) {
   const { project, item, agent, model, actor } = assignment;
-  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO;
+  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO, landedCommit = null;
   const generation = () => request === undefined ? [] : ["--request", String(request)];
   const release = async (reason) => {
     released = true;
@@ -1669,6 +1703,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     const claimed = preclaimed ?? JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
     request = claimed.request;
     claimedRequest = request !== undefined;
+    landedCommit = claimed.landed?.commit ?? null;
     if (request !== undefined) {
       // One renewal in flight; network failures recover on the next interval.
       // A refused generation must never post a verdict, even for this actor.
@@ -1688,7 +1723,11 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
     await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
     if (io.stopped()) throw new Error("interrupted");
-    if (claimed.landed) await io.checkout(workspace, claimed.head);
+    if (claimed.landed) {
+      await fetchLandedCommit(io, workspace, claimed, { project, actor });
+      if (io.stopped()) throw new Error("interrupted");
+      await io.checkout(workspace, claimed.head);
+    }
     const compare = await reviewBase(io, workspace, claimed);
     if (io.stopped()) throw new Error("interrupted");
     if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
@@ -1819,6 +1858,19 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
   } catch (error) {
     io.log(`failed: ${error.message}`);
     if (claimedRequest && !released) await release(error.message);
+    // A merge commit no source holds (t591) is skipped here, not counted as
+    // a failure: the release makes the request anew under another number,
+    // and the loop keeps this runner off the review until the baseline moves.
+    if (error.missingCommit) return { phase: "failed", reason: error.message, skipped: true, missingCommit: error.missingCommit };
+    // A baseline that could not be fetched (t591) is counted by task and
+    // head in the loop (fetchFailures), not under the request's number,
+    // which every release renews.
+    // So is every other failure a post-merge review's job throws after its
+    // claim (t591, fourth review): the clone, the checkout, the diff, the
+    // verdict's post. An interrupt is the runner's own, and counts nothing.
+    if (error.fetchFailed || (landedCommit && !io.stopped() && error.message !== "interrupted")) {
+      return { phase: "failed", reason: error.message, skipped: true, fetchFailed: { commit: error.fetchFailed?.commit ?? landedCommit } };
+    }
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   } finally {
     clearInterval(renewal);
@@ -1827,6 +1879,78 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
   }
+}
+
+// The merge commit a post-merge review reads (t591), fetched into the review
+// clone from where it lives. A task landed in fast mode is merged on the
+// developer's own main (atelier fast land), and the merge reaches the
+// project's baseline only when the developer publishes main; the task's fork
+// never holds it. The clone the claim names may therefore lack it, and the
+// checkout failed with "fatal: unable to read tree (<merge>)". When the
+// clone lacks it, the baseline is read through its read token (the
+// baseline-token route, as a build's merge of main reads it): its branch
+// first, then the commit by name, then the same of the branch the claim's
+// target names where that is another repository. The baseline head seen is
+// returned with a merge no source holds, as `missingCommit` on the error, so
+// the runner can wait for the baseline to move before it claims the review
+// again.
+export async function fetchLandedCommit(io, workspace, claimed, { project, actor }) {
+  const commit = claimed.landed.commit;
+  if (!/^[a-f0-9]{40,64}$/.test(commit ?? "")) throw new Error("the post-merge claim names no merge commit");
+  const held = async () => io.hasCommit ? await io.hasCommit(workspace, commit) : true;
+  if (await held()) return { source: "the claim's clone" };
+  const looked = ["the claim's clone"], sources = [];
+  let baseline = null;
+  try {
+    const base = JSON.parse(await io.cli(["baseline-token", "--project", project, "--as", actor]));
+    if (base?.remote && base?.token && base?.defaultBranch) sources.push({ name: "the baseline", remote: base.remote, token: base.token, branch: base.defaultBranch, baseline: true });
+    else looked.push("the baseline (its read token names no repository, token or branch)");
+  } catch (error) {
+    looked.push(`the baseline (its read token could not be read: ${error.message})`);
+  }
+  const target = claimed.target;
+  if (target?.remote && target?.branch && !sources.some((s) => s.remote === target.remote)) {
+    sources.push({ name: `the branch ${target.branch} the task merged into`, remote: target.remote, token: target.token, branch: target.branch });
+  }
+  // The sources whose branch could not be read (fifth review of t591): a
+  // merge is known to be missing only when every source was read.
+  const unread = [];
+  for (const source of sources) {
+    const failed = [];
+    let read = false;
+    for (const ref of [source.branch, commit]) {
+      if (io.stopped()) throw new Error("interrupted");
+      try {
+        await io.fetch(workspace, source.remote, source.token, ref);
+        if (source.baseline && ref === source.branch) baseline = (await io.revParse(workspace, "FETCH_HEAD")).trim() || null;
+        if (ref === source.branch) read = !source.baseline || !!baseline;
+      } catch (error) {
+        failed.push(`${ref === commit ? "the commit" : source.branch}: ${String(error.message).split("\n").at(-1)}`);
+      }
+      if (await held()) {
+        io.log(`post-merge review: the merge ${commit.slice(0, 8)} fetched from ${source.name}`);
+        return { source: source.name };
+      }
+    }
+    if (!read) unread.push(source.name);
+    const at = source.baseline && baseline ? ` (${source.branch} at ${baseline.slice(0, 8)})` : "";
+    looked.push(`${source.name}${at}${failed.length ? ` (${failed.join("; ")})` : ""}`);
+  }
+  // Only a baseline that was read, and whose branch lacks the merge, says
+  // the merge is missing (codex/gpt-6-astra's third review of t591). A fetch
+  // that failed (the network, a token, Git) read nothing: an ordinary
+  // failure, released and served again on the next poll, never kept as a
+  // missing commit, which would pass the review by until the baseline moved
+  // even when the baseline already held the merge.
+  // Such failures are counted by task and head in the runner's loop, served
+  // again with backoff and given up after FETCH_TRIES (fetchFailed).
+  if (!baseline) throw Object.assign(new Error(`could not read the baseline for the merge commit ${commit}: looked in ${looked.join(", ")}`), { fetchFailed: { commit } });
+  // The baseline was read without the merge, but another source the claim
+  // names (the target's branch, a plan's) could not be: the merge may live
+  // there, so this too is a fetch failure, served again with backoff, not a
+  // missing commit kept until the baseline moves (fifth review of t591).
+  if (unread.length) throw Object.assign(new Error(`could not read ${unread.join(" or ")} for the merge commit ${commit}: looked in ${looked.join(", ")}`), { fetchFailed: { commit } });
+  throw Object.assign(new Error(`the merge commit ${commit} is not in ${looked.join(", nor ")}; publish main to the baseline (atelier publish), and this runner reviews it once the baseline moves`), { missingCommit: { commit, baseline } });
 }
 
 // A criteria review job (t438, src/review/criteria.ts): the runner claims the
@@ -2492,9 +2616,16 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), missing = new Map(), fetchFailures = new Map(), poll = 0 }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
+  // A post-merge review whose merge commit no source held (t591) waits for
+  // the baseline to move, whatever number the request has since.
+  const absent = missing.get(missingKey(task));
+  const unread = fetchFailures.get(missingKey(task));
+  if (unread && poll < unread.due) return `Passed by: its post-merge review of ${unread.commit.slice(0, 8)} failed before a verdict (${unread.count} of ${FETCH_TRIES} tries); it is served again in ${unread.due - poll} poll${unread.due - poll === 1 ? "" : "s"}.`;
+  if (absent?.fetchFailed) return `Passed by: its post-merge review of ${absent.commit.slice(0, 8)} failed before a verdict ${FETCH_TRIES} times (the baseline, the clone or the checkout); it is tried again once the baseline moves or this runner restarts.`;
+  if (absent) return `Passed by: its merge commit ${absent.commit.slice(0, 8)} is not in the baseline${absent.baseline ? ` (at ${absent.baseline.slice(0, 8)})` : ""}; it is tried again once the baseline moves (publish main with atelier publish) or this runner restarts.`;
   // A task the server answered task_terminal for while this runner held it
   // (t476) is not taken again by this process, whatever later polls say.
   const terminal = terminalTasks.get(taskKey(task));
@@ -2834,7 +2965,7 @@ export async function reloadCheck(started, { version, checkout, signal }) {
 // when it is that, else the commit the server runs.
 const targetLine = (check) => check.target === check.main ? `main is at ${short(check.target)}` : `the server runs ${short(check.target)}`;
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -2867,6 +2998,35 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
   const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
+  // Post-merge reviews whose merge commit no source held (t591), by
+  // missingKey: the commit, the baseline head the job saw, and when the head
+  // was last read. Each is passed by until the baseline's head moves
+  // (recheckMissing), read through `baselineHead` at most every
+  // MISSING_RECHECK_MS; a CLI wired without it keeps them until restart.
+  const missing = new Map();
+  // Post-merge reviews whose baseline could not be fetched (t591), by
+  // missingKey: the commit, the failures so far and the poll the next try
+  // is due on. At FETCH_TRIES the review moves to `missing`.
+  const fetchFailures = new Map();
+  // The server's answer to GET /api/version at start, for the capabilities
+  // a report needs (the infrastructure_miss run report, t591).
+  let serverVersion = null;
+  const recheckMissing = async (tasks) => {
+    for (const task of tasks) {
+      const key = missingKey(task), entry = missing.get(key);
+      if (!entry || !baselineHead || now() - entry.checked < MISSING_RECHECK_MS) continue;
+      entry.checked = now();
+      let head;
+      try { head = await baselineHead(task.project, task.actor, controller.signal); }
+      catch (error) { if (!controller.signal.aborted) io.log(`could not read ${task.project}'s baseline head for ${task.item.id}'s review: ${error.message}`); continue; }
+      if (typeof head !== "string" || !head || head === entry.baseline) continue;
+      // A head never known at the miss is unknown, not moved (codex/
+      // gpt-6-astra's review of t591, finding 2): the first one read is kept.
+      if (!entry.baseline) { entry.baseline = head; continue; }
+      missing.delete(key);
+      io.log(`${task.project}'s baseline moved to ${head.slice(0, 8)}; ${task.item.id}'s post-merge review of ${entry.commit.slice(0, 8)} is tried again`);
+    }
+  };
   // The harnesses a provider's usage limit has paused (providerLimitOf), kept
   // in a file so a restart honours them. A harness is paused for the whole
   // runner process: every model of it leaves the offer until its reset.
@@ -2910,21 +3070,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // A build or plan job given up goes the same way, to run-skip (t420), so
   // status and show name this runner as what passes it by, the
   // infrastructure failures that send no run report among them.
+  // An infrastructure_miss run report (t591) goes the same way, as "miss",
+  // to the run reports, tried MISS_REPORT_TRIES times at most.
   const reportSkip = async (key, body, misses = 0, what = "review") => {
-    const send = what === "review" ? reportReviewSkip : reportRunSkip;
+    const send = what === "review" ? reportReviewSkip : what === "miss" ? reportRun : reportRunSkip;
+    const named = what === "miss" ? `${body.project}/${body.item} as infrastructure_miss` : `the ${what} skip for ${body.project}/${body.item}`;
     try {
       await send(body, offer.runner, controller.signal);
       pendingSkips.delete(key);
-      io.log(`reported the ${what} skip for ${body.project}/${body.item}`);
+      io.log(`reported ${named}`);
     } catch (error) {
       if (controller.signal.aborted) return;
-      if (skipRefusedForGood(error)) {
+      if (skipRefusedForGood(error) || (what === "miss" && misses + 1 >= MISS_REPORT_TRIES)) {
         pendingSkips.delete(key);
-        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}`);
+        io.log(`could not report ${named}: ${error.message}${what === "miss" && !skipRefusedForGood(error) ? `; given up after ${MISS_REPORT_TRIES} tries` : ""}`);
       } else {
         const after = skipRetryPolls(misses + 1);
         pendingSkips.set(key, { body, misses: misses + 1, due: polls + after, what });
-        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
+        io.log(`could not report ${named}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
       }
     }
   };
@@ -3043,6 +3206,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       return out;
     },
     checkout: (dir, head) => checked(["git", "checkout", "--quiet", "--detach", head], { cwd: dir, signal: controller.signal, step: "checkout" }, executeChild),
+    // Whether the clone holds `commit` (fetchLandedCommit): git exits 0 for
+    // yes and non-zero for an object it does not have.
+    hasCommit: async (dir, commit) => {
+      const result = await executeChild(["git", "cat-file", "-e", `${commit}^{commit}`], { cwd: dir, capture: true, captureError: true, signal: controller.signal, step: "cat-file" });
+      if (result.timedOut) throw new Error("cat-file timed out");
+      if (controller.signal.aborted) throw new Error("interrupted");
+      return result.code === 0;
+    },
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
     // Whether `base` is an ancestor of `head` (alreadyComplete): git exits 0
@@ -3122,6 +3293,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // here instead, saying to deploy.
     if (version) {
       const answer = await version(controller.signal);
+      serverVersion = answer;
       // The integrator's task refresh (t462) is the one job it drops rather
       // than refuse for: a server from before it still has its plans
       // integrated and refreshed, and the line below says the job is off.
@@ -3239,12 +3411,18 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // Pre-reviews (t524) follow the gate's reviews and come before the
         // rest: one never takes this runner ahead of a review a landing waits on.
         const ordered = orderJobs(tasks);
+        await recheckMissing(ordered);
+        if (controller.signal.aborted) break;
         let ranTask = false;
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, missing, fetchFailures, poll: polls });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
           if (terminalTasks.has(taskKey(task)) || limits.pauses[task.agent]) continue;
+          // An earlier job of this batch may have changed what passes this
+          // one by: several requests for one missing merge (t591, second
+          // review, finding 2) are claimed once, not once each.
+          if (passBy(task) !== null) continue;
           // A task this runner may take is not an idle poll.
           ranTask = true;
           // A dispatch carrying job: "plan" asks for the plan job, one
@@ -3298,7 +3476,41 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // reviewer has skipped, instead of waiting out the hour (t353). A
           // report the server did not take is kept and tried again each poll
           // (reportSkip), since this review is not run again in this process.
-          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
+          // A merge commit no source held (t591) is reported as a run that
+          // ended on the infrastructure, naming the commit, where the server
+          // takes that outcome (runs.infrastructure-miss.v1), which counts
+          // against no model; a server without it has the review skip below
+          // instead. A report the server did not take is kept and sent again
+          // on later polls with the skip reports' backoff (reportSkip), not
+          // traded for a review skip (second review of t591, finding 3).
+          let missReported = false;
+          if (state.missingCommit && reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) {
+            missReported = true;
+            await reportSkip(`miss:${missingKey(task)}:${task.item.request}`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: state.reason }, 0, "miss");
+          }
+          // A baseline that could not be fetched (t591) is served again after
+          // fetchRetryPolls, counted by task and head; at FETCH_TRIES it is
+          // passed by until the baseline's head moves (the head read over
+          // HTTP now, or the first one read later when none can be), with
+          // one report naming the commit and the fetch error.
+          if (state.fetchFailed) {
+            const fkey = missingKey(task), tries = (fetchFailures.get(fkey)?.count ?? 0) + 1;
+            if (tries < FETCH_TRIES) fetchFailures.set(fkey, { commit: state.fetchFailed.commit, count: tries, due: polls + fetchRetryPolls(tries) });
+            else {
+              fetchFailures.delete(fkey);
+              let head = null;
+              if (baselineHead) {
+                try { const read = await baselineHead(task.project, task.actor, controller.signal); head = typeof read === "string" && read ? read : null; }
+                catch (error) { if (!controller.signal.aborted) io.log(`could not read ${task.project}'s baseline head for ${task.item.id}'s review: ${error.message}`); }
+              }
+              missing.set(fkey, { commit: state.fetchFailed.commit, baseline: head, checked: now(), fetchFailed: true });
+              io.log(`${task.project}/${task.item.id}'s post-merge review is passed by after ${FETCH_TRIES} failures before a verdict: ${state.reason}`);
+              const note = `gave up the post-merge review of the merge commit ${state.fetchFailed.commit} after ${FETCH_TRIES} failures before a verdict: ${state.reason}`;
+              if (reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) await reportSkip(`miss:${fkey}:fetch`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: note }, 0, "miss");
+              else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
+            }
+          } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
+          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
           // A build or plan job given up under this dispatch, after its
@@ -3317,6 +3529,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // itself, independently of the revision-specific refusals that a
           // new dispatch can supersede and of a review's per-request failures.
           if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
+          // A miss is kept against the baseline head its Git fetch read (a
+          // missing commit is only ever reported with one), never a head read
+          // later, which may already hold a merge published in between
+          // (second review of t591, finding 1).
+          else if (state.missingCommit) missing.set(missingKey(task), { ...state.missingCommit, checked: now() });
           else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }

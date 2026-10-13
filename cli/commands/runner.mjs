@@ -109,6 +109,15 @@ export default async function runnerCommand() {
         if (!res.ok) throw Object.assign(new Error(`the plan could not be posted: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
         return data;
       },
+      // The baseline's head (GET baseline-head, which a runner token may
+      // read), for a post-merge review this runner keeps waiting on a merge
+      // commit no source held (t591): it is claimed again once the head moves.
+      async baselineHead(project, actor, signal) {
+        await resolveTokenActor();
+        const res = await fetch(server() + `/api${P(project)}/baseline-head`, { headers: auth(actor), signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+        if (!res.ok) throw new Error(`baseline-head: ${res.status}`);
+        return (await res.json())?.head ?? null;
+      },
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does.
       reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
