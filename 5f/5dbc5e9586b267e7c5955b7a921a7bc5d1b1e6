@@ -1,0 +1,60 @@
+atelier atelier/t570 "Vitest's 5 s test timeout fails landings on a loaded host"
+accepted head 92a70692250cd6d1db3ca410e02c1beda3c22e4c
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — atelier/integrator 2026-10-13T07:21:48.877Z
+OBSERVED pass npm run types && npm run typecheck — atelier/integrator 2026-10-13T07:21:51.817Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-13T10:29:15.700Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-13T10:29:21.202Z
+REVIEW approve by opencode/glm-5.3 at 92a70692250cd6d1db3ca410e02c1beda3c22e4c, recorded by opencode/glm-5.3
+2026-10-13T02:48:10.585Z pavi item.created
+2026-10-13T02:48:16.372Z pavi item.edited
+2026-10-13T02:48:16.372Z pavi criteria.revised
+2026-10-13T02:48:16.372Z pavi item.criteria_changed
+2026-10-13T02:48:16.948Z pavi item.dispatched
+2026-10-13T02:48:23.139Z claude-code/sonnet-5.5 item.claimed
+2026-10-13T02:48:47.153Z claude-code/sonnet-5.5 fork.created
+2026-10-13T02:50:32.038Z claude-code/sonnet-5.5 push.observed
+2026-10-13T02:55:08.554Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T02:55:11.278Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T02:55:11.760Z claude-code/sonnet-5.5 item.submitted
+2026-10-13T03:18:28.316Z atelier/orchestrator refresh.queued
+2026-10-13T03:33:57.878Z atelier/integrator refresh.leased
+2026-10-13T03:35:31.433Z atelier/integrator item.refreshed
+2026-10-13T03:40:14.183Z atelier/integrator evidence.observed
+2026-10-13T03:40:17.393Z atelier/integrator evidence.observed
+2026-10-13T03:40:18.197Z atelier/integrator refresh.checked
+2026-10-13T04:40:16.352Z atelier/orchestrator refresh.queued
+2026-10-13T04:53:11.139Z atelier/integrator refresh.leased
+2026-10-13T04:54:59.312Z atelier/integrator item.refreshed
+2026-10-13T04:59:56.538Z atelier/integrator evidence.observed
+2026-10-13T04:59:59.442Z atelier/integrator evidence.observed
+2026-10-13T05:00:00.186Z atelier/integrator refresh.checks_failed
+2026-10-13T06:10:35.744Z atelier/orchestrator refresh.queued
+2026-10-13T06:15:33.338Z atelier/integrator refresh.leased
+2026-10-13T06:16:45.722Z atelier/integrator item.refreshed
+2026-10-13T06:21:20.210Z atelier/integrator evidence.observed
+2026-10-13T06:21:23.074Z atelier/integrator evidence.observed
+2026-10-13T06:21:23.836Z atelier/integrator refresh.checked
+2026-10-13T07:11:59.968Z atelier/orchestrator refresh.queued
+2026-10-13T07:15:29.208Z atelier/integrator refresh.leased
+2026-10-13T07:16:47.691Z atelier/integrator item.refreshed
+2026-10-13T07:21:49.030Z atelier/integrator evidence.observed
+2026-10-13T07:21:51.920Z atelier/integrator evidence.observed
+2026-10-13T07:21:52.629Z atelier/integrator refresh.checks_failed
+2026-10-13T10:22:49.010Z pavi land.merge
+2026-10-13T10:23:02.982Z pavi land.regenerate
+2026-10-13T10:23:04.015Z pavi land.push
+2026-10-13T10:29:16.122Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T10:29:21.280Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T10:29:21.959Z pavi land.check
+2026-10-13T10:29:24.593Z pavi review.requested
+2026-10-13T10:31:40.709Z opencode/glm-5.3 review.claimed
+2026-10-13T10:35:34.069Z opencode/glm-5.3 review.unparsable
+2026-10-13T10:35:34.069Z opencode/glm-5.3 review.released
+2026-10-13T10:44:29.813Z opencode/glm-5.3 review.claimed
+2026-10-13T10:48:45.620Z opencode/glm-5.3 review.approved
+2026-10-13T10:48:53.465Z pavi land.review
+2026-10-13T10:48:53.973Z pavi land.lease
+2026-10-13T10:48:54.872Z pavi item.accepted
+2026-10-13T10:48:54.903Z pavi land.accept
