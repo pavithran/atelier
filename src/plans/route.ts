@@ -31,6 +31,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, type Assignment } from "../models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
@@ -77,6 +78,13 @@ export interface RouteInput {
   // src/dispatch/rules.ts): whether a runner runs the review job a review
   // dispatch names is judged there, not here.
   offers?: readonly SeenOffer[] | null;
+  // The role assignments of this project and of every project
+  // (src/models/assignments.ts). A build assignment picks a part's builder
+  // ahead of the spread, and a review one its reviewer (claims-review for a
+  // docs part, then review), from the models that pass every rule; a part's
+  // prefer comes first. Read when the plan is previewed, approved or
+  // rerouted: an approved plan keeps the routing it was approved with.
+  assignments?: readonly Assignment[];
 }
 
 export interface Choice { actor: string; reasons: string[] }
@@ -423,6 +431,14 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
       lead.push(`Preferred by the plan (${reason}); passes every rule`);
     }
   }
+  // A build assignment orders the eligible builders; its first eligible
+  // choice builds, ahead of the spread, which still orders the rest.
+  const assignments = ctx.input.assignments ?? [];
+  const buildOrder = assignments.length ? orderByAssignment(able, (v) => v.actor, applicableAssignments(assignments, null, ["build"]), () => null, FALLBACK.build, ctx.input.pool) : null;
+  if (!builder && buildOrder?.outcome.applied) {
+    builder = buildOrder.order[0];
+    lead.push(...buildOrder.reasons(builder));
+  } else if (!builder && buildOrder && !part.prefer) lead.push(...buildOrder.outcome.lines);
   if (!builder && able.length) {
     const picked = spread(able, builds, "builds", ctx);
     builder = picked.pick;
@@ -430,7 +446,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   }
   if (!builder) return none(`no eligible builder: ${excluded.map((e) => `${e.actor} (${e.reasons.join("; ")})`).join(", ")}`, excluded);
   builds.add(builder);
-  const alternates = able.filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
+  const alternates = (buildOrder?.outcome.applied ? buildOrder.order : able).filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
   const chosen = choice(builder, [...lead, rank(builder)], "executor", ctx);
 
   const others = verdicts.filter((v) => v !== builder);
@@ -448,7 +464,11 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const single = ctx.single;
   const independent = (v: Verdict) => (single ? modelKey(v.actor) !== modelKey(builder.actor) : crossFamily(v.family, builder.family));
   const reviewers = byPrecision(byPace(others.filter((v) => !v.review.length && independent(v)), ctx, "review"), namesOfVerdict, precision);
-  const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
+  // A review assignment (claims-review for a docs part, then review) picks
+  // the first of its choices that qualifies, ahead of the spread.
+  const reviewOrder = assignments.length ? orderByAssignment(reviewers, (v) => v.actor, applicableAssignments(assignments, null, reviewRoles({ docs: part.kind === "docs" || part.taskKind === "docs" })), () => null, FALLBACK.review, ctx.input.pool) : null;
+  const reviewer = reviewOrder?.outcome.applied ? { pick: reviewOrder.order[0], lead: null }
+    : reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
   if (!reviewer) {
     const why = single
       ? `no different ${single} model from ${builder.actor} to review (single-family mode): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : "the same model as the builder"})`).join(", ") : "no other model in the pool"}`
@@ -462,7 +482,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
     ? `A different ${single} model (${reviewer.pick.actor}) from the builder (${builder.actor}), as single-family mode asks`
     : `Another family (${reviewer.pick.family}) than the builder's (${builder.family})`;
   const first = precision ? "the first such model by review precision, then rank order" : "the first such model in rank order";
-  const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; ${first}`];
+  const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; ${first}`, ...(reviewOrder ? reviewOrder.reasons(reviewer.pick) : [])];
   if (precision) said.push(precisionLine(precisionOf(precision, namesOfVerdict(reviewer.pick)), precision.window));
   // What the runner offers said of the reviewer: the runners that offer it
   // for the review job, or, offers read but no runner live, the warning

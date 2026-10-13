@@ -7,6 +7,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offeredActors, type SeenOffer } from "../dispatch/rules.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
@@ -298,13 +299,15 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // name one); so is one the project's policy does not let plan; and so is one
 // no live runner offers, since the plan job would wait for a runner that
 // never asks for it.
-export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[]): PlannerPick {
+// A plan assignment (`assignments`, the project's copy: its own and every
+// project's; src/models/assignments.ts) puts its eligible choices first; the
+// developer's --planner names one outright and never comes here.
+export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[], assignments: readonly Assignment[] = []): PlannerPick {
   const entries = new Map(pool.map((entry) => [actorOf(entry), entry]));
   const ranked = route({ kind: "research" }, pool.map((entry) => profileFor(entry, profiles)), recordFor(pool, events), { localOnly: false, allowedWhere: "any" });
   const offered = offers ? offeredActors(liveOffers(offers)) : null;
   const passedOver: Choice[] = [];
-  for (const [i, candidate] of ranked.entries()) {
-    const entry = entries.get(candidate.actor!)!;
+  const refusalsOf = (entry: ModelEntry): string[] => {
     const actor = actorOf(entry);
     const refusals: string[] = [];
     if (entry.status?.state === "refused") refusals.push(`status refused, reported by ${entry.status.by} at ${entry.status.at}`);
@@ -317,10 +320,17 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
       if (!rule) throw err;
       refusals.push(rule.detail);
     }
+    return refusals;
+  };
+  const rows = ranked.map((candidate, i) => ({ candidate, i, entry: entries.get(candidate.actor!)!, refusals: refusalsOf(entries.get(candidate.actor!)!) }));
+  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), applicableAssignments(assignments, null, ["plan"]), (r) => (r.refusals.length ? r.refusals.join("; ") : null), FALLBACK.plan, pool);
+  for (const row of byAssignment.order) {
+    const { candidate, i, entry, refusals } = row;
+    const actor = actorOf(entry);
     if (refusals.length) { passedOver.push({ actor, reasons: refusals }); continue; }
     return {
       actor, passedOver,
-      reasons: [`Rank ${i + 1} of ${ranked.length} in the pool for research work, score ${candidate.score}; equal scores go by model id, then actor name`, ...candidate.reasons],
+      reasons: [...byAssignment.reasons(row), `Rank ${i + 1} of ${ranked.length} in the pool for research work, score ${candidate.score}; equal scores go by model id, then actor name`, ...candidate.reasons],
     };
   }
   const why = pool.length

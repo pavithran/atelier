@@ -238,6 +238,19 @@ test("decisions and overrides are counted by the acting model, apart from verdic
   assert.ok(!Object.keys(row(r, "opus-5.5")!).some((k) => /score|rate|precision|share/i.test(k)), "no success score is inferred");
 });
 
+// t622: a role assignment is a decision with structure, recorded on the
+// index ledger with its acting model; the index's events are one more source.
+test("role assignments recorded and withdrawn count as decisions of the acting model", () => {
+  const r = build([], [{ project: "(models)", events: [
+    ev(1, null, "assignment.recorded", { id: "a1", role: "security-review", choices: ["codex/gpt-6-astra"], acting: OPUS }),
+    ev(2, null, "assignment.withdrawn", { id: "a2", withdraws: "a1", note: "n", acting: "antigravity/claude-opus-5.5" }),
+    ev(3, null, "assignment.recorded", { id: "a3", role: "build", choices: ["claude-code/opus-5.5"] }),
+  ] }]);
+  // Opus under Antigravity is the same model as under Claude Code.
+  assert.deepEqual([row(r, "opus-5.5")!.decisionsRecorded, row(r, "opus-5.5")!.decisionsWithdrawn], [1, 1]);
+  assert.equal(r.unknown.decisionsRecorded, 1);
+});
+
 test("the window counts what was recorded in it; an outcome found after it still counts", () => {
   const r = build([
     verdict(1, "refuted", OPUS, { at: OLD }),

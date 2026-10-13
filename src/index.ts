@@ -27,6 +27,7 @@ import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
+import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, resolveChoices, type Assignment } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -516,8 +517,22 @@ function index(env: Env) {
 // cannot be reached keeps its last copy; the change itself stands.
 async function sendPool(env: Env): Promise<string[]> {
   const I = index(env);
-  const [pool, projects] = await Promise.all([I.models(), I.projects()]);
-  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool).then(() => null).catch(() => p.name)));
+  const [pool, projects, assignments] = await Promise.all([I.models(), I.projects(), I.currentRoleAssignments()]);
+  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool, bearingOn(assignments, p)).then(() => null).catch(() => p.name)));
+  return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
+}
+// The role assignments that bear on a project: its own, by its key, and
+// every project's (src/models/assignments.ts).
+function bearingOn(assignments: readonly Assignment[], p: ProjectRecord): Assignment[] {
+  return assignments.filter((a) => a.scope === ALL_PROJECTS || a.scope === (p.key ?? p.name));
+}
+// Sends each project's ledger the role assignments bearing on it, after one
+// is recorded or withdrawn, so its selectors read them without the index.
+// Returns the projects it could not reach.
+async function sendAssignments(env: Env): Promise<string[]> {
+  const I = index(env);
+  const [projects, assignments] = await Promise.all([I.projects(), I.currentRoleAssignments()]);
+  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).assignmentsChanged(bearingOn(assignments, p)).then(() => null).catch(() => p.name)));
   return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
 }
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
@@ -1144,6 +1159,37 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
+  // Role assignments (t622, src/models/assignments.ts): the developer's dated
+  // judgements of which model does what, with evidence, which routing reads.
+  // Developer-only and private, reading included. GET lists every one with
+  // its status and the fallback each role returns to; POST records one, its
+  // scope, choices and evidence checked against the index, the pool and each
+  // project's ledger; POST model-roles/aN/withdraw withdraws the standing one.
+  if (parts[0] === "model-roles") {
+    requireOwner(env, actor);
+    const I = index(env);
+    if (parts.length === 1 && m === "GET") return json({ ...(await I.roleAssignments()), fallback: FALLBACK });
+    if (parts.length === 1 && m === "POST") {
+      const input = cleanAssignmentInput(body);
+      let scope = ALL_PROJECTS;
+      if (input.scope !== ALL_PROJECTS) {
+        const ref = await resolveProject(env, input.scope);
+        if (!ref.registered) throw new RuleError("bad_scope", `no project ${input.scope}`, 404);
+        scope = ref.key;
+      }
+      const evidence = await checkEvidence(input.evidence, (name) => resolveProject(env, name), (key, item, seq) => ledger(env, key).evidenceMissing(item, seq));
+      const choices = resolveChoices(input.choices, await I.models(), input.role);
+      const record = await I.assignRole(actor, { ...input, scope, choices, evidence }, c.acting ?? null);
+      const unreached = await sendAssignments(env);
+      return json({ ...record, unreached }, record.retried ? 200 : 201);
+    }
+    if (parts.length === 3 && parts[2] === "withdraw" && m === "POST") {
+      const record = await I.withdrawRoleAssignment(parts[1], actor, body.note, c.acting ?? null);
+      const unreached = await sendAssignments(env);
+      return json({ ...record, unreached });
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   // Usage, limits and balances. A runner reports one tool at a time under
   // its name, as it reports a model's status: the owner token, and the
   // runner named in X-Atelier-Runner. The owner reads every report, the
@@ -1182,7 +1228,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // `judgement` is each acting model's verdicts on findings, decisions and
     // overrides over its window, with the window's totals.
     const { sources, reliability, speed, events, unread } = await trackRecords(env);
-    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    // Role assignments are recorded on the index, so its events are one
+    // more source of the acting models' decisions (t622).
+    const assigned = { project: "(model roles)", events: await index(env).assignmentEvents() };
+    const judgement = buildJudgement([...sources, assigned], judgementWindow(new Date()), ownerActor(env), await index(env).models());
     const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
@@ -2040,8 +2089,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // restrictions unless named, so it asks for no suggestion.
       if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
         requireOwner(env, actor);
-        const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        const [pool, track, item, p, assignments] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments()]);
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments }, body);
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);

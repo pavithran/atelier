@@ -4,6 +4,7 @@ import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } fro
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, type Assignment } from "./assignments.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
@@ -14,6 +15,9 @@ export interface SuggestionInput extends SuggestionRecords {
   policy: ProjectPolicy;
   owner?: string;
   frontierRequired?: boolean;
+  // The role assignments standing now (src/models/assignments.ts); those of
+  // this project (by its key, `project`) and of every project bear here.
+  assignments?: readonly Assignment[];
 }
 const actorOf = (m: ModelEntry) => `${m.harness}/${m.id}`;
 const keysOf = (m: ModelEntry) => new Set([m.id, ...m.aliases].map(modelKey));
@@ -69,22 +73,33 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   const why = (rejections >= 2 ? "Two rejections require a frontier builder." : strict ? "Security, concurrency or gate work requires a frontier builder." : "Eligible pool models ranked by recorded successful and failed outcomes.")
     + (single ? ` This project runs in single-family mode (${single}), so only ${single}'s models are considered.` : "");
   const excluded: string[] = [];
-  for (const { entry, score, reason } of ranked(input)) {
+  const refusalOf = (entry: ModelEntry): string => {
     const actor = actorOf(entry);
-    if (constraints.model && !entryRuns(entry, String(constraints.model))) continue;
-    if (constraints.to && constraints.to !== "any" && constraints.to !== entry.where) continue;
-    let refusal = "";
     const held = standingRefusal(entry, "build");
-    if (held) refusal = held;
-    else if (single && actorFamily(actor) !== single) refusal = `not one of ${single}'s models (single-family mode)`;
-    else if (strict && !frontier(entry)) refusal = "not frontier";
-    else if (stalledBuilder(entry, input)) refusal = "two consecutive stalled builds; no successful build since";
-    else if (entry.status?.state === "refused") refusal = "provider refused";
-    else if (paidPerToken(entry)) refusal = "per-token spending is not authorized";
-    else { try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; refusal = e.message; } }
+    if (held) return held;
+    if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
+    if (strict && !frontier(entry)) return "not frontier";
+    if (stalledBuilder(entry, input)) return "two consecutive stalled builds; no successful build since";
+    if (entry.status?.state === "refused") return "provider refused";
+    if (paidPerToken(entry)) return "per-token spending is not authorized";
+    try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; return e.message; }
+    return "";
+  };
+  // The developer's explicit --model and --to narrow the candidates first;
+  // a build assignment then puts its eligible choices ahead of the outcome
+  // ranking (src/models/assignments.ts, precedence).
+  const rows = ranked(input)
+    .filter(({ entry }) => !(constraints.model && !entryRuns(entry, String(constraints.model))))
+    .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
+    .map((row) => ({ ...row, refusal: refusalOf(row.entry) }));
+  const assigned = applicableAssignments(input.assignments ?? [], input.project, ["build"]);
+  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), assigned, (r) => r.refusal || null, FALLBACK.build, input.pool);
+  for (const row of byAssignment.order) {
+    const { entry, score, reason, refusal } = row;
+    const actor = actorOf(entry);
     if (refusal) { excluded.push(`${actor}: ${refusal}`); continue; }
     const note = latestNote(entry, input.project, input.item.id);
-    return { actor, where: entry.where, reasons: [why, `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
+    return { actor, where: entry.where, reasons: [why, ...byAssignment.reasons(row), `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
   }
   throw new RuleError("no_builder", `${why} No eligible builder in the pool. ${excluded.join("; ")}`, 409);
 }

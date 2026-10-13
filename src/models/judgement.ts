@@ -11,6 +11,10 @@
 //   atelier decisions withdraw dN --as H/M   decision.withdrawn
 //   atelier accept|merge ID --override-review "..." --as H/M
 //                                            review.overridden
+//   atelier models assign ROLE H/M... --as H/M
+//                                            assignment.recorded (t622)
+//   atelier models roles withdraw aN --as H/M
+//                                            assignment.withdrawn
 //
 // The CLI sends the name in X-Atelier-Acting (ACTING_HEADER), and the Worker
 // checks it with cleanActing and registeredActing before any route runs: it
@@ -48,7 +52,7 @@ export const ACTING_HEADER = "x-atelier-acting";
 export const JUDGEMENT_WINDOW_DAYS = 90;
 
 // The events an acting model is recorded on, and the commands that write them.
-export const ACTING_EVENTS = ["review.finding", "decision.recorded", "decision.withdrawn", "review.overridden"] as const;
+export const ACTING_EVENTS = ["review.finding", "decision.recorded", "decision.withdrawn", "review.overridden", "assignment.recorded", "assignment.withdrawn"] as const;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const isModel = (a: string, owner: string) => a !== owner && a.includes("/") && !a.startsWith("atelier/") && validActor(a);
@@ -177,8 +181,8 @@ export interface ActingJudgement {
   contradicted: number;          // a later verdict disagreed, or a defect named it
   unresolved: number;            // neither: no outcome is known
   contradictions: Contradiction[];
-  decisionsRecorded: number;     // standing decisions it recorded for the owner
-  decisionsWithdrawn: number;
+  decisionsRecorded: number;     // standing decisions and role assignments it recorded for the owner
+  decisionsWithdrawn: number;    // and withdrew
   overrides: number;             // reviews it overrode for the owner
 }
 
@@ -260,8 +264,11 @@ export function buildJudgement(projects: readonly { project: string; events: rea
     }
     for (const e of sorted) {
       if (!inWindow(e.at)) continue;
-      if (e.kind === "decision.recorded") of(actingOf(e, owner)).decisionsRecorded++;
-      else if (e.kind === "decision.withdrawn") of(actingOf(e, owner)).decisionsWithdrawn++;
+      // A role assignment (src/models/assignments.ts) is a decision with
+      // structure, logged on the index ledger, which the caller adds as one
+      // more source.
+      if (e.kind === "decision.recorded" || e.kind === "assignment.recorded") of(actingOf(e, owner)).decisionsRecorded++;
+      else if (e.kind === "decision.withdrawn" || e.kind === "assignment.withdrawn") of(actingOf(e, owner)).decisionsWithdrawn++;
       else if (e.kind === "review.overridden") of(actingOf(e, owner)).overrides++;
     }
   }
