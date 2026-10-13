@@ -1,8 +1,27 @@
 // atelier review-claim. Its forms, flags and help are declared in src/usage/commands/review-claim.ts.
-import { REVIEW_LEASE_MS } from "../../src/rules.ts";
+import { REVIEW_LEASE_MS, REVIEW_RENEW_MS } from "../../src/rules.ts";
 import { I, actor, args, call, die, itemArg, project, rememberReviewClaim, rememberedReviewClaim } from "../atelier.mjs";
 
 const MINUTES = REVIEW_LEASE_MS / 60_000;
+
+// What a renewal is sure of. The server counts the lease from its last
+// renewal and skips one within REVIEW_RENEW_MS of it (renewReview in
+// src/ledger.ts), and its answer is only { renewed: true }, so a renewal
+// that succeeds may have extended nothing: the lease then ends up to
+// REVIEW_RENEW_MS sooner than five minutes from now (Astra's review of
+// t575, 2026-10-13). The guidance renews within half of what is sure,
+// whole minutes, which leaves a missed or skipped renewal room for one more.
+const SURE_MS = REVIEW_LEASE_MS - REVIEW_RENEW_MS;
+const EVERY_MINUTES = Math.max(1, Math.floor(SURE_MS / 2 / 60_000));
+const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+function span(ms) {
+  const minutes = Math.floor(ms / 60_000), seconds = Math.round((ms % 60_000) / 1000);
+  return [minutes ? plural(minutes, "minute") : "", seconds ? plural(seconds, "second") : ""].filter(Boolean).join(" ");
+}
+
+export function renewedLine(id, request, how, as) {
+  return `Renewed the lease on ${id}'s review request ${request}${how}, as ${as}: it lasts at least ${span(SURE_MS)} from now (the server skips a renewal within ${span(REVIEW_RENEW_MS)} of the last); renew again within ${plural(EVERY_MINUTES, "minute")}.`;
+}
 
 // What a reviewer serving a claim by hand needs (t575): the request, head and
 // criteria binding the verdict names, the exact command that records it, and
@@ -13,7 +32,7 @@ export function handLines(id, claim, as) {
     `Claimed ${id}'s review request ${request} at ${head} as ${as}.`,
     `Criteria binding: ${claim.criteria}`,
     `Record the verdict with: atelier review ${id} --head ${head} --request ${request} --criteria ${claim.criteria} --approve|--reject --note "…" --as ${as}`,
-    `The claim's lease lasts ${MINUTES} minutes and lapses unless renewed: run atelier review-claim ${id} --renew --request ${request} --as ${as} within every ${MINUTES} minutes until the verdict is recorded.`,
+    `The claim's lease lasts ${MINUTES} minutes and lapses unless renewed: run atelier review-claim ${id} --renew --request ${request} --as ${as} every ${plural(EVERY_MINUTES, "minute")} until the verdict is recorded.`,
   ];
 }
 
@@ -30,7 +49,7 @@ export default async function reviewClaimCommand() {
     if (request === undefined) die(`no review request of ${id} was claimed on this machine; name it with --request N, as the claim gave it`);
     await call("POST", `${I(name, id)}/review-renew`, { request }, as);
     const how = args.request !== undefined ? "" : ", the one this machine last claimed";
-    console.log(`Renewed the lease on ${id}'s review request ${request}${how}, as ${as}: it lasts ${MINUTES} more minutes; renew again before then.`);
+    console.log(renewedLine(id, request, how, as));
     return;
   }
   const r = await call("POST", `${I(name, id)}/review-claim`, {}, as, args.runner ? { "x-atelier-runner": args.runner } : {});

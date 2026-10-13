@@ -119,10 +119,25 @@ export function replyFormat(criteria: number, own = 0, deferred: readonly number
     ...(flagged.length ? [`CRITERION ${flagged[0]}: deferred — What the change built for criterion ${flagged[0]}, which is checked after deploy.`] : []),
     "",
     ...FORMAT_RULES,
-    `Write one CRITERION line for each of the ${count} acceptance criteria, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
+    `${criteriaRule(count)}, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
     ...(flagged.length ? [`${flagged.length === 1 ? `Criterion ${flagged[0]} was` : `Criteria ${flagged.join(", ")} were`} flagged by the review of the acceptance criteria as ${flagged.length === 1 ? "a check" : "checks"} after deploy: the builder could not verify ${flagged.length === 1 ? "it" : "them"} in a workspace and neither can you. For ${flagged.length === 1 ? "it" : "each"} write CRITERION n, then deferred, then what the change built for it and what the developer or the orchestrator checks after deploy; met is allowed only when you proved it. Deferred is refused on any other criterion: prove it met, or reject with a blocking finding.`] : []),
     FORMAT_END,
   ].join("\n");
+}
+
+// The words that open replyFormat's CRITERION rule, and the count of
+// criteria read back from a brief that carries it (0 when none does): the
+// adapter's second ask of a reviewer whose first reply states no verdict
+// (cli/harness/adapter.mjs, t608) asks again for one CRITERION line per
+// criterion, and reads how many from the brief the reviewer was given. The
+// reply format is the brief's last section, so its rule is the last match;
+// criteria quoted earlier in the brief do not change the count.
+const criteriaRule = (count: number) => `Write one CRITERION line for each of the ${count} acceptance criteria`;
+const CRITERIA_RULE = /Write one CRITERION line for each of the (\d+) acceptance criteria/g;
+export function criteriaAsked(brief: string): number {
+  const last = [...String(brief).matchAll(CRITERIA_RULE)].at(-1);
+  const count = last ? Number(last[1]) : 0;
+  return Number.isSafeInteger(count) && count > 0 ? count : 0;
 }
 
 // The severities the brief names, and the design's verdict-file names for

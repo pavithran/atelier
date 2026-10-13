@@ -289,12 +289,12 @@ async function readLog(e: Pick<Evidence, "outputTail" | "log" | "where">, read: 
 // failing test's own line (node:test's `✖`, TAP's `not ok`, vitest's ` FAIL `
 // and `×`, jest's `●`, pytest's `FAILED`/`ERROR`, go's `--- FAIL:`), with
 // the assertion or error line that follows it, and the summary counts that
-// say how many failed (`ℹ fail N`, vitest's `Test Files … failed` and
-// `Tests … failed`). Read from the whole output, in its order, each line
-// once, within FAILURE_LINES_MAX lines and FAILURE_LINES_CHARS characters;
-// a last `[atelier]` line counts the lines left out.
+// say how many failed (`ℹ fail N`, TAP's `# fail N`, vitest's `Test Files …
+// failed` and `Tests … failed`). Read from the whole output, in its order,
+// each line once, within FAILURE_LINES_MAX lines and FAILURE_LINES_CHARS
+// characters; a last `[atelier]` line counts the lines left out.
 const FAILED_TEST = /^\s*(?:not ok \d+|✖ |FAIL {1,2}\S|× |● |FAILED \S|ERROR \S+::|--- FAIL: )/;
-const FAIL_COUNT = /^\s*(?:ℹ fail [1-9]\d*\b|Test Files\b.*\b\d+ failed\b|Tests\b.*\b\d+ failed\b|Tests: .*\b\d+ failed\b)/;
+const FAIL_COUNT = /^\s*(?:ℹ fail [1-9]\d*\b|# fail [1-9]\d*\b|Test Files\b.*\b\d+ failed\b|Tests\b.*\b\d+ failed\b|Tests: .*\b\d+ failed\b)/;
 const ASSERTION = /\b(?:AssertionError|[A-Z]\w*Error)\b|^\s*(?:error|expected|actual|Expected|Received):/;
 const SKIPPED = /^\s*not ok \d+.*# (?:SKIP|TODO)\b/i;
 

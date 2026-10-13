@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERDICT_FOLLOW_UP, agentRules, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
 import { redactKeys } from "../src/models/pool.ts";
-import { parseVerdict } from "../src/review/verdict.ts";
+import { parseVerdict, replyFormat } from "../src/review/verdict.ts";
 
 // t374: the four harness adapters ship in bin/harness/, carry the agent
 // rules, hold no key, give every prompt on standard input and are what the
@@ -62,7 +62,11 @@ fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: p
 fs.appendFileSync(${JSON.stringify(record)} + ".calls", JSON.stringify({ argv, input }) + "\\n");
 // FAKE_ANSWER, when set, is the first reply and FAKE_FOLLOW_UP the reply in
 // the continued session (opencode run --continue).
-const answer = !process.env.FAKE_ANSWER ? "VERDICT: APPROVE\\nSUMMARY: fine" : argv.includes("--continue") ? process.env.FAKE_FOLLOW_UP : process.env.FAKE_ANSWER;
+// FAKE_FOLLOW_UP=@template answers the second ask as a reviewer who follows
+// it to the letter: with the ask's own verdict-format lines, and no other.
+const template = (ask) => ask.split("\\n").filter((l) => /^(?:SUMMARY|FINDING|CRITERION \\d+|VERDICT):/.test(l)).join("\\n");
+const followUp = process.env.FAKE_FOLLOW_UP === "@template" ? template(input) : process.env.FAKE_FOLLOW_UP;
+const answer = !process.env.FAKE_ANSWER ? "VERDICT: APPROVE\\nSUMMARY: fine" : argv.includes("--continue") ? followUp : process.env.FAKE_ANSWER;
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
 else if (argv.includes("--format") && argv[argv.indexOf("--format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "text", part: { text: answer } }));
@@ -203,6 +207,28 @@ test("an opencode review reply with no verdict is asked once more in the same se
   const parsed = parseVerdict(kept);
   assert.equal(parsed.ok, true, parsed.error);
   assert.equal(parsed.verdict, "approve");
+});
+
+// Astra's review of t576 (2026-10-13): the second ask permitted only
+// SUMMARY, FINDING and VERDICT lines, so a reviewer following it on a task
+// with acceptance criteria still gave an approval the runner refuses for
+// its missing CRITERION lines (parseVerdict with the task's criterion
+// count), and the review was released. The ask now names one CRITERION line
+// per criterion, reading the count from the brief's reply format.
+test("an opencode review's second ask, on a task with acceptance criteria, asks for one CRITERION line per criterion", (t) => {
+  const s = setup(t);
+  writeFileSync(s.brief, `Task: t9\nBuild it.\n\n## Acceptance criteria\n\n1. One.\n2. Two.\n\n## Reply format\n\n${replyFormat(2)}\n`);
+  const narrative = "I read the diff and ran the tests; both criteria hold.";
+  const { verdict } = run("opencode", s, { model: "deepseek-v4-pro", review: true, env: { FAKE_ANSWER: narrative, FAKE_FOLLOW_UP: "@template" } });
+  const calls = readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].input, /one CRITERION line for each of the 2 acceptance criteria/);
+  const parsed = parseVerdict(readFileSync(verdict, "utf8"), 2);
+  assert.equal(parsed.ok, true, parsed.error);
+  assert.equal(parsed.verdict, "approve");
+  // Without criteria in the brief the ask names none.
+  assert.equal(verdictFollowUp(0), VERDICT_FOLLOW_UP);
+  assert.doesNotMatch(VERDICT_FOLLOW_UP, /CRITERION/);
 });
 
 test("an opencode review whose second ask also states no verdict keeps both replies for the runner to record as unparsable", (t) => {
