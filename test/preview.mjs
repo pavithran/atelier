@@ -104,7 +104,7 @@ const server = createServer((req, res) => {
   else if (url.pathname === "/p/atelier") html = ui.renderProject(project, items, events.slice(-8).reverse(), "PAVI");
   else if (url.pathname.startsWith("/p/")) html = ui.renderItem(project, d, "PAVI", state === "unavailable" ? "unavailable" : diff);
   else if (url.pathname === "/error") html = ui.renderError("This task changed since you opened it. Refresh and review the new revision.");
-  else html = ui.renderInbox(state === "empty" ? [] : [attentionFor(project.name, items, entries, [], now)], [project], "PAVI", state === "empty" ? undefined : { project, detail: d, diff }, [{ project, items }], state === "empty" ? undefined : floor, now);
+  else html = ui.renderInbox(state === "empty" ? [] : [attentionFor(project.name, items, entries, [], now)], [project], "PAVI", state === "empty" ? undefined : { project, detail: d, diff }, [{ project, items }]);
   html = html.replace('<meta http-equiv="refresh" content="15">', "");
   res.writeHead(req.method === "GET" ? 200 : 405, { "content-type": "text/html" });
   res.end(req.method === "GET" ? html : "Read-only preview; no live action was taken.");

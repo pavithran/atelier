@@ -93,7 +93,7 @@ it("the Decisions badge is the number the Decisions list says waits on the owner
   const html = async (path: string) => (await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie } }), testEnv)).text();
 
   const decisions = await html("/decisions");
-  const listed = Number(/<p class="lead">(\d+) tasks? needs? your attention\.<\/p>/.exec(decisions)?.[1]);
+  const listed = Number(/<h1 id="dec-h">Decisions · (\d+)<\/h1>/.exec(decisions)?.[1]);
   expect(listed).toBeGreaterThanOrEqual(2);
   expect(badge(decisions)).toBe(String(listed));
   for (const path of ["/home", "/studio", `/p/${name}`, `/p/${name}/settings`, "/models"]) expect(badge(await html(path)), path).toBe(String(listed));

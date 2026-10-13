@@ -18,6 +18,16 @@ test("a phone shows the Decisions list and the selected decision as separate vie
   assert.match(css, /\.desk:not\(\.has-selection\) \.review-sheet \{\s*display:\s*none\s*;\s*\}/);
 });
 
+// t545: /decisions selects the first decision itself for the desktop's
+// detail and marks it `auto-selected`; at phone width only a decision the
+// owner picked (`has-selection`) hides the list, so every row stays in reach.
+test("a phone hides the Decisions list only for a decision the owner picked", () => {
+  const phone = css.slice(css.indexOf("@media (max-width: 700px) {\n  .desk"));
+  const hides = [...phone.matchAll(/([^{}]*\.queue[^{}]*)\{\s*display:\s*none/g)].map((m) => m[1].trim());
+  assert.deepEqual(hides, [".desk.has-selection .queue"]);
+  assert.doesNotMatch(css, /auto-selected[^{}]*\.queue/);
+});
+
 test("the back link is hidden on the desktop and shown only with a selection", () => {
   assert.match(css, /\.review-back \{\s*display:\s*none/);
   assert.match(css, /\.desk\.has-selection \.review-back \{\s*display:\s*inline-flex/);
