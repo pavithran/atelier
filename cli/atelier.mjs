@@ -50,6 +50,7 @@ import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
+import { serverFetch } from "./server-fetch.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -322,7 +323,7 @@ function checkFlags(cmd) {
 // JSON. checkCapabilities tells that null apart from a malformed answer.
 export async function serverVersion() {
   try {
-    const res = await fetch(server() + "/api/version", { signal: AbortSignal.timeout(30_000) });
+    const res = await serverFetch(server() + "/api/version", { signal: AbortSignal.timeout(30_000) });
     return res.ok ? await res.json() : null;
   } catch { return null; }
 }
@@ -778,7 +779,7 @@ export async function request(method, path, body, as, extra = {}, signal) {
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
-    res = await fetch(server() + "/api" + path, {
+    res = await serverFetch(server() + "/api" + path, {
       method, signal,
       headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -815,7 +816,7 @@ export async function requestText(path, as) {
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
-    res = await fetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
+    res = await serverFetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
     text = await res.text();
   } catch (error) { throw new RequestError(`server request failed: ${error.message}`, 4); }
   if (res.status === 404) return null;
@@ -845,7 +846,7 @@ export async function recordedApproval(name) {
   await resolveTokenActor();
   let res, data;
   try {
-    res = await fetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+    res = await serverFetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
     data = await res.json().catch(() => ({}));
   } catch (error) { die(`server request failed: ${error.message}`, 4); }
   if (res.status === 404) return null;
@@ -1636,7 +1637,7 @@ export async function landingLease(name, as) {
   await resolveTokenActor();
   let res, data;
   try {
-    res = await fetch(`${server()}/api${P(name)}/landing-lease`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? as } });
+    res = await serverFetch(`${server()}/api${P(name)}/landing-lease`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? as } });
     data = await res.json().catch(() => ({}));
   } catch (error) { die(`server request failed: ${error.message}`, 4); }
   if (!res.ok) return { unreadable: `${data.error ?? res.status}` };
@@ -1785,7 +1786,7 @@ export function wrapReady(name, cwd, report) {
 // names another actor: a runner token cannot act as the owner, so its
 // review skip goes as the review job's actor (t353).
 export async function postAsRunner(path, body, runner, signal, as = OWNER) {
-  const res = await fetch(`${server()}/api${path}`, {
+  const res = await serverFetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),
