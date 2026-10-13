@@ -32,7 +32,7 @@
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
-import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { actorStanding, familyOf, paidPerToken, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -124,10 +124,7 @@ export const SIZE_M_CONTEXT = 64 * 1024;
 // Billed per token: an API reached with a key. The Studio and a harness
 // sign-in (a subscription) cost nothing per call. An OpenAI-compatible
 // server is paid in the cloud; at home it is the owner's own server.
-export function paidPerToken(entry: Pick<ModelEntry, "provider" | "where">): boolean {
-  if (entry.provider === "ai-studio" || entry.provider === "subscription") return false;
-  return entry.provider !== "openai-compatible" || entry.where === "cloud";
-}
+export { paidPerToken };
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 

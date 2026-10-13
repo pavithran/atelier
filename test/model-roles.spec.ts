@@ -400,3 +400,36 @@ it("a plan's replacement reviewer is one a live runner offers for the review job
   const asked = (await L.events(partId) as unknown as { kind: string; data: Record<string, any> }[]).find((e) => e.kind === "review.requested")!;
   expect(asked.data.reviewer).toBe(offered);
 });
+
+// gpt-6-astra's and gemini-4-argon's fourth reviews of t622 (findings 1 and
+// 2): the separate tier review found a tier name's entry by the first alias
+// that matched and dispatched the tier name as written, so an assignment
+// promoted a paused model whose name another entry lists as an alias, and a
+// tier name written as an alias was dispatched under a name no runner offers.
+it("a separate tier review judges and dispatches the pool entry each tier name is", async () => {
+  const name = "roles-tier-alias";
+  const sonnet = { ...entry("claude-code", "sonnet-5.5"), aliases: ["fable-5.1", "sonnet-alias"] };
+  const fable = { ...entry("claude-code", "fable-5.1"), state: "paused" as const, stateAt: AT, note: "spent" };
+  const pool = [...POOL, sonnet, fable];
+  const policy = { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/fable-5.1", "claude-code/sonnet-alias"] };
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy, createdAt: AT }, "owner");
+  const H = "a".repeat(40);
+  await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
+  await L.claim("t1", "codex/gpt-6-astra");
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush("t1", "codex/gpt-6-astra", H, H);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit("t1", "codex/gpt-6-astra");
+  await L.assignmentsChanged({ version: 950, assignments: [{ id: "a950", kind: "assigned", scope: "*", role: "review", choices: [{ actor: "claude-code/fable-5.1", model: "fable-5.1" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  expect((await L.requestReview("t1", "owner", "antigravity/gemini-4-argon", pool)).requested).toBe(true);
+  const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+  const tier = events.find((e) => e.kind === "review.requested" && e.data.tier === true);
+  // Fable is paused: Sonnet, named in the tier by an alias, is asked under its own id.
+  expect(tier?.data.reviewer).toBe("claude-code/sonnet-5.5");
+  expect(String(tier?.data.reason)).toMatch(/Role assignment a950 skipped: no choice is eligible here \(claude-code\/fable-5.1: paused since/);
+  const waiting = (await L.reviewWaiting()).map((i) => `${i.dispatch?.agent}/${i.dispatch?.model}`);
+  expect(waiting).toContain("claude-code/sonnet-5.5");
+  expect(waiting).not.toContain("claude-code/fable-5.1");
+  expect(waiting).not.toContain("claude-code/sonnet-alias");
+});

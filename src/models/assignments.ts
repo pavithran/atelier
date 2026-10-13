@@ -345,10 +345,17 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
   // was superseded or was withdrawn since. The same id with other content
   // is another request reusing it, and is refused.
   const own = records.find((r): r is Assignment => r.kind === "assigned" && r.request === input.request);
+  // The acting model is part of the match, here inside the serialized
+  // write, so two requests racing past the route's lookup with the same id
+  // and different acting models are never both answered as one
+  // (gpt-6-astra's fourth review of t622, finding 3).
   if (own) {
-    const same = own.fingerprint !== undefined && input.fingerprint !== undefined ? own.fingerprint === input.fingerprint : sameContent(own, input) && (own.supersedes ?? null) === input.replaces;
-    if (same) return { ...own, retried: true };
-    throw new RuleError("request_reused", `request ${input.request} already recorded ${own.id}, with other content; a new decision needs a new request id`, 409);
+    if (own.fingerprint !== undefined && input.fingerprint !== undefined) {
+      isRetryOf(own, input.request, input.fingerprint, acting);
+      return { ...own, retried: true };
+    }
+    if (sameContent(own, input) && (own.supersedes ?? null) === input.replaces && sameActing(own.acting, acting)) return { ...own, retried: true };
+    throw new RuleError("request_reused", `request ${input.request} already recorded ${own.id}, with other content or another acting model; a new decision needs a new request id`, 409);
   }
   if (standing && input.replaces !== standing.id) {
     throw new RuleError("assignment_changed", `${standing.id} stands for ${where} since ${standing.at.slice(0, 10)}${input.replaces ? `, not ${input.replaces}` : ""}; to supersede it, name it: --replaces ${standing.id}`, 409);
@@ -380,8 +387,8 @@ export function withdrawAssignment(store: AssignmentStore, actor: string, id: st
   if (!target || target.kind !== "assigned") throw new RuleError("no_assignment", `no assignment ${id}; atelier models roles lists them`, 404);
   const done = records.find((r): r is AssignmentWithdrawal => r.kind === "withdrawn" && r.withdraws === id);
   if (done) {
-    if (done.note === why) return { ...done, retried: true };
-    throw new RuleError("not_standing", `${id} was withdrawn on ${done.at.slice(0, 10)} (${done.id}), so there is nothing to withdraw`, 409);
+    if (isWithdrawalRetry(done, why, acting)) return { ...done, retried: true };
+    throw new RuleError("not_standing", `${id} was withdrawn on ${done.at.slice(0, 10)} (${done.id})${done.note === why ? `, acting as ${done.acting ?? "nobody"}` : ""}, so there is nothing to withdraw`, 409);
   }
   const after = records.find((r): r is Assignment => r.kind === "assigned" && r.supersedes === id);
   if (after) throw new RuleError("not_standing", `${id} was superseded by ${after.id} on ${after.at.slice(0, 10)}; withdraw ${after.id} to return ${target.role} in ${scopeText(target.scope)} to its fallback`, 409);
@@ -447,8 +454,10 @@ export function inputFingerprint(input: AssignmentInput): string {
 // not fail the retry (gpt-6-astra's third review of t622, finding 4). The
 // same id with other content, or another acting model, is another request
 // reusing it, and is refused.
+const sameActing = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").toLowerCase() === (b ?? "").toLowerCase();
+
 export function isRetryOf(prior: Pick<Assignment, "id" | "fingerprint" | "acting">, request: string, fingerprint: string, acting: string | null): true {
-  if (prior.fingerprint === fingerprint && (prior.acting ?? "").toLowerCase() === (acting ?? "").toLowerCase()) return true;
+  if (prior.fingerprint === fingerprint && sameActing(prior.acting, acting)) return true;
   const what = prior.fingerprint === fingerprint ? `acting as ${prior.acting ?? "nobody"}, not ${acting ?? "nobody"}` : "with other content";
   throw new RuleError("request_reused", `request ${request} already recorded ${prior.id}, ${what}; a new decision needs a new request id`, 409);
 }
@@ -457,7 +466,7 @@ export function isRetryOf(prior: Pick<Assignment, "id" | "fingerprint" | "acting
 // same note, by the same acting model. Otherwise it is not, and
 // withdrawAssignment judges it as a new request.
 export function isWithdrawalRetry(done: Pick<AssignmentWithdrawal, "note" | "acting">, note: unknown, acting: string | null): boolean {
-  return typeof note === "string" && line(note) === done.note && (done.acting ?? "").toLowerCase() === (acting ?? "").toLowerCase();
+  return typeof note === "string" && line(note) === done.note && sameActing(done.acting, acting);
 }
 
 // ── reading ─────────────────────────────────────────────────────────────

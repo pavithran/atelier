@@ -45,7 +45,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { modelKey, RuleError, sameActor, validActor } from "../rules.ts";
-import type { ModelEntry } from "./pool.ts";
+import { poolEntryFor, type ModelEntry } from "./pool.ts";
 import { SERVED } from "./served.ts";
 
 export const ACTING_HEADER = "x-atelier-acting";
@@ -93,25 +93,9 @@ export function canonicalModel(acting: string, pool: PoolNames): string {
   return entry ? modelKey(`${entry.harness}/${entry.id}`) : modelKey(acting);
 }
 
-// The pool entry a harness/model name is, in the name's harness, or
-// undefined: the entry whose id is the name exactly, then one with the name
-// exactly as an alias, then one whose id, then whose alias, is the same
-// model by sameActor. An entry's own id comes before any entry's alias, so
-// an alias naming another entry's id never takes that entry's identity
-// (gpt-6-astra's second review of t622, finding 1), and an exact name comes
-// before a model-key match, so two entries in one harness that share a
-// model (claude-code/opus-5.5 and claude-code/claude-opus-5-5, or two
-// profiles of one model) stay two entries (gemini-4-argon's third review of
-// t622, finding 2). Identity is still the canonical model (canonicalModel);
-// this says which pool entry, so which harness, profile and standing.
-export function poolEntryFor<E extends PoolNames[number]>(actor: string, pool: readonly E[]): E | undefined {
-  const lower = actor.toLowerCase();
-  const full = (m: E, id: string) => `${m.harness}/${id}`;
-  return pool.find((m) => full(m, m.id).toLowerCase() === lower)
-    ?? pool.find((m) => m.aliases.some((id) => full(m, id).toLowerCase() === lower))
-    ?? pool.find((m) => sameActor(actor, full(m, m.id)))
-    ?? pool.find((m) => m.aliases.some((id) => sameActor(actor, full(m, id))));
-}
+// poolEntryFor lives beside the pool (src/models/pool.ts), with the one
+// eligibility check that reads it.
+export { poolEntryFor };
 
 // The acting model an event records, or null: unknown for an event recorded
 // before t440, without a name, or with a field that is not a model's name.

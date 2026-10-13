@@ -72,14 +72,18 @@ test("atelier models assign sends the role, ordered choices, reason, words, evid
 
 test("atelier models assign needs a reason, the developer's words and evidence before any request", async (t) => {
   const f = await fixture(t);
-  for (const argv of [
-    ["models", "assign", "review", "codex/gpt-6-astra", "--quote", "q", "--evidence", "atelier/t1"],
-    ["models", "assign", "review", "codex/gpt-6-astra", "--reason", "r", "--evidence", "atelier/t1"],
-    ["models", "assign", "review", "codex/gpt-6-astra", "--reason", "r", "--quote", "q"],
-    ["models", "assign", "review", "--reason", "r", "--quote", "q", "--evidence", "atelier/t1"],
+  // Each names what is missing, so an unknown command (which also exits 1
+  // and sends nothing) cannot pass here (gpt-6-astra's fourth review of t622,
+  // follow-up 4).
+  for (const [argv, said] of [
+    [["models", "assign", "review", "codex/gpt-6-astra", "--quote", "q", "--evidence", "atelier/t1"], /an assignment needs --reason/],
+    [["models", "assign", "review", "codex/gpt-6-astra", "--reason", "r", "--evidence", "atelier/t1"], /an assignment needs --quote/],
+    [["models", "assign", "review", "codex/gpt-6-astra", "--reason", "r", "--quote", "q"], /an assignment rests on evidence/],
+    [["models", "assign", "review", "--reason", "r", "--quote", "q", "--evidence", "atelier/t1"], /atelier models assign ROLE H\/M/],
   ]) {
     const r = await f.run(argv);
     assert.equal(r.status, 1, argv.join(" "));
+    assert.match(r.stderr, said, argv.join(" "));
   }
   assert.deepEqual(f.requests, []);
 });

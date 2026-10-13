@@ -136,7 +136,13 @@ const PATHS = [
   ['src/ledger.ts', 'reroutePlan', 'this.assertStanding(', 'a named planner or builder (atelier plan reroute)'],
   ['src/ledger.ts', 'rerouteReviewer', 'this.assertStanding(', "a named reviewer of a plan's part"],
   ['src/ledger.ts', 'reviewTick', 'actorStanding(', "a plan's reviews and their open requests"],
-  ['src/ledger.ts', 'askTierReview', 'actorStanding(', 'tier reviews'],
+  // Tier reviews judge each tier name by the one eligibility check of the
+  // entry it names (gpt-6-astra's and gemini-4-argon's fourth reviews of
+  // t622), and their dispatch by the standing check.
+  ['src/ledger.ts', 'askTierReview', 'tierEligible(', 'tier reviews'],
+  ['src/ledger.ts', 'askTierReview', 'this.standingDispatch(', 'tier reviews'],
+  ['src/review/tier.ts', 'tierEligible', 'poolEligibility(', 'tier reviews, through the one eligibility check'],
+  ['src/models/pool.ts', 'poolEligibility', 'standingRefusal(', 'the one eligibility check of role assignments\' readers'],
   ['src/ledger.ts', 'reaskReview', 'actorStanding(', 'a request carried when the head moves'],
   ['src/ledger.ts', 'reaskForCriteria', 'actorStanding(', 'a request carried when the criteria change'],
   ['src/ledger.ts', 'claim', 'actorStanding(', 'a task claimed by an actor'],

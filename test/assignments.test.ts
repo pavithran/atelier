@@ -222,7 +222,8 @@ test("withdrawal needs a note, restores the fallback rather than the superseded 
   assert.equal(standingFor(store.records(), ALL_PROJECTS, "security-review"), null);
   assert.deepEqual(currentAssignments(store.records()), []);
   // A retry of the withdrawal is answered with it; another note is refused.
-  assert.equal(withdrawAssignment(store, OWNER, "a2", "Argon missed real defects on t593.", AT).retried, true);
+  // A retry names the same acting model (gpt-6-astra's fourth review, finding 3).
+  assert.equal(withdrawAssignment(store, OWNER, "a2", "Argon missed real defects on t593.", AT, "codex/gpt-6-astra").retried, true);
   refused(() => withdrawAssignment(store, OWNER, "a2", "other", AT), "not_standing", /withdrawn on 2026-10-13 \(a3\)/);
   const history = assignmentHistory(store.records());
   assert.deepEqual(history.map((v) => [v.id, v.status]), [["a1", "superseded"], ["a2", "withdrawn"]]);
@@ -314,4 +315,23 @@ test("a retry is the same content by the same acting model as recorded; anything
   assert.equal(isWithdrawalRetry({ note: "Reserved this week.", acting: "codex/gpt-6-astra" }, " Reserved this week. ", "codex/gpt-6-astra"), true);
   assert.equal(isWithdrawalRetry({ note: "Reserved this week." }, "Another note", null), false);
   assert.equal(isWithdrawalRetry({ note: "Reserved this week." }, "Reserved this week.", "codex/gpt-6-astra"), false);
+});
+
+// gpt-6-astra's fourth review of t622, finding 3: the stored retry paths
+// ignored the acting model, so two requests racing past the route's lookup,
+// or a withdrawal sent again by another acting model, were answered as one.
+test("the stored retry of an assignment or a withdrawal is the same acting model's, or refused", () => {
+  const store = memoryStore();
+  const first = input({ fingerprint: "fp-1" });
+  const a = recordAssignment(store, OWNER, first, AT, "claude-code/opus-5.5");
+  assert.equal(recordAssignment(store, OWNER, first, AT, "Claude-Code/opus-5.5").retried, true);
+  refused(() => recordAssignment(store, OWNER, first, AT, "codex/gpt-6-astra"), "request_reused", /acting as claude-code\/opus-5.5, not codex\/gpt-6-astra/);
+  refused(() => recordAssignment(store, OWNER, first, AT, null), "request_reused", /not nobody/);
+  // A record kept without a fingerprint is matched by its content and acting model too.
+  const legacy = input();
+  recordAssignment(store, OWNER, { ...legacy, replaces: a.id }, AT, "claude-code/opus-5.5");
+  refused(() => recordAssignment(store, OWNER, { ...legacy, replaces: a.id }, AT, "codex/gpt-6-astra"), "request_reused", /another acting model/);
+  const w = withdrawAssignment(store, OWNER, store.rows.at(-1)!.id, "Done with it.", AT, "claude-code/opus-5.5");
+  assert.equal(withdrawAssignment(store, OWNER, w.withdraws, "Done with it.", AT, "claude-code/opus-5.5").retried, true);
+  refused(() => withdrawAssignment(store, OWNER, w.withdraws, "Done with it.", AT, "codex/gpt-6-astra"), "not_standing", /acting as claude-code\/opus-5.5/);
 });
