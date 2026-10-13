@@ -319,9 +319,6 @@ async function offersOf(env: Env): Promise<SeenOffer[] | null> {
 async function poolOf(env: Env): Promise<ModelEntry[] | null> {
   try { return await index(env).models(); } catch { return null; }
 }
-// Waiting decisions drawn as cards; the rest of the list stays as plain rows.
-const CARD_LIMIT = 12;
-
 // The actor that stands for the project owner, and the name the pages use.
 function ownerActor(env: Env): string {
   return (env as unknown as Settings).OWNER_ACTOR || DEFAULT_OWNER;
@@ -3357,7 +3354,6 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   const { projects, views } = await projectViews(env);
   const now = new Date();
   const floorViews = await floorViewsOf(env, views);
-  const floor = buildFloor(floorViews, now);
   const owner = ownerActor(env);
   const cutoffs = new Map<string, number | null>();
   // Only the most recently active project's graph rests on Decisions.
@@ -3373,28 +3369,22 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
   const projectName = c.url.searchParams.get("project") ?? first[0]?.project;
   const task = c.url.searchParams.get("task") ?? first[0]?.itemId;
+  const auto = !c.url.searchParams.has("task");
   const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
   let selected: ReviewContext | undefined;
   if (project && task) {
     const L = ledgerOf(env, project);
-    const detail: Detail = await L.detail(task);
+    // The factor says whether the task page offers its override form, which
+    // the detail links to.
+    const read: Detail = await L.detail(task);
+    const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
     const selectedItem = await L.item(task);
-    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,detail.events)};
+    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,detail.events),auto};
   }
-  // Each waiting decision is drawn as a card with its brief and its thread, which
-  // need the task's own record; a dozen cards is enough for one screen of work.
-  const details = new Map<string, Detail>();
-  const seen = new Set<string>();
-  await Promise.all(first.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
-    // An entry names its project as the Ledger's record does; the listed record says where that Ledger is.
-    const p = projectNamed(projects, x.project);
-    if (!p) return;
-    try { details.set(`${x.project}/${x.itemId}`, (await ledgerOf(env, p).detail(x.itemId)) as unknown as Detail); } catch { /* the row stays without its card */ }
-  }));
   const recent = (v: FloorView) => v.events[0]?.at ?? "";
   const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
   const latest = busiest && !selected ? await story(busiest) : null;
-  return html(renderInbox(attention, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
+  return html(renderInbox(attention, projects, ownerName(env), selected, views, queued, latest ? { story: latest, owner } : undefined, live), 200, live.nonce);
 }
 
 // ── a project's area ───────────────────────────────────────────────────────
