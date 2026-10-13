@@ -34,7 +34,7 @@ it("t371: the standing lists every merge by override, newest first, and the proj
   expect(html).toMatch(/<h3>Merged by override: 2 merges<\/h3>/);
   expect(html).toMatch(/<a href="\/p\/demo\/t4">t4<\/a>/);
   expect(html).toMatch(/<a href="\/p\/demo\/t2">t2<\/a>/);
-  expect(html).toMatch(/the owner(&#39;|'|&#x27;)s override, not a review: No model of another family was available/);
+  expect(html).toMatch(/the developer(&#39;|'|&#x27;)s override, not a review: No model of another family was available/);
   // None: the lead says so, and no group is drawn.
   const none = buildStanding(project, [item("t3", "merged")], new Map(), 50, attentionFor("demo", [item("t3", "merged")], [], [], new Date()), new Map(), new Date());
   expect(none.overrides).toEqual([]);
