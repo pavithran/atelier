@@ -806,9 +806,11 @@ export interface FeedRow { at: string; kind: string; text: string; project: stri
 // The showcase's latest moves, newest first. An acceptance followed by its
 // merge is one row, and a move repeated back to back (the same words in the
 // same project) is one row that says how many times and over how long
-// (t530). Nothing is counted that the stories do not hold.
-export function foldMoves(moments: { at: string; kind: string; text: string; item: string; project: string }[], limit = 10): FeedRow[] {
-  const sorted = [...moments].sort((a, b) => b.at.localeCompare(a.at));
+// (t530). Nothing is counted that the stories do not hold. Moves of one
+// instant keep the ledger's order by their position, newest first, so a merge
+// recorded in the acceptance's millisecond still follows it.
+export function foldMoves(moments: { at: string; kind: string; text: string; item: string; project: string; pos?: number }[], limit = 10): FeedRow[] {
+  const sorted = [...moments].sort((a, b) => b.at.localeCompare(a.at) || (b.pos ?? 0) - (a.pos ?? 0));
   const joined: Omit<FeedRow, "times" | "since">[] = [];
   for (let i = 0; i < sorted.length; i++) {
     const m = sorted[i], older = sorted[i + 1];
