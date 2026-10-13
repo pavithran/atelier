@@ -766,7 +766,7 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
   const withDates = same && began
     ? `<p class="compare-dates">since ${e(dayLabel(began, false))}${same.partial && !same.counted ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
   return `<section class="show-section compare-section" aria-labelledby="compare-h">
-  <h2 class="show-h2" id="compare-h">Git keeps the code. Atelier brings the receipts.</h2>
+  <h2 class="show-h2" id="compare-h">Before Atelier, and with it</h2>
   <div class="compare">
   <article class="compare-card before">
     <p class="compare-kicker"><span>Before Atelier · from git</span><span>${e(before.title)}</span></p>
@@ -1069,7 +1069,8 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="show-section show-hero" id="top">
     <p class="kicker">Public showcase · read only · from the ledger</p>
-    <h1>A Git platform for multiple coding agents, built on Cloudflare</h1>
+    <h1>Git keeps the code. Atelier brings the receipts.</h1>
+    <p class="show-what">A Git platform for multiple coding agents, built on Cloudflare.</p>
     <p class="show-stack">Repositories in Artifacts, the record in Durable Objects, landings as Workflows, checks in Containers on request.</p>
     <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and merges it once the person who owns the project accepts it.</p>
     ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}

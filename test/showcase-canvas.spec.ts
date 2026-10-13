@@ -128,7 +128,7 @@ it("compares a project known only from git with the record Atelier kept, as two 
   const html = renderShowcase([built, idle], built.tally, "pavi", "PAVI", false, new Map([["idle", h]]));
   const compare = html.split('aria-labelledby="compare-h"')[1].split("</section>")[0];
   expect(html.indexOf('id="compare-h"')).toBeLessThan(html.indexOf('id="tally-h"'));
-  expect(compare).toContain(">Git keeps the code. Atelier brings the receipts.</h2>");
+  expect(compare).toContain(">Before Atelier, and with it</h2>");
   expect(compare).toContain('<p class="compare-kicker"><span>Before Atelier · from git</span><span>Idle</span></p>');
   expect(compare).toContain("<b>50%</b><span>of commits name an agent. Nothing else about them is recorded.</span>");
   expect(compare).toContain('<div class="none"><dt>—</dt><dd>reviews by another model</dd></div>');
