@@ -54,8 +54,10 @@ export default async function cloneCommand() {
 
   const parent = dirname(dir);
   mkdirSync(parent, { recursive: true });
-  // A full clone of the branch: no depth, every commit of its history.
-  git(["clone", "--quiet", "--no-checkout", "--branch", branch, base.remote, dir], { cwd: parent, token: base.token });
+  // A full clone of the branch: no depth, every commit of its history. The
+  // remote is named origin whatever clone.defaultRemoteName says, since
+  // this command and those after it name it so.
+  git(["clone", "--quiet", "--no-checkout", "--origin", "origin", "--branch", branch, base.remote, dir], { cwd: parent, token: base.token });
   // The receipts: the provenance notes each merge pushes to the baseline,
   // which git log shows beside the commits they describe.
   const notes = git(["ls-remote", base.remote, "refs/notes/atelier"], { cwd: dir, token: base.token });
