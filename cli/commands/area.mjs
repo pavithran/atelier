@@ -1,3 +1,4 @@
+// atelier area. Its forms, flags and help are declared in src/usage/commands/area.ts.
 import { OWNER, P, args, call, die, project } from "../atelier.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 

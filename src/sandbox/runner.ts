@@ -14,7 +14,7 @@
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { againstMain, changedPaths, pairReader, repoReader, type Reader } from "../diff";
-import { mergePatch, mergeTrees, type Patch } from "../preview/merge";
+import { mergePatch, mergedTreeRefusal, mergeTrees, type Patch } from "../preview/merge";
 import { refusalOf, refusalText } from "../checks.ts";
 import { prepareChecks } from "../check-preparation.ts";
 import { checkApplies, type ProjectPolicy, type CheckPaths } from "../rules.ts";
@@ -221,7 +221,10 @@ export class CheckRunner extends DurableObject<Env> {
       if (trees.main !== m.main || trees.head !== m.head) throw new Error("the workspace or main moved while the run started; start a new check run");
       reader = pairReader(fork, baseline);
       const merge = await mergePatch(repoReader(baseline), repoReader(fork), trees.baseTree, trees.mainTree, trees.headTree);
-      if (merge.conflicts.length) throw new Error(`the merge with main at ${m.main.slice(0, 8)} stops on conflicts: ${merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ")}; bring main into the workspace and resolve them`);
+      // Conflicts, or outputs only a declared generator can write (t463):
+      // either way there is no tree here (mergedTreeRefusal says why).
+      const refused = mergedTreeRefusal(merge, m.main);
+      if (refused) throw new Error(refused);
       patch = merge.patch;
     }
 
