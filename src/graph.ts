@@ -10,7 +10,7 @@ import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
-import { servedActor, servedBy, withServed } from "./models/served.ts";
+import { withServed } from "./models/served.ts";
 import { shortStamp, stamp } from "./time.ts";
 import { withoutAddresses } from "./text.ts";
 import { workKind } from "./kind.ts";
@@ -115,55 +115,53 @@ export function addTally(a: Tally, b: Tally): Tally {
 }
 
 // The whole record's figures as the Ledger counts them in SQL
-// (Ledger.showcaseCounts): events by actor and kind, the recent ones again
-// by half-hour, and the served annotations with the events they annotate.
+// (Ledger.showcaseCounts): events by actor and kind, and the recent ones
+// by actor, kind and day in the owner's zone, each annotated event already
+// under the model that served it.
 export interface CountRow { actor: string; kind: string; n: number; first: number; cloud: number }
+export interface DayRow { actor: string; kind: string; day: string; n: number }
 export interface ShowcaseCounts {
   kinds: CountRow[];
-  recent: { actor: string; kind: string; at: string; n: number }[];
+  days: DayRow[];
   merges: number;              // merges of tasks claimed before them
   taken: number;               // tasks ever claimed
-  served: LedgerEvent[];       // the annotations, oldest first
-  annotated: { seq: number; at: string; actor: string; kind: string; cloud: boolean }[];
   first: string | null;        // the oldest and newest event of the record
   last: string | null;
   story: string | null;        // the merged task told as it happened
 }
 
+// One annotated event, moved from the actor it was recorded under to the
+// one that served it; `day` is null when it falls before the window.
+export interface ServedMove { seq: number; actor: string; to: string; kind: string; cloud: boolean; day: string | null }
+
 // The counts with each annotated event moved under the model that served
 // it, as withServed does for the events buildStory reads.
-export function servedCounts(c: ShowcaseCounts): { kinds: CountRow[]; recent: ShowcaseCounts["recent"] } {
-  const served = servedBy(c.served);
-  const kinds = new Map(c.kinds.map((r) => [`${r.actor}\n${r.kind}`, { ...r }]));
-  const recent = new Map(c.recent.map((r) => [`${r.actor}\n${r.kind}\n${r.at}`, { ...r }]));
-  for (const ev of c.annotated) {
-    if (!served.has(ev.seq)) continue;
-    const to = servedActor({ seq: ev.seq, actor: ev.actor, kind: ev.kind, at: ev.at, itemId: null, data: {} }, served);
-    if (to === ev.actor) continue;
-    const from = kinds.get(`${ev.actor}\n${ev.kind}`);
-    if (from) { from.n--; if (ev.cloud) from.cloud--; }
-    const k = `${to}\n${ev.kind}`;
-    const row = kinds.get(k) ?? { actor: to, kind: ev.kind, n: 0, first: ev.seq, cloud: 0 };
-    row.n++; row.first = Math.min(row.first, ev.seq); if (ev.cloud) row.cloud++;
+export function applyServed(kindRows: CountRow[], dayRows: DayRow[], moves: ServedMove[]): { kinds: CountRow[]; days: DayRow[] } {
+  const kinds = new Map(kindRows.map((r) => [`${r.actor}\n${r.kind}`, { ...r }]));
+  const days = new Map(dayRows.map((r) => [`${r.actor}\n${r.kind}\n${r.day}`, { ...r }]));
+  for (const m of moves) {
+    const from = kinds.get(`${m.actor}\n${m.kind}`);
+    if (from) { from.n--; if (m.cloud) from.cloud--; }
+    const k = `${m.to}\n${m.kind}`;
+    const row = kinds.get(k) ?? { actor: m.to, kind: m.kind, n: 0, first: m.seq, cloud: 0 };
+    row.n++; row.first = Math.min(row.first, m.seq); if (m.cloud) row.cloud++;
     kinds.set(k, row);
-    const slot = c.recent.find((r) => r.actor === ev.actor && r.kind === ev.kind && Math.abs(Date.parse(r.at) - Date.parse(ev.at)) < 30 * 60_000 && Date.parse(r.at) <= Date.parse(ev.at));
-    if (!slot) continue;
-    const old = recent.get(`${slot.actor}\n${slot.kind}\n${slot.at}`);
+    if (m.day === null) continue;
+    const old = days.get(`${m.actor}\n${m.kind}\n${m.day}`);
     if (old) old.n--;
-    const rk = `${to}\n${ev.kind}\n${slot.at}`;
-    const moved = recent.get(rk) ?? { actor: to, kind: ev.kind, at: slot.at, n: 0 };
+    const dk = `${m.to}\n${m.kind}\n${m.day}`;
+    const moved = days.get(dk) ?? { actor: m.to, kind: m.kind, day: m.day, n: 0 };
     moved.n++;
-    recent.set(rk, moved);
+    days.set(dk, moved);
   }
-  return { kinds: [...kinds.values()].filter((r) => r.n > 0), recent: [...recent.values()].filter((r) => r.n > 0) };
+  return { kinds: [...kinds.values()].filter((r) => r.n > 0), days: [...days.values()].filter((r) => r.n > 0) };
 }
 
 // The tally buildStory would count over every event of the record, from the
 // Ledger's counts: the same rules, applied to each actor's count of a kind.
 export function tallyFromCounts(c: ShowcaseCounts, owner: string): Tally {
   const t = emptyTally();
-  const { kinds } = servedCounts(c);
-  for (const r of [...kinds].sort((a, b) => a.first - b.first)) {
+  for (const r of [...c.kinds].sort((a, b) => a.first - b.first)) {
     if (r.actor === owner) { if (DECISIONS.has(r.kind)) t.decisions += r.n; }
     else if (!QUIET.has(r.kind) && !isAtelier(r.actor)) {
       t.agentMoves += r.n;
