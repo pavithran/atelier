@@ -238,3 +238,55 @@ test("a clean clone whose setup fails stops at the test setup, main untouched", 
     assert.equal(git(dir, "rev-parse", "HEAD"), start);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// Astra's audit of 2026-10-13, finding 4: the secret scan read the displayed
+// diff of the batch, so a binary blob, a file .gitattributes marks -diff, or
+// a credential one commit added and a later one removed showed no added line
+// and passed. Fast land now reads every blob each new commit adds or changes
+// with the server's scanner (scanTrees in src/secret-scan.ts), and a change it
+// cannot read as text stops the batch, as the server's push scan does. A clean
+// batch still passes (the passing batch tests above).
+function leakBranch(dir, commits) {
+  git(dir, "checkout", "-q", "-b", "leak", "main");
+  for (const files of commits) {
+    for (const [path, content] of Object.entries(files)) {
+      if (content === null) rmSync(join(dir, path));
+      else writeFileSync(join(dir, path), content);
+    }
+    git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "leak\n\nAgent: codex/gpt-6");
+  }
+  const sha = git(dir, "rev-parse", "HEAD");
+  git(dir, "checkout", "-q", "main");
+  return sha;
+}
+const KEY = `AWS_KEY=AKIA${"Q".repeat(16)}\n`;
+
+async function landLeak(commits) {
+  const { dir } = repo();
+  try {
+    const sha = leakBranch(dir, commits);
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Leak" }, cwd: dir, pairs: [{ id: "t3", sha }], test: "true", record: () => assert.fail("recorded") });
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+    return r;
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test("a binary file holding a credential stops the batch, naming the path (finding 4)", async () => {
+  const r = await landLeak([{ "k.bin": Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from(KEY)]) }]);
+  assert.equal(r.failure?.step, "secret scan");
+  assert.match(r.failure.detail, /k\.bin \(binary content\)/);
+  assert.doesNotMatch(r.failure.detail, /AKIA/);
+});
+
+test("a text file .gitattributes marks -diff still has its credential found (finding 4)", async () => {
+  const r = await landLeak([{ ".gitattributes": "k.txt -diff\n", "k.txt": KEY }]);
+  assert.equal(r.failure?.step, "secret scan");
+  assert.match(r.failure.detail, /k\.txt:1/);
+});
+
+test("a credential one batch commit adds and a later one removes is still found in history (finding 4)", async () => {
+  const r = await landLeak([{ "k.txt": KEY }, { "k.txt": null }]);
+  assert.equal(r.failure?.step, "secret scan");
+  assert.match(r.failure.detail, /k\.txt:1/);
+});

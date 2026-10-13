@@ -5,7 +5,8 @@
 // so declared generated outputs are regenerated after the sources merge and
 // never stop a batch on a text conflict (t587). The generated files are then
 // regenerated and committed, and the batch is checked once: the typecheck,
-// the secret scan over the batch's added lines, and one run of the test
+// the secret scan over every blob the batch's commits add or change (as the
+// server's push scan reads them), and one run of the test
 // command. Anything that fails resets main to where it started, so main is
 // never left half-merged. Only on success are the receipts recorded, one per
 // task, through `record`. It never pushes or deploys; the caller prints the
@@ -27,7 +28,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scanLine } from "../src/secret-scan.ts";
+import { scanTrees } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
 import { checkEnv } from "./check-env.mjs";
@@ -80,19 +81,51 @@ export function testInCleanClone(cwd, head, { setup, test, env = checkEnv() }) {
   }
 }
 
-// Added lines of the batch's diff that the server's push scan would flag.
-// It names the file and line, never the value.
-export function scanBatch(cwd, start) {
-  const diff = git(cwd, "diff", "--no-color", "--no-ext-diff", "-U0", `${start}..HEAD`);
-  const hits = [];
-  let file = null, line = 0;
-  for (const l of diff.split("\n")) {
-    if (l.startsWith("+++ ")) { file = l.slice(4).replace(/^b\//, ""); continue; }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(l);
-    if (hunk) { line = Number(hunk[1]); continue; }
-    if (l.startsWith("+")) { if (scanLine(l.slice(1))) hits.push(`${file}:${line}`); line++; }
+// A Reader (src/diff.ts) over the checkout's object store: trees from
+// `git ls-tree`, blobs from `git cat-file`, so no diff driver or
+// .gitattributes setting (-diff, binary) decides what the scan sees. A
+// missing object answers null, which the scan's strict reader turns into an
+// error, so the batch stops rather than passing a hole.
+export function gitReader(cwd) {
+  const run = (a, encoding) => spawnSync("git", a, { cwd, encoding, maxBuffer: 1024 * 1024 * 1024 });
+  return {
+    tree: async (hash) => {
+      const r = run(["ls-tree", "-z", hash], "utf8");
+      if (r.status !== 0) return null;
+      return r.stdout.split("\0").filter(Boolean).map((e) => {
+        const tab = e.indexOf("\t");
+        const [mode, type, h] = e.slice(0, tab).split(" ");
+        return { name: e.slice(tab + 1), mode, type, hash: h };
+      });
+    },
+    blob: async (hash) => {
+      const r = run(["cat-file", "blob", hash], "buffer");
+      return r.status === 0 ? new Uint8Array(r.stdout) : null;
+    },
+  };
+}
+
+// The batch's secret scan (Astra's audit of 2026-10-13, finding 4): every
+// commit the batch adds to main (each agent commit, each merge, the
+// regeneration's commit) is scanned against its first parent with the
+// server's push scanner, scanTrees in src/secret-scan.ts, so a credential
+// one commit adds and a later one removes is still found in the history the
+// batch lands. A path whose new object is not readable text (binary, a
+// submodule, too large) is listed as unscanned and stops the batch, as it
+// blocks a push. It names the file and line, or the file and why, never the
+// value. Returns { hits, unscanned } as strings, each once.
+export async function scanBatch(cwd, start) {
+  const reader = gitReader(cwd);
+  const emptyTree = git(cwd, "hash-object", "-t", "tree", "--stdin");
+  const hits = new Set(), unscanned = new Set();
+  for (const line of git(cwd, "rev-list", "--parents", `${start}..HEAD`).split("\n").filter(Boolean)) {
+    const [commit, parent] = line.split(" ");
+    const baseTree = parent ? git(cwd, "rev-parse", `${parent}^{tree}`) : emptyTree;
+    const scan = await scanTrees(reader, baseTree, git(cwd, "rev-parse", `${commit}^{tree}`));
+    for (const h of scan.hits) hits.add(`${h.file}:${h.line}`);
+    for (const u of scan.unscanned) unscanned.add(`${u.file} (${u.reason})`);
   }
-  return hits;
+  return { hits: [...hits], unscanned: [...unscanned] };
 }
 
 // The clone each named commit can be fetched from (t589): the workspace a
@@ -166,9 +199,12 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       else log(`typecheck passed: ${typecheck}`);
     }
     if (!failure) {
-      const hits = scanBatch(cwd, start);
-      if (hits.length) failure = { step: "secret scan", detail: `added lines that look like credentials: ${hits.slice(0, 20).join(", ")}` };
-      else log("secret scan found nothing in the batch's added lines");
+      const { hits, unscanned } = await scanBatch(cwd, start);
+      const found = [];
+      if (hits.length) found.push(`added lines that look like credentials: ${hits.slice(0, 20).join(", ")}`);
+      if (unscanned.length) found.push(`changes the scan cannot read as text: ${unscanned.slice(0, 20).join(", ")}`);
+      if (found.length) failure = { step: "secret scan", detail: found.join("\n") };
+      else log("secret scan found nothing in the blobs the batch's commits add or change");
     }
     if (!failure) {
       const where = cleanClone ? "clean clone" : "checkout";
