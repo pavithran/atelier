@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
-import { fastLand, parsePairs, scanBatch } from "./fast.mjs";
+import { fastLand, parsePairs, recordPending, scanBatch } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
@@ -557,6 +557,67 @@ test("objects of the batch deleted after the scan stop the batch, named by path 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Tenth review of t592 (t618): the post-test check read only the objects
+// new to start..head, so a blob the batch reuses from earlier history (here
+// a.txt's first content, which a batch commit puts back) was never checked
+// again, and a test that deleted it after the scan had receipts recorded
+// for history main could no longer show. Every object the scan read is now
+// checked again, reused ones included.
+test("a reused blob deleted after the scan stops the batch, named by path (t618)", async () => {
+  const { dir } = repo();
+  try {
+    const reused = git(dir, "rev-parse", "main:a.txt");
+    const sha = leakBranch(dir, [{ "a.txt": "changed\n" }, { "a.txt": "a\n", "b.txt": "b\n" }]);
+    assert.equal(git(dir, "rev-parse", `${sha}:a.txt`), reused, "the batch's head holds the blob main held before it");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Reused" }, cwd: dir, pairs: [{ id: "t3", sha }], test: `rm -f .git/objects/${reused.slice(0, 2)}/${reused.slice(2)}`, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false, "the batch is refused");
+    assert.equal(r.failure.step, "objects changed", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])a\.txt \(/);
+    assert.equal(git(dir, "rev-parse", "main"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Review of t618 (gpt-6-astra, gemini-4-argon): checking only the objects
+// new to start..head and those the scan read still missed every object the
+// batch's trees hold unchanged from main (the scan skips unchanged entries),
+// such as a.txt here, which no batch commit touches. The check now covers
+// the full tree of every batch commit, and an object no changed entry
+// leads to is named by the paths that hold it.
+test("an unchanged blob the batch inherits from main, deleted after the scan, stops the batch named by path (t618)", async () => {
+  const { dir, one } = repo();
+  try {
+    const inherited = git(dir, "rev-parse", "main:a.txt");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: `rm -f .git/objects/${inherited.slice(0, 2)}/${inherited.slice(2)}`, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false, "the batch is refused");
+    assert.equal(r.failure.step, "objects changed", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])a\.txt \(/);
+    assert.equal(git(dir, "rev-parse", "main"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A mode-only change keeps the blob main holds, and the scan does not read
+// it (review of t618, gemini-4-argon).
+test("a blob a batch commit only changes the mode of, deleted after the scan, stops the batch (t618)", async () => {
+  const { dir } = repo();
+  try {
+    const kept = git(dir, "rev-parse", "main:a.txt");
+    git(dir, "checkout", "-q", "-b", "mode", "main");
+    git(dir, "update-index", "--chmod=+x", "a.txt");
+    git(dir, "commit", "-q", "-m", "mode\n\nAgent: codex/gpt-6");
+    const sha = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "-f", "main");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Mode" }, cwd: dir, pairs: [{ id: "t3", sha }], test: `rm -f .git/objects/${kept.slice(0, 2)}/${kept.slice(2)}`, record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "objects changed", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])a\.txt \(/);
+    // Main at the start needs the deleted blob too, with the other mode, so
+    // the rollback's reset cannot write a.txt; fast land says so.
+    if (git(dir, "rev-parse", "main") !== start) assert.match(r.restoreProblem, /main was NOT restored/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Ninth review of t592: the history checks (replacement refs, grafts, a
 // shallow boundary) ran only before the tests, so a test that wrote
 // .git/shallow after the scan cut the post-test object walk short.
@@ -583,6 +644,126 @@ test("a blob the scan cannot read stops the batch, naming its path (finding 4)",
     assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
     assert.match(r.failure.detail, /k\.txt \(.*cannot be read/);
     assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Astra's audit of 2026-10-13, finding 9 (t602): receipts were posted one by
+// one after the merges, and when one failed main already held the batch, so
+// running fast land again refused the recorded task and the unrecorded one
+// alike (main already holds its commit), and nothing could finish recording.
+// The receipts are now written under .git before any is posted, and
+// recordPending posts only the ones not yet recorded, without merging.
+function failingSecond() {
+  const calls = [];
+  const record = (id, receipt) => {
+    calls.push([id, receipt]);
+    if (calls.length === 2) throw new Error("the server did not answer");
+    return { ok: true };
+  };
+  return { calls, record };
+}
+
+test("a receipt that fails is kept under .git, and recordPending records the rest without merging (finding 9)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const { calls, record } = failingSecond();
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", note: { project: "demo", reviewer: "opencode/glm-5.3" }, record });
+    assert.equal(r.ok, false);
+    assert.equal(r.failure.step, "record t2");
+    assert.equal(r.failure.merged, true);
+    assert.deepEqual(r.recorded, ["t1"]);
+    assert.deepEqual(r.unrecorded, ["t2"]);
+    assert.equal(git(dir, "rev-parse", "main"), r.head, "main keeps the checked batch");
+    const file = join(dir, ".git", "atelier-fast-land", `${r.start}..${r.head}.json`);
+    assert.equal(realpathSync(r.pending), realpathSync(file));
+    const kept = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(kept.project, "demo");
+    assert.equal(kept.reviewer, "opencode/glm-5.3");
+    assert.deepEqual(kept.receipts.map((x) => [x.task, x.commit, x.builder, x.recorded]), [["t1", one, "claude-code/opus-5.5", true], ["t2", two, "codex/gpt-6", false]]);
+    assert.equal(kept.receipts[1].mergeCommit, r.head);
+    assert.deepEqual(kept.receipts[1].tests, calls[0][1].tests);
+
+    const head = git(dir, "rev-parse", "HEAD"), count = git(dir, "rev-list", "--count", "HEAD");
+    const again = [];
+    const resumed = await recordPending({ cwd: dir, record: (id, receipt) => { again.push([id, receipt]); return { ok: true }; } });
+    assert.equal(resumed.ok, true, JSON.stringify(resumed.failure));
+    assert.deepEqual(again.map(([id]) => id), ["t2"], "only the receipt not yet recorded is posted");
+    assert.deepEqual(again[0][1], calls[1][1], "the same receipt fast land tried");
+    assert.deepEqual(resumed.already, ["t1"]);
+    assert.deepEqual(resumed.landed.map((l) => [l.id, l.mergeCommit]), [["t2", r.head]]);
+    assert.equal(git(dir, "rev-parse", "HEAD"), head, "nothing is merged again");
+    assert.equal(git(dir, "rev-list", "--count", "HEAD"), count);
+    assert.equal(existsSync(file), false, "the file is removed once every receipt is recorded");
+    await assert.rejects(recordPending({ cwd: dir, record: () => assert.fail("recorded") }), /no fast landing waits to be recorded/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("recordPending refuses when main no longer holds a receipt's merge commit, recording nothing (finding 9)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const { record } = failingSecond();
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", record });
+    assert.equal(r.failure?.step, "record t2");
+    git(dir, "reset", "-q", "--hard", `${r.head}^1`);
+    await assert.rejects(recordPending({ cwd: dir, file: r.pending, record: () => assert.fail("recorded") }), (err) => {
+      assert.match(err.message, /main no longer holds t2's merge commit/);
+      assert.ok(err.message.includes(r.head.slice(0, 12)));
+      return true;
+    });
+    assert.equal(existsSync(r.pending), true, "the file is kept");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Review of t602 (gpt-6-astra): the resume checked the merges' ancestry,
+// parents, subjects and builders but not their objects, so a blob of the
+// batch deleted between the failed receipt and the resume still had the
+// receipt posted for history main could not show.
+test("recordPending refuses when an object of the batch was damaged after the failed receipt, recording nothing (finding 9)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const { record } = failingSecond();
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", record });
+    assert.equal(r.failure?.step, "record t2");
+    const blob = git(dir, "rev-parse", `${two}:two.txt`);
+    rmSync(join(dir, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+    await assert.rejects(recordPending({ cwd: dir, file: r.pending, record: () => assert.fail("recorded") }), (err) => {
+      assert.match(err.message, /nothing was recorded/);
+      assert.match(err.message, /(^|[ :,])two\.txt \(/);
+      return true;
+    });
+    assert.equal(existsSync(r.pending), true, "the file is kept");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Re-review of t602 (gpt-6-astra): the resume compared the shallow boundary
+// with itself, so a .git/shallow written after the failed receipt was never
+// seen, and the object check then stopped at that boundary. The boundary
+// fast land saw is kept in the receipts file and compared at the resume.
+test("recordPending refuses when the shallow boundary changed since fast land, recording nothing (finding 9)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const { record } = failingSecond();
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", record });
+    assert.equal(r.failure?.step, "record t2");
+    writeFileSync(join(dir, ".git", "shallow"), `${two}\n`);
+    await assert.rejects(recordPending({ cwd: dir, file: r.pending, record: () => assert.fail("recorded") }), (err) => {
+      assert.match(err.message, /nothing was recorded/);
+      assert.match(err.message, /shallow boundary/);
+      return true;
+    });
+    assert.equal(existsSync(r.pending), true, "the file is kept");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a batch that fails before the receipts leaves no receipts file (finding 9)", async () => {
+  const { dir, one } = repo();
+  try {
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "exit 1", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "tests");
+    assert.equal(existsSync(join(dir, ".git", "atelier-fast-land")), false);
+    const ok = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "true", record: () => ({ ok: true }) });
+    assert.equal(ok.ok, true);
+    assert.equal(existsSync(join(dir, ".git", "atelier-fast-land", `${ok.start}..${ok.head}.json`)), false, "a batch fully recorded leaves no file");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

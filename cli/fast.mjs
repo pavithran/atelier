@@ -9,8 +9,9 @@
 // server's push scan reads them), and one run of the test
 // command. Anything that fails resets main to where it started, so main is
 // never left half-merged. Only on success are the receipts recorded, one per
-// task, through `record`. It never pushes or deploys; the caller prints the
-// owner's next commands.
+// task, through `record`, after they are written under .git so a failed one
+// can be finished with recordPending (t602). It never pushes or deploys; the
+// caller prints the owner's next commands.
 //
 // The default test run (t588) is in a temporary clean clone of the batch's
 // head, as atelier check runs a check: the owner's checkout can hold stray
@@ -25,9 +26,9 @@
 // temporary repository with stand-in commands and a stand-in recorder.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
@@ -164,7 +165,10 @@ function objectFormat(cwd) {
 }
 
 // The object's content, verified against its id; throws as unreadable.
-function readObject(cwd, kind, hash) {
+// `read`, when given, collects the id of every object asked for, so the
+// post-test check can verify again exactly what the scan read (t618).
+function readObject(cwd, kind, hash, read) {
+  read?.add(hash.toLowerCase());
   const r = runGit(cwd, ["cat-file", kind, hash], { encoding: "buffer" });
   if (r.status !== 0) throw unreadable(kind, hash);
   const id = createHash(objectFormat(cwd)).update(`${kind} ${r.stdout.length}\0`).update(r.stdout).digest("hex");
@@ -200,82 +204,131 @@ function parseTree(raw, idBytes, hash) {
   return out;
 }
 
-function readTree(cwd, hash) {
-  return parseTree(readObject(cwd, "tree", hash), objectFormat(cwd) === "sha256" ? 32 : 20, hash);
+function readTree(cwd, hash, read) {
+  return parseTree(readObject(cwd, "tree", hash, read), objectFormat(cwd) === "sha256" ? 32 : 20, hash);
 }
 
-// Whether every object the batch's commits reach (start..head: the commits,
-// their trees and blobs) is still present and still hashes to its id,
-// checked after the tests, so a test command that deletes or rewrites one
-// after the scan stops the batch (eighth review of t592). One rev-list and
-// one cat-file --batch read them all. When any is missing or changed, the
-// batch is walked again object by object (namedObjectProblems) so each
-// problem is named by its path. Answers the problems found, at most `limit`.
-function objectProblems(cwd, start, head, limit = 20) {
-  const problems = batchObjectProblems(cwd, start, head, limit);
+// Whether every object the batch's commits reference is still present and
+// still hashes to its id: each commit in start..head and every tree and
+// blob in its whole tree, those it shares with main included, and every
+// object the scan read. It runs after the tests, so a test command that
+// deletes or rewrites one after the scan stops the batch (eighth review of
+// t592), and again before atelier fast record posts a receipt (t602).
+// Objects new to start..head were not enough (t618, and its review by
+// gpt-6-astra and gemini-4-argon): a blob a batch commit put back from
+// earlier history, a blob whose mode alone changed, and every entry a
+// batch tree holds unchanged from main were never checked again, so
+// receipts were recorded for history main could no longer show. One
+// rev-list over the commits' full trees (--no-walk, so nothing main holds
+// is left out; --missing=print, so a missing object is listed, not fatal)
+// and one cat-file --batch read them all. When any is missing or changed,
+// each problem is named by its path (namedObjectProblems). Answers the
+// problems found, at most `limit`.
+function objectProblems(cwd, start, head, read = new Set(), limit = 20) {
+  const problems = batchObjectProblems(cwd, start, head, read, limit);
   return problems.length ? namedObjectProblems(cwd, start, head, limit, problems) : [];
 }
 
-// Each commit in start..head against its first parent, read and verified a
-// level at a time (as the scan reads it), descending only into entries the
-// parent does not hold, so every missing, malformed or changed object is
-// named by its path, a directory with a trailing slash (ninth review of
-// t592). `fallback` is answered when the walk finds nothing to name.
+// Names each problem by its path, a directory with a trailing slash (ninth
+// review of t592). First each commit in start..head is walked against its
+// first parent, read and verified a level at a time as the scan reads it,
+// descending only into entries the parent does not hold; a tree is walked
+// once per base it is compared with (t618: the merge's tree is its task
+// commit's, and the walk against main had marked it seen). Then every
+// problem object that walk did not name, such as one a batch tree holds
+// unchanged from main, is named by the paths that hold it in the batch's
+// trees or main's, in one walk (pathsOfAll). A problem nothing names keeps
+// its text (`fallback` holds the problems as { id, text }).
 function namedObjectProblems(cwd, start, head, limit, fallback) {
   const commits = runGit(cwd, ["rev-list", "--parents", `${start}..${head}`]);
   if (commits.status !== 0) return [`the batch's commits cannot be listed: ${(commits.stderr || "").trim().split("\n").at(-1)}`];
-  const found = new Set(), seen = new Set();
+  const found = new Set(), named = new Set(), seen = new Set(), trees = new Set();
   const why = (err) => `${err?.message ?? err}`;
   const walk = (tree, baseTree, prefix) => {
-    if (found.size >= limit || seen.has(`${tree}\0${prefix}`)) return;
-    seen.add(`${tree}\0${prefix}`);
+    const key = `${tree}\0${baseTree}\0${prefix}`;
+    if (found.size >= limit || seen.has(key)) return;
+    seen.add(key);
     let entries, base = new Map();
-    try { entries = readTree(cwd, tree); } catch (err) { found.add(`${prefix || "the root tree"} (${why(err)})`); return; }
+    try { entries = readTree(cwd, tree); } catch (err) { named.add(tree); found.add(`${prefix || "the root tree"} (${why(err)})`); return; }
     if (baseTree) { const b = listTree(cwd, baseTree); for (const e of b ?? []) base.set(e.name, e); }
     for (const e of entries) {
       const before = base.get(e.name);
       if (before && before.hash === e.hash) continue;
       const path = prefix + e.name;
       if (e.type === "tree") walk(e.hash, before?.type === "tree" ? before.hash : null, `${path}/`);
-      else if (e.type === "blob") { try { readObject(cwd, "blob", e.hash); } catch (err) { found.add(`${path} (${why(err)})`); } }
+      else if (e.type === "blob") { try { readObject(cwd, "blob", e.hash); } catch (err) { named.add(e.hash); found.add(`${path} (${why(err)})`); } }
     }
   };
   for (const line of commits.stdout.split("\n").filter(Boolean)) {
     const [commit, parent] = line.split(" ");
     try {
       const head = commitOf(cwd, commit);
+      trees.add(head.tree);
       walk(head.tree, parent ? commitOf(cwd, parent).tree : null, "");
-    } catch (err) { found.add(`commit ${commit} (${why(err)})`); }
+    } catch (err) { named.add(commit); found.add(`commit ${commit} (${why(err)})`); }
   }
-  return found.size ? [...found] : fallback;
+  // The rest are named too, not dropped once the walk named one (review of
+  // t618, gemini-4-argon).
+  const rest = fallback.filter((p) => !p.id || !named.has(p.id));
+  if (rest.length && found.size < limit) {
+    try { trees.add(commitOf(cwd, start).tree); } catch { /* main's own tree is not the batch's to name */ }
+    const paths = pathsOfAll(cwd, new Set(rest.filter((p) => p.id).map((p) => p.id)), [...trees]);
+    for (const p of rest) {
+      if (found.size >= limit) break;
+      const at = p.id ? paths.get(p.id) : null;
+      if (at?.size) for (const x of at) found.add(`${x} (${p.text})`);
+      else found.add(p.text);
+    }
+  }
+  return [...found];
 }
 
-function batchObjectProblems(cwd, start, head, limit) {
-  const list = runGit(cwd, ["rev-list", "--objects", `${start}..${head}`]);
-  if (list.status !== 0) return [`git rev-list --objects could not walk the batch: ${(list.stderr || "").trim().split("\n").at(-1)}`];
-  const ids = list.stdout.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+function batchObjectProblems(cwd, start, head, read, limit) {
+  const commits = runGit(cwd, ["rev-list", `${start}..${head}`]);
+  if (commits.status !== 0) return [{ text: `git rev-list could not list the batch's commits: ${(commits.stderr || "").trim().split("\n").at(-1)}` }];
+  const list = runGit(cwd, ["rev-list", "--objects", "--no-walk", "--missing=print", "--stdin"], { input: commits.stdout });
+  if (list.status !== 0) return [{ text: `git rev-list --objects could not walk the batch's trees: ${(list.stderr || "").trim().split("\n").at(-1)}` }];
+  const ids = [...new Set([...list.stdout.split("\n").map((l) => l.split(" ")[0].replace(/^\?/, "")).filter(Boolean), ...read])];
   if (!ids.length) return [];
   const r = runGit(cwd, ["cat-file", "--batch"], { encoding: "buffer", input: Buffer.from(ids.join("\n") + "\n") });
-  if (r.status !== 0) return [`git cat-file --batch failed: ${String(r.stderr || "").trim().split("\n").at(-1)}`];
+  if (r.status !== 0) return [{ text: `git cat-file --batch failed: ${String(r.stderr || "").trim().split("\n").at(-1)}` }];
   const out = r.stdout, problems = [], algo = objectFormat(cwd);
   let i = 0;
   for (const id of ids) {
     if (problems.length >= limit) break;
     const eol = out.indexOf(0x0a, i);
-    if (eol < 0) { problems.push(`${id.slice(0, 12)} was not answered`); break; }
+    if (eol < 0) { problems.push({ id, text: `${id.slice(0, 12)} was not answered` }); break; }
     const [got, type, size] = out.toString("latin1", i, eol).split(" ");
-    if (got !== id || type === "missing" || size === undefined) { problems.push(`${id.slice(0, 12)} is missing`); i = eol + 1; continue; }
+    if (got !== id || type === "missing" || size === undefined) { problems.push({ id, text: `${id.slice(0, 12)} is missing` }); i = eol + 1; continue; }
     const body = out.subarray(eol + 1, eol + 1 + Number(size));
     i = eol + 1 + Number(size) + 1;
     const hash = createHash(algo).update(`${type} ${body.length}\0`).update(body).digest("hex");
-    if (body.length !== Number(size) || hash !== id) problems.push(`${id.slice(0, 12)} does not hash to its id`);
+    if (body.length !== Number(size) || hash !== id) problems.push({ id, text: `${id.slice(0, 12)} does not hash to its id` });
   }
   return problems;
 }
 
+// The paths that hold each of `ids` in any of `trees`, in one walk a level
+// at a time (a subtree with a trailing slash). Trees that cannot be read
+// are passed over; it runs only to name problems already found.
+function pathsOfAll(cwd, ids, trees) {
+  const out = new Map([...ids].map((id) => [id, new Set()])), seen = new Set();
+  const walk = (tree, prefix) => {
+    if (seen.has(`${tree}\0${prefix}`)) return;
+    seen.add(`${tree}\0${prefix}`);
+    for (const e of listTree(cwd, tree) ?? []) {
+      const path = prefix + e.name + (e.type === "tree" ? "/" : "");
+      out.get(e.hash)?.add(path);
+      if (e.type === "tree") walk(e.hash, path);
+    }
+  };
+  for (const t of trees) walk(t, "");
+  return out;
+}
+
 // A commit's tree and first parent, from its verified bytes.
-function commitOf(cwd, hash) {
-  const text = readObject(cwd, "commit", hash).toString("utf8");
+function commitOf(cwd, hash, read) {
+  const text = readObject(cwd, "commit", hash, read).toString("utf8");
   const header = text.slice(0, text.indexOf("\n\n") + 1 || text.length);
   return { tree: /^tree ([0-9a-f]+)$/m.exec(header)?.[1], parent: /^parent ([0-9a-f]+)$/m.exec(header)?.[1] ?? null };
 }
@@ -285,10 +338,10 @@ function listTree(cwd, hash) {
   try { return readTree(cwd, hash); } catch { return null; }
 }
 
-export function gitReader(cwd) {
+export function gitReader(cwd, read) {
   return {
-    tree: async (hash) => readTree(cwd, hash),
-    blob: async (hash) => new Uint8Array(readObject(cwd, "blob", hash)),
+    tree: async (hash) => readTree(cwd, hash, read),
+    blob: async (hash) => new Uint8Array(readObject(cwd, "blob", hash, read)),
   };
 }
 
@@ -326,9 +379,11 @@ function pathsOf(cwd, object, trees) {
 // blocks a push. It names the file and line, or the file and why, never the
 // value. An object the scan cannot read is listed unscanned under the path
 // that holds it (or the commit, when no path does), so it stops the batch
-// too. Returns { hits, unscanned } as strings, each once.
+// too. Returns { hits, unscanned } as strings, each once, and `read`, the
+// id of every object the scan read, for the post-test check (t618).
 export async function scanBatch(cwd, start, head = "HEAD") {
-  const reader = gitReader(cwd);
+  const read = new Set();
+  const reader = gitReader(cwd, read);
   const emptyTree = git(cwd, "hash-object", "-t", "tree", "--stdin");
   const hits = new Set(), unscanned = new Set();
   for (const line of git(cwd, "rev-list", "--parents", `${start}..${head}`).split("\n").filter(Boolean)) {
@@ -337,10 +392,10 @@ export async function scanBatch(cwd, start, head = "HEAD") {
     // parent rev-list walked must be the one the commit names.
     let baseTree, headTree;
     try {
-      const head = commitOf(cwd, commit);
+      const head = commitOf(cwd, commit, read);
       if ((head.parent ?? undefined) !== parent) throw unreadable("commit", commit, `names parent ${head.parent?.slice(0, 12) ?? "none"}, not ${parent?.slice(0, 12) ?? "none"} as Git listed it`);
       headTree = head.tree;
-      baseTree = parent ? commitOf(cwd, parent).tree : emptyTree;
+      baseTree = parent ? commitOf(cwd, parent, read).tree : emptyTree;
     } catch (err) {
       unscanned.add(`commit ${commit.slice(0, 12)} (cannot be read: ${err?.message ?? err})`);
       continue;
@@ -357,7 +412,7 @@ export async function scanBatch(cwd, start, head = "HEAD") {
     for (const h of scan.hits) hits.add(`${h.file}:${h.line}`);
     for (const u of scan.unscanned) unscanned.add(`${u.file} (${u.reason})`);
   }
-  return { hits: [...hits], unscanned: [...unscanned] };
+  return { hits: [...hits], unscanned: [...unscanned], read };
 }
 
 // The clone each named commit can be fetched from (t589): the workspace a
@@ -381,8 +436,11 @@ const hasCommit = (cwd, sha) => runGit(cwd, ["cat-file", "-e", `${sha}^{commit}`
 // runs the test command in a temporary clean clone of the batch's head after
 // that setup (testInCleanClone); without it the test runs in the checkout.
 // `sources` maps a task to the local clone its commit is fetched from when the
-// checkout lacks it (readySources). Returns { ok, start, head, landed, failure }.
-export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, log = () => {} }) {
+// checkout lacks it (readySources). `note` is kept in the receipts file
+// (the project and reviewer, for atelier fast record). Returns { ok, start,
+// head, landed, failure }, and once the batch landed, the tasks recorded
+// and unrecorded and `pending`, the receipts file while any is unrecorded.
+export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -432,7 +490,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   // developer's files and Keychain.
   const env = checkEnv();
   const merged = [];
-  let failure = null, tests = null, scanned = null;
+  let failure = null, tests = null, scanned = null, read = new Set(), file = null, pending = null;
   try {
     for (const { id, sha } of pairs) {
       if (sources[id] && !hasCommit(cwd, sha)) {
@@ -510,7 +568,9 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     }
     if (!failure) {
       scanned = expected;
-      const { hits, unscanned } = await scanBatch(cwd, start, scanned);
+      const scan = await scanBatch(cwd, start, scanned);
+      const { hits, unscanned } = scan;
+      read = scan.read;
       const found = [];
       if (hits.length) found.push(`added lines that look like credentials: ${hits.slice(0, 20).join(", ")}`);
       if (unscanned.length) found.push(`changes the scan cannot read as text: ${unscanned.slice(0, 20).join(", ")}`);
@@ -538,10 +598,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const overrides = historyOverrides(cwd, shallowAtStart);
       if (overrides.length) failure = { step: "checkout changed", detail: `after the secret scan the checkout has ${overrides.join(", ")}, which change the history Git shows` };
     }
-    // The objects the scan read are all still there, unchanged, after the
-    // tests (eighth review of t592).
+    // The objects the scan read, reused ones included, are all still there,
+    // unchanged, after the tests (eighth review of t592, t618).
     if (!failure) {
-      const problems = objectProblems(cwd, start, scanned);
+      const problems = objectProblems(cwd, start, scanned, read);
       if (problems.length) failure = { step: "objects changed", detail: `objects of the batch changed after the secret scan: ${problems.join(", ")}` };
     }
     // Every merge a receipt will name is in the scanned head's history, so
@@ -553,19 +613,131 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       if (lost.length) failure = { step: "checkout changed", detail: `main moved: ${scanned.slice(0, 12)} does not hold ${lost.map((m) => `${m.id} (its commit ${m.commit.slice(0, 12)} merged as ${m.mergeCommit.slice(0, 12)})`).join(", ")}` };
     }
     if (failure) return { ok: false, start, ...restore(), landed: [], failure };
+    // The receipts are written before any is posted (finding 9); a write
+    // that fails rolls the batch back like any other step, as nothing is
+    // recorded yet.
+    // The shallow boundary (.git/shallow's contents, "" when there is none)
+    // is kept too, so the resume sees one written since (re-review of t602).
+    pending = { version: 1, ...note, start, head: scanned, shallow: shallowAtStart, receipts: merged.map((m) => ({ task: m.id, commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests, recorded: false })) };
+    file = join(pendingDir(cwd), `${start}..${scanned}.json`);
+    writePending(file, pending);
   } catch (err) {
     return { ok: false, start, ...restore(), landed: [], failure: { step: err?.step ?? "error", detail: err?.message ?? String(err) } };
   }
   // Main holds the checked batch now. A receipt the server refuses leaves it
-  // so (the merges passed); the caller names what was and was not recorded.
+  // so (the merges passed); the receipts file says what was and was not
+  // recorded, and recordPending finishes it (Astra's audit of 2026-10-13,
+  // finding 9).
   const head = scanned;
+  const done = await postReceipts(file, pending, record);
+  return { start, head, ...done };
+}
+
+// The receipts of a batch that landed, kept under the checkout's .git
+// directory until every one is recorded (Astra's audit of 2026-10-13,
+// finding 9): fast land posts them one by one after the merges, so a
+// network or server failure part way left main holding the batch with no
+// way to record the rest, since landing again refuses a task already
+// recorded and a commit main already holds. The file is written before any
+// receipt is posted, each receipt is marked once the server answers, and
+// the file is removed when all are. `atelier fast record` resumes it.
+export function pendingDir(cwd) {
+  return join(git(cwd, "rev-parse", "--absolute-git-dir"), "atelier-fast-land");
+}
+
+function writePending(file, data) {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(`${file}.tmp`, `${JSON.stringify(data, null, 2)}\n`);
+  renameSync(`${file}.tmp`, file);
+}
+
+// Posts each receipt not yet recorded, in order, marking it in the file as
+// the server answers, and removes the file when all are recorded. Never
+// merges. Answers { ok, landed, already, recorded, unrecorded, pending,
+// failure }: landed are the receipts this call recorded, already those an
+// earlier run had.
+async function postReceipts(file, data, record) {
+  const already = data.receipts.filter((x) => x.recorded).map((x) => x.task);
   const landed = [];
-  for (const m of merged) {
-    const receipt = { commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests };
-    try { landed.push({ ...m, receipt, answer: await record(m.id, receipt) }); }
-    catch (err) { return { ok: false, start, head, landed, failure: { step: `record ${m.id}`, detail: err?.message ?? String(err), merged: true } }; }
+  const tally = () => ({ recorded: data.receipts.filter((x) => x.recorded).map((x) => x.task), unrecorded: data.receipts.filter((x) => !x.recorded).map((x) => x.task) });
+  for (const x of data.receipts) {
+    if (x.recorded) continue;
+    const receipt = { commit: x.commit, mergeCommit: x.mergeCommit, builder: x.builder, tests: x.tests };
+    let answer;
+    try { answer = await record(x.task, receipt); }
+    catch (err) { return { ok: false, landed, already, ...tally(), pending: file, failure: { step: `record ${x.task}`, detail: err?.message ?? String(err), merged: true } }; }
+    x.recorded = true;
+    landed.push({ id: x.task, commit: x.commit, mergeCommit: x.mergeCommit, builder: x.builder, receipt, answer });
+    if (data.receipts.some((y) => !y.recorded)) writePending(file, data);
   }
-  return { ok: true, start, head, landed, failure: null };
+  rmSync(file, { force: true });
+  return { ok: true, landed, already, ...tally(), pending: null, failure: null };
+}
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// Resumes a batch whose receipts did not all post: reads the receipts file
+// (`file`, or the only one under pendingDir), checks that main still holds
+// each receipt not yet recorded as fast land left it, and posts only those.
+// It refuses, posting nothing, when main no longer holds a receipt's merge
+// commit, the merge's second parent is not the task's commit, the merge is
+// not the task's, the commit's Agent line names another builder, or an
+// object the batch's commits reference is missing or changed.
+export async function recordPending({ cwd, file, record }) {
+  return postPending(readPending(cwd, file), record);
+}
+
+// recordPending's reading and checks, apart, so the command can read the
+// project and reviewer the file names before anything is posted. Answers
+// { file, project, reviewer, data }, or throws, naming every problem.
+export function readPending(cwd, file) {
+  if (!file) {
+    const dir = pendingDir(cwd);
+    const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).sort() : [];
+    if (!files.length) throw new Error(`no fast landing waits to be recorded in ${dir}`);
+    if (files.length > 1) throw new Error(`more than one fast landing waits to be recorded; name one: ${files.map((f) => join(dir, f)).join(", ")}`);
+    file = join(dir, files[0]);
+  }
+  let data;
+  try { data = JSON.parse(readFileSync(file, "utf8")); } catch (err) { throw new Error(`${file} cannot be read as a fast landing's receipts: ${err?.message ?? err}`); }
+  const valid = (x) => /^t\d+$/.test(x?.task) && FULL_SHA.test(x.commit) && FULL_SHA.test(x.mergeCommit) && typeof x.builder === "string" && typeof x.recorded === "boolean";
+  if (data?.version !== 1 || typeof data.shallow !== "string" || !FULL_SHA.test(data.start) || !FULL_SHA.test(data.head) || !Array.isArray(data.receipts) || !data.receipts.length || !data.receipts.every(valid)) throw new Error(`${file} is not a fast landing's receipts file`);
+  const main = git(cwd, "rev-parse", "--verify", "refs/heads/main");
+  const problems = [];
+  const holds = (a, b) => runGit(cwd, ["merge-base", "--is-ancestor", a, b]).status === 0;
+  if (!holds(data.head, main)) problems.push(`main no longer holds the batch's head ${data.head.slice(0, 12)} (main is at ${main.slice(0, 12)})`);
+  for (const x of data.receipts) if (!holds(x.mergeCommit, data.head) || holds(x.mergeCommit, data.start)) problems.push(`${x.task}'s merge commit ${x.mergeCommit.slice(0, 12)} is not in the batch ${data.start.slice(0, 12)}..${data.head.slice(0, 12)}`);
+  for (const x of data.receipts.filter((r) => !r.recorded)) {
+    const merge = x.mergeCommit.slice(0, 12);
+    if (runGit(cwd, ["merge-base", "--is-ancestor", x.mergeCommit, main]).status !== 0) { problems.push(`main no longer holds ${x.task}'s merge commit ${merge} (main is at ${main.slice(0, 12)})`); continue; }
+    const parents = git(cwd, "rev-list", "--parents", "-n", "1", x.mergeCommit).split(" ").slice(1);
+    if (parents.length !== 2 || parents[1] !== x.commit) problems.push(`${merge} is not a merge of ${x.task}'s commit ${x.commit.slice(0, 12)}`);
+    else if (!git(cwd, "log", "-1", "--format=%s", x.mergeCommit).startsWith(`Merge ${x.task}:`)) problems.push(`${merge} is not the merge of ${x.task}`);
+    else if (agentOfMessage(git(cwd, "log", "-1", "--format=%B", x.commit)) !== x.builder) problems.push(`${x.task}'s commit ${x.commit.slice(0, 12)} does not name ${x.builder} as its builder`);
+  }
+  // The batch's history is still whole (review of t602, gpt-6-astra: an
+  // object deleted between the failed receipt and the resume had the
+  // receipt posted for history main could not show): nothing changes what
+  // Git shows, and every object the batch's commits reference, their whole
+  // trees included, is present and hashes to its id, as fast land checked
+  // after its tests (objectProblems).
+  if (!problems.length) {
+    // Against the boundary fast land saw, kept in the file: compared with
+    // the current one it could never differ (re-review of t602, gpt-6-astra).
+    const overrides = historyOverrides(cwd, data.shallow);
+    if (overrides.length) problems.push(`the checkout has ${overrides.join(", ")}, which change the history Git shows`);
+    else {
+      const damaged = objectProblems(cwd, data.start, data.head);
+      if (damaged.length) problems.push(`objects of the batch are missing or changed: ${damaged.join(", ")}`);
+    }
+  }
+  if (problems.length) throw new Error(`nothing was recorded: ${problems.join("; ")}`);
+  return { file, project: typeof data.project === "string" ? data.project : null, reviewer: typeof data.reviewer === "string" ? data.reviewer : null, data };
+}
+
+// Posts the receipts readPending read (recordPending's second half).
+export async function postPending(kept, record) {
+  return { file: kept.file, project: kept.project, reviewer: kept.reviewer, ...(await postReceipts(kept.file, kept.data, record)) };
 }
 
 export const DEFAULT_REGEN = (cwd) => existsSync(join(cwd, "bin/orchestrate/regen-fixtures.sh")) ? "zsh bin/orchestrate/regen-fixtures.sh" : null;
