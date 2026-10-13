@@ -7,7 +7,7 @@ import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, render
 import { scanCommit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
-import { setTimeZone } from "./time";
+import { setTimeZone, timeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
@@ -32,7 +32,7 @@ import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
-import { PULSE_DAYS, pulseFromCounts } from "./pulse";
+import { buildPulse, PULSE_DAYS, pulseFromCounts } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
@@ -205,29 +205,52 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
       // The threads are drawn from the most recent events; every figure the
       // page prints is counted over the whole record by the Ledger (t578).
+      // When the counts or the told task cannot be read, the page falls back
+      // to what the recent events show, and the error is logged, rather than
+      // leaving the project out.
       const now = new Date();
       const since = new Date(now.getTime() - (PULSE_DAYS + 1) * 86400_000).toISOString();
-      const [record, items, events, counts] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>, L.showcaseCounts(since) as unknown as Promise<ShowcaseCounts>]);
+      const [record, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
+      const counts = await (L.showcaseCounts(since, timeZone()) as unknown as Promise<ShowcaseCounts>)
+        .catch((err: unknown) => { console.error(`showcase: the whole-record counts of ${p.name} could not be read: ${errorText(err)}`); return null; });
       cutoffs.set(p.name, firstTaskAt(items));
       const anon = mode === "anonymous";
       const title = anon
         ? projectKind(record.policy.checks, await rootFiles(env, record.repo))
         : titleOf(record);
       const opts = { redact: true, ownerLabel: ownerName(env) || "The owner", anon };
-      const story = buildStory(p.name, items, events, owner, events.length >= STORY_EVENTS, title, opts);
-      story.tally = tallyFromCounts(counts, owner);
-      story.counted = { from: counts.first, to: counts.last, taken: counts.taken };
+      const cut = events.length >= STORY_EVENTS;
+      const story = buildStory(p.name, items, events, owner, cut, title, opts);
+      let pulse = buildPulse(events, owner, now, cut);
+      if (counts) {
+        try {
+          const tally = tallyFromCounts(counts, owner);
+          pulse = pulseFromCounts(counts, owner, now);
+          story.tally = tally;
+          story.counted = { from: counts.first, to: counts.last, taken: counts.taken };
+        } catch (err) { console.error(`showcase: the whole-record figures of ${p.name} could not be counted: ${errorText(err)}`); }
+      }
       // The task told as it happened is a merged one, read from its own events.
-      const told = counts.story ? (await L.events(counts.story, FEATURED_EVENTS)) as unknown as LedgerEvent[] : [];
-      const featured = told.length ? buildStory(p.name, items, told, owner, false, title, opts) : null;
+      let featured: Story | null = null;
+      if (counts?.story) {
+        try {
+          const told = (await L.events(counts.story, FEATURED_EVENTS)) as unknown as LedgerEvent[];
+          const one = buildStory(p.name, items, told, owner, false, title, opts);
+          const threads = one.threads.filter((th) => th.id === counts.story);
+          if (threads.length) featured = { ...one, threads };
+        } catch (err) { console.error(`showcase: task ${counts.story} of ${p.name} could not be read: ${errorText(err)}`); }
+      }
       return {
-        project: record, mode, story,
-        ...(featured?.threads.length ? { featured: { ...featured, threads: featured.threads.filter((th) => th.id === counts.story) } } : {}),
-        pulse: pulseFromCounts(counts, owner, now),
+        project: record, mode, story, pulse,
+        ...(featured ? { featured } : {}),
         allTimeMerged: items.filter((i) => i.state === "merged").length,
         inProgress: items.filter((i) => ["claimed", "submitted", "accepted"].includes(i.state)).length,
       };
-    } catch { return null; /* left out; the page says a project could not be read */ }
+    } catch (err) {
+      // Left out; the page says a project could not be read, and the log says why.
+      console.error(`showcase: ${p.name} could not be read: ${errorText(err)}`);
+      return null;
+    }
   }));
   const shown = found.filter((f): f is NonNullable<typeof f> => f !== null);
   return { shown, cutoffs };
@@ -305,6 +328,9 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
   await Promise.all(projects.map(async (p) => { const h = await importedFor(env, p, cutoffs.get(p.name) ?? null); if (h) out.set(p.name, h); }));
   return out;
 }
+
+// An error as one line for the log: its message, never its data.
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 300);
 
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
