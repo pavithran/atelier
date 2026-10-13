@@ -328,10 +328,13 @@ BINDING --approve|--reject --note "…" --as HARNESS/MODEL`; run that command
 as printed. The claim's lease lasts 5 minutes, as a runner's does, and a
 reviewer that outlasts it loses the claim and its verdict is refused (t573's
 review, on 2026-10-13, ran about 6 minutes). While the review runs, renew
-the lease within every 5 minutes with `atelier review-claim ID --renew`,
-which uses the route a runner renews with. This machine remembers the
-request it last claimed for the task, so `--renew` and `atelier review`
-without `--request` both use that request, and `review` names it.
+the lease every 2 minutes with `atelier review-claim ID --renew --as
+HARNESS/MODEL`, naming the reviewer that claimed it, which uses the route a
+runner renews with. The server skips a renewal within 30 seconds of the
+last, so a renewal is sure of 4 minutes 30 seconds, not 5. This machine
+remembers the request it last claimed for the task, so `--renew` and
+`atelier review` without `--request` both use that request, and `review`
+names it; it does not remember the reviewer, so each still needs `--as`.
 
 **Report after each landing.** The report the developer gets after every landing
 is `atelier status --brief`, under 20 lines: the recent merges, the commit
