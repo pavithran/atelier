@@ -98,18 +98,82 @@ to its own remotes remain separate decisions.
 `atelier land t9` runs the whole second half in one command, for the project
 owner in the registered checkout: it merges main into the task's workspace,
 regenerates the project's fixtures when its policy declares how, pushes, runs
-the required checks, submits, waits for the independent review the gate
-needs, then accepts and merges. It replaces the queueing a project owner did
-by hand, one landing at a time, and it takes a lease on the server to keep
-that order: while one landing runs, another landing in the same project is
-refused with who holds the lease and since when. The lease is released when
-the landing ends, on success or failure alike; a landing stopped partway can
-be resumed by running `atelier land t9` again, which takes its own lease
-back, and a lease whose task has merged or was abandoned no longer guards
+the required checks, submits and waits for the independent review the gate
+needs — all without the landing lease — and only then takes the lease,
+confirms main has not moved, and accepts and merges.
+
+### Review before the runway (t550)
+
+The project's landing lease is held for the merge alone. The orchestrator's
+landing-queue timing log measured 71 landings between 2026-10-11 21:03 and
+2026-10-12 16:47 UTC: together they held the single lease for 11.5 hours,
+and the 34 that review rejected held it about 11 minutes each before they
+failed, since the lease was taken first and kept through the merge of main,
+the checks and the review. Now:
+
+1. **Without the lease**, beside any other task's landing: the merge of main
+   (with the moved-code comparison, t471), the regeneration, the push, the
+   triage (t475), the required checks, the submission and the review. Two
+   landings of different tasks check and review at the same time. A
+   conflict, a failed check, a stopped triage, a rejection, a review timeout
+   or a request no runner will serve ends the landing here, and the lease is
+   never asked for.
+2. **The gate**, asked before the lease: the server's gate, as `accept`
+   reads it, must hold the pushed head with its required checks passing and
+   an approval it counts (or none needed). Anything else stops the landing
+   with the lease never taken.
+3. **The lease, for the merge alone.** Every landing that reaches this point
+   queues for the lease if another landing holds it, `--wait` or not: what
+   it waits behind is another landing's merge, which takes minutes, never
+   its checks or review. The queue keeps its order (below).
+4. **Main confirmed under the lease.** The landing reads main again and
+   merges only if it is still the commit the head was merged with, checked
+   and reviewed against. If another landing merged meanwhile, it releases
+   the lease without accepting or merging and goes round again from step 1:
+   it merges the new main into the workspace, checks it and asks for the
+   review again. That review request is where an approval may carry over a
+   clean merge of main: the server decides, by its own rules (t459's
+   approval carry, where deployed, answers that an approval already covers
+   the change; a server without it asks for a new review, which the landing
+   waits for as any other). The CLI never judges the carry itself, so the
+   landing works with or without t459. A new conflict ends the landing as
+   in step 1. After five rounds (`ATELIER_LAND_MAIN_MOVED_ROUNDS`) of main
+   moving, it stops, unmerged.
+5. **Accept and merge**, renewing the lease first (t232), then release it.
+   Before accepting, the landing sends the main it confirmed to the server
+   (`{ item, confirm: true, main }` on the landing-lease route), which reads
+   main itself, refuses one it does not hold (`main_moved`, and the landing
+   goes round again) and records the confirmed main with the head. The merge
+   of that head into any other main is then refused by the server
+   (`main_moved`), even if the landing loses the lease before it merges: the
+   head goes back for a merge of main, new checks and a review.
+
+A head pushed while the landing waits for the lease is not merged: the
+recorded head is checked again before the acceptance and before the merge,
+and a moved head stops the landing. `--no-review` leaves the task submitted
+after step 1 and never takes the lease.
+
+The landing records the time it spent before the lease and the time it held
+it: the `land.lease` event carries `beforeLease` (milliseconds from the
+round's start to the ask for the lease), `waited` (milliseconds in the
+queue), the `head` and the `main` it was merged with, and a `land.release`
+event's duration is the time the lease was held, with the `reason` it was
+let go (`merged`, `main moved from A to B`, or the failure). The CLI also
+prints both at the end. A server from before t550 does not publish
+`land.review-first.v1` and refuses the new fields, so against it the plain
+landing records only the `head` with the lease and prints the timing
+instead; `--workflow` needs the capability and refuses such a server,
+saying to deploy.
+
+The lease is released when the landing ends, on success or failure alike; a
+landing stopped partway can be resumed by running `atelier land t9` again,
+and a lease whose task has merged or was abandoned no longer guards
 anything.
 
-With `--wait` a landing queues for the lease instead of refusing, and the
-queue has an order: the server keeps the landings waiting for the lease in
+### The queue for the lease
+
+A landing waiting for the lease queues for it (with or without `--wait`,
+since t550), and the queue has an order: the server keeps the landings waiting for the lease in
 the order they queued (one row per task, with who asked and when) and hands
 the lease to the first of them when it frees, so a landing cannot take it
 ahead of another that waited longer, however their polls happen to land —
@@ -123,8 +187,8 @@ renewed for that long stops guarding the project, and a row whose task has
 closed goes the same way.
 
 A landing that loses the lease stops rather than merge beside its successor:
-a Mac can sleep through a landing, pausing the timers that renew the lease,
-so it lapses and a landing queued with `--wait` takes it over, and the first
+a Mac can sleep through a landing's merge, pausing the timers that renew the
+lease, so it lapses and a waiting landing takes it over, and the first
 landing wakes to find the lease gone. It then ends at once, having accepted
 and merged nothing, and says whose landing holds the lease now; before the
 accepting and merging steps it also asks for the lease again, so a loss it
@@ -223,8 +287,8 @@ The steps in between:
    runner job but the review requires it, so a runner refuses a server that
    reports only a route level and starts on one that publishes the name.
 
-2. Main is fetched into the task's workspace and merged with `--no-ff`
-   through the merge pipeline (`cli/merge-pipeline.mjs`), the same one
+2. Main is fetched into the task's workspace and merged with `--no-ff`,
+   without the lease (t550), through the merge pipeline (`cli/merge-pipeline.mjs`), the same one
    every merge Atelier makes with Git goes through: the owner's merge onto
    the baseline, `atelier update` (a pipeline merge wherever a declared
    generator must run, otherwise a rebase through the clone's merge
@@ -285,10 +349,12 @@ The steps in between:
 4. If the gate needs an independent review, the landing requests one through the
    review-request routes and waits for the verdict: the reviewer is the one named with
    `--reviewer H/M`, or a model of another family than every contributor
-   picked from the pool. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection or a timeout stops the landing (the request stays open and the task stays submitted). `--no-review` skips the waiting and leaves the task submitted for the owner to settle by hand.
-5. The landing accepts and merges through the CLI's own `accept` and `merge`
-   commands, each run as this CLI's child, so their checks and their
-   journals behave exactly as when the owner runs them.
+   picked from the pool, still without the lease. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection or a timeout stops the landing (the request stays open and the task stays submitted). `--no-review` skips the waiting and leaves the task submitted for the owner to settle by hand.
+5. With the head checked and approved, the landing takes the lease,
+   confirms main has not moved (above), and accepts and merges through the
+   CLI's own `accept` and `merge` commands, each run as this CLI's child,
+   so their checks and their journals behave exactly as when the owner runs
+   them.
 
 Each step, its duration and what it settled are recorded on the task as
 `land.*` events (the commits that came from main, the files a conflict
@@ -342,14 +408,14 @@ machine holding the workspace reports the triage's merge base and criteria
 binding with the head. The Workflow submits, and later asks for the review,
 only while the Ledger holds a pass, bypass or override recorded at that whole
 binding and the task's head and criteria are still those; otherwise it ends,
-saying what moved, with the lease released.
+saying what moved, with the lease never taken.
 
 Only every criterion met goes on. A criterion not met or unsure, a task with
 no criteria, a reply that cannot be read, a timeout, or a model that is
 unavailable stops the landing before the task is submitted (through the
 Workflow, before the head is reported, so the Workflow submits nothing): the
-findings are printed with the command to run again, the lease is released,
-and the task stays with its holder, its merged head pushed. The project
+findings are printed with the command to run again, the lease is never
+taken, and the task stays with its holder, its merged head pushed. The project
 owner can skip the triage with `--no-triage "REASON"`, or go past a stop with
 `--override-triage "REASON"`; either is recorded with the head and the
 criteria binding before the landing goes on, and a record the server
@@ -380,25 +446,46 @@ from Artifacts, a Durable Object reset) is retried rather than ending the
 landing. In order:
 
 1. Read the task: a merged, abandoned or accepted task, or a plan, ends the
-   Workflow at once with the plain landing's words.
-2. Take the project's landing lease, queueing for it in the order the
-   landings asked (as `--wait` does), for up to three hours.
-3. Wait for the workspace (stage `workspace`, below), then see the pushed
-   head in the Ledger.
-4. Renew the lease (a lease another landing took over stops this one), and
-   settle the required checks in the landing's checks mode (below): in the
+   Workflow at once with the plain landing's words, as does a landing a
+   blocking pre-review fenced (t524).
+2. Wait for the workspace (stage `workspace`, below), holding no lease
+   (t550), then see the pushed head in the Ledger. A report must name the
+   main head the push was merged with; one that names none ends the landing.
+3. Settle the required checks in the landing's checks mode (below): in the
    `local` mode, read their observed results at the pushed head from the
    Ledger; in the `container` mode, run them in a Cloudflare container.
-5. Submit the task in its holder's name, as `atelier submit` in the
+4. Submit the task in its holder's name, as `atelier submit` in the
    workspace does.
-6. Request the review and wait for the verdict, polling the Ledger and
-   renewing the lease on each poll; the verdict is judged by
-   `src/landing-verdict.ts`, which the plain landing uses too.
-   `--no-review` ends here, leaving the task submitted.
-7. Read the fork's head from Artifacts, which must be the reviewed head,
-   then accept it.
-8. Wait for the merge to be recorded (stage `merge`, below), then release
-   the lease.
+5. Request the review and wait for the verdict, polling the Ledger; the
+   verdict is judged by `src/landing-verdict.ts`, which the plain landing
+   uses too. `--no-review` ends here, leaving the task submitted and the
+   lease never taken. A failed check or a rejection ends the landing before
+   the lease, too.
+6. Ask the gate, as the acceptance will, whether the head is ready: checks
+   passing and the approval counted (or none needed).
+   Steps 3 to 6 hold no lease to renew, so each asks the landing's record
+   whether this instance is still the task's landing; one the server
+   replaced (t430) stops there without checking, submitting or reviewing.
+7. Take the project's landing lease (stage `lease`), queueing for it in the
+   order the landings asked, for up to three hours, and record the time
+   spent before it and in the queue.
+8. Confirm main, read from Artifacts, is still the main head the executor
+   reported. If it moved, release the lease (recording the time held),
+   write the stage `workspace` of a new round saying main moved, and go
+   back to step 2: the executor merges main again, and the new head is
+   checked, submitted and reviewed as before, where the server carries the
+   approval over a clean merge of main as far as its rules let it (t459,
+   where deployed) or asks for a new review. Each round's steps are named
+   for it, so none answers from an earlier round's cached result. After
+   five rounds of main moving, the landing ends unmerged.
+   Where main has not moved, record it with the head on the Ledger, so the
+   merge of the head into any other main is refused (`main_moved`).
+9. Read the fork's head from Artifacts, which must be the reviewed head,
+   then renew the lease (a lease another landing took over stops this one)
+   and accept it.
+10. Wait for the merge to be recorded (stage `merge`, below), renewing the
+    lease on every poll so it cannot lapse to another landing meanwhile,
+    then release the lease, recording the time held.
 
 Two kinds of step need Git with a working tree, which a Worker does not
 have, and stay on the machine that holds the task's workspace: merging main
@@ -410,19 +497,22 @@ Ledger (`lease`, `workspace`, `conflict`, `checks`, `review`, `merge`,
 `GET .../items/t9/landing-workflow`, says each new stage once, and acts on
 two of them:
 
-- At `workspace` the Workflow holds the lease, and the command merges main,
+- At `workspace` the Workflow holds no lease, and the command merges main,
   regenerates and pushes with the same code as the plain landing, triages
   when the landing triages, in the `local` checks mode then runs the
   required checks in a clean clone (the plain landing's `atelier check`
-  step), renewing the lease meanwhile, and
-  reports the pushed head as a `workspace` event. A check that fails is
+  step), and reports the pushed head and the main it merged as a
+  `workspace` event. A new round (main moved before the lease, or a
+  conflict resolved) is worked the same way. A check that fails is
   reported as a failed workspace step instead, which ends the Workflow with
   the check's output.
   Every report names its round, so a report the Workflow buffered from an
   earlier round is passed over.
-- At `merge` the Workflow has accepted, and the command runs `atelier merge
-  t9` in the registered checkout, retrying while another landing holds the
-  lease.
+- At `merge` the Workflow holds the lease, renewing it until the merge is
+  recorded, and has accepted, and the command runs `atelier merge t9` in the
+  registered checkout. A merge the server refuses because main moved from
+  the commit confirmed under the lease (`main_moved`) ends the command,
+  nothing merged.
 
 ### Where the checks run
 
@@ -444,8 +534,8 @@ was more than this change needed, t305).
   `sandboxOnly`, which counts only container runs, the local mode is
   refused and points at `--checks container`). Every required check that
   applies must pass. A failing one ends the landing, recorded as a failed
-  `land.check`, with the lease released and nothing submitted. Checks with
-  no result are waited for, polling and renewing the lease, for up to 30
+  `land.check`, with the lease never taken and nothing submitted. Checks
+  with no result are waited for, polling, for up to 30
   minutes (`checksTimeoutMs` on the route), and then end the landing,
   naming them. The command records the `land.check` step it ran, as the
   plain landing does.
@@ -467,13 +557,12 @@ command warns that the checks run in the container.
 
 ### Conflicts and what the Workflow protects against
 
-A merge of main that stops on conflicts is reported as such. The Workflow
-releases the lease and pauses at stage `conflict`, naming the files, for up
-to a week. The owner (or the builder, through `atelier dispatch t9 --job
+A merge of main that stops on conflicts is reported as such. The Workflow,
+holding no lease, pauses at stage `conflict`, naming the files, for up to a
+week. The owner (or the builder, through `atelier dispatch t9 --job
 merge-main`) resolves and commits them, then runs `atelier land t9
 --workflow` again: the command attaches to the live instance and sends a
-`resume` event, and the Workflow queues for the lease again and asks for the
-workspace steps in a new round, since main may have moved while it waited.
+`resume` event, and the Workflow asks for the workspace steps in a new round, since main may have moved while it waited.
 
 What this protects against, and what it does not:
 
@@ -482,11 +571,16 @@ What this protects against, and what it does not:
   instance and goes on from its stage. The submission, the review wait and
   the container mode's checks proceed with no machine attached; the
   workspace steps (with the local mode's checks) and the final merge wait
-  for one. While the Workflow waits for the workspace,
-  the lease is renewed only by a live executor, and while it waits for the
-  merge it is not renewed at all, so a machine that is gone lets the lease
-  lapse after 15 minutes rather than hold the project. Once the workspace
-  reports, the Workflow takes the lease again before the checks.
+  for one. The Workflow holds no lease while it waits for the workspace
+  (t550). While it waits for the merge it holds the lease and renews it, so
+  no other landing can merge and move main under its accepted head; a
+  machine that is gone therefore holds the project until the merge wait
+  times out, or until `atelier land t9 --release-lease` frees the lease,
+  which ends the Workflow at its next poll with the task still accepted.
+  As a second guard the server refuses the merge of a head into any main
+  other than the one the landing confirmed under the lease (`main_moved`):
+  merge main into the workspace and push it, which withdraws the
+  acceptance, then land again.
 - A transient failure of the server's own steps is retried. A failure that
   outlasts the retries ends the Workflow with the stage `failed`, the
   reason, and the lease released; run the command again to start a new
@@ -495,8 +589,8 @@ What this protects against, and what it does not:
   expired token there fails the workspace step, which ends the Workflow with
   the CLI's own message.
 - Timeouts: a workspace that never reports ends the Workflow after 24 hours,
-  a review after one hour, a merge after 24 hours, all with the lease
-  released and the by-hand command named.
+  a review after one hour (both before the lease is taken), a merge after
+  24 hours (with the lease released), each naming the by-hand command.
 - The lease wait has a limit, `LANDING_LEASE_WAIT_LIMIT_MS` in
   `src/landing/lease-wait.ts`: three hours, measured from the time the
   server recorded the instance entering the stage `lease` (`stageAt` of its

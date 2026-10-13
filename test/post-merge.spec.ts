@@ -182,6 +182,7 @@ it("Workflow's real merge wait does not complete while the same Ledger reservati
   await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, name);
   await wf.modify(async m => {
     await m.mockStepResult({ name: "confirm the fork's head" }, { head: B });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: A });
   });
   const instance = await env.LANDING_WORKFLOW.create({ id: name, params: { project: name, key: name, item: "t1", actor: "owner", pollMs: 10, mergePollMs: 10 } });
   await instance.sendEvent({ type: "workspace", payload: { round: 0, head: B, mainHead: A, mergedIn: false } });

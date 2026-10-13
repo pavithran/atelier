@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { detectMovedEdits, detectMovedEditsAsync, describeFinding, findingKey, parseHunks, parseRawZ, showPath, MIN_MATCH_LINES } from "../src/moved-code.ts";
 import { readMovedCodeRecords } from "../cli/landing.mjs";
 
@@ -333,7 +333,7 @@ function landWorld(t, { base, task, main, moves = [] }) {
   return { p, baseline, ws, mainClone, pushMain, head: () => git(ws, "rev-parse", "HEAD"), mainHead: () => git(mainClone, "rev-parse", "HEAD"), log: () => readMovedCodeRecords(join(ws, ".git")) };
 }
 
-// A stand-in landing Workflow: it holds the lease and asks for the workspace
+// A stand-in landing Workflow: holding no lease (t550), it asks for the workspace
 // at once, pauses on a conflict, starts a new round on a resume, and ends
 // on a reported head unless `onHead` says otherwise.
 function fakeWorkflow({ onHead } = {}) {
@@ -366,7 +366,7 @@ function landIo(world, { args = {}, wf = null, refuseApproval = false, failGit =
   const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease";
   const request = async (method, path, body) => {
     calls.push({ method, path, body });
-    if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
+    if (path === "/version") return { capabilities: SERVER_CAPABILITIES, commit: "c0ffee" };
     if (path === leasePath) return method === "GET" ? { lease: null, waiting: [] } : body.cancel || body.renew ? {} : { item: { id: "t1", state: "submitted" } };
     if (path === itemPath) return { item: { id: "t1", state: "submitted", owner: "codex/test" }, policy: { checks: [] } };
     if (path === `${itemPath}/base-token`) return { remote: world.baseline, token: "read", defaultBranch: "main" };
@@ -392,7 +392,9 @@ function landIo(world, { args = {}, wf = null, refuseApproval = false, failGit =
     io, calls, lines, commands, posts, output: () => lines.join("\n"),
     land: async () => { try { await runLand(io); return null; } catch (error) { return error; } },
     records: () => posts("/land").map((c) => c.body),
-    released: () => posts("/landing-lease").some((c) => c.body.cancel === true),
+    // Whether the landing asked for the lease at all: since t550 a stop at
+    // the merge of main ends it before it ever does.
+    leased: () => posts("/landing-lease").some((c) => !c.body.cancel),
   };
 }
 
@@ -402,7 +404,7 @@ const unchanged = (world, head) => {
   assert.equal(git(world.ws, "status", "--porcelain"), "");
 };
 
-test("plain land: an edit in moved code stops it before the merge, Git unchanged, the lease released, revisions and porting instructions recorded", async (t) => {
+test("plain land: an edit in moved code stops it before the merge, Git unchanged, the lease never taken, revisions and porting instructions recorded", async (t) => {
   const w = landWorld(t, regression);
   const head = w.head(), main = w.mainHead(), mergeBase = git(w.ws, "merge-base", "HEAD", "origin/main");
   const l = landIo(w);
@@ -411,7 +413,7 @@ test("plain land: an edit in moved code stops it before the merge, Git unchanged
   assert.match(error.message, /t1's edits lie in code main moved to another file, so the landing stops before merging main; Git and the workspace are unchanged \(task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}\):\n  - cli\/atelier\.mjs lines 6-11 moved to cli\/commands\/report\.mjs lines 2-7/);
   assert.match(error.message, /To port them: merge main into the workspace .*atelier dispatch t1 --job merge-main\), make each edit again at its destination, commit, push with atelier push, and run atelier land t1 again, which compares afresh\. If a finding is wrong, atelier land t1 --moved-ok records your approval/);
   unchanged(w, head);
-  assert.ok(l.released());
+  assert.equal(l.leased(), false);
   assert.deepEqual(l.commands, []);
   const merge = l.records().find((r) => r.step === "merge");
   assert.equal(merge.failed, true);
@@ -456,7 +458,7 @@ test("plain land --moved-ok records the owner, the findings and the revisions on
   const records = l.records();
   const approval = records.findIndex((r) => r.resolvedBy === "owner with --moved-ok");
   assert.ok(approval >= 0);
-  assert.deepEqual(records.map((r) => r.step), ["lease", "merge", "merge", "push", "check", "submit", "review"]);
+  assert.deepEqual(records.map((r) => r.step), ["merge", "merge", "push", "check", "submit", "review"]);
   const recorded = records[approval];
   assert.equal(recorded.head, head);
   assert.deepEqual(recorded.conflicts, ["cli/atelier.mjs", "cli/commands/report.mjs"]);
@@ -481,7 +483,7 @@ test("--moved-ok bypasses only the findings: a Git conflict still stops the land
   const error = await l.land();
   assert.match(error.message, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
   assert.ok(l.records().some((r) => r.resolvedBy === "owner with --moved-ok"));
-  assert.ok(l.released());
+  assert.equal(l.leased(), false);
 });
 
 test("--moved-ok whose approval the ledger refuses (anyone but the project owner) stops before the merge with Git unchanged", async (t) => {
@@ -491,7 +493,7 @@ test("--moved-ok whose approval the ledger refuses (anyone but the project owner
   const error = await l.land();
   assert.match(error.message, /the --moved-ok approval of 1 finding \(task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}\) could not be recorded on the ledger, so the landing stops before merging main; Git and the workspace are unchanged: not_project_owner/);
   unchanged(w, head);
-  assert.ok(l.released());
+  assert.equal(l.leased(), false);
   assert.deepEqual(w.log(), []);
 });
 
@@ -527,7 +529,7 @@ test("Workflow land: an edit in moved code pauses the Workflow at its conflict s
   const first = landIo(w, { args: { workflow: true }, wf });
   const error = await first.land();
   assert.match(error.message, /t1's edits lie in code main moved to another file/);
-  assert.match(error.message, /The landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index\. Once the edits are ported, committed and pushed with atelier push, run atelier land t1 --workflow again/);
+  assert.match(error.message, /The landing Workflow is paused at its conflict stage, holding no lease; no merge was made, so nothing is left to resolve in the index\. Once the edits are ported, committed and pushed with atelier push, run atelier land t1 --workflow again/);
   assert.match(error.message, /run atelier land t1 --workflow again, which compares afresh/);
   assert.deepEqual(wf.events.map((e) => [e.type, e.payload.round, e.payload.conflict, e.payload.files]), [["workspace", 0, true, ["cli/atelier.mjs", "cli/commands/report.mjs"]]]);
   assert.equal(wf.stage, "conflict");
@@ -549,14 +551,14 @@ test("Workflow land: an edit in moved code pauses the Workflow at its conflict s
   assert.deepEqual(third.commands, ["push"]);
 });
 
-test("a comparison that fails, or finds no merge base, stops the landing with the reason, Git unchanged and the lease released", async (t) => {
+test("a comparison that fails, or finds no merge base, stops the landing with the reason, Git unchanged and the lease never taken", async (t) => {
   const w = landWorld(t, regression);
   const head = w.head();
   const failing = landIo(w, { failGit: (a) => a[0] === "diff-tree" });
   const error = await failing.land();
   assert.match(error.message, /the comparison of t1's edits with code main moved to another file failed \(task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}\), so the landing stops before merging main; Git and the workspace are unchanged: git diff-tree failed:\nfatal: injected failure/);
   unchanged(w, head);
-  assert.ok(failing.released());
+  assert.equal(failing.leased(), false);
   assert.equal(failing.records().find((r) => r.step === "merge").failed, true);
   // Main replaced by a history unrelated to the task's.
   git(w.mainClone, "checkout", "-q", "--orphan", "other"); apply(w.mainClone, { "other.txt": "unrelated\n" });
@@ -565,7 +567,7 @@ test("a comparison that fails, or finds no merge base, stops the landing with th
   const none = await unrelated.land();
   assert.match(none.message, /t1's head [0-9a-f]{8} and main at [0-9a-f]{8} have no merge base, so the landing cannot compare t1's edits with code main moved to another file, and stops before merging main; Git and the workspace are unchanged\./);
   unchanged(w, head);
-  assert.ok(unrelated.released());
+  assert.equal(unrelated.leased(), false);
 });
 
 test("findingKey names a finding's source, destination and edit, so an approval names exactly what it approved", (t) => {
