@@ -538,16 +538,21 @@ test("a malformed tree under its correct id stops the batch promptly, naming its
 // Eighth review of t592: the objects the scan read were not checked again
 // after the tests, so a test command could delete one and the batch landed
 // a history main could not show in full.
-test("an object of the batch deleted after the scan stops the batch (finding 4)", async () => {
+// Ninth review of t592: the post-test check named a missing object by an
+// abbreviated id or a Git error, not by its path. A blob and a directory
+// an intermediate commit added are deleted; both are named by path.
+test("objects of the batch deleted after the scan stop the batch, named by path (finding 4)", async () => {
   const { dir } = repo();
   try {
-    const sha = leakBranch(dir, [{ "k.txt": "first\n" }, { "k.txt": "second\n" }]);
-    const lost = git(dir, "rev-parse", `${sha}^:k.txt`);
+    mkdirSync(join(dir, "nested")); mkdirSync(join(dir, "other"));
+    const sha = leakBranch(dir, [{ "nested/k.txt": "first\n", "other/x.txt": "x\n" }, { "nested/k.txt": "second\n", "other/x.txt": null }]);
+    const objects = [git(dir, "rev-parse", `${sha}^:nested/k.txt`), git(dir, "rev-parse", `${sha}^:other`)];
     const start = git(dir, "rev-parse", "HEAD");
-    const r = await fastLand({ ...base, titles: { t3: "Deleted" }, cwd: dir, pairs: [{ id: "t3", sha }], test: `rm -f .git/objects/${lost.slice(0, 2)}/${lost.slice(2)}`, record: () => assert.fail("recorded") });
+    const r = await fastLand({ ...base, titles: { t3: "Deleted" }, cwd: dir, pairs: [{ id: "t3", sha }], test: objects.map((o) => `rm -f .git/objects/${o.slice(0, 2)}/${o.slice(2)}`).join(" && "), record: () => assert.fail("recorded") });
     assert.equal(r.ok, false, "the batch is refused");
     assert.equal(r.failure.step, "objects changed");
-    assert.match(r.failure.detail, new RegExp(lost.slice(0, 12)));
+    assert.match(r.failure.detail, /nested\/k\.txt \(/);
+    assert.match(r.failure.detail, /other\/ \(/);
     assert.equal(git(dir, "rev-parse", "main"), start);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
