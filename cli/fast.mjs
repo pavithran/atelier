@@ -85,26 +85,38 @@ export function testInCleanClone(cwd, head, { setup, test, env = checkEnv() }) {
 
 // A Reader (src/diff.ts) over the checkout's object store: trees from
 // `git ls-tree`, blobs from `git cat-file`, so no diff driver or
-// .gitattributes setting (-diff, binary) decides what the scan sees. A
-// missing object answers null, which the scan's strict reader turns into an
-// error, so the batch stops rather than passing a hole.
+// .gitattributes setting (-diff, binary) decides what the scan sees. An
+// object it cannot read throws, carrying the object's hash, so the batch
+// stops rather than passing a hole and scanBatch can name the path.
+const unreadable = (kind, hash) => Object.assign(new Error(`the ${kind} ${hash.slice(0, 12)} cannot be read`), { object: hash });
+
+function listTree(cwd, hash, recursive = false) {
+  const r = spawnSync("git", ["ls-tree", "-z", ...(recursive ? ["-r", "-t"] : []), hash], { cwd, encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 });
+  if (r.status !== 0) return null;
+  return r.stdout.split("\0").filter(Boolean).map((e) => {
+    const tab = e.indexOf("\t");
+    const [mode, type, h] = e.slice(0, tab).split(" ");
+    return { name: e.slice(tab + 1), mode, type, hash: h };
+  });
+}
+
 export function gitReader(cwd) {
-  const run = (a, encoding) => spawnSync("git", a, { cwd, encoding, maxBuffer: 1024 * 1024 * 1024 });
   return {
-    tree: async (hash) => {
-      const r = run(["ls-tree", "-z", hash], "utf8");
-      if (r.status !== 0) return null;
-      return r.stdout.split("\0").filter(Boolean).map((e) => {
-        const tab = e.indexOf("\t");
-        const [mode, type, h] = e.slice(0, tab).split(" ");
-        return { name: e.slice(tab + 1), mode, type, hash: h };
-      });
-    },
+    tree: async (hash) => listTree(cwd, hash) ?? Promise.reject(unreadable("tree", hash)),
     blob: async (hash) => {
-      const r = run(["cat-file", "blob", hash], "buffer");
-      return r.status === 0 ? new Uint8Array(r.stdout) : null;
+      const r = spawnSync("git", ["cat-file", "blob", hash], { cwd, maxBuffer: 1024 * 1024 * 1024 });
+      if (r.status !== 0) throw unreadable("blob", hash);
+      return new Uint8Array(r.stdout);
     },
   };
+}
+
+// The paths that hold `object` in either tree, read from the trees alone, so
+// an unreadable blob is named by where it is (review of t592).
+function pathsOf(cwd, object, trees) {
+  const found = new Set();
+  for (const t of trees) for (const e of listTree(cwd, t, true) ?? []) if (e.hash === object) found.add(e.name);
+  return [...found];
 }
 
 // The batch's secret scan (Astra's audit of 2026-10-13, finding 4): every
@@ -115,15 +127,26 @@ export function gitReader(cwd) {
 // batch lands. A path whose new object is not readable text (binary, a
 // submodule, too large) is listed as unscanned and stops the batch, as it
 // blocks a push. It names the file and line, or the file and why, never the
-// value. Returns { hits, unscanned } as strings, each once.
-export async function scanBatch(cwd, start) {
+// value. An object the scan cannot read is listed unscanned under the path
+// that holds it (or the commit, when no path does), so it stops the batch
+// too. Returns { hits, unscanned } as strings, each once.
+export async function scanBatch(cwd, start, head = "HEAD") {
   const reader = gitReader(cwd);
   const emptyTree = git(cwd, "hash-object", "-t", "tree", "--stdin");
   const hits = new Set(), unscanned = new Set();
-  for (const line of git(cwd, "rev-list", "--parents", `${start}..HEAD`).split("\n").filter(Boolean)) {
+  for (const line of git(cwd, "rev-list", "--parents", `${start}..${head}`).split("\n").filter(Boolean)) {
     const [commit, parent] = line.split(" ");
     const baseTree = parent ? git(cwd, "rev-parse", `${parent}^{tree}`) : emptyTree;
-    const scan = await scanTrees(reader, baseTree, git(cwd, "rev-parse", `${commit}^{tree}`));
+    const headTree = git(cwd, "rev-parse", `${commit}^{tree}`);
+    let scan;
+    try { scan = await scanTrees(reader, baseTree, headTree); }
+    catch (err) {
+      const paths = err?.object ? pathsOf(cwd, err.object, [headTree, baseTree]) : [];
+      const why = `cannot be read: ${err?.message ?? err}`;
+      if (paths.length) for (const p of paths) unscanned.add(`${p} (${why})`);
+      else unscanned.add(`a path in commit ${commit.slice(0, 12)} (${why})`);
+      continue;
+    }
     for (const h of scan.hits) hits.add(`${h.file}:${h.line}`);
     for (const u of scan.unscanned) unscanned.add(`${u.file} (${u.reason})`);
   }
@@ -207,8 +230,14 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       if (!r.ok) failure = { step: "typecheck", detail: r.output.trim().split("\n").slice(-20).join("\n") };
       else log(`typecheck passed: ${typecheck}`);
     }
+    // The head the scan reads is the head that lands: the tests run on it,
+    // and after them the checkout must still be on main at it, with no
+    // tracked change (review of t592: a test script that committed after the
+    // scan landed what the scan never read).
+    let scanned = null;
     if (!failure) {
-      const { hits, unscanned } = await scanBatch(cwd, start);
+      scanned = git(cwd, "rev-parse", "HEAD");
+      const { hits, unscanned } = await scanBatch(cwd, start, scanned);
       const found = [];
       if (hits.length) found.push(`added lines that look like credentials: ${hits.slice(0, 20).join(", ")}`);
       if (unscanned.length) found.push(`changes the scan cannot read as text: ${unscanned.slice(0, 20).join(", ")}`);
@@ -217,10 +246,17 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     }
     if (!failure) {
       const where = cleanClone ? "clean clone" : "checkout";
-      if (cleanClone) log(`running ${test} in a clean clone of ${git(cwd, "rev-parse", "--short=12", "HEAD")}`);
-      const r = cleanClone ? testInCleanClone(cwd, git(cwd, "rev-parse", "HEAD"), { setup: cleanClone.setup, test, ...(cleanClone.env ? { env: cleanClone.env } : {}) }) : { ...sh(cwd, test, env), step: "tests" };
+      if (cleanClone) log(`running ${test} in a clean clone of ${scanned.slice(0, 12)}`);
+      const r = cleanClone ? testInCleanClone(cwd, scanned, { setup: cleanClone.setup, test, ...(cleanClone.env ? { env: cleanClone.env } : {}) }) : { ...sh(cwd, test, env), step: "tests" };
       if (!r.ok) failure = { step: r.step, detail: `in the ${where}:\n${r.output.trim().split("\n").slice(-20).join("\n")}` };
       else { tests = { command: test, sha256: createHash("sha256").update(r.output).digest("hex"), where }; log(`tests passed once for the batch in the ${where}: ${test}`); }
+    }
+    if (!failure) {
+      const branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD"), now = git(cwd, "rev-parse", "HEAD");
+      const changed = git(cwd, "status", "--porcelain", "--untracked-files=no");
+      if (branch !== "main" || now !== scanned || changed) {
+        failure = { step: "checkout changed", detail: `the checkout changed after the secret scan of ${scanned.slice(0, 12)}: ${branch !== "main" ? `it is on ${branch}, not main` : now !== scanned ? `main is at ${now.slice(0, 12)}` : `tracked files changed:\n${changed}`}` };
+      }
     }
     if (failure) {
       spawnSync("git", ["merge", "--abort"], { cwd });

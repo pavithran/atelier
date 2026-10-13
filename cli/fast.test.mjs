@@ -315,3 +315,37 @@ test("a credential one batch commit adds and a later one removes is still found 
   assert.equal(r.failure?.step, "secret scan");
   assert.match(r.failure.detail, /k\.txt:1/);
 });
+
+// Review of t592 (codex/gpt-6-astra): the scan ran before the checkout test,
+// and fast land then took whatever HEAD was, so an agent-changed test script
+// could commit a binary credential after the scan and exit 0.
+test("a commit made after the secret scan, by the test command, stops the batch (finding 4)", async () => {
+  const { dir, one } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const sneak = `printf 'k\\0AKIA' > late.bin && git -c user.name=t -c user.email=t@example.com add late.bin && git -c user.name=t -c user.email=t@example.com commit -q -m late`;
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: sneak, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false);
+    assert.equal(r.failure.step, "checkout changed");
+    assert.match(r.failure.detail, /after the secret scan/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Review of t592: a blob the scan could not read stopped the batch with only
+// the object's hash, not the path the criterion asks it to name. The blob
+// here is one a batch commit added and a later one replaced, so the merge
+// never needs it and only the scan reads it.
+test("a blob the scan cannot read stops the batch, naming its path (finding 4)", async () => {
+  const { dir } = repo();
+  try {
+    const sha = leakBranch(dir, [{ "k.txt": "first\n" }, { "k.txt": "second\n" }]);
+    const lost = git(dir, "rev-parse", `${sha}^:k.txt`);
+    rmSync(join(dir, ".git", "objects", lost.slice(0, 2), lost.slice(2)));
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Lost" }, cwd: dir, pairs: [{ id: "t3", sha }], test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /k\.txt \(.*cannot be read/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
