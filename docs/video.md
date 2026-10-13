@@ -83,7 +83,7 @@ without proof · 4 Big goals become plans · 5 It measures, and it learns ·
 
 > Many AI agents, one repository. When their work merges, what can you trust?
 >
-> Three things to remember. One: Atelier runs the tests itself. Two: independent review, by another company's model. Three: every step is on the record.
+> Three things to remember. One: the tests run on the exact head, not on the agent's word. Two: independent review, by another company's model. Three: every step is on the record.
 
 ## 2. Why Git alone isn't enough {#why}
 
@@ -237,7 +237,7 @@ On screen, dark: the field of light returns. Four lines, then "Git keeps
 the code. Atelier brings the receipts.", 321 tasks and 240 merged counting up,
 with the rest beneath; then atelier.zone and the repository's address.
 
-> Atelier runs the tests itself. Independent review, by another company's model. Every step is on the record.
+> Tests run on the exact head, not on the agent's word. Independent review, by another company's model. Every step is on the record.
 >
 > Git keeps the code. Atelier brings the receipts. It built itself this way: 321 tasks, 240 merged.
 >

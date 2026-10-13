@@ -282,3 +282,20 @@ test("the How page, help and docs state the current core-file hold rule", () => 
   assert.match(core.enforced, /submitted or accepted item that is not landing holds nothing/);
   assert.match(core.enforced, /once each claimed blocker submits or is released and each landing ends/);
 });
+
+// t595's review (codex/gpt-6-astra and antigravity/gemini-4-argon, 2026-10-13):
+// pages and docs once said Atelier itself runs the tests, where a local check
+// runs on the caller's machine and only a container check, which
+// `--sandbox-only` requires, is Atelier's own run. No reader-facing text may
+// say so again, and /how must name the setting that makes it true.
+test("no page or doc says Atelier itself runs the tests, and /how names --sandbox-only", () => {
+  const docs = readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => `docs/${name}`);
+  const pages = readdirSync(join(root, "src")).filter((name) => /^how.*\.ts$/.test(name)).map((name) => `src/${name}`);
+  for (const file of ["README.md", ...docs, ...pages, "src/ui.ts"]) {
+    const text = read(file).replace(/\s+/g, " ");
+    for (const claim of [/Atelier runs the tests/i, /run by Atelier and not taken on an agent's word/i]) {
+      assert.doesNotMatch(text, claim, `${file} says ${claim.source}`);
+    }
+  }
+  assert.ok(pages.some((file) => read(file).includes("--sandbox-only")), "/how no longer names --sandbox-only");
+});
