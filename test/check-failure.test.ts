@@ -563,6 +563,13 @@ test("a failed run on a machine keeps the lines naming its failure beside a tail
   // A whole log in the tail holds the lines already: none are added.
   const whole = await readCheckLog({ outputTail: `${stdout}${sha}`, where: "runner", failureLines }, none);
   assert.equal(whole.failureLines, undefined);
+  // TAP's summary count (`# fail 2`) is kept too, so the failure count
+  // survives a tail of noise (Astra's review of t569 of 2026-10-13).
+  const tap = `${fixture("tap.txt")}\n${noise}\n`;
+  assert.ok(!tap.slice(-LOCAL_OUTPUT_TAIL).includes("# fail"), "the tail alone holds no failure count");
+  const tapLines = collectFailureLines(tap).split("\n");
+  assert.ok(tapLines.includes("# fail 2"), tapLines.join("\n"));
+  assert.ok(!tapLines.some((line) => /^# (?:pass|tests|cancelled|skipped|todo)\b/.test(line)), tapLines.join("\n"));
 });
 
 test("the failure lines are bounded in lines and characters, read vitest's and TAP's formats, and count what they leave out", () => {
@@ -582,4 +589,5 @@ test("the failure lines are bounded in lines and characters, read vitest's and T
   assert.ok(kept.length <= FAILURE_LINES_MAX && many.length <= FAILURE_LINES_CHARS, `${kept.length} ${many.length}`);
   assert.match(kept.at(-1)!, /^\[atelier\] and \d+ more failure lines not kept$/);
   assert.equal(collectFailureLines("all fine\nℹ fail 0"), "");
+  assert.equal(collectFailureLines("# tests 3\n# pass 3\n# fail 0"), "");
 });
