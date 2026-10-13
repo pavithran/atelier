@@ -17,7 +17,7 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -3416,13 +3416,22 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
         // What the Overview cannot read is said on it, not fatal to it: the
         // standing labels its own gaps, and the board and the events table say
         // they were not read.
+        // The notices split a submitted task by its state word on the grid.
         const standing = await standingOf(env, ref.key);
         const board = await L.board().catch(() => null);
         const events = await (L.events(undefined, 40) as Promise<unknown>).catch(() => null) as LedgerEvent[] | null;
-        return html(renderProject(p, board?.items ?? [], events, ownerName(env), standing, board));
+        const inbox = await L.inbox(standing.generatedAt, await poolOf(env)).catch(() => null);
+        return html(renderProject(p, board?.items ?? null, events, ownerName(env), standing, board, inbox));
       }
       case "tasks": {
+        // ?state=WORD lists the tasks one of the Overview's counts counts;
+        // any other value is the whole list.
         const board = await L.board();
+        const word = c.url.searchParams.get("state");
+        if (isStateWord(word)) {
+          const inbox = await L.inbox(new Date().toISOString(), await poolOf(env)).catch(() => null);
+          return html(renderProjectTasks(p, board.items, ownerName(env), board, { word, words: stateWords(board.items, inbox) }));
+        }
         return html(renderProjectTasks(p, board.items, ownerName(env), board));
       }
       case "flow": {
