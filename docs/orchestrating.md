@@ -746,6 +746,49 @@ that verification after deployment; a local pass cannot stand in for it.
 5. Report to the lead developer: what merged, what was deployed, what is
    landing and what went back.
 
+## Fast mode
+
+Atelier has two modes. Full mode is the default: every task is claimed,
+built on its fork, checked, reviewed and landed one at a time, as above.
+Fast mode is the owner's, for when that path cannot run. On 2026-10-13
+Artifacts failed every new fork, so no task could be claimed, and four
+finished tasks (t575 to t578) were merged by hand, outside the record. Fast
+mode makes that path a recorded one.
+
+Only the owner switches. `atelier mode fast --reason TEXT` puts the project
+in fast mode; the switch is recorded as a standing decision with the
+reason, so every review brief carries it. Fast mode has no end time.
+`atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`, and
+the project's Overview says so while fast mode stands.
+
+In fast mode, from a clean checkout of main:
+
+    atelier fast land t575=SHA t576=SHA --reviewer H/M
+
+merges each SHA in order with `git merge --no-ff`, regenerates the
+generated files and commits them, runs the typecheck, scans the batch's
+added lines for credentials with the server's own scanner, and runs the
+tests once for the whole batch. If any step fails, main is reset to where
+it started and nothing is recorded. On success each task gets a landed-fast
+receipt: the commit merged, the merge commit, the builder its Agent line
+names, the test command and the sha256 of its output, and the mode's
+reason. The task is marked merged, and its post-merge review is asked of
+the reviewer named. It never pushes or deploys; publish main and deploy as
+after any landing, so the reviewer can read the merge.
+
+The post-merge review of a fast landing may come from a model of the
+builder's family (PAVI: fast mode permits single-family models), never
+from the builder itself; the review record says "same-family (fast mode)".
+A merge that went through the gate keeps the family rule for its post-merge
+review. A rejection files a fix task, "Fix after fast landing of tN: ...",
+whose criteria are the review's findings.
+
+`atelier fast status` lists every fast landing with its review's state.
+`atelier mode full` (or `atelier fast close`) returns the project to full
+mode, withdraws the decision and prints the same list. The task page names
+a fast landing as "Landed in fast mode" with its receipt, and the showcase
+counts fast landings apart from gated merges.
+
 ## Judging a review
 
 A reviewer's finding is a claim about the code, and it can be wrong. On

@@ -2027,9 +2027,12 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 // which the page says rather than showing an empty record or no tasks.
 // `inbox` holds the project's notices, which split a submitted task by its
 // state word; null when they could not be read.
-export function renderProject(p: ProjectRecord, items: Item[] | null, events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null, inbox: InboxEntry[] | null = null, now = standing ? new Date(standing.generatedAt) : new Date()): string {
+export function renderProject(p: ProjectRecord, items: Item[] | null, events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null, inbox: InboxEntry[] | null = null, now = standing ? new Date(standing.generatedAt) : new Date(), mode: { mode: string; line: string } | null = null): string {
   const unread = (what: string) => `<p class="notice" role="status">${what} could not be read.</p>`;
+  // The project's mode (t585): fast mode is said at the top while it stands.
+  const modeNote = mode?.mode === "fast" ? `<p class="notice" role="status">${e(mode.line)}. Tasks land in fast mode from the owner's checkout, each with a receipt and a post-merge review; atelier mode full returns to the gated process.</p>` : "";
   return projectPage(p, "Overview", `
+  ${modeNote}
   ${board === null ? unread("The task board") : ""}
   ${overviewSection(p, board === null ? null : items, inbox, standing, now)}
   <details class="disclosure"><summary>Ledger events</summary>${events ? eventTable(events, true) : unread("The project's events")}</details>

@@ -3450,7 +3450,8 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
         const board = await L.board().catch(() => null);
         const events = await (L.events(undefined, 40) as Promise<unknown>).catch(() => null) as LedgerEvent[] | null;
         const inbox = await L.inbox(standing.generatedAt, await poolOf(env)).catch(() => null);
-        return html(renderProject(p, board?.items ?? null, events, ownerName(env), standing, board, inbox));
+        const mode = await L.mode().catch(() => null);
+        return html(renderProject(p, board?.items ?? null, events, ownerName(env), standing, board, inbox, undefined, mode));
       }
       case "tasks": {
         // ?state=WORD lists the tasks one of the Overview's counts counts;
