@@ -75,7 +75,7 @@ const selectedHref = (project: string, task: string) =>
 // What the showcase's fast-mode count means (t605, Gemini 4 Argon's claims
 // audit of 2026-10-13, finding 8): shown under the card's figures whenever
 // it counts fast landings, which no page explained.
-export const FAST_MODE_NOTE = "Fast mode, which the developer turns on with a reason: finished tasks land together after one typecheck, secret scan and test run, each with a receipt, and are reviewed after the merge. Full mode, review first, is the default.";
+export const FAST_MODE_NOTE = "Fast mode, which the developer turns on with a reason: finished tasks land together after one typecheck, secret scan and test run, each with a receipt; any review comes after the merge, when the developer asks for one. Full mode, review first, is the default.";
 const tag = (label: string, tone = "") => `<span class="tag ${tone}">${e(label)}</span>`;
 
 const ICONS: Record<string, string> = {
@@ -1076,7 +1076,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     <h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>
     <p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>
     <p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>
-    <p class="show-lead">Agents of several model families work one repository at once. In full mode, the default, a change merges once its checks pass at the exact head Atelier reads and the developer accepts it, and a change to a protected path first needs a review by a model of another company (another model of that company in single-family mode) unless the developer records an override. In fast mode the review follows the merge.</p>
+    <p class="show-lead">Agents of several model families work one repository at once. In full mode, the default, a change merges once its checks pass at the exact head Atelier reads and the developer accepts it, and a change to a protected path first needs a review by a model of another company (another model of that company in single-family mode) unless the developer records an override. In fast mode any review follows the merge, and only when the developer asks for one.</p>
     ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>
   ${compareBlock(stories, imported, total, owner, who)}
@@ -2039,7 +2039,7 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 export function renderProject(p: ProjectRecord, items: Item[] | null, events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null, inbox: InboxEntry[] | null = null, now = standing ? new Date(standing.generatedAt) : new Date(), mode: { mode: string; line: string } | null = null): string {
   const unread = (what: string) => `<p class="notice" role="status">${what} could not be read.</p>`;
   // The project's mode (t585): fast mode is said at the top while it stands.
-  const modeNote = mode?.mode === "fast" ? `<p class="notice" role="status">${e(mode.line)}. Tasks land in fast mode from the developer's checkout, each with a receipt and a post-merge review; atelier mode full returns to the gated process.</p>` : "";
+  const modeNote = mode?.mode === "fast" ? `<p class="notice" role="status">${e(mode.line)}. Tasks land in fast mode from the developer's checkout, each with a receipt and, when the developer asks for one, a review after the merge; atelier mode full returns to the gated process.</p>` : "";
   return projectPage(p, "Overview", `
   ${modeNote}
   ${board === null ? unread("The task board") : ""}

@@ -428,7 +428,7 @@ it("the fast-mode count says what fast mode is, and no count appears without fas
   expect(cardHtml).not.toContain("title=");
   expect(note).toBe(FAST_MODE_NOTE);
   expect(note).toMatch(/with a reason/);
-  expect(note).toMatch(/reviewed after the merge/);
+  expect(note).toMatch(/any review comes after the merge, when the developer asks for one/);
   expect(note).toMatch(/Full mode, review first, is the default/);
   expect(renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [shown()])).not.toContain("landed in fast mode");
 });
