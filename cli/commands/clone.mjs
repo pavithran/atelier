@@ -5,15 +5,27 @@ import { dirname, join, resolve } from "node:path";
 import { FRESH_TRAILER, savePairs } from "../fresh.mjs";
 import { installMergeConfig } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { OWNER, P, apiToken, args, call, cfg, die, git, recordTokenExpiry, saveConfig, server, short, storeWorkspaceToken } from "../atelier.mjs";
+import { OWNER, P, apiToken, args, call, cfg, die, landingGit, saveConfig, server, short } from "../atelier.mjs";
 
 // The developer, on a Mac that has no checkout of the project yet (t643):
 // Git, not iCloud, carries code between Macs, and the project's baseline is
 // the remote every Mac shares. The checkout is made from the baseline the
-// way a task workspace is (claimWorkspace in cli/atelier.mjs): the
-// baseline is origin, and the developer's write token, minted as sync mints
-// it, lives in .git/atelier-credentials, never in .git/config or a URL.
+// way a task workspace is (claimWorkspace in cli/atelier.mjs), with the
+// baseline as origin. The checkout keeps no token: the developer's write
+// token, minted as sync mints it, is passed to the commands that reach the
+// baseline here and then dropped, and every later Atelier command that
+// reaches the baseline (sync, merge, publish) mints its own. A header
+// stored in the checkout would outlive its token, and Git sends a stored
+// header for the baseline's URL in place of the one those commands pass
+// (Astra's review of t643, finding 1).
+//
+// Every Git command here runs with every hook off (landingGit), and the
+// token goes only to the clone and the notes fetch, which check nothing
+// out: the files are checked out afterwards, without it. A Mac whose
+// global core.hooksPath is relative, such as .githooks, would otherwise run
+// a hook the baseline carries, with the token in its environment (finding 2).
 export default async function cloneCommand() {
+  const git = landingGit;
   const name = args._[1] ?? die(COMMAND_USAGE.clone);
   if (args._.length > 3) die(COMMAND_USAGE.clone);
   const dir = args._[2] !== undefined ? resolve(String(args._[2])) : join(homedir(), "src", name);
@@ -40,15 +52,17 @@ export default async function cloneCommand() {
   const base = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
   const branch = base.defaultBranch;
 
-  mkdirSync(dirname(dir), { recursive: true });
+  const parent = dirname(dir);
+  mkdirSync(parent, { recursive: true });
   // A full clone of the branch: no depth, every commit of its history.
-  git(["clone", "--quiet", "--branch", branch, base.remote, dir], { token: base.token });
-  storeWorkspaceToken(dir, base.remote, base.token);
-  recordTokenExpiry(dir, base.expiresAt);
+  git(["clone", "--quiet", "--no-checkout", "--branch", branch, base.remote, dir], { cwd: parent, token: base.token });
   // The receipts: the provenance notes each merge pushes to the baseline,
   // which git log shows beside the commits they describe.
-  const notes = git(["ls-remote", "origin", "refs/notes/atelier"], { cwd: dir });
-  if (notes) git(["fetch", "--quiet", "origin", "refs/notes/atelier:refs/notes/atelier"], { cwd: dir });
+  const notes = git(["ls-remote", base.remote, "refs/notes/atelier"], { cwd: dir, token: base.token });
+  if (notes) git(["fetch", "--quiet", base.remote, "refs/notes/atelier:refs/notes/atelier"], { cwd: dir, token: base.token });
+  // The files, without the token. Artifacts holds Git LFS pointers alone,
+  // so they are kept as pointers, as every clone of a baseline keeps them.
+  git(["reset", "--quiet", "--hard", "HEAD"], { cwd: dir, env: { GIT_LFS_SKIP_SMUDGE: "1" } });
   git(["config", "--local", "notes.displayRef", "refs/notes/atelier"], { cwd: dir });
   try { installMergeConfig(dir, { git }); } catch (error) { die(error.message); }
   const identity = record?.policy?.commitIdentity;
@@ -75,6 +89,6 @@ export default async function cloneCommand() {
   const head = git(["rev-parse", "HEAD"], { cwd: dir });
   console.log(`${name}: cloned ${branch} @ ${short(head)}, ${commits.length} commit${commits.length === 1 ? "" : "s"}${fresh ? " (the baseline holds part of the project's history)" : ""}, into ${dir}, now this Mac's checkout of ${name}.`);
   if (elsewhere) console.log(`This replaces ${elsewhere} as ${name}'s checkout on this Mac; that folder is left as it is.`);
-  console.log(`origin is the baseline; ${notes ? "its receipts are on refs/notes/atelier" : "it holds no receipts yet"}. The write token is kept in .git/atelier-credentials and expires ${base.expiresAt}.`);
+  console.log(`origin is the baseline; ${notes ? "its receipts are on refs/notes/atelier" : "it holds no receipts yet"}. The checkout keeps no token: Atelier's commands that reach the baseline mint their own.`);
   console.log(identity?.email ? `Commits here are authored as ${identity.name} <${identity.email}>, as the project's policy names.` : `Warning: ${name}'s policy names no commit identity, so commits here use this Mac's global Git identity; set one with atelier init --commit-name NAME --commit-email EMAIL.`);
 }
