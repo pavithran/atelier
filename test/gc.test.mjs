@@ -53,9 +53,9 @@ test("gc previews, then removes only clean closed clones; preserves all local wo
   assert.ok(existsSync(clean));
   await collectCache({ ...f.options, apply: true, cwd: current });
   assert.ok(!existsSync(clean));
-  assert.ok(!existsSync(ignored), "ignored files alone do not hold a workspace");
   assert.ok(!existsSync(abandoned), "a clean abandoned workspace at its recorded head goes");
-  for (const dir of [active, dirty, untracked, branch, ahead, current, foreign, abandonedMoved, busy, submodules]) assert.ok(existsSync(dir), dir);
+  // An ignored file that is not rebuildable output holds a workspace (t561).
+  for (const dir of [active, dirty, ignored, untracked, branch, ahead, current, foreign, abandonedMoved, busy, submodules]) assert.ok(existsSync(dir), dir);
 });
 
 test("gc rechecks server state and local files before removal", async (t) => {
@@ -66,6 +66,80 @@ test("gc rechecks server state and local files before removal", async (t) => {
     writeFileSync(join(dir, "late-work"), "keep"); return f.items[0];
   } });
   assert.ok(existsSync(dir));
+});
+
+test("a finished workspace goes once its HEAD is in main or the recorded head, and one holding work main lacks is kept and named (t561)", async (t) => {
+  const f = fixture(t), lines = [];
+  // The project's checkout, whose main takes commits from the workspaces.
+  const checkout = join(f.cache, "checkout");
+  mkdirSync(checkout); f.git(checkout, "init", "-b", "main");
+  f.git(checkout, "config", "user.name", "Test"); f.git(checkout, "config", "user.email", "test@example.invalid");
+  const main = { dir: checkout, branch: "main" };
+  // Main keeps what it took before: each workspace's history is merged in.
+  const intoMain = (dir, rev = "HEAD") => { f.git(checkout, "fetch", "-q", dir, rev); f.git(checkout, "merge", "-q", "--allow-unrelated-histories", "--no-edit", "FETCH_HEAD"); };
+  // Merged, its HEAD behind the accepted head (main went on through the fork).
+  const behind = f.workspace("t1");
+  f.git(behind, "commit", "--allow-empty", "-m", "Accepted");
+  f.items[0].acceptedHead = f.items[0].head = f.git(behind, "rev-parse", "HEAD");
+  intoMain(behind);
+  f.git(behind, "reset", "-q", "--hard", "HEAD~1");
+  // Abandoned, at the head Atelier recorded for it.
+  const recorded = f.workspace("t2", "abandoned");
+  // Merged, with a side branch that main took in later.
+  const side = f.workspace("t3");
+  f.git(side, "checkout", "-q", "-b", "side"); f.git(side, "commit", "--allow-empty", "-m", "Side"); f.git(side, "checkout", "-q", "main");
+  intoMain(side, "side");
+  // Merged, with a commit neither the ledger nor main holds.
+  const unrecorded = f.workspace("t4");
+  f.git(unrecorded, "checkout", "-q", "-b", "local"); f.git(unrecorded, "commit", "--allow-empty", "-m", "Local only"); f.git(unrecorded, "checkout", "-q", "main");
+  // Merged, with a tracked file changed.
+  const dirty = f.workspace("t5"); writeFileSync(join(dirty, ".gitignore"), "changed");
+  // Abandoned, ahead of its recorded head with a commit main lacks.
+  const ahead = f.workspace("t6", "abandoned"); f.git(ahead, "commit", "--allow-empty", "-m", "Never pushed");
+
+  await collectCache({ ...f.options, apply: true, log: () => {} });
+  assert.ok(existsSync(behind) && existsSync(side), "without main, only the recorded head counts");
+  assert.ok(!existsSync(recorded));
+
+  await collectCache({ ...f.options, apply: true, main, log: (l) => lines.push(l) });
+  for (const dir of [behind, side]) assert.ok(!existsSync(dir), lines.join("\n"));
+  for (const dir of [unrecorded, dirty, ahead]) assert.ok(existsSync(dir), dir);
+  assert.ok(lines.includes(`KEEP    ${unrecorded}: contains commits neither Atelier's record nor main holds`), lines.join("\n"));
+  assert.ok(lines.includes(`KEEP    ${dirty}: contains changed or untracked files`));
+  assert.ok(lines.includes(`KEEP    ${ahead}: HEAD is neither the head Atelier recorded nor in main`));
+  assert.match(lines.at(-1), /^Kept 3 finished tasks' workspaces holding work/);
+
+  // Once main holds the local commit, the workspace goes.
+  intoMain(unrecorded, "local");
+  await collectCache({ ...f.options, apply: true, main, log: () => {} });
+  assert.ok(!existsSync(unrecorded));
+});
+
+// A harness's logs under .scratch/, which every workspace's .git/info/exclude
+// ignores, went with the workspace without a word (t561 pre-review).
+test("a finished workspace holding ignored files other than rebuildable output is kept and named", async (t) => {
+  const f = fixture(t), ws = f.workspace("t1"), lines = [];
+  writeFileSync(join(ws, ".git", "info", "exclude"), ".scratch/\nnode_modules/\n.env\n");
+  mkdirSync(join(ws, "node_modules", "dep"), { recursive: true }); writeFileSync(join(ws, "node_modules", "dep", "index.js"), "");
+  mkdirSync(join(ws, ".scratch"));
+  // An empty .scratch/ and node_modules hold nothing to lose.
+  await collectCache({ ...f.options, apply: false, log: (l) => lines.push(l) });
+  assert.ok(lines.includes(`WOULD REMOVE ${ws}`), lines.join("\n"));
+  writeFileSync(join(ws, ".scratch", "harness.log"), "agent log\n"); writeFileSync(join(ws, ".env"), "local\n");
+  lines.length = 0;
+  await collectCache({ ...f.options, apply: true, log: (l) => lines.push(l) });
+  assert.ok(existsSync(join(ws, ".scratch", "harness.log")));
+  assert.ok(lines.includes(`KEEP    ${ws}: holds ignored files that are not rebuildable output: .env, .scratch/`), lines.join("\n"));
+});
+
+test("a pass for one task touches only its workspace and no check clone", async (t) => {
+  const f = fixture(t), one = f.workspace("t1"), other = f.workspace("t2"), lines = [];
+  const check = join(f.cache, "checks", "run-old"); mkdirSync(check, { recursive: true });
+  writeFileSync(markerPath(check), JSON.stringify({ version: 1, project: "proj", pid: -5, startedAt: 0 }));
+  const result = await collectCache({ ...f.options, apply: true, only: "t1", log: (l) => lines.push(l) });
+  assert.deepEqual(result, { removed: 1, held: 0 });
+  assert.deepEqual(lines, [`REMOVED ${one}`]);
+  assert.ok(existsSync(other)); assert.ok(existsSync(check));
 });
 
 test("gc rejects path traversal and skips symlinks and linked worktrees", async (t) => {
@@ -128,6 +202,30 @@ test("CLI gc uses only GET requests, defaults to preview, and fails closed on AP
   fail = false; assert.equal((await run("--apply")).status, 0); assert.ok(!existsSync(dir));
   assert.ok(requests.every((s) => s.startsWith("GET ")));
   assert.ok(requests.includes("GET /api/projects/proj/items/t1"));
+});
+
+test("CLI clean removes unless --dry-run, the way gc --apply does", async (t) => {
+  const f = fixture(t), dir = f.workspace("t1");
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(req.url.endsWith("/t1") ? { item: f.items[0] } : { items: f.items }));
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => server.close());
+  async function run(...args) {
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "clean", "--project", "proj", "--as", "test/runner", ...args], {
+      cwd: f.cache, env: { ...process.env, ATELIER_CACHE: f.cache, ATELIER_TOKEN: "test", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
+    });
+    let output = "";
+    child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
+    const status = await new Promise((done) => child.on("close", done));
+    return { status, output };
+  }
+  const preview = await run("--dry-run");
+  assert.equal(preview.status, 0, preview.output); assert.match(preview.output, /WOULD REMOVE.*\n.*Run without --dry-run/); assert.ok(existsSync(dir));
+  assert.notEqual((await run("--apply")).status, 0, "clean takes no --apply");
+  const clean = await run();
+  assert.equal(clean.status, 0, clean.output); assert.match(clean.output, /REMOVED/); assert.ok(!existsSync(dir));
 });
 
 test("check records its running child, reports pass and failure, and cleans its clone and record", async (t) => {
