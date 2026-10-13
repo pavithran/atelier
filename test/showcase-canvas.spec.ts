@@ -88,7 +88,7 @@ it("draws the canvas's sections in its order, every figure from the seeded tally
   expect(tally).toContain('<span class="grade pending">Pending</span>not yet run');
   // The seven steps, each counted.
   const steps = [...section(html, "travels-h").matchAll(/<h3>(\w+)<\/h3><p>[^<]*<\/p><span class="travel-count[^"]*">([^<]+)<\/span>/g)].map((m) => [m[1], m[2]]);
-  expect(steps).toEqual([["Planned", "3 planned"], ["Claimed", "8 claims, 0 handoffs"], ["Worked", "1 push"], ["Checked", "2 observed, 1 in Cloudflare"], ["Reviewed", "1 approved, 1 sent back"], ["Decided", "1 accepted"], ["Merged", "1 merged"]]);
+  expect(steps).toEqual([["Planned", "3 planned"], ["Claimed", "3 tasks taken, 0 handoffs"], ["Worked", "1 push"], ["Checked", "2 observed, 1 in Cloudflare"], ["Reviewed", "1 approved, 1 sent back"], ["Decided", "1 accepted"], ["Merged", "1 merged"]]);
 });
 
 it("draws a card per shown project, an idle one dashed, and an anonymised one by its kind alone", () => {
