@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fastLand, parsePairs } from "./fast.mjs";
@@ -188,5 +188,53 @@ test("a SHA main already holds is refused, not recorded against an unrelated com
     assert.equal(r.failure.step, "merge t7");
     assert.match(r.failure.detail, /main already holds/);
     assert.equal(git(dir, "rev-parse", "HEAD"), held);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// t588: on 2026-10-13 fast land's npm test failed in the owner's checkout
+// while the same merged tree passed in a clean clone. The default test run
+// is in a temporary clean clone of the batch's head, so a stray untracked
+// file in the checkout (here one the test trips over) changes nothing; the
+// same command given as --test runs in the checkout and does see it.
+test("a stray untracked file in the checkout does not change the result: the default test runs in a clean clone of the batch's head", async () => {
+  const { dir, one, two } = repo();
+  const where = join(mkdtempSync(join(tmpdir(), "fast-land-where-")), "pwd");
+  try {
+    writeFileSync(join(dir, "stray.txt"), "left behind\n");
+    const pairs = [{ id: "t1", sha: one }, { id: "t2", sha: two }];
+    const command = `pwd -P > ${JSON.stringify(where)}; test ! -e stray.txt && test -e one.txt && test -e two.txt && test -e gen.txt && test -e setup.done && echo ok`;
+    const opts = { ...base, cwd: dir, pairs, regen: "echo generated > gen.txt", test: command };
+
+    const recorded = [];
+    const r = await fastLand({ ...opts, cleanClone: { setup: "touch setup.done" }, record: (id, receipt) => { recorded.push([id, receipt]); return { ok: true }; } });
+    assert.equal(r.ok, true, JSON.stringify(r.failure));
+    assert.deepEqual(recorded.map(([id, x]) => [id, x.tests.where, x.tests.command]), [["t1", "clean clone", command], ["t2", "clean clone", command]]);
+    const ran = readFileSync(where, "utf8").trim();
+    assert.notEqual(ran, realpathSync(dir), "the tests ran outside the checkout");
+    assert.equal(existsSync(ran), false, "the clone is removed afterwards");
+    // The stray file stayed the owner's: untracked, and not in the regeneration's commit.
+    assert.equal(git(dir, "status", "--porcelain"), "?? stray.txt");
+    assert.equal(git(dir, "log", "-1", "--format=%s"), "Regenerate after fast landing of t1, t2");
+    assert.doesNotMatch(git(dir, "ls-tree", "-r", "--name-only", "HEAD"), /stray\.txt|setup\.done/);
+
+    // The same command given as --test runs in the checkout, where the stray file is.
+    git(dir, "reset", "-q", "--hard", r.start);
+    const inCheckout = await fastLand({ ...opts, record: () => assert.fail("recorded") });
+    assert.equal(inCheckout.ok, false);
+    assert.equal(inCheckout.failure.step, "tests");
+    assert.match(inCheckout.failure.detail, /^in the checkout:/);
+    assert.equal(readFileSync(where, "utf8").trim(), realpathSync(dir));
+    assert.equal(git(dir, "rev-parse", "HEAD"), r.start);
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(dirname(where), { recursive: true, force: true }); }
+});
+
+test("a clean clone whose setup fails stops at the test setup, main untouched", async () => {
+  const { dir, one } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "true", cleanClone: { setup: "echo no lockfile; exit 1" }, record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "test setup");
+    assert.match(r.failure.detail, /in the clean clone:\nno lockfile/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
