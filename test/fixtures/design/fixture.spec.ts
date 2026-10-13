@@ -58,7 +58,7 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
       if (p.path.startsWith("/p/") && marked("Project") !== 1) failures.push(`${p.id}: ${marked("Project")} current tabs`);
       for (const m of head.matchAll(/<a [^>]*href="([^"]+)"/g)) links.add(m[1]);
       if (p.id === "decisions") {
-        const listed = /<p class="lead">(\d+) tasks? needs? your attention\.<\/p>/.exec(body)?.[1];
+        const listed = /<h1 id="dec-h">Decisions · (\d+)<\/h1>/.exec(body)?.[1];
         const shown = /, waiting on you: <\/span>(\d+)\??<\/span>/.exec(head)?.[1];
         if (!listed || shown !== listed) failures.push(`decisions: the badge says ${shown}, the list ${listed}`);
       }

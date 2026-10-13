@@ -94,7 +94,7 @@ export function pageStates(s: Seeded): PageState[] {
     { id: "signin", path: "/login", audience: "token", status: 200, marker: "Sign in to Atelier", state: "Sign-in over the anonymised backdrop" },
     // Cross-project
     { id: "home", path: "/home", audience: "owner", status: 200, marker: "Ledger Core", state: "Portfolio: dense, empty and unavailable projects" },
-    { id: "decisions", path: "/decisions", audience: "owner", status: 200, marker: "Needs your attention", state: "Inbox with the first decision selected" },
+    { id: "decisions", path: "/decisions", audience: "owner", status: 200, marker: "aria-labelledby=\"sel-h\"", state: "Inbox with the first decision selected" },
     { id: "decisions-sent-back", path: `/decisions?project=ledger-core&task=${lc("sentBack")}`, audience: "owner", status: 200, marker: "Changes requested", state: "A sent-back task selected" },
     { id: "decisions-blocked", path: `/decisions?project=ledger-core&task=${lc("blocked")}`, audience: "owner", status: 200, marker: "Blocked", state: "A blocked task selected" },
     { id: "studio", path: "/studio", audience: "owner", status: 200, marker: "at work", state: "The floor with live, stale and overlapping work" },
