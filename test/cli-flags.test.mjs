@@ -579,7 +579,7 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   const blocked = f.run(f.checkout, ["block", "t2", "waiting", "on", "the", "keys", "--project", "demo"]);
   assert.equal(blocked.status, 0, blocked.stderr);
   assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/block", { reason: "waiting on the keys" }]]);
-  assert.match(blocked.stdout, /^t2 is blocked: waiting on the keys\. It keeps its owner and workspace; run atelier unblock t2 when it can go on\.\n$/);
+  assert.match(blocked.stdout, /^t2 is blocked: waiting on the keys\. It keeps its holder and workspace; run atelier unblock t2 when it can go on\.\n$/);
   f.clear();
   const here = f.run(f.workspace, ["block", "needs a decision"], { ATELIER_ACTOR: "codex/test" });
   assert.equal(here.status, 0, here.stderr);

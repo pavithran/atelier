@@ -220,7 +220,7 @@ test("CLI init keeps the approval recorded on a ControlPlane project unless the 
   // Nothing recorded yet: the approval is asked for, after one read and no write.
   const asked = command(["init", "--title", "Weblog"]);
   assert.equal(asked.status, 1, asked.stdout);
-  assert.match(asked.stderr, /Record the project owner's approval/);
+  assert.match(asked.stderr, /Record the developer's approval/);
   assert.deepEqual(calls().map((c) => c.method), ["GET"]);
   // Recorded: a change to the title or the checks keeps it and sends none.
   const kept = command(["init", "--title", "Weblog", "--check", "npm test"], { TEST_APPROVED: approval });
@@ -238,7 +238,7 @@ test("CLI init keeps the approval recorded on a ControlPlane project unless the 
     const again = command(["init", ...flag], { TEST_APPROVED: approval });
     assert.equal(again.status, 1, again.stdout);
     assert.match(again.stderr, why);
-    assert.match(again.stderr, /Record the project owner's approval/);
+    assert.match(again.stderr, /Record the developer's approval/);
   }
   assert.equal(calls().filter((c) => c.method === "PUT").length, 2);
 }));

@@ -58,6 +58,6 @@ export default async function loginCommand() {
   cfg.ownerName = conf.ownerName ?? undefined;
   try { saveConfig(cfg); } catch (error) { die(`the token is stored, but config.json could not be written (${error.message}); run login again`); }
   const what = from === "ATELIER_TOKEN" && store ? "The token, from ATELIER_TOKEN," : "The token";
-  console.log(`Signed in to ${cfg.server} as the project owner, actor "${cfg.owner}". ${what} ${store ? "is now stored in" : "is read from"} ${where}.`);
+  console.log(`Signed in to ${cfg.server} as the developer, actor "${cfg.owner}". ${what} ${store ? "is now stored in" : "is read from"} ${where}.`);
   if (from === "typed" && fromEnv) console.log("ATELIER_TOKEN is set in the environment and is used instead of the stored token until it is unset.");
 }

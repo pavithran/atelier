@@ -289,7 +289,7 @@ test("a refused plan job is retried once before the runner retires it", async (t
   });
   assert.deepEqual(claims, [1, 2], "the planner gets its two attempts, then the runner retires the job");
   assert.equal(logs.filter((s) => s.includes("the plan was refused")).length, 2);
-  assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+  assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
 });
 
 test("a plan job whose harness exits with an error is reported as harness_failed with its last error line", async (t) => {

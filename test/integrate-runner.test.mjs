@@ -265,7 +265,7 @@ test("runRefresh submits the plan item instead of releasing it when the server s
   assert.ok(submit, "the plan item is submitted");
   assert.match(submit.argv[submit.argv.indexOf("--summary") + 1], /^main at cccccccc merged; integrated 2 parts: a, b$/);
   assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the plan item is not released");
-  assert.ok(logs.some((s) => s.includes("submitted for the owner")));
+  assert.ok(logs.some((s) => s.includes("submitted for the developer")));
 });
 
 test("runRefresh posts refreshed with no merge commit when the branch already holds main's head", async () => {
@@ -362,7 +362,7 @@ test("a --integrate runner keeps serving a plan whose refresh conflicts twice", 
     },
   });
   assert.deepEqual(claimed, ["t1", "t1", "t1"], "the integrate job follows two recorded refresh failures");
-  assert.ok(!logs.some((s) => s.includes("needs the owner's attention")), "a recorded refresh-failed asks for no owner's attention");
+  assert.ok(!logs.some((s) => s.includes("needs the developer's attention")), "a recorded refresh-failed asks for no developer's attention");
 });
 
 test("runRefresh skips a refresh job that names no main head", async () => {

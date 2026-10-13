@@ -446,7 +446,7 @@ test("--no-triage records the owner's reason with the head and the criteria bind
   assert.equal(l.asked.length, 0);
   assert.deepEqual(l.triages().map((d) => [d.outcome, d.reason, d.head, d.base, d.criteria]), [["bypassed", "hotfix for the outage", HEAD, BASE, criteriaOf({ accept: CRITERIA })]]);
   assert.ok(l.at((c) => c.path?.endsWith("/land") && c.body.step === "triage") < l.at((c) => c.command === "submit"));
-  assert.match(l.output(), /Triage bypassed by the project owner \(--no-triage: hotfix for the outage\)/);
+  assert.match(l.output(), /Triage bypassed by the developer \(--no-triage: hotfix for the outage\)/);
 });
 
 test("a bypass or an override the server does not record stops the landing before the submission (t475)", async (t) => {

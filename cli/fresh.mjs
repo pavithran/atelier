@@ -136,7 +136,7 @@ export function carryTask(git, cwd, baselineHead, taskHead, pairs) {
     const [commit, ...parents] = line.split(" ");
     const mapped = parents.map((p) => made[p] ?? pairs[p] ?? null);
     const missing = parents.find((_, i) => !mapped[i]);
-    if (missing) throw new Error(`the task builds on ${missing.slice(0, 8)}, a baseline commit this checkout has no pair for; the task's owner should run atelier update and resubmit`);
+    if (missing) throw new Error(`the task builds on ${missing.slice(0, 8)}, a baseline commit this checkout has no pair for; the task's holder should run atelier update and resubmit`);
     made[commit] = rebuild(git, cwd, commit, mapped);
   }
   return made[taskHead] ?? pairs[taskHead] ?? null;

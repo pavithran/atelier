@@ -42,7 +42,7 @@
     "generated": [
       "gen-fixtures.txt"
     ],
-    "resolvedBy": "the project owner, by hand"
+    "resolvedBy": "the developer, by hand"
   },
   "routeLevel": {
     "step": "merge",

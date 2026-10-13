@@ -185,7 +185,7 @@ test("check runs nothing, and clones nothing, when a registered check or the com
   const r = await f.run("check", "t1");
   assert.equal(r.status, 1, r.stdout);
   assert.match(r.stderr, /`npm --prefix web run deploy` is not a check: it runs a script whose name says it deploys or publishes/);
-  assert.match(r.stderr, /Nothing was run\. Ask the project owner to replace the check with atelier init --check\./);
+  assert.match(r.stderr, /Nothing was run\. Ask the developer to replace the check with atelier init --check\./);
   assert.ok(!f.paths.some((p) => p.endsWith("/read-token") || p.endsWith("/evidence")), f.paths.join(" "));
   assert.equal(existsSync(ran(f.root)), false);
   assert.ok(!existsSync(join(f.root, "cache", "checks")) || readdirSync(join(f.root, "cache", "checks")).length === 0, "no clone was made");

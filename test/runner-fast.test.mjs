@@ -70,7 +70,7 @@ test("in fast mode the runner takes the build without a fork, builds in the clea
   assert.match(brief, /no fork and no remote.*Do not push/s);
   assert.ok(brief.includes(`Agent: ${ACTOR}`));
   assert.ok(logs.some((l) => l.startsWith("fast mode: no fork and no write token")));
-  assert.ok(logs.includes(`ready for fast land: t13=${BUILT}; the owner lands it with atelier fast land`));
+  assert.ok(logs.includes(`ready for fast land: t13=${BUILT}; the developer lands it with atelier fast land`));
   assert.ok(calls.some((c) => c.removed), "the brief is removed");
 });
 
