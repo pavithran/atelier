@@ -54,6 +54,9 @@ export const PLANS: ProjectPlan[] = [
 // Registered with no work, and registered but unreadable.
 export const EMPTY_PROJECT = "blank-slate";
 export const UNAVAILABLE_PROJECT = "cold-storage";
+// The project with git history from before Atelier, and how many days of it.
+export const HISTORY_PROJECT = "open-tool";
+export const HISTORY_DAYS = 60;
 
 export const total = (p: ProjectPlan) => Object.values(p.shapes).reduce((n, k) => n + (k ?? 0), 0);
 export const TOTAL_TASKS = PLANS.reduce((n, p) => n + total(p), 0);
@@ -106,7 +109,17 @@ export async function seed(env: Env): Promise<Seeded> {
   for (const plan of PLANS) {
     const tree = new Map(FILES.map((f) => [f, `// ${f} of ${plan.name}\n`]));
     files.set(plan.name, tree);
-    seeded.mainHead[plan.name] = git.commit(plan.name, { treeHash: git.tree(tree), message: "Initial commit\n\nAgent: owner", author: { name: OWNER_NAME, email: "owner@example.com" }, parents: [], authoredAt: Math.floor(clock / 1000) });
+    let parent: string[] = [];
+    // The named project has git history from before its first task, so the
+    // showcase's comparison has a "before" to draw: one commit a day, two in
+    // three naming an agent the way commit messages do.
+    if (plan.name === HISTORY_PROJECT) {
+      for (let d = HISTORY_DAYS; d > 0; d--) {
+        const named = d % 3 === 0 ? "" : `\n\nCo-Authored-By: ${d % 3 === 1 ? "Claude Opus 4.7 <noreply@anthropic.com>" : "Codex gpt-5.5 <codex@example.com>"}`;
+        parent = [git.commit(plan.name, { treeHash: git.tree(tree), message: `Change ${HISTORY_DAYS - d + 1} before Atelier${named}`, author: { name: OWNER_NAME, email: "owner@example.com" }, parents: parent, authoredAt: Math.floor((clock - d * 86_400_000) / 1000) })];
+      }
+    }
+    seeded.mainHead[plan.name] = git.commit(plan.name, { treeHash: git.tree(tree), message: "Initial commit\n\nAgent: owner", author: { name: OWNER_NAME, email: "owner@example.com" }, parents: parent, authoredAt: Math.floor(clock / 1000) });
   }
 
   // The merged work is spread over the four weeks before FIXED_NOW, so the
