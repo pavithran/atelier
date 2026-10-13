@@ -80,6 +80,10 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
     const location = res.headers.get("location") ?? "";
     if (res.status !== a.status || (a.location && !location.endsWith(a.location))) failures.push(`alias ${a.path}: ${res.status} ${location}`);
   }
+  // The named project's git history from before Atelier is the comparison's "before".
+  const shown = await (await draw(pages, "/", "public", cookie)).text();
+  expect(shown).toContain("Git keeps what a commit claims. Atelier keeps what happened.");
+  expect(shown).toContain("of commits name an agent");
   // The no-showcase state, with the setting cleared and put back.
   const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   for (const plan of PLANS) if (plan.mode) await I.removeShowcase(plan.name);

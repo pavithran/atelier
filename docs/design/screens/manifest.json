@@ -1,10 +1,10 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+  "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
   "sourceDirty": true,
   "browser": {
     "name": "chromium",
-    "version": "156.0.8078.4",
+    "version": "149.0.7827.55",
     "playwrightCore": "1.61.1"
   },
   "fixture": {
@@ -69,9 +69,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 3966,
+      "height": 4411,
       "filename": "public-showcase-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -80,7 +80,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -107,9 +107,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 5231,
+      "height": 6943,
       "filename": "public-showcase-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -118,7 +118,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -145,9 +145,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 18644,
+      "height": 18652,
       "filename": "public-how-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -156,7 +156,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -183,9 +183,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 29645,
+      "height": 29667,
       "filename": "public-how-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -194,7 +194,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -223,7 +223,7 @@
       "colorScheme": "light",
       "height": 968,
       "filename": "public-owner-route-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -232,7 +232,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -260,7 +260,7 @@
       "colorScheme": "light",
       "height": 947,
       "filename": "public-owner-route-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -269,7 +269,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -295,9 +295,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 954,
+      "height": 962,
       "filename": "signin-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -306,7 +306,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -333,9 +333,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 963,
+      "height": 985,
       "filename": "signin-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -344,7 +344,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -373,7 +373,7 @@
       "colorScheme": "light",
       "height": 2049,
       "filename": "home-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -382,7 +382,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -411,7 +411,7 @@
       "colorScheme": "light",
       "height": 4480,
       "filename": "home-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -420,7 +420,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -449,7 +449,7 @@
       "colorScheme": "light",
       "height": 1915,
       "filename": "decisions-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -458,7 +458,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -488,7 +488,7 @@
       "colorScheme": "light",
       "height": 2669,
       "filename": "decisions-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -497,7 +497,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -527,7 +527,7 @@
       "colorScheme": "light",
       "height": 1915,
       "filename": "decisions-sent-back-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -536,7 +536,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -566,7 +566,7 @@
       "colorScheme": "light",
       "height": 1103,
       "filename": "decisions-sent-back-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -575,7 +575,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -605,7 +605,7 @@
       "colorScheme": "light",
       "height": 1915,
       "filename": "decisions-blocked-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -614,7 +614,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -644,7 +644,7 @@
       "colorScheme": "light",
       "height": 1014,
       "filename": "decisions-blocked-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -653,7 +653,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -683,7 +683,7 @@
       "colorScheme": "light",
       "height": 6068,
       "filename": "studio-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -692,7 +692,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -721,7 +721,7 @@
       "colorScheme": "light",
       "height": 9745,
       "filename": "studio-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -730,7 +730,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -757,9 +757,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10714,
+      "height": 11133,
       "filename": "flow-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -768,7 +768,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -796,9 +796,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 9997,
+      "height": 10536,
       "filename": "flow-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -807,7 +807,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -835,9 +835,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1952,
+      "height": 2440,
       "filename": "flow-filtered-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -846,7 +846,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -874,9 +874,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 3062,
+      "height": 3695,
       "filename": "flow-filtered-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -885,7 +885,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -915,7 +915,7 @@
       "colorScheme": "light",
       "height": 18867,
       "filename": "history-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -924,7 +924,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -951,9 +951,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 33043,
+      "height": 33022,
       "filename": "history-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -962,7 +962,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -991,7 +991,7 @@
       "colorScheme": "light",
       "height": 3241,
       "filename": "models-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1000,7 +1000,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1029,7 +1029,7 @@
       "colorScheme": "light",
       "height": 5420,
       "filename": "models-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1038,7 +1038,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1067,7 +1067,7 @@
       "colorScheme": "light",
       "height": 2404,
       "filename": "usage-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1076,7 +1076,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1105,7 +1105,7 @@
       "colorScheme": "light",
       "height": 4214,
       "filename": "usage-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1114,7 +1114,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1143,7 +1143,7 @@
       "colorScheme": "light",
       "height": 1469,
       "filename": "project-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1152,7 +1152,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1181,7 +1181,7 @@
       "colorScheme": "light",
       "height": 2505,
       "filename": "project-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1190,7 +1190,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1219,7 +1219,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "project-empty-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1228,7 +1228,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1257,7 +1257,7 @@
       "colorScheme": "light",
       "height": 1030,
       "filename": "project-empty-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1266,7 +1266,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1295,7 +1295,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "project-unavailable-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1304,7 +1304,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1333,7 +1333,7 @@
       "colorScheme": "light",
       "height": 1030,
       "filename": "project-unavailable-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1342,7 +1342,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1371,7 +1371,7 @@
       "colorScheme": "light",
       "height": 15194,
       "filename": "tasks-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1380,7 +1380,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1409,7 +1409,7 @@
       "colorScheme": "light",
       "height": 27733,
       "filename": "tasks-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1418,7 +1418,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1447,7 +1447,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "tasks-empty-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1456,7 +1456,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1485,7 +1485,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "tasks-empty-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1494,7 +1494,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1523,7 +1523,7 @@
       "colorScheme": "light",
       "height": 6438,
       "filename": "project-flow-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1532,7 +1532,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1562,7 +1562,7 @@
       "colorScheme": "light",
       "height": 5831,
       "filename": "project-flow-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1571,7 +1571,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1601,7 +1601,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "plans-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1610,7 +1610,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1639,7 +1639,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "plans-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1648,7 +1648,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1677,7 +1677,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "ship-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1686,7 +1686,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1715,7 +1715,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "ship-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1724,7 +1724,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1753,7 +1753,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "settings-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1762,7 +1762,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1791,7 +1791,7 @@
       "colorScheme": "light",
       "height": 1123,
       "filename": "settings-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1800,7 +1800,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1829,7 +1829,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1838,7 +1838,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1867,7 +1867,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "code-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1876,7 +1876,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1905,7 +1905,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-dir-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1914,7 +1914,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1943,7 +1943,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "code-dir-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1952,7 +1952,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1981,7 +1981,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-file-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1990,7 +1990,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2019,7 +2019,7 @@
       "colorScheme": "light",
       "height": 1079,
       "filename": "code-file-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2028,7 +2028,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2057,7 +2057,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-no-commits-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2066,7 +2066,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2095,7 +2095,7 @@
       "colorScheme": "light",
       "height": 1030,
       "filename": "code-no-commits-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2104,7 +2104,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2133,7 +2133,7 @@
       "colorScheme": "light",
       "height": 2522,
       "filename": "log-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2142,7 +2142,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2171,7 +2171,7 @@
       "colorScheme": "light",
       "height": 4903,
       "filename": "log-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2180,7 +2180,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2209,7 +2209,7 @@
       "colorScheme": "light",
       "height": 2522,
       "filename": "log-page-2-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2218,7 +2218,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2247,7 +2247,7 @@
       "colorScheme": "light",
       "height": 4903,
       "filename": "log-page-2-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2256,7 +2256,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2285,7 +2285,7 @@
       "colorScheme": "light",
       "height": 1531,
       "filename": "commit-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2294,7 +2294,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2323,7 +2323,7 @@
       "colorScheme": "light",
       "height": 1621,
       "filename": "commit-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2332,7 +2332,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2361,7 +2361,7 @@
       "colorScheme": "light",
       "height": 1095,
       "filename": "path-history-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2370,7 +2370,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2399,7 +2399,7 @@
       "colorScheme": "light",
       "height": 1913,
       "filename": "path-history-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2408,7 +2408,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2437,7 +2437,7 @@
       "colorScheme": "light",
       "height": 1526,
       "filename": "task-open-long-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2446,7 +2446,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2476,7 +2476,7 @@
       "colorScheme": "light",
       "height": 2355,
       "filename": "task-open-long-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2485,7 +2485,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2515,7 +2515,7 @@
       "colorScheme": "light",
       "height": 2317,
       "filename": "task-working-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2524,7 +2524,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2554,7 +2554,7 @@
       "colorScheme": "light",
       "height": 3052,
       "filename": "task-working-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2563,7 +2563,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2593,7 +2593,7 @@
       "colorScheme": "light",
       "height": 2317,
       "filename": "task-stale-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2602,7 +2602,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2632,7 +2632,7 @@
       "colorScheme": "light",
       "height": 3052,
       "filename": "task-stale-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2641,7 +2641,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2671,7 +2671,7 @@
       "colorScheme": "light",
       "height": 2493,
       "filename": "task-blocked-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2680,7 +2680,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2710,7 +2710,7 @@
       "colorScheme": "light",
       "height": 3464,
       "filename": "task-blocked-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2719,7 +2719,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2749,7 +2749,7 @@
       "colorScheme": "light",
       "height": 2577,
       "filename": "task-failed-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2758,7 +2758,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2788,7 +2788,7 @@
       "colorScheme": "light",
       "height": 3411,
       "filename": "task-failed-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2797,7 +2797,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2827,7 +2827,7 @@
       "colorScheme": "light",
       "height": 2402,
       "filename": "task-unreadable-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2836,7 +2836,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2866,7 +2866,7 @@
       "colorScheme": "light",
       "height": 3403,
       "filename": "task-unreadable-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2875,7 +2875,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2905,7 +2905,7 @@
       "colorScheme": "light",
       "height": 2456,
       "filename": "task-ready-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2914,7 +2914,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2944,7 +2944,7 @@
       "colorScheme": "light",
       "height": 3402,
       "filename": "task-ready-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2953,7 +2953,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2983,7 +2983,7 @@
       "colorScheme": "light",
       "height": 2884,
       "filename": "task-protected-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2992,7 +2992,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3022,7 +3022,7 @@
       "colorScheme": "light",
       "height": 4048,
       "filename": "task-protected-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3031,7 +3031,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3061,7 +3061,7 @@
       "colorScheme": "light",
       "height": 2681,
       "filename": "task-sent-back-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3070,7 +3070,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3100,7 +3100,7 @@
       "colorScheme": "light",
       "height": 3773,
       "filename": "task-sent-back-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3109,7 +3109,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3139,7 +3139,7 @@
       "colorScheme": "light",
       "height": 2480,
       "filename": "task-accepted-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3148,7 +3148,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3178,7 +3178,7 @@
       "colorScheme": "light",
       "height": 3407,
       "filename": "task-accepted-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3187,7 +3187,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3217,7 +3217,7 @@
       "colorScheme": "light",
       "height": 2446,
       "filename": "task-scope-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3226,7 +3226,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3256,7 +3256,7 @@
       "colorScheme": "light",
       "height": 3367,
       "filename": "task-scope-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3265,7 +3265,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3295,7 +3295,7 @@
       "colorScheme": "light",
       "height": 2019,
       "filename": "task-merged-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3304,7 +3304,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3334,7 +3334,7 @@
       "colorScheme": "light",
       "height": 2736,
       "filename": "task-merged-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3343,7 +3343,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3373,7 +3373,7 @@
       "colorScheme": "light",
       "height": 1988,
       "filename": "task-abandoned-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3382,7 +3382,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3412,7 +3412,7 @@
       "colorScheme": "light",
       "height": 2623,
       "filename": "task-abandoned-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3421,7 +3421,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3451,7 +3451,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "task-not-found-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3460,7 +3460,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3489,7 +3489,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "task-not-found-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3498,7 +3498,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3527,7 +3527,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "fork-code-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3536,7 +3536,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3565,7 +3565,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "fork-code-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3574,7 +3574,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3603,7 +3603,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "fork-none-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3612,7 +3612,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3641,7 +3641,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "fork-none-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3650,7 +3650,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3679,7 +3679,7 @@
       "colorScheme": "light",
       "height": 968,
       "filename": "public-showcase-none-1440.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3688,7 +3688,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3716,7 +3716,7 @@
       "colorScheme": "light",
       "height": 947,
       "filename": "public-showcase-none-390.png",
-      "source": "d1b2d96e9c01825ba829301235ad4173675644aa",
+      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
       "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3725,7 +3725,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "156.0.8078.4",
+        "version": "149.0.7827.55",
         "playwrightCore": "1.61.1"
       },
       "assets": {
