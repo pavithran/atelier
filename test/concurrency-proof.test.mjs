@@ -284,7 +284,7 @@ test("--agents above the limit, a missing project, or an insecure server is refu
   const cases = [
     [["--agents", "1001"], /--agents must be an integer from 1 to 1000/],
     [["--agents", "0"], /--agents must be an integer from 1 to 1000/],
-    [["--server", "http://example.com", "--token", "x"], /is not https: the owner token goes with every request/],
+    [["--server", "http://example.com", "--token", "x"], /is not https: the developer's token goes with every request/],
   ];
   for (const [argv, message] of cases) {
     const r = await run(t, server, argv);

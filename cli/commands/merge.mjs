@@ -130,7 +130,7 @@ export default async function mergeCommand() {
       }
       journal.clear();
       if (landed) return console.log(`${id}: the landing in this checkout is cancelled. ${id} at ${short(head)} is already on the baseline through another merge commit, so its landing lease is left for that merge to be recorded.`);
-      if (ours) return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+      if (ours) return console.log(`${id}: the merge is cancelled; its holder can push a new revision.`);
       return console.log(`${id}: the landing in this checkout is cancelled. ${id} is ${now}, and nothing changed on the server${item.state === "accepted" ? `; merge its accepted revision with: atelier merge ${id}` : ""}.`);
     } finally { unlock(); }
   }
@@ -185,7 +185,7 @@ export default async function mergeCommand() {
     // baseline already holds is not read.
     const identity=d.policy?.commitIdentity ?? die(`${NO_IDENTITY(name)}. Nothing was merged.`);
     const taskRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,item.acceptedHead);
-    if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's owner rewrites those commits under an allowed identity and submits a new revision, or the owner allows the address with atelier init --agent-email EMAIL.`);
+    if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's holder rewrites those commits under an allowed identity and submits a new revision, or the developer allows the address with atelier init --agent-email EMAIL.`);
     if (refreshed?.policy) {
       if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
       // The accepted revision's own changes: those since the newest baseline
@@ -237,12 +237,12 @@ export default async function mergeCommand() {
         const tree=/^[0-9a-f]{40,64}$/.test(mergedTree)?mergedTree:target;
         const entries=treeEntries(git(['ls-tree','-r','-z','--full-tree',tree],{cwd,raw:true}));
         const clashes=pathCollisions(entries.map(e=>e.path));
-        if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's owner must rename or remove all but one of each and submit a new revision`);}
+        if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's holder must rename or remove all but one of each and submit a new revision`);}
         // The landing reads the ControlPlane policy and receipt template
         // and writes the receipt; a symlink on one of those paths would
         // take the read or the write outside the checkout.
         const links=landingSymlinks(entries);
-        if(links.length){journal.clear();die(`the merge would put a symlink where the landing reads or writes its ControlPlane files: ${links.join(', ')}. The landing would follow it out of the checkout. Nothing was merged; the task's owner must replace each with the file or folder itself and submit a new revision`);}
+        if(links.length){journal.clear();die(`the merge would put a symlink where the landing reads or writes its ControlPlane files: ${links.join(', ')}. The landing would follow it out of the checkout. Nothing was merged; the task's holder must replace each with the file or folder itself and submit a new revision`);}
         // A file that this checkout's Git configuration runs (a hook, a
         // filter or merge driver script, an included configuration file)
         // and that the merge would change would run during the merge, or
@@ -251,7 +251,7 @@ export default async function mergeCommand() {
         let runs;
         try{runs=touchedExecutables(git(['diff','--name-only','--no-renames','-z',local,tree],{cwd,raw:true}).split('\0').filter(Boolean),executablePaths(cwd,gitEnv()));}
         catch(error){journal.clear();die(error.message);}
-        if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
+        if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's holder submit a revision that leaves them alone`);}
         // The merge onto the baseline goes through the merge pipeline
         // (cli/merge-pipeline.mjs) and runs no generator here: outputs the
         // baseline would hold that neither the accepted revision nor the
@@ -264,9 +264,9 @@ export default async function mergeCommand() {
         // bound to the accepted head and never carries over to outputs
         // generated after it.
         const preview=previewMerge(cwd,local,target,{git});
-        if(!preview.error&&(preview.regenerate.length||preview.generated.length)){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}). The regenerated outputs were never checked or reviewed, so nothing was merged and ${id} stays accepted. The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}
+        if(!preview.error&&(preview.regenerate.length||preview.generated.length)){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}). The regenerated outputs were never checked or reviewed, so nothing was merged and ${id} stays accepted. The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}
         const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false});
-        if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
+        if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
         if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
         const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
         if(receipt)git(['add',receipt],{cwd});

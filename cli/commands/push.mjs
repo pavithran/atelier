@@ -98,7 +98,7 @@ export default async function pushCommand() {
     const onRoute = !credential && RUNNER_ROUTE.test(url.replace(/\/+$/, ""));
     const fork = onRoute ? git(["config", "--get", "atelier.fork-remote"], { allowFail: true }).stdout?.trim() || null : null;
     const { item } = await call("GET", I(name, id), undefined, as);
-    const ownerHint = `The owner can push it from a workspace on the fork itself: atelier claim ${id} --as ${item.owner ?? "HOLDER"} --runner ${item.runner ?? "home:NAME"}, then atelier push.`;
+    const ownerHint = `The developer can push it from a workspace on the fork itself: atelier claim ${id} --as ${item.owner ?? "HOLDER"} --runner ${item.runner ?? "home:NAME"}, then atelier push.`;
     try {
       pushCommitsInTurn(git, undefined, { remote, branch, opts: { token: credential?.token, env: credentialEnv }, say: (line) => console.log(line), fallback: fork, ownerHint, refusal: (r.stderr || r.stdout || "").trim() });
       r = { status: 0 };
@@ -124,7 +124,7 @@ export default async function pushCommand() {
   // until a later push, or Atelier's own retry, completes it.
   if (item.secretScan === item.head) console.log(`${id}: the secret scan of ${short(item.head)} has not completed; acceptance waits for it. Run atelier push again to retry it.`);
   for (const f of (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared)) {
-    console.log(f.unscanned ? `${id}: the secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; the flag blocks acceptance until the owner clears it (atelier clear-secret ${id} --note "why") or a push removes the line.`
-      : `${id}: a key pattern was added at ${f.file}:${f.line}; the flag blocks acceptance until the owner clears it (atelier clear-secret ${id} --note "why") or a push removes the line.`);
+    console.log(f.unscanned ? `${id}: the secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; the flag blocks acceptance until the developer clears it (atelier clear-secret ${id} --note "why") or a push removes the line.`
+      : `${id}: a key pattern was added at ${f.file}:${f.line}; the flag blocks acceptance until the developer clears it (atelier clear-secret ${id} --note "why") or a push removes the line.`);
   }
 }

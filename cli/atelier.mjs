@@ -130,7 +130,7 @@ export function apiToken() {
     if (runner) return runner;
     if (name && !ownerNoticeGiven) {
       ownerNoticeGiven = true;
-      process.stderr.write(`runner ${name} has no runner token: running with the owner's credential\n`);
+      process.stderr.write(`runner ${name} has no runner token: running with the developer's credential\n`);
     }
   } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
@@ -455,7 +455,7 @@ export const cfg = isMain ? loadConfig() : {};
 
 // The server says which actor stands for the project owner; `login` records it.
 export const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";
-export const OWNER_NAME = cfg.ownerName ?? "the project owner";
+export const OWNER_NAME = cfg.ownerName ?? "the developer";
 
 // The server in use: the one `login` is checking, else ATELIER_SERVER, else
 // the one config.json names. Every request goes through here, so an address
@@ -482,7 +482,7 @@ export function insecureServer(url) {
   try { parsed = new URL(url); } catch { return `${url} is not a URL; name the server as https://HOST`; }
   if (parsed.protocol === "https:") return undefined;
   if (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname)) return undefined;
-  return `${url} is not https: the owner token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
+  return `${url} is not https: the developer's token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
 }
 
 // A session driving Atelier by hand reads the project's AGENTS.md and the
@@ -1391,7 +1391,7 @@ export const flat = (value) => stripVTControlCharacters(String(value)).replace(/
 // line per item, and any text a person or agent wrote flattened.
 export const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
 // `origin` is the server in use, for the link to each merge by override.
-export function formatStanding(s, ownerName = "the project owner", origin = "") {
+export function formatStanding(s, ownerName = "the developer", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const mode = s.familyMode?.single ? ` (single-family: ${flat(s.familyMode.single)})` : "";
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
@@ -1468,9 +1468,9 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   } else if (submitted && gate.ready) {
     outcome = "submitted"; exitCode = 0;
     unresolved = "none";
-    accept = "waiting for the owner"; merge = "not yet; it follows acceptance";
+    accept = "waiting for the developer"; merge = "not yet; it follows acceptance";
     ownerAction = `accept ${id} at ${short(head)}: atelier accept ${id} --head ${head}`;
-    line = "Outcome: submitted, ready for the owner";
+    line = "Outcome: submitted, ready for the developer";
   } else {
     outcome = "checked_but_blocked"; exitCode = 3;
     unresolved = `${blockers.length} (named on the last line)`;
@@ -1487,7 +1487,7 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
     `Accept: ${accept}`,
     `Merge: ${merge}`,
     `Deploy: ${deploy}`,
-    `Owner action: ${ownerAction}`,
+    `Developer action: ${ownerAction}`,
   ];
   const json = {
     outcome, exitCode, outcomeLine: line, head, submitted,
@@ -1545,7 +1545,7 @@ export function criteriaNotice(id, change) {
 export function formatTask(item) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
     // The note is carried whole, with its line breaks (t480); only terminal control codes go.
-    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
+    item.dispatch?.note ? `Note (the developer's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {
@@ -1616,12 +1616,12 @@ export function formatCriteriaReviews(view) {
       lines.push(`    ${i + 1}. ${f.severity} ${flat(f.file)} ${flat(f.text)}${v ? ` [${flat(v.verdict)}${flat(v.note) ? `: ${flat(v.note)}` : ""}]` : " [no resolution recorded]"}`);
     });
     // The criteria the review flagged as checks after deploy (t457).
-    for (const c of r.checks ?? []) lines.push(`    Check after deploy: criterion ${flat(String(c.criterion))}, ${c.by === "owner" ? "the project owner's" : "the orchestrator's"}: ${flat(c.text)}`);
+    for (const c of r.checks ?? []) lines.push(`    Check after deploy: criterion ${flat(String(c.criterion))}, ${c.by === "owner" ? "the developer's" : "the orchestrator's"}: ${flat(c.text)}`);
   }
   // The checks that stand for the criteria as they are now.
   if (view.checks?.length) {
     lines.push(`  Checks after deploy for revision ${view.status?.rev ?? 0}, the builder cannot verify these in its workspace:`);
-    for (const c of view.checks) lines.push(`    criterion ${flat(String(c.criterion))}: ${c.by === "owner" ? "the project owner" : "the orchestrator"} checks it once deployed. ${flat(c.text)}`);
+    for (const c of view.checks) lines.push(`    criterion ${flat(String(c.criterion))}: ${c.by === "owner" ? "the developer" : "the orchestrator"} checks it once deployed. ${flat(c.text)}`);
   }
   return lines.join("\n");
 }

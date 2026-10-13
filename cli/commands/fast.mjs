@@ -73,7 +73,7 @@ async function fastTake(name) {
   if (args.json) return console.log(JSON.stringify({ item: r.item, dir: r.dir, base: r.base, head: r.head, resumed: r.resumed }));
   console.log(`${id} is yours, ${as}, in fast mode: no fork, no write token. Work here, in a clean clone of main at ${r.base.slice(0, 12)}:\n  cd ${JSON.stringify(r.dir)}`);
   if (r.resumed) console.log(`The clone holds ${r.head.slice(0, 12)}, a commit never reported; report it with atelier fast ready ${id}.`);
-  console.log(`Then: commit with your Agent line, then atelier fast ready ${id}. Nothing is pushed; the owner lands it with atelier fast land.`);
+  console.log(`Then: commit with your Agent line, then atelier fast ready ${id}. Nothing is pushed; the developer lands it with atelier fast land.`);
 }
 
 // atelier fast ready ID, in the clone fast take made: reports its head, or
@@ -90,5 +90,5 @@ async function fastReadyReport(name) {
   if (!builder) die(`${commit.slice(0, 12)} has no Agent: line naming its builder; amend it to end with Agent: ${as}`);
   const top = git(["rev-parse", "--show-toplevel"], { cwd });
   const r = await call("POST", `${I(name, id)}/fast-ready`, { commit, base, builder, workspace: top }, as);
-  console.log(`${id} is ready for fast land at ${r.ready.commit}, built by ${r.ready.builder} on main at ${r.ready.base.slice(0, 12)}. The owner lands it: atelier fast land ${id}=${r.ready.commit}`);
+  console.log(`${id} is ready for fast land at ${r.ready.commit}, built by ${r.ready.builder} on main at ${r.ready.base.slice(0, 12)}. The developer lands it: atelier fast land ${id}=${r.ready.commit}`);
 }

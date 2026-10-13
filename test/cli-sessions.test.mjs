@@ -207,7 +207,7 @@ test("wrap refuses to commit when a registered check fails, naming it with its e
   if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = refusesFailingChecks(f, {}, /^atelier: wrap refuses to commit with a failing check: exit 7 \(exited 7\)\. Fix it, or run again with --allow-failing to commit anyway\./m);
-  assert.match(r.stdout, /Reported: exit 7: failed \(owner's checkout, not a clean clone\)\./, "the result was printed before the refusal");
+  assert.match(r.stdout, /Reported: exit 7: failed \(developer's checkout, not a clean clone\)\./, "the result was printed before the refusal");
   assert.doesNotMatch(r.stdout, /Uncommitted files|Refresh STATE\.md|Relay:/, "wrap stopped right after the checks");
 });
 
@@ -403,7 +403,7 @@ test("only the project owner records a session, and wrap says so before it commi
   const f = fixture(t), before = snapshot(f.checkout);
   const r = f.runWith({ ATELIER_ACTOR: "claude-code/opus-5.5" }, "wrap", "Mine", "--no-check");
   assert.equal(r.status, 1);
-  assert.match(r.stderr, /only the project owner records a session/);
+  assert.match(r.stderr, /only the developer records a session/);
   assert.deepEqual(snapshot(f.checkout), before);
   assert.deepEqual(f.requests(), []);
 });

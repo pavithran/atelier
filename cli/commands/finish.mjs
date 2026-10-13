@@ -10,7 +10,7 @@ export default async function finishCommand() {
   const name = project(), id = itemArg(), as = await actor();
   requireWorkspace("finish", name, id, as);
   const d = await call("GET", I(name,id), undefined, as);
-  if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
+  if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and held by you");
   if (git(["status","--porcelain"])) die("commit your changes before finishing");
   const head = git(["rev-parse","HEAD"]);
   // Advisory: failure to read the baseline must not prevent push or checks.

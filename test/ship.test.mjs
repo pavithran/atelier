@@ -293,7 +293,7 @@ test("ship --dry-run prints the steps and the approvals missing, and runs nothin
   assert.equal(out[0], `Ship demo at main @ ${f.head.slice(0, 8)}, from docs/atelier/ship.json, class web:`);
   assert.ok(out.includes("  2. deploy           bin/deploy.sh  [deploy: no approval at this revision]"), r.stdout);
   assert.ok(out.includes(`  3. verify-delivery  GET ${f.url}/live, expecting 200`), r.stdout);
-  assert.ok(out.includes("  5. push             git push --no-force github refs/heads/main:refs/heads/main  (no approval: the owner's own act at this revision)"), r.stdout);
+  assert.ok(out.includes("  5. push             git push --no-force github refs/heads/main:refs/heads/main  (no approval: the developer's own act at this revision)"), r.stdout);
   assert.ok(out.includes(`  atelier approve deploy --head ${f.head} --project demo`), r.stdout);
   // The push takes no approval, so none is asked for.
   assert.ok(!out.includes("atelier approve push"), r.stdout);
@@ -310,7 +310,7 @@ test("ship with an approval missing refuses before running anything, naming the 
   const f = await fixture(t);
   const r = await f.run(["ship", "--push"]);
   assert.equal(r.status, 1, r.stdout);
-  assert.equal(r.stderr, `atelier: ship refused before running anything: an approval is missing at ${f.head.slice(0, 8)}. The project owner approves with:\n  atelier approve deploy --head ${f.head} --project demo\nthen runs atelier ship again.\n`);
+  assert.equal(r.stderr, `atelier: ship refused before running anything: an approval is missing at ${f.head.slice(0, 8)}. The developer approves with:\n  atelier approve deploy --head ${f.head} --project demo\nthen runs atelier ship again.\n`);
   assert.match(r.stdout, /bin\/deploy\.sh  \[deploy: no approval at this revision\]/);
   assert.ok(!existsSync(f.marker));
   assert.deepEqual(f.writes(), [], "nothing used, run or recorded");
@@ -358,7 +358,7 @@ test("ship stops at the first step that fails, says what ran and what did not, a
   assert.equal(r.stderr, [
     "atelier: ship stopped at deploy: bin/deploy.sh exited 3.",
     "Ran before it: commit. Not run: verify-delivery, wrap. Each step that ran is recorded on the ledger.",
-    `The approval used here (a1 for deploy) is spent; after fixing the cause, the owner approves again: atelier approve deploy --head ${f.head} --project demo`,
+    `The approval used here (a1 for deploy) is spent; after fixing the cause, the developer approves again: atelier approve deploy --head ${f.head} --project demo`,
     "",
   ].join("\n"));
   assert.deepEqual(f.state.runs.map((x) => [x.step, x.passed, x.exitStatus]), [["commit", true, null], ["deploy", false, 3]]);
@@ -409,7 +409,7 @@ test("ship refuses a dirty checkout, a HEAD the baseline does not hold, another 
   assert.equal(ahead.status, 1);
   assert.match(ahead.stderr, /HEAD [0-9a-f]{8} is not the baseline's head [0-9a-f]{8}; ship runs only the revision Atelier holds/);
   const agent = await f.run(["ship"], { ATELIER_ACTOR: "codex/gpt-6-astra" });
-  assert.equal(agent.stderr, "atelier: only the project owner ships: run ship as owner, without --as or ATELIER_ACTOR naming another actor\n");
+  assert.equal(agent.stderr, "atelier: only the developer ships: run ship as owner, without --as or ATELIER_ACTOR naming another actor\n");
   const elsewhere = await f.run(["ship", "--project", "demo"], {}, f.dir);
   assert.match(elsewhere.stderr, /^atelier: run ship in demo's registered checkout: cd /);
   assert.ok(!existsSync(f.marker));

@@ -113,7 +113,7 @@ test("atelier clear-secret needs a note before any server contact", async (t) =>
 
 test("the push's secret flag message names the command that clears it", () => {
   const push = readFileSync(resolve("cli/commands/push.mjs"), "utf8");
-  const said = push.match(/the flag blocks acceptance until the owner clears it[^.]*\./g) ?? [];
+  const said = push.match(/the flag blocks acceptance until the developer clears it[^.]*\./g) ?? [];
   assert.equal(said.length, 2);
   for (const line of said) assert.ok(line.includes('(atelier clear-secret ${id} --note "why")'), line);
 });

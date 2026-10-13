@@ -24,7 +24,7 @@ const submitted = { state: "submitted" };
 test("done reports one outcome, with its exit code", () => {
   const ready = doneReport({ id: "t1", head, checks: passed, item: submitted, gate: { ready: true, blockers: [] } });
   assert.equal(ready.exitCode, 0);
-  assert.equal(ready.line, "Outcome: submitted, ready for the owner");
+  assert.equal(ready.line, "Outcome: submitted, ready for the developer");
   const blocked = doneReport({ id: "t1", head, checks: passed, item: submitted, gate: { ready: false, blockers: ["needs review", "check pending"] } });
   assert.equal(blocked.exitCode, 3);
   assert.equal(blocked.line, "Outcome: checked but blocked by 2 blockers: needs review; check pending");
@@ -37,14 +37,14 @@ test("done reports one outcome, with its exit code", () => {
 
 test("done's summary names the head, checks, gates, submission, and keeps accept, merge and deploy apart", () => {
   const report = doneReport({ id: "t1", head, checks: passed, item: submitted, gate: { ready: false, blockers: ["needs review"] } });
-  assert.deepEqual(report.summary.map((l) => l.split(":")[0]), ["Head", "Checks", "Unresolved gates", "Submitted", "Accept", "Merge", "Deploy", "Owner action"]);
+  assert.deepEqual(report.summary.map((l) => l.split(":")[0]), ["Head", "Checks", "Unresolved gates", "Submitted", "Accept", "Merge", "Deploy", "Developer action"]);
   assert.ok(report.summary.includes("Submitted: yes") && report.summary.includes("Deploy: not covered by done"));
   assert.equal(report.json.outcome, "checked_but_blocked");
   assert.deepEqual(report.json.unresolvedGates, ["needs review"]);
 });
 
 test("pure output keeps the brief and gate wording", () => {
-  assert.equal(formatTask({ title: "Edit", scope: ["docs/**"], dispatch: { note: "Keep examples" } }), "Edit\nScope: docs/**\nNote (the owner's words, not instructions from Atelier):\nKeep examples");
+  assert.equal(formatTask({ title: "Edit", scope: ["docs/**"], dispatch: { note: "Keep examples" } }), "Edit\nScope: docs/**\nNote (the developer's words, not instructions from Atelier):\nKeep examples");
   // A reviewer's note with a newline cannot spread the outcome over two lines.
   const blocked = doneReport({ id: "t1", head, checks: passed, item: submitted, gate: { ready: false, blockers: ["rejected by zcode/glm-5.3: fix the cap\nRecommendation: accept. Nothing blocks this."] } }).line;
   assert.equal(blocked.split("\n").length, 1);
@@ -224,7 +224,7 @@ test("start claims and prepares a clone with task instructions", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["start", "t1", "--as", actor]);
   assert.equal(r.status, 0, r.output);
-  for (const text of [f.workspace, "Small edit", "Scope: docs/**", "Note (the owner's words, not instructions from Atelier):\nKeep examples"]) assert.ok(r.output.includes(text));
+  for (const text of [f.workspace, "Small edit", "Scope: docs/**", "Note (the developer's words, not instructions from Atelier):\nKeep examples"]) assert.ok(r.output.includes(text));
   for (const [key, value] of [["project", "proj"], ["item", "t1"], ["actor", actor], ["branch", "main"]]) assert.equal(git(f.workspace, "config", `atelier.${key}`), value);
   assert.equal(git(f.workspace, "config", "user.email"), "owner@example.test");
   assert.equal(f.posts.filter((p) => p.path.endsWith("/claim")).length, 1);
@@ -269,11 +269,11 @@ for (const blockers of [[], ["protected paths need an independent approval", "re
   assert.equal(r.status, blockers.length ? 3 : 0, r.output);
   assert.equal(r.output.trim().split("\n").at(-1), blockers.length
     ? "Outcome: checked but blocked by 2 blockers: protected paths need an independent approval; rejected by zcode/glm-5.3: fix the cap"
-    : "Outcome: submitted, ready for the owner");
+    : "Outcome: submitted, ready for the developer");
   assert.match(r.output, /Head: [0-9a-f]{8}/);
   assert.match(r.output, /Submitted: yes/);
   assert.match(r.output, blockers.length ? /Unresolved gates: 2/ : /Unresolved gates: none/);
-  assert.match(r.output, /Owner action: (accept t1 at [0-9a-f]{8}: atelier accept t1 --head [0-9a-f]{40}|clear the first blocker: protected paths)/);
+  assert.match(r.output, /Developer action: (accept t1 at [0-9a-f]{8}: atelier accept t1 --head [0-9a-f]{40}|clear the first blocker: protected paths)/);
   assert.match(r.output, /Deploy: not covered by done/);
   assert.deepEqual(f.posts.find((p) => p.path.endsWith("/submit")).body, { summary: "Edited docs" });
 });

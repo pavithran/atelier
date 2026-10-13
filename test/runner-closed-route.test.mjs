@@ -145,7 +145,7 @@ for (const state of STATES) test(`a task ${state} before its claim ends the job 
   assert.deepEqual(r.requests, ["POST claim"]); // nothing else is called once the claim answers the state
   assert.equal(r.head, null);
   assert.deepEqual(r.reports, []);
-  assert.doesNotMatch(r.log, /released|claim refused|needs the owner's attention/);
+  assert.doesNotMatch(r.log, /released|claim refused|needs the developer's attention/);
 });
 
 for (const state of STATES) test(`a task ${state} during its push ends the job with the state and keeps the commit`, async (t) => {
@@ -166,7 +166,7 @@ for (const state of STATES) test(`a task ${state} during its push ends the job w
   assert.equal(git(["log", "-1", "--format=%s"], r.workspace), "work");
   assert.equal(git(["status", "--porcelain"], r.workspace), "");
   assert.deepEqual(r.reports, []);
-  assert.doesNotMatch(r.log, /released|claim preserved|needs the owner's attention/);
+  assert.doesNotMatch(r.log, /released|claim preserved|needs the developer's attention/);
 });
 
 for (const state of STATES) test(`a task ${state} during finish, after a successful push, ends the job with the state`, async (t) => {
@@ -185,7 +185,7 @@ for (const state of STATES) test(`a task ${state} during finish, after a success
   assert.equal(server.item.head, r.head);
   assert.notEqual(r.head, fork.seedHead);
   assert.deepEqual(r.reports, []);
-  assert.doesNotMatch(r.log, /released|claim preserved|needs the owner's attention/);
+  assert.doesNotMatch(r.log, /released|claim preserved|needs the developer's attention/);
 });
 
 test("a claim refused as forbidden is a refusal, not a terminal state", async (t) => {
@@ -214,6 +214,6 @@ test("a nonterminal finish failure preserves the claim and charges the task coun
   assert.doesNotMatch(r.log, /state: /);
   // Charged as a task failure: the next poll runs it again, and the second failure caps it.
   assert.equal(claims(r.requests), 2);
-  assert.match(r.log, /needs the owner's attention after 2 failures/);
+  assert.match(r.log, /needs the developer's attention after 2 failures/);
   assert.notEqual(r.head, fork.seedHead);
 });

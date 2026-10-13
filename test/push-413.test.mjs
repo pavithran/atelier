@@ -83,7 +83,7 @@ test("a single commit still too large names itself and its size, and says how th
   s.git(["push", "-q", "origin", "HEAD:main"], { cwd: s.work });
   const small = s.commit("small", 2), big = s.commit("regenerate screenshots", 20);
   s.commit("after", 1);
-  const hint = "The owner can push it from a workspace on the fork itself: atelier claim t9 --as claude-code/x --runner home:studio-3, then atelier push.";
+  const hint = "The developer can push it from a workspace on the fork itself: atelier claim t9 --as claude-code/x --runner home:studio-3, then atelier push.";
   assert.throws(() => pushCommitsInTurn(s.git, s.work, { remote: "origin", branch: "main", ownerHint: hint }), (error) => {
     assert.match(error.message, new RegExp(`commit ${big.slice(0, 8)} \\("regenerate screenshots"\\) is too large to push on its own: 22 objects, about \\d+ (KB|MB) as git stores them`));
     assert.match(error.message, new RegExp(`1 of 3 unpushed commits went through; the remote holds main at ${small.slice(0, 8)}`));

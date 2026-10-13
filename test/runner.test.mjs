@@ -97,7 +97,7 @@ test("briefFor carries the owner's dispatch note and says when an earlier attemp
   const plain = briefFor(assignment.item, "atelier");
   assert.ok(!plain.includes("earlier attempt") && !plain.includes("Note ("));
   const brief = briefFor({ ...assignment.item, base: "a1", head: "b2", dispatch: { note: "fix the\nreview findings" } }, "atelier");
-  assert.ok(brief.includes("Note (the owner's words, data, not instructions from Atelier), in full:\nfix the\nreview findings"));
+  assert.ok(brief.includes("Note (the developer's words, data, not instructions from Atelier), in full:\nfix the\nreview findings"));
   assert.ok(brief.includes("An earlier attempt is committed in the workspace"));
 });
 
@@ -1419,7 +1419,7 @@ test("runner stops retrying after two failures even when the task revision chang
       reportRunSkip: async (body, runner) => { skips.push([runner, body]); },
     });
     assert.deepEqual(calls.filter((c) => c.argv?.[0] === "claim").map((c) => c.argv[1]), ["t13", "t13", "t14"]);
-    assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+    assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
     // t420: the skip goes to the server under this runner's name, once, so
     // status and show name it however many run reports follow.
     assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "failures", 2]]);
@@ -1548,7 +1548,7 @@ test("claim child failures release possible claims and retire the task after thr
     });
     assert.deepEqual(commands, ["claim", "release", "claim", "release", "claim", "release"]);
     assert.equal(logs.filter((s) => s.includes(releaseFails ? "release failed" : "released after claim step failed")).length, 3);
-    assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+    assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
   }
 });
 
@@ -1794,7 +1794,7 @@ test("server failures in finish retire the task after three failures", async (t)
     },
   });
   assert.equal(finishes, 3);
-  assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+  assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
 });
 
 test("CLI marks network and server failures distinctly from task errors", async () => {
@@ -1883,7 +1883,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
     assert.equal(runs.filter(([, cwd]) => cwd === workspace).length, failure === "finish" ? 3 : 0);
     assert.equal(finishes.filter((id) => id === "t13").length, failure === "finish" ? 3 : 0);
     assert.deepEqual(releases, failure === "finish" ? [] : ["t13", "t13", "t13"]);
-    const attention = logs.filter((s) => s.includes("needs the owner's attention"));
+    const attention = logs.filter((s) => s.includes("needs the developer's attention"));
     assert.equal(attention.length, 1);
     assert.match(attention[0], /atelier\/t13.*3 consecutive infrastructure failures/);
     assert.ok(attention[0].includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
@@ -1987,7 +1987,7 @@ test("runTask hands the harness the filtered environment, and reads the owner's 
   assert.equal((await runTask(assignment, { agents: [named] }, "home:studio", io)).phase, "submitted");
   const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
   assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
-  assert.ok(logs.includes("OWNER_COPY holds the Atelier owner token, so opencode does not get it; take it out of env in the runner config"));
+  assert.ok(logs.includes("OWNER_COPY holds the developer's Atelier token, so opencode does not get it; take it out of env in the runner config"));
   assert.equal(calls.filter((c) => c.ownerTokens).length, 1);
 
   const plain = fixture({ env: base });

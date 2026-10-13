@@ -42,5 +42,5 @@ export default async function projectsCommand() {
     delete cfg.projects[name];
     saveConfig(cfg);
   }
-  console.log(`${name} removed from the project index and local config.${dropped} The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the owner.`);
+  console.log(`${name} removed from the project index and local config.${dropped} The Artifacts repository and project Ledger data are retained. Deleting a repository requires a separate, deliberate action by the developer.`);
 }

@@ -113,7 +113,7 @@ function linesFor(e, verdicts, used, owner) {
         out.push(`${i + 1}. ${flat(f.severity)} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
         const key = findingKey(d.head, e.actor, i + 1, { file: String(f.file ?? ""), text: String(f.text ?? "") });
         const v = verdicts.get(key);
-        if (v) { used.add(key); out.push(`owner's verdict: ${flat(v.verdict)}${v.note ? `. ${flat(v.note)}` : ""}${verdictPlace(v.seq, v.acting)}`); }
+        if (v) { used.add(key); out.push(`developer's verdict: ${flat(v.verdict)}${v.note ? `. ${flat(v.note)}` : ""}${verdictPlace(v.seq, v.acting)}`); }
       });
       return out;
     }
