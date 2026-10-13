@@ -1039,29 +1039,46 @@ function missingMergeFixture({ branchFails = false } = {}) {
   return { merge, io, calls, logs, state, task };
 }
 
-// t591 (codex/gpt-6-astra's review, finding 2): when Git cannot read the
-// baseline at all, the job knows no baseline head; the head read over HTTP
-// at the miss is the one kept, and a head never known is never taken as the
-// baseline having moved, so the review is not claimed again while it stands.
-test("a missing merge whose baseline Git cannot read is claimed once over 20 polls while the baseline's head stands", async (t) => {
+// t591 (codex/gpt-6-astra's third review): a fetch that fails (the network,
+// a token, Git) read nothing, so it is no evidence the merge is missing. It
+// is an ordinary failure, released and served again on the next poll, never
+// kept as a missing commit; only a baseline that was read and lacks the
+// merge is. Here the baseline's fetch fails twice, then reads the merge,
+// and the review records its verdict.
+test("a baseline fetch that fails transiently is retried, not kept as a missing merge, and the review records its verdict", async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
-  const { io, calls, task } = missingMergeFixture({ branchFails: true });
+  const { merge, io, calls, task } = missingMergeFixture();
+  let held = false, branchFetches = 0;
+  io.hasCommit = async () => held;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (ref === merge) throw new Error("fatal: unable to access the repository");
+    if (++branchFetches <= 2) throw new Error("fatal: unable to access 'https://artifacts.example/baseline/': Could not resolve host");
+    held = true;
+  };
+  io.checkout = async (_dir, head) => { assert.ok(held); assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : ref === "FETCH_HEAD" ? merge : assert.fail(`unexpected rev-parse ${ref}`);
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
-  let polls = 0, clock = 0;
+  const skips = [], runs = [], heads = [];
+  let polls = 0, reviewed = false;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
-    async reportReviewSkip() {},
-    async baselineHead() { return "1".repeat(40); },
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { skips.push(body); },
+    async reportRun(body) { runs.push(body); },
+    async baselineHead() { heads.push(polls); return "1".repeat(40); },
     async queue() {
-      polls++;
-      clock = polls * 60_000;
-      if (polls > 20) { process.emit("SIGINT"); return []; }
+      reviewed = calls.some((c) => c.argv?.[0] === "review");
+      if (++polls > 6 || reviewed) { process.emit("SIGINT"); return []; }
       return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
     },
   });
-  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
-  assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 1);
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 3, "served on each of three polls");
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 2);
+  const verdict = calls.find((c) => c.argv?.[0] === "review").argv;
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+  assert.ok(verdict.includes("--approve"));
+  assert.deepEqual([skips.length, runs.length, heads.length], [0, 0, 0], "no miss was kept, reported or checked");
 });
 
 // t591 (codex/gpt-6-astra's review, finding 1): a server with the
