@@ -454,7 +454,7 @@ test("land --workflow pauses the Workflow on a conflict, and the rerun after the
   const wf = scriptWorkflow(f);
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
+  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
   assert.match(r.output, /The landing Workflow is paused at its conflict stage, holding no lease\. Once the conflicts are resolved, committed and pushed with atelier push, run atelier land t1 --workflow again: it resumes this landing\./);
   assert.equal(wf.events.length, 1);
   assert.deepEqual({ ...wf.events[0].payload, reason: undefined }, { round: 0, conflict: true, files: ["work.txt"], reason: undefined });
@@ -479,10 +479,11 @@ test("land --workflow pauses the Workflow on a conflict, and the rerun after the
 test("land --workflow tells the Workflow a conflict regeneration did not settle by its whole message, not the merge step's note", async (t) => {
   if (!canInspectSlots(t)) return;
   // The same conflict as the plain landing's: one file the regenerate
-  // command rewrites, one it does not, so taking either side and
-  // regenerating leaves work.txt and the merge stops. That stop's error
-  // data carries the note the ledger's merge step records (`reason`); the
-  // Workflow's conflict record gets the message the owner read.
+  // command rewrites, one it does not, in a project that declares no merge
+  // manifest, so taking either side and regenerating leaves work.txt and
+  // the merge stops. That stop's error data carries the note the ledger's
+  // merge step records (`reason`); the Workflow's conflict record gets the
+  // message the owner read.
   const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
   const wf = scriptWorkflow(f);
   writeFileSync(join(f.checkout, "gen-fixtures.txt"), "from main\n");
@@ -491,13 +492,14 @@ test("land --workflow tells the Workflow a conflict regeneration did not settle 
   git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt/);
+  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  gen-fixtures\.txt\n  work\.txt\n/);
   assert.equal(wf.events.length, 1);
   const { payload } = wf.events[0];
   assert.deepEqual({ ...payload, reason: undefined }, { round: 0, conflict: true, files: ["gen-fixtures.txt", "work.txt"], reason: undefined });
-  assert.match(payload.reason, /^the merge of main at [0-9a-f]{8} into t1's workspace stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt\nTaking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it\. /);
+  assert.match(payload.reason, /^the merge of main at [0-9a-f]{8} into t1's workspace stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  gen-fixtures\.txt\n  work\.txt\nTaking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it\. /);
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
+  assert.deepEqual(merge.body.source, ["gen-fixtures.txt", "work.txt"]);
 });
 
 test("land --workflow ends with the Workflow's own reason when the Workflow fails", async (t) => {
