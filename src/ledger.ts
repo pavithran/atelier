@@ -1811,12 +1811,12 @@ export class Ledger extends DurableObject<Env> {
   item(id: string): Item {
     const row = this.sql.exec(`SELECT * FROM items WHERE id = ?`, id).toArray()[0];
     if (!row) throw new RuleError("no_item", `no item ${id}`, 404);
-    const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed') ORDER BY seq`, id).toArray();
+    const events = this.sql.exec(`SELECT actor, kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`, id).toArray();
     return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
   }
 
   items(): Item[] {
-    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed') ORDER BY seq`).toArray();
+    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`).toArray();
     const histories = new Map<string, Parameters<typeof pushActors>[0]>();
     for (const row of events) {
       const id = row.item_id as string;
@@ -2417,7 +2417,7 @@ export class Ledger extends DurableObject<Env> {
   private withPushActors(rows: Row[]): Item[] {
     const ids = JSON.stringify(rows.map((r) => r.id as string));
     const histories = new Map<string, Parameters<typeof pushActors>[0]>();
-    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE item_id IN (SELECT value FROM json_each(?)) AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed') ORDER BY seq`, ids).toArray();
+    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE item_id IN (SELECT value FROM json_each(?)) AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`, ids).toArray();
     for (const row of events) {
       const id = row.item_id as string;
       const history = histories.get(id) ?? [];
