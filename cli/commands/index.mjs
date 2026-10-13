@@ -13,6 +13,7 @@ import command_check from "./check.mjs";
 import command_check_log from "./check-log.mjs";
 import command_claim from "./claim.mjs";
 import command_clean from "./clean.mjs";
+import command_clear_secret from "./clear-secret.mjs";
 import command_criteria_finding from "./criteria-finding.mjs";
 import command_criteria_review from "./criteria-review.mjs";
 import command_criteria_review_claim from "./criteria-review-claim.mjs";
@@ -101,6 +102,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/check-log.mjs", run: command_check_log },
   { path: "cli/commands/claim.mjs", run: command_claim },
   { path: "cli/commands/clean.mjs", run: command_clean },
+  { path: "cli/commands/clear-secret.mjs", run: command_clear_secret },
   { path: "cli/commands/criteria-finding.mjs", run: command_criteria_finding },
   { path: "cli/commands/criteria-review.mjs", run: command_criteria_review },
   { path: "cli/commands/criteria-review-claim.mjs", run: command_criteria_review_claim },
