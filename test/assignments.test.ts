@@ -234,12 +234,33 @@ test("withdrawal needs a note, restores the fallback rather than the superseded 
   assert.equal(recordAssignment(store, OWNER, input({ reason: "Back to astra." }), AT).supersedes, undefined);
 });
 
-test("the history keeps a renamed project's key and a removed model's choice as recorded", () => {
+// gpt-6-astra's sixth review of t622, follow-up 3: this test read literal
+// fields without renaming anything. The project is now renamed (its name
+// moves to a new one over the same key) and the model removed from the pool
+// before the history and the routing are read.
+test("after its project is renamed and its model removed, an assignment keeps its key and choice, and routing passes it over", async () => {
+  const names = new Map([["old-name", "k1"]]);
+  const resolve = async (name: string) => (names.has(name) ? { key: names.get(name)!, registered: true } : { key: name, registered: false });
+  const exists = async () => null;
   const store = memoryStore();
-  recordAssignment(store, OWNER, input({ scope: "old-key", evidence: ["old-key/t5#9"] }), AT);
+  const evidence = await checkEvidence([parseEvidenceRef("old-name/t5#9")], resolve, exists);
+  recordAssignment(store, OWNER, input({ scope: "k1", role: "review", evidence, choices: resolveChoices(["antigravity/gemini-4-argon"], POOL, "review") }), AT);
+  // The rename: the project answers to its new name, under the same key.
+  names.delete("old-name");
+  names.set("new-name", "k1");
+  assert.deepEqual(await checkEvidence([parseEvidenceRef("new-name/t5#9")], resolve, exists), ["k1/t5#9"]);
+  await assert.rejects(checkEvidence([parseEvidenceRef("old-name/t5#9")], resolve, exists), /no project old-name/);
+  // The removal: the pool no longer has Argon.
+  const pool = POOL.filter((e) => e.id !== "gemini-4-argon");
   const [view] = assignmentHistory(store.records());
-  // The listing (cli/model-roles.mjs) shows the key by the project's name now and marks a choice the pool lost.
-  assert.deepEqual([view.scope, view.evidence, view.choices.map((c) => c.actor)], ["old-key", ["old-key/t5#9"], ["codex/gpt-6-astra"]]);
+  assert.deepEqual([view.scope, view.evidence, view.choices.map((c) => c.actor), view.status], ["k1", ["k1/t5#9"], ["antigravity/gemini-4-argon"], "current"]);
+  // Routing in the renamed project reads it by its key, and passes over the removed choice to the fallback.
+  const bearing = applicableAssignments(currentAssignments(store.records()), "k1", ["review"]);
+  assert.deepEqual(bearing.map((a) => a.id), [view.id]);
+  const r = orderByAssignment(pool.map((e) => `${e.harness}/${e.id}`), (c) => c, bearing, () => null, FALLBACK.review, pool);
+  assert.equal(r.outcome.applied, null);
+  assert.match(r.outcome.skipped[0].why, /antigravity\/gemini-4-argon: not a candidate here/);
+  assert.match(r.outcome.lines.join("\n"), /No role assignment applies, so the reviewer selector/);
 });
 
 test("applicable assignments go most specific first: the role's own, then review; this project's, then every project's", () => {

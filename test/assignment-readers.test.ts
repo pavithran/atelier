@@ -476,3 +476,21 @@ test("tierReviewerPick and gateServesTier read every tier, gate and contributor 
   tierReviewerPick(tier, ["codex/gpt-6-astra"], [], (a) => { asked.push(a); return true; }, null, null, promote, pool);
   assert.ok(asked.includes("claude-code/sonnet-5.5") && !asked.includes("claude-code/sonnet-alias"));
 });
+
+// gpt-6-astra's sixth review of t622, finding 2: with the plan's preference
+// chosen, the builder's reasons named no build assignment, so which decision
+// was skipped, and why, was lost.
+test("routeParts: a preferred builder's reasons name each build assignment skipped for the preference", () => {
+  const a = assigned("build", ["claude-code/opus-5.5"]);
+  const [r] = routeParts(plan(part("a", { prefer: { actor: "codex/gpt-6-astra", reason: "knows the code" } })), { pool: POOL, events: [], policy, allowPaid: false, assignments: [a] });
+  assert.equal(r.builder?.actor, "codex/gpt-6-astra");
+  said(r.builder?.reasons, new RegExp(`Role assignment ${a.id} skipped: the plan's preference comes before role assignments`));
+  // A preference that fails a rule leaves the assignment to apply, and says so.
+  const [held] = routeParts(plan(part("a", { prefer: { actor: "codex/gpt-6-astra", reason: "knows the code" } })), { pool: [{ ...astra, state: "paused" as const, stateAt: AT }, argon, glm, opus, sonnet], events: [], policy, allowPaid: false, assignments: [a] });
+  assert.equal(held.builder?.actor, "claude-code/opus-5.5");
+  said(held.builder?.reasons, new RegExp(`Role assignment ${a.id} \\(build`));
+  // No assignment applies after a failed preference: the skipped ones and the fallback are named.
+  const none = assigned("build", ["zcode/glm-5.3"]);
+  const [fallback] = routeParts(plan(part("a", { prefer: { actor: "codex/gpt-6-astra", reason: "knows the code" } })), { pool: [{ ...astra, state: "paused" as const, stateAt: AT }, argon, { ...glm, roles: ["review" as const] }, opus, sonnet], events: [], policy, allowPaid: false, assignments: [none] });
+  said(fallback.builder?.reasons, new RegExp(`Role assignment ${none.id} skipped: no choice is eligible here`));
+});

@@ -462,10 +462,18 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   // Every verdict is a candidate, with the rules it failed as its refusal,
   // so an assigned model that may not build is passed over with its reason.
   const buildOrder = assignments.length ? orderByAssignment([...able, ...verdicts.filter((v) => v.build.length)], (v) => v.actor, applicableAssignments(assignments, null, ["build"]), (v) => (v.build.length ? v.build.join("; ") : null), FALLBACK.build, ctx.input.pool) : null;
-  if (!builder && buildOrder?.outcome.applied) {
+  // The reasons always say what became of the build assignments: with the
+  // plan's preference chosen, each is skipped as coming after it, as
+  // pickReviewer says of the previous round's reviewer (gpt-6-astra's sixth
+  // review of t622, finding 2); otherwise the one applied, or those skipped
+  // and the fallback.
+  const bearing = applicableAssignments(assignments, null, ["build"]);
+  if (builder && bearing.length) {
+    lead.push("The plan's preference comes before role assignments", ...bearing.map((a) => `Role assignment ${a.id} skipped: the plan's preference comes before role assignments`));
+  } else if (!builder && buildOrder?.outcome.applied) {
     builder = buildOrder.order[0];
     lead.push(...buildOrder.reasons(builder));
-  } else if (!builder && buildOrder && !part.prefer) lead.push(...buildOrder.outcome.lines);
+  } else if (!builder && buildOrder) lead.push(...buildOrder.outcome.lines);
   if (!builder && able.length) {
     const picked = spread(able, builds, "builds", ctx);
     builder = picked.pick;

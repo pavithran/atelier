@@ -70,11 +70,18 @@ export function cleanActing(header: string | null, owner: string, agentToken: bo
   return acting;
 }
 
-// The declared acting model must name a model registered in the owner's pool,
-// by its harness and its id or an alias (sameActor: letter case and a
-// ":profile" suffix make no other model). It is kept as declared.
+// The declared acting model must name one model registered in the owner's
+// pool, by its harness and its id or an alias (sameActor: letter case and a
+// ":profile" suffix make no other model). An entry's exact id names it;
+// otherwise a name two entries answer to is ambiguous and refused, as an
+// ambiguous assignment choice is (resolveChoices), so attribution never
+// depends on the pool's order (gpt-6-astra's sixth review of t622, finding
+// 1). It is kept as declared.
 export function registeredActing(acting: string, pool: PoolNames): string {
-  if (pool.some((m) => [m.id, ...m.aliases].some((id) => sameActor(acting, `${m.harness}/${id}`)))) return acting;
+  if (pool.some((m) => `${m.harness}/${m.id}`.toLowerCase() === acting.toLowerCase())) return acting;
+  const found = pool.filter((m) => [m.id, ...m.aliases].some((id) => sameActor(acting, `${m.harness}/${id}`)));
+  if (found.length === 1) return acting;
+  if (found.length > 1) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which the pool has under ${found.map((m) => `${m.harness}/${m.id}`).join(" and ")}; name one by its id`, 400);
   throw new RuleError("unregistered_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which is not a model in the pool; add it on the Models page, or name the harness/model you are`, 400);
 }
 
