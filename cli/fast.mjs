@@ -151,8 +151,8 @@ export function testInCleanClone(cwd, head, { setup, test, env = checkEnv() }) {
 // stops rather than passing a hole and scanBatch can name the path.
 const unreadable = (kind, hash) => Object.assign(new Error(`the ${kind} ${hash.slice(0, 12)} cannot be read`), { object: hash });
 
-function listTree(cwd, hash, recursive = false) {
-  const r = runGit(cwd, ["ls-tree", "-z", ...(recursive ? ["-r", "-t"] : []), hash]);
+function listTree(cwd, hash) {
+  const r = runGit(cwd, ["ls-tree", "-z", hash]);
   if (r.status !== 0) return null;
   return r.stdout.split("\0").filter(Boolean).map((e) => {
     const tab = e.indexOf("\t");
@@ -172,12 +172,28 @@ export function gitReader(cwd) {
   };
 }
 
-// The paths that hold `object` in either tree, read from the trees alone, so
-// an unreadable blob is named by where it is (review of t592).
+// The paths that hold `object` in either tree, so an unreadable object is
+// named by where it is (review of t592). The trees are walked a level at a
+// time, each read on its own and the path kept on the way down, so a
+// missing subtree does not hide every path as a recursive read would
+// (t606). A subtree is named with a trailing slash ("nested/"). When no
+// readable path holds the object, the subtrees that could not be read are
+// named instead: the deepest paths the walk reached.
 function pathsOf(cwd, object, trees) {
-  const found = new Set();
-  for (const t of trees) for (const e of listTree(cwd, t, true) ?? []) if (e.hash === object) found.add(e.name);
-  return [...found];
+  const found = new Set(), unread = new Set(), seen = new Set();
+  const walk = (tree, prefix) => {
+    if (seen.has(`${tree}\0${prefix}`)) return;
+    seen.add(`${tree}\0${prefix}`);
+    const entries = listTree(cwd, tree);
+    if (!entries) { unread.add(prefix || "the root tree"); return; }
+    for (const e of entries) {
+      const path = prefix + e.name + (e.type === "tree" ? "/" : "");
+      if (e.hash === object) found.add(path);
+      else if (e.type === "tree") walk(e.hash, path);
+    }
+  };
+  for (const t of trees) walk(t, "");
+  return [...(found.size ? found : unread)];
 }
 
 // The batch's secret scan (Astra's audit of 2026-10-13, finding 4): every
