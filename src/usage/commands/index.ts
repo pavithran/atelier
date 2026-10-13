@@ -15,6 +15,7 @@ import command_check_log from "./check-log.ts";
 import command_claim from "./claim.ts";
 import command_clean from "./clean.ts";
 import command_clear_secret from "./clear-secret.ts";
+import command_clone from "./clone.ts";
 import command_criteria_finding from "./criteria-finding.ts";
 import command_criteria_review from "./criteria-review.ts";
 import command_criteria_review_claim from "./criteria-review-claim.ts";
@@ -106,6 +107,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/claim.ts", spec: command_claim },
   { path: "src/usage/commands/clean.ts", spec: command_clean },
   { path: "src/usage/commands/clear-secret.ts", spec: command_clear_secret },
+  { path: "src/usage/commands/clone.ts", spec: command_clone },
   { path: "src/usage/commands/criteria-finding.ts", spec: command_criteria_finding },
   { path: "src/usage/commands/criteria-review.ts", spec: command_criteria_review },
   { path: "src/usage/commands/criteria-review-claim.ts", spec: command_criteria_review_claim },
