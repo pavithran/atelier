@@ -127,7 +127,8 @@ live, so its figures have moved on since: read on 2026-10-13 for Gemini 4
 Argon's claims audit, it showed 379 merged, all time, and, counted apart, 13
 landed in fast mode. Those 13 landed on 2026-10-13, when the developer had
 switched the project to fast mode while Artifacts failed to create forks; a
-task landed in fast mode has its review after the merge, not before it.
+task landed in fast mode is reviewed, when the developer asks for a review, after
+the merge, not before it.
 
 ## Built on Cloudflare
 
