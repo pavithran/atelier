@@ -798,6 +798,17 @@ mode makes that path a recorded one.
 Only the developer switches. `atelier mode fast --reason TEXT` puts the project
 in fast mode; the switch is recorded as a standing decision with the
 reason, so every review brief carries it. Fast mode has no end time.
+
+Fast mode lands tasks without the gate, so it is held to what an override
+of the independent review is (Astra's audit of 2026-10-13, finding 3). The
+developer token alone does not switch to it: the developer first presses
+"Allow fast mode from the command line" on the project's Settings page,
+under their Cloudflare Access sign-in or giving the server's confirmation
+secret (OVERRIDE_SECRET), and then runs `atelier mode fast` within 15
+minutes; one permission allows one switch. Without it the command is
+refused and says so. A project set up with `atelier init --no-override`
+refuses the switch to fast mode and every fast landing. Switching back with
+`atelier mode full` needs no confirmation.
 `atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`, and
 the project's Overview says so while fast mode stands.
 

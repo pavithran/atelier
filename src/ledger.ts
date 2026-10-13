@@ -24,7 +24,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, type FastModeConfirmation, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
 } from "./rules";
 import { cleanSummary } from "./brief";
@@ -4576,6 +4576,14 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const next = modeSwitch(current, actor, this.owner, to, reason, at);
     if (next.mode === "fast") {
+      // Fast mode lands without the gate (Astra's audit of 2026-10-13,
+      // finding 3): refused where overrides are, and only on the developer's
+      // permission from the Settings page (confirmFastMode), which this spends.
+      const project = this.project();
+      assertFastModeAllowed(project.policy);
+      const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode_confirmation'`).toArray()[0];
+      assertFastModeConfirmed(row ? JSON.parse(row.value as string) as FastModeConfirmation : null, Date.now(), this.owner, project.name);
+      this.sql.exec(`DELETE FROM meta WHERE key = 'mode_confirmation'`);
       const d = recordDecision(this.decisionStore, actor, { text: `Atelier runs in fast mode since ${at}: ${next.reason}`, quote: next.reason }, at, acting);
       next.decision = d.id;
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?)`, JSON.stringify(next));
@@ -4590,6 +4598,21 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`DELETE FROM meta WHERE key = 'mode'`);
     this.log(null, actor, "mode.full", { since: was.since, reason: was.reason, landed: landed.map((l) => l.item) }, at);
     return { mode: "full", line: modeLine({ mode: "full" }), landed };
+  }
+
+  // The developer allows the switch to fast mode from the command line, as
+  // confirmOverride allows an override: recorded from the Settings page with
+  // the factor no agent holds (the route checks it), good for
+  // OVERRIDE_CONFIRMATION_MS and one switch. Refused where overrides are.
+  confirmFastMode(actor: string, factor: OwnerFactor): FastModeConfirmation {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer allows fast mode", 403);
+    if (factor !== "access" && factor !== "secret") throw new RuleError("fast_mode_unconfirmed", "fast mode is allowed only with the developer's Access identity or the confirmation secret", 403);
+    assertFastModeAllowed(this.project().policy);
+    const now = Date.now(), at = new Date(now).toISOString();
+    const confirmation: FastModeConfirmation = { by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('mode_confirmation', ?)`, JSON.stringify(confirmation));
+    this.log(null, actor, "mode.fast_allowed", { until: confirmation.until, factor }, at);
+    return confirmation;
   }
 
   // Every task landed in fast mode since `since` (all of them when null),
@@ -4614,6 +4637,7 @@ export class Ledger extends DurableObject<Env> {
   // baseline, and the event says it landed fast.
   landedFast(id: string, actor: string, body: Record<string, unknown>): { item: Item; receipt: FastReceipt } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands in fast mode", 403);
+    assertFastModeAllowed(this.project().policy);
     const at = new Date().toISOString();
     const receipt = fastReceipt(body, this.mode(), actor, at);
     const item = this.item(id);

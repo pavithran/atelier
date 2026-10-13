@@ -1091,6 +1091,27 @@ test("the project is in full mode unless a fast record stands, and only the owne
   assertFastMode(fast);
 });
 
+// Astra's audit of 2026-10-13, finding 3: fast mode lands without the gate,
+// so switching to it took the developer token alone and skipped both the
+// confirmation an override needs and a project's --no-override. The switch
+// and a fast landing are refused under noOverride, and the switch needs the
+// permission the developer gives on the Settings page with the factor no
+// agent holds, as an override from the command line does.
+import { assertFastModeAllowed, assertFastModeConfirmed, fastModeConfirmationHint } from "../src/rules.ts";
+
+test("fast mode is refused where overrides are, and the switch needs the developer's confirmation, not the token", () => {
+  assert.throws(() => assertFastModeAllowed({ noOverride: true }), (e: RuleError) => e.code === "fast_mode_forbidden" && /forbids overrides/.test(e.detail) && /--no-override/.test(e.detail));
+  assertFastModeAllowed({});
+  const now = Date.parse("2026-10-13T14:00:00.000Z");
+  const given = { by: "owner", at: "2026-10-13T13:50:00.000Z", until: "2026-10-13T14:05:00.000Z", factor: "secret" as const };
+  assert.throws(() => assertFastModeConfirmed(null, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed" && e.status === 403 && /Allow fast mode from the command line/.test(e.detail) && /developer token alone/.test(e.detail));
+  assert.throws(() => assertFastModeConfirmed({ ...given, until: "2026-10-13T13:59:00.000Z" }, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed");
+  assert.throws(() => assertFastModeConfirmed({ ...given, by: "codex/gpt-6" }, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed");
+  assertFastModeConfirmed(given, now, "owner", "proj");
+  assert.match(fastModeConfirmationHint("proj", "https://a.test", "access"), /^open https:\/\/a\.test\/p\/proj\/settings as the developer, press "Allow fast mode from the command line" under your Cloudflare Access sign-in/);
+  assert.match(fastModeConfirmationHint("proj", "", null), /this server can take no confirmation/);
+});
+
 test("a landed-fast receipt needs both commits, the builder, the test command and its output's sha256, in fast mode only", () => {
   const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
   const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };

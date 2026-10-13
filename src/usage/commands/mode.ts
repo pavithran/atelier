@@ -6,7 +6,7 @@ const spec: CommandSpec = {
   capabilities: ["projects.mode.v1"],
   forms: [
     { group: "Developer", line: 6, slot: 10, form: "mode [--project P]", about: "Prints the project's mode: \"Mode: full\" (the default, the gated process) or \"Mode: fast since TIME (reason)\"." },
-    { group: "Developer", line: 6, slot: 20, form: "mode fast --reason TEXT [--project P]", about: "The developer switches the project to fast mode, recorded as a standing decision with the reason. In fast mode the developer lands finished tasks in batches with atelier fast land; it has no end time." },
+    { group: "Developer", line: 6, slot: 20, form: "mode fast --reason TEXT [--project P]", about: "The developer switches the project to fast mode, recorded as a standing decision with the reason. It needs the developer's permission from the project's Settings page first (Allow fast mode from the command line, good for 15 minutes), never the developer token alone, and a project set up with --no-override refuses it. In fast mode the developer lands finished tasks in batches with atelier fast land; it has no end time." },
     { group: "Developer", line: 6, slot: 30, form: "mode full [--project P]", about: "The developer switches back to full mode, withdrawing the fast mode decision, and prints what landed in fast mode and each post-merge review's state." },
   ],
   flags: { reason: "--reason needs text: atelier mode fast --reason \"why\"" },
