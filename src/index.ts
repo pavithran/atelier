@@ -9,7 +9,7 @@ import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone, timeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
-import { accessSettings, accessVouches } from "./access.ts";
+import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
@@ -101,7 +101,8 @@ type Settings = {
   // Cloudflare Access in front of the owner's pages (src/access.ts): the
   // team's URL, the Access application's audience tag, and the owner's email
   // as the token's email claim must name it. All three set, and every owner
-  // route — /login among them — must carry an assertion Access signed.
+  // route — /login among them — must carry an assertion Access signed. Only
+  // some set, or one unusable, and those routes are refused (accessConfig).
   CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
   // The confirmation secret an override needs on a server not behind Access
   // (t371): a Worker secret the owner types into the task page's override
@@ -3699,9 +3700,18 @@ export default {
       // audit noted). Never the /api routes, which take bearer tokens the CLI
       // sends without passing Access; the sign-out form stays open. A request
       // that passes is the owner's sign-in, and starts a session (t534).
+      // Access set in part, or with a value it cannot use, refuses those same
+      // routes outright, naming what is wrong and no value, rather than read
+      // as no Access and leave the token alone to guard them (Astra's audit
+      // of 2026-10-13, finding 11). Set wholly or not at all, as before.
       const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
-      const access = accessSettings(env as unknown as Record<string, string | undefined>);
-      if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
+      const accessConfigured = accessConfig(env as unknown as Record<string, string | undefined>);
+      const guarded = parts[0] !== "api" && pathname !== "/logout";
+      if (accessConfigured.state === "broken" && guarded) {
+        return html(renderError(`This server's Cloudflare Access settings are incomplete or unusable, so the developer's pages are refused until they are fixed: ${accessConfigured.problem}`, ""), 503);
+      }
+      const access = accessConfigured.state === "on" ? accessConfigured.settings : null;
+      if (access && guarded && !(await accessVouches(req, access))) {
         return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
       }
       if (pathname === "/login") {
