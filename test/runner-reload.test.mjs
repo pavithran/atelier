@@ -178,7 +178,7 @@ test("reloadCheck: a start commit that already contains the deploy, a --once run
   assert.deepEqual(await reloadCheck(LATER, { version: async () => answer(NEW), checkout }), { action: "none" }, "a checkout ahead of the deploy");
   assert.deepEqual(await reloadCheck(null, { version: async () => answer(NEW), checkout }), { action: "none" });
   assert.deepEqual(await reloadCheck(OLD, { version: async () => answer("not-a-commit"), checkout }), { action: "none" });
-  assert.deepEqual(await reloadCheck(OLD, { version: async () => answer(NEW), checkout }), { action: "reload", deployed: NEW, head: LATER });
+  assert.deepEqual(await reloadCheck(OLD, { version: async () => answer(NEW), checkout }), { action: "reload", target: NEW, deployed: NEW, head: LATER });
 
   const s = setup(t);
   let reads = 0;
@@ -188,6 +188,35 @@ test("reloadCheck: a start commit that already contains the deploy, a --once run
     reload: { checkout: fakeCheckout([OLD]), reexec: async () => assert.fail("a --once run reloaded") },
   });
   assert.equal(reads, 1, "only the start's capability check");
+});
+
+// A merge of cli/** alone deploys nothing (t556): the server's commit stays,
+// and main's head, which /api/version names beside it, is the target.
+const merged = (main, commit = OLD) => ({ ...answer(commit), main });
+
+test("reloadCheck targets main's head when the server names it, and the deployed commit until the checkout holds main", async () => {
+  assert.deepEqual(await reloadCheck(OLD, { version: async () => merged(NEW), checkout: fakeCheckout([NEW]) }), { action: "reload", target: NEW, deployed: OLD, main: NEW, head: NEW }, "main moved, the deploy did not");
+  assert.deepEqual(await reloadCheck(OLD, { version: async () => merged(NEW), checkout: fakeCheckout([OLD]) }), { action: "behind", target: NEW, deployed: OLD, main: NEW, head: OLD });
+  assert.deepEqual(await reloadCheck(NEW, { version: async () => merged(NEW, NEW), checkout: fakeCheckout([NEW]) }), { action: "none" }, "started from main's head");
+  assert.deepEqual(await reloadCheck(LATER, { version: async () => merged(NEW), checkout: fakeCheckout([LATER]) }), { action: "none" }, "a checkout ahead of main");
+  assert.deepEqual(await reloadCheck(OLD, { version: async () => merged(LATER, NEW), checkout: fakeCheckout([NEW]) }), { action: "reload", target: NEW, deployed: NEW, main: LATER, head: NEW }, "the deploy now, main once pulled");
+  assert.deepEqual(await reloadCheck(OLD, { version: async () => merged("not-a-commit", NEW), checkout: fakeCheckout([NEW]) }), { action: "reload", target: NEW, deployed: NEW, head: NEW }, "a malformed main is ignored");
+});
+
+test("an idle runner reloads after a merge of cli/** alone, which moves main but not the deploy", async (t) => {
+  const s = setup(t);
+  const execs = [];
+  let polls = 0;
+  await runRunner(kinds.build(s), {
+    credential: "secret", workspacePath: () => s.workspace, wait: async () => {},
+    version: async () => merged(polls < 2 ? OLD : NEW),
+    queue: async () => { if (++polls > 5) stop(); return []; },
+    reload: { checkout: fakeCheckout([OLD, NEW]), reexec: async (env) => { execs.push([polls, env[RELOADED_FROM]]); stop(); } },
+  });
+  assert.deepEqual(execs, [[2, OLD]], "reloaded once main moved, the deployed commit never having moved");
+  const reloading = s.logs.filter((l) => l.startsWith("runner: reloading:"));
+  assert.equal(reloading.length, 1);
+  assert.match(reloading[0], new RegExp(`started from ${OLD.slice(0, 8)}, main is at ${NEW.slice(0, 8)}; starting replacement runner`));
 });
 
 test("runnerCheckout reads a real checkout's HEAD and which commits it contains", async (t) => {

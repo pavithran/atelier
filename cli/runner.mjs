@@ -2629,21 +2629,36 @@ export async function reexecSelf(env, { argv = process.argv, execArgv = process.
   }
 }
 
-// What an idle runner does about the deployed commit: nothing while the
-// server cannot say which it is (no answer, no commit), or while the commit
-// it started from already contains it (the reloaded process, or a checkout
-// ahead of the deploy, so nothing reloads twice); "reload" when the
-// checkout's HEAD now contains it; "behind" until then.
+// What an idle runner does about the server's version. Its target is
+// Atelier's main head as the ledger last saw it (`main`, t556), which moves
+// with every merge, a merge of cli/** alone among them, though only a change
+// to the Worker deploys it; else, from a server that names no main, the
+// deployed commit. Nothing while the server names neither (no answer, no
+// commit), or while the commit it started from already contains the target
+// (the reloaded process, or a checkout ahead of main, so nothing reloads
+// twice); "reload" when the checkout's HEAD now contains it; "behind" until
+// then. A checkout that holds the deployed commit but not yet main's head
+// still reloads to the deployed one, and to main's once it is pulled.
 export async function reloadCheck(started, { version, checkout, signal }) {
   if (!started || !version || !checkout) return { action: "none" };
   let answer = null;
   try { answer = await version(signal); } catch { return { action: "none" }; }
-  const deployed = answer?.commit;
-  if (typeof deployed !== "string" || !COMMIT.test(deployed) || deployed === started) return { action: "none" };
-  if (await checkout.contains(deployed, started)) return { action: "none" };
+  const named = (commit) => typeof commit === "string" && COMMIT.test(commit) ? commit : null;
+  const deployed = named(answer?.commit), main = named(answer?.main);
+  const pending = [];
+  for (const target of new Set([main, deployed])) {
+    if (target && target !== started && !await checkout.contains(target, started)) pending.push(target);
+  }
+  if (!pending.length) return { action: "none" };
   const head = await checkout.head();
-  return { action: head && await checkout.contains(deployed, head) ? "reload" : "behind", deployed, head };
+  const why = (target) => ({ target, deployed, ...(main ? { main } : {}), head });
+  for (const target of pending) if (head && await checkout.contains(target, head)) return { action: "reload", ...why(target) };
+  return { action: "behind", ...why(pending[0]) };
 }
+
+// The target reloadCheck names, said as the server's state: main's head
+// when it is that, else the commit the server runs.
+const targetLine = (check) => check.target === check.main ? `main is at ${short(check.target)}` : `the server runs ${short(check.target)}`;
 
 export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
@@ -2932,39 +2947,40 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // queue's silence.
     io.log(jobsLine(offer.jobs));
     // The commit this process started from (t265), against which an idle
-    // runner compares the deployed one. A --once run never reloads.
+    // runner compares main's head and the deployed one. A --once run never
+    // reloads.
     const reloading = reload && !args.once;
     const started = reloading ? await reload.checkout.head().catch(() => null) : null;
     const target = process.env[RELOAD_TARGET];
     delete process.env[RELOAD_TARGET];
     if (target && (!started || !await reload.checkout.contains(target, started))) {
-      throw new Error("replacement checkout no longer contains the deployed commit");
+      throw new Error("replacement checkout no longer contains the commit it reloaded for");
     }
     const reloadedFrom = process.env[RELOADED_FROM];
     delete process.env[RELOADED_FROM];
     if (reloading && reloadedFrom) line(`reloaded: was ${short(reloadedFrom)}, now ${short(started)}`);
     if (reloading && !started) line(`the commit this runner started from cannot be read in ${reload.checkout.dir}; it will not reload itself after a deploy`);
-    // The deployed commit last said to be missing from the checkout, and the
-    // one a re-exec failed for: each is said once, and a failed one is not
-    // tried again until the next deploy.
+    // The target last said to be missing from the checkout, and the one a
+    // re-exec failed for: each is said once, and a failed one is not tried
+    // again until main or the deploy moves.
     let saidBehind = null, failedReload = null;
     const reloadIfDeployed = async () => {
       const check = await reloadCheck(started, { version, checkout: reload.checkout, signal: controller.signal });
       if (controller.signal.aborted || check.action === "none") return;
       if (check.action === "behind") {
-        if (saidBehind === check.deployed) return;
-        saidBehind = check.deployed;
-        line(`behind: started from ${short(started)}, the server runs ${short(check.deployed)}, and this checkout (${reload.checkout.dir}) at ${short(check.head)} does not contain it; update it (git -C '${reload.checkout.dir}' pull --ff-only) and this runner reloads itself when next idle`);
+        if (saidBehind === check.target) return;
+        saidBehind = check.target;
+        line(`behind: started from ${short(started)}, ${targetLine(check)}, and this checkout (${reload.checkout.dir}) at ${short(check.head)} does not contain it; update it (git -C '${reload.checkout.dir}' pull --ff-only) and this runner reloads itself when next idle`);
         return;
       }
       // A skip report not yet taken lives only in this process: the reload
       // waits until the server has it.
-      if (failedReload === check.deployed || pendingSkips.size) return;
-      line(`reloading: started from ${short(started)}, the server runs ${short(check.deployed)}; starting replacement runner from ${reload.checkout.dir} at ${short(check.head)}`);
-      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started, [RELOAD_TARGET]: check.deployed }); }
+      if (failedReload === check.target || pendingSkips.size) return;
+      line(`reloading: started from ${short(started)}, ${targetLine(check)}; starting replacement runner from ${reload.checkout.dir} at ${short(check.head)}`);
+      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started, [RELOAD_TARGET]: check.target }); }
       catch (error) {
-        failedReload = check.deployed;
-        line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.deployed)}`);
+        failedReload = check.target;
+        line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.target)}`);
       }
     };
     // Pauses a restart finds in the file, said as the runner's status.
