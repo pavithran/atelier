@@ -1630,6 +1630,10 @@ export function missingKey(task) {
 // the head has moved, and read no more often than this.
 export const MISSING_RECHECK_MS = 5 * 60_000;
 
+// The capability a server takes the infrastructure_miss run report under
+// (src/capability-declarations.ts).
+export const INFRASTRUCTURE_MISS = "runs.infrastructure-miss.v1";
+
 // The job an assignment is, as the offer names jobs: the dispatch's own, the
 // merge jobs a build carries (a task's merge-main under "merge-main-task",
 // a part returned after an integration conflict under "merge-plan"), or a
@@ -2951,6 +2955,21 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // (recheckMissing), read through `baselineHead` at most every
   // MISSING_RECHECK_MS; a CLI wired without it keeps them until restart.
   const missing = new Map();
+  // The server's answer to GET /api/version at start, for the capabilities
+  // a report needs (the infrastructure_miss run report, t591).
+  let serverVersion = null;
+  // The baseline head a miss is kept against: the one `baselineHead` reads
+  // over HTTP at the miss, the same source the recheck reads, or else the
+  // one the job's Git fetch saw, or null (unknown) when neither was read.
+  const headAtMiss = async (task, miss) => {
+    if (baselineHead) {
+      try {
+        const head = await baselineHead(task.project, task.actor, controller.signal);
+        if (typeof head === "string" && head) return head;
+      } catch (error) { if (!controller.signal.aborted) io.log(`could not read ${task.project}'s baseline head for ${task.item.id}'s review: ${error.message}`); }
+    }
+    return miss.baseline ?? null;
+  };
   const recheckMissing = async (tasks) => {
     for (const task of tasks) {
       const key = missingKey(task), entry = missing.get(key);
@@ -2960,6 +2979,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       try { head = await baselineHead(task.project, task.actor, controller.signal); }
       catch (error) { if (!controller.signal.aborted) io.log(`could not read ${task.project}'s baseline head for ${task.item.id}'s review: ${error.message}`); continue; }
       if (typeof head !== "string" || !head || head === entry.baseline) continue;
+      // A head never known at the miss is unknown, not moved (codex/
+      // gpt-6-astra's review of t591, finding 2): the first one read is kept.
+      if (!entry.baseline) { entry.baseline = head; continue; }
       missing.delete(key);
       io.log(`${task.project}'s baseline moved to ${head.slice(0, 8)}; ${task.item.id}'s post-merge review of ${entry.commit.slice(0, 8)} is tried again`);
     }
@@ -3227,6 +3249,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // here instead, saying to deploy.
     if (version) {
       const answer = await version(controller.signal);
+      serverVersion = answer;
       // The integrator's task refresh (t462) is the one job it drops rather
       // than refuse for: a server from before it still has its plans
       // integrated and refreshed, and the line below says the job is off.
@@ -3405,7 +3428,20 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // reviewer has skipped, instead of waiting out the hour (t353). A
           // report the server did not take is kept and tried again each poll
           // (reportSkip), since this review is not run again in this process.
-          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
+          // A merge commit no source held (t591) is reported as a run that
+          // ended on the infrastructure, naming the commit, where the server
+          // takes that outcome (runs.infrastructure-miss.v1), which counts
+          // against no model; a server without it, or a report it did not
+          // take, has the review skip below instead.
+          let missReported = false;
+          if (state.missingCommit && reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) {
+            try {
+              await reportRun({ actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
+              missReported = true;
+              io.log(`reported ${task.project}/${task.item.id} as infrastructure_miss`);
+            } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as infrastructure_miss: ${error.message}`); }
+          }
+          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
           // A build or plan job given up under this dispatch, after its
@@ -3424,7 +3460,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // itself, independently of the revision-specific refusals that a
           // new dispatch can supersede and of a review's per-request failures.
           if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
-          else if (state.missingCommit) missing.set(missingKey(task), { ...state.missingCommit, checked: now() });
+          else if (state.missingCommit) missing.set(missingKey(task), { ...state.missingCommit, baseline: await headAtMiss(task, state.missingCommit), checked: now() });
           else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }

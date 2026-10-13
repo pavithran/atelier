@@ -1007,9 +1007,99 @@ test("a post-merge review whose merge commit no source holds is released once an
   // One skip report per failure, under the request claimed, naming the commit.
   assert.deepEqual(reports.map((r) => r.request), [50, 51]);
   for (const r of reports) assert.match(r.note, new RegExp(merge));
-  // The baseline's head is read at most every five minutes, not each poll.
-  assert.ok(heads.length >= 2 && heads.length <= 4, JSON.stringify(heads));
+  // The baseline's head is read at each miss and at most every five minutes
+  // besides, not each poll: polls 1 and 16 (the misses), 6, 11 and 16.
+  assert.deepEqual(heads.map(([poll]) => poll), [1, 6, 11, 16, 16]);
   assert.ok(logs.some((l) => /baseline moved/.test(l)), logs.join("\n"));
+});
+
+// The stand-in io of a post-merge review whose merge commit no source holds
+// (t591): `fetch` answers the baseline's branch unless `branchFails`, and
+// never the commit; FETCH_HEAD reads `state.baseline`.
+function missingMergeFixture({ branchFails = false } = {}) {
+  const merge = "e".repeat(40);
+  const claim = { ...claimed, plan: null, item: { ...claimed.item, state: "merged", head: merge, accept: ["Keeps data"] }, head: merge,
+    need: { ...claimed.need, head: merge }, landed: { commit: merge, head: H1, base: H0 } };
+  const { io, calls, logs } = fixture({ claim });
+  const state = { baseline: "1".repeat(40) };
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    if (argv[0] !== "baseline-token") return cli(argv, cwd, options);
+    calls.push({ argv, token: options?.token });
+    return JSON.stringify({ remote: "https://artifacts.example/baseline", token: "baseline-read", defaultBranch: "main" });
+  };
+  io.hasCommit = async () => false;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (ref === merge || branchFails) throw new Error("fatal: unable to access the repository");
+  };
+  io.revParse = async (_dir, ref) => { if (ref === "FETCH_HEAD") return state.baseline; throw new Error(`unexpected rev-parse ${ref}`); };
+  io.checkout = async () => assert.fail("a commit the clone lacks is never checked out");
+  const task = (request) => ({ ...assignment, item: { ...assignment.item, head: merge, request, dispatch: { job: "review" } } });
+  return { merge, io, calls, logs, state, task };
+}
+
+// t591 (codex/gpt-6-astra's review, finding 2): when Git cannot read the
+// baseline at all, the job knows no baseline head; the head read over HTTP
+// at the miss is the one kept, and a head never known is never taken as the
+// baseline having moved, so the review is not claimed again while it stands.
+test("a missing merge whose baseline Git cannot read is claimed once over 20 polls while the baseline's head stands", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, task } = missingMergeFixture({ branchFails: true });
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  let polls = 0, clock = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    async reportReviewSkip() {},
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls > 20) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 1);
+});
+
+// t591 (codex/gpt-6-astra's review, finding 1): a server with the
+// runs.infrastructure-miss.v1 capability takes a run report of the miss,
+// naming the missing commit, which counts against no model; one without it
+// (the live server until its deploy) takes today's review-skip report.
+test("a missing merge is reported as an infrastructure_miss run where the server has the capability, and as a review skip where it does not", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  for (const capable of [true, false]) {
+    const args = { ...runnerConfig(t), once: undefined };
+    const { merge, io, calls, task } = missingMergeFixture();
+    const previous = process.exitCode;
+    t.after(() => { process.exitCode = previous; });
+    const runs = [], skips = [];
+    let polls = 0;
+    const capabilities = SERVER_CAPABILITIES.filter((name) => capable || name !== "runs.infrastructure-miss.v1");
+    await runRunner(args, {
+      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      version: async () => ({ capabilities }),
+      async reportRun(body) { runs.push(body); },
+      async reportReviewSkip(body) { skips.push(body); },
+      async baselineHead() { return "1".repeat(40); },
+      async queue() {
+        if (++polls > 3) { process.emit("SIGINT"); return []; }
+        return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+      },
+    });
+    assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+    if (capable) {
+      assert.deepEqual(runs.map((r) => [r.role, r.outcome, r.item, r.actor]), [["review", "infrastructure_miss", "t21", assignment.actor]]);
+      assert.match(runs[0].detail, new RegExp(`merge commit ${merge}`));
+      assert.equal(skips.length, 0);
+    } else {
+      assert.equal(runs.length, 0);
+      assert.equal(skips.length, 1);
+      assert.match(skips[0].note, new RegExp(merge));
+    }
+  }
 });
 
 // t490: the claim's evidence at the head reaches the brief the reviewer
