@@ -987,7 +987,8 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .task-area, .area-purpose { min-width: 0; overflow-wrap: anywhere; }
 .area-board .task-list { list-style: none; margin: 0; padding: 0; }
 .area-board .task-list li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(6rem, auto) minmax(0, 14rem); gap: 1rem; align-items: start; padding: .8rem 0; border-bottom: 1px solid currentColor; }
-.area-board .task-list .area-task-title { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.area-board .task-list a.area-task-title { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; align-items: start; padding: 0; min-width: 0; overflow-wrap: break-word; }
+.area-board .task-list a.area-task-title > span { min-width: 0; overflow-wrap: break-word; }
 .area-holder { overflow-wrap: anywhere; }
 .area-task-title:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 @media (max-width: 700px) {
