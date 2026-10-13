@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { redactGitArgs } from "../runner.mjs";
 import { runLand } from "../land.mjs";
 import { OWNER, apiToken, args, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { serverFetch } from "../server-fetch.mjs";
 
 // The project owner lands one task whole: the lease on the server, the
 // merge of main into the task's workspace, the project's fixture
@@ -23,7 +24,7 @@ export default async function landCommand() {
   const request = async (method, path, body, as = OWNER, extra = {}) => {
     let res, text;
     try {
-      res = await fetch(server() + "/api" + path, {
+      res = await serverFetch(server() + "/api" + path, {
         method,
         headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "content-type": "application/json", ...extra },
         body: body === undefined ? undefined : JSON.stringify(body),
