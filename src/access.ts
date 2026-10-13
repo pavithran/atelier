@@ -19,25 +19,58 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 // CF_ACCESS_AUD the Access application's audience tag, both shown on the
 // application's page in the Zero Trust dashboard, and CF_ACCESS_OWNER_EMAIL
 // the one person the pages are for, as the identity provider reports the
-// address. Null when any of the three is unset, or the issuer is not an https
-// URL: the server then stands as it always has, and the deploy notes in the
-// README say how to set the triple. A value that is set but unusable — an
-// http or bare-team-name issuer, a missing piece — is warned of once, so a
-// typo cannot quietly leave the pages unguarded.
+// address. It stands in one of three states:
+//   off     none of the three is set (or each is blank): the server stands as
+//           it always has, with the token form and the session;
+//   on      all three are set and usable: the Worker checks Access's
+//           assertion on every developer route;
+//   broken  some are set and the rest missing, or one is unusable (an issuer
+//           that is not an https URL with a host and nothing after it, an
+//           email with no "@"): the Worker refuses every route Access would
+//           guard, with `problem`, rather than fall back to the token alone.
+// Broken used to read as off, so a typo quietly dropped the extra factor
+// (Astra's audit of 2026-10-13, finding 11). `problem` names the settings and
+// what is wrong with each, never a value, for it is shown to whoever asks
+// for a page.
 export type AccessSettings = { issuer: string; audience: string; email: string };
+export type AccessConfig =
+  | { state: "off" }
+  | { state: "on"; settings: AccessSettings }
+  | { state: "broken"; problem: string };
 
-let warnedOff = false;
-
-export function accessSettings(env: Record<string, string | undefined>): AccessSettings | null {
-  const issuer = env.CF_ACCESS_ISS?.trim().replace(/\/+$/, "");
-  const audience = env.CF_ACCESS_AUD?.trim();
-  const email = env.CF_ACCESS_OWNER_EMAIL?.trim().toLowerCase();
-  const settings = issuer?.startsWith("https://") && audience && email ? { issuer, audience, email } : null;
-  if (!settings && (issuer || audience || email) && !warnedOff) {
-    warnedOff = true;
-    console.warn("atelier: the Access settings are set but unusable — CF_ACCESS_ISS must be the team's https URL, and CF_ACCESS_ISS, CF_ACCESS_AUD and CF_ACCESS_OWNER_EMAIL are all needed — so the Access check is off and the developer's pages stand without it.");
+function teamIssuer(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname !== "" && url.pathname === "/" && !url.search && !url.hash && !url.username && !url.password && value.startsWith("https://");
+  } catch {
+    return false;
   }
-  return settings;
+}
+
+export function accessConfig(env: Record<string, string | undefined>): AccessConfig {
+  const given = env.CF_ACCESS_ISS?.trim() ?? "";
+  const issuer = given.replace(/\/+$/, "");
+  const audience = env.CF_ACCESS_AUD?.trim() ?? "";
+  const email = env.CF_ACCESS_OWNER_EMAIL?.trim().toLowerCase() ?? "";
+  if (!given && !audience && !email) return { state: "off" };
+  const wrong: string[] = [];
+  if (!given) wrong.push("CF_ACCESS_ISS is not set");
+  else if (!teamIssuer(issuer)) wrong.push("CF_ACCESS_ISS is not the team's https URL, as Access reports it in a token's issuer");
+  if (!audience) wrong.push("CF_ACCESS_AUD is not set");
+  if (!email) wrong.push("CF_ACCESS_OWNER_EMAIL is not set");
+  else if (!/^[^@\s]+@[^@\s]+$/.test(email)) wrong.push("CF_ACCESS_OWNER_EMAIL is not an email address");
+  if (wrong.length) {
+    return { state: "broken", problem: `${wrong.join("; ")}. Set all three Access settings (docs/setup.md), or none to run without Access.` };
+  }
+  return { state: "on", settings: { issuer, audience, email } };
+}
+
+// The usable settings, or null when Access is off or broken: what the
+// factor an override rests on reads (ownerFactorOf in src/index.ts). The
+// entry reads accessConfig itself, so broken refuses rather than turns off.
+export function accessSettings(env: Record<string, string | undefined>): AccessSettings | null {
+  const config = accessConfig(env);
+  return config.state === "on" ? config.settings : null;
 }
 
 // The team's published keys, kept per issuer: jose's remote set caches what

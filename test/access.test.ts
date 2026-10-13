@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
-import { accessSettings, accessVouches, type AccessSettings } from "../src/access.ts";
+import { accessConfig, accessSettings, accessVouches, type AccessSettings } from "../src/access.ts";
 
 // Cloudflare Access vouches for a request with a JWT in
 // Cf-Access-Jwt-Assertion, signed by the team's published keys. These tests
@@ -48,28 +48,46 @@ async function assertion(pair: CryptoKey, issuer: string, audience: string, expi
 }
 
 test("the Access settings need the issuer, the audience and the owner's email, the issuer an https team URL", () => {
-  // A setting that is present but unusable warns once, so a typo cannot
-  // quietly turn the check off; nothing set at all stays silent.
-  const said: string[] = [];
-  const warn = console.warn;
-  console.warn = (...args: unknown[]) => { said.push(args.join(" ")); };
-  try {
-    const good = { issuer: "https://t.access-test", audience: AUD, email: OWNER };
-    assert.equal(accessSettings({ CF_ACCESS_ISS: good.issuer, CF_ACCESS_AUD: good.audience }), null);
-    assert.equal(accessSettings({ CF_ACCESS_ISS: good.issuer, CF_ACCESS_OWNER_EMAIL: OWNER }), null);
-    assert.equal(accessSettings({ CF_ACCESS_AUD: good.audience, CF_ACCESS_OWNER_EMAIL: OWNER }), null);
-    assert.equal(accessSettings({}), null);
-    // A plain-word team or an http URL is not an issuer Access reports.
-    for (const bad of ["t.access-test", "http://t.access-test", "https://", " "]) {
-      assert.equal(accessSettings({ CF_ACCESS_ISS: bad, CF_ACCESS_AUD: good.audience, CF_ACCESS_OWNER_EMAIL: OWNER }), null, bad);
-    }
-    assert.deepEqual(
-      accessSettings({ CF_ACCESS_ISS: ` ${good.issuer}/ `, CF_ACCESS_AUD: ` ${good.audience}`, CF_ACCESS_OWNER_EMAIL: ` ${OWNER.replace("owner", "Owner")} ` }),
-      { issuer: good.issuer, audience: good.audience, email: OWNER },
-    );
-    assert.equal(said.length, 1);
-    assert.match(said[0], /the Access check is off/);
-  } finally { console.warn = warn; }
+  const good = { issuer: "https://t.access-test", audience: AUD, email: OWNER };
+  const full = { CF_ACCESS_ISS: good.issuer, CF_ACCESS_AUD: good.audience, CF_ACCESS_OWNER_EMAIL: OWNER };
+  assert.deepEqual(
+    accessSettings({ CF_ACCESS_ISS: ` ${good.issuer}/ `, CF_ACCESS_AUD: ` ${good.audience}`, CF_ACCESS_OWNER_EMAIL: ` ${OWNER.replace("owner", "Owner")} ` }),
+    { issuer: good.issuer, audience: good.audience, email: OWNER },
+  );
+  assert.deepEqual(accessConfig(full), { state: "on", settings: good });
+  // Nothing set at all, or only blanks, is a server without Access, as always.
+  assert.deepEqual(accessConfig({}), { state: "off" });
+  assert.deepEqual(accessConfig({ CF_ACCESS_ISS: " ", CF_ACCESS_AUD: "", CF_ACCESS_OWNER_EMAIL: undefined }), { state: "off" });
+  assert.equal(accessSettings({}), null);
+});
+
+test("Access set in part, or with a value it cannot use, is broken, naming what is wrong and never a value", () => {
+  // Astra's audit of 2026-10-13, finding 11: a partial or unusable Access
+  // configuration read as no Access at all, so the developer's pages fell
+  // back to the token and the session without the extra factor. It is now
+  // a broken configuration, which the Worker refuses the pages under.
+  const iss = "https://t.access-test";
+  const cases: [Record<string, string>, RegExp[]][] = [
+    [{ CF_ACCESS_ISS: iss, CF_ACCESS_AUD: AUD }, [/CF_ACCESS_OWNER_EMAIL is not set/]],
+    [{ CF_ACCESS_ISS: iss, CF_ACCESS_OWNER_EMAIL: OWNER }, [/CF_ACCESS_AUD is not set/]],
+    [{ CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER }, [/CF_ACCESS_ISS is not set/]],
+    [{ CF_ACCESS_AUD: AUD }, [/CF_ACCESS_ISS is not set/, /CF_ACCESS_OWNER_EMAIL is not set/]],
+    [{ CF_ACCESS_ISS: " ", CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER }, [/CF_ACCESS_ISS is not set/]],
+    // A plain-word team, an http URL or a scheme alone is not an issuer Access reports.
+    ...["t.access-test", "http://t.access-test", "https://", "https://t.access-test/path"].map((bad) =>
+      [{ CF_ACCESS_ISS: bad, CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER }, [/CF_ACCESS_ISS is not the team's https URL/]] as [Record<string, string>, RegExp[]]),
+    [{ CF_ACCESS_ISS: iss, CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: "owner" }, [/CF_ACCESS_OWNER_EMAIL is not an email address/]],
+  ];
+  for (const [env, problems] of cases) {
+    const config = accessConfig(env);
+    assert.equal(config.state, "broken", JSON.stringify(env));
+    assert.equal(accessSettings(env), null);
+    if (config.state !== "broken") continue;
+    for (const problem of problems) assert.match(config.problem, problem);
+    // The message is shown to whoever asks for a page: no value set is in it.
+    for (const value of Object.values(env)) if (value.trim().length > 6) assert.ok(!config.problem.includes(value.trim()), value);
+    assert.ok(!config.problem.includes(AUD) && !config.problem.includes(OWNER), config.problem);
+  }
 });
 
 test("a token Access signed, for this team, application and owner, vouches for the request", async () => {
