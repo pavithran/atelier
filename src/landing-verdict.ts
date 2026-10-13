@@ -52,3 +52,31 @@ export function allSkipped(reviewer: string, offers: readonly SeenOffer[], skips
   const left = names.filter((name) => !skipped.has(name));
   return left.length ? null : names;
 }
+
+// Whether the review a landing waits on can still come (t574). With no
+// verdict at the head, the wait goes on only while a gate request at that
+// head is open or claimed and its reviewer has given no reply the server
+// could not read since the landing asked. t573 at cc688bac waited 62 minutes
+// on opencode/glm-5.3, whose replies carried no VERDICT line: each one
+// released the claim and asked the same reviewer again, so nothing the
+// landing read ever changed until its hour ran out. A reply with no readable
+// verdict ends the wait at once, naming its reviewer; no live request at all
+// ends it too, since nothing would ever answer it. `live` is the live gate
+// request as liveReviewRequest reads it, read before the verdicts, so a
+// verdict that closed the request is seen with it.
+export interface LandingUnparsable {
+  by: string;
+  head: string;
+  at: string;
+  note?: string;
+}
+
+export type ReviewStall = { kind: "unparsable"; by: string; note: string } | { kind: "no_request" };
+
+export function reviewStall(head: string, since: string, reviewer: string | null, live: { reviewer: string } | null, unparsable: readonly LandingUnparsable[]): ReviewStall | null {
+  const asked = reviewer?.toLowerCase() ?? null;
+  const bad = (unparsable ?? []).filter((u) => u && u.head === head && Date.parse(u.at) >= Date.parse(since) && (asked === null || u.by.toLowerCase() === asked)).at(-1);
+  if (bad) return { kind: "unparsable", by: bad.by, note: bad.note ?? "" };
+  if (!live) return { kind: "no_request" };
+  return null;
+}
