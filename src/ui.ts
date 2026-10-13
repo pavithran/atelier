@@ -184,7 +184,7 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
   const nav = NAV.map(([label, url]) => `<a href="${url}"${cur(label === current)}>${label}${label === "Decisions" ? `<span data-shell="waiting">${MARK.waiting}</span>` : ""}</a>`).join("");
   const account = ACCOUNT.map(([label, url]) => `<a href="${url}"${cur(label === active)}>${label}</a>`).join("");
   const signout = signedIn ? `<form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : "";
-  const who = e(ownerName || "Owner");
+  const who = e(ownerName || "Developer");
   const liveAttr = live?.refresh ? ` data-live-refresh="${live.refresh}"` : "";
   const liveNote = live?.refresh
     ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live<span class="live-when"> · this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</span></p>`
@@ -359,7 +359,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     mainClass: "login-page",
     main: `<section class="login${graph ? " over-graph" : ""}">${graph}
   <h1>${TAGLINE.split(". ").map(e).join(".<br>")}</h1>
-  <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
+  <p class="lead">Atelier gives every task one holder, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
     <h2>Sign in to Atelier</h2>
     ${error ? `<p role="alert" class="error">${e(error)}</p>` : ""}
@@ -368,7 +368,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     <p class="meta">Use the token stored in your Keychain as <code>atelier.API_TOKEN</code>.</p>
     <button class="primary">Sign in</button>
   </form>
-  <p class="meta">${showcase ? 'Not the owner? <a href="/">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
+  <p class="meta">${showcase ? 'Not the developer? <a href="/">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
 </section>`,
   });
 }
@@ -991,7 +991,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   // as the portfolio themselves, shown named.
   const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
   const total = drawnTotal(stories);
-  const who = ownerName || "the owner";
+  const who = ownerName || "the developer";
   const drawn = stories.filter((s) => s.threads.length || imported.get(s.project)?.total);
   const n = (v: number) => v.toLocaleString("en");
 
@@ -1072,7 +1072,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     <h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>
     <p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>
     <p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>
-    <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and merges it once the person who owns the project accepts it.</p>
+    <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and merges it once the developer accepts it.</p>
     ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>
   ${compareBlock(stories, imported, total, owner, who)}
@@ -1089,7 +1089,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   ${moves}
   ${where}
   <footer class="show-foot"><div class="show-foot-in">
-    <p class="public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
+    <p class="public-note">Shown read only. Projects the developer names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
     <p class="show-foot-links"><a href="/how">How it works</a><a href="${REPO_URL}">Source on GitHub</a></p>
   </div></footer>
 `,
@@ -1183,7 +1183,7 @@ export function precisionSection(p: PrecisionRecord): string {
     <td class="num">${r.ranked ? `${Math.round(r.precision! * 100)}%<span class="meta">routing term ${precisionTerm(r).toFixed(2)}</span>` : `<span class="meta">n=${r.judged}, too few to rank</span>`}</td></tr>`;
   return `<section class="precision" aria-label="Review precision by reviewer">
   <h2 class="section-title">Review precision · ${e(from)} to ${e(to)}</h2>
-  <p class="meta">Of each reviewer's blocking findings the owner judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
+  <p class="meta">Of each reviewer's blocking findings the developer judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
   ${rows.length ? `<table class="usage-table">
     <thead><tr><th scope="col">Reviewer</th><th scope="col">Judged blocking findings</th><th scope="col">Held up</th><th scope="col">Refuted</th><th scope="col">Precision</th></tr></thead>
     <tbody>${rows.map(row).join("")}</tbody>
@@ -1208,12 +1208,12 @@ export function judgementSection(j: JudgementRecord): string {
   const causes = rows.flatMap((r) => r.contradictions.map((c) => ({ ...c, model: r.model })));
   return `<section class="judgement" aria-label="Judgements by acting model">
   <h2 class="section-title">The orchestrator's judgements · ${e(from)} to ${e(to)}</h2>
-  <p class="meta">What each harness/model acting for the owner recorded from ${e(from)} to ${e(to)} (the last ${j.window.days} days, every project), named with <code>--as</code>; the authority stays the owner's. The acting model is declared, not verified: Atelier checks it names a model in the pool, but the owner token cannot prove which model typed the command. A verdict on a finding is upheld when a later verdict by another named model agrees, contradicted when a later verdict corrects it or a defect names it with <code>atelier defect --contradicts</code>, and unresolved otherwise: no defect is not proof a verdict was right. Decisions and overrides are counted, never scored. Events recorded before Atelier kept the acting model, or without one, stay unknown.</p>
+  <p class="meta">What each harness/model acting for the developer recorded from ${e(from)} to ${e(to)} (the last ${j.window.days} days, every project), named with <code>--as</code>; the authority stays the developer's. The acting model is declared, not verified: Atelier checks it names a model in the pool, but the owner token cannot prove which model typed the command. A verdict on a finding is upheld when a later verdict by another named model agrees, contradicted when a later verdict corrects it or a defect names it with <code>atelier defect --contradicts</code>, and unresolved otherwise: no defect is not proof a verdict was right. Decisions and overrides are counted, never scored. Events recorded before Atelier kept the acting model, or without one, stay unknown.</p>
   <p class="meta">Totals: ${plural(totals.verdicts, "verdict")}: ${totals.upheld} upheld, ${totals.contradicted} contradicted, ${totals.unresolved} unresolved; ${plural(totals.decisionsRecorded, "decision")} recorded, ${totals.decisionsWithdrawn} withdrawn; ${plural(totals.overrides, "override")}.</p>
   ${rows.length ? `<table class="usage-table">
     <thead><tr><th scope="col">Acting model (declared)</th><th scope="col">Verdicts</th><th scope="col">Upheld</th><th scope="col">Contradicted</th><th scope="col">Unresolved</th><th scope="col">Decisions</th><th scope="col">Overrides</th></tr></thead>
     <tbody>${rows.map(row).join("")}</tbody>
-  </table>` : `<p class="empty">Nothing was judged for the owner from ${e(from)} to ${e(to)}.</p>`}
+  </table>` : `<p class="empty">Nothing was judged for the developer from ${e(from)} to ${e(to)}.</p>`}
   ${causes.length ? `<ul class="causes">${causes.map((c) => `<li class="meta">${when(c.at)} · ${c.model ? `<code>${e(c.model)}</code>` : "unknown"}'s verdict (event ${c.event}) on <code>${e(c.project)}/${e(c.item)}</code> ${c.by === "defect" ? "contradicted by a defect" : "corrected"}: ${e(c.note)}</li>`).join("")}</ul>` : ""}
 </section>`;
 }
@@ -1385,9 +1385,9 @@ function comparisonTable(rows: ModelReliability[]): string {
 }
 
 export function reliabilitySection(models: Reliability, ownerName: string | null, window: { events: number; unread: string[] }): string {
-  const who = ownerName || "the owner";
+  const who = ownerName || "the developer";
   const rows = [...models.values()];
-  const lead = `Each model's record across all ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. A finding the owner adjudicated measures the reviewer's precision: kept means confirmed or marked fixed, refuted means the code already did what it asked. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
+  const lead = `Each model's record across all ${window.events.toLocaleString("en")} events of every project${window.unread.length ? ` (${window.unread.map(e).join(", ")} could not be read just now, so ${window.unread.length === 1 ? "its" : "their"} work is not counted)` : ""}, and the runs the runners reported. Its work is what it held; its verdicts are its own reviews. A finding the developer adjudicated measures the reviewer's precision: kept means confirmed or marked fixed, refuted means the code already did what it asked. Approvals by ${e(who)} are never a model's verdict: they are counted per model whose work they approved, those made on the task page apart from those recorded through the API, as the orchestrator records them; those from before Atelier kept the two apart are unrecorded.`;
   return `<section class="reliability" aria-label="Reliability by model">
   <h2 class="section-title">Reliability by model · ${rows.length}</h2>
   <p class="meta">${lead}</p>
@@ -1840,7 +1840,7 @@ function standingMore(p: ProjectRecord, s: Standing): string {
     : `${plural(s.queued.length, "task")} queued · <span class="merged-by-override">${plural(overrides.length, "merge")} by override</span> · ${plural(s.handoffs.length, "handoff note")}`;
   return `<details class="disclosure standing-more"><summary>${summary}</summary>
   ${group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(notePreview(q.note))}` : ""}</span></li>`))}
-  ${group(`Merged by override: ${plural(overrides.length, "merge")}`, overrides.map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`))}
+  ${group(`Merged by override: ${plural(overrides.length, "merge")}`, overrides.map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the developer's override, not a review: ${e(o.reason)}</span></li>`))}
   ${group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`))}
   ${s.session ? `<h3>Newest session</h3>${sessionNoteText(s.session).split("\n").map((line) => `<p class="meta">${e(line)}</p>`).join("")}` : ""}
   ${overlapDisclosure({ project: p.name, owner: [], pipeline: [], overlaps: s.overlaps ?? [], unknown: [] })}
@@ -1931,7 +1931,7 @@ function taskRows(p: ProjectRecord, items: Item[]): string {
   const closed = (i: Item) => i.state === "merged" || i.state === "abandoned";
   const ordered = [...items].sort((a, b) => Number(closed(a)) - Number(closed(b)) || b.updatedAt.localeCompare(a.updatedAt));
   return `<ul class="task-list">${ordered.map((i) => `<li><a href="${href("p", p.name, i.id)}">
-    <span><strong>${e(i.title)}</strong><span class="meta">${e(i.id)} · ${e(i.owner ?? "No current owner")}</span></span>
+    <span><strong>${e(i.title)}</strong><span class="meta">${e(i.id)} · ${e(i.owner ?? "No current holder")}</span></span>
     ${tag(stateLabel[i.state], i.state === "merged" ? "go" : "")}<time class="meta">${when(i.updatedAt)}</time>${icon("arrow")}</a></li>`).join("")}</ul>`;
 }
 
@@ -2035,7 +2035,7 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 export function renderProject(p: ProjectRecord, items: Item[] | null, events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null, inbox: InboxEntry[] | null = null, now = standing ? new Date(standing.generatedAt) : new Date(), mode: { mode: string; line: string } | null = null): string {
   const unread = (what: string) => `<p class="notice" role="status">${what} could not be read.</p>`;
   // The project's mode (t585): fast mode is said at the top while it stands.
-  const modeNote = mode?.mode === "fast" ? `<p class="notice" role="status">${e(mode.line)}. Tasks land in fast mode from the owner's checkout, each with a receipt and a post-merge review; atelier mode full returns to the gated process.</p>` : "";
+  const modeNote = mode?.mode === "fast" ? `<p class="notice" role="status">${e(mode.line)}. Tasks land in fast mode from the developer's checkout, each with a receipt and a post-merge review; atelier mode full returns to the gated process.</p>` : "";
   return projectPage(p, "Overview", `
   ${modeNote}
   ${board === null ? unread("The task board") : ""}
@@ -2163,7 +2163,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Models</dt><dd>${e(familyModeText(p.policy))}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
-    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the owner on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the owner token"}</dd>
+    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the developer on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the owner token"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
   const cp = p.policy.approval
@@ -2291,7 +2291,7 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   const r = ev.data as Record<string, unknown>;
   const tests = (r.tests ?? {}) as { command?: string; sha256?: string; where?: string };
   const short = (v: unknown) => e(String(v ?? "").slice(0, 12));
-  const ran = tests.where === "clean clone" ? " in a clean clone of the batch's head" : tests.where === "checkout" ? " in the owner's checkout" : "";
+  const ran = tests.where === "clean clone" ? " in a clean clone of the batch's head" : tests.where === "checkout" ? " in the developer's checkout" : "";
   const sameFamily = d.reviews.filter((x) => x.independence).map((x) => `<li>${e(x.by)}: ${e(x.independence!)}</li>`).join("");
   const fixes = d.events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
   return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}.</p>
@@ -2304,7 +2304,7 @@ function fastReadyBlock(d: Detail): string {
   if (d.item.state === "merged" || d.item.state === "abandoned") return "";
   const ready = standingFastReady(d.events);
   if (!ready) return "";
-  return `<div class="fast-ready"><p><strong>Ready for fast land at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the owner lands it with the next batch.</p>
+  return `<div class="fast-ready"><p><strong>Ready for fast land at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the developer lands it with the next batch.</p>
   <p class="meta"><code>atelier fast land ${e(d.item.id)}=${e(ready.commit)}</code></p></div>`;
 }
 
@@ -2410,7 +2410,7 @@ function permissionState(d: Detail, now: number, owner: string): OwnerState["per
   if (standing) return cell("invalidated", "Invalidated: no longer on record, so it allows nothing");
   if (d.policy.noOverride) return cell("forbidden", "Forbidden: this project refuses every override");
   if (item.state !== "submitted" || !d.gate.needsAssessor) return cell("not-applicable", "Not given; there is no missing independent review to override");
-  if ((d.ownerFactor ?? null) === null) return cell("unconfirmable", "Unavailable: this server takes no owner confirmation");
+  if ((d.ownerFactor ?? null) === null) return cell("unconfirmable", "Unavailable: this server takes no developer confirmation");
   return cell("none", "Not given");
 }
 
@@ -2482,7 +2482,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
   // The headline above states the state and its reason; this line gives only
   // the move that follows, or who it waits on, never the state again (t498).
   const sentBack = item.state === "submitted" && latest.some((r) => !r.approve);
-  const holder = item.owner ? `the task owner, ${item.owner}` : "the task owner";
+  const holder = item.owner ? `the task holder, ${item.owner}` : "the task holder";
   const holderMid = item.owner ? `${holder},` : holder;
   const next: OwnerState["next"] =
     item.state === "merged" || item.state === "abandoned" ? { kind: "complete", text: "Nothing waits on you." }
@@ -2492,7 +2492,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
     : live && item.head && !evidenceVisible ? { kind: "next", text: "Reload this task; approval and acceptance wait until the changes shown match the recorded revision." }
     : secretHeld ? { kind: item.secretScan === item.head ? "waiting" : "next", text: item.secretScan === item.head ? "For the secret scan of this revision to complete." : "Check the flagged line and clear the flag if it is not a secret." }
     : decision.action === "accept" ? { kind: "next", text: "Accept revision, below; the merge command follows." }
-    : item.state === "submitted" && mine && !mine.approve && !gate.needsAssessor && gate.blockers.length === 1 ? { kind: "next", text: "Approve the revision if your concern is met; otherwise wait for the task owner's next push." }
+    : item.state === "submitted" && mine && !mine.approve && !gate.needsAssessor && gate.blockers.length === 1 ? { kind: "next", text: "Approve the revision if your concern is met; otherwise wait for the task holder's next push." }
     // A rejection at this revision blocks whatever review is asked next, so
     // the way on is a new revision, not a landing (which asks for a review).
     : sentBack ? { kind: "waiting", text: `For ${holderMid} to address the review and push a new revision; a landing then asks for a fresh review.` }
@@ -2591,7 +2591,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     : "";
   const evidenceNotice = live && item.head && !evidenceVisible
     ? `<div class="notice" role="status"><h3>${diff && diff !== "unavailable" ? "The displayed revision has changed" : "Changes are unavailable"}</h3>
-      <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${href("p", p.name, item.id)}">Reload this task</a>. If the revision changed, the task owner should run <code>atelier push</code> and rerun checks.</p></div>`
+      <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${href("p", p.name, item.id)}">Reload this task</a>. If the revision changed, the task holder should run <code>atelier push</code> and rerun checks.</p></div>`
     : "";
   const counted = countingReviews(d.reviews, bindingOf(item), d.policy, d.ownerActor ?? DEFAULT_OWNER);
   const reviewWanted = decision.action === "review" || counted.some((r) => !r.approve);
@@ -2638,7 +2638,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   const override = overridable && d.policy.noOverride
     ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from ${single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor"}.</p>`
     : overridable && factor === null
-    ? `<p class="meta">An override of the independent review needs the owner's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
+    ? `<p class="meta">An override of the independent review needs the developer's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
     : overridable
     // A native disclosure (t457), drawn as one and not as a button: a marker
     // that turns and words that change when it opens. Opening it submits
@@ -2719,13 +2719,13 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   const blockBox = item.state === "blocked" && item.blocked
     ? `<div class="notice" role="status"><h3>Blocked by ${e(item.blocked.by)} ${when(item.blocked.at)}</h3>
         <p>${e(item.blocked.reason)}</p>
-        <p class="meta">It keeps its owner and workspace, is skipped by runners and stuck detection, and cannot be pushed or submitted. Unblocking returns it to ${e(stateLabel[item.blocked.from].toLowerCase())}.</p>
+        <p class="meta">It keeps its holder and workspace, is skipped by runners and stuck detection, and cannot be pushed or submitted. Unblocking returns it to ${e(stateLabel[item.blocked.from].toLowerCase())}.</p>
         <form method="post" action="${action("unblock")}">${revision}<button class="primary">Unblock</button></form></div>`
     : live || item.state === "open"
       ? `<details class="request-changes"><summary>Block this task</summary>
         <form class="stack" method="post" action="${action("block")}">${revision}
           <label>What is it waiting on?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>
-          <p class="meta">The task keeps its owner and workspace, leaves the runner queue and stuck detection, and cannot be submitted until it is unblocked.</p>
+          <p class="meta">The task keeps its holder and workspace, leaves the runner queue and stuck detection, and cannot be submitted until it is unblocked.</p>
           <button>Block</button>
         </form></details>`
       : "";
@@ -2765,7 +2765,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // forms stay under Technical details.
   const ownership = live
     ? `<form class="stack" method="post" action="${action("handoff")}">${revision}
-        <label>New owner<input type="text" name="to" required placeholder="harness/model"></label>
+        <label>New holder<input type="text" name="to" required placeholder="harness/model"></label>
         <label>Handoff note<input type="text" name="note"></label>
         <button>Hand off task</button></form>
       <form method="post" action="${action("release")}">${revision}<button>Release task</button></form>`
@@ -2790,7 +2790,7 @@ ${defectOrigin}${framing}${openScope}${fastReadyBlock(d)}
 ${notices}
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
-<details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
+<details class="disclosure"><summary>Technical details${live ? " and handoff" : ""}</summary>${technical}${ownership}${close}</details>`;
   }
 
   const scope = gate.outOfScope.length
@@ -2819,7 +2819,7 @@ ${submissionRounds(d)}
       ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}${loadOf(last) ? ` · ${loadOf(last)}` : ""}`
       : uncounted
         ? "This check ran on a runner, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
-        : "The task owner must run this required check.";
+        : "The task holder must run this required check.";
     // Every result at this head is kept and shown, each with its load, so a
     // later pass of an unchanged command does not replace its earlier failure.
     const history = runs.length > 1
@@ -2869,7 +2869,7 @@ ${submissionRounds(d)}
   const overrideEvent = overridden ? d.events.filter((v) => v.kind === "review.overridden" && str(v.data.head) === overridden.head).sort((a, b) => a.seq - b.seq).at(-1) : undefined;
   const overrideNote = overridden
     ? `<div class="review-note">${tag(voided ? "Override not counted" : "Review overridden", "ask")}
-    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p>${overrideEvent ? `<p class="meta">${e(availabilityText(overrideEvent.data.availability))}</p>` : ""}</div>`
+    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the developer's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p>${overrideEvent ? `<p class="meta">${e(availabilityText(overrideEvent.data.availability))}</p>` : ""}</div>`
     : "";
   const blockers = live && !gate.ready
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`
@@ -2888,7 +2888,7 @@ ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 </section>
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
-<details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
+<details class="disclosure"><summary>Technical details${live ? " and handoff" : ""}</summary>${technical}${ownership}${close}</details>`;
 }
 
 // The error page keeps the owner's name and the rail, and highlights nothing:
@@ -2940,7 +2940,7 @@ function renderDiff(diff: ItemDiff | "unavailable" | null, recordedHead: string 
   const added = diff.files.reduce((n, f) => n + f.added, 0);
   const removed = diff.files.reduce((n, f) => n + f.removed, 0);
   const moved = recordedHead && recordedHead !== diff.head
-    ? `<p>${tag("Unrecorded", "ask")} Artifacts holds <span class="mono">${short(diff.head)}</span>, newer than the recorded head <span class="mono">${short(recordedHead)}</span>; the owner has pushed without running <code>atelier push</code>.</p>`
+    ? `<p>${tag("Unrecorded", "ask")} Artifacts holds <span class="mono">${short(diff.head)}</span>, newer than the recorded head <span class="mono">${short(recordedHead)}</span>; the holder has pushed without running <code>atelier push</code>.</p>`
     : "";
   // The diff is against main as it is now, so a workspace behind main shows
   // main's newer changes too, as reversals; the preview beneath says how far

@@ -18,7 +18,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 
 const W = 980, X0 = 96, CW = 124, NW = 100, NH = 44;
 const LANES: { key: Lane | "atelier"; label: string[]; y: number; h: number }[] = [
-  { key: "owner", label: ["Owner"], y: 36, h: 68 },
+  { key: "owner", label: ["Developer"], y: 36, h: 68 },
   { key: "agent", label: ["Agent"], y: 108, h: 68 },
   { key: "reviewer", label: ["Reviewer"], y: 180, h: 68 },
   { key: "atelier", label: ["Atelier", "records"], y: 268, h: 96 },
@@ -69,7 +69,7 @@ const terms = (): string => `<dl class="how-terms">${TERMS.map((t) => `<div><dt>
 
 function where(): string {
   return `
-<p>Atelier runs in five layers. The owner and anyone acting for them work through one command, the CLI, which is the only way into Cloudflare; agents work below it, each in its own workspace, calling its own model.</p>
+<p>Atelier runs in five layers. The developer and anyone acting for them work through one command, the CLI, which is the only way into Cloudflare; agents work below it, each in its own workspace, calling its own model.</p>
 ${layersFigure()}`;
 }
 
@@ -100,7 +100,7 @@ function step(s: Verbed): string {
 function takeaways(): string {
   return `
 <p class="how-takeaways">${e(TAKEAWAYS)}</p>
-<p>Proven: every required check observed passing at the exact head, run by Atelier and not taken on an agent's word. Reviewed: protected changes approved by a model of another family than every contributor, or in single-family mode by a different model of the project's company; an owner override is recorded as one, never as a review. Recorded: every claim, push, check, review, acceptance and merge in the task's ledger, and its receipt attached to the merge as a git note.</p>
+<p>Proven: every required check observed passing at the exact head, run by Atelier and not taken on an agent's word. Reviewed: protected changes approved by a model of another family than every contributor, or in single-family mode by a different model of the project's company; a developer override is recorded as one, never as a review. Recorded: every claim, push, check, review, acceptance and merge in the task's ledger, and its receipt attached to the merge as a git note.</p>
 <p class="how-tagline">${e(TAGLINE)}</p>
 <h3 class="how-sub">Limits of enforcement</h3>
 <ul class="how-limits">${LIMITS.map((t) => `<li>${md(t)}</li>`).join("")}</ul>`;
@@ -108,7 +108,7 @@ function takeaways(): string {
 
 function orchestrator(): string {
   return `
-<p>The orchestrator turns a goal into merged work. Every step here is built, and the list below names the code behind each. <code>atelier plan "goal"</code> makes the goal a plan task and queues it as a plan job. Every home runner offers build and plan jobs unless its config names the jobs it takes, so one takes the plan job: it claims the plan task as the planner, reads the brief the server wrote, runs the planner's harness and posts the plan document it wrote. The owner approves the newest proposal by its hash, once, with <code>atelier plan approve</code>. The approval fixes each part's routing: <code>routeParts</code> in <code>src/plans/route.ts</code> names a builder, two alternates and a reviewer of another model family than the builder's, and the approval is refused while any part has no builder or no such reviewer. The ledger's tick then dispatches the parts in plan order, two live at a time, each once the parts it depends on have landed and with the brief the server writes for it, and runs again after each push, check, review, submit, release, merge or abandon of a part. A submitted part whose checks pass and whose paths are measured gets a review request from the tick, routed to a model of another family than every contributor. A home runner whose config offers review jobs serves the request: <code>runReview</code> in <code>cli/runner.mjs</code> clones the head read-only, gives the reviewer the brief and the diff, and posts the verdict with its findings; <code>cli/agy-review.mjs</code> is the adapter that runs Antigravity's CLI as that reviewer. A rejection with blocking findings sends the part back to its builder for rework. An approved part is merged into the plan's integration branch by the integrator runner, <code>atelier runner --integrate</code>, which runs the plan's checks and rolls the branch back when they fail. When no part remains to integrate, the integrator submits the plan task, and it reaches main by the owner's acceptance and merge, which marks each part merged through the plan. A task outside a plan lands whole with <code>atelier land</code>: it takes the project's landing lease, merges main into the workspace, pushes, runs the checks and submits, asks for the review the gate needs through a review request served the same way, waits for the verdict, then accepts and merges. <code>docs/orchestrator.md</code> holds the design and its build sequence.</p>
+<p>The orchestrator turns a goal into merged work. Every step here is built, and the list below names the code behind each. <code>atelier plan "goal"</code> makes the goal a plan task and queues it as a plan job. Every home runner offers build and plan jobs unless its config names the jobs it takes, so one takes the plan job: it claims the plan task as the planner, reads the brief the server wrote, runs the planner's harness and posts the plan document it wrote. The developer approves the newest proposal by its hash, once, with <code>atelier plan approve</code>. The approval fixes each part's routing: <code>routeParts</code> in <code>src/plans/route.ts</code> names a builder, two alternates and a reviewer of another model family than the builder's, and the approval is refused while any part has no builder or no such reviewer. The ledger's tick then dispatches the parts in plan order, two live at a time, each once the parts it depends on have landed and with the brief the server writes for it, and runs again after each push, check, review, submit, release, merge or abandon of a part. A submitted part whose checks pass and whose paths are measured gets a review request from the tick, routed to a model of another family than every contributor. A home runner whose config offers review jobs serves the request: <code>runReview</code> in <code>cli/runner.mjs</code> clones the head read-only, gives the reviewer the brief and the diff, and posts the verdict with its findings; <code>cli/agy-review.mjs</code> is the adapter that runs Antigravity's CLI as that reviewer. A rejection with blocking findings sends the part back to its builder for rework. An approved part is merged into the plan's integration branch by the integrator runner, <code>atelier runner --integrate</code>, which runs the plan's checks and rolls the branch back when they fail. When no part remains to integrate, the integrator submits the plan task, and it reaches main by the developer's acceptance and merge, which marks each part merged through the plan. A task outside a plan lands whole with <code>atelier land</code>: it takes the project's landing lease, merges main into the workspace, pushes, runs the checks and submits, asks for the review the gate needs through a review request served the same way, waits for the verdict, then accepts and merges. <code>docs/orchestrator.md</code> holds the design and its build sequence.</p>
 ${planFlowFigure()}
 <ul class="how-status">${ORCHESTRATOR.map((p) => `<li><span class="tag ${p.built ? "go" : "ask"}">${p.built ? "Built" : "Not built yet"}</span><div><h3>${e(p.name)} <span class="meta">${e(p.stage)}</span></h3><p>${md(p.what)}</p></div></li>`).join("")}</ul>`;
 }
@@ -116,7 +116,7 @@ ${planFlowFigure()}
 // The owner's guide in short; the file in the repository says each point in full.
 function usingWell(): string {
   return `
-<p>The project owner makes three kinds of decision: what to do, whether a plan's split is right, and whether finished work is accepted. These points, from <a href="${REPO_URL}/blob/main/${USING_WELL_DOC}">${e(USING_WELL_DOC)}</a> in the repository, are about making them well and leaving the rest to the system.</p>
+<p>The developer makes three kinds of decision: what to do, whether a plan's split is right, and whether finished work is accepted. These points, from <a href="${REPO_URL}/blob/main/${USING_WELL_DOC}">${e(USING_WELL_DOC)}</a> in the repository, are about making them well and leaving the rest to the system.</p>
 <ul class="how-limits">${USING_WELL.map((a) => `<li>${md(a.point)}</li>`).join("")}</ul>`;
 }
 
@@ -150,8 +150,8 @@ export function renderHow(): string {
 <header class="how-hero">
   <span class="kicker">How it works · public · reads no project data</span>
   <h1>How Atelier works</h1>
-  <p class="lead">Atelier is a Git platform for several coding agents working on one project at the same time. Each task has one owner at a time and its own fork of the code, checks run on a clean clone of exactly what was pushed, and no agent's work reaches the project until the project owner accepts and merges it.</p>
-  <p class="lead">It runs on Cloudflare Workers, Durable Objects and Artifacts. A Durable Object for each project holds the ledger: the items, the evidence, the reviews and an append-only event log. Artifacts holds the repositories. Agents and the owner work through one command, <code>atelier</code>, which needs only Node and git; the owner also has a web inbox that ranks what needs a decision.</p>
+  <p class="lead">Atelier is a Git platform for several coding agents working on one project at the same time. Each task has one holder at a time and its own fork of the code, checks run on a clean clone of exactly what was pushed, and no agent's work reaches the project until the developer accepts and merges it.</p>
+  <p class="lead">It runs on Cloudflare Workers, Durable Objects and Artifacts. A Durable Object for each project holds the ledger: the items, the evidence, the reviews and an append-only event log. Artifacts holds the repositories. Everyone works through one command, <code>atelier</code>, which needs only Node and git; the developer also has a web inbox that ranks what needs a decision.</p>
   <p class="lead">A task lives in five steps: ${STEPS.slice(0, -1).map((s) => e(s.verb)).join(", ")} and ${e(STEPS.at(-1)!.verb)}. What lands is <strong>${e(TAKEAWAYS)}</strong> ${e(TAGLINE)}</p>
   <nav class="how-toc" aria-label="On this page">${sections.map(([h]) => `<a href="#${slug(h)}">${e(h)}</a>`).join("")}</nav>
 </header>

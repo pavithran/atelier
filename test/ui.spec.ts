@@ -130,7 +130,7 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   const reviewOverride={head,by:'pavi',reason:'No <b>other</b> family is available',at:time};
   const d=detail();d.item.reviewOverride=reviewOverride;d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[],overridden:reviewOverride};
   const html=renderItem(project,d,'PAVI',diff);
-  expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the project owner's override, not a review");
+  expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the developer's override, not a review");
   // The brief says it once; the header's description is not drawn beside that brief (finding 7).
   expect(html).toContain('The project owner overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('Accept revision');
   d.item.state='accepted';d.item.acceptedHead=head;
@@ -575,7 +575,7 @@ it('the showcase draws a named project that has work, and survives a cache that 
   // Its open task is in the latest moves; only a merged task is told as it happened (t578).
   expect(body).toContain('gpt-6 took t1');
   expect(body).not.toContain('id="story-h"');
-  expect(body).toContain('The owner made 0 decisions.');
+  expect(body).toContain('The developer made 0 decisions.');
   expect(body).toContain('Proven. Reviewed. Recorded.');
  }finally{(caches.default as {put:unknown}).put=put;}
 });
@@ -1361,7 +1361,7 @@ it('the checks on the would-be merge stand beside the preview, bound to the main
  const html=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[{path:'src/a.ts',status:'modified',added:1,removed:0,hunks:[]}],truncated:false,main:preview(M1)});
  expect(html).toContain('Checks on the merge with main, at this revision');
  expect(html).toContain('<span class="tag ask">Waiting</span><code>npm test</code>');
- expect(html).toContain('The task owner must run this required check.');
+ expect(html).toContain('The task holder must run this required check.');
  expect(html).not.toContain('Accept revision');
  // Without a preview there is nothing to mark stale against, so the merged run is not shown beside it.
  expect(renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false})).not.toContain('Checks on the merge');
@@ -1706,7 +1706,7 @@ it('the error page keeps the owner\'s name, highlights nothing, and says Go back
  // No link in the markup is current: the page does not know which page failed (finding 18).
  expect(html).not.toMatch(/<a[^>]*aria-current="page"/);
  expect(renderError('x')).not.toMatch(/<a[^>]*aria-current="page"/);
- expect(renderError('x')).toContain('<summary>Owner</summary>');
+ expect(renderError('x')).toContain('<summary>Developer</summary>');
 });
 
 it('Tasks is one list of every task with state, holder and time; the Overview tab no longer repeats it',async()=>{
@@ -1725,7 +1725,7 @@ it('Tasks is one list of every task with state, holder and time; the Overview ta
  for(const i of items){
   expect(html).toContain(`href="/p/example/${i.id}"`);
   expect(html).toContain(`<span class="tag ${i.state==='merged'?'go':''}">${labels[i.id as keyof typeof labels]}</span>`);
-  expect(html).toContain(i.owner??'No current owner');
+  expect(html).toContain(i.owner??'No current holder');
  }
  // Live work before closed, newest first within each.
  expect(html.indexOf('href="/p/example/t3"')).toBeLessThan(html.indexOf('href="/p/example/t2"'));

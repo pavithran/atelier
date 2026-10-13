@@ -146,7 +146,7 @@ it("each model's reliability across projects: the JSON route, the Models page an
   expect(models_).toContain("<code>opus-5.5</code>");
   expect(models_).toContain("&lt;b&gt;needs a test&lt;/b&gt;");
   expect(models_).not.toContain("<b>needs a test</b>");
-  expect(models_).toContain("1 by the owner on the page");
+  expect(models_).toContain("1 by the developer on the page");
   expect(models_).toContain("1 through the API");
   expect(models_).toContain("Its approvals a defect contradicted · 1");
   const usage = await (await worker.fetch(new Request("https://atelier.test/usage", { headers: { cookie } }), testEnv)).text();
