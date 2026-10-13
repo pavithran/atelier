@@ -131,10 +131,15 @@ starts the thirty-day session at once, with no token form. A request from
 another site starts none; the hop back from Access's own prompt gets a page
 that reloads the address from the server's origin, where the session starts.
 Sign out ends the session; the next developer page opened under the same Access
-sign-in starts a new one. With any of the three unset the server stands as
-it always has, without the second check; a value that is set but unusable,
-such as an issuer without `https://`, logs a warning once rather than quietly
-leaving the pages unguarded.
+sign-in starts a new one. With none of the three set the server stands as
+it always has, without the second check. Partial configuration is refused:
+with one or two of the three set, or a value the Worker cannot use (an issuer
+that is not the team's `https://` URL, an email with no `@`), every route
+Access would guard answers 503 with a page naming which setting is missing or
+unusable, never its value, until all three are set or all three removed. The
+public pages and the `/api` routes stay open meanwhile, so the CLI still
+works. Before this, a partial configuration turned the check off and left the
+pages to the server token alone (Astra's audit of 2026-10-13, finding 11).
 
 ## Confirming an override
 
