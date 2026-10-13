@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseConfig } from "../cli/runner-config.mjs";
+import { AGY_MODELS } from "../cli/harness/adapter.mjs";
 
 // The antigravity review adapter (cli/agy-review.mjs): it reads the brief and
 // the diff the review job wrote, builds one prompt, runs the stand-in for `agy`
@@ -68,6 +69,19 @@ test("a diff with very many runs of backticks still gets its fence", (t) => {
 
 test("the adapter maps gpt-oss-120b and passes any other model id through", (t) => {
   for (const [model, mapped] of [["gpt-oss-120b", "gpt-oss-120b-medium"], ["some-other-id", "some-other-id"]]) {
+    const { log, result } = review(t, { model });
+    assert.equal(result.status, 0, result.stderr);
+    const { argv: args } = JSON.parse(readFileSync(log, "utf8"));
+    assert.equal(args[args.indexOf("--model") + 1], mapped, model);
+  }
+});
+
+// A review must name the model as a build does: the adapter once kept its
+// own copy of the table, without gemini-3.8-flash, and agy refused every
+// Flash review (t573, 2026-10-13, t567 at e18fc819).
+test("a review maps every model the build path maps, gemini-3.8-flash among them", (t) => {
+  assert.equal(AGY_MODELS["gemini-3.8-flash"], "gemini-3.8-flash-high");
+  for (const [model, mapped] of Object.entries(AGY_MODELS)) {
     const { log, result } = review(t, { model });
     assert.equal(result.status, 0, result.stderr);
     const { argv: args } = JSON.parse(readFileSync(log, "utf8"));
