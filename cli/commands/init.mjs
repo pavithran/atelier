@@ -166,9 +166,17 @@ export default async function initCommand() {
   // flag given once as "" clears its list.
   if (args["commit-name"] !== undefined) policy.commitName = args["commit-name"];
   if (args["commit-email"] !== undefined) policy.commitEmail = args["commit-email"];
-  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"], ["public-mirror", "publicMirrors"]]) {
+  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"], ["public-mirror", "publicMirrors"], ["private-path", "privatePaths"], ["private-pattern", "privatePatterns"]]) {
     const values = args.multi[flag];
     if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
+  }
+  if (args.multi["public-mirror-destination"]) {
+    policy.publicMirrorDestinations = {};
+    for (const value of args.multi["public-mirror-destination"]) {
+      const split = value.indexOf("=");
+      if (split < 1) die("--public-mirror-destination needs REMOTE=URL");
+      policy.publicMirrorDestinations[value.slice(0, split)] = value.slice(split + 1);
+    }
   }
   const r = await call("PUT", P(name), {
     ...policy,

@@ -711,7 +711,7 @@ function branchArg(value: unknown): string {
 }
 
 // The commit identity's fields as init sends them (src/commit-identity.ts).
-const IDENTITY_FIELDS = ["commitName", "commitEmail", "agentEmails", "privateEmails", "publicMirrors"];
+const IDENTITY_FIELDS = ["commitName", "commitEmail", "agentEmails", "privateEmails", "publicMirrors", "publicMirrorDestinations", "privatePaths", "privatePatterns"];
 
 // The approval a policy records, as init sends it: the owner's own text,
 // stored with the policy, so one over its limit is refused, never cut.

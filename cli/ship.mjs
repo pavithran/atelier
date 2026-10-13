@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
 import { runGroup } from "./group.mjs";
+import { publishCheckoutRemote } from "./mirror.mjs";
 
 export const SHIP_FILE = "docs/atelier/ship.json";
 const CP = "docs/control-plane";
@@ -405,6 +406,7 @@ export async function runRequest(run) {
 //   wrap(summary)              runs atelier wrap in the checkout: { status, output, durationMs }
 //   env, secrets, redact       the environment, the values to cut and the cutter
 //   dryRun, push               the flags
+//   identity                   the project's commitIdentity, read when pushing
 export async function ship(ctx) {
   const { name, cwd, branch, git, request, print, fail } = ctx;
   const P = `/projects/${encodeURIComponent(name)}`;
@@ -425,6 +427,11 @@ export async function ship(ctx) {
     try { target = resolvePush(pushStep.push, { git, cwd, branch }); }
     catch (error) { if (ctx.push) refusals.push(error.message); }
   }
+  // Once the policy declares a public mirror, the push goes through the
+  // same check as publish REMOTE and wrap --push (cli/mirror.mjs), which
+  // publishes the registered branch under its own name and nothing else.
+  const mirrored = Boolean(ctx.identity?.publicMirrors?.length);
+  if (ctx.push && mirrored && target && target.branch !== branch) refusals.push(`the project declares public mirrors, so ship pushes only ${branch} to ${branch}, through the privacy check; ${SHIP_FILE} names ${target.branch} on ${target.remote}`);
   const { approvals } = commit ? await request("GET", `${P}/actions`) : { approvals: [] };
   // A dry run lists what would refuse beside the steps; a ship stops on it.
   print(formatPlan({ name, plan, branch, head, commit: commit ?? head, approvals, push: ctx.push, target, refusals: ctx.dryRun ? refusals : [] }));
@@ -471,7 +478,12 @@ export async function ship(ctx) {
     } else if (s.step === "push") {
       const started = Date.now();
       const label = pushLabel(target, branch);
-      const r = git(["-c", `remote.${target.remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", target.remote, `refs/heads/${branch}:refs/heads/${target.branch}`], { cwd, allowFail: true, ownerRemote: true });
+      let r;
+      if (mirrored) {
+        const said = [];
+        const published = publishCheckoutRemote({ git, dir: cwd, branch, remote: target.remote, identity: ctx.identity, say: (line) => { said.push(line); print(`push: ${line}`); } });
+        r = { status: published.ok ? 0 : 1, stdout: said.map((line) => `${line}\n`).join(""), stderr: "" };
+      } else r = git(["-c", `remote.${target.remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", target.remote, `refs/heads/${branch}:refs/heads/${target.branch}`], { cwd, allowFail: true, ownerRemote: true });
       const now = git(["rev-parse", "HEAD"], { cwd });
       const listed = r.status === 0 ? git(["ls-remote", target.remote, `refs/heads/${target.branch}`], { cwd, allowFail: true, ownerRemote: true }) : null;
       const holds = listed?.status === 0 && listed.stdout.split(/\s/)[0] === now;

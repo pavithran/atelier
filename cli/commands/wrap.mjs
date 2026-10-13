@@ -3,9 +3,9 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
-import { IDENTITY_LOG_FORMAT, isPublicMirror, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
 import { OWNER, P, actor, args, at, call, cfg, die, git, project, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
-import publishCommand from "./publish.mjs";
+import { publishCheckoutRemote } from "../mirror.mjs";
+import { publishBaseline } from "./publish.mjs";
 import syncCommand from "./sync.mjs";
 
 export default async function wrapCommand() {
@@ -124,26 +124,10 @@ export default async function wrapCommand() {
   else die("could not inspect staged changes");
   data.pushes = [];
   for (const remote of remotes) {
-    // A remote the policy declares a public mirror (publicMirrors) takes
-    // only the project's own no-reply address (publicRefusals): every
-    // commit it lacks, as last fetched or pushed, must carry it as author
-    // and committer. An agent address allowed for landing is not allowed
-    // here. Such a remote is not pushed, and fails as a push that failed
-    // does. Any other remote is the owner's own and is pushed as before.
     const identity = record.policy.commitIdentity;
-    if (isPublicMirror(identity, remote)) {
-      const log = git(["log", `--format=${IDENTITY_LOG_FORMAT}`, `refs/heads/${branch}`, "--not", `--remotes=${remote}`], { cwd, raw: true });
-      const unpublic = publicRefusals(identity, parseIdentityLog(log));
-      if (unpublic.length) {
-        data.pushes.push({ remote, passed: false });
-        console.log(`Remote ${sessionText(remote, 200)}: not pushed; it would publish addresses that are not public:\n  ${unpublic.map((line) => sessionText(line, 300)).join("\n  ")}`);
-        continue;
-      }
-    }
-    // The owner's own remotes: a normal push, LFS objects included (see gitEnv).
-    const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true, ownerRemote: true });
-    data.pushes.push({ remote, passed: result.status === 0 });
-    console.log(`Remote ${sessionText(remote, 200)}: ${result.status === 0 ? "pushed" : "failed"}.`);
+    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log });
+    data.pushes.push({ remote, passed: result.ok });
+    console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
   }
   if (!args.push) console.log("Checkout remotes not pushed (no --push).");
   data.found = [];
@@ -157,7 +141,7 @@ export default async function wrapCommand() {
   const note = await call("POST", `${P(name)}/sessions`, cleanSession(data), as);
   console.log(sessionNoteText(note));
   if (cfg.projects[name].fresh === true) await syncCommand();
-  else await publishCommand();
+  else await publishBaseline();
   console.log("Nothing deployed or published as a release.");
   console.log(FILING_RELAY);
   console.log(wrapRelay(note));

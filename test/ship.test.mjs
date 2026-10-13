@@ -179,7 +179,9 @@ test("the kinds approve accepts: Atelier's four and those the project's files na
 
 // ── the command, end to end ─────────────────────────────────────────────────
 
-const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@x.test", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@x.test" } }).trim();
+const gitAs = (email) => (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: email } }).trim();
+const git = gitAs("t@x.test");
+const PUBLIC_EMAIL = "123+t@users.noreply.github.com";
 const SECRET = "s3cret-value-for-the-deploy";
 
 // A stand-in for the Worker's routes ship, approve and wrap use. Approvals
@@ -216,7 +218,7 @@ function standIn(state) {
       a.withdrawn = { by: "owner", at: new Date().toISOString(), note: body.note };
       return send(200, view(a));
     }
-    if (path === "/api/projects/demo" && req.method === "GET") return send(200, { project: { policy: { checks: state.checks ?? [] } }, items: [] });
+    if (path === "/api/projects/demo" && req.method === "GET") return send(200, { project: { policy: { checks: state.checks ?? [], ...(state.identity ? { commitIdentity: state.identity } : {}) } }, items: [] });
     if (path === "/api/projects/demo/sessions" && req.method === "GET") return send(200, []);
     if (path === "/api/projects/demo/sessions" && req.method === "POST") return send(201, { actor: "owner", at: new Date().toISOString(), data: body });
     if (path === "/api/projects/demo/baseline-token") return send(200, { remote: state.baseline, token: "t", defaultBranch: "main" });
@@ -227,7 +229,8 @@ function standIn(state) {
 // A checkout registered as demo, whose docs/atelier/ship.json deploys with a
 // stand-in script, checks a stand-in live site and pushes to a local bare
 // repository named github. The baseline is a local bare repository at HEAD.
-async function fixture(t, { approve = [], ship } = {}) {
+async function fixture(t, { approve = [], ship, email = "t@x.test" } = {}) {
+  const git = gitAs(email);
   const dir = mkdtempSync(join(tmpdir(), "atelier-ship-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = { approvals: [], runs: [], requests: [] };
@@ -239,7 +242,7 @@ async function fixture(t, { approve = [], ship } = {}) {
   mkdirSync(join(checkout, "bin"), { recursive: true });
   git(checkout, "init", "-q", "-b", "main");
   git(checkout, "config", "user.name", "T");
-  git(checkout, "config", "user.email", "t@x.test");
+  git(checkout, "config", "user.email", email);
   writeFileSync(join(checkout, "README.md"), "demo\n");
   git(checkout, "add", ".");
   git(checkout, "commit", "-q", "-m", "one");
@@ -433,4 +436,38 @@ test("approve sends the kind, the full revision and the expiry; approvals lists 
   assert.equal((await f.run(["approvals"])).stdout, "No approval stands for demo; atelier approvals --all lists the used, withdrawn and expired ones.\n");
   assert.match((await f.run(["approvals", "--all"])).stdout, /^a1   deploy .* withdrawn .* \(not yet\)/);
   assert.match((await f.run(["approvals", "frobnicate"])).stderr, /usage: atelier approvals/);
+});
+
+// Once the policy declares a public mirror, ship --push goes through the same
+// check as publish REMOTE (cli/mirror.mjs): the outgoing commits must carry
+// the public address, and the remote must point at its declared destination.
+test("ship --push publishes a declared public mirror only through the privacy check", async (t) => {
+  const mirrorPolicy = (github) => ({ name: "T", email: PUBLIC_EMAIL, agentEmails: [], publicMirrors: ["github"], publicMirrorDestinations: { github } });
+  const clean = await fixture(t, { approve: ["deploy"], email: PUBLIC_EMAIL });
+  clean.state.identity = mirrorPolicy(clean.github);
+  const ok = await clean.run(["ship", "--push"]);
+  assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+  assert.equal(git(clean.github, "rev-parse", "main"), clean.head, "the scanned head reached the mirror");
+  assert.ok(clean.state.runs.at(-1).passed);
+
+  // A commit under a private address is refused, named, and nothing reaches the mirror.
+  const f = await fixture(t, { approve: ["deploy"] });
+  f.state.identity = mirrorPolicy(f.github);
+  const before = git(f.github, "rev-parse", "main");
+  const r = await f.run(["ship", "--push"]);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stdout, /push: Not published/);
+  assert.match(r.stdout, new RegExp(f.head.slice(0, 8)));
+  assert.match(r.stderr, /ship stopped at push/);
+  assert.equal(git(f.github, "rev-parse", "main"), before, "the mirror was not pushed");
+  assert.equal(f.state.runs.at(-1).step, "push");
+  assert.equal(f.state.runs.at(-1).passed, false);
+
+  // A ship file pushing another branch name is refused before anything runs.
+  const other = await fixture(t, { approve: ["deploy"], email: PUBLIC_EMAIL, ship: { schema_version: 1, kind: "atelier.ship", class: "other", push: { remote: "github", branch: "release" } } });
+  other.state.identity = mirrorPolicy(other.github);
+  const refused = await other.run(["ship", "--push"]);
+  assert.equal(refused.status, 1, refused.stdout);
+  assert.match(refused.stderr, /declares public mirrors, so ship pushes only main to main/);
+  assert.deepEqual(other.writes(), []);
 });
