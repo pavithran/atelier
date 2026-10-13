@@ -164,8 +164,11 @@ export const HARNESSES = {
   },
   antigravity: {
     executable: "agy",
-    command(args) {
-      return { argv: ["--model", AGY_MODELS[args.model] ?? args.model, "--dangerously-skip-permissions", "--sandbox", "--output-format", "json", "--print-timeout", "2400s"], verdictFrom: "agy-json" };
+    // Reviews keep the terminal sandbox; builds run without it (d14, PAVI
+    // 2026-10-13: with skip-permissions the sandbox only blocked the build's
+    // own installs, tests and commit, then let them through outside it).
+    command(args, kind) {
+      return { argv: ["--model", AGY_MODELS[args.model] ?? args.model, "--dangerously-skip-permissions", ...(kind === "review" ? ["--sandbox"] : []), "--output-format", "json", "--print-timeout", "2400s"], verdictFrom: "agy-json" };
     },
   },
 };
