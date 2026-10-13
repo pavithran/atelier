@@ -112,7 +112,7 @@ export function withStanding(saved: readonly ModelEntry[], current: readonly Mod
 // test/pool-standing.test.mjs lists every path and fails if one skips it.
 const ROLE_NOUN: Record<ModelRole, string> = { build: "builder", review: "reviewer", plan: "planner" };
 export function standingRefusal(entry: ModelEntry, role: ModelRole): string | null {
-  if (offThePool(entry)) return `${modelState(entry)} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the owner's standing)${entry.note ? `: ${entry.note}` : ""}`;
+  if (offThePool(entry)) return `${modelState(entry)} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the developer's standing)${entry.note ? `: ${entry.note}` : ""}`;
   if (!hasModelRole(entry, role)) return `not a ${ROLE_NOUN[role]}; its roles are ${entry.roles!.join(", ")}`;
   return null;
 }

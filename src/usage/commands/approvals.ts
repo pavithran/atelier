@@ -11,7 +11,7 @@ const spec: CommandSpec = {
     {
       group: "Owner", line: 3, slot:50,
       form: "approvals withdraw ID [--note T]",
-      about: "The project owner withdraws an approval no ship has used, so none can use it.",
+      about: "The developer withdraws an approval no ship has used, so none can use it.",
     },
   ],
   flags: { all: true, note: false },

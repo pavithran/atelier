@@ -213,7 +213,7 @@ export function confirmationAt(item: Pick<Item, "head" | "overrideConfirmation">
 export function ownerFactorText(factor: OwnerFactor | null | undefined): string {
   if (factor === "access") return "under your Cloudflare Access sign-in, which is the confirmation";
   if (factor === "secret") return "giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given)";
-  return "confirming as the owner";
+  return "confirming as the developer";
 }
 
 // What a server with no factor must do before any override can be confirmed.
@@ -224,7 +224,7 @@ export const NO_OWNER_FACTOR = "this server can take no confirmation: put its pa
 // server takes (`factor`: undefined where the caller does not know, as the
 // Ledger does not; null for a server that takes none).
 export function overrideConfirmationHint(project: string, id: string, origin = "", factor?: OwnerFactor | null): string {
-  const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the owner, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
+  const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the developer, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
   return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the owner token alone does not confirm it`;
 }
 
@@ -647,7 +647,7 @@ export function agentLine(message: string): string | null {
 
 export function assertHandoffTarget(actor: string, owner: string): void {
   if (!validActor(actor) || !actor.includes("/") || actor === owner) {
-    throw new RuleError("bad_actor", "handoff needs harness/model and cannot name the project owner", 400);
+    throw new RuleError("bad_actor", "handoff needs harness/model and cannot name the developer", 400);
   }
 }
 
@@ -874,7 +874,7 @@ export function assertClaimable(item: Item, actor: string): void {
     throw new RuleError("closed", `${item.id} is ${item.state}`);
   }
   if (item.owner && item.owner !== actor) {
-    throw new RuleError("owned", `${item.id} is owned by ${item.owner}; ask for a handoff`);
+    throw new RuleError("owned", `${item.id} is held by ${item.owner}; ask for a handoff`);
   }
 }
 
@@ -1121,14 +1121,14 @@ export function unprovedReview(r: Review): boolean {
 export function recordedText(r: Review, owner = DEFAULT_OWNER): string | null {
   if (r.recordedBy === undefined) return null;
   if (r.proved) return `recorded by ${r.recordedBy ?? r.by} with its own token`;
-  const who = r.recordedBy === owner ? "the project owner" : r.recordedBy;
+  const who = r.recordedBy === owner ? "the developer" : r.recordedBy;
   if (sameActor(r.by, owner)) return `recorded by ${who}`;
   return `recorded by ${who} with the owner token${r.claimed ? ", answering a review request it claimed" : ""}`;
 }
 
 // The gate's words for an approval unprovedReview sets aside.
 export function unprovedBlocker(r: Review): string {
-  return `the approval by ${r.by} was recorded by ${r.recordedBy ?? "the project owner"} with the owner token and answers no review request ${r.by} claimed at this head, so it is not the independent review`;
+  return `the approval by ${r.by} was recorded by ${r.recordedBy ?? "the developer"} with the owner token and answers no review request ${r.by} claimed at this head, so it is not the independent review`;
 }
 
 // The owner's override that stands at the item's current head, if any. One
@@ -1375,7 +1375,7 @@ export function overlappingRefusal(item: Item, items: readonly Item[], actor: st
   const clash = overlappingLive(item, items, actor);
   if (!clash.length) return null;
   const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
+  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The developer can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
 }
 
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
@@ -1397,7 +1397,7 @@ export function assertCriteriaAllowed(policy: Pick<ProjectPolicy, "requireCriter
 
 export function assertOwner(item: Item, actor: string): void {
   if (item.owner !== actor) {
-    throw new RuleError("not_owner", `${actor} does not own ${item.id} (owner: ${item.owner ?? "nobody"})`, 403);
+    throw new RuleError("not_owner", `${actor} does not hold ${item.id} (holder: ${item.owner ?? "nobody"})`, 403);
   }
 }
 
@@ -1839,7 +1839,7 @@ export function inboxFor(
     // Where the owner's override stands in for the independent review, the
     // entry says so and gives its reason. An accepted item is read as
     // accept() reads it, as if still submitted.
-    const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the project owner: ${g.overridden.reason}` : "");
+    const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the developer: ${g.overridden.reason}` : "");
     // A part is reported through its plan (the Ledger's planView), so it
     // never appears as an accept, assess, failing, scope or stale entry. An
     // accepted part still asks to be merged.
@@ -1861,7 +1861,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? protectedNeed(singleFamily(policy))}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the owner's last resort"}`, weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? protectedNeed(singleFamily(policy))}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the developer's last resort"}`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
@@ -2000,7 +2000,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
   if (item.state === "blocked") {
     const b = item.blocked;
-    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its owner and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
+    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its holder and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
   }
   if (item.state === "accepted") {
     const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner).overridden;
@@ -2009,8 +2009,8 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
       : "Approval is recorded. Run the revision-bound command below in your local checkout.";
     return { title: "Ready to merge", detail, action: "merge", tone: "go", passed };
   }
-  if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
-  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The task owner must bring main into the workspace, fix the result and finish again; running the revision's own checks again does not clear it, only a passing merged run or a new revision.", action: "none", tone: "bad", passed };
+  if (failed) return { title: "Checks need attention", detail: "The holder must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
+  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The holder must bring main into the workspace, fix the result and finish again; running the revision's own checks again does not clear it, only a passing merged run or a new revision.", action: "none", tone: "bad", passed };
   // The owner's approval is recorded but is not the independent review, so
   // the page asks for a qualifying reviewer, and offers the override only
   // when the missing review is all that blocks, since it waives nothing else.
@@ -2025,8 +2025,8 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
       : "Required checks passed for this revision. Accept it to prepare the local merge.";
     return { title: "Ready to accept", detail, action: "accept", tone: "go", passed };
   }
-  if (countingReviews(reviews, bindingOf(item), policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
-  return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The task owner is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
+  if (countingReviews(reviews, bindingOf(item), policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The holder must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
+  return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The holder is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
 }
 
 export interface PushNotice { repo: string; ref: string; after: string }
@@ -2079,7 +2079,7 @@ export function modeLine(mode: ProjectMode): string {
 
 // The switch the owner asks for, checked before anything is written.
 export function modeSwitch(current: ProjectMode, actor: string, owner: string, to: unknown, reason: unknown, at: string): ProjectMode {
-  if (actor !== owner) throw new RuleError("not_project_owner", "only the project owner switches the project's mode", 403);
+  if (actor !== owner) throw new RuleError("not_project_owner", "only the developer switches the project's mode", 403);
   if (to !== "fast" && to !== "full") throw new RuleError("bad_mode", "the mode is fast or full", 400);
   if (to === "full") {
     if (current.mode === "full") throw new RuleError("already_full", "the project is already in full mode", 409);
@@ -2093,7 +2093,7 @@ export function modeSwitch(current: ProjectMode, actor: string, owner: string, t
 }
 
 export function assertFastMode(mode: ProjectMode): asserts mode is Extract<ProjectMode, { mode: "fast" }> {
-  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", "the project is in full mode; the owner switches with atelier mode fast --reason TEXT before landing fast", 409);
+  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", "the project is in full mode; the developer switches with atelier mode fast --reason TEXT before landing fast", 409);
 }
 
 // What a landing in fast mode records: the commit merged, the merge commit,

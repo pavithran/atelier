@@ -33,7 +33,7 @@ test("runner names are kind:name", () => {
 
 test("only an open, unowned task can be dispatched", () => {
   assert.doesNotThrow(() => assertDispatchable(item()));
-  assert.throws(() => assertDispatchable(item({ state: "claimed", owner: "codex/gpt-6" })), /owned by codex/);
+  assert.throws(() => assertDispatchable(item({ state: "claimed", owner: "codex/gpt-6" })), /held by codex/);
   assert.throws(() => assertDispatchable(item({ state: "merged" })), /is merged/);
 });
 

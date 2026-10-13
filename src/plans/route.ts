@@ -265,7 +265,7 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // a builder and a build-only one never a reviewer.
   const heldBuild = standingRefusal(entry, "build");
   const heldReview = standingRefusal(entry, "review");
-  if (!heldBuild && !heldReview) passed.push("The owner's standing is available");
+  if (!heldBuild && !heldReview) passed.push("The developer's standing is available");
 
   const { allowPaid, spend } = ctx.input;
   if (!paidPerToken(entry)) passed.push(`No per-token cost (${entry.provider})`);

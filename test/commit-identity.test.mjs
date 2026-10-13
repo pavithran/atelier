@@ -45,7 +45,7 @@ test("the policy takes a validated name and address, explicit agent addresses an
   // A later init changes only what it names.
   assert.deepEqual(settleCommitIdentity({ agentEmails: [] }, settled), { ...POLICY, agentEmails: [] });
   assert.equal(settleCommitIdentity({}, settled), settled);
-  assert.equal(settleCommitIdentity({}, undefined), undefined, "a project from before t451 names none until the owner does");
+  assert.equal(settleCommitIdentity({}, undefined), undefined, "a project from before t451 names none until the developer does");
 });
 
 test("an invalid policy is refused, naming the field to fix", () => {
@@ -142,7 +142,7 @@ test("a workspace with no policy recorded refuses the builder and names the init
   rmSync(join(dir, ".git", IDENTITY_FILE));
   run(dir, ["config", "--local", "user.name", OWNER.name], env);
   run(dir, ["config", "--local", "user.email", OWNER.email], env);
-  assert.deepEqual(identityRefusals(dir, env, "demo"), ["demo has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL [--agent-email EMAIL ...] (docs/setup.md, \"Commit identity\")"]);
+  assert.deepEqual(identityRefusals(dir, env, "demo"), ["demo has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL [--agent-email EMAIL ...] (docs/setup.md, \"Commit identity\")"]);
   assert.deepEqual(builderRefusals(null, resolveIdentity(dir, env), "demo"), identityRefusals(dir, env, "demo"));
 });
 
@@ -326,7 +326,7 @@ test("a claim in a project with no identity says so, and the runner's check refu
   f.state.identity = null;
   const r = await f.claim();
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Warning: proj has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL/);
+  assert.match(r.output, /Warning: proj has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL/);
   assert.deepEqual(identityRefusals(f.ws, f.env, "proj"), [r.output.match(/Warning: (proj has no commit identity[^\n]*?\))\./)[1]]);
 });
 

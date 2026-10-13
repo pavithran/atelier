@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Items", line: 2, slot: 40,
       form: "owners [--json]",
-      about: "Prints one line per live task: its state, its owner and since when.",
+      about: "Prints one line per live task: its state, its holder and since when.",
     },
   ],
   flags: { json: true },

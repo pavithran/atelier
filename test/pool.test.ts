@@ -147,7 +147,7 @@ test("a saved pool takes the owner's standing now, and a held model or one witho
   assert.equal(withStanding([a], [astra])[0].state, undefined);
   // An entry the pool no longer has keeps what was saved.
   assert.deepEqual(withStanding([luna], []), [luna]);
-  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since 2026-10-09 \(the owner's standing\): credits/);
+  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since 2026-10-09 \(the developer's standing\): credits/);
   assert.match(actorStanding(now, "codex/gpt-6-luna", "review")!, /not a reviewer; its roles are build/);
   assert.equal(actorStanding(now, "codex/gpt-6-luna", "build"), null);
   assert.match(actorStanding(now, "codex/astra", "build")!, /reserved since/);

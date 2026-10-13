@@ -49,7 +49,7 @@ async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promi
 it("the owner alone switches modes; fast is a standing decision until the switch back to full", async () => {
   const L = await project("fast-switch");
   expect(await L.mode()).toMatchObject({ mode: "full", line: "Mode: full" });
-  await refusal(L.setMode(GPT, "fast", "forks fail"), "not_project_owner", /only the project owner/);
+  await refusal(L.setMode(GPT, "fast", "forks fail"), "not_project_owner", /only the developer/);
   await refusal(L.setMode("owner", "fast", ""), "bad_reason", /needs a reason/);
   const fast = await L.setMode("owner", "fast", "Artifacts fails every new fork");
   expect(fast).toMatchObject({ mode: "fast", reason: "Artifacts fails every new fork", decision: "d1" });
@@ -73,7 +73,7 @@ it("a landing is refused in full mode, records its receipt in fast mode, and que
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
   await refusal(L.landedFast(item.id, "owner", receipt(C1, M1)), "not_fast_mode", /full mode/);
   await L.setMode("owner", "fast", "forks fail");
-  await refusal(L.landedFast(item.id, GPT, receipt(C1, M1)), "not_project_owner", /only the project owner/);
+  await refusal(L.landedFast(item.id, GPT, receipt(C1, M1)), "not_project_owner", /only the developer/);
   const landed = await L.landedFast(item.id, "owner", receipt(C1, M1));
   expect(landed.item).toMatchObject({ state: "merged", head: C1, acceptedHead: C1, pushActors: [OPUS] });
   expect(landed.receipt).toMatchObject({ commit: C1, mergeCommit: M1, builder: OPUS, reason: "forks fail", tests: { command: "npm test" } });

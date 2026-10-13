@@ -78,7 +78,7 @@ test("models compare without letter case or profile, and by the registry's id fo
 });
 
 test("one owner: a second actor cannot claim an owned item", () => {
-  assert.throws(() => assertClaimable(item({ state: "claimed" }), "codex/gpt-5.5"), /owned by claude-code/);
+  assert.throws(() => assertClaimable(item({ state: "claimed" }), "codex/gpt-5.5"), /held by claude-code/);
   assert.doesNotThrow(() => assertClaimable(item({ state: "claimed" }), "claude-code/opus-5.5"));
   assert.doesNotThrow(() => assertClaimable(item({ state: "open", owner: null }), "codex/gpt-5.5"));
   assert.throws(() => assertClaimable(item({ state: "merged", owner: null }), "codex/gpt-5.5"), /merged/);
@@ -333,7 +333,7 @@ test("eligibleAgents names only the available agents holding the role", () => {
 test("overlappingRefusal names the same live items with the same words as the claim", () => {
   const held = item({ id: "t1", state: "claimed", owner: "codex/gpt-5.5", scope: ["src/**"] });
   const want = item({ id: "t2", state: "open", owner: null, scope: ["src/ui/**"] });
-  assert.equal(overlappingRefusal(want, [held], "claude-code/opus-5.5"), "t2's scope overlaps live t1 (codex/gpt-5.5); this project refuses overlapping claims. The project owner can narrow a scope with atelier edit t1 --scope GLOB (or atelier edit t2 --scope GLOB)");
+  assert.equal(overlappingRefusal(want, [held], "claude-code/opus-5.5"), "t2's scope overlaps live t1 (codex/gpt-5.5); this project refuses overlapping claims. The developer can narrow a scope with atelier edit t1 --scope GLOB (or atelier edit t2 --scope GLOB)");
   assert.equal(overlappingRefusal(want, [], "claude-code/opus-5.5"), null);
   assert.equal(overlappingRefusal(want, [held], "codex/gpt-5.5"), null, "the holder of the overlapping item may take it");
 });
@@ -799,9 +799,9 @@ test("decision 2026-10-06: the inbox and the page name the override and its reas
   const touching = [pass({ changedPaths: ["AGENTS.md"] })];
   const reviewOverride: ReviewOverride = { head: H1, by: "owner", reason: "No other family is available", at: T };
   const entry = (over: Partial<Item>) => inboxFor("proj", [item({ scope: [], ...over })], policy, touching, [], now);
-  assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the owner's last resort`]]);
-  assert.deepEqual(entry({ reviewOverride }).map((x) => [x.kind, x.reason]), [["accept", "all checks observed passing at this head, with the independent review overridden by the project owner: No other family is available"]]);
-  assert.deepEqual(entry({ reviewOverride, state: "accepted", acceptedHead: H1 }).map((x) => [x.kind, x.reason]), [["merge", "accepted, with the independent review overridden by the project owner: No other family is available; run `atelier merge` in the project checkout"]]);
+  assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the developer's last resort`]]);
+  assert.deepEqual(entry({ reviewOverride }).map((x) => [x.kind, x.reason]), [["accept", "all checks observed passing at this head, with the independent review overridden by the developer: No other family is available"]]);
+  assert.deepEqual(entry({ reviewOverride, state: "accepted", acceptedHead: H1 }).map((x) => [x.kind, x.reason]), [["merge", "accepted, with the independent review overridden by the developer: No other family is available; run `atelier merge` in the project checkout"]]);
   assert.equal(entry({ state: "accepted", acceptedHead: H1 })[0].reason, "accepted; run `atelier merge` in the project checkout");
   // The page's decision line says the owner's approval is not the review, and gives the override's reason once used.
   const waiting = decisionFor(item(), policy, touching, [review("owner")]);

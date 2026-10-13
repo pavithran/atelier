@@ -136,7 +136,7 @@ test("reviewNeeded: a rejection at this head waits for rework, and an item's nee
   assert.deepEqual(need({ reviews: [review("codex/gpt-6-astra", false)] }), {
     needed: false, reason: "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review",
   });
-  assert.equal(need({ reviews: [review(OWNER, false)] }).reason, "the project owner rejected bbbbbbbb; the builder reworks it before another review");
+  assert.equal(need({ reviews: [review(OWNER, false)] }).reason, "the developer rejected bbbbbbbb; the builder reworks it before another review");
   // A reviewer's latest review at the head is the one that counts.
   assert.equal(need({ reviews: [review("codex/gpt-6-astra", false), review("codex/gpt-6-astra", true, H2, { at: "2026-10-05T12:30:00.000Z" })] }).needed, false);
   // The gate asks another family for a protected change in every project, so
@@ -149,7 +149,7 @@ test("reviewNeeded: a rejection at this head waits for rework, and an item's nee
   });
   const reviewOverride = { head: H2, by: OWNER, reason: "No model of another family is available", at: T };
   assert.deepEqual(need({ ...prot, item: { ...prot.item, reviewOverride } }), {
-    needed: false, reason: "the project owner overrode the independent review of bbbbbbbb: No model of another family is available",
+    needed: false, reason: "the developer overrode the independent review of bbbbbbbb: No model of another family is available",
   });
   // A part takes no override: it still needs its review from another family.
   assert.ok(need({ item: item({ reviewOverride }) }).needed);
@@ -184,7 +184,7 @@ test("reviewNeeded: a rejection whose every blocking finding the owner refuted i
   // A rejection with no findings recorded has nothing to refute, and the
   // owner's own rejection is the owner's decision: both still block.
   assert.equal(need({ reviews: [review(GPT, false)] }).reason, "codex/gpt-6-astra rejected bbbbbbbb; the builder reworks it before another review");
-  assert.equal(need({ reviews: [review(OWNER, false, H2, { note: "Rename it" })] }).reason, "the project owner rejected bbbbbbbb; the builder reworks it before another review");
+  assert.equal(need({ reviews: [review(OWNER, false, H2, { note: "Rename it" })] }).reason, "the developer rejected bbbbbbbb; the builder reworks it before another review");
   // A second, unrefuted rejection at the head still blocks beside a refuted one.
   assert.equal(need({ reviews: [rejected, review("claude-code/opus-5.5", false, H2, { at: "2026-10-05T12:30:00.000Z", findings: [findings[0]] })], verdicts: lifted }).reason,
     "claude-code/opus-5.5 rejected bbbbbbbb; the builder reworks it before another review");
@@ -274,7 +274,7 @@ test("pickReviewer: the plan's routed reviewer, when it passes every rule, with 
     "The plan's routed reviewer for this part",
     "Another family (openai) than every contributor: zcode/glm-5.3 (zai)",
     "Status not checked yet",
-    "The owner's standing is available",
+    "The developer's standing is available",
     "No per-token cost (subscription)",
     "Availability not set; treated as available",
   ] });
@@ -420,10 +420,10 @@ test("pickReviewer: a paused or reserved model is passed over, and a model witho
   const openai = item({ owner: "codex/gpt-6-astra", pushActors: ["codex/gpt-6-astra"] });
   const paused = pick({ item: openai, pool: [{ ...opus, state: "paused", stateAt: T, note: "source down" }, sonnet] });
   assert.equal(paused.reviewer!.actor, "claude-code/sonnet-5.5");
-  assert.deepEqual(paused.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["paused since 2026-10-05 (the owner's standing): source down"] }]);
+  assert.deepEqual(paused.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["paused since 2026-10-05 (the developer's standing): source down"] }]);
   const reserved = pick({ item: openai, pool: [{ ...opus, state: "reserved", note: "astra's credits" }, sonnet] });
   assert.equal(reserved.reviewer!.actor, "claude-code/sonnet-5.5");
-  assert.deepEqual(reserved.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["reserved since 2026-10-05 (the owner's standing): astra's credits"] }]);
+  assert.deepEqual(reserved.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["reserved since 2026-10-05 (the developer's standing): astra's credits"] }]);
   // A model whose roles lack review is never a reviewer.
   const buildOnly = pick({ item: openai, pool: [{ ...opus, roles: ["build"] }, sonnet] });
   assert.equal(buildOnly.reviewer!.actor, "claude-code/sonnet-5.5");
@@ -744,7 +744,7 @@ test("reviewBrief: the task's title and the plan's text are labelled the request
   assert.ok(rules.includes("The task's title and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The plan's acceptance criteria bind as criteria, not as claims."), rules);
   // The fenced text's authors include whoever filed the task, and a task
   // outside a plan carries the title label and the rule without the plan's.
-  assert.ok(text.includes("written by the plan's author, the owner who filed the task, the builder or earlier reviewers"), text);
+  assert.ok(text.includes("written by the plan's author, the developer who filed the task, the builder or earlier reviewers"), text);
   const task = brief({ need: required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"] })] }), plan: null });
   assert.ok(task.includes("it is not a claim the change or its commits make:"), task);
   assert.ok(task.includes("a phrase of them is not a claim a commit must support"), task);
@@ -832,13 +832,13 @@ test("reviewBrief: a re-review carries the earlier findings and says the builder
     "finding 2: follow-up README.md Mention t39.",
     "```",
     "",
-    "Round 1, at aaaaaaaa: the project owner approved.",
+    "Round 1, at aaaaaaaa: the developer approved.",
     "No note and no findings.",
   ].join("\n")));
   // A review at a head no model rejected is not a round.
   const ownerOnly = brief({ need: required({ reviews: [review(OWNER, false, H1, { note: "Rename it" })] }) });
   assert.ok(!ownerOnly.includes("This is review round"));
-  assert.ok(ownerOnly.includes("At aaaaaaaa: the project owner rejected.\n```\nnote: Rename it\n```"));
+  assert.ok(ownerOnly.includes("At aaaaaaaa: the developer rejected.\n```\nnote: Rename it\n```"));
 });
 
 test("reviewBrief: quoted text cannot close its block, hidden characters are shown, and a long diff is cut with a note", () => {
@@ -878,7 +878,7 @@ test("reviewBrief: an item outside a plan, with no diff and no summary", () => {
   const need = required({ part: false, evidence: [pass({ changedPaths: ["AGENTS.md"], where: "runner" })] });
   const text = brief({ need, plan: null, diff: null, events: [], item: item({ scope: [] }) });
   assert.ok(!text.includes("## The plan"));
-  assert.ok(text.includes("Change class: protected, because it touches a protected path. It needs an independent review before the project owner can accept it."));
+  assert.ok(text.includes("Change class: protected, because it touches a protected path. It needs an independent review before the developer can accept it."));
   assert.ok(text.includes("The item has no scope, so no changed file is outside it."));
   assert.ok(text.includes("- `npm test`, on a runner, in a clean clone"));
   assert.ok(text.includes("The builder gave no summary with this submission."));
@@ -903,7 +903,7 @@ test("reviewBrief: states the project's review bar, or the default, before the r
   // The default bar states the five blocking classes and that anything else
   // is a follow-up; this pins the text so a change to it is reviewed, not
   // drifted.
-  assert.equal(DEFAULT_REVIEW_BAR, "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; a behaviour change without a test that covers it; docs or help that now contradict the code; a breaking change to a command, route or API field without a migration; or a visible regression on a user-facing page. A claim in a commit message that the code does not support is a correctness defect. A blocking finding names the file and line and what breaks, and is never style or naming. Decisions the project owner made are not defects; anything else is a follow-up.");
+  assert.equal(DEFAULT_REVIEW_BAR, "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; a behaviour change without a test that covers it; docs or help that now contradict the code; a breaking change to a command, route or API field without a migration; or a visible regression on a user-facing page. A claim in a commit message that the code does not support is a correctness defect. A blocking finding names the file and line and what breaks, and is never style or naming. Decisions the developer made are not defects; anything else is a follow-up.");
   // The project's own bar replaces the default in both.
   const bar = "Block only for data loss.";
   for (const text of [brief({ bar }), brief({ ...task, bar })]) {
@@ -930,13 +930,13 @@ test("reviewBrief: from round 2, earlier findings carry the owner's verdicts, an
     "finding 1: blocking src/review/needed.ts:88 A lapsed claim is never retried.",
     "finding 2: follow-up src/rules.ts:12 Rename x.",
     "```",
-    "The project owner's verdicts on these findings:",
+    "The developer's verdicts on these findings:",
     "- finding 1: refuted, noting `needed.ts:140 retries a lapsed claim.`",
   ].join("\n")), text);
   assert.ok(!text.includes("- finding 2:"));
-  assert.ok(text.includes("A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code"));
+  assert.ok(text.includes("A finding the developer refuted is repeated only with new evidence that their answer is wrong, quoting the code"));
   // The rule sits with the bar, before the reply format.
-  assert.ok(text.indexOf("A finding the owner refuted") > text.indexOf("## Rules for blocking"));
+  assert.ok(text.indexOf("A finding the developer refuted") > text.indexOf("## Rules for blocking"));
   // An approval at the head under review that does not suffice (the
   // builder's own family) is an earlier review too, with its verdicts.
   const followUp: Finding = { file: "src/rules.ts", line: null, severity: "follow-up", text: "Add a test." };
@@ -962,7 +962,7 @@ test("reviewBrief: a re-review at the same head says the owner refuted the rejec
     verdicts: [refuted],
   });
   const text = brief({ need, events: [submitted(H2, "Adds reviewNeeded with tests."), refuted] });
-  assert.ok(text.includes("This is review round 2. A model rejected this head, and the project owner refuted every blocking finding of that rejection, so it is reviewed again rather than reworked. Start with the earlier blocking findings under \"Earlier reviews\": say in your summary which are resolved, and repeat as blocking any that still holds."), text);
+  assert.ok(text.includes("This is review round 2. A model rejected this head, and the developer refuted every blocking finding of that rejection, so it is reviewed again rather than reworked. Start with the earlier blocking findings under \"Earlier reviews\": say in your summary which are resolved, and repeat as blocking any that still holds."), text);
   assert.ok(text.includes([
     "## Earlier reviews",
     "",
@@ -980,7 +980,7 @@ test("reviewBrief: a re-review at the same head says the owner refuted the rejec
     verdicts: [refuted],
   });
   const both = brief({ need: round3, events: [submitted(H2, "Adds reviewNeeded with tests."), refuted] });
-  assert.ok(both.includes("This is review round 3. A model rejected an earlier head and the builder has pushed since, and the project owner refuted every blocking finding of a rejection at this head, so it is reviewed again rather than reworked."), both);
+  assert.ok(both.includes("This is review round 3. A model rejected an earlier head and the builder has pushed since, and the developer refuted every blocking finding of a rejection at this head, so it is reviewed again rather than reworked."), both);
   assert.ok(both.includes("Round 2, at bbbbbbbb (this head): codex/gpt-6-astra rejected."), both);
 });
 

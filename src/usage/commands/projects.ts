@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Projects", line: 1, slot: 10,
       form: "projects rename OLD NEW",
-      about: "The project owner gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every fork stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused.",
+      about: "The developer gives a project a new name on the server, and this machine's config entry moves to it. The ledger, the baseline repository and every fork stay where they are. The old name keeps working: the API serves it, old page links redirect, and tokens and workspaces that use it need no change. A name another project has or had, or one a removed project's ledger is kept under, is refused.",
     },
     {
       group: "Projects", line: 1, slot: 20,

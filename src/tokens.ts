@@ -39,7 +39,7 @@ export function tokenOptions(input: Record<string, unknown>, owner: string, now:
     throw new RuleError("bad_runner_token", "a runner token needs exactly one project and no actor", 400);
   }
   if (typeof actor !== "string" || !validActor(actor) || !/^[^/]+\/[^/]+$/.test(actor) || actor === owner) {
-    throw new RuleError("bad_actor", "an agent token needs harness/model and cannot name the project owner", 400);
+    throw new RuleError("bad_actor", "an agent token needs harness/model and cannot name the developer", 400);
   }
   const days = input.days === undefined ? 30 : input.days;
   if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 365) {

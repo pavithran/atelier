@@ -281,7 +281,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         await this.stage(step, L, p, "review", round);
         if (p.noReview) {
           await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { skipped: true }); return {}; });
-          await this.stage(step, L, p, "done", round, "submitted; the review is left to the owner (--no-review); the landing lease was never taken");
+          await this.stage(step, L, p, "done", round, "submitted; the review is left to the developer (--no-review); the landing lease was never taken");
           return { item: p.item, workflow: p.instance, review: "skipped" };
         }
         await this.review(step, L, p, head, round, report);
@@ -607,7 +607,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       if (!project.policy.checks.length) return { none: true as const, t0: Date.now(), runId: "", seconds: 0 };
       if (!item.fork || !item.head) throw new NonRetryableError(`${p.item} has nothing pushed to check`);
       const refused = [...(project.policy.prepare ? [project.policy.prepare.command] : []), ...project.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
-      if (refused.length) throw new NonRetryableError(`${refused.join(". ")}. The project owner replaces it with atelier init --check; until then land ${p.item} without --workflow.`);
+      if (refused.length) throw new NonRetryableError(`${refused.join(". ")}. The developer replaces it with atelier init --check; until then land ${p.item} without --workflow.`);
       const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
       const runId = `${p.key}:${p.item}:${head.slice(0, 12)}:wf-${p.instance}`;
       const request: RunRequest = {

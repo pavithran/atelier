@@ -84,7 +84,7 @@ test("one approval, one run: a run uses it before it runs, and nothing can use i
 test("an approval is refused for any other revision, kind, actor, or once withdrawn or expired", () => {
   const { store } = memory();
   approveAction(store, "owner", { kind: "deploy", commit: H1, expires: "1h" }, T0);
-  refused(() => consumeAction(store, "owner", { kind: "deploy", commit: H2 }, T0), "not_approved", /no active approval for deploy at bbbbbbbb: deploy is approved only at another revision \(a1 at aaaaaaaa\)\. The project owner approves it with: atelier approve deploy --head b{40}/);
+  refused(() => consumeAction(store, "owner", { kind: "deploy", commit: H2 }, T0), "not_approved", /no active approval for deploy at bbbbbbbb: deploy is approved only at another revision \(a1 at aaaaaaaa\)\. The developer approves it with: atelier approve deploy --head b{40}/);
   refused(() => consumeAction(store, "owner", { kind: "install", commit: H1 }, T0), "not_approved", /no active approval for install at aaaaaaaa\./);
   refused(() => consumeAction(store, "codex/gpt-6-astra", { kind: "deploy", commit: H1 }, T0), "not_project_owner");
   refused(() => consumeAction(store, "owner", { kind: "deploy", commit: "abc" }, T0), "bad_request");

@@ -75,7 +75,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     for (const f of detectStuck(live, events, now, limits))
       add("task", f.itemId, f.reason, f.since, f.suggestion === "hand off"
         ? `hand off: choose the next agent H/M, then ${command(`handoff ${f.itemId} --to H/M`)}`
-        : `check in with the owner${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact the holder before changing ownership`);
+        : `check in with the holder${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact them before handing the task to another agent`);
     for (const w of workflows) {
       if (!live.some((i) => i.id === w.item && i.state !== "merged" && i.state !== "abandoned")) continue;
       if (w.record.stage === "conflict" && !["complete", "errored", "terminated", "absent"].includes(w.status ?? "") && age(w.record.stageAt) > limits.conflictWaitMinutes * 60_000)
