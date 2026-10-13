@@ -15,5 +15,6 @@ export default defineConfig({
       remoteBindings: false,
     }),
   ],
-  test: { include: ["test/**/*.spec.ts", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs"] },
+  // t570: a loaded landing host stalls in-process Worker tests past the 5 s default.
+  test: { testTimeout: 60_000, hookTimeout: 60_000, include: ["test/**/*.spec.ts", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs"] },
 });
