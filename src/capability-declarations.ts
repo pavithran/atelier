@@ -1,5 +1,7 @@
 // One capability per line, without level for new entries. Existing levels are legacy metadata.
-// Git unions independent additions; buildCapabilities validates names.
+// Atelier's records driver (merge=atelier-records, t463) unites independent
+// additions by name where Atelier merges, and plain Git merges this file as
+// text; buildCapabilities validates names either way.
 export const CAPABILITY_DECLARATIONS = [
   { name: "items.owner-port.v1", summary: "owner-only short-lived write credentials for an open unclaimed task fork, without claiming it" },
   { name: "reviews.post-merge.v1", summary: "review requests and verdicts audit recorded merges and file linked defects for blocking findings" },
@@ -19,7 +21,6 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "areas.manage.v1", level: 23, summary: "the area routes (list, create, rename, remove) and a task's assignment to an area by new and edit --area" },
   { name: "reviews.lease.v1", level: 26, summary: "five-minute review claim leases: review-renew, and release, unparsable and verdicts naming the claim generation (--request)" },
   { name: "areas.board.v1", level: 23, summary: "the board snapshot, every task grouped by function area, which atelier board and the project page read" },
-  { name: "reviews.criteria-review.v1", summary: "the criteria-review routes (request, claim, verdict, failure and finding resolution) that review a task's acceptance criteria before its build, and the project policy's requireCriteriaReview" },
   { name: "models.standing.v1", summary: "the pool's standing: atelier models set (POST /models/ID/set), and PUT /models takes state, roles and tier" },
   { name: "runners.run-skip.v1", summary: "the run-skip route a runner posts for a job other than a review it gives up after its failures, and the queue poll with why: true that says why each dispatch waits" },
   { name: "land.triage.v1", level: 28, summary: "the landing's triage step: the land step route records a triage, a --no-triage bypass and an --override-triage with the head, merge base and criteria binding, the project policy carries the triage model, and a landing Workflow triages before the review" },
@@ -27,5 +28,6 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "refresh.tasks.v1", summary: "the task refresh queue (t462): the refreshes route, the refresh-lease, refresh-pushing and refresh-checked routes, the refreshed and refresh-failed routes taking a task's lease, the task-refresh and task-resolve queue jobs, and the project policy's resolvers" },
   { name: "projects.stuck.v1", summary: "the owner-only read-only stuck report, GET /projects/:p/stuck, which atelier stuck reads" },
   { name: "dispatch.orphaned-claims.v1", summary: "a claim whose runner has not polled (or sent a heartbeat) within RUNNER_GONE_MS holds no dispatch: the queue lists it as orphaned on the waiting task, and the stuck report as an orphaned-claim entry" },
+  { name: "reviews.criteria-review.v1", summary: "the criteria-review routes (request, claim, verdict, failure and finding resolution) that review a task's acceptance criteria before its build, and the project policy's requireCriteriaReview" },
   { name: "land.review-first.v1", summary: "review before the runway (t550): the landing Workflow merges main, checks, submits and reviews without the landing lease, takes it for the merge alone once the gate holds the head checked and approved, and confirms main has not moved under it, renewing the lease until the merge is recorded; the landing-lease route's { item, confirm: true, main } records the main the holder confirmed (read again by the server), and the merge route refuses that head into any other main (main_moved); the land step route records the release step and the lease step's main, beforeLease and waited" },
 ] as const;

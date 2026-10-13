@@ -243,7 +243,7 @@ test("main moved before the lease and conflicts: the lease is released unmerged 
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /main moved from/);
-  assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
+  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
   assert.deepEqual(f.box.leaseLog.map((x) => `${x.item} ${x.kind}`), ["t1 take", "t1 release"]);
   assert.equal(f.box.lease, null);
   assert.equal(f.posts("/accept").length, 0);

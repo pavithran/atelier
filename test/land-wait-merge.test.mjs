@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
-import { git, landFixture, takesOf, grantedTo, recordedAt, WAITING, raiseRouteLevel, CEILING_MS, until, settled } from "./land-fixture.mjs";
+import { git, landFixture, takesOf, grantedTo, recordedAt, WAITING, raiseRouteLevel, declareGenerated, sameMergeStep, CEILING_MS, until, settled } from "./land-fixture.mjs";
 
 // The atelier land tests of the --wait queue, conflicts, route levels and the
 // server's level, split out of test/land.test.mjs (t550), which describes the
@@ -295,14 +295,14 @@ test("a conflict stops the landing with the files named and the merge left for t
   const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
+  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
   assert.match(r.output, /The merge is left in the workspace for you to resolve/);
   // The conflict can also go back to the task's builder (t243): the message
   // names the holder and the dispatch that sends the work there.
   assert.match(r.output, new RegExp(`Or send them back to the task's builder, codex/test, to resolve in this workspace: atelier dispatch t1 --job merge-main --agent codex --model test; its runner merges main at ${f.mainCommit.slice(0, 8)} into the workspace again`));
   assert.match(r.output, /and then atelier land t1 again\.$/m);
-  // The regeneration was tried and could not settle the conflict, and says so.
-  assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it/);
+  // The policy's regenerate command settles nothing: it never ran.
+  assert.doesNotMatch(r.output, /Regenerat(ing|ed) /);
   // The merge is in progress in the workspace, nothing was pushed or merged.
   assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
   assert.equal(f.forkHead("t1"), before.fork);
@@ -312,14 +312,20 @@ test("a conflict stops the landing with the files named and the merge left for t
   assert.deepEqual(f.posts("/push"), []); assert.deepEqual(f.posts("/merged"), []);
   // The step that stopped is recorded, with the file and who resolves it.
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.failed, true); assert.deepEqual(merge.body.conflicts, ["work.txt"]);
+  assert.equal(merge.body.failed, true); assert.deepEqual(merge.body.conflicts, ["work.txt"]); assert.deepEqual(merge.body.source, ["work.txt"]);
   assert.equal(merge.body.resolvedBy, "the project owner, by hand");
+  // The project declares no manifest, so the regenerate command's
+  // settlement was tried and could not settle the conflict, and says so.
   assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
+  assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it/);
   // The conflict ended the landing before the lease, which was never asked
   // for (t550).
   assert.deepEqual(f.posts("/landing-lease"), []);
 });
 
+// A project that declares no merge manifest keeps the regenerate
+// command's settlement (main's, before t463): a conflict only in files the
+// command rewrites is settled by taking either side and regenerating.
 test("a conflict only in files the regenerate command rewrites is settled by taking either side and regenerating, and the landing goes on", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
@@ -362,7 +368,7 @@ test("a conflict that also touches a file the regenerate command does not rewrit
   const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt/);
+  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  gen-fixtures\.txt\n  work\.txt\nTaking either side and regenerating did not settle them: /);
   assert.match(r.output, /the regenerate command left work\.txt as either side had it/);
   // The conflicted merge is back in the workspace, markers and all; nothing moved on.
   assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
@@ -398,6 +404,102 @@ test("a regenerate command that fails while settling conflicts stops the landing
   assert.equal(merge.body.reason, "the regenerate command `echo boom >&2; exit 3` failed (exit 3)");
 });
 
+test("a conflict only in a declared generated output is regenerated by its generator once the sources merge, and the landing goes on", async (t) => {
+  const f = await landFixture(t);
+  declareGenerated(f.checkout, "main");
+  declareGenerated(f.workspace("t1"), "task");
+  // The policy's own regenerate command would overwrite the output; it is off here.
+  f.box.regen = null;
+  const before = { checkout: git(f.checkout, "rev-parse", "HEAD") };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Regenerating gen-fixtures\.txt with sh -c cat in\/\*\.txt > gen-fixtures\.txt \(fixtures\)…/);
+  assert.match(r.output, /Regenerated gen-fixtures\.txt \(matches neither side\) with sh -c .*; its log is .*merge-logs/);
+  // The workspace's merge holds the regenerated output and its provenance.
+  const ws = f.workspace("t1");
+  assert.equal(readFileSync(join(ws, "gen-fixtures.txt"), "utf8"), "main\ntask\n");
+  assert.match(git(ws, "log", "-1", "--format=%B"), /^Merge main into t1\n\nAtelier land: main at [0-9a-f]+\n\nAtelier-Regenerated: fixtures \(sh -c cat in\/\*\.txt > gen-fixtures\.txt\): gen-fixtures\.txt matches neither side; log sha256 [0-9a-f]{64}$/m);
+  // The pushed head carries it, so the checks and the review are of the regenerated output.
+  assert.equal(f.forkHead("t1"), git(ws, "rev-parse", "HEAD"));
+  assert.equal(git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ")[1], before.checkout);
+  assert.equal(f.box.states.t1, "merged");
+  const events = f.posts("/land");
+  assert.deepEqual(events.map((x) => x.body.step), ["merge", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  const merge = events.find((x) => x.body.step === "merge");
+  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
+  assert.equal(merge.body.resolvedBy, "atelier land, through the merge pipeline");
+  assert.equal(merge.body.regenerated[0].name, "fixtures");
+  assert.match(merge.body.regenerated[0].logSha, /^[0-9a-f]{64}$/);
+  assert.equal(merge.body.failed, undefined);
+  sameMergeStep("regenerated", merge.body);
+});
+
+test("a source conflict beside a generated one stops the landing before anything is generated, telling the two apart", async (t) => {
+  const f = await landFixture(t);
+  declareGenerated(f.checkout, "main", { also: { "work.txt": "from main\n" } });
+  declareGenerated(f.workspace("t1"), "task");
+  const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\nRegenerable outputs, not to be edited by hand \(regenerate them once the sources merge\):\n  gen-fixtures\.txt \(sh -c cat in\/\*\.txt > gen-fixtures\.txt\)\n/);
+  // The merge is left in the workspace: the source with its markers, the
+  // output unmerged with no markers and not regenerated.
+  const ws = f.workspace("t1");
+  assert.ok(existsSync(join(ws, ".git", "MERGE_HEAD")));
+  assert.match(readFileSync(join(ws, "work.txt"), "utf8"), /^<{7} /m);
+  assert.equal(readFileSync(join(ws, "gen-fixtures.txt"), "utf8"), "task\n");
+  assert.deepEqual(git(ws, "diff", "--name-only", "--diff-filter=U").split("\n"), ["gen-fixtures.txt", "work.txt"]);
+  assert.equal(f.forkHead("t1"), before.fork);
+  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
+  assert.deepEqual(f.posts("/push"), []); assert.deepEqual(f.posts("/merged"), []);
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.failed, true);
+  assert.deepEqual([merge.body.source, merge.body.generated], [["work.txt"], ["gen-fixtures.txt"]]);
+  assert.equal(merge.body.resolvedBy, "the project owner, by hand");
+  assert.match(merge.body.mainHead, /^[0-9a-f]{40}$/);
+  sameMergeStep("stopped", merge.body);
+});
+
+test("--dry-run previews the merge of main, telling source conflicts from regenerable outputs, and changes nothing", async (t) => {
+  const f = await landFixture(t);
+  declareGenerated(f.checkout, "main", { also: { "work.txt": "from main\n" } });
+  declareGenerated(f.workspace("t1"), "task");
+  const ws = f.workspace("t1"), head = git(ws, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--dry-run");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /\n {5}Preview: main at [0-9a-f]{8} would stop the merge, generating nothing\.\n {5}Source conflicts to resolve:\n {5}  work\.txt\n {5}Regenerable outputs, not to be edited by hand \(regenerate them once the sources merge\):\n {5}  gen-fixtures\.txt\n/);
+  assert.equal(git(ws, "rev-parse", "HEAD"), head);
+  assert.equal(existsSync(join(ws, ".git", "MERGE_HEAD")), false);
+  assert.equal(git(ws, "status", "--porcelain"), "");
+
+  // With the source conflict gone, the preview says the merge is clean and names the generator it runs.
+  const g = await landFixture(t);
+  declareGenerated(g.checkout, "main");
+  declareGenerated(g.workspace("t1"), "task");
+  const clean = await g.run(g.checkout, "land", "t1", "--dry-run");
+  assert.match(clean.output, /\n {5}Preview: main at [0-9a-f]{8} merges cleanly\.\n {5}Regenerable outputs[^\n]*\n {5}  gen-fixtures\.txt\n {5}It would regenerate with fixtures\.\n/);
+});
+
+test("a declared generator that fails stops the landing with the merge aborted and the failure named", async (t) => {
+  const f = await landFixture(t);
+  const command = ["sh", "-c", "echo boom >&2; exit 3"];
+  declareGenerated(f.checkout, "main", { command });
+  declareGenerated(f.workspace("t1"), "task", { command });
+  const before = { fork: f.forkHead("t1"), head: git(f.workspace("t1"), "rev-parse", "HEAD") };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /stopped: the generator fixtures \(sh -c echo boom >&2; exit 3\) failed on run 1 \(exit 3\); its log is (\S+merge-logs\S+\.log)\nNothing was merged; the merge was aborted/);
+  const log = /its log is (\S+\.log)/.exec(r.output)[1];
+  assert.match(readFileSync(log, "utf8"), /--- run 1: exit 3\nboom/);
+  assert.equal(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")), false);
+  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.head);
+  assert.equal(f.forkHead("t1"), before.fork);
+  assert.equal(f.box.states.t1, "submitted");
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.failed, true);
+  assert.match(merge.body.reason, /^the generator fixtures .* failed on run 1 \(exit 3\)/);
+});
+
 test("where main and the task each raised the route level from one base, the landing raises the merged level past both", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
@@ -416,6 +518,7 @@ test("where main and the task each raised the route level from one base, the lan
   // The merge step records the levels it compared and the one it set.
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
+  sameMergeStep("routeLevel", merge.body);
 });
 
 test("named legacy mappings stop automatic renumbering until the builder resolves them", async (t) => {
@@ -470,7 +573,7 @@ test("a rerun of a conflicted merge resolved by hand still compares and raises t
   raiseRouteLevel(f.checkout, 9, "Main raises the route level");
   const stopped = await f.run(f.checkout, "land", "t1");
   assert.equal(stopped.status, 1, stopped.output);
-  assert.match(stopped.output, /stops on conflicts in:\nsrc\/route-level\.ts/);
+  assert.match(stopped.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  src\/route-level\.ts\n/);
   assert.match(stopped.output, /The merge is left in the workspace for you to resolve/);
   // The owner resolves it by hand, writing main's number — one side's
   // alone, as a hand resolution does — and reruns the landing, which now
@@ -581,7 +684,7 @@ test("--dry-run says a merge that finds both sides raised the route level raises
   const before = git(f.workspace("t1"), "rev-parse", "HEAD");
   const r = await f.run(f.checkout, "land", "t1", "--dry-run");
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /1\. merge main into t1's workspace \(.*\); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch t1 --job merge-main; where main and the task each raised the route level \(src\/route-level\.ts\) from one base, raise the merged level past both/);
+  assert.match(r.output, /1\. merge main into t1's workspace \(.*\) once a comparison .*, through the merge pipeline: .*; on source or record conflicts, stop before generating anything and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch t1 --job merge-main; where main and the task each raised the route level \(src\/route-level\.ts\) from one base, raise the merged level past both/);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
 });
 
@@ -597,9 +700,12 @@ test("--dry-run prints the steps and the refusals without changing anything", as
   assert.match(r.output, /Nothing was changed\./);
   // The default review wait outlasts the runner's 45 minute build timeout.
   assert.match(r.output, /for up to 60 minutes/);
-  // Reads only: the lease is read, never taken, and nothing that changes state was posted.
+  // Reads only: the lease is read, never taken, and nothing that changes
+  // state was posted; the one POST is the read token the merge preview
+  // reads main with.
   assert.ok(f.box.requests.some((x) => x.method === "GET" && x.path.endsWith("/landing-lease")));
-  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
+  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST").map((x) => [x.path, x.body]), [["/api/projects/proj/items/t1/base-token", { scope: "read" }]]);
+  assert.match(r.output, /Preview: main at [0-9a-f]{8} merges cleanly\./);
   assert.equal(f.box.lease, null);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
   assert.equal(f.forkHead("t1"), before.fork);
