@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseConfig } from "../cli/runner-config.mjs";
-import { AGY_MODELS } from "../cli/harness/adapter.mjs";
+import { AGY_MODELS, VERDICT_DEMAND } from "../cli/harness/adapter.mjs";
 
 // The antigravity review adapter (cli/agy-review.mjs): it reads the brief and
 // the diff the review job wrote, builds one prompt, runs the stand-in for `agy`
@@ -49,6 +49,7 @@ test("the adapter writes agy's response to the verdict file and maps the model i
   assert.ok(!args.includes("-p"), "the prompt is not an argument, whose size the operating system caps");
   assert.ok(prompt.startsWith("BRIEF TEXT\n"), "the brief opens the prompt");
   assert.ok(prompt.includes("````diff\nDIFF TEXT\n````"), "the diff is fenced with four backticks");
+  assert.ok(prompt.endsWith(VERDICT_DEMAND), "the prompt ends by demanding a final VERDICT line (t576)");
 });
 
 test("a diff larger than an argument can hold passes on standard input, fenced past its own backticks", (t) => {

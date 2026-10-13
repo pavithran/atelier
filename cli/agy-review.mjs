@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { AGY_MODELS } from "./harness/adapter.mjs";
+import { AGY_MODELS, VERDICT_DEMAND } from "./harness/adapter.mjs";
 
 // An adapter a runner's config names as the review command for the antigravity
 // harness (docs/orchestrator.md, section 4). The review job hands it the brief
@@ -46,6 +46,7 @@ const prompt = [
   fence,
   "",
   "In the current folder you may read files and run the project's tests; do not push, do not run any atelier command, and verify a blocking finding before you state it.",
+  VERDICT_DEMAND,
 ].join("\n");
 
 const agy = process.env.ATELIER_AGY || "agy";
