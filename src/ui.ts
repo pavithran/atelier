@@ -1069,7 +1069,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="show-section show-hero" id="top">
     <p class="kicker">Public showcase · read only · from the ledger</p>
-    <h1>Git keeps the code. Atelier brings the receipts.</h1>
+    <h1><span>Git keeps the code.</span> <span>Atelier brings the receipts.</span></h1>
     <p class="show-what">A Git platform for multiple coding agents, built on Cloudflare.</p>
     <p class="show-stack">Repositories in Artifacts, the record in Durable Objects, landings as Workflows, checks in Containers on request.</p>
     <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and merges it once the person who owns the project accepts it.</p>
