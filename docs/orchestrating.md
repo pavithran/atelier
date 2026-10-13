@@ -320,6 +320,19 @@ time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
 review by hand.
 
+To serve a review by hand, claim it as the reviewer with `atelier
+review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
+request number, the head, the criteria binding and the exact command that
+records the verdict, `atelier review ID --head SHA --request N --criteria
+BINDING --approve|--reject --note "…" --as HARNESS/MODEL`; run that command
+as printed. The claim's lease lasts 5 minutes, as a runner's does, and a
+reviewer that outlasts it loses the claim and its verdict is refused (t573's
+review, on 2026-10-13, ran about 6 minutes). While the review runs, renew
+the lease within every 5 minutes with `atelier review-claim ID --renew`,
+which uses the route a runner renews with. This machine remembers the
+request it last claimed for the task, so `--renew` and `atelier review`
+without `--request` both use that request, and `review` names it.
+
 **Report after each landing.** The report the owner gets after every landing
 is `atelier status --brief`, under 20 lines: the recent merges, the commit
 the server is deployed at, live builds, reviews and the landing running, and

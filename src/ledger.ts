@@ -2748,6 +2748,11 @@ export class Ledger extends DurableObject<Env> {
     const hadClaim = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND head = ? AND claimedBy IS NOT NULL`, r.itemId, r.head).toArray()
       .some((c) => sameActor(c.claimedBy as string, r.by));
     if ((r.request !== undefined || hadClaim) && !claims.some((c) => c.id === r.request)) {
+      // A verdict that names no request is told so (t575), never "request undefined".
+      if (r.request === undefined) {
+        const live = claims.map((c) => c.id as number);
+        throw new RuleError("stale_request", `the verdict on ${r.itemId} names no review request, but ${r.by} claimed ${live.length ? `request ${live.join(", ")}` : "one"} at ${r.head.slice(0, 8)}: name it with --request N, as the review claim gave it; if it was withdrawn or replaced, claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409);
+      }
       throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409);
     }
     const boundClaims = claims.filter((c) => c.id === r.request);
