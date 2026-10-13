@@ -94,6 +94,7 @@ it("a landing is refused in full mode, records its receipt in fast mode, and que
   const counts = await L.showcaseCounts("2000-01-01T00:00:00.000Z") as unknown as ShowcaseCounts;
   expect(counts).toMatchObject({ landedFast: 1, merges: 0 });
   expect(counts.kinds.some((k) => k.kind === "item.merged")).toBe(false);
+  expect(counts.days.some((k) => k.kind === "item.merged")).toBe(false);
 });
 
 it("a same-family post-merge review is refused for a merge that did not land fast", async () => {

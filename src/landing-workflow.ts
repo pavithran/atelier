@@ -82,7 +82,7 @@ import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
+import { landingVerdict, allSkipped, reviewStall, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
 import { fenceText, type PrereviewFence } from "./dispatch/prereview.ts";
@@ -714,7 +714,11 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
         // The request's number travels with the ask (t353): the skips the
         // wait counts are that request's alone.
-        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null, request: r.request ?? null };
+        // `asked` is when this landing asked (t574): only a reply with no
+        // readable verdict given since then ends its wait, not one an earlier
+        // landing already stopped on.
+        const asked = new Date().toISOString();
+        return { needed: r.needed, reason: r.reason, at: r.at ?? asked, asked, reviewer: r.reviewer ?? null, request: r.request ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));
       }
@@ -728,12 +732,28 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     for (let i = 0; ; i++) {
       const poll = await step.do(`wait for the verdict #${i}${p.sfx}`, RETRIES, async () => {
         await this.stillCurrent(L, p);
+        // The live request is read before the verdicts (t574): a verdict
+        // closes the request it answers, so one recorded between the reads is
+        // seen in the detail rather than taken for a request gone unanswered.
+        const live = await L.liveReviewRequest(p.item, head);
         // The Ledger's detail is a wide view; the step keeps what it reads.
-        const d = (await L.detail(p.item)) as unknown as { item: { head: string | null }; reviews: LandingReview[] };
+        const d = (await L.detail(p.item)) as unknown as { item: { head: string | null }; reviews: LandingReview[]; unparsable?: LandingUnparsable[] };
         if (d.item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
         const { verdict } = landingVerdict(d.reviews ?? [], head, ask.at);
-        return verdict ? { approve: verdict.approve, by: verdict.by, note: String(verdict.note ?? ""), tier: verdict.tier === true } : null;
+        if (verdict) return { approve: verdict.approve, by: verdict.by, note: String(verdict.note ?? ""), tier: verdict.tier === true };
+        // No verdict: the wait goes on only while one can still come.
+        const stall = reviewStall(head, ask.asked ?? ask.at, ask.reviewer, live, d.unparsable ?? []);
+        return stall ? { stall } : null;
       });
+      if (poll && "stall" in poll) {
+        const stall = poll.stall as ReviewStall;
+        await step.do(`record the stalled review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: stall.kind === "unparsable" ? "unparsable" : "no-request", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
+        const byHand = `review by hand (atelier review ${p.item} --approve --as H/M --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}`;
+        if (stall.kind === "unparsable") {
+          throw new NonRetryableError(`${stall.by} replied to the review of ${p.item} at ${short(head)} with no verdict the server could read (${stall.note.slice(0, 300) || "no note"}); the reply is kept on the task (atelier show ${p.item}). The request stays asked of ${stall.by} and ${p.item} stays submitted. Run atelier land ${p.item} --workflow --reviewer H/M to ask another reviewer, which replaces that request, or ${byHand}`);
+        }
+        throw new NonRetryableError(`no review request of ${p.item} at ${short(head)} is open or claimed and no verdict was given, so none will come; ${p.item} stays submitted. Run atelier land ${p.item} --workflow${ask.reviewer ? ` --reviewer ${ask.reviewer}` : ""} to ask again, or ${byHand}`);
+      }
       if (poll) {
         if (!poll.approve) {
           await step.do(`record the rejected review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "reject", reviewer: poll.by, resolvedBy: poll.by }); return {}; });

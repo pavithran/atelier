@@ -1,5 +1,6 @@
 import { landingOf } from "./diff.ts";
-import type { ShowcaseCounts } from "./graph.ts";
+import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
+import { dayInZone } from "./time.ts";
 import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
@@ -38,7 +39,7 @@ import {
 } from "./dispatch/prereview.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
-import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
+import { matchServed, SERVED, SERVED_LIMIT, servedActor, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
@@ -733,6 +734,9 @@ export class Ledger extends DurableObject<Env> {
     // An item's events are read by its id (item(), and the queue's push
     // actors), so the log is not scanned whole for each read.
     this.sql.exec(`CREATE INDEX IF NOT EXISTS events_item ON events (item_id)`);
+    // The showcase counts the whole record by kind (showcaseCounts, t578),
+    // reading this index rather than every row.
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS events_kind ON events (kind, actor, item_id)`);
     // The refresh queue (t462): one target per task, and each settled
     // refresh under its key (src/refresh/queue.ts).
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_targets (item TEXT PRIMARY KEY, json TEXT NOT NULL)`);
@@ -4642,57 +4646,96 @@ export class Ledger extends DurableObject<Env> {
   // The public showcase's figures over the whole record, counted in SQL
   // rather than over a window of events (t578: 3,000 events covered eight
   // hours of this project's own record, and the page said 0 merged in two
-  // weeks beside 379 all time). Events are counted by actor and kind; those
-  // at or after `since` again by half-hour, so the caller can place them on
-  // days in the owner's zone. The owner's served annotations are returned
-  // with the events they annotate, so the caller counts those under the
-  // model that served them, as buildStory does. `story` is the merged task
-  // the page tells as it happened: one a review sent back first when there
-  // is one, then the one with the most events.
-  showcaseCounts(since: string): ShowcaseCounts {
+  // weeks beside 379 all time). Events are counted by actor and kind, and
+  // those at or after `since` again by day in `zone`, the owner's. The
+  // owner's served annotations move each annotated event under the model
+  // that served it, as buildStory does, here rather than in the caller, so
+  // the result stays a few hundred rows however long the record (the first
+  // deploy returned every half-hour's counts and every annotation, 4.4 MB
+  // and five seconds of the Worker's time on a seeded ledger of 150,000
+  // events). `story` is the merged task the page tells as it happened: one
+  // a review sent back first when there is one, then the one with the most
+  // events. The queries read the kind index (events_kind) and never parse
+  // a row's data unless it is valid JSON.
+  showcaseCounts(since: string, zone = "UTC"): ShowcaseCounts {
     const num = (v: unknown) => Number(v ?? 0);
-    const kinds = this.sql.exec(
-      `SELECT actor, kind, COUNT(*) AS n, MIN(seq) AS first,
-        SUM(CASE WHEN kind = 'evidence.observed' AND json_extract(data, '$.where') = 'sandbox' THEN 1 ELSE 0 END) AS cloud
-       FROM events WHERE kind != 'event.served' AND NOT (kind = 'item.merged' AND IFNULL(json_extract(data, '$.fast'), 0) = 1) GROUP BY actor, kind`,
-    ).toArray().map((r) => ({ actor: String(r.actor), kind: String(r.kind), n: num(r.n), first: num(r.first), cloud: num(r.cloud) }));
-    const recent = this.sql.exec(
-      `SELECT actor, kind, substr(at, 1, 14) || CASE WHEN substr(at, 15, 2) < '30' THEN '00' ELSE '30' END AS slot, COUNT(*) AS n
-       FROM events WHERE at >= ? AND kind != 'event.served' AND NOT (kind = 'item.merged' AND IFNULL(json_extract(data, '$.fast'), 0) = 1) GROUP BY actor, kind, slot`, since,
-    ).toArray().map((r) => ({ actor: String(r.actor), kind: String(r.kind), at: `${String(r.slot)}:00.000Z`, n: num(r.n) }));
+    const kinds = new Map<string, CountRow>();
+    for (const r of this.sql.exec(`SELECT kind, actor, COUNT(*) AS n, MIN(seq) AS first FROM events WHERE kind != 'event.served' GROUP BY kind, actor`)) {
+      kinds.set(`${String(r.actor)}\n${String(r.kind)}`, { actor: String(r.actor), kind: String(r.kind), n: num(r.n), first: num(r.first), cloud: 0 });
+    }
+    for (const r of this.sql.exec(`SELECT actor, COUNT(*) AS n FROM events WHERE kind = 'evidence.observed' AND json_valid(data) AND json_extract(data, '$.where') = 'sandbox' GROUP BY actor`)) {
+      const row = kinds.get(`${String(r.actor)}\nevidence.observed`);
+      if (row) row.cloud = num(r.n);
+    }
+    // The window starts after the newest event older than it, found by
+    // reading back from the newest event rather than scanning the record.
+    const floor = num(this.sql.exec(`SELECT seq FROM events WHERE at < ? ORDER BY seq DESC LIMIT 1`, since).toArray()[0]?.seq);
+    const dayOfSlot = new Map<string, string>();
+    const dayIn = (slot: string) => {
+      let d = dayOfSlot.get(slot);
+      if (d === undefined) { d = dayInZone(`${slot}:00.000Z`, zone); dayOfSlot.set(slot, d); }
+      return d;
+    };
+    const days = new Map<string, DayRow>();
+    for (const r of this.sql.exec(
+      `SELECT kind, actor, substr(at, 1, 14) || CASE WHEN substr(at, 15, 2) < '30' THEN '00' ELSE '30' END AS slot, COUNT(*) AS n
+       FROM events WHERE seq > ? AND at >= ? AND kind != 'event.served' GROUP BY kind, actor, slot`, floor, since,
+    )) {
+      const day = dayIn(String(r.slot));
+      const key = `${String(r.actor)}\n${String(r.kind)}\n${day}`;
+      const row = days.get(key) ?? { actor: String(r.actor), kind: String(r.kind), day, n: 0 };
+      row.n += num(r.n);
+      days.set(key, row);
+    }
+    // Each annotated event once, under its latest valid annotation, as servedBy reads them.
+    const moves: ServedMove[] = [];
+    for (const r of this.sql.exec(
+      `SELECT e.seq AS seq, e.actor AS actor, e.kind AS kind, e.at AS at, a.model AS model,
+         CASE WHEN e.kind = 'evidence.observed' AND json_valid(e.data) AND json_extract(e.data, '$.where') = 'sandbox' THEN 1 ELSE 0 END AS cloud
+       FROM (SELECT json_extract(data, '$.seq') AS target, json_extract(data, '$.served') AS model, MAX(seq) AS latest
+             FROM events WHERE kind = 'event.served' AND json_valid(data)
+               AND json_type(data, '$.seq') = 'integer' AND json_type(data, '$.served') = 'text'
+             GROUP BY target) a
+       JOIN events e ON e.seq = a.target WHERE e.kind != 'event.served'`,
+    )) {
+      const ev = { seq: num(r.seq), actor: String(r.actor), kind: String(r.kind), at: String(r.at), itemId: null, data: {} };
+      const to = servedActor(ev, new Map([[ev.seq, String(r.model)]]));
+      if (to === ev.actor) continue;
+      moves.push({ actor: ev.actor, to, kind: ev.kind, seq: ev.seq, cloud: num(r.cloud) === 1, day: ev.at >= since && ev.seq > floor ? dayIn(ev.at.slice(0, 14) + (ev.at.slice(14, 16) < "30" ? "00" : "30")) : null });
+    }
+    // Tasks landed in fast mode (t585) are counted apart from gated merges:
+    // their item.merged events leave the figures above.
+    for (const r of this.sql.exec(`SELECT seq, actor, at FROM events WHERE kind = 'item.merged' AND json_valid(data) AND IFNULL(json_extract(data, '$.fast'), 0) = 1`)) {
+      const all = kinds.get(`${String(r.actor)}\nitem.merged`);
+      if (all && --all.n <= 0) kinds.delete(`${String(r.actor)}\nitem.merged`);
+      const at = String(r.at);
+      if (at < since || num(r.seq) <= floor) continue;
+      const key = `${String(r.actor)}\nitem.merged\n${dayIn(at.slice(0, 14) + (at.slice(14, 16) < "30" ? "00" : "30"))}`;
+      const row = days.get(key);
+      if (row && --row.n <= 0) days.delete(key);
+    }
+    const adjusted = applyServed([...kinds.values()], [...days.values()], moves);
     // A merge is counted when its task was claimed before it, as the graph
     // counts only the merges of the threads it draws.
     const merges = num(this.sql.exec(
-      `SELECT COUNT(*) AS n FROM events m WHERE m.kind = 'item.merged' AND EXISTS
-        (SELECT 1 FROM events c WHERE c.item_id = m.item_id AND c.kind = 'item.claimed' AND c.seq < m.seq)`,
+      `SELECT COUNT(*) AS n FROM events m
+       JOIN (SELECT item_id, MIN(seq) AS first FROM events WHERE kind = 'item.claimed' GROUP BY item_id) c ON c.item_id = m.item_id
+       WHERE m.kind = 'item.merged' AND c.first < m.seq AND NOT (json_valid(m.data) AND IFNULL(json_extract(m.data, '$.fast'), 0) = 1)`,
     ).one().n);
     const taken = num(this.sql.exec(`SELECT COUNT(DISTINCT item_id) AS n FROM events WHERE kind = 'item.claimed'`).one().n);
-    // Tasks landed in fast mode (t585) are counted apart from gated merges:
-    // their item.merged events are left out of the figures above.
+    // Tasks landed in fast mode (t585), counted apart from gated merges.
     const landedFast = num(this.sql.exec(`SELECT COUNT(DISTINCT item_id) AS n FROM events WHERE kind = 'item.landed_fast'`).one().n);
-    const span = this.sql.exec(`SELECT MIN(at) AS first, MAX(at) AS last FROM events`).one();
-    const served = this.sql.exec(`SELECT * FROM events WHERE kind = 'event.served' ORDER BY seq`).toArray().map(eventOf);
-    const seqs = [...new Set(served.map((ev) => ev.data.seq).filter((s): s is number => typeof s === "number"))];
-    const annotated: ShowcaseCounts["annotated"] = [];
-    for (let i = 0; i < seqs.length; i += 90) {
-      const part = seqs.slice(i, i + 90);
-      for (const r of this.sql.exec(`SELECT seq, at, actor, kind, json_extract(data, '$.where') AS place FROM events WHERE seq IN (${part.map(() => "?").join(", ")})`, ...part).toArray()) {
-        annotated.push({ seq: num(r.seq), at: String(r.at), actor: String(r.actor), kind: String(r.kind), cloud: r.kind === "evidence.observed" && r.place === "sandbox" });
-      }
-    }
+    const first = this.sql.exec(`SELECT at FROM events ORDER BY seq LIMIT 1`).toArray()[0]?.at as string | undefined;
+    const last = this.sql.exec(`SELECT at FROM events ORDER BY seq DESC LIMIT 1`).toArray()[0]?.at as string | undefined;
     const pick = this.sql.exec(
-      `SELECT i.id AS id,
-        (SELECT COUNT(*) FROM events e WHERE e.item_id = i.id AND e.kind = 'review.rejected') AS back,
-        (SELECT COUNT(*) FROM events e WHERE e.item_id = i.id) AS n
-       FROM items i WHERE i.state = 'merged'
-         AND EXISTS (SELECT 1 FROM events c WHERE c.item_id = i.id AND c.kind = 'item.claimed')
+      `SELECT i.id AS id, COALESCE(b.n, 0) AS back, COALESCE(t.n, 0) AS n FROM items i
+       JOIN (SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed') c ON c.item_id = i.id
+       LEFT JOIN (SELECT item_id, COUNT(*) AS n FROM events WHERE kind = 'review.rejected' GROUP BY item_id) b ON b.item_id = i.id
+       LEFT JOIN (SELECT item_id, COUNT(*) AS n FROM events WHERE item_id IS NOT NULL GROUP BY item_id) t ON t.item_id = i.id
+       WHERE i.state = 'merged'
        ORDER BY back > 0 DESC, n DESC, i.id LIMIT 1`,
     ).toArray()[0];
-    return {
-      kinds, recent, merges, taken, landedFast, served, annotated,
-      first: (span.first as string | null) ?? null, last: (span.last as string | null) ?? null,
-      story: pick ? String(pick.id) : null,
-    };
+    return { ...adjusted, merges, taken, landedFast, first: first ?? null, last: last ?? null, story: pick ? String(pick.id) : null };
   }
 
   // Who holds what, without titles, scopes or paths: safe to hand to a
@@ -5910,7 +5953,13 @@ export class Ledger extends DurableObject<Env> {
     if (!row && closed.length) {
       throw new RuleError("stale_head", `the review request for ${closed.map((h) => h.slice(0, 8)).join(", ")} was closed: ${itemId} is at ${item.head!.slice(0, 8)}, and no review of that head is asked yet`, 409);
     }
-    if (!row) throw new RuleError("no_review", `${itemId} has no open review request`, 404);
+    if (!row) {
+      // A request a runner holds is live, as requestReview counts it (t574):
+      // the refusal names the claim, so it is not read as no request at all.
+      const held = this.sql.exec(`SELECT id, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state = 'claimed' ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
+      if (held) throw new RuleError("no_review", `${itemId} has no open review request: request ${held.id} is claimed by ${held.claimedBy} since ${held.claimedAt}`, 404);
+      throw new RuleError("no_review", `${itemId} has no open review request`, 404);
+    }
     const tier = row.tier === 1;
     const head = row.head as string;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
@@ -6104,6 +6153,27 @@ export class Ledger extends DurableObject<Env> {
         if (asked && sameActor(asked, reviewer)) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
+      }
+    }
+    // A request at this head whose reviewer has replied to it with no verdict
+    // the server could read (t574) is asked of that reviewer again each time
+    // (unparsableReview releases the claim as a new request), so it may never
+    // be answered, and while a runner serves it again it is claimed. t573 at
+    // cc688bac: opencode/glm-5.3's replies had no VERDICT line, and naming
+    // codex/gpt-6-astra was refused as "already requested from
+    // opencode/glm-5.3" while review-claim said no request was open (the
+    // runner held the next claim). The owner naming another reviewer
+    // replaces it, open or claimed: a claim withdrawn here fences the
+    // verdict of the run holding it (its --request is no longer current).
+    if (reviewer !== null && item.head) {
+      const unread = this.unparsableFor(id).filter((u) => u.head === item.head);
+      const standing = this.sql.exec(`SELECT id, dispatch, state FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL`, id, item.head).toArray();
+      for (const r of standing) {
+        const d = JSON.parse(r.dispatch as string) as Dispatch;
+        const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+        if (!asked || sameActor(asked, reviewer) || !unread.some((u) => sameActor(u.by, asked))) continue;
+        this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, request: r.id as number, reason: `${asked} replied with no verdict the server could read, and the project owner named ${reviewer} to review it` }, at, proved);
       }
     }
     // An open request at this head that every runner offering its reviewer

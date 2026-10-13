@@ -16,10 +16,10 @@ export function setTimeZone(name: string | undefined | null): string {
 
 export const timeZone = () => zone;
 
-const parts = (at: Date | string | number) => {
+const parts = (at: Date | string | number, timeZone = zone) => {
   const d = at instanceof Date ? at : new Date(at);
   const f = new Intl.DateTimeFormat("en-US", {
-    timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short",
   }).formatToParts(d);
   const get = (t: string) => f.find((p) => p.type === t)?.value ?? "";
@@ -47,6 +47,14 @@ export function shortStamp(at: Date | string | number): string {
 // "2026-10-05"
 export function dayOf(at: Date | string | number): string {
   const p = parts(at);
+  return `${p.y}-${p.m}-${p.d}`;
+}
+
+// dayOf in a zone named by the caller, for code that runs where no request
+// has set the owner's zone (the Ledger's showcase counts). An unknown zone is UTC.
+export function dayInZone(at: Date | string | number, name: string): string {
+  let p;
+  try { p = parts(at, name); } catch { p = parts(at, "UTC"); }
   return `${p.y}-${p.m}-${p.d}`;
 }
 

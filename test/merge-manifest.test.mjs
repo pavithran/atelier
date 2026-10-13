@@ -91,6 +91,12 @@ function fixture(t) {
   git(dir, "init", "-q", "-b", "main");
   appendFileSync(join(dir, ".git/info/exclude"), "node_modules\n");
   git(dir, "config", "commit.gpgsign", "false");
+  // No automatic gc: a detached `git gc --auto`, which a commit starts once
+  // the loose objects pass its estimate, still writes .git/objects/pack while
+  // the cleanup removes the folder, and the rm fails with ENOTEMPTY (t571,
+  // whose two new command files tipped the copied tree over it).
+  git(dir, "config", "gc.auto", "0");
+  git(dir, "config", "maintenance.auto", "false");
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "base");
   return dir;
