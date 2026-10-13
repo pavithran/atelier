@@ -1,10 +1,10 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "4aed4a3b89cb67ece7a0839ad147c8516adcd05a",
+  "source": "30f42e6bfb74d9abd32936d147c56c5c5313c955",
   "sourceDirty": true,
   "browser": {
     "name": "chromium",
-    "version": "149.0.7827.55",
+    "version": "156.0.8078.4",
     "playwrightCore": "1.61.1"
   },
   "fixture": {
@@ -60,7 +60,7 @@
     "public-showcase": {
       "390": {
         "structure": {
-          "height": 5231,
+          "height": 5210,
           "navs": [
             {
               "label": "Elsewhere",
@@ -82,7 +82,7 @@
             "h2 How a task travels",
             "h2 Where it runs"
           ],
-          "words": 1274
+          "words": 1263
         },
         "targets": {
           "total": 5,
@@ -111,7 +111,7 @@
       },
       "1440": {
         "structure": {
-          "height": 3966,
+          "height": 3944,
           "navs": [
             {
               "label": "Elsewhere",
@@ -133,7 +133,7 @@
             "h2 How a task travels",
             "h2 Where it runs"
           ],
-          "words": 1274
+          "words": 1263
         },
         "targets": {
           "total": 5,
@@ -274,7 +274,7 @@
     "public-how": {
       "390": {
         "structure": {
-          "height": 29645,
+          "height": 28154,
           "navs": [
             {
               "label": "Elsewhere",
@@ -317,7 +317,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 17624
+          "words": 16147
         },
         "targets": {
           "total": 29,
@@ -412,7 +412,7 @@
       },
       "1440": {
         "structure": {
-          "height": 18644,
+          "height": 17884,
           "navs": [
             {
               "label": "Elsewhere",
@@ -455,7 +455,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 17624
+          "words": 16147
         },
         "targets": {
           "total": 29,
@@ -550,13 +550,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 1026,
+            "checked": 978,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 1026,
+            "checked": 978,
             "unknown": 0,
             "failures": []
           }
@@ -5557,7 +5557,7 @@
     "tasks": {
       "390": {
         "structure": {
-          "height": 27733,
+          "height": 111256,
           "navs": [
             {
               "label": "Atelier",
@@ -5599,7 +5599,7 @@
       },
       "1440": {
         "structure": {
-          "height": 15194,
+          "height": 19556,
           "navs": [
             {
               "label": "Atelier",
@@ -9432,43 +9432,43 @@
             },
             {
               "selector": "label",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "label",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "select",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "label",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "span.meta",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "input",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "label",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "span.meta",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "textarea",
-              "right": 370
+              "right": 366
             },
             {
               "selector": "button.primary",
-              "right": 370
+              "right": 366
             }
           ]
         }
