@@ -88,7 +88,11 @@ export type PoolNames = readonly Pick<ModelEntry, "id" | "harness" | "aliases">[
 
 export function canonicalModel(acting: string, pool: PoolNames): string {
   const names = (m: PoolNames[number]) => [m.id, ...m.aliases];
-  const entry = pool.find((m) => names(m).some((id) => sameActor(acting, `${m.harness}/${id}`)))
+  // An entry's own id before any entry's alias, so an alias naming another
+  // entry's id never takes that entry's identity (gpt-6-astra's second
+  // review of t622, finding 1).
+  const entry = pool.find((m) => sameActor(acting, `${m.harness}/${m.id}`))
+    ?? pool.find((m) => names(m).some((id) => sameActor(acting, `${m.harness}/${id}`)))
     ?? pool.find((m) => names(m).some((id) => modelKey(`${m.harness}/${id}`) === modelKey(acting)));
   return entry ? modelKey(`${entry.harness}/${entry.id}`) : modelKey(acting);
 }

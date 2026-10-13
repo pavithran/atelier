@@ -5,7 +5,7 @@ import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEv
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
-import { liveOffers, offeredActors, type SeenOffer } from "../dispatch/rules.ts";
+import { offering, type SeenOffer } from "../dispatch/rules.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
@@ -80,13 +80,15 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   const excluded: string[] = [];
   // gpt-6-astra's review of t622, finding 6: without the offers, a standing
   // assignment could suggest a model nobody can claim over a live one.
-  const live = input.offers ? liveOffers(input.offers) : [];
-  const offered = live.length ? offeredActors(live) : null;
+  // Offered for this very dispatch: a build, sent where the entry runs, as
+  // the dispatch route sends it (gpt-6-astra's second review, finding 2).
+  const offeredFor = (entry: ModelEntry) => (input.offers ? offering({ to: entry.where }, input.offers) : null);
   const refusalOf = (entry: ModelEntry): string => {
     const actor = actorOf(entry);
     const held = standingRefusal(entry, "build");
     if (held) return held;
-    if (offered && !offered.has(actor.toLowerCase())) return `no live runner offers ${actor}, so no runner could claim its dispatch`;
+    const offered = offeredFor(entry);
+    if (offered && !offered.actors.has(actor.toLowerCase())) return `no live runner offers ${actor} for a build ${entry.where === "home" ? "at home" : "in the cloud"}, so no runner could claim its dispatch`;
     if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
     if (strict && !frontier(entry)) return "not frontier";
     if (stalledBuilder(entry, input)) return "two consecutive stalled builds; no successful build since";

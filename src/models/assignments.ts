@@ -136,6 +136,7 @@ export interface AssignmentChoice {
 export interface Assignment {
   id: string;                 // a1, a2, ... shared with withdrawals, in the order recorded
   request?: string;           // the id the client gave the request that recorded it
+  fingerprint?: string;       // what that request said (inputFingerprint), to tell its retry
   kind: "assigned";
   scope: string;              // ALL_PROJECTS or a project's stable key
   role: AssignmentRole;
@@ -306,6 +307,7 @@ export interface AssignmentStore {
 // pool, and its evidence checked and kept by project key.
 export interface ResolvedAssignment {
   request: string;
+  fingerprint?: string;
   scope: string;
   role: AssignmentRole;
   choices: AssignmentChoice[];
@@ -344,7 +346,8 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
   // is another request reusing it, and is refused.
   const own = records.find((r): r is Assignment => r.kind === "assigned" && r.request === input.request);
   if (own) {
-    if (sameContent(own, input) && (own.supersedes ?? null) === input.replaces) return { ...own, retried: true };
+    const same = own.fingerprint !== undefined && input.fingerprint !== undefined ? own.fingerprint === input.fingerprint : sameContent(own, input) && (own.supersedes ?? null) === input.replaces;
+    if (same) return { ...own, retried: true };
     throw new RuleError("request_reused", `request ${input.request} already recorded ${own.id}, with other content; a new decision needs a new request id`, 409);
   }
   if (standing && input.replaces !== standing.id) {
@@ -355,7 +358,7 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
     throw new RuleError("assignment_changed", `${input.replaces} does not stand for ${where}${was ? ` (${was.kind === "assigned" ? "it was superseded or withdrawn" : "that is a withdrawal"})` : ""}; nothing stands there now, so record it without --replaces`, 409);
   }
   const record: Assignment = {
-    id: nextId(records), kind: "assigned", request: input.request, scope: input.scope, role: input.role, choices: input.choices,
+    id: nextId(records), kind: "assigned", request: input.request, ...(input.fingerprint ? { fingerprint: input.fingerprint } : {}), scope: input.scope, role: input.role, choices: input.choices,
     reason: input.reason, quote: input.quote, evidence: input.evidence, by: actor, at: now,
     ...(acting ? { acting } : {}), ...(standing ? { supersedes: standing.id } : {}),
   };
@@ -416,6 +419,25 @@ export function assignmentSnapshot(records: readonly AssignmentRecord[], bears: 
 // which would bring back what was superseded or withdrawn since it was read.
 export function snapshotApplies(held: AssignmentSnapshot | null, incoming: AssignmentSnapshot): boolean {
   return held === null || incoming.version >= held.version;
+}
+
+// A new project's first copy: the project is registered first, so every
+// withdrawal or assignment broadcast from then on reaches it, and only then
+// is the snapshot read and installed; a broadcast that lands between the
+// read and the install is newer, and the install of the older one is
+// refused. Installed before registering, a withdrawal broadcast in between
+// never reached the project (gpt-6-astra's second review of t622, finding 4).
+export async function seedProject(steps: { register(): Promise<unknown>; snapshot(): Promise<AssignmentSnapshot>; install(snapshot: AssignmentSnapshot): Promise<unknown> }): Promise<void> {
+  await steps.register();
+  await steps.install(await steps.snapshot());
+}
+
+// What a request said, as the client sent it, before anything mutable (the
+// pool, the projects' names) was read: a retry is matched to its record by
+// this, so removing a model after the first request does not make its retry
+// fail (gpt-6-astra's second review of t622, finding 5).
+export function inputFingerprint(input: AssignmentInput): string {
+  return JSON.stringify([input.scope, input.role, input.choices, input.reason, input.quote, input.evidence.map(refText), input.replaces]);
 }
 
 // ── reading ─────────────────────────────────────────────────────────────

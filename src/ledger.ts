@@ -74,6 +74,8 @@ import {
   pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
 import { gateServesTier, tierReviewerPick } from "./review/tier.ts";
+import { offering } from "./dispatch/rules.ts";
+import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
 import { linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
@@ -1209,6 +1211,11 @@ export class Ledger extends DurableObject<Env> {
 
   assignRole(actor: string, input: ResolvedAssignment, acting: string | null = null): Assignment & { retried?: true } {
     return recordAssignment(this.assignmentStore, actor, input, new Date().toISOString(), acting);
+  }
+
+  // The assignment a request recorded, by the client's request id, or null.
+  assignmentForRequest(request: string): Assignment | null {
+    return this.assignmentStore.records().find((r): r is Assignment => r.kind === "assigned" && r.request === request) ?? null;
   }
 
   withdrawRoleAssignment(id: string, actor: string, note: unknown, acting: string | null = null) {
@@ -5941,7 +5948,7 @@ export class Ledger extends DurableObject<Env> {
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
-        assigned: this.reviewAssigned(p, part),
+        assigned: this.reviewAssigned(p, part, need.changedPaths),
       });
       if (pick && !pick.reviewer) {
         this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name ${single ? independentReviewerText(single) : "one of another family than every contributor"}, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
@@ -6448,13 +6455,15 @@ export class Ledger extends DurableObject<Env> {
     }
     let chosen: string;
     let choiceReason = "";
+    // Where the request below sends each model, so its offer is judged there.
+    const destination = (e: ModelEntry): "home" | "cloud" => (records || reviewerAdmission(`${e.harness}/${e.id}`, policy)?.active ? e.where : "home");
     if (reviewer !== null) {
       chosen = reviewer;
     } else if (records) {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
       const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined, assignments: this.heldAssignments(), offers },
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined, assignments: this.heldAssignments(), offers, destination },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");
@@ -6469,13 +6478,16 @@ export class Ledger extends DurableObject<Env> {
         owner: this.owner,
         precision: this.reviewPrecision(at),
         assigned: this.reviewAssigned(item, null, need.changedPaths),
-        offers,
+        offers, destination,
       });
       if (!pick.reviewer) {
         const single = singleFamily(policy);
         throw new RuleError("no_reviewer", `${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} is in the pool: ${pick.unpicked}. Name one with atelier land ID --reviewer H/M, or add a model with atelier models add`, 409);
       }
       chosen = pick.reviewer.actor;
+      // The selector's reasons, its assignment's included, as the
+      // suggestion's are kept (gpt-6-astra's second review, follow-up).
+      choiceReason = pick.reviewer.reasons.join(" ");
     }
     const slash = chosen.indexOf("/");
     const where = records || reviewerAdmission(chosen, policy)?.active ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
@@ -6486,7 +6498,7 @@ export class Ledger extends DurableObject<Env> {
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
-    if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved);
+    if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved, pool, offers);
     return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
   }
 
@@ -6526,7 +6538,7 @@ export class Ledger extends DurableObject<Env> {
   // not protected, the gate's reviewer gives the tier review too, a tier
   // request was made or a tier review recorded for this head already, or no
   // tier model remains.
-  private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false): void {
+  private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers?: readonly SeenOffer[]): void {
     const policy = this.project().policy;
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
     if (this.gateIsTier(item, need, gateReviewer)) return;
@@ -6541,14 +6553,32 @@ export class Ledger extends DurableObject<Env> {
     const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
       .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));
-    // A tier model the owner has paused, reserved or kept from reviewing is
-    // passed over, as the gate's selector passes it over.
-    const standing = this.poolStanding();
-    const pick = tierReviewerPick(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !actorStanding(standing, a, "review"), this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), standing);
+    // A tier model is judged as the gate's selector judges a reviewer before
+    // any assignment orders it (gpt-6-astra's second review of t622, finding
+    // 3): in the pool, the project's policy, the developer's standing, not
+    // refused, not paid per token, and offered by a live runner for the
+    // review job where it runs. The request goes where the model runs. A
+    // tier model outside the pool is the project's explicit choice and is
+    // asked as before, home, but no assignment moves it ahead
+    // (tierReviewerPick).
+    const entryOf = (a: string) => pool.find((e) => [e.id, ...e.aliases].some((id) => sameActor(`${e.harness}/${id}`, a)));
+    const mayReview = (a: string): true | string => {
+      if (!mayAssess(a, policy, this.owner)) return "may not review under the project's policy";
+      const e = entryOf(a);
+      if (!e) return true;
+      const held = actorStanding(pool, a, "review");
+      if (held) return held;
+      if (e.status?.state === "refused") return `status refused, reported by ${e.status.by} at ${e.status.at}${e.status.detail ? `: ${e.status.detail}` : ""}`;
+      if (paidPerToken(e)) return `paid per token (${e.provider}); paid models are not allowed for this review`;
+      const offered = offers ? offering({ to: e.where, job: "review" }, offers) : null;
+      if (offered && !offered.actors.has(a.toLowerCase())) return `no live runner offers ${a} for the review job ${e.where === "home" ? "at home" : "in the cloud"}`;
+      return true;
+    };
+    const pick = tierReviewerPick(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
     const reviewer = pick.actor;
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
-    const dispatch = { ...this.standingDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
+    const dispatch = { ...this.standingDispatch({ to: entryOf(reviewer)?.where ?? "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
     // What the role assignments said of this choice, kept on the request
     // (gpt-6-astra's review of t622, finding 7).

@@ -83,7 +83,9 @@ Who decides, strongest first:
    round's reviewer on a re-review.
 3. The project's review tier (`atelier init --review-tier`). Its models
    review a protected change before the rest of the pool; an assignment orders
-   the tier's models among themselves and adds none to it.
+   the tier's models among themselves and adds none to it. A tier model
+   outside the pool is still asked in the tier's order, but no assignment
+   moves it ahead.
 4. Assignments, most specific first: a role's own (security-review for
    security, concurrency or gate work, claims-review for docs) before review,
    and this project's before every project's. The first with an eligible

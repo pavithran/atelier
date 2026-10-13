@@ -13,6 +13,7 @@ const actorOf = (m: SuggestionInput["pool"][number]) => `${m.harness}/${m.id}`;
 export interface ReviewerSuggestionInput extends SuggestionInput {
   previous?: string | null;          // the reviewer of the last rejected round, asked first
   tier?: readonly string[];          // the project's review tier, asked next for a protected change
+  destination?: (entry: SuggestionInput["pool"][number]) => "home" | "cloud";  // where the ledger sends the review
 }
 
 export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly { actor: string; reason: string }[] = [], now = new Date()): Choice {
@@ -23,7 +24,7 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
     allowPaid: false, owner: input.owner, avoid, precision, previous: input.previous ?? null, tier: input.tier,
     // Security, concurrency or gate work reads security-review, docs alone
     // claims-review, and both then review (src/models/assignments.ts).
-    offers: input.offers,
+    offers: input.offers, destination: input.destination,
     assigned: applicableAssignments(input.assignments ?? [], input.project, reviewRoles({ sensitive: sensitive(input.item), docs: docsOnly(input.item.scope) })),
     // Preserve outcome order between equal precision terms.
     recordOrder: ordered.map(({ entry }) => actorOf(entry)),
