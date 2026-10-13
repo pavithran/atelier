@@ -767,6 +767,7 @@ body.public main.showcase { max-width: none; padding: 0 0 8px; }
 .show-hero { padding-top: 64px; padding-bottom: 24px; }
 .show-hero .kicker { display: block; margin: 0 0 18px; font-weight: 400; line-height: 1.5; letter-spacing: .1em; }
 .show-hero h1 { margin: 0; max-width: 15ch; font: 800 clamp(44px, 6.4vw, 88px)/.98 var(--font-display); letter-spacing: -.035em; color: var(--text-bright); }
+.show-stack { margin: 18px 0 0; max-width: 720px; font-family: var(--font-mono, "IBM Plex Mono", monospace); font-size: 14px; letter-spacing: 0.02em; color: var(--accent); }
 .show-lead { margin: 28px 0 0; max-width: 640px; font-size: 20px; line-height: 1.5; color: var(--text); }
 .show-hero .error { margin-top: 20px; }
 
