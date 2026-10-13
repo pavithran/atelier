@@ -556,16 +556,23 @@ export async function runLand(io) {
   // and the landing's failure path below runs beside it. That path waits
   // for the signal's ending (`stopping`) rather than end the landing itself
   // with exit 1, the lease still held (t590). The signal's release waits
-  // for any release already in flight (above), and a second signal of
-  // another kind changes nothing: the first signal's ending stands, with
-  // its status.
-  let stopping = null;
+  // for any release already in flight (above). The handlers stay for the
+  // signals that follow (t590): a second one, of any kind, says the release
+  // is still going and keeps waiting for it, so a second Ctrl-C does not
+  // end the landing with the cancel unanswered; a third forces the exit,
+  // and the lease then lapses on its own, as an unreleased lease does. The
+  // first signal's status stands unless the exit is forced.
+  let stopping = null, signals = 0;
+  const statusOf = (signal) => signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
+  const lapses = `The landing lease of ${name} lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes, unless atelier land ${id} --release-lease frees it first.`;
   const onSignal = (signal) => {
-    if (stopping) return;
+    signals++;
+    if (stopping && signals === 2) return print(`${signal} received again; still releasing the landing lease of ${name}; press again to force quit, and the lease then lapses on its own.`);
+    if (stopping) { print(`${signal} received a third time; quitting without waiting for the release. ${lapses}`); process.exit(statusOf(signal)); }
     print(`${signal} received; releasing the landing lease of ${name}…`);
-    stopping = release(`${signal} ended the landing`).finally(() => process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
+    stopping = release(`${signal} ended the landing`).finally(() => process.exit(statusOf(signal)));
   };
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, onSignal);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, onSignal);
 
   // The wait for the lease, once the head is checked and approved (t550):
   // the landing polls for the lease until no live task holds it and no

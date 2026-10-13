@@ -121,6 +121,46 @@ test("a second, different signal during a signal's release waits for it, and the
   }
 });
 
+// t590, from codex/gpt-6-astra's second review: the handlers listened once,
+// so the same signal again during the release (a second Ctrl-C) met Node's
+// default, or cli/group.mjs's exit, and ended the landing with the cancel
+// unanswered and the lease held. A second signal now says the release is
+// still going and keeps waiting; a third forces the exit, the lease left to
+// lapse.
+const STILL = /SIGTERM received again; still releasing the landing lease of proj; press again to force quit/;
+const FORCED = /SIGTERM received a third time; quitting without waiting for the release\. The landing lease of proj lapses on its own after \d+ minutes/;
+test("the same signal again during the release says so and keeps waiting; a third forces the exit", async (t) => {
+  if (!canInspectSlots(t)) return;
+  for (const force of [false, true]) {
+    const f = await landFixture(t);
+    let letGo = false;
+    f.box.holdOn = (url, body) => url.endsWith("/accept") || (url.endsWith("/landing-lease") && body.cancel === true && !letGo);
+    const landing = spawnLanding(f);
+    await until(() => underLease(f), CEILING_MS, "the acceptance under the lease");
+    landing.child.kill("SIGTERM");
+    await until(() => cancelHeld(f), CEILING_MS, "the release SIGTERM started");
+    landing.child.kill("SIGTERM");
+    await until(() => STILL.test(landing.output()), 15_000, "the line that the release is still going");
+    assert.ok(await stillRunning(landing), `the landing ended before its release was answered:\n${landing.output()}`);
+    if (force) {
+      landing.child.kill("SIGTERM");
+      const began = Date.now();
+      const ended = await landing.done;
+      assert.ok(Date.now() - began < 10_000, "the third signal ends the landing promptly");
+      assert.equal(ended.status, 143, landing.output());
+      assert.match(landing.output(), FORCED);
+      // The cancel was never answered: the lease lapses on its own.
+      assert.equal(f.box.lease?.item, "t1");
+      continue;
+    }
+    letGo = true;
+    const ended = await landing.done;
+    assert.equal(ended.status, 143, landing.output());
+    assert.equal(f.box.lease, null, landing.output());
+    assert.equal(f.box.states.t1, "submitted");
+  }
+});
+
 // t419: a landing signalled while its regenerate command runs ends that
 // command's process group, and what it started, as it releases the lease.
 test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
