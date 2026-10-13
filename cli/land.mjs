@@ -504,8 +504,20 @@ export async function runLand(io) {
     catch { /* the row lapses on its own after the expiry */ }
   };
   // `why` is what the release step records: the merge, main moving under
-  // the lease, or the failure that ended the landing.
-  const release = async (why = "the landing ended") => {
+  // the lease, or the failure that ended the landing. Releases run one at a
+  // time, and each caller waits for every release asked before its own
+  // (t590): one marks the lease released before the server answers its
+  // cancel, so a second caller (a signal during the failed landing's
+  // release, or a second signal during the first's) that found nothing left
+  // to release would otherwise go on, and end the landing, while the
+  // cancel is still unanswered.
+  let releasing = Promise.resolve();
+  const release = (why = "the landing ended") => {
+    const next = releasing.then(() => releaseNow(why));
+    releasing = next.catch(() => {});
+    return next;
+  };
+  const releaseNow = async (why) => {
     beating = false;
     if (everQueued && !leased) { everQueued = false; await leaveQueue(); }
     if (!leased) return;
@@ -538,11 +550,29 @@ export async function runLand(io) {
   // releases no lease, but it leaves the queue the landing holds a place in
   // (t249). A terminal hang-up is taken the same way, so the regenerate
   // command's group (runRegenerateIn) ends with the landing.
+  //
+  // The signal also SIGKILLs the process group of the step under way
+  // (cli/group.mjs), so that step fails while the release is still asked,
+  // and the landing's failure path below runs beside it. That path waits
+  // for the signal's ending (`stopping`) rather than end the landing itself
+  // with exit 1, the lease still held (t590). The signal's release waits
+  // for any release already in flight (above). The handlers stay for the
+  // signals that follow (t590): a second one, of any kind, says the release
+  // is still going and keeps waiting for it, so a second Ctrl-C does not
+  // end the landing with the cancel unanswered; a third forces the exit,
+  // and the lease then lapses on its own, as an unreleased lease does. The
+  // first signal's status stands unless the exit is forced.
+  let stopping = null, signals = 0;
+  const statusOf = (signal) => signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
+  const lapses = `The landing lease of ${name} lapses on its own after ${Math.round(LANDING_LEASE_EXPIRY_MS / 60000)} minutes, unless atelier land ${id} --release-lease frees it first.`;
   const onSignal = (signal) => {
+    signals++;
+    if (stopping && signals === 2) return print(`${signal} received again; still releasing the landing lease of ${name}; press again to force quit, and the lease then lapses on its own.`);
+    if (stopping) { print(`${signal} received a third time; quitting without waiting for the release. ${lapses}`); process.exit(statusOf(signal)); }
     print(`${signal} received; releasing the landing lease of ${name}…`);
-    release(`${signal} ended the landing`).finally(() => process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
+    stopping = release(`${signal} ended the landing`).finally(() => process.exit(statusOf(signal)));
   };
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, onSignal);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, onSignal);
 
   // The wait for the lease, once the head is checked and approved (t550):
   // the landing polls for the lease until no live task holds it and no
@@ -836,10 +866,15 @@ export async function runLand(io) {
       break;
     }
   } catch (error) {
+    // A step the signal ended fails here before its release is answered,
+    // and a signal can come while this release is: either way the signal's
+    // handler ends the landing, with the signal's status.
     await release(`stopped: ${String(error.message).split("\n")[0]}`);
+    if (stopping) await stopping;
     die(error.message);
   }
   await release("merged");
+  if (stopping) await stopping;
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
   print(`${id} spent ${span(Date.now() - began - heldMs)} landing without the lease and held it ${span(heldMs)}.`);
   // When another landing took the lease over, release() has said where it
