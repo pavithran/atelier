@@ -10,7 +10,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fastLand, parsePairs } from "./fast.mjs";
+import { fastLand, parsePairs, scanBatch } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
@@ -336,6 +336,68 @@ test("a commit made after the secret scan, by the test command, stops the batch 
 // the object's hash, not the path the criterion asks it to name. The blob
 // here is one a batch commit added and a later one replaced, so the merge
 // never needs it and only the scan reads it.
+// Second review of t592 (codex/gpt-6-astra): a replacement ref made the scan
+// read a harmless blob in place of the credential the history holds. A
+// typecheck the batch changed can make one with `git replace`.
+function replacedLeak() {
+  const { dir } = repo();
+  const sha = leakBranch(dir, [{ "k.txt": KEY }, { "k.txt": null }]);
+  const leak = git(dir, "rev-parse", `${sha}^:k.txt`);
+  writeFileSync(join(dir, "..safe"), "harmless\n");
+  const safe = git(dir, "hash-object", "-w", join(dir, "..safe"));
+  rmSync(join(dir, "..safe"));
+  return { dir, sha, replace: `git replace ${leak} ${safe}` };
+}
+
+test("the scan reads the history's own objects, not replacements (finding 4)", async () => {
+  const { dir, sha, replace } = replacedLeak();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    git(dir, "merge", "-q", "--no-ff", "-m", "m", sha);
+    execFileSync("sh", ["-c", replace], { cwd: dir });
+    const { hits } = await scanBatch(dir, start);
+    assert.deepEqual(hits, ["k.txt:1"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a replacement ref a project command makes stops the batch, main untouched (finding 4)", async () => {
+  const { dir, sha, replace } = replacedLeak();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Replace" }, cwd: dir, pairs: [{ id: "t3", sha }], typecheck: replace, test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /replacement refs/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a grafts file a project command writes stops the batch (finding 4)", async () => {
+  const { dir, one } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], typecheck: `mkdir -p .git/info && git rev-parse HEAD > .git/info/grafts`, test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /grafts/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Second review of t592: a test that left the checkout on another branch
+// had that branch reset, and main kept the refused batch.
+test("a test that switches branch is refused, and main, not the new branch, goes back to the start (finding 4)", async () => {
+  const { dir, one } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "git checkout -q -b temporary", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "checkout changed");
+    assert.match(r.failure.detail, /on temporary, not main/);
+    assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+    assert.equal(git(dir, "rev-parse", "main"), start);
+    assert.equal(r.head, start);
+    assert.notEqual(git(dir, "rev-parse", "temporary"), start, "the branch the test made is left as it was");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a blob the scan cannot read stops the batch, naming its path (finding 4)", async () => {
   const { dir } = repo();
   try {
