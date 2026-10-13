@@ -65,6 +65,9 @@ it("folds an acceptance into its merge, and a repeated move into one row that sa
   expect([rows[0].at, rows[0].since]).toEqual([at(5, 8, 10), at(5, 8, 4)]);
   expect(rows[3].kind).toBe("item.merged");
   expect(foldMoves([m(at(1, 1), "item.claimed", "a took t1"), m(at(1, 2), "item.claimed", "b took t1")], 1)).toHaveLength(1);
+  // An acceptance and its merge in one millisecond still fold, by ledger position.
+  const same = foldMoves([{ ...m(at(4, 12), "item.accepted", "PAVI accepted t1"), pos: 7 }, { ...m(at(4, 12), "item.merged", "t1 merged into main"), pos: 8 }]);
+  expect(same.map((r) => r.text)).toEqual(["PAVI accepted t1; merged into main"]);
 });
 
 it("draws the canvas's sections in its order, every figure from the seeded tally", () => {
