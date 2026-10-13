@@ -259,6 +259,77 @@ it("a merge is refused while another task's landing holds the project's lease, a
   expect(await L.merged(b, "owner", "7".repeat(40), true, bHead)).toMatchObject({ state: "merged" });
 });
 
+// t550 pre-review finding: the landing Workflow left the lease to lapse
+// while it waited for the merge, so a queued landing took it, merged and
+// moved main, and the first head was then merged into that main unchecked.
+// The main a landing confirms under the lease is recorded with its head,
+// and the merge of that head into any other main is refused.
+it("the merge of a head into a main other than the one its landing confirmed under the lease is refused (t550)", async () => {
+  const L = await setup("land-main-moved");
+  const a = (await L.newItem("Landing", [], "owner")).id;
+  const b = (await L.newItem("Beside it", [], "owner")).id;
+  const aHead = "9".repeat(40), bHead = "e".repeat(40), M1 = "1".repeat(40), M2 = "2".repeat(40);
+  await submittedTask(L, a, aHead, ["docs/a.md"]);
+  await submittedTask(L, b, bHead, ["docs/b.md"]);
+  // Only the lease's holder confirms main, and only a commit hash.
+  await refusal(L.confirmLeaseMain(a, "owner", M1), "no_lease", /no landing lease is held/);
+  await L.beginProjectLanding(a, "owner");
+  await refusal(L.confirmLeaseMain(a, "owner", "main"), "bad_main", /commit hash/);
+  await refusal(L.confirmLeaseMain(a, "someone", M1), "not_project_owner", /only the project owner/);
+  expect(await L.confirmLeaseMain(a, "owner", M1)).toEqual({ main: M1, head: aHead });
+  await L.accept(a, "owner", aHead);
+  // The lease lapses while a waits to merge; b takes it, merges and moves main to M2.
+  const held = (await L.readProjectLanding())!;
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-lease'`, JSON.stringify({ ...held, renewedAt: new Date(Date.now() - LANDING_LEASE_EXPIRY_MS).toISOString() }));
+  });
+  await L.beginProjectLanding(b, "owner");
+  await L.accept(b, "owner", bHead);
+  await L.beginLanding(b, "owner", bHead, M1);
+  await L.merged(b, "owner", M2, true, bHead);
+  // a's merge into M2 is refused, naming both mains, and nothing is reserved.
+  await refusal(L.beginLanding(a, "owner", aHead, M2), "main_moved", new RegExp(`main moved from 11111111 to 22222222 since ${a}'s landing confirmed it under the lease; ${a} at 99999999 was checked and reviewed against 11111111.*atelier land ${a} again`));
+  expect(await L.item(a)).toMatchObject({ state: "accepted", acceptedHead: aHead });
+  // Into the main it was confirmed against, the merge begins; once begun, a
+  // resumed merge keeps its reservation whatever main reads now.
+  await L.beginLanding(a, "owner", aHead, M1);
+  await L.beginLanding(a, "owner", aHead, M2);
+});
+
+it("the landing-lease route's confirm reads main itself, refusing a main it does not hold and recording the one it does (t550)", async () => {
+  const project = "land-confirm-route";
+  const L = await setup(project);
+  const a = (await L.newItem("First", [], "owner")).id;
+  const aHead = "9".repeat(40), M1 = "1".repeat(40), M2 = "2".repeat(40);
+  await submittedTask(L, a, aHead, ["docs/a.md"]);
+  let top = M2;
+  const ARTIFACTS = { get: async () => ({ log: async () => [{ hash: top }], [Symbol.dispose]() {} }) };
+  const bindings = { ...env, ATELIER_TOKEN: "land-routes-token", ARTIFACTS } as unknown as typeof env;
+  const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
+    method: "POST", headers: { authorization: ["Bearer", "land-routes-token"].join(" "), "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+  }), bindings);
+  expect((await post({ item: a })).status).toBe(200);
+  const refused = await post({ item: a, confirm: true, main: M1 });
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toMatchObject({ error: "main_moved", detail: expect.stringMatching(/main is at 22222222, not 11111111/) });
+  top = M1;
+  const confirmed = await post({ item: a, confirm: true, main: M1 });
+  expect(confirmed.status).toBe(200);
+  expect(await confirmed.json()).toEqual({ confirmed: { main: M1, head: aHead } });
+  await L.accept(a, "owner", aHead);
+  await refusal(L.beginLanding(a, "owner", aHead, M2), "main_moved", /main moved from 11111111 to 22222222/);
+});
+
+it("a renewal from an executor older than review-first landing is told to update, not that it lost the lease (t550)", async () => {
+  const L = await setup("land-old-executor");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  await L.setLandingWorkflow(id, "land-old-1", "owner");
+  await L.setLandingWorkflowStage(id, "land-old-1", "workspace", 0);
+  await refusal(L.renewProjectLanding(id, "owner", "land-old-1"), "no_lease", /holds no lease while main is merged, checked and reviewed \(t550\).*Update the atelier command/);
+  // Without a landing Workflow at a stage before the lease, the refusal is as before.
+  await refusal(L.renewProjectLanding(id, "owner"), "no_lease", /^no landing lease is held, so t\d+'s landing cannot renew it$/);
+});
+
 it("a submitted task with a protected change gets a review request, named or picked, that a verdict answers", async () => {
   const L = await setup("land-review");
   const id = (await L.newItem("Landing", [], "owner")).id;
@@ -477,6 +548,19 @@ it("the landing's steps are recorded as land.* events with their duration, and a
   await refusal(L.landEvent(id, "owner", "merge", -5, {}), "bad_ms", /duration in milliseconds/);
   await refusal(L.landEvent(id, "owner", "merge", 5, { nonsense: true }), "bad_field", /nonsense is not a field/);
   await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the project owner records/);
+});
+
+it("the time before the lease and the time holding it are recorded on the lease and release steps (t550)", async () => {
+  const L = await setup("land-timing");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  await L.landEvent(id, "owner", "lease", 40, { head: "a".repeat(40), main: "b".repeat(40), beforeLease: 690_000.4, waited: 0 });
+  await L.landEvent(id, "owner", "release", 52_000, { reason: "merged" });
+  const recorded = (await events(L, id)).filter((e) => e.kind.startsWith("land.")).sort((a, b) => a.seq - b.seq);
+  expect(recorded.map((e) => e.kind)).toEqual(["land.lease", "land.release"]);
+  expect(recorded[0].data).toMatchObject({ ms: 40, head: "a".repeat(40), main: "b".repeat(40), beforeLease: 690_000, waited: 0 });
+  expect(recorded[1].data).toMatchObject({ ms: 52_000, reason: "merged" });
+  await refusal(L.landEvent(id, "owner", "lease", 5, { beforeLease: -1 }), "bad_field", /beforeLease must be a duration in milliseconds/);
+  await refusal(L.landEvent(id, "owner", "lease", 5, { waited: "long" }), "bad_field", /waited must be a duration in milliseconds/);
 });
 
 it("a triage is recorded as its own land.triage step, by the project owner alone, and changes no review, round or gate decision (t475)", async () => {
