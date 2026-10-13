@@ -38,6 +38,36 @@ test("SIGINT and SIGTERM release the lease before the landing ends, with the sig
   }
 });
 
+// t590: the signal SIGKILLs the acceptance's process group (cli/group.mjs)
+// while its handler releases the lease, so the acceptance fails and the
+// landing's own failure path ran beside the release. Under load the release
+// was the slower of the two, and the failure path ended the landing with
+// exit 1 ("atelier accept failed (exit ended by a signal)") before the lease
+// was released. Here the server answers the release only after the failed
+// acceptance is recorded, which is that order made certain: the landing must
+// still wait for its release and end with the signal's status.
+test("a signal ends the landing with its status after the release, though the acceptance it killed fails first", async (t) => {
+  if (!canInspectSlots(t)) return;
+  for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) {
+    const f = await landFixture(t);
+    let failedAt = null;
+    f.box.holdOn = (url, body) => {
+      if (url.endsWith("/accept")) return true;
+      if (!(url.endsWith("/landing-lease") && body.cancel === true)) return false;
+      failedAt ??= f.posts("/land").some((x) => x.body.step === "accept" && x.body.failed === true) ? Date.now() : null;
+      return failedAt === null || Date.now() - failedAt < 500;
+    };
+    const landing = spawnLanding(f);
+    await until(() => underLease(f), CEILING_MS, "the acceptance under the lease");
+    landing.child.kill(signal);
+    const ended = await landing.done;
+    assert.ok(failedAt !== null, `the acceptance failed before the release was answered:\n${landing.output()}`);
+    assert.equal(ended.status, status, landing.output());
+    assert.equal(f.box.lease, null, landing.output());
+    assert.equal(f.box.states.t1, "submitted");
+  }
+});
+
 // t419: a landing signalled while its regenerate command runs ends that
 // command's process group, and what it started, as it releases the lease.
 test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
