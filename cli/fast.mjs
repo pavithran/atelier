@@ -208,9 +208,49 @@ function readTree(cwd, hash) {
 // their trees and blobs) is still present and still hashes to its id,
 // checked after the tests, so a test command that deletes or rewrites one
 // after the scan stops the batch (eighth review of t592). One rev-list and
-// one cat-file --batch read them all. Answers the problems found, at most
-// `limit`, each naming the object.
+// one cat-file --batch read them all. When any is missing or changed, the
+// batch is walked again object by object (namedObjectProblems) so each
+// problem is named by its path. Answers the problems found, at most `limit`.
 function objectProblems(cwd, start, head, limit = 20) {
+  const problems = batchObjectProblems(cwd, start, head, limit);
+  return problems.length ? namedObjectProblems(cwd, start, head, limit, problems) : [];
+}
+
+// Each commit in start..head against its first parent, read and verified a
+// level at a time (as the scan reads it), descending only into entries the
+// parent does not hold, so every missing, malformed or changed object is
+// named by its path, a directory with a trailing slash (ninth review of
+// t592). `fallback` is answered when the walk finds nothing to name.
+function namedObjectProblems(cwd, start, head, limit, fallback) {
+  const commits = runGit(cwd, ["rev-list", "--parents", `${start}..${head}`]);
+  if (commits.status !== 0) return [`the batch's commits cannot be listed: ${(commits.stderr || "").trim().split("\n").at(-1)}`];
+  const found = new Set(), seen = new Set();
+  const why = (err) => `${err?.message ?? err}`;
+  const walk = (tree, baseTree, prefix) => {
+    if (found.size >= limit || seen.has(`${tree}\0${prefix}`)) return;
+    seen.add(`${tree}\0${prefix}`);
+    let entries, base = new Map();
+    try { entries = readTree(cwd, tree); } catch (err) { found.add(`${prefix || "the root tree"} (${why(err)})`); return; }
+    if (baseTree) { const b = listTree(cwd, baseTree); for (const e of b ?? []) base.set(e.name, e); }
+    for (const e of entries) {
+      const before = base.get(e.name);
+      if (before && before.hash === e.hash) continue;
+      const path = prefix + e.name;
+      if (e.type === "tree") walk(e.hash, before?.type === "tree" ? before.hash : null, `${path}/`);
+      else if (e.type === "blob") { try { readObject(cwd, "blob", e.hash); } catch (err) { found.add(`${path} (${why(err)})`); } }
+    }
+  };
+  for (const line of commits.stdout.split("\n").filter(Boolean)) {
+    const [commit, parent] = line.split(" ");
+    try {
+      const head = commitOf(cwd, commit);
+      walk(head.tree, parent ? commitOf(cwd, parent).tree : null, "");
+    } catch (err) { found.add(`commit ${commit} (${why(err)})`); }
+  }
+  return found.size ? [...found] : fallback;
+}
+
+function batchObjectProblems(cwd, start, head, limit) {
   const list = runGit(cwd, ["rev-list", "--objects", `${start}..${head}`]);
   if (list.status !== 0) return [`git rev-list --objects could not walk the batch: ${(list.stderr || "").trim().split("\n").at(-1)}`];
   const ids = list.stdout.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
