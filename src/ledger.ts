@@ -8,6 +8,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type L
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
+import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
 import { ledgerRestart, parseLedgerRestart } from "./rules";
@@ -759,6 +760,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS model_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS model_cards (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -1187,6 +1189,32 @@ export class Ledger extends DurableObject<Env> {
     const stored = named ? { ...note, project: named.key } : note;
     this.sql.exec(`INSERT INTO model_notes (model, json) VALUES (?, ?)`, id, JSON.stringify(stored));
     return named ? { ...stored, projectName: named.name } : stored;
+  }
+
+  // Vendor model cards (t625, src/models/cards.ts), beside the notes but
+  // never on a pool entry, and never read by what reads the pool. The whole
+  // table is read: a card's state comes from every record naming its id, and
+  // it is listed under the modelKey it was written with (cardFiling), which
+  // no pool alias, removal or re-addition changes.
+  private cardRecords(): CardRecord[] {
+    return this.sql.exec(`SELECT id, json FROM model_cards ORDER BY id`).toArray()
+      .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }));
+  }
+
+  modelCards(named: string): CardView {
+    return modelCardView(this.cardRecords(), this.models(), named);
+  }
+
+  // A card or a withdrawal, stored once: the same record sent again (a
+  // retry) is answered with the one stored, and nothing is added.
+  addModelCard(named: string, input: CardInput | WithdrawalInput, by: string, at: string): { record: CardRecord; retried: boolean; view: CardView } {
+    const all = this.cardRecords();
+    const pool = this.models();
+    const made = newCardRecord(all, named, input, by, at);
+    if ("existing" in made) return { record: made.existing, retried: true, view: modelCardView(all, pool, named) };
+    const row = this.sql.exec(`INSERT INTO model_cards (model, json) VALUES (?, ?) RETURNING id`, made.store.model, JSON.stringify(made.store)).one();
+    const record = { ...made.store, id: `c${row.id as number}` } as CardRecord;
+    return { record, retried: false, view: modelCardView([...all, record], pool, named) };
   }
 
   putModel(entry: ModelEntry): ModelEntry {

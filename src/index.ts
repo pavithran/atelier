@@ -21,6 +21,7 @@ import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderIn
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
+import { cleanCard, cleanCardModel, cleanWithdrawal } from "./models/cards.ts";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
@@ -1130,6 +1131,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 3 && parts[2] === "notes" && m === "POST") {
       requireOwner(env, actor);
       return json(await I.addModelNote(id, cleanNote(body, actor, new Date().toISOString())));
+    }
+    // Vendor model cards (t625, src/models/cards.ts): the developer's alone
+    // to read and to write, as private as the notes. Any model's name is
+    // taken, in the pool or not; the answer says which pool entries it is.
+    if (parts.length === 3 && parts[2] === "cards" && (m === "GET" || m === "POST")) {
+      requireOwner(env, actor);
+      const named = cleanCardModel(id);
+      if (m === "GET") return json(await I.modelCards(named));
+      const at = new Date().toISOString();
+      const input = "withdraws" in body ? cleanWithdrawal(body) : cleanCard(body, at.slice(0, 10));
+      const added = await I.addModelCard(named, input, actor, at);
+      return json(added, added.retried ? 200 : 201);
     }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));

@@ -192,11 +192,13 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   assert.deepEqual(requiredForCommand("models", "add"), []);
   assert.deepEqual(requiredForCommand("models", "note"), ["models.note.v1"]);
   assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
+  // card posts vendor cards (t625); show prints them only where the server has them.
+  assert.deepEqual(requiredForCommand("models", "card"), ["models.card.v1"]);
   // set posts the pool's standing (t389); add needs it only when it gives --state, --roles or --tier.
   assert.deepEqual(requiredForCommand("models", "set"), ["models.standing.v1"]);
   assert.deepEqual(requiredForCommand("models", "add", { harness: "codex" }), []);
   for (const flag of ["state", "roles", "tier"]) assert.deepEqual(requiredForCommand("models", "add", { [flag]: "x" }), ["models.standing.v1"], flag);
-  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1", "models.standing.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1", "models.card.v1", "models.standing.v1"]);
   assert.deepEqual(requiredForCommand("token", "issue"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "store"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "ls"), []);

@@ -190,7 +190,7 @@ const KEY_PREFIX = /(?<![A-Za-z0-9])(?:sk-|sk_|hf_|AIza|ghp_|gho_|github_pat_|xo
 // names are not; some keys join two such runs with a dot (id.secret).
 // Scan each run once: failure logs can contain very long alphabetic lines.
 const hasKeyRun = (s: string) => (s.match(/[A-Za-z0-9]+/g) ?? []).some((run) => run.length >= 24 && /[A-Za-z]/.test(run) && /[0-9]/.test(run));
-const LOOKS_LIKE_KEY = { test: (s: string) => KEY_PREFIX.test(s) || hasKeyRun(s) };
+export const LOOKS_LIKE_KEY = { test: (s: string) => KEY_PREFIX.test(s) || hasKeyRun(s) };
 // Any part of an endpoint's path that looks like a key.
 const keyInPath = (path: string) => path.split("/").some((seg) => LOOKS_LIKE_KEY.test(seg));
 
