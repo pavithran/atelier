@@ -10,7 +10,7 @@ import type { LedgerEvent } from "./ledger.ts";
 import type { Item } from "./rules.ts";
 import { splitActor } from "./floor.ts";
 import { familyOf, LOCAL_BUILD } from "./models/pool.ts";
-import { withServed } from "./models/served.ts";
+import { servedActor, servedBy, withServed } from "./models/served.ts";
 import { shortStamp, stamp } from "./time.ts";
 import { withoutAddresses } from "./text.ts";
 import { workKind } from "./kind.ts";
@@ -86,6 +86,10 @@ export interface Story {
   threads: Thread[];
   moments: Moment[];
   tally: Tally;
+  // Set when the tally counts the whole record (Ledger.showcaseCounts)
+  // rather than the events drawn: its first and last event, and how many
+  // tasks were ever taken.
+  counted?: { from: string | null; to: string | null; taken: number };
 }
 
 // Bookkeeping takes a quarter step on the axis so the work gets the width, and
@@ -108,6 +112,79 @@ export function addTally(a: Tally, b: Tally): Tally {
     planned: sum("planned"), claims: sum("claims"), handoffs: sum("handoffs"), pushes: sum("pushes"),
     approvals: sum("approvals"), accepts: sum("accepts"), merges: sum("merges"),
   };
+}
+
+// The whole record's figures as the Ledger counts them in SQL
+// (Ledger.showcaseCounts): events by actor and kind, the recent ones again
+// by half-hour, and the served annotations with the events they annotate.
+export interface CountRow { actor: string; kind: string; n: number; first: number; cloud: number }
+export interface ShowcaseCounts {
+  kinds: CountRow[];
+  recent: { actor: string; kind: string; at: string; n: number }[];
+  merges: number;              // merges of tasks claimed before them
+  taken: number;               // tasks ever claimed
+  served: LedgerEvent[];       // the annotations, oldest first
+  annotated: { seq: number; at: string; actor: string; kind: string; cloud: boolean }[];
+  first: string | null;        // the oldest and newest event of the record
+  last: string | null;
+  story: string | null;        // the merged task told as it happened
+}
+
+// The counts with each annotated event moved under the model that served
+// it, as withServed does for the events buildStory reads.
+export function servedCounts(c: ShowcaseCounts): { kinds: CountRow[]; recent: ShowcaseCounts["recent"] } {
+  const served = servedBy(c.served);
+  const kinds = new Map(c.kinds.map((r) => [`${r.actor}\n${r.kind}`, { ...r }]));
+  const recent = new Map(c.recent.map((r) => [`${r.actor}\n${r.kind}\n${r.at}`, { ...r }]));
+  for (const ev of c.annotated) {
+    if (!served.has(ev.seq)) continue;
+    const to = servedActor({ seq: ev.seq, actor: ev.actor, kind: ev.kind, at: ev.at, itemId: null, data: {} }, served);
+    if (to === ev.actor) continue;
+    const from = kinds.get(`${ev.actor}\n${ev.kind}`);
+    if (from) { from.n--; if (ev.cloud) from.cloud--; }
+    const k = `${to}\n${ev.kind}`;
+    const row = kinds.get(k) ?? { actor: to, kind: ev.kind, n: 0, first: ev.seq, cloud: 0 };
+    row.n++; row.first = Math.min(row.first, ev.seq); if (ev.cloud) row.cloud++;
+    kinds.set(k, row);
+    const slot = c.recent.find((r) => r.actor === ev.actor && r.kind === ev.kind && Math.abs(Date.parse(r.at) - Date.parse(ev.at)) < 30 * 60_000 && Date.parse(r.at) <= Date.parse(ev.at));
+    if (!slot) continue;
+    const old = recent.get(`${slot.actor}\n${slot.kind}\n${slot.at}`);
+    if (old) old.n--;
+    const rk = `${to}\n${ev.kind}\n${slot.at}`;
+    const moved = recent.get(rk) ?? { actor: to, kind: ev.kind, at: slot.at, n: 0 };
+    moved.n++;
+    recent.set(rk, moved);
+  }
+  return { kinds: [...kinds.values()].filter((r) => r.n > 0), recent: [...recent.values()].filter((r) => r.n > 0) };
+}
+
+// The tally buildStory would count over every event of the record, from the
+// Ledger's counts: the same rules, applied to each actor's count of a kind.
+export function tallyFromCounts(c: ShowcaseCounts, owner: string): Tally {
+  const t = emptyTally();
+  const { kinds } = servedCounts(c);
+  for (const r of [...kinds].sort((a, b) => a.first - b.first)) {
+    if (r.actor === owner) { if (DECISIONS.has(r.kind)) t.decisions += r.n; }
+    else if (!QUIET.has(r.kind) && !isAtelier(r.actor)) {
+      t.agentMoves += r.n;
+      const v = vendorOf(r.actor, owner);
+      t.byVendor[v] = (t.byVendor[v] ?? 0) + r.n;
+      if (isLocalRun(r.actor)) t.localRuns += r.n;
+      if (!t.agents.includes(r.actor)) t.agents.push(r.actor);
+    }
+    switch (r.kind) {
+      case "item.created": t.planned += r.n; break;
+      case "item.claimed": t.claims += r.n; break;
+      case "item.handoff": t.handoffs += r.n; break;
+      case "push.observed": t.pushes += r.n; break;
+      case "evidence.observed": t.checks += r.n; t.inCloud += r.cloud; break;
+      case "review.approved": t.approvals += r.n; break;
+      case "review.rejected": t.sentBack += r.n; break;
+      case "item.accepted": t.accepts += r.n; break;
+    }
+  }
+  t.merges = c.merges;
+  return t;
 }
 
 const sha8 = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
