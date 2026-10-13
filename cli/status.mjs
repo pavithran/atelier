@@ -19,7 +19,8 @@
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
 import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
-import { mergedByOverride } from "../src/rules.ts";
+import { stripVTControlCharacters } from "node:util";
+import { directionText, mergedByOverride } from "../src/rules.ts";
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
@@ -75,6 +76,8 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       name: v.name,
       ...(v.title ? { title: v.title } : {}),
       ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
+      // Fast mode's line while it stands (t629: with the developer's words and the acting model).
+      ...(v.mode ? { mode: v.mode } : {}),
       // Each null when not read, which attention.unknown words; never an
       // empty list standing for nothing.
       inbox: v.inbox ? mine : null,
@@ -87,6 +90,15 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       mergedByOverride: mergedByOverride(v.items ?? []).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
     };
   });
+}
+
+// What a merge by override says after its link and title, in `atelier
+// status` and `status --project` alike: the reason, and, for an override on
+// the developer's direction (t629), their words and the model that relayed
+// them. Text a person or agent wrote is flattened to one line.
+const flatText = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
+export function overrideTail(o) {
+  return `  reason: ${flatText(o.reason)}${o.quote ? `  ${flatText(directionText({ quote: o.quote, acting: o.acting }))}` : ""}`;
 }
 
 // A path on the server in use, as a full address where the server is known.
@@ -276,6 +288,8 @@ export function formatStatus(views, waiting = {}) {
     const why = whyIn(waiting, v.name, offers);
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
+    // Fast mode, as status --project prints it (t629).
+    if (v.mode) lines.push(`  ${flatText(v.mode)}`);
     if (!a.owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.
@@ -297,7 +311,7 @@ export function formatStatus(views, waiting = {}) {
     const merged = items.filter((i) => i.state === "merged"), byOverride = mergedByOverride(merged);
     if (merged.length) {
       lines.push(`  Merged by override: ${byOverride.length} of ${merged.length} ${merged.length === 1 ? "merge" : "merges"}`);
-      for (const i of byOverride) lines.push(`    ${i.id}  ${taskLink(waiting.server, v.name, i.id)}  ${i.title}`);
+      for (const i of byOverride) lines.push(`    ${i.id}  ${taskLink(waiting.server, v.name, i.id)}  ${i.title}${overrideTail(i.reviewOverride)}`);
     }
     if (queued.length || reviews.length) {
       lines.push("  Waiting for a runner");

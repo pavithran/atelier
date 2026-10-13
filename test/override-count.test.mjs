@@ -28,8 +28,8 @@ test("atelier status counts the merges by override for each project and links ea
   assert.ok(count >= 0, out.join("\n"));
   // Each merge by override under the count, with the link to its page.
   assert.deepEqual(out.slice(count + 1, count + 3), [
-    "    t2  https://atelier.zone/p/demo/t2  Task t2",
-    "    t4  https://atelier.zone/p/demo/t4  Task t4",
+    "    t2  https://atelier.zone/p/demo/t2  Task t2  reason: No model of another family was available",
+    "    t4  https://atelier.zone/p/demo/t4  Task t4  reason: No model of another family was available",
   ]);
   assert.ok(out.includes("  Merged by override: 0 of 1 merge"), out.join("\n"));
   // A project that has merged nothing has no count to show.
@@ -38,8 +38,31 @@ test("atelier status counts the merges by override for each project and links ea
     [{ id: "t2", url: "https://atelier.zone/p/demo/t2" }, { id: "t4", url: "https://atelier.zone/p/demo/t4" }], [], [],
   ]);
   // With no server known, the page's path stands for the link.
-  assert.equal(formatStatus(views).split("\n")[count + 1], "    t2  /p/demo/t2  Task t2");
+  assert.equal(formatStatus(views).split("\n")[count + 1], "    t2  /p/demo/t2  Task t2  reason: No model of another family was available");
   assert.equal(taskLink("", "my project", "t2"), "/p/my%20project/t2");
+});
+
+// t629 review (codex/gpt-6-astra): bare `atelier status` listed each merge by
+// override with no reason, words or acting model, and said nothing of fast
+// mode, where `status --project` showed both. Both paths now print the same
+// direction lines.
+test("atelier status prints each override's reason and the developer's words, and fast mode's line, as status --project does", () => {
+  const direction = { ...override, quote: "override it, nobody else can review", acting: "claude-code/opus-5.5" };
+  const views = [{ name: "demo", title: "Demo project", items: [item("t2", "merged", { reviewOverride: direction }), item("t4", "merged", { reviewOverride: override })], inbox: [],
+    mode: "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: “go fast”, relayed by claude-code/opus-5.5" }];
+  const out = formatStatus(views, { server: "https://atelier.zone" }).split("\n");
+  assert.equal(out[1], "  Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: “go fast”, relayed by claude-code/opus-5.5", out.join("\n"));
+  assert.ok(out.includes("    t2  https://atelier.zone/p/demo/t2  Task t2  reason: No model of another family was available  the developer's words: “override it, nobody else can review”, relayed by claude-code/opus-5.5"), out.join("\n"));
+  assert.ok(out.includes("    t4  https://atelier.zone/p/demo/t4  Task t4  reason: No model of another family was available"), out.join("\n"));
+  // The same words as status --project's standing prints for that override.
+  const standing = formatStanding({ project: { name: "demo", title: "Demo project", repo: "demo" }, generatedAt: T, live: [], waiting: [], queued: [], merged: [], handoffs: [], controlPlane: null,
+    overrides: [{ id: "t2", title: "Task t2", at: T, reason: override.reason, quote: direction.quote, acting: direction.acting }] }, "PAVI", "https://atelier.zone").split("\n");
+  const tail = (l) => l.slice(l.indexOf("reason:"));
+  assert.equal(tail(standing.find((l) => l.includes("t2  https"))), tail(out.find((l) => l.includes("t2  https"))));
+  // The JSON carries the mode line too.
+  assert.equal(statusJson(views, "https://atelier.zone")[0].mode, views[0].mode);
+  // A project in full mode prints no mode line.
+  assert.ok(!formatStatus([{ ...views[0], mode: null }]).includes("Mode:"));
 });
 
 test("the standing's text counts the merges by override in its heading and links each with its reason", () => {
