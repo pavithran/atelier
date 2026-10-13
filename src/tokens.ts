@@ -100,15 +100,34 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
 // offered (t353), and the gateway takes it only for such a job, as it takes
 // a run report (assertRunnerReport). run-skip is its word that it gives up a
 // build or plan job it was offered (t420), taken the same way.
+const RUNNER_ITEM = "projects/:project/items/:id";
+
+// The authoritative method/path inventory. Body restrictions remain below;
+// adding a route here also requires an answer in the shared runner test server.
+export const RUNNER_ROUTES: readonly { method: string; pattern: string }[] = [
+  { method: "GET", pattern: "config" },
+  { method: "POST", pattern: "queue" },
+  { method: "POST", pattern: "runs" },
+  { method: "GET", pattern: "projects/:project" },
+  { method: "GET", pattern: "projects/:project/decisions" },
+  { method: "GET", pattern: "projects/:project/baseline-head" },
+  { method: "POST", pattern: "projects/:project/baseline-token" },
+  { method: "GET", pattern: RUNNER_ITEM },
+  ...["brief", "job-brief", "diff"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}` })),
+  ...["sandbox", "logs", "diffs"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}/*` })),
+  ...["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip"]
+    .map(verb => ({ method: "POST", pattern: `${RUNNER_ITEM}/${verb}` })),
+];
+
 export function runnerRoute(method: string, parts: string[], body: Record<string, unknown> = {}): boolean {
-  if (parts.length === 1) return method === "GET" && parts[0] === "config" || method === "POST" && ["queue", "runs"].includes(parts[0]);
-  if (parts[0] !== "projects" || !parts[1]) return false;
-  if (parts.length === 2) return method === "GET";
-  if (parts.length === 3) return method === "GET" && ["decisions", "baseline-head"].includes(parts[2]) || method === "POST" && parts[2] === "baseline-token" && body.scope !== "write";
-  if (parts[2] !== "items" || !/^t[0-9]+$/.test(parts[3])) return false;
-  if (["read-token", "base-token"].includes(parts[4]) && body.scope === "write") return false;
-  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "job-brief", "diff"].includes(parts[4]) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(parts[4]);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip"].includes(parts[4]);
+  const allowed = RUNNER_ROUTES.some(route => {
+    const pattern = route.pattern.split("/");
+    return route.method === method && pattern.length === parts.length && pattern.every((part, i) =>
+      part === ":project" ? !!parts[i] : part === ":id" ? /^t[0-9]+$/.test(parts[i]) : part === "*" || part === parts[i]);
+  });
+  if (!allowed) return false;
+  if (body.scope === "write" && (parts.length === 3 && parts[2] === "baseline-token" || ["read-token", "base-token"].includes(parts[4]))) return false;
+  return true;
 }
 
 export function runnerDenied(token: AgentToken): RuleError {
