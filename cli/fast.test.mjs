@@ -349,3 +349,30 @@ test("a blob the scan cannot read stops the batch, naming its path (finding 4)",
     assert.equal(git(dir, "rev-parse", "HEAD"), start);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// Review of t593 (codex/gpt-6-astra): fast land's merges ran Git with the
+// developer's whole environment and hooks on, so a checkout whose
+// core.hooksPath is a tracked directory let an agent-changed hook read the
+// developer's secrets before any filtered command ran.
+test("Git hooks an agent changes neither run nor see the developer's variables during fast land (finding 5)", async () => {
+  const { dir } = repo();
+  const probe = join(mkdtempSync(join(tmpdir(), "fast-land-hook-")), "seen");
+  const saved = process.env.FAST_LAND_PROBE_TOKEN;
+  process.env.FAST_LAND_PROBE_TOKEN = "developer-secret";
+  try {
+    git(dir, "config", "core.hooksPath", ".githooks");
+    git(dir, "checkout", "-q", "-b", "hooks", "main");
+    mkdirSync(join(dir, ".githooks"));
+    const hook = `#!/bin/sh\necho "$(basename "$0") $FAST_LAND_PROBE_TOKEN" >> ${JSON.stringify(probe)}\nexit 0\n`;
+    for (const name of ["pre-commit", "commit-msg", "post-commit", "pre-merge-commit", "post-merge", "post-checkout", "reference-transaction"]) writeFileSync(join(dir, ".githooks", name), hook, { mode: 0o755 });
+    git(dir, "add", "-A"); git(dir, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "hooks\n\nAgent: codex/gpt-6");
+    const sha = git(dir, "rev-parse", "HEAD");
+    git(dir, "-c", "core.hooksPath=/dev/null", "checkout", "-q", "main");
+    const r = await fastLand({ ...base, titles: { t8: "Hooks" }, cwd: dir, pairs: [{ id: "t8", sha }], regen: "echo generated > gen.txt", test: "true", record: () => ({ ok: true }) });
+    assert.equal(r.ok, true, JSON.stringify(r.failure));
+    assert.equal(existsSync(probe) ? readFileSync(probe, "utf8") : "", "", "no hook ran");
+  } finally {
+    if (saved === undefined) delete process.env.FAST_LAND_PROBE_TOKEN; else process.env.FAST_LAND_PROBE_TOKEN = saved;
+    rmSync(dir, { recursive: true, force: true }); rmSync(dirname(probe), { recursive: true, force: true });
+  }
+});

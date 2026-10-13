@@ -47,8 +47,36 @@ export function parsePairs(list) {
   return pairs;
 }
 
+// Every Git command fast land runs, its merges through the merge pipeline
+// included, runs with hooks off and the check environment (review of t593,
+// Astra's audit of 2026-10-13, finding 5): the checkout's hooks directory
+// can be a tracked one (core.hooksPath) that a merged agent changed, and a
+// hook would otherwise run with the developer's tokens, keys and
+// SSH_AUTH_SOCK. Git keeps the variables that say who commits and where its
+// own config lives, and never prompts.
+const GIT_KEEP = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "XDG_CONFIG_HOME"];
+export function gitEnv(base = process.env) {
+  const env = { ...checkEnv(base), GIT_TERMINAL_PROMPT: "0" };
+  for (const name of GIT_KEEP) if (base[name] !== undefined) env[name] = base[name];
+  return env;
+}
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
+function runGit(cwd, args, { encoding = "utf8", env } = {}) {
+  return spawnSync("git", [...NO_HOOKS, ...args], { cwd, encoding, env: { ...gitEnv(), ...env }, maxBuffer: 1024 * 1024 * 1024 });
+}
+
+// The merge pipeline's git (localGit's contract in cli/merge-pipeline.mjs),
+// with fast land's restriction in place of localGit's whole process.env.
+export function fastGit(args, opts = {}) {
+  const r = runGit(opts.cwd, args, { env: opts.env });
+  if (opts.allowFail) return r;
+  if (r.error || r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${(r.stderr || r.stdout || r.error?.message || "").trim()}`);
+  return opts.raw ? r.stdout : r.stdout.trim();
+}
+
 function git(cwd, ...a) {
-  const r = spawnSync("git", a, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const r = runGit(cwd, a);
   if (r.status !== 0) throw Object.assign(new Error(`git ${a.join(" ")} failed: ${(r.stderr || r.stdout).trim()}`), { step: `git ${a[0]}` });
   return r.stdout.trim();
 }
@@ -91,7 +119,7 @@ export function testInCleanClone(cwd, head, { setup, test, env = checkEnv() }) {
 const unreadable = (kind, hash) => Object.assign(new Error(`the ${kind} ${hash.slice(0, 12)} cannot be read`), { object: hash });
 
 function listTree(cwd, hash, recursive = false) {
-  const r = spawnSync("git", ["ls-tree", "-z", ...(recursive ? ["-r", "-t"] : []), hash], { cwd, encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 });
+  const r = runGit(cwd, ["ls-tree", "-z", ...(recursive ? ["-r", "-t"] : []), hash]);
   if (r.status !== 0) return null;
   return r.stdout.split("\0").filter(Boolean).map((e) => {
     const tab = e.indexOf("\t");
@@ -104,7 +132,7 @@ export function gitReader(cwd) {
   return {
     tree: async (hash) => listTree(cwd, hash) ?? Promise.reject(unreadable("tree", hash)),
     blob: async (hash) => {
-      const r = spawnSync("git", ["cat-file", "blob", hash], { cwd, maxBuffer: 1024 * 1024 * 1024 });
+      const r = runGit(cwd, ["cat-file", "blob", hash], { encoding: "buffer" });
       if (r.status !== 0) throw unreadable("blob", hash);
       return new Uint8Array(r.stdout);
     },
@@ -166,7 +194,7 @@ export function readySources(ready, pairs) {
   return out;
 }
 
-const hasCommit = (cwd, sha) => spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd }).status === 0;
+const hasCommit = (cwd, sha) => runGit(cwd, ["cat-file", "-e", `${sha}^{commit}`]).status === 0;
 
 // `titles` maps each task to its title; `record(id, receipt)` posts one
 // receipt; `log` prints a step; `run` runs a declared generator for the merge
@@ -200,7 +228,8 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const message = `Merge ${id}: ${titles[id] ?? id}\n\nLanded fast: ${reason}`;
       // Through the pipeline (t587): a declared generated output both sides
       // changed is regenerated from the merged sources, not merged as text.
-      const r = await mergeThrough(cwd, commit, { message, run, log });
+      // Fast land's git, not localGit, and no commit hooks (review of t593).
+      const r = await mergeThrough(cwd, commit, { git: fastGit, verify: false, message, run, log });
       if (r.state === "held") { failure = { step: `merge ${id}`, detail: `main already holds ${commit.slice(0, 12)}, so there is nothing of ${id} to land` }; break; }
       if (r.state === "conflicts") { failure = { step: `merge ${id}`, detail: describeConflicts(r, r.manifest) }; break; }
       if (r.state !== "merged") { failure = { step: `merge ${id}`, detail: String(r.reason ?? r.state).trim().split("\n").slice(-5).join("\n") }; break; }
@@ -220,7 +249,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         const made = untracked().filter((f) => !stray.has(f));
         if (made.length) git(cwd, "add", "--", ...made);
         if (git(cwd, "diff", "--cached", "--name-only")) {
-          git(cwd, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", `Regenerate after fast landing of ${pairs.map((p) => p.id).join(", ")}\n\nLanded fast: ${reason}`);
+          git(cwd, "commit", "-q", "-m", `Regenerate after fast landing of ${pairs.map((p) => p.id).join(", ")}\n\nLanded fast: ${reason}`);
           log("regenerated and committed the generated files");
         }
       }
@@ -259,13 +288,13 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       }
     }
     if (failure) {
-      spawnSync("git", ["merge", "--abort"], { cwd });
+      runGit(cwd, ["merge", "--abort"]);
       git(cwd, "reset", "-q", "--hard", start);
       return { ok: false, start, head: git(cwd, "rev-parse", "HEAD"), landed: [], failure };
     }
   } catch (err) {
-    spawnSync("git", ["merge", "--abort"], { cwd });
-    spawnSync("git", ["reset", "-q", "--hard", start], { cwd });
+    runGit(cwd, ["merge", "--abort"]);
+    runGit(cwd, ["reset", "-q", "--hard", start]);
     return { ok: false, start, head: git(cwd, "rev-parse", "HEAD"), landed: [], failure: { step: err?.step ?? "error", detail: err?.message ?? String(err) } };
   }
   // Main holds the checked batch now. A receipt the server refuses leaves it
