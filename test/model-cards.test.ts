@@ -257,6 +257,16 @@ test("two active cards that give one benchmark different scores under the same c
   // conflict (Astra's seventh review of t625, 2026-10-13).
   const cased = cardDisagreements([shown("c1", [claim(40, { details: ["/datasets/Hard"] })]), shown("c2", [claim(80, { details: ["/datasets/hard"] })])]);
   assert.deepEqual(cased.map((d) => d.kind), ["conditions-differ"]);
+  // Units, benchmarks and versions are compared as written: MB/s and Mb/s
+  // are two units (Astra's eighth review of t625, 2026-10-13), and a claim
+  // keeps its own unit in the disagreement.
+  const speed = (score: number, unit: string, benchmark = "Throughput", version?: string) =>
+    ({ benchmark, ...(version ? { version } : {}), score, unit, taskKind: "general" as const, conditions: {} });
+  assert.deepEqual(cardDisagreements([shown("c1", [speed(100, "MB/s")]), shown("c2", [speed(800, "Mb/s")])]), []);
+  assert.deepEqual(cardDisagreements([shown("c1", [speed(1, "%", "MMLU")]), shown("c2", [speed(2, "%", "mmlu")])]), []);
+  assert.deepEqual(cardDisagreements([shown("c1", [speed(1, "%", "B", "Hard")]), shown("c2", [speed(2, "%", "B", "hard")])]), []);
+  assert.deepEqual(cardDisagreements([shown("c1", [speed(100, "MB/s")]), shown("c2", [speed(120, "MB/s")])])[0].claims.map((c) => [c.card, c.score, c.unit]),
+    [["c1", 100, "MB/s"], ["c2", 120, "MB/s"]]);
   // The same score, an ended card, another benchmark or one card alone is no disagreement.
   assert.deepEqual(cardDisagreements([shown("c1", [claim(80, max)]), shown("c2", [claim(80, max)])]), []);
   assert.deepEqual(cardDisagreements([shown("c1", [claim(80, max)]), { ...shown("c2", [claim(70, max)]), state: "superseded" }]), []);

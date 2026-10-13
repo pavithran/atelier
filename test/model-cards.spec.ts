@@ -64,8 +64,8 @@ it("the developer records a card, a retry adds nothing, and one model's cards ar
   expect(second.view.disagreements).toEqual([expect.objectContaining({
     kind: "conflict", benchmark: "SWE-bench Pro",
     claims: [
-      { card: first.record.id, score: 80.9, source: "https://vendor.example/opus-card", conditions: { harness: "vendor scaffold", effort: "max" } },
-      { card: second.record.id, score: 78.2, source: "https://other.example/leaderboard", conditions: { harness: "vendor scaffold", effort: "max" } },
+      { card: first.record.id, score: 80.9, unit: "%", benchmark: "SWE-bench Pro", source: "https://vendor.example/opus-card", conditions: { harness: "vendor scaffold", effort: "max" } },
+      { card: second.record.id, score: 78.2, unit: "%", benchmark: "SWE-bench Pro", source: "https://other.example/leaderboard", conditions: { harness: "vendor scaffold", effort: "max" } },
     ],
   })]);
 });

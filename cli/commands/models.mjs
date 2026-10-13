@@ -144,7 +144,7 @@ export function cardLines(view) {
     for (const l of card.limitations) out.push(`    Limitation: ${l}`);
   }
   for (const d of view.disagreements) {
-    const each = d.claims.map((c) => `${c.card} ${scoreText(c.score, d.unit)}${underText(c.conditions)}`).join(", ");
+    const each = d.claims.map((c) => `${c.card} ${scoreText(c.score, c.unit)}${underText(c.conditions)}`).join(", ");
     out.push(d.kind === "conflict"
       ? `  Conflict, ${benchText(d)} under the same conditions: ${each}`
       : `  ${benchText(d)} differs under different conditions, not a conflict: ${each}`);
@@ -202,7 +202,7 @@ async function cardCommand(id) {
       ? `${record.id} was already recorded for ${view.model}${pool}; nothing added.`
       : `${record.id} recorded for ${view.model}${pool}: ${claims} from ${record.source}, read ${record.read}${replaces}.`);
     for (const d of view.disagreements.filter((d) => d.kind === "conflict" && d.claims.some((c) => c.card === record.id))) {
-      console.log(`  Conflict, ${benchText(d)} under the same conditions: ${d.claims.map((c) => `${c.card} ${scoreText(c.score, d.unit)}`).join(", ")}; both stay on show.`);
+      console.log(`  Conflict, ${benchText(d)} under the same conditions: ${d.claims.map((c) => `${c.card} ${scoreText(c.score, c.unit)}`).join(", ")}; both stay on show.`);
     }
   }
 }

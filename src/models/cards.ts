@@ -81,7 +81,9 @@ export interface CardDisagreement {
   benchmark: string;
   version?: string;
   unit: string;
-  claims: { card: string; score: number; source: string; conditions: CardConditions }[];
+  // Each claim with its own recorded unit, benchmark and version, so none is
+  // ever shown in another claim's words.
+  claims: { card: string; score: number; unit: string; benchmark: string; version?: string; source: string; conditions: CardConditions }[];
 }
 export interface CardView {
   model: string;       // the key the cards are stored and listed under (modelKey)
@@ -331,22 +333,23 @@ export function admitCardRecord(all: readonly CardRecord[], input: CardInput | W
 // Two claims say the same thing when they name one benchmark, version and
 // unit under the same conditions; then a different score is a conflict. The
 // same benchmark under other conditions is a difference, not a conflict.
-// The benchmark, version and unit are compared in any letter case; the
-// conditions only with their spacing evened, never case-folded, since a
-// condition may name something whose case matters, such as a dataset's
-// directory (/datasets/Hard and /datasets/hard are two; Astra's seventh
-// review of t625, 2026-10-13).
+// Every recorded text is compared as written, with only its spacing evened,
+// never case-folded: a unit's case can change its meaning (MB/s and Mb/s,
+// Astra's eighth review of t625, 2026-10-13), as can a condition's
+// (/datasets/Hard and /datasets/hard, the seventh), and a benchmark or a
+// version written in another case is shown apart rather than merged. The
+// order of a claim's details does not matter; each is still shown as its
+// card recorded it.
 const spaced = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
-const fold = (s: string | undefined) => spaced(s).toLowerCase();
 const conditionKey = (c: CardConditions) => JSON.stringify([spaced(c.harness), spaced(c.effort), (c.details ?? []).map(spaced).sort()]);
 export function cardDisagreements(cards: readonly ShownCard[]): CardDisagreement[] {
   const groups = new Map<string, CardDisagreement>();
   for (const card of cards) {
     if (card.state !== "active") continue;
     for (const c of card.claims) {
-      const key = JSON.stringify([fold(c.benchmark), fold(c.version), fold(c.unit)]);
+      const key = JSON.stringify([spaced(c.benchmark), spaced(c.version), spaced(c.unit)]);
       const group = groups.get(key) ?? { kind: "conflict", benchmark: c.benchmark, ...(c.version ? { version: c.version } : {}), unit: c.unit, claims: [] };
-      group.claims.push({ card: card.id, score: c.score, source: card.source, conditions: c.conditions });
+      group.claims.push({ card: card.id, score: c.score, unit: c.unit, benchmark: c.benchmark, ...(c.version ? { version: c.version } : {}), source: card.source, conditions: c.conditions });
       groups.set(key, group);
     }
   }
