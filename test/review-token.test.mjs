@@ -112,7 +112,7 @@ test("a token file resolves under the Atelier config directory, is read by its f
   assert.deepEqual(names, ["agent.glm"]);
 });
 
-test("reviewToken refuses a model the config names no token for, naming the entry to add, and never answers with the owner token", () => {
+test("reviewToken refuses a model the config names no token for, naming the entry to add, and never answers with the developer token", () => {
   const refused = reviewToken({ agents }, model, actor);
   assert.match(refused.refused, /no agent token for opencode\/glm-5\.3/);
   assert.match(refused.refused, /tokens\["glm-5\.3"\]/);

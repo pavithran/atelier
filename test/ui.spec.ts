@@ -1803,8 +1803,8 @@ it('each review on the task page says who recorded it (t215)',()=>{
  ];
  const html=renderItem(project,d,'PAVI',diff);
  expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded by claude-code/opus-5.5 with its own token');
- expect(html).toContain('recorded by the developer with the owner token</p>');
- expect(html).toContain('recorded by the developer with the owner token, answering a review request it claimed');
+ expect(html).toContain('recorded by the developer with the developer token</p>');
+ expect(html).toContain('recorded by the developer with the developer token, answering a review request it claimed');
 });
 it('a merged task shows its change as it landed, with no merge preview or conflict warning',()=>{
  const d=detail();d.item={...d.item,state:'merged',owner:null,acceptedHead:head};

@@ -720,7 +720,7 @@ it("the evidence route measures against main's head, so a crafted merge cannot h
 });
 
 // PAVI's decision, 2026-10-06, through the Worker: the owner's approval is
-// not the independent review, and only the owner, with the owner token and a
+// not the independent review, and only the owner, with the developer token and a
 // reason, can override a missing one while accepting.
 it("decision 2026-10-06: the accept route takes an override only from the owner, with a reason", async () => {
   const name = "override-route", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
@@ -764,7 +764,7 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
     expect([overrideReview, res.status, (await res.json() as { error: string }).error]).toEqual([overrideReview, 400, "override_reason"]);
   }
   expect((await L.item("t1")).state).toBe("submitted");
-  // t371: the owner token alone does not override, since an agent session
+  // t371: the developer token alone does not override, since an agent session
   // may hold it, and nor does the browser session that token signs in at
   // /login. The API's override is refused, naming the page on this server,
   // the button and the factor the server takes, until the owner allows it
@@ -774,19 +774,19 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   // what to set. One permission takes one override, for 15 minutes.
   const unconfirmed = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(unconfirmed.status).toBe(403);
-  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the developer's confirmation: open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the owner token alone does not confirm it` });
+  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the developer's confirmation: open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the developer token alone does not confirm it` });
   expect((await L.item("t1")).state).toBe("submitted");
   // On a server with neither Access nor a secret, the refusal says what to set.
   const nowhere = await as(TOKEN, "owner", bare)("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(nowhere.status).toBe(403);
-  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the developer, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the owner token alone does not confirm it`);
+  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the developer, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the developer token alone does not confirm it`);
   const page = (headers: Record<string, string>, on = bindings, confirmation?: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/allow-override`, {
     method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "", ...(confirmation === undefined ? {} : { confirmation }) }),
   }), on);
   // The owner token as a bearer is refused, even with the secret.
   const byBearer = await page({ authorization: `Bearer ${TOKEN}` }, bindings, SECRET);
   expect(byBearer.status).toBe(403);
-  expect(await byBearer.text()).toMatch(/needs the developer(&#39;|'|&#x27;)s own sign-in, not the owner token/);
+  expect(await byBearer.text()).toMatch(/needs the developer(&#39;|'|&#x27;)s own sign-in, not the developer token/);
   // A session alone, which that token buys at /login, is refused without the secret, or with a wrong one.
   const cookie = await signIn(TOKEN, bindings);
   const noSecret = await page({ cookie });
