@@ -2,13 +2,14 @@
 import { normalizeRunner, promptSecret, storeRunnerCredential } from "../credentials.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, actor, args, call, die, project, server } from "../atelier.mjs";
+import { serverFetch } from "../server-fetch.mjs";
 
 export default async function tokenCommand() {
   const action = args._[1];
   if (action === "store" && args.runner) {
     const name = normalizeRunner(args.runner);
     const token = await promptSecret("Runner token: ");
-    const res = await fetch(`${server()}/api/config`, { headers: { authorization: `Bearer ${token}` } });
+    const res = await serverFetch(`${server()}/api/config`, { headers: { authorization: `Bearer ${token}` } });
     const config = await res.json();
     if (!res.ok || config.runner !== name) die("credential is not an active token for this runner");
     console.log(storeRunnerCredential(server(), name, token));
