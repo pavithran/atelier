@@ -1,0 +1,31 @@
+atelier atelier/t568 "npm test survives load"
+accepted head c66f846281d39a1612f7afd18780f68f91e402fa
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-13T01:20:47.408Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-13T01:20:52.197Z
+REVIEW approve by opencode/glm-5.3 at c66f846281d39a1612f7afd18780f68f91e402fa, recorded by opencode/glm-5.3
+2026-10-12T22:07:47.665Z pavi item.created
+2026-10-12T22:07:49.070Z pavi item.dispatched
+2026-10-12T22:18:05.959Z pavi item.undispatched
+2026-10-12T22:18:06.553Z claude-code/opus-5.5 item.claimed
+2026-10-12T22:18:23.553Z claude-code/opus-5.5 fork.created
+2026-10-13T01:03:07.954Z claude-code/opus-5.5 push.observed
+2026-10-13T01:03:09.714Z claude-code/opus-5.5 item.submitted
+2026-10-13T01:13:47.863Z atelier/orchestrator refresh.queued
+2026-10-13T01:15:21.297Z pavi land.merge
+2026-10-13T01:15:35.750Z pavi land.regenerate
+2026-10-13T01:15:39.778Z claude-code/opus-5.5 push.observed
+2026-10-13T01:15:41.581Z pavi land.push
+2026-10-13T01:20:47.746Z claude-code/opus-5.5 evidence.observed
+2026-10-13T01:20:52.380Z claude-code/opus-5.5 evidence.observed
+2026-10-13T01:20:53.042Z pavi land.check
+2026-10-13T01:20:56.256Z pavi review.requested
+2026-10-13T01:27:25.138Z atelier/integrator refresh.leased
+2026-10-13T01:28:38.325Z atelier/integrator refresh.held
+2026-10-13T01:40:08.390Z opencode/glm-5.3 review.claimed
+2026-10-13T01:48:17.442Z opencode/glm-5.3 review.approved
+2026-10-13T01:48:21.181Z pavi land.review
+2026-10-13T01:48:21.702Z pavi land.lease
+2026-10-13T01:48:22.870Z pavi item.accepted
+2026-10-13T01:48:22.911Z pavi land.accept
