@@ -175,7 +175,7 @@ test("a runner whose script path holds spaces is still a runner", () => {
 
 // `atelier wait` end to end against a stand-in server.
 const cli = resolve("cli/atelier.mjs");
-async function runWait(t, details, argv, { command = "wait", handle, setup = () => ({}) } = {}) {
+async function runWait(t, details, argv, { command = "wait", handle, setup = () => ({}), boundMs } = {}) {
   const dir = mkdtempSync(resolve(".test-wait-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const queue = [...details];
@@ -193,9 +193,13 @@ async function runWait(t, details, argv, { command = "wait", handle, setup = () 
     cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...setup(dir) },
   });
   t.after(() => child.kill("SIGKILL"));
-  let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
+  let output = "", bounded = false; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
+  // A run past boundMs is killed and reported as bounded, so a test of a
+  // deadline fails rather than hangs when the deadline never fires.
+  const bound = boundMs && setTimeout(() => { bounded = true; child.kill("SIGKILL"); }, boundMs);
   const code = await new Promise((done) => child.on("close", done));
-  return { code, output: output.trim() };
+  clearTimeout(bound);
+  return { code, output: output.trim(), bounded };
 }
 
 test("atelier wait prints the outcome and exits by it", async (t) => {
@@ -245,12 +249,19 @@ test("wait CLI covers submission, both review verdicts, blocking and any-change"
 });
 
 
-test("wait deadline aborts stalled headers and stalled response bodies", { timeout: 10000 }, async (t) => {
+// The deadline is the CLI's own --timeout; the test waits on the process and
+// the server's close events, not on a wall-clock limit of its own, which a
+// loaded host (two CLI startups in a landing's full run) can exceed (t568).
+// BOUND_MS, far past any host's startup time, only ends a CLI whose deadline
+// never fires, and the test then fails.
+test("wait deadline aborts stalled headers and stalled response bodies", async (t) => {
+  const BOUND_MS = 60_000;
   for (const body of [false, true]) {
     let closed;
     const disconnected = new Promise((resolve) => { closed = resolve; });
     let reads = 0;
     const result = await runWait(t, [], ["t5", "--project", "demo", "--timeout", "0.15"], {
+      boundMs: BOUND_MS,
       handle(req, res) {
         reads++;
         res.on("close", closed);
@@ -260,6 +271,7 @@ test("wait deadline aborts stalled headers and stalled response bodies", { timeo
         }
       },
     });
+    assert.equal(result.bounded, false, `the CLI was still waiting after ${BOUND_MS} ms: its deadline did not abort the ${body ? "stalled body" : "stalled headers"}`);
     assert.equal(result.code, 3, result.output);
     assert.match(result.output, /gave up waiting for merged/);
     await disconnected;
