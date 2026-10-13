@@ -662,8 +662,13 @@ transient failure, a failure that outlasts the retries, the pause on a
 conflict and its resume, the local checks mode with evidence present,
 arriving late, missing or untrusted, and failing, and the routes), and the
 command against a stand-in server (`test/land.test.mjs`, including the
-local mode's checks run after the push and before the report). No test yet drives the command
-against a running Workflow, and none has run on Cloudflare itself.
+local mode's checks run after the push and before the report, and
+`test/land-lease-workflow.test.mjs`: `land --workflow` against a scripted
+Workflow on that server, from the start without the lease to the merge under
+it). No test drives the command against a Workflow running in workerd. On
+Cloudflare itself the Workflow is live: `LandingWorkflow` has landed most of
+the orchestrator's tasks since 2026-10-10, run as `atelier land tN --workflow`
+with the default `--checks local`.
 Claim reconciliation relies on Cloudflare rejecting duplicate Workflow IDs.
 The remote smoke check before and after deploy must also leave a recorded
 claim without creating its instance, wait 60 seconds, then retry concurrently

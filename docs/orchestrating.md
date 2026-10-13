@@ -522,7 +522,8 @@ While one landing holds the project's lease, Atelier pre-reviews the next
 two landings queued behind it (t524; `src/dispatch/prereview.ts`), so a
 defect is found before a task's turn rather than after it spends the lease.
 This replaces the orchestrator's hand-run `prereview.brief`. Every ask of the
-landing queue, by `atelier land --wait` or a landing Workflow, and every
+landing queue, by an `atelier land` (every landing queues, `--wait` or
+not) or a landing Workflow, and every
 renewal of the lease asks what is missing: one request per waiter and
 binding (its recorded head, the criteria binding, its contributors, main's
 actual SHA and how many merges main has had), never a second for the same
