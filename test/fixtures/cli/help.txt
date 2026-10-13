@@ -29,7 +29,7 @@ Models     models [--json] · models add ID --harness H --where home|cloud [--pr
 Projects   projects rename OLD NEW · projects remove NAME [--force] · showcase set NAME [--named|--anonymous] · showcase remove NAME · init --name NAME --rename-local
            
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
-Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH] [--integrate]
+Local      gc [--project NAME] [--dry-run | --apply] · clean [--project NAME] [--dry-run] · runner --name home:NAME [--once] [--config PATH] [--integrate]
            runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] (what each home model's harness serves) · slots set N · slots status [--json]
            runner --usage [--name home:NAME] [--dry-run] [--config PATH]   (each tool's windows, served models, costs and balances)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
