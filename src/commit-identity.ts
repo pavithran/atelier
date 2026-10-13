@@ -27,6 +27,9 @@ export interface CommitIdentityPolicy {
   // The names of the checkout's remotes that are public mirrors: atelier
   // wrap --push publishes to one only commits under the project's address.
   publicMirrors?: string[];
+  publicMirrorDestinations?: Record<string, string>;
+  privatePaths?: string[];
+  privatePatterns?: string[];
 }
 
 // What an init sends; a field absent keeps the recorded value.
@@ -36,6 +39,9 @@ export interface CommitIdentityInit {
   agentEmails?: string[];
   privateEmails?: string[];
   publicMirrors?: string[];
+  publicMirrorDestinations?: Record<string, string>;
+  privatePaths?: string[];
+  privatePatterns?: string[];
 }
 
 const NAME_MAX = 200, EMAIL_MAX = 254, LIST_MAX = 50;
@@ -135,7 +141,7 @@ function emailsArg(value: unknown, field: string): string[] {
 // Nothing named and nothing recorded leaves no identity (a project from
 // before t451; docs/setup.md says how to set one).
 export function settleCommitIdentity(init: CommitIdentityInit, current: CommitIdentityPolicy | undefined): CommitIdentityPolicy | undefined {
-  const named = init.commitName !== undefined || init.commitEmail !== undefined || init.agentEmails !== undefined || init.privateEmails !== undefined || init.publicMirrors !== undefined;
+  const named = init.commitName !== undefined || init.commitEmail !== undefined || init.agentEmails !== undefined || init.privateEmails !== undefined || init.publicMirrors !== undefined || init.publicMirrorDestinations !== undefined || init.privatePaths !== undefined || init.privatePatterns !== undefined;
   if (!named) return current;
   const name = init.commitName ?? current?.name;
   const email = init.commitEmail ?? current?.email;
@@ -159,6 +165,22 @@ export function settleCommitIdentity(init: CommitIdentityInit, current: CommitId
     // no-reply one, as t433 asks of what a public mirror carries.
     if (!isPublicEmail(policy.email)) throw new RuleError("bad_identity", `commitEmail ${policy.email} is not a GitHub no-reply address (such as 123+owner@users.noreply.github.com), and publicMirrors ${publicMirrors.join(", ")} would publish it; set commitEmail to one, or clear publicMirrors`, 400);
     policy.publicMirrors = [...publicMirrors];
+  }
+  const destinations = init.publicMirrorDestinations !== undefined ? init.publicMirrorDestinations : current?.publicMirrorDestinations;
+  if (destinations !== undefined) {
+    if (!destinations || typeof destinations !== "object" || Array.isArray(destinations)) throw new RuleError("bad_identity", "publicMirrorDestinations must map remote names to URLs", 400);
+    remotesArg(Object.keys(destinations));
+    for (const url of Object.values(destinations)) if (typeof url !== "string" || !url.trim() || url.startsWith("-") || /[\x00-\x20\x7f]/.test(url)) throw new RuleError("bad_identity", "publicMirrorDestinations needs nonempty destination URLs without whitespace", 400);
+    policy.publicMirrorDestinations = { ...destinations };
+  }
+  for (const key of ["privatePaths", "privatePatterns"] as const) {
+    const values = init[key] !== undefined ? init[key] : current?.[key];
+    if (values === undefined) continue;
+    if (!Array.isArray(values) || values.length > LIST_MAX || values.some((v) => typeof v !== "string" || !v || v.length > 1000)) throw new RuleError("bad_identity", `${key} must be a list of nonempty strings`, 400);
+    if (key === "privatePatterns") for (const value of values) {
+      try { new RegExp(value); } catch { throw new RuleError("bad_identity", "privatePatterns contains an invalid regular expression", 400); }
+    }
+    policy[key] = [...values];
   }
   return policy;
 }

@@ -178,7 +178,8 @@ export function git(args, opts = {}) {
   let off = {};
   if (opts.hooks === false) { try { off = configEnv(hooksOff(opts.cwd, gitEnv(process.env, {}, args))); } catch (error) { die(error.message); } }
   const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", args, { encoding: opts.bytes ? null : "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  if (opts.bytes && r.stderr) r.stderr = r.stderr.toString("utf8");
   const shown = redactGitArgs(args);
   // git itself did not run: the folder it was to run in is missing, it is
   // not on PATH or not executable, or its output overran the buffer. There
@@ -190,7 +191,7 @@ export function git(args, opts = {}) {
     const why = r.error.code !== "ENOENT" ? r.error.message : opts.cwd && !existsSync(opts.cwd) ? `the folder ${opts.cwd} does not exist` : "git was not found on PATH";
     die(`git ${shown.join(" ")} could not run: ${why}`);
   }
-  let detail = (r.stderr || r.stdout || "").trim();
+  let detail = (r.stderr || r.stdout || "").toString().trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
   }
@@ -365,6 +366,9 @@ export async function serverVersion() {
 // not be read, and 1 for a refusal.
 export async function requireCapabilities(cmd, word = args._[1]) {
   if (cmd === "init" && args["rename-local"] === true) return;
+  // publish takes one REMOTE at most; its handler refuses more with the usage,
+  // which needs no server.
+  if (cmd === "publish" && args._.length > 2) return;
   if (COMMANDS[cmd]?.capabilityCheck === "handler") return;
   const required = requiredForCommand(cmd, word, args);
   if (!required.length) return;

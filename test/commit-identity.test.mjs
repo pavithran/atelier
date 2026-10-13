@@ -369,3 +369,18 @@ test("every commit email the policy accepts is one Git keeps as written (t451)",
     if (emailProblem(email) === null) assert.equal(recorded(email), email, `${JSON.stringify(email)} is accepted but Git records ${JSON.stringify(recorded(email))}`);
   }
 });
+
+test("registered mirror destinations and privacy rules validate, persist and clear", () => {
+  const fields = { publicMirrors: ["github"], publicMirrorDestinations: { github: "https://example.org/public.git" }, privatePaths: ["private/**"], privatePatterns: ["INTERNAL-[0-9]+"] };
+  const policy = settleCommitIdentity({ commitName: OWNER.name, commitEmail: OWNER.email, ...fields }, undefined);
+  for (const [key, value] of Object.entries(fields)) assert.deepEqual(policy[key], value);
+  const renamed = settleCommitIdentity({ commitName: "New name" }, policy);
+  for (const [key, value] of Object.entries(fields)) assert.deepEqual(renamed[key], value);
+  const cleared = settleCommitIdentity({ publicMirrorDestinations: {}, privatePaths: [], privatePatterns: [] }, policy);
+  assert.deepEqual(cleared.publicMirrorDestinations, {});
+  assert.deepEqual(cleared.privatePaths, []);
+  assert.deepEqual(cleared.privatePatterns, []);
+  for (const invalid of [{ publicMirrorDestinations: [] }, { publicMirrorDestinations: { github: "" } }, { publicMirrorDestinations: { github: "-option" } }, { privatePaths: "private" }, { privatePatterns: ["("] }]) {
+    assert.throws(() => settleCommitIdentity(invalid, policy), /publicMirrorDestinations|privatePaths|privatePatterns/);
+  }
+});
