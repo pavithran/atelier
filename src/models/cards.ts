@@ -140,17 +140,29 @@ function day(v: unknown, what: string): string {
 }
 
 // A source is a public https URL: no credentials in it, no other scheme, no
-// local host, and nothing that looks like a key in its path or query.
+// local, private or numeric host, and nothing that looks like a key in its
+// path, query or fragment, read decoded, so percent-encoding hides none. The
+// host is kept lowercased and without a trailing dot. Astra's review of t625
+// (2026-10-13, finding 3) found a key behind %-escapes, and localhost. with
+// its trailing dot, accepted. The URL parser has already turned 127.1 and
+// 0x7f000001 into dotted IPv4, which the digits test refuses.
+const PRIVATE_HOST = /(?:^|\.)(?:localhost|local|localdomain|internal|intranet|lan|home|corp|private|home\.arpa)$/;
 export function cleanSource(v: unknown): string {
   const raw = text(v, "source", 500, true)!;
   let url: URL;
   try { url = new URL(raw); } catch { throw bad("source must be a URL, such as https://vendor.example/model-card"); }
   if (url.protocol !== "https:") throw bad("source must be an https URL");
   if (url.username || url.password) throw bad("source must not carry a user name or password");
-  const host = url.hostname.toLowerCase();
-  if (!host.includes(".") || host === "localhost" || host.endsWith(".localhost") || /^[\d.]+$/.test(host) || host.startsWith("[")) {
+  const host = url.hostname.toLowerCase().replace(/\.+$/, "");
+  if (!host.includes(".") || PRIVATE_HOST.test(host) || /^[\d.]+$/.test(host) || host.startsWith("[") || host.includes(":")) {
     throw bad("source must name a public host by its domain name");
   }
+  url.hostname = host;
+  let decoded: string;
+  try {
+    decoded = [url.pathname, url.search, url.hash].map((part) => decodeURIComponent(part.replace(/\+/g, " "))).join(" ");
+  } catch { throw bad("source has malformed percent-encoding"); }
+  if (LOOKS_LIKE_KEY.test(decoded)) throw bad("source looks like it carries a key; a key belongs in the Keychain");
   return url.toString();
 }
 
@@ -237,16 +249,18 @@ function endings(records: readonly CardRecord[]): Map<string, { state: CardState
 
 // What a new record does among the model's records, before it is stored:
 // the record that already says the same thing (a retry, answered with it and
-// stored again never), or a refusal when it names a card that is not the
+// stored again never, whatever has happened to it since: a replay neither
+// brings back a withdrawn card nor is refused for a later ending, Astra's
+// review of t625, 2026-10-13, finding 2), or a refusal when it names a card that is not the
 // model's or has already ended. `records` are the model's, oldest first.
 const content = (r: CardInput | ModelCard | WithdrawalInput | CardWithdrawal) => {
   const { id: _i, model: _m, named: _n, at: _a, by: _b, ...rest } = r as ModelCard;
   return JSON.stringify(rest);
 };
 export function admitCardRecord(records: readonly CardRecord[], input: CardInput | WithdrawalInput, model: string): CardRecord | null {
-  const ended = endings(records);
-  const same = records.find((r) => content(r) === content(input) && (r.kind === "withdrawal" || !ended.has(r.id)));
+  const same = records.find((r) => content(r) === content(input));
   if (same) return same;
+  const ended = endings(records);
   const target = input.kind === "withdrawal" ? input.withdraws : input.corrects ?? input.supersedes;
   if (!target) return null;
   const card = records.find((r): r is ModelCard => r.id === target && r.kind === "card");

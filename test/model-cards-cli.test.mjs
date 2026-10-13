@@ -131,7 +131,7 @@ test("models show prints the cards after the notes, with their states, conflicts
     "  Conflict, SWE-bench Pro under the same conditions: c2 58% (vendor scaffold; max effort), c3 61.2% (vendor scaffold; max effort)",
     "  Prior (the registry's, not a card): vendor-described strength; not yet measured by Atelier; Task t14: supplied cloud model prior",
   ]);
-  assert.deepEqual(f.requests.map((q) => q.path), ["/api/models", "/api/models/example-5/cards"]);
+  assert.deepEqual(f.requests.map((q) => q.path), ["/api/models/example-5/cards", "/api/models"]);
 });
 
 test("models show prints the cards of a model the pool does not have, and refuses one with neither", async (t) => {
@@ -142,6 +142,18 @@ test("models show prints the cards of a model the pool does not have, and refuse
   const missing = await f.run(["models", "show", "no-such-model"]);
   assert.equal(missing.status, 1);
   assert.match(missing.output, /no-such-model is not in the pool and has no vendor cards/);
+});
+
+test("models show finds a pooled model by an alias, harness/id or the canonical name its cards give", async (t) => {
+  // gemini-4-argon's review of t625, 2026-10-13: an alias printed "not in the pool" for a pooled model.
+  const pooled = [{ ...POOL[0], id: "Example-5-API", aliases: ["example-5-preview"] }];
+  const f = await stub(t, (method, path) => ({ data: path.endsWith("/cards") ? VIEW([{ ...stored("c4", "example-5"), state: "active" }], { pool: ["codex/Example-5-API"] }) : pooled }));
+  for (const name of ["example-5-preview", "codex/Example-5-API", "example-5"]) {
+    const r = await f.run(["models", "show", name]);
+    assert.equal(r.status, 0, r.output);
+    assert.match(r.output, /^cloud codex\/Example-5-API  other  not checked\n/, name);
+    assert.match(r.output, /Vendor card c4: /);
+  }
 });
 
 test("against a server without models.card.v1, show says so and card refuses before sending", async (t) => {

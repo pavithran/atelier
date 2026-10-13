@@ -77,10 +77,14 @@ export default async function modelsCommand() {
   if (sub === "card") return cardCommand(id);
   if (sub === "show") {
     if (!id) die("atelier models show ID");
-    const m = (await call("GET", "/models", undefined, OWNER)).find((entry) => entry.id === id);
     // A model the pool does not have may still have vendor cards.
     const cards = (await serverVersion())?.capabilities?.includes("models.card.v1")
       ? await call("GET", `/models/${encodeURIComponent(id)}/cards`, undefined, OWNER) : null;
+    // The entry by its id, an alias or harness/id, or as the server resolves
+    // the name to its canonical model (gemini-4-argon's review of t625).
+    const pool = await call("GET", "/models", undefined, OWNER);
+    const named = (e) => [e.id, ...(e.aliases ?? []), `${e.harness}/${e.id}`].includes(id);
+    const m = pool.find((e) => e.id === id) ?? pool.find(named) ?? pool.find((e) => cards?.pool.includes(`${e.harness}/${e.id}`));
     if (!m && !cards?.cards.length) die(`${id} is not in the pool${cards ? " and has no vendor cards" : ""}`);
     if (m) {
       console.log(modelLine(m));
