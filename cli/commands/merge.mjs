@@ -8,13 +8,27 @@ import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingL
 import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
+import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
 export default async function mergeCommand() {
   const git = landingGit;
+  // A merged task's workspace on this Mac goes once its work is in main or
+  // the head Atelier recorded (t561); one holding more is kept and named.
+  // Its removal never fails the merge.
+  const cleanWorkspace = async (name, id, branch, cwd) => {
+    if (!existsSync(join(CACHE, "work", name, id))) return;
+    try {
+      // request throws where call would end the command: a ledger that
+      // fails after the merge must not fail it or skip what follows.
+      const getItem = async () => (await request("GET", I(name, id), undefined, OWNER)).item;
+      await collectCache({ cache: CACHE, name, items: [await getItem()], getItem, apply: true, only: id, main: { dir: cwd, branch },
+        log: (line) => console.log(line.replace(/^REMOVED /, `Removed ${id}'s workspace `).replace(/^KEEP +(.*?): /, `Kept ${id}'s workspace $1: `)) });
+    } catch (error) { console.log(`${id}'s workspace was left in place: ${error.message}`); }
+  };
   const postMerge = (name, id) => executePostMerge({ name, id, request: (method, path, body) => request(method, path, body, OWNER) });
   // A plan's branch is updated only by its integrator, which merges
   // recorded parts, so an accepted plan that conflicts with main would stay
@@ -151,7 +165,7 @@ export default async function mergeCommand() {
     if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
     if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
     const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
-    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
+    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); await cleanWorkspace(name, id, p.branch, cwd); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
     const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
     if (refreshed?.policy) {
       const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
@@ -314,6 +328,7 @@ export default async function mergeCommand() {
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
     else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
+    await cleanWorkspace(name, id, p.branch, cwd);
     if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
     else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
   } finally { unlock(); }
