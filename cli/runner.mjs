@@ -1909,6 +1909,13 @@ export async function fetchLandedCommit(io, workspace, claimed, { project, actor
     const at = source.baseline && baseline ? ` (${source.branch} at ${baseline.slice(0, 8)})` : "";
     looked.push(`${source.name}${at}${failed.length ? ` (${failed.join("; ")})` : ""}`);
   }
+  // Only a baseline that was read, and whose branch lacks the merge, says
+  // the merge is missing (codex/gpt-6-astra's third review of t591). A fetch
+  // that failed (the network, a token, Git) read nothing: an ordinary
+  // failure, released and served again on the next poll, never kept as a
+  // missing commit, which would pass the review by until the baseline moved
+  // even when the baseline already held the merge.
+  if (!baseline) throw new Error(`could not read the baseline for the merge commit ${commit}: looked in ${looked.join(", ")}`);
   throw Object.assign(new Error(`the merge commit ${commit} is not in ${looked.join(", nor ")}; publish main to the baseline (atelier publish), and this runner reviews it once the baseline moves`), { missingCommit: { commit, baseline } });
 }
 
@@ -2963,21 +2970,6 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // The server's answer to GET /api/version at start, for the capabilities
   // a report needs (the infrastructure_miss run report, t591).
   let serverVersion = null;
-  // The baseline head a miss is kept against: the one the job's Git fetch
-  // saw when it read the baseline, since a head read later may already hold
-  // a merge published in between (codex/gpt-6-astra's second review of
-  // t591, finding 1); else the one `baselineHead` reads over HTTP now; or
-  // null (unknown) when neither was read.
-  const headAtMiss = async (task, miss) => {
-    if (miss.baseline) return miss.baseline;
-    if (baselineHead) {
-      try {
-        const head = await baselineHead(task.project, task.actor, controller.signal);
-        if (typeof head === "string" && head) return head;
-      } catch (error) { if (!controller.signal.aborted) io.log(`could not read ${task.project}'s baseline head for ${task.item.id}'s review: ${error.message}`); }
-    }
-    return miss.baseline ?? null;
-  };
   const recheckMissing = async (tasks) => {
     for (const task of tasks) {
       const key = missingKey(task), entry = missing.get(key);
@@ -3474,7 +3466,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // itself, independently of the revision-specific refusals that a
           // new dispatch can supersede and of a review's per-request failures.
           if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
-          else if (state.missingCommit) missing.set(missingKey(task), { ...state.missingCommit, baseline: await headAtMiss(task, state.missingCommit), checked: now() });
+          // A miss is kept against the baseline head its Git fetch read (a
+          // missing commit is only ever reported with one), never a head read
+          // later, which may already hold a merge published in between
+          // (second review of t591, finding 1).
+          else if (state.missingCommit) missing.set(missingKey(task), { ...state.missingCommit, checked: now() });
           else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
