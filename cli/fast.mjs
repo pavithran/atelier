@@ -491,6 +491,13 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         failure = { step: "checkout changed", detail: `the checkout changed after the secret scan of ${scanned.slice(0, 12)}: ${branch !== "main" ? `it is on ${branch}, not main` : now !== scanned ? `main moved to ${now.slice(0, 12)}` : `tracked files changed:\n${changed}`}` };
       }
     }
+    // Nothing changed the history Git shows during the tests either (ninth
+    // review of t592: a shallow boundary written after the scan cut the
+    // object check below short).
+    if (!failure) {
+      const overrides = historyOverrides(cwd, shallowAtStart);
+      if (overrides.length) failure = { step: "checkout changed", detail: `after the secret scan the checkout has ${overrides.join(", ")}, which change the history Git shows` };
+    }
     // The objects the scan read are all still there, unchanged, after the
     // tests (eighth review of t592).
     if (!failure) {

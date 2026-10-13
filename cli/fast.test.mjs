@@ -552,6 +552,21 @@ test("an object of the batch deleted after the scan stops the batch (finding 4)"
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Ninth review of t592: the history checks (replacement refs, grafts, a
+// shallow boundary) ran only before the tests, so a test that wrote
+// .git/shallow after the scan cut the post-test object walk short.
+test("a shallow boundary a test writes after the scan stops the batch (finding 4)", async () => {
+  const { dir, one } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: `echo ${one} > .git/shallow`, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false, "the batch is refused");
+    assert.equal(r.failure.step, "checkout changed");
+    assert.match(r.failure.detail, /shallow boundary/);
+    assert.equal(git(dir, "rev-parse", "main"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a blob the scan cannot read stops the batch, naming its path (finding 4)", async () => {
   const { dir } = repo();
   try {
