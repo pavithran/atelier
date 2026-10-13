@@ -45,9 +45,16 @@ setInterval(() => { if (process.ppid !== parent) process.exit(129); }, 1000).unr
 // The guard (test/guard.mjs) in each test file's process ends it once this
 // process is gone, should it be SIGKILLed and have no chance to act.
 const env = { ...process.env, ATELIER_TEST_RUNNER: String(process.pid) };
+// Every pool runs, the vitest pool after a failed Node pool included, so one
+// run reports every failure rather than hiding the second pool's behind the
+// first's (t568). The exit is the worst status any pool ended with: the
+// highest, and 1 for one that ended with no status (a timeout, a signal, a
+// command that could not start).
+let worst = 0;
 for (const argv of commands) {
   const r = await runGroup(argv, { env, stdio: "inherit", timeoutMs: TIMEOUT_MS });
   if (r.timedOut) console.error(`test/run.mjs: \`${argv.join(" ")}\` ran past ${Math.round(TIMEOUT_MS / 1000)} s; its process group was killed`);
   else if (r.error && r.status === null && !r.signal) console.error(`test/run.mjs: ${r.error.message}`);
-  if (r.status !== 0 || r.error) process.exit(r.status || 1);
+  if (r.status !== 0 || r.error) worst = Math.max(worst, r.status || 1);
 }
+process.exit(worst);
