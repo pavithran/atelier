@@ -25,7 +25,7 @@
 // temporary repository with stand-in commands and a stand-in recorder.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
@@ -62,8 +62,30 @@ export function gitEnv(base = process.env) {
 }
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
+// Replacement refs off too (second review of t592): `git replace` would
+// otherwise let a project command swap a credential blob, or a commit, for a
+// harmless one in every read the scan makes, while the history that lands
+// still holds the original.
 function runGit(cwd, args, { encoding = "utf8", env } = {}) {
-  return spawnSync("git", [...NO_HOOKS, ...args], { cwd, encoding, env: { ...gitEnv(), ...env }, maxBuffer: 1024 * 1024 * 1024 });
+  return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, env: { ...gitEnv(), GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
+}
+
+// What can make Git show history other than the history that lands:
+// replacement refs (ignored by runGit, and refused anyway, since they mean
+// something rewrote what Git shows), a grafts file, and a shallow boundary
+// that moved since fast land began, which would end the scan's walk early.
+function shallowOf(cwd) {
+  const file = join(git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"), "shallow");
+  return existsSync(file) ? readFileSync(file, "utf8") : "";
+}
+function historyOverrides(cwd, shallowAtStart) {
+  const common = git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const found = [];
+  const replaced = git(cwd, "for-each-ref", "--format=%(refname)", "refs/replace/").split("\n").filter(Boolean);
+  if (replaced.length) found.push(`replacement refs (${replaced.slice(0, 5).join(", ")}${replaced.length > 5 ? ", ..." : ""})`);
+  if (existsSync(join(common, "info", "grafts"))) found.push("a grafts file (info/grafts)");
+  if (shallowOf(cwd) !== shallowAtStart) found.push("a shallow boundary that changed since fast land began");
+  return found;
 }
 
 // The merge pipeline's git (localGit's contract in cli/merge-pipeline.mjs),
@@ -207,6 +229,15 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
+  const shallowAtStart = shallowOf(cwd);
+  // A refused batch puts main back where it started, whatever branch a
+  // project command left checked out; any other branch is left as it is
+  // (second review of t592).
+  const restore = () => {
+    runGit(cwd, ["merge", "--abort"]);
+    runGit(cwd, ["checkout", "-q", "-f", "main"]);
+    runGit(cwd, ["reset", "-q", "--hard", start]);
+  };
   // Every project command below (regeneration, typecheck, a --test in the
   // checkout) runs code the merged agents may have changed, so it gets the
   // check environment, not the developer's (Astra's audit of 2026-10-13,
@@ -265,6 +296,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     // scan landed what the scan never read).
     let scanned = null;
     if (!failure) {
+      const overrides = historyOverrides(cwd, shallowAtStart);
+      if (overrides.length) failure = { step: "secret scan", detail: `the checkout has ${overrides.join(", ")}, which change the history Git shows; remove them and land again` };
+    }
+    if (!failure) {
       scanned = git(cwd, "rev-parse", "HEAD");
       const { hits, unscanned } = await scanBatch(cwd, start, scanned);
       const found = [];
@@ -288,14 +323,12 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       }
     }
     if (failure) {
-      runGit(cwd, ["merge", "--abort"]);
-      git(cwd, "reset", "-q", "--hard", start);
-      return { ok: false, start, head: git(cwd, "rev-parse", "HEAD"), landed: [], failure };
+      restore();
+      return { ok: false, start, head: git(cwd, "rev-parse", "main"), landed: [], failure };
     }
   } catch (err) {
-    runGit(cwd, ["merge", "--abort"]);
-    runGit(cwd, ["reset", "-q", "--hard", start]);
-    return { ok: false, start, head: git(cwd, "rev-parse", "HEAD"), landed: [], failure: { step: err?.step ?? "error", detail: err?.message ?? String(err) } };
+    restore();
+    return { ok: false, start, head: git(cwd, "rev-parse", "main"), landed: [], failure: { step: err?.step ?? "error", detail: err?.message ?? String(err) } };
   }
   // Main holds the checked batch now. A receipt the server refuses leaves it
   // so (the merges passed); the caller names what was and was not recorded.
