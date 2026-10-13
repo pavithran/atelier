@@ -208,51 +208,55 @@ function readTree(cwd, hash, read) {
   return parseTree(readObject(cwd, "tree", hash, read), objectFormat(cwd) === "sha256" ? 32 : 20, hash);
 }
 
-// Whether every object the batch's commits reach (start..head: the commits,
-// their trees and blobs) and every object the scan read is still present
-// and still hashes to its id, checked after the tests, so a test command
-// that deletes or rewrites one after the scan stops the batch (eighth
-// review of t592). The objects the scan read (`read`) include those the
-// batch reuses from earlier history, which start..head leaves out (t618:
-// a test deleted a blob a batch commit put back, and receipts were recorded
-// for history main could no longer show). One rev-list and one cat-file
-// --batch read them all. When any is missing or changed, the batch is
-// walked again object by object (namedObjectProblems) so each problem is
-// named by its path. Answers the problems found, at most `limit`.
+// Whether every object the batch's commits reference is still present and
+// still hashes to its id: each commit in start..head and every tree and
+// blob in its whole tree, those it shares with main included, and every
+// object the scan read. It runs after the tests, so a test command that
+// deletes or rewrites one after the scan stops the batch (eighth review of
+// t592), and again before atelier fast record posts a receipt (t602).
+// Objects new to start..head were not enough (t618, and its review by
+// gpt-6-astra and gemini-4-argon): a blob a batch commit put back from
+// earlier history, a blob whose mode alone changed, and every entry a
+// batch tree holds unchanged from main were never checked again, so
+// receipts were recorded for history main could no longer show. One
+// rev-list over the commits' full trees (--no-walk, so nothing main holds
+// is left out; --missing=print, so a missing object is listed, not fatal)
+// and one cat-file --batch read them all. When any is missing or changed,
+// each problem is named by its path (namedObjectProblems). Answers the
+// problems found, at most `limit`.
 function objectProblems(cwd, start, head, read = new Set(), limit = 20) {
   const problems = batchObjectProblems(cwd, start, head, read, limit);
   return problems.length ? namedObjectProblems(cwd, start, head, limit, problems) : [];
 }
 
-// Each commit in start..head against its first parent, read and verified a
-// level at a time (as the scan reads it), descending only into entries the
-// parent does not hold, so every missing, malformed or changed object is
-// named by its path, a directory with a trailing slash (ninth review of
-// t592). A tree is walked once per base it is compared with (t618: the
-// merge's tree is its task commit's, and the walk against main had marked
-// it seen, so the reused blob the task commit put back was never reached).
-// A problem object no walk reaches, such as one the scan read only as a
-// parent's content, is named by the paths that hold it in the batch's
-// trees or main's (pathsOf). `fallback`, the problems as { id, text }, is
-// answered as text where nothing names them.
+// Names each problem by its path, a directory with a trailing slash (ninth
+// review of t592). First each commit in start..head is walked against its
+// first parent, read and verified a level at a time as the scan reads it,
+// descending only into entries the parent does not hold; a tree is walked
+// once per base it is compared with (t618: the merge's tree is its task
+// commit's, and the walk against main had marked it seen). Then every
+// problem object that walk did not name, such as one a batch tree holds
+// unchanged from main, is named by the paths that hold it in the batch's
+// trees or main's, in one walk (pathsOfAll). A problem nothing names keeps
+// its text (`fallback` holds the problems as { id, text }).
 function namedObjectProblems(cwd, start, head, limit, fallback) {
   const commits = runGit(cwd, ["rev-list", "--parents", `${start}..${head}`]);
   if (commits.status !== 0) return [`the batch's commits cannot be listed: ${(commits.stderr || "").trim().split("\n").at(-1)}`];
-  const found = new Set(), seen = new Set(), trees = new Set();
+  const found = new Set(), named = new Set(), seen = new Set(), trees = new Set();
   const why = (err) => `${err?.message ?? err}`;
   const walk = (tree, baseTree, prefix) => {
     const key = `${tree}\0${baseTree}\0${prefix}`;
     if (found.size >= limit || seen.has(key)) return;
     seen.add(key);
     let entries, base = new Map();
-    try { entries = readTree(cwd, tree); } catch (err) { found.add(`${prefix || "the root tree"} (${why(err)})`); return; }
+    try { entries = readTree(cwd, tree); } catch (err) { named.add(tree); found.add(`${prefix || "the root tree"} (${why(err)})`); return; }
     if (baseTree) { const b = listTree(cwd, baseTree); for (const e of b ?? []) base.set(e.name, e); }
     for (const e of entries) {
       const before = base.get(e.name);
       if (before && before.hash === e.hash) continue;
       const path = prefix + e.name;
       if (e.type === "tree") walk(e.hash, before?.type === "tree" ? before.hash : null, `${path}/`);
-      else if (e.type === "blob") { try { readObject(cwd, "blob", e.hash); } catch (err) { found.add(`${path} (${why(err)})`); } }
+      else if (e.type === "blob") { try { readObject(cwd, "blob", e.hash); } catch (err) { named.add(e.hash); found.add(`${path} (${why(err)})`); } }
     }
   };
   for (const line of commits.stdout.split("\n").filter(Boolean)) {
@@ -261,20 +265,30 @@ function namedObjectProblems(cwd, start, head, limit, fallback) {
       const head = commitOf(cwd, commit);
       trees.add(head.tree);
       walk(head.tree, parent ? commitOf(cwd, parent).tree : null, "");
-    } catch (err) { found.add(`commit ${commit} (${why(err)})`); }
+    } catch (err) { named.add(commit); found.add(`commit ${commit} (${why(err)})`); }
   }
-  if (found.size) return [...found];
-  try { trees.add(commitOf(cwd, start).tree); } catch { /* main's own tree is not the batch's to name */ }
-  return fallback.map((p) => {
-    const paths = p.id ? pathsOf(cwd, p.id, [...trees]).filter((x) => x !== "the root tree") : [];
-    return paths.length ? paths.map((x) => `${x} (${p.text})`).join(", ") : p.text;
-  });
+  // The rest are named too, not dropped once the walk named one (review of
+  // t618, gemini-4-argon).
+  const rest = fallback.filter((p) => !p.id || !named.has(p.id));
+  if (rest.length && found.size < limit) {
+    try { trees.add(commitOf(cwd, start).tree); } catch { /* main's own tree is not the batch's to name */ }
+    const paths = pathsOfAll(cwd, new Set(rest.filter((p) => p.id).map((p) => p.id)), [...trees]);
+    for (const p of rest) {
+      if (found.size >= limit) break;
+      const at = p.id ? paths.get(p.id) : null;
+      if (at?.size) for (const x of at) found.add(`${x} (${p.text})`);
+      else found.add(p.text);
+    }
+  }
+  return [...found];
 }
 
 function batchObjectProblems(cwd, start, head, read, limit) {
-  const list = runGit(cwd, ["rev-list", "--objects", `${start}..${head}`]);
-  if (list.status !== 0) return [{ text: `git rev-list --objects could not walk the batch: ${(list.stderr || "").trim().split("\n").at(-1)}` }];
-  const ids = [...new Set([...list.stdout.split("\n").map((l) => l.split(" ")[0]).filter(Boolean), ...read])];
+  const commits = runGit(cwd, ["rev-list", `${start}..${head}`]);
+  if (commits.status !== 0) return [{ text: `git rev-list could not list the batch's commits: ${(commits.stderr || "").trim().split("\n").at(-1)}` }];
+  const list = runGit(cwd, ["rev-list", "--objects", "--no-walk", "--missing=print", "--stdin"], { input: commits.stdout });
+  if (list.status !== 0) return [{ text: `git rev-list --objects could not walk the batch's trees: ${(list.stderr || "").trim().split("\n").at(-1)}` }];
+  const ids = [...new Set([...list.stdout.split("\n").map((l) => l.split(" ")[0].replace(/^\?/, "")).filter(Boolean), ...read])];
   if (!ids.length) return [];
   const r = runGit(cwd, ["cat-file", "--batch"], { encoding: "buffer", input: Buffer.from(ids.join("\n") + "\n") });
   if (r.status !== 0) return [{ text: `git cat-file --batch failed: ${String(r.stderr || "").trim().split("\n").at(-1)}` }];
@@ -292,6 +306,24 @@ function batchObjectProblems(cwd, start, head, read, limit) {
     if (body.length !== Number(size) || hash !== id) problems.push({ id, text: `${id.slice(0, 12)} does not hash to its id` });
   }
   return problems;
+}
+
+// The paths that hold each of `ids` in any of `trees`, in one walk a level
+// at a time (a subtree with a trailing slash). Trees that cannot be read
+// are passed over; it runs only to name problems already found.
+function pathsOfAll(cwd, ids, trees) {
+  const out = new Map([...ids].map((id) => [id, new Set()])), seen = new Set();
+  const walk = (tree, prefix) => {
+    if (seen.has(`${tree}\0${prefix}`)) return;
+    seen.add(`${tree}\0${prefix}`);
+    for (const e of listTree(cwd, tree) ?? []) {
+      const path = prefix + e.name + (e.type === "tree" ? "/" : "");
+      out.get(e.hash)?.add(path);
+      if (e.type === "tree") walk(e.hash, path);
+    }
+  };
+  for (const t of trees) walk(t, "");
+  return out;
 }
 
 // A commit's tree and first parent, from its verified bytes.
