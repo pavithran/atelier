@@ -20,7 +20,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { modelKey } from "../rules.ts";
-import { isAgent, type ProjectEvents, type RunReport } from "./reliability.ts";
+import { isAgent, isInfrastructureOutcome, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { SERVED, servedActor, servedBy } from "./served.ts";
 
 export const SPEED_DAYS = 14;
@@ -79,7 +79,7 @@ export function buildSpeed(projects: readonly ProjectEvents[], runs: readonly Ru
 
   for (const { events } of projects) replay(events, owner, inWindow, bin, seconds);
   for (const run of runs) {
-    if ((run.role !== "build" && run.role !== "review") || !isAgent(run.actor, owner) || !inWindow(run.at)) continue;
+    if ((run.role !== "build" && run.role !== "review") || !isAgent(run.actor, owner) || !inWindow(run.at) || isInfrastructureOutcome(run.outcome)) continue;
     const b = bin(run.actor);
     const stalled = STALL_OUTCOMES.includes(run.outcome) ? 1 : 0;
     if (run.role === "build") { b.buildRuns++; b.buildStalled += stalled; }

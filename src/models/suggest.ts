@@ -1,7 +1,7 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
 import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
-import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
+import { buildReliability, isInfrastructureOutcome, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
 
@@ -26,7 +26,7 @@ export const sensitive = (item: Task) => /\b(security|auth(?:entication|orizatio
 export function stalledBuilder(entry: ModelEntry, records: SuggestionRecords): boolean {
   const keys = keysOf(entry);
   const outcomes: { at: string; stalled: boolean; success: boolean }[] = records.runs
-    .filter((r) => r.role === "build" && keys.has(modelKey(r.actor)))
+    .filter((r) => r.role === "build" && keys.has(modelKey(r.actor)) && !isInfrastructureOutcome(r.outcome))
     .map((r) => ({ at: r.at, stalled: r.outcome === "stalled", success: false }));
   for (const source of records.sources) {
     const holders = new Map<string, string>();

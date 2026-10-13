@@ -34,4 +34,5 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "land.fast.v1", summary: "fast mode's landed-fast route (t585): the developer records a task merged from a local checkout with its receipt, and asks its post-merge review, which a model of the builder's family may answer" },
   { name: "projects.publication-policy.v1", summary: "project policy's commitIdentity carries publicMirrorDestinations, privatePaths and privatePatterns, which init records and publish REMOTE reads for the public mirror check" },
   { name: "runners.fast-build.v1", summary: "fast mode's builds without a fork (t589): the queue marks a plain build fast while the project is in fast mode, POST items/tN/fast-take takes it with no fork and no write token, POST items/tN/fast-ready reports the commit built as ready for fast land, and GET /projects/:p/mode lists the ready commits" },
+  { name: "runs.infrastructure-miss.v1", summary: "a run report's infrastructure_miss outcome (t591): a job that ended on the infrastructure, such as a review whose merge commit no source held, kept with its detail and counted against no model" },
 ] as const;
