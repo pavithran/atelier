@@ -247,12 +247,16 @@ const claim = (score: number, conditions = {}, benchmark = "SWE-bench Pro"): Mod
 
 test("two active cards that give one benchmark different scores under the same conditions conflict; under other conditions they only differ", () => {
   const max = { harness: "Claude Code", effort: "max" };
-  const conflict = cardDisagreements([shown("c1", [claim(80.9, max)]), shown("c2", [claim(78.2, { effort: "MAX", harness: "claude  code" })])]);
+  const conflict = cardDisagreements([shown("c1", [claim(80.9, max)]), shown("c2", [claim(78.2, { effort: " max", harness: "Claude  Code" })])]);
   assert.deepEqual(conflict.map((d) => [d.kind, d.claims.map((c) => [c.card, c.score])]), [["conflict", [["c1", 80.9], ["c2", 78.2]]]]);
   assert.equal(conflict[0].claims[0].source, "https://vendor.example/c1");
 
   const differ = cardDisagreements([shown("c1", [claim(80.9, max)]), shown("c2", [claim(72.0, { harness: "vendor scaffold" })])]);
   assert.deepEqual(differ.map((d) => d.kind), ["conditions-differ"]);
+  // Conditions that differ only in letter case are other conditions, not a
+  // conflict (Astra's seventh review of t625, 2026-10-13).
+  const cased = cardDisagreements([shown("c1", [claim(40, { details: ["/datasets/Hard"] })]), shown("c2", [claim(80, { details: ["/datasets/hard"] })])]);
+  assert.deepEqual(cased.map((d) => d.kind), ["conditions-differ"]);
   // The same score, an ended card, another benchmark or one card alone is no disagreement.
   assert.deepEqual(cardDisagreements([shown("c1", [claim(80, max)]), shown("c2", [claim(80, max)])]), []);
   assert.deepEqual(cardDisagreements([shown("c1", [claim(80, max)]), { ...shown("c2", [claim(70, max)]), state: "superseded" }]), []);

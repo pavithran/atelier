@@ -331,8 +331,14 @@ export function admitCardRecord(all: readonly CardRecord[], input: CardInput | W
 // Two claims say the same thing when they name one benchmark, version and
 // unit under the same conditions; then a different score is a conflict. The
 // same benchmark under other conditions is a difference, not a conflict.
-const fold = (s: string | undefined) => (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
-const conditionKey = (c: CardConditions) => JSON.stringify([fold(c.harness), fold(c.effort), (c.details ?? []).map(fold).sort()]);
+// The benchmark, version and unit are compared in any letter case; the
+// conditions only with their spacing evened, never case-folded, since a
+// condition may name something whose case matters, such as a dataset's
+// directory (/datasets/Hard and /datasets/hard are two; Astra's seventh
+// review of t625, 2026-10-13).
+const spaced = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
+const fold = (s: string | undefined) => spaced(s).toLowerCase();
+const conditionKey = (c: CardConditions) => JSON.stringify([spaced(c.harness), spaced(c.effort), (c.details ?? []).map(spaced).sort()]);
 export function cardDisagreements(cards: readonly ShownCard[]): CardDisagreement[] {
   const groups = new Map<string, CardDisagreement>();
   for (const card of cards) {
