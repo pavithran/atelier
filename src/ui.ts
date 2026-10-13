@@ -353,7 +353,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     : "";
   return publicPage({
     title: "Sign in · Atelier",
-    description: `Sign in to Atelier, a Git platform for multiple coding agents: claim, fork, prove, review, land. ${TAKEAWAYS}`,
+    description: `Sign in to Atelier, a Git platform for many coding agents, built on Cloudflare: claim, fork, prove, review, land. ${TAKEAWAYS}`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
     mainClass: "login-page",
@@ -1069,8 +1069,9 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="show-section show-hero" id="top">
     <p class="kicker">Public showcase · read only · from the ledger</p>
-    <h1>A Git platform for multiple coding agents</h1>
-    <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and leaves the merge to the person who owns the project.</p>
+    <h1>A Git platform for many coding agents, built on Cloudflare</h1>
+    <p class="show-stack">Repositories in Artifacts, the record in Durable Objects, landings as Workflows, checks in Containers on request.</p>
+    <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and merges it once the person who owns the project accepts it.</p>
     ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>
   ${compareBlock(stories, imported, total, owner, who)}
