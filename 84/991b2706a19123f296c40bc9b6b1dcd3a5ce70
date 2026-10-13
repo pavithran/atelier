@@ -1,0 +1,38 @@
+atelier atelier/t561 "A finished task's workspace is removed once its work is in main or its fork"
+accepted head 11551b622ce4af7c3c781bd40ea4d34ac8f0e5c5
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-13T01:00:03.470Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-13T01:00:08.206Z
+REVIEW approve by opencode/glm-5.3 at 11551b622ce4af7c3c781bd40ea4d34ac8f0e5c5, recorded by opencode/glm-5.3
+2026-10-12T20:25:20.794Z pavi item.created
+2026-10-12T21:48:00.870Z pavi item.dispatched
+2026-10-12T22:13:53.723Z claude-code/opus-5.5 item.claimed
+2026-10-12T22:14:17.610Z claude-code/opus-5.5 fork.created
+2026-10-12T22:22:16.774Z claude-code/opus-5.5 push.observed
+2026-10-12T22:28:56.754Z claude-code/opus-5.5 evidence.observed
+2026-10-12T22:28:59.809Z claude-code/opus-5.5 evidence.observed
+2026-10-12T22:34:09.445Z claude-code/opus-5.5 push.observed
+2026-10-12T22:40:08.461Z claude-code/opus-5.5 evidence.observed
+2026-10-12T22:40:11.356Z claude-code/opus-5.5 evidence.observed
+2026-10-12T22:40:11.951Z claude-code/opus-5.5 item.submitted
+2026-10-12T22:51:23.077Z pavi item.handoff
+2026-10-12T22:51:29.022Z claude-code/opus-5.5 push.observed
+2026-10-13T00:48:22.774Z atelier/orchestrator refresh.queued
+2026-10-13T00:53:48.680Z pavi land.merge
+2026-10-13T00:54:01.992Z pavi land.regenerate
+2026-10-13T00:54:06.289Z claude-code/opus-5.5 push.observed
+2026-10-13T00:54:08.023Z pavi land.push
+2026-10-13T01:00:04.283Z claude-code/opus-5.5 evidence.observed
+2026-10-13T01:00:08.594Z claude-code/opus-5.5 evidence.observed
+2026-10-13T01:00:09.266Z pavi land.check
+2026-10-13T01:00:13.391Z claude-code/opus-5.5 item.submitted
+2026-10-13T01:00:13.480Z pavi land.submit
+2026-10-13T01:00:13.834Z pavi review.requested
+2026-10-13T01:04:38.288Z opencode/glm-5.3 review.claimed
+2026-10-13T01:04:39.842Z opencode/glm-5.3 review.diff
+2026-10-13T01:13:25.218Z opencode/glm-5.3 review.approved
+2026-10-13T01:13:30.095Z pavi land.review
+2026-10-13T01:13:30.709Z pavi land.lease
+2026-10-13T01:13:32.385Z pavi item.accepted
+2026-10-13T01:13:32.436Z pavi land.accept
