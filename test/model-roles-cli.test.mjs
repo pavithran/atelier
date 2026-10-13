@@ -60,7 +60,9 @@ test("atelier models assign sends the role, ordered choices, reason, words, evid
     "--quote", "astra does security reviews", "--evidence", "atelier/t592", "--evidence", "atelier/t593#40", "--as", "claude-code/opus-5.5"]);
   assert.equal(r.status, 0, r.stderr);
   assert.equal(f.requests.length, 1);
-  assert.deepEqual(f.requests[0].body, {
+  const { request, ...sent } = f.requests[0].body;
+  assert.match(request, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(sent, {
     role: "security-review", choices: ["codex/gpt-6-astra", "antigravity/gemini-4-argon"], reason: "Every blocking finding judged was real.",
     quote: "astra does security reviews", evidence: ["atelier/t592", "atelier/t593#40"],
   });

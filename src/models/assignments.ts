@@ -32,9 +32,18 @@
 // check and the write cannot interleave; what is guarded is a stale view.
 // An assignment that would supersede one must name it (replaces), so two
 // sessions that both read "a1 stands" cannot both replace it: the second is
-// refused, naming the one that stands now. A request sent twice (a retry
-// after a lost answer) finds its own record standing, with the same content
-// and the same replaces, and gets it back marked retried, not recorded again.
+// refused, naming the one that stands now. Each request carries an id the
+// client makes once (the CLI, per command), kept on the record: a request
+// sent again (a retry after a lost answer, however late) finds its record by
+// that id and gets it back marked retried, whatever happened since, so a
+// delayed retry never reactivates an assignment withdrawn in between
+// (gpt-6-astra's review of t622, finding 2). A new decision is a new id.
+//
+// Each project's ledger holds a copy of the assignments bearing on it, sent
+// as a snapshot whose version is the number of records written (withdrawals
+// included, so it only grows). Two snapshots read at different times may
+// arrive in either order; a copy never takes one older than the one it holds
+// (snapshotApplies; gpt-6-astra's review of t622, finding 1).
 //
 // ── Precedence ──────────────────────────────────────────────────────────
 // Pool roles (build, review, plan on a pool entry) say what a model may do;
@@ -82,6 +91,7 @@ export const ALL_PROJECTS = "*";
 export const ASSIGNMENT_ID = /^a[1-9]\d{0,8}$/;
 export const MAX_CHOICES = 8;
 export const MAX_EVIDENCE = 20;
+const REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
 
 // The pool role a model needs to take an assignment role.
 export const POOL_ROLE: Record<AssignmentRole, ModelRole> = {
@@ -117,6 +127,7 @@ export interface AssignmentChoice {
 
 export interface Assignment {
   id: string;                 // a1, a2, ... shared with withdrawals, in the order recorded
+  request?: string;           // the id the client gave the request that recorded it
   kind: "assigned";
   scope: string;              // ALL_PROJECTS or a project's stable key
   role: AssignmentRole;
@@ -197,6 +208,7 @@ const list = (v: unknown): string[] =>
   (Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : []).map((s) => (typeof s === "string" ? s.trim() : "")).filter(Boolean);
 
 export interface AssignmentInput {
+  request: string;            // the client's id for this request, the same on every retry
   scope: string;              // ALL_PROJECTS or a project's name as given
   role: AssignmentRole;
   choices: string[];          // as given; resolveChoices reads them against the pool
@@ -228,7 +240,9 @@ export function cleanAssignmentInput(body: Record<string, unknown>): AssignmentI
   const evidence = refs.map(parseEvidenceRef);
   const replaces = body.replaces === undefined || body.replaces === null || body.replaces === "" || body.replaces === "none" ? null : String(body.replaces).trim();
   if (replaces !== null && !ASSIGNMENT_ID.test(replaces)) throw new RuleError("bad_replaces", "--replaces names the assignment that stands, such as a3, or none", 400);
-  return { scope, role: role as AssignmentRole, choices, reason, quote, evidence, replaces };
+  const request = typeof body.request === "string" ? body.request.trim() : "";
+  if (!REQUEST_ID.test(request)) throw new RuleError("bad_request_id", "an assignment request carries a request id the client makes once, 8 to 64 letters, digits, dashes or underscores, so a retry is told from a new decision", 400);
+  return { request, scope, role: role as AssignmentRole, choices, reason, quote, evidence, replaces };
 }
 
 // Each choice as the pool names it, with its canonical model. A choice must
@@ -283,6 +297,7 @@ export interface AssignmentStore {
 // An input with its scope resolved to a project key, its choices to the
 // pool, and its evidence checked and kept by project key.
 export interface ResolvedAssignment {
+  request: string;
   scope: string;
   role: AssignmentRole;
   choices: AssignmentChoice[];
@@ -307,7 +322,7 @@ export function standingFor(records: readonly AssignmentRecord[], scope: string,
 }
 
 const sameContent = (a: Assignment, b: ResolvedAssignment) =>
-  a.reason === b.reason && a.quote === b.quote
+  a.scope === b.scope && a.role === b.role && a.reason === b.reason && a.quote === b.quote
   && JSON.stringify(a.choices.map((c) => c.actor)) === JSON.stringify(b.choices.map((c) => c.actor))
   && JSON.stringify(a.evidence) === JSON.stringify(b.evidence);
 
@@ -316,8 +331,14 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
   const records = store.records();
   const standing = standingFor(records, input.scope, input.role);
   const where = `${input.role} in ${scopeText(input.scope)}`;
-  // A retry: the request's own record stands, the same in every part.
-  if (standing && sameContent(standing, input) && (standing.supersedes ?? null) === input.replaces) return { ...standing, retried: true };
+  // A retry: the request's own record, found by its id whether it stands,
+  // was superseded or was withdrawn since. The same id with other content
+  // is another request reusing it, and is refused.
+  const own = records.find((r): r is Assignment => r.kind === "assigned" && r.request === input.request);
+  if (own) {
+    if (sameContent(own, input) && (own.supersedes ?? null) === input.replaces) return { ...own, retried: true };
+    throw new RuleError("request_reused", `request ${input.request} already recorded ${own.id}, with other content; a new decision needs a new request id`, 409);
+  }
   if (standing && input.replaces !== standing.id) {
     throw new RuleError("assignment_changed", `${standing.id} stands for ${where} since ${standing.at.slice(0, 10)}${input.replaces ? `, not ${input.replaces}` : ""}; to supersede it, name it: --replaces ${standing.id}`, 409);
   }
@@ -326,7 +347,7 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
     throw new RuleError("assignment_changed", `${input.replaces} does not stand for ${where}${was ? ` (${was.kind === "assigned" ? "it was superseded or withdrawn" : "that is a withdrawal"})` : ""}; nothing stands there now, so record it without --replaces`, 409);
   }
   const record: Assignment = {
-    id: nextId(records), kind: "assigned", scope: input.scope, role: input.role, choices: input.choices,
+    id: nextId(records), kind: "assigned", request: input.request, scope: input.scope, role: input.role, choices: input.choices,
     reason: input.reason, quote: input.quote, evidence: input.evidence, by: actor, at: now,
     ...(acting ? { acting } : {}), ...(standing ? { supersedes: standing.id } : {}),
   };
@@ -373,6 +394,20 @@ export function assignmentHistory(records: readonly AssignmentRecord[]): Assignm
 // The assignments standing now, one per scope and role.
 export function currentAssignments(records: readonly AssignmentRecord[]): Assignment[] {
   return assignmentHistory(records).filter((v) => v.status === "current").map(({ status: _s, supersededBy: _b, withdrawal: _w, ...a }) => a);
+}
+
+// What a project's ledger is sent: the assignments standing now and the
+// version of the record they were read at, the number of records written.
+export interface AssignmentSnapshot { version: number; assignments: Assignment[] }
+
+export function assignmentSnapshot(records: readonly AssignmentRecord[], bears: (a: Assignment) => boolean = () => true): AssignmentSnapshot {
+  return { version: records.length, assignments: currentAssignments(records).filter(bears) };
+}
+
+// Whether a copy holding `held` takes `incoming`: never an older snapshot,
+// which would bring back what was superseded or withdrawn since it was read.
+export function snapshotApplies(held: AssignmentSnapshot | null, incoming: AssignmentSnapshot): boolean {
+  return held === null || incoming.version >= held.version;
 }
 
 // ── reading ─────────────────────────────────────────────────────────────

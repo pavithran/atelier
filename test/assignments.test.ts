@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentLine, checkEvidence, cleanAssignmentInput, currentAssignments,
-  FALLBACK, orderByAssignment, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
+  assignmentSnapshot, FALLBACK, orderByAssignment, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
   type Assignment, type AssignmentRecord, type AssignmentStore, type ResolvedAssignment,
 } from "../src/models/assignments.ts";
 import type { ModelEntry } from "../src/models/pool.ts";
@@ -32,8 +32,9 @@ function memoryStore(owner = OWNER): AssignmentStore & { rows: AssignmentRecord[
   return { rows, events, owner, records: () => rows.map((r) => structuredClone(r)), insert: (r) => void rows.push(structuredClone(r)), log: (kind, data) => void events.push({ kind, data }) };
 }
 
+let requests = 0;
 const input = (change: Partial<ResolvedAssignment> = {}): ResolvedAssignment => ({
-  scope: ALL_PROJECTS, role: "security-review", choices: resolveChoices(["codex/gpt-6-astra"], POOL, "security-review"),
+  request: `req-${++requests}-0000`, scope: ALL_PROJECTS, role: "security-review", choices: resolveChoices(["codex/gpt-6-astra"], POOL, "security-review"),
   reason: "Every finding it raised on the fast-land scan was real.", quote: "astra does security reviews", evidence: ["atelier/t592"], replaces: null, ...change,
 });
 
@@ -51,9 +52,9 @@ test("an evidence reference names its project: PROJECT/tN or PROJECT/tN#SEQ, nev
 });
 
 test("cleanAssignmentInput needs a role, ordered choices, a reason, the developer's words and evidence", () => {
-  const body = { role: "review", choices: "codex/gpt-6-astra, antigravity/gemini-4-argon", reason: " Precise\nfindings ", quote: "use astra", evidence: ["atelier/t592", "atelier/t593#12"] };
+  const body = { role: "review", choices: "codex/gpt-6-astra, antigravity/gemini-4-argon", reason: " Precise\nfindings ", quote: "use astra", evidence: ["atelier/t592", "atelier/t593#12"], request: "request-0001" };
   assert.deepEqual(cleanAssignmentInput(body), {
-    scope: ALL_PROJECTS, role: "review", choices: ["codex/gpt-6-astra", "antigravity/gemini-4-argon"], reason: "Precise findings", quote: "use astra",
+    request: "request-0001", scope: ALL_PROJECTS, role: "review", choices: ["codex/gpt-6-astra", "antigravity/gemini-4-argon"], reason: "Precise findings", quote: "use astra",
     evidence: [{ project: "atelier", item: "t592" }, { project: "atelier", item: "t593", seq: 12 }], replaces: null,
   });
   assert.equal(cleanAssignmentInput({ ...body, scope: "atelier", replaces: "a3" }).scope, "atelier");
@@ -122,15 +123,56 @@ test("a new assignment supersedes the standing one only by naming it; a stale or
 
 test("a retried request finds its own record and gets it back, recorded once", () => {
   const store = memoryStore();
-  recordAssignment(store, OWNER, input(), AT);
-  const again = recordAssignment(store, OWNER, input(), "2026-10-13T12:00:05.000Z");
+  recordAssignment(store, OWNER, input({ request: "first-request" }), AT);
+  const again = recordAssignment(store, OWNER, input({ request: "first-request" }), "2026-10-13T12:00:05.000Z");
   assert.equal(again.id, "a1");
   assert.equal(again.retried, true);
-  const a2 = recordAssignment(store, OWNER, input({ reason: "Changed.", replaces: "a1" }), AT);
-  // The retry of the superseding request carries the same replaces: it finds a2.
-  assert.equal(recordAssignment(store, OWNER, input({ reason: "Changed.", replaces: "a1" }), AT).id, a2.id);
+  const a2 = recordAssignment(store, OWNER, input({ request: "second-request", reason: "Changed.", replaces: "a1" }), AT);
+  // The retry of the superseding request carries the same request id: it finds a2.
+  assert.equal(recordAssignment(store, OWNER, input({ request: "second-request", reason: "Changed.", replaces: "a1" }), AT).id, a2.id);
   assert.equal(store.rows.length, 2);
   assert.equal(store.events.length, 2);
+  // The same request id with other content is refused, never read as a retry.
+  refused(() => recordAssignment(store, OWNER, input({ request: "second-request", reason: "Other." }), AT), "request_reused", /second-request already recorded a2/);
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 2: create a1, withdraw it
+// as a2, resend the original request, and the server made a3 current: a
+// delayed retry undid a withdrawal without a new decision.
+test("a retry of a request whose assignment was since withdrawn returns the stored record and reactivates nothing", () => {
+  const store = memoryStore();
+  recordAssignment(store, OWNER, input({ request: "original-request" }), AT);
+  withdrawAssignment(store, OWNER, "a1", "Astra is reserved.", AT);
+  const replay = recordAssignment(store, OWNER, input({ request: "original-request" }), AT);
+  assert.deepEqual([replay.id, replay.retried], ["a1", true]);
+  assert.equal(standingFor(store.records(), ALL_PROJECTS, "security-review"), null);
+  assert.equal(store.rows.length, 2);
+  // A new decision with the same content is a new request, and is recorded.
+  assert.equal(recordAssignment(store, OWNER, input({ request: "a-new-decision" }), AT).id, "a3");
+});
+
+test("cleanAssignmentInput needs a request id, so a retry can be told from a new decision", () => {
+  const body = { role: "review", choices: "codex/gpt-6-astra", reason: "r", quote: "q", evidence: "atelier/t1" };
+  refused(() => cleanAssignmentInput(body), "bad_request_id", /request id/);
+  refused(() => cleanAssignmentInput({ ...body, request: "x" }), "bad_request_id", /request id/);
+  assert.equal(cleanAssignmentInput({ ...body, request: "0b9f6c1e-request" }).request, "0b9f6c1e-request");
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 1: two broadcasts read at
+// different times can arrive in either order, and an older one replaced a
+// newer copy, restoring a superseded or withdrawn assignment.
+test("a project's copy takes a snapshot only when it is no older than the one it holds", () => {
+  const store = memoryStore();
+  recordAssignment(store, OWNER, input(), AT);
+  const old = assignmentSnapshot(store.records());
+  withdrawAssignment(store, OWNER, "a1", "withdrawn", AT);
+  const now = assignmentSnapshot(store.records());
+  assert.deepEqual([old.version, old.assignments.map((a) => a.id)], [1, ["a1"]]);
+  assert.deepEqual([now.version, now.assignments], [2, []]);
+  assert.equal(snapshotApplies(now, old), false);
+  assert.equal(snapshotApplies(old, now), true);
+  assert.equal(snapshotApplies(null, old), true);
+  assert.equal(snapshotApplies(now, now), true);
 });
 
 test("withdrawal needs a note, restores the fallback rather than the superseded record, and keeps the evidence and author", () => {
