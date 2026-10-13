@@ -1,6 +1,6 @@
 # Setup in detail
 
-The README's "Setup" section gives the steps that take a fresh clone to a
+The README's "Quickstart" section gives the steps that take a fresh clone to a
 deployed Worker and a registered project. This document holds the rest: how
 the CLI stores its token and talks to the server, what agent tokens may do,
 the owner's settings, notifications, push events and local development.
@@ -135,6 +135,36 @@ sign-in starts a new one. With any of the three unset the server stands as
 it always has, without the second check; a value that is set but unusable,
 such as an issuer without `https://`, logs a warning once rather than quietly
 leaving the pages unguarded.
+
+## Confirming an override
+
+When no model qualifies to review a protected change, the owner can accept
+it by overriding that review, with a reason. The override needs the owner's
+own confirmation, a factor no agent holds; the owner token alone does not
+give it, nor the browser session it signs in (`OwnerFactor` and
+`NO_OWNER_FACTOR` in `src/rules.ts`, `ownerFactorOf` in `src/index.ts`).
+The server takes one of two factors:
+
+- **Cloudflare Access.** With `CF_ACCESS_ISS`, `CF_ACCESS_AUD` and
+  `CF_ACCESS_OWNER_EMAIL` all set (above), the owner's verified Access
+  identity is the confirmation, and `OVERRIDE_SECRET` is not read.
+- **A confirmation secret.** Without Access, set `OVERRIDE_SECRET`, a value
+  kept apart from the server token and never given to an agent or a session:
+
+  ```bash
+  openssl rand -hex 32
+  npx wrangler secret put OVERRIDE_SECRET
+  ```
+
+  The owner types it into the task page's override form; the Worker compares
+  it in constant time and refuses a wrong or missing one with a 403.
+
+A server with neither confirms no override, and its refusal says so. To
+override from the command line, the owner presses Allow an override from the
+command line on the task's page with that factor, then runs
+`atelier accept ID --override-review "reason"` within 15 minutes. A project
+registered with `atelier init --no-override` refuses every override either
+way.
 
 ## Agent tokens
 
@@ -438,8 +468,10 @@ into an iCloud project.
 test pool, against the Ledger Durable Object with its real SQLite storage
 and no network access; `tsc -p test` typechecks them against the types
 `wrangler types` generates. Workerd logs each refusal those tests assert as
-an uncaught promise rejection (`uncaught exception … 409|owned|…`); those
-lines are the refusals under test, not failures.
+an uncaught promise rejection (`uncaught exception … 403`, `… 409`,
+`… owned` and the like); those lines are the refusals under test, not
+failures. The README's Quickstart gives how long the suite took on
+recent landings.
 
 ## Local visual review
 
