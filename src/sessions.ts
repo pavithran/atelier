@@ -96,7 +96,7 @@ export function sessionNoteText(note?: SessionNote): string {
     ...(d.commit ? [`Session commit: ${d.commit}`] : []),
     ...(d.pushes ?? []).map((p) => `Remote ${sessionText(p.remote, 200)}: ${p.passed ? "pushed" : "failed"}.`),
     ...(d.found?.length ? [`Filed tasks: ${d.found.join(", ")}`] : []),
-    ...d.checks.map((c) => `Reported: ${c.command}: ${c.passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`),
+    ...d.checks.map((c) => `Reported: ${c.command}: ${c.passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`),
     ...(d.checksSkipped ? ["Registered checks skipped (--no-check)."] : []),
     ...(d.checksOverridden?.length ? [`Failing checks overridden by --allow-failing: ${d.checksOverridden.join(", ")}.`] : [])].join("\n");
 }

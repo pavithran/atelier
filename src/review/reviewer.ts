@@ -175,7 +175,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   // reviewers alone.
   const held = standingRefusal(entry, "review");
   if (held) failed.push(held);
-  else passed.push("The owner's standing is available");
+  else passed.push("The developer's standing is available");
 
   const { allowPaid, spend } = input;
   if (!paidPerToken(entry)) passed.push(`No per-token cost (${entry.provider})`);

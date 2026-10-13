@@ -88,7 +88,7 @@ test("each state says the recovery it calls for", () => {
   assert.match(prereviewRecovery({ ...base, state: "open" }), /never waits/);
   assert.match(prereviewRecovery({ ...base, state: "passed" }), /queue position stands/);
   assert.match(prereviewRecovery({ ...base, state: "blocked" }), /atelier unblock t2/);
-  assert.match(prereviewRecovery({ ...base, state: "blocked", ownerAction: "no runner" }), /^owner action needed: no runner/);
+  assert.match(prereviewRecovery({ ...base, state: "blocked", ownerAction: "no runner" }), /^developer action needed: no runner/);
   assert.match(prereviewRecovery({ ...base, state: "conflict", files: ["src/a.ts"] }), /merge-main/);
   assert.match(prereviewRecovery({ ...base, state: "unavailable", outcome: "timeout" }), /asked again/);
   assert.match(prereviewRecovery({ ...base, state: "unavailable", outcome: "timeout", attempts: 3 }), /normal checks and review/);
@@ -255,12 +255,12 @@ test("the pre-review brief carries the owner's standing decisions from the claim
   const { io, calls } = fixture(r, { claim: prereviewClaim(r, { decisions: [decision] }) });
   await runPrereview(assignment(r.head), config, "home:studio", io);
   const brief = calls.find((c) => c.brief).brief;
-  assert.match(brief, /## Standing decisions\n\nThese are the project owner's standing decisions/);
-  assert.match(brief, /- d3 \(2026-10-01\): Queue order is FIFO by arrival\. The owner's words: “keep it FIFO”/);
+  assert.match(brief, /## Standing decisions\n\nThese are the developer's standing decisions/);
+  assert.match(brief, /- d3 \(2026-10-01\): Queue order is FIFO by arrival\. The developer's words: “keep it FIFO”/);
   const none = repos(t);
   const bare = fixture(none, { claim: prereviewClaim(none, { decisions: undefined }) });
   await runPrereview(assignment(none.head), config, "home:studio", bare.io);
-  assert.match(bare.calls.find((c) => c.brief).brief, /## Standing decisions[\s\S]*The project owner has recorded no standing decision/);
+  assert.match(bare.calls.find((c) => c.brief).brief, /## Standing decisions[\s\S]*The developer has recorded no standing decision/);
 });
 
 test("a conflict with main is reported as a conflict, with its files, and no reviewer runs", async (t) => {

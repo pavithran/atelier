@@ -25,7 +25,7 @@ const mid = (x: number, w = CW) => x + w / 2;
 
 const NODES: Node[] = [
   { x: COL[0], y: 32, w: CW, name: "Browser", sub: "atelier.zone pages" },
-  { x: COL[1], y: 32, w: CW, name: "Terminal", sub: 'developer: atelier plan "goal"' },
+  { x: COL[1], y: 32, w: CW, name: "Terminal", sub: 'atelier plan "goal"' },
   { x: COL[2], y: 32, w: CW, name: "Orchestrator", sub: "a session; starts agents" },
   { x: COL[3], y: 32, w: CW, name: "Home runner", sub: "build, plan and review jobs" },
   { x: COL[1], y: 118, w: COL[3] + CW - COL[1], name: "atelier CLI, in the checkout and in each workspace", sub: "the usual path to Cloudflare; runs checks in a fresh clone of the pushed head" },

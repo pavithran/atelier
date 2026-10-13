@@ -141,7 +141,7 @@ function save(sql: SqlStorage, a: ActionApproval): void {
 }
 
 function ownerOnly(store: ActionStore, actor: string, what: string): void {
-  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the project owner ${what}`, 403);
+  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403);
 }
 
 const view = (a: ActionApproval, now: string): ApprovalView => ({ ...a, status: approvalStatus(a, now) });
@@ -199,7 +199,7 @@ export function consumeAction(store: ActionStore, actor: string, body: Record<st
       elsewhere.length ? `${kind} is approved only at another revision (${elsewhere.join(", ")})` : "",
       lapsed ? `${lapsed.id} for it is ${approvalStatus(lapsed, now)}` : "",
     ].filter(Boolean).join("; ");
-    throw new RuleError("not_approved", `no active approval for ${kind} at ${short(commit)}${why ? `: ${why}` : ""}. The project owner approves it with: atelier approve ${kind} --head ${commit}`, 409);
+    throw new RuleError("not_approved", `no active approval for ${kind} at ${short(commit)}${why ? `: ${why}` : ""}. The developer approves it with: atelier approve ${kind} --head ${commit}`, 409);
   }
   match.consumed = { by: actor, at: now };
   save(store.sql, match);

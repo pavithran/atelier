@@ -3,7 +3,7 @@
 // additions by name where Atelier merges, and plain Git merges this file as
 // text; buildCapabilities validates names either way.
 export const CAPABILITY_DECLARATIONS = [
-  { name: "items.owner-port.v1", summary: "owner-only short-lived write credentials for an open unclaimed task fork, without claiming it" },
+  { name: "items.owner-port.v1", summary: "developer-only short-lived write credentials for an open unclaimed task fork, without claiming it" },
   { name: "reviews.post-merge.v1", summary: "review requests and verdicts audit recorded merges and file linked defects for blocking findings" },
   { name: "plans.integration.v1", level: 6, summary: "the integrated, integration-failed, refreshed and refresh-failed routes a plan's integrator posts" },
   { name: "plans.refresh.v1", level: 6, summary: "the plan refresh route, which atelier plan refresh and atelier merge post to take main into a plan's branch" },
@@ -13,8 +13,8 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "reviews.unparsable.v1", level: 17, summary: "the review-unparsable route a runner's review job calls" },
   { name: "reviews.skip.v1", level: 21, summary: "the review-skip route a runner posts for a review it will not serve; the queue's review tasks and the review request's answer name the request's number, and the landing counts skips by it" },
   { name: "reviews.skip-as-runner.v1", level: 22, summary: "a runner token posts review-skip for a review job it was offered, under the job's actor" },
-  { name: "reviews.admission.v1", level: 25, summary: "owner admission, withdrawal and listing of outside reviewers" },
-  { name: "models.note.v1", level: 18, summary: "dated owner notes under a pool model" },
+  { name: "reviews.admission.v1", level: 25, summary: "developer admission, withdrawal and listing of outside reviewers" },
+  { name: "models.note.v1", level: 18, summary: "dated developer notes under a pool model" },
   { name: "projects.require-criteria.v1", level: 19, summary: "a project that requires criteria refuses a task filed or cleared without them" },
   { name: "projects.commit-identity.v1", level: 24, summary: "project policy carries commitIdentity; init records commitName, commitEmail, agentEmails, privateEmails and publicMirrors" },
   { name: "runners.scoped-token.v1", level: 20, summary: "runner-scoped API credentials and the revocable Git gateway" },
@@ -24,14 +24,14 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "models.standing.v1", summary: "the pool's standing: atelier models set (POST /models/ID/set), and PUT /models takes state, roles and tier" },
   { name: "runners.run-skip.v1", summary: "the run-skip route a runner posts for a job other than a review it gives up after its failures, and the queue poll with why: true that says why each dispatch waits" },
   { name: "land.triage.v1", level: 28, summary: "the landing's triage step: the land step route records a triage, a --no-triage bypass and an --override-triage with the head, merge base and criteria binding, the project policy carries the triage model, and a landing Workflow triages before the review" },
-  { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
+  { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's developer-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
   { name: "refresh.tasks.v1", summary: "the task refresh queue (t462): the refreshes route, the refresh-lease, refresh-pushing and refresh-checked routes, the refreshed and refresh-failed routes taking a task's lease, the task-refresh and task-resolve queue jobs, and the project policy's resolvers" },
-  { name: "projects.stuck.v1", summary: "the owner-only read-only stuck report, GET /projects/:p/stuck, which atelier stuck reads" },
+  { name: "projects.stuck.v1", summary: "the developer-only read-only stuck report, GET /projects/:p/stuck, which atelier stuck reads" },
   { name: "dispatch.orphaned-claims.v1", summary: "a claim whose runner has not polled (or sent a heartbeat) within RUNNER_GONE_MS holds no dispatch: the queue lists it as orphaned on the waiting task, and the stuck report as an orphaned-claim entry" },
   { name: "reviews.criteria-review.v1", summary: "the criteria-review routes (request, claim, verdict, failure and finding resolution) that review a task's acceptance criteria before its build, and the project policy's requireCriteriaReview" },
   { name: "land.review-first.v1", summary: "review before the runway (t550): the landing Workflow merges main, checks, submits and reviews without the landing lease, takes it for the merge alone once the gate holds the head checked and approved, and confirms main has not moved under it, renewing the lease until the merge is recorded; the landing-lease route's { item, confirm: true, main } records the main the holder confirmed (read again by the server), and the merge route refuses that head into any other main (main_moved); the land step route records the release step and the lease step's main, beforeLease and waited" },
-  { name: "projects.mode.v1", summary: "the project's mode (t585): GET /projects/:p/mode says full or fast and what landed fast, and the owner's POST { mode, reason } switches it, recorded as a decision" },
-  { name: "land.fast.v1", summary: "fast mode's landed-fast route (t585): the owner records a task merged from a local checkout with its receipt, and asks its post-merge review, which a model of the builder's family may answer" },
+  { name: "projects.mode.v1", summary: "the project's mode (t585): GET /projects/:p/mode says full or fast and what landed fast, and the developer's POST { mode, reason } switches it, recorded as a decision" },
+  { name: "land.fast.v1", summary: "fast mode's landed-fast route (t585): the developer records a task merged from a local checkout with its receipt, and asks its post-merge review, which a model of the builder's family may answer" },
   { name: "projects.publication-policy.v1", summary: "project policy's commitIdentity carries publicMirrorDestinations, privatePaths and privatePatterns, which init records and publish REMOTE reads for the public mirror check" },
   { name: "runners.fast-build.v1", summary: "fast mode's builds without a fork (t589): the queue marks a plain build fast while the project is in fast mode, POST items/tN/fast-take takes it with no fork and no write token, POST items/tN/fast-ready reports the commit built as ready for fast land, and GET /projects/:p/mode lists the ready commits" },
 ] as const;

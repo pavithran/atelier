@@ -132,9 +132,9 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   const html=renderItem(project,d,'PAVI',diff);
   expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the developer's override, not a review");
   // The brief says it once; the header's description is not drawn beside that brief (finding 7).
-  expect(html).toContain('The project owner overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('Accept revision');
+  expect(html).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('Accept revision');
   d.item.state='accepted';d.item.acceptedHead=head;
-  expect(renderItem(project,d,'PAVI',diff)).toContain('The project owner overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');
+  expect(renderItem(project,d,'PAVI',diff)).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');
   const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
   expect(renderItem(project,moved,'PAVI',diff)).not.toContain('Review overridden');
  });
@@ -781,7 +781,7 @@ it('a blocked task\'s detail offers the task page\'s own Unblock form, and a mer
  const form=/<form method="post" action="\/ui\/example\/t2\/unblock">.*?<\/form>/s.exec(renderItem(project,d,'PAVI',shown(d)))![0];
  expect(html.slice(html.indexOf('<section class="review-sheet decision-detail"'))).toContain(form);
  expect(html).toContain('<p class="dec-word ask">Blocked</p>');
- expect(html).toContain('<p class="dec-because">codex/gpt-6 blocked it: waits on keys. It keeps its owner and workspace, and nothing moves until it is unblocked.</p>');
+ expect(html).toContain('<p class="dec-because">codex/gpt-6 blocked it: waits on keys. It keeps its holder and workspace, and nothing moves until it is unblocked.</p>');
  const m=threaded('t3','Shipped');m.item.state='merged';m.item.acceptedHead=head;
  const ship=renderInbox([place([m.item],[{itemId:'t3',kind:'ship'}])],[project],'PAVI',{project,detail:m,diff:null});
  expect(ship).toContain('<p class="dec-word signal">To ship</p>');
@@ -1798,13 +1798,13 @@ it('each review on the task page says who recorded it (t215)',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.reviews=[
   {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'own token',at:time,recordedBy:'claude-code/opus-5.5',proved:true,claimed:false},
-  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the owner',at:time,recordedBy:'pavi',proved:false,claimed:false},
+  {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'antigravity/gemini-3.1-pro',note:'named by the developer',at:time,recordedBy:'pavi',proved:false,claimed:false},
   {itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'zcode/glm-5.3',note:'served',at:time,recordedBy:'pavi',proved:false,claimed:true},
  ];
  const html=renderItem(project,d,'PAVI',diff);
  expect(html).toContain('claude-code/opus-5.5 · ');expect(html).toContain('recorded by claude-code/opus-5.5 with its own token');
- expect(html).toContain('recorded by the project owner with the owner token</p>');
- expect(html).toContain('recorded by the project owner with the owner token, answering a review request it claimed');
+ expect(html).toContain('recorded by the developer with the owner token</p>');
+ expect(html).toContain('recorded by the developer with the owner token, answering a review request it claimed');
 });
 it('a merged task shows its change as it landed, with no merge preview or conflict warning',()=>{
  const d=detail();d.item={...d.item,state:'merged',owner:null,acceptedHead:head};

@@ -35,7 +35,7 @@ test("releasing a held dispatch keeps its builder, job, head, note and place, an
 test("releasing a hold refuses a task with no dispatch and one a runner has claimed", () => {
   assert.throws(() => retainDispatch(item() as never, {}, [], policy), /no dispatch to release/);
   const claimed = item({ state: "claimed", owner: "codex/gpt-6", dispatch: makeDispatch({}, "pavi", T) });
-  assert.throws(() => retainDispatch(claimed as never, {}, [], policy), /owned by codex\/gpt-6/);
+  assert.throws(() => retainDispatch(claimed as never, {}, [], policy), /held by codex\/gpt-6/);
 });
 
 // An overlap override sent as a dispatch edits the existing offer (t491).

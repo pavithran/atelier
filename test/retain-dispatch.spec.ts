@@ -110,7 +110,7 @@ it("--overlap-ok with a builder the owner holds from building is refused and cha
   const id = ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
   const first = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "keep" });
   const { dispatch } = (await first.json()) as { dispatch: Record<string, unknown> };
-  for (const [model, why] of [["qwen3-coder-next", /paused since 2026-10-06 \(the owner's standing\): AI Studio down/], ["kimi-k3", /not a builder; its roles are review/]] as const) {
+  for (const [model, why] of [["qwen3-coder-next", /paused since 2026-10-06 \(the developer's standing\): AI Studio down/], ["kimi-k3", /not a builder; its roles are review/]] as const) {
     const res = await call("POST", `/projects/${name}/items/${id}/dispatch`, { retain: true, overlapOk: true, model });
     expect(res.status, model).toBe(409);
     const body = (await res.json()) as { error: string; detail: string };

@@ -378,13 +378,13 @@ test("a paused or reserved model is skipped for build and review alike, with its
   const paused = one([{ ...glm, state: "paused", stateAt: AT, note: "source down" }, gpt, opus]);
   assert.equal(paused.builder!.actor, "codex/gpt-6-astra");
   assert.equal(paused.reviewer!.actor, "claude-code/opus-5.5");
-  assert.deepEqual(paused.excluded, [{ actor: "zcode/glm-5.3", reasons: ["paused since 2026-10-04 (the owner's standing): source down"] }]);
+  assert.deepEqual(paused.excluded, [{ actor: "zcode/glm-5.3", reasons: ["paused since 2026-10-04 (the developer's standing): source down"] }]);
   // A paused model is not even an alternate behind the builder.
   assert.deepEqual(actors(paused.alternates), ["claude-code/opus-5.5"]);
   // reserved is the same hold, whatever its reason; the date is the entry's.
   const reserved = one([{ ...glm, state: "reserved", note: "astra's credits" }, gpt, opus]);
   assert.equal(reserved.builder!.actor, "codex/gpt-6-astra");
-  assert.deepEqual(reserved.excluded, [{ actor: "zcode/glm-5.3", reasons: ["reserved since 2026-10-04 (the owner's standing): astra's credits"] }]);
+  assert.deepEqual(reserved.excluded, [{ actor: "zcode/glm-5.3", reasons: ["reserved since 2026-10-04 (the developer's standing): astra's credits"] }]);
   // A paused model is never the reviewer either: with only gpt and a paused opus, no reviewer remains.
   const noReview = one([gpt, { ...opus, state: "paused", note: "source down" }]);
   assert.equal(noReview.builder!.actor, "codex/gpt-6-astra");
