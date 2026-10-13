@@ -5,7 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import {
   decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageFormat, triageModelRefusal, triageRecord, triageSettingRefusal, triageStandsRefusal,
@@ -17,7 +17,7 @@ import {
 // unsure, no criteria, a malformed reply, a harness that fails or never
 // answers, and a model the pool refuses each stop the landing before the
 // task is submitted, with the findings and the command to run again, the
-// lease released and nothing asked of a reviewer. The owner's bypass and
+// lease never taken (t550) and nothing asked of a reviewer. The owner's bypass and
 // override are recorded, with the head and the criteria binding, before the
 // landing goes on, and a record the server refuses stops it. Triage results
 // are bound to the head, its merge base and the criteria, and run again when
@@ -68,7 +68,7 @@ function landing(t, { submitted = false, args = {}, answers = [allMet()], criter
   const item = () => ({ id: "t1", title: "Widget", brief: "Render the widget.", state, owner: "claude-code/opus-5.5", head: HEAD, accept: accept(), scope: [] });
   const request = async (method, path, body) => {
     log.push({ method, path, body });
-    if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
+    if (path === "/version") return { capabilities: SERVER_CAPABILITIES, commit: "c0ffee" };
     if (path === "/models") return pool;
     if (path === leasePath && method === "GET") return { lease: null, waiting: [] };
     if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state } };
@@ -134,6 +134,9 @@ function landing(t, { submitted = false, args = {}, answers = [allMet()], criter
     triages: () => recorded.filter((e) => e.kind === "land.triage").map((e) => e.data),
     reviewAsked: () => log.some((c) => c.path === `${itemPath}/review-request`),
     released: () => log.some((c) => c.path === leasePath && c.body?.cancel === true),
+    // Whether the landing asked for the lease at all: since t550 a triage
+    // that stops ends the landing before it ever does.
+    leased: () => log.some((c) => c.path === leasePath && c.method === "POST" && !c.body?.cancel),
     at, output: () => lines.join("\n"),
     reviewRouteTouched: () => log.some((c) => typeof c.path === "string" && /\/(review|reviews|review-claim|approve|reject)(\/|$)/.test(c.path)),
   };
@@ -270,7 +273,7 @@ for (const [what, answers, pattern] of [
   ["a harness that fails", [new Error("could not run codex: ENOENT")], /triage is unavailable: codex\/gpt-6-astra could not be run \(could not run codex: ENOENT\)/],
   ["a harness that never answers", ["hang"], /triage timed out: codex\/gpt-6-astra gave no answer within 200 ms/],
 ]) {
-  test(`plain land stops before the review request on ${what}, shows the findings and the retry, releases the lease and leaves the task claimed (t475)`, async (t) => {
+  test(`plain land stops before the review request on ${what}, shows the findings and the retry, never takes the lease and leaves the task claimed (t475)`, async (t) => {
     const l = landing(t, { args: { triage: "codex/gpt-6-astra" }, answers });
     await assert.rejects(runLand(l.io), (error) => {
       assert.match(error.message, pattern);
@@ -281,7 +284,7 @@ for (const [what, answers, pattern] of [
     });
     assert.deepEqual(l.commands(), ["push"], "nothing submitted");
     assert.equal(l.reviewAsked(), false, "no review request");
-    assert.ok(l.released(), "the lease is released");
+    assert.equal(l.leased(), false, "the lease is never taken");
     assert.deepEqual(l.triages().map((d) => [d.outcome, d.head, d.base, d.triager]), [["stopped", HEAD, BASE, "codex/gpt-6-astra"]]);
   });
 }
@@ -384,7 +387,7 @@ test("criteria that change while the model triages are triaged again before the 
   });
   assert.equal(after.asked.length, 1);
   assert.equal(after.reviewAsked(), false);
-  assert.ok(after.released());
+  assert.equal(after.leased(), false);
 
   // Criteria that never settle stop the landing rather than triage for ever.
   let n = 0;
@@ -451,7 +454,7 @@ test("a bypass or an override the server does not record stops the landing befor
   await assert.rejects(runLand(bypass.io), /The bypass of the triage \(--no-triage\) could not be recorded on the ledger, so the landing stops before the review request: not_project_owner/);
   assert.deepEqual(bypass.commands(), ["push"]);
   assert.equal(bypass.reviewAsked(), false);
-  assert.ok(bypass.released());
+  assert.equal(bypass.leased(), false);
 
   const override = landing(t, { args: { triage: "codex/gpt-6-astra", "override-triage": "the route is checked by hand" }, answers: [reply([met(1), met(2, { status: "not-met" })])], landFails: (b) => b.outcome === "overridden" });
   await assert.rejects(runLand(override.io), /The override of the stopped triage \(--override-triage\) could not be recorded on the ledger/);
@@ -517,13 +520,13 @@ test("conflicting triage flags are refused before the lease is taken or anything
 test("--dry-run reports the triage choice and its source without calling a model or recording anything (t475)", async (t) => {
   const flag = landing(t, { args: { "dry-run": true, triage: "codex/gpt-6-astra" } });
   await runLand(flag.io);
-  assert.match(flag.output(), /5\. triage the pushed head's diff against its merge base with main and t1's 2 acceptance criteria with codex\/gpt-6-astra \(from --triage\), going on only when every criterion is met/);
+  assert.match(flag.output(), /4\. triage the pushed head's diff against its merge base with main and t1's 2 acceptance criteria with codex\/gpt-6-astra \(from --triage\), going on only when every criterion is met/);
   const project = landing(t, { args: { "dry-run": true }, project: { triage: "codex/gpt-7" } });
   await runLand(project.io);
   assert.match(project.output(), /with codex\/gpt-7 \(from project\.triage\); as the pool stands it would stop: codex\/gpt-7 is not in the model pool/);
   const off = landing(t, { args: { "dry-run": true } });
   await runLand(off.io);
-  assert.match(off.output(), /5\. run no triage \(no --triage, and the project sets no triage\), then run the required checks/);
+  assert.match(off.output(), /4\. run no triage \(no --triage, and the project sets no triage\), then run the required checks/);
   const bypass = landing(t, { args: { "dry-run": true, "no-triage": "hotfix" }, project: { triage: "codex/gpt-6-astra" } });
   await runLand(bypass.io);
   assert.match(bypass.output(), /record your bypass of the triage \(--no-triage: "hotfix"\)/);
@@ -561,7 +564,7 @@ test("a Workflow landing triages before the local checks and reports the head on
   assert.equal(off.log.find((c) => c.body?.event?.type === "workspace")?.body.event.payload.triage, undefined);
 });
 
-test("a Workflow landing whose triage stops reports a failed workspace, so the Workflow submits nothing, asks for no review and releases the lease (t475)", async (t) => {
+test("a Workflow landing whose triage stops reports a failed workspace, so the Workflow submits nothing, asks for no review and never takes the lease (t475)", async (t) => {
   for (const answers of [[reply([met(1), met(2, { status: "unsure" })])], [new Error("codex is down")], ["hang"]]) {
     const l = landing(t, { workflow: true, args: { triage: "codex/gpt-6-astra" }, answers });
     await assert.rejects(runLand(l.io), (error) => {
