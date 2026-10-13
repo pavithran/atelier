@@ -53,17 +53,17 @@ independence names it, so the same model under two harnesses or a
 registered alias is one record. Its work is what it held: how much was
 approved at its first review by another model, how many review rounds a
 merged item went through, every rejection with the note that gave its
-cause, and every defect the owner traced to its accepted work. Its verdicts
+cause, and every defect the developer traced to its accepted work. Its verdicts
 are its own reviews: an approval of a revision a defect was later traced to
 is contradicted, and so is a review run that never reached a verdict. Its
-runs are those that failed, as the runners and the owner reported them. The
-owner's approvals of its work are counted apart and are never a model's
-verdict: those made on the task page, which only the signed-in owner
-reaches, apart from those recorded through the API with the owner token, as
+runs are those that failed, as the runners and the developer reported them. The
+developer's approvals of its work are counted apart and are never a model's
+verdict: those made on the task page, which only the signed-in developer
+reaches, apart from those recorded through the API with the developer token, as
 the orchestrator records them. An approval recorded before Atelier kept the
 two apart is counted as unrecorded.
 
-The record also holds the measures a comparison of models needs. The owner
+The record also holds the measures a comparison of models needs. The developer
 adjudicates each finding of a review and records a verdict on it, which
 counts the reviewer's precision: a finding confirmed or marked fixed is
 kept, a refuted one was wrong, and the record shows how many of each a
@@ -79,7 +79,7 @@ its plan part when there is one, else unknown.
 
 Review precision is shown in a section of its own on the Models page, over
 the last 30 days with the dates stated: for each reviewer model, the
-blocking findings the owner judged (n), those confirmed or fixed, those
+blocking findings the developer judged (n), those confirmed or fixed, those
 refuted, and the share confirmed or fixed. Each finding counts once, by its
 newest verdict (`src/models/precision.ts`). Under 5 judged findings the row
 shows n and says it is too few to rank. Routing reads the same figure, from
@@ -106,15 +106,15 @@ the item itself does not change. `atelier finding` records a verdict on one
 finding of a review, at the head the review was made at and the finding's
 position in its findings, one based. A later review of the task shows the
 reviewer each earlier finding, numbered as `--index` counts it, with the
-owner's verdict and note, and says that a refuted finding is repeated only
-with new evidence that the owner's answer is wrong, quoting the code. A run ends without a result the ledger
+developer's verdict and note, and says that a refuted finding is repeated only
+with new evidence that the developer's answer is wrong, quoting the code. A run ends without a result the ledger
 saw when it stalls, times out or is refused, or when the harness stops
 early, stops at a permission, designs something a task already had, or
 leaves a merge incomplete. The runner reports a run through `POST /api/runs`
-with the owner token and its name in `X-Atelier-Runner`, as it reports
+with the developer token and its name in `X-Atelier-Runner`, as it reports
 usage: the agent it ran, the role (`build` or `review`), the outcome, the
 project and task when there is one, and a detail. `atelier run-report` lets
-the owner record a run by hand for a run outside the runner. `bin/seed-2026-10-06`
+the developer record a run by hand for a run outside the runner. `bin/seed-2026-10-06`
 prints the `atelier finding` and `atelier run-report` commands that record
 the 2026-10-06 adjudications in `docs/data/adjudications-2026-10-06.json`;
 it records the run reports only with `--apply`, since a finding's head and
@@ -129,7 +129,7 @@ evidence still decide the score.
 
 A harness can serve another model than the one its events name: zcode
 follows its app's provider settings, and served deepseek-flash while its
-events said glm-5.3. The owner records what served them:
+events said glm-5.3. The developer records what served them:
 
 ```text
 atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
@@ -144,7 +144,7 @@ counts, so a mistaken one is corrected by another. The track record, the
 reliability record, the Models page and the graph count an annotated event
 under the served model in the recorded harness, here `zcode/deepseek-flash`.
 `bin/annotate-t95` holds the commands that correct the record for task t95;
-the owner runs it, first without `--apply`.
+the developer runs it, first without `--apply`.
 
 ## Usage, limits and balances
 
@@ -156,7 +156,7 @@ served with requests, tokens and cost over the last 5 hours, 24 hours and
 and when; a report older than three hours is marked stale, and a figure
 past a threshold is tagged. `GET /api/usage` returns the same reports with
 the thresholds and the alerts in force. A report is a status like a
-model's: `POST /api/usage/TOOL` takes the owner token and the runner's
+model's: `POST /api/usage/TOOL` takes the developer token and the runner's
 name in `X-Atelier-Runner`, and keeps one report per tool and runner.
 
 Alerts go through the `NTFY_TOPIC` notification already used for decisions,
@@ -290,7 +290,7 @@ reliability tie-breaker does.
 
 ## Admitting an outside reviewer
 
-The project owner can admit a registered model as a reviewer in one project:
+The developer can admit a registered model as a reviewer in one project:
 
 ```text
 atelier models add Qwen3-Coder-Next --harness opencode --where home --endpoint http://ai-server:8000/v1 --alias studio-review
@@ -302,7 +302,7 @@ atelier models withdraw Qwen3-Coder-Next --project weblog --reason "Retiring thi
 
 Admissions use the registered canonical id and its aliases, irrespective of
 harness. They grant the assessor role only in that project; they grant no
-builder role. Admit and withdraw both record the owner, reason and server time
+builder role. Admit and withdraw both record the developer, reason and server time
 in the project event history. Repeat `models admit` to readmit a model.
 An unknown family or an alias that disguises another family is refused.
 
@@ -310,7 +310,7 @@ Each new admitted review must be from another family than **every** contributor
 by default. In single-family mode it must instead come from a different model
 of the selected company from every contributor; no other company qualifies.
 Every admitted review must name the current head and acceptance-criteria binding. Admission does
-not turn an owner-token assertion into a proved review: the model must use its
+not turn a developer-token assertion into a proved review: the model must use its
 own actor token or answer a review request it claimed, as before. A recorded
 review retains its admission snapshot. Withdrawal cancels outstanding requests
 and refuses new verdicts; it preserves past approvals at their original head
