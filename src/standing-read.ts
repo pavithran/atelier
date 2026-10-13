@@ -20,6 +20,9 @@ export interface StandingSource {
   events(id: string, limit: number): Promise<LedgerEvent[]>;
   detail(id: string): Promise<Detail>;
   sessions(limit: number): Promise<SessionNote[]>;
+  // The project's mode (t585); a source without it, or one that cannot be
+  // read, leaves the standing without a mode line.
+  mode?(): Promise<{ mode: string; line: string }>;
 }
 
 // `offers` and `pool` are null when they could not be read; `limit` is how
@@ -40,8 +43,10 @@ export async function readStanding(
     try { details.set(id, await L.detail(id)); } catch { /* the line keeps the inbox's own reason */ }
   }));
   const sessions = await L.sessions(1).catch(() => null);
+  // Fast mode's line, with the developer's words and the acting model when it was switched on their direction (t629).
+  const mode = L.mode ? await L.mode().catch(() => null) : null;
   const standing = buildStanding(project, items ?? [], taskEvents, limit, attention, details, now);
   if (!sessions) standing.partial.push("The last session's note could not be read.");
   const unread = [...items ? [] : ["tasks" as const], ...inbox ? [] : ["notices" as const]];
-  return { ...standing, session: sessions?.[0], ...unread.length ? { unread } : {} };
+  return { ...standing, session: sessions?.[0], ...unread.length ? { unread } : {}, ...mode?.mode === "fast" ? { mode: mode.line } : {} };
 }

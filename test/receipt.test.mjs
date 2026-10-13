@@ -122,6 +122,16 @@ test("the receipt names the acting model and the verdict a defect contradicts", 
   assert.match(lines[4], /defect recorded by pavi at bbbbbbbb: Still drops the last row; contradicts the refuted verdict, event 2, on finding 1$/);
 });
 
+// t629: an override on the developer's direction says whose words and which
+// model relayed them, so every such override says afterwards who asked and why.
+test("the receipt names the developer's words an override was made on", () => {
+  const story = { item: detail().item, events: [
+    ev(1, "2026-10-13T21:20:00.000Z", "pavi", "review.overridden", { head: B, reason: "No other family", confirmed: "direction", quote: "override it, nobody else can review", acting: "claude-code/opus-5.5" }),
+  ] };
+  const text = receiptText("atelier", "t1", story);
+  assert.match(text, /independent review overridden by pavi, declared acting claude-code\/opus-5\.5: No other family; on the developer's words: “override it, nobody else can review”/);
+});
+
 test("the receipt as JSON carries the item's events in the ledger's order, whole", () => {
   const json = receiptJson("atelier", "t1", detail());
   assert.deepEqual(json, { project: "atelier", id: "t1", title: "Fix the parser", state: "merged", events: [...detail().events].sort((a, b) => a.seq - b.seq) });

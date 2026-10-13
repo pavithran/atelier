@@ -33,6 +33,20 @@ test("the text is one line per item under plain headings, and says what each par
   assert.equal(out.filter((l) => /^\s+t\d/.test(l)).length, 5);
 });
 
+// t629: a merge by override on the developer's direction shows their words and the model that relayed them.
+test("a merge by override on the developer's direction says whose words and which model", () => {
+  const out = formatStanding(standing({ overrides: [
+    { id: "t4", title: "Overridden", at: "2026-10-13T12:00:00.000Z", reason: "No other family", quote: "override it", acting: "claude-code/opus-5.5" },
+    { id: "t5", title: "Paged", at: "2026-10-13T12:00:00.000Z", reason: "No other family" },
+  ] }), "PAVI", "https://a.test").split("\n");
+  assert.ok(out.includes("  t4  https://a.test/p/demo/t4  2026-10-13 12:00 UTC  Overridden  reason: No other family  the developer's words: “override it”, relayed by claude-code/opus-5.5"), out.join("\n"));
+  assert.ok(out.includes("  t5  https://a.test/p/demo/t5  2026-10-13 12:00 UTC  Paged  reason: No other family"), out.join("\n"));
+  // Fast mode switched on the developer's direction is the line under the heading.
+  const fast = formatStanding(standing({ mode: "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: \u201cgo fast\u201d, relayed by claude-code/opus-5.5" }), "PAVI").split("\n");
+  assert.equal(fast[1], "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: \u201cgo fast\u201d, relayed by claude-code/opus-5.5");
+  assert.notEqual(formatStanding(standing(), "PAVI").split("\n")[1], fast[1]);
+});
+
 test("a waiting line says what to do and links it; the pipeline and overlapping scopes are counted, not listed", () => {
   const out = formatStanding(standing({
     waiting: [{ id: "t4", title: "Blocked", call: "unblock", sentence: "Settle what blocks it, then unblock it so it goes on.", href: "/p/demo/t4", command: "atelier unblock t4 --project demo", why: "blocked by a/b: keys", brief: null }],

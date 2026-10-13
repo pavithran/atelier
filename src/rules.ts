@@ -171,7 +171,43 @@ export interface ReviewOverride {
   // time of the page's own override form, or of the standing permission an
   // `atelier accept --override-review` then used.
   confirmedAt?: string;
+  // An override on the developer's direction (t629): the developer's own
+  // words the command carried, and the harness/model that sent them.
+  quote?: string;
+  acting?: string;
 }
+
+// The developer's direction (t629): their own words, quoted by the session
+// acting on them, and the harness/model that session is (X-Atelier-Acting,
+// atelier --as). PAVI decided on 2026-10-13 that it suffices, on every
+// project, for the developer token to switch to fast mode or override a
+// missing independent review: "even touch id is too much. why isn't my
+// direction sufficient?" This reverses t596 and the command-line half of
+// t371, which Astra's audit of 2026-10-13 (finding 3) had led to: an agent
+// session holding the developer token, acting on a mistaken or injected
+// instruction, can now lower a gate. That risk is accepted on one condition,
+// that every such switch says afterwards who asked and why: the words and
+// the acting model are required and recorded on the event, the override or
+// the mode, and shown on the task page, the status and the receipt. A
+// project set up with --no-override still refuses both.
+export interface OwnerDirection { quote: string; acting: string }
+export const DIRECTION_QUOTE_MAX = 2000;
+
+// The direction a request carries, or null when it carries no words (then
+// the page's permission is needed, as before). Words that are blank, not
+// text or too long, or words with no acting model, are refused.
+export function ownerDirection(quote: unknown, acting: string | null | undefined, what: string): OwnerDirection | null {
+  if (quote === undefined) return null;
+  const words = typeof quote === "string" ? quote.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
+  if (!words) throw new RuleError("bad_quote", `${what} on the developer's direction needs the developer's words: --quote "what the developer said"`, 400);
+  if (words.length > DIRECTION_QUOTE_MAX) throw new RuleError("too_long", `the developer's words are at most ${DIRECTION_QUOTE_MAX} characters`, 400);
+  if (!acting) throw new RuleError("no_acting", `${what} on the developer's direction names the model acting on it: --as H/M or ATELIER_ACTOR, such as claude-code/opus-5.5`, 400);
+  return { quote: words, acting };
+}
+
+// What every refusal for want of a confirmation adds: the direction is the
+// other way, from the command line itself.
+const DIRECTION_HINT = `or run it again with --quote "the developer's words" and --as H/M naming the model acting on them`;
 
 // The owner's permission for an override made with the owner token (t371).
 // An agent session acting with that token recorded every override on ourAI,
@@ -225,7 +261,7 @@ export const NO_OWNER_FACTOR = "this server can take no confirmation: put its pa
 // Ledger does not; null for a server that takes none).
 export function overrideConfirmationHint(project: string, id: string, origin = "", factor?: OwnerFactor | null): string {
   const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the developer, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
-  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
+  return `${page}; ${DIRECTION_HINT}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
 }
 
 // The merged items that went in on the owner's override: those whose override
@@ -2057,7 +2093,7 @@ export function reviewLeaseExpired(renewedAt: string | null | undefined, now: nu
 // post-merge review. It has no end time; the owner switches back to full.
 export type ProjectMode =
   | { mode: "full" }
-  | { mode: "fast"; since: string; reason: string; by: string; decision: string | null };
+  | { mode: "fast"; since: string; reason: string; by: string; decision: string | null; quote?: string; acting?: string };
 
 export const MODE_REASON_MAX = 500;
 
@@ -2066,15 +2102,24 @@ export const MODE_REASON_MAX = 500;
 export function projectMode(record: unknown): ProjectMode {
   const r = record as Record<string, unknown> | null | undefined;
   if (!r || r.mode !== "fast" || typeof r.since !== "string" || typeof r.reason !== "string" || typeof r.by !== "string") return { mode: "full" };
-  return { mode: "fast", since: r.since, reason: r.reason, by: r.by, decision: typeof r.decision === "string" ? r.decision : null };
+  const direction = typeof r.quote === "string" && typeof r.acting === "string" ? { quote: r.quote, acting: r.acting } : {};
+  return { mode: "fast", since: r.since, reason: r.reason, by: r.by, decision: typeof r.decision === "string" ? r.decision : null, ...direction };
 }
 
 const utcMinute = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 
 // The one line every surface prints: "Mode: full" or
-// "Mode: fast since 2026-10-13 14:05 UTC (reason)".
+// "Mode: fast since 2026-10-13 14:05 UTC (reason)", and, for a switch on the
+// developer's direction (t629), whose words and which model relayed them.
 export function modeLine(mode: ProjectMode): string {
-  return mode.mode === "fast" ? `Mode: fast since ${utcMinute(mode.since)} (${mode.reason})` : "Mode: full";
+  if (mode.mode !== "fast") return "Mode: full";
+  const direction = mode.quote ? `; ${directionText(mode)}` : "";
+  return `Mode: fast since ${utcMinute(mode.since)} (${mode.reason})${direction}`;
+}
+
+// How a record made on the developer's direction says so, everywhere it is shown.
+export function directionText(d: { quote?: string; acting?: string }): string {
+  return `the developer's words: \u201c${d.quote ?? ""}\u201d, relayed by ${d.acting ?? "an unnamed model"}`;
 }
 
 // The switch the owner asks for, checked before anything is written.
@@ -2100,11 +2145,11 @@ export function assertFastMode(mode: ProjectMode): asserts mode is Extract<Proje
 // independent review is (Astra's audit of 2026-10-13, finding 3): a project
 // that forbids overrides (`atelier init --no-override`) refuses the switch
 // to fast mode and every fast landing, and the switch to fast mode needs the
-// developer's confirmation with the factor no agent holds, never the
-// developer token alone. The developer gives it as a permission on the
-// project's Settings page, good for OVERRIDE_CONFIRMATION_MS and one switch,
-// as `atelier accept --override-review` takes the task page's. Switching
-// back to full needs none.
+// developer's confirmation. Since t629 that is either the developer's
+// direction (ownerDirection: their quoted words and the acting model, with
+// the developer token) or, as t596 made it, a permission given on the
+// project's Settings page with the factor no agent holds, good for
+// OVERRIDE_CONFIRMATION_MS and one switch. Switching back to full needs none.
 export interface FastModeConfirmation { by: string; at: string; until: string; factor: OwnerFactor }
 
 export function assertFastModeAllowed(policy: Pick<ProjectPolicy, "noOverride">): void {
@@ -2113,7 +2158,7 @@ export function assertFastModeAllowed(policy: Pick<ProjectPolicy, "noOverride">)
 
 export function fastModeConfirmationHint(project: string, origin = "", factor?: OwnerFactor | null): string {
   const page = `open ${origin}/p/${encodeURIComponent(project)}/settings as the developer, press "Allow fast mode from the command line" ${ownerFactorText(factor)}, then run atelier mode fast again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
-  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
+  return `${page}; ${DIRECTION_HINT}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
 }
 
 export function assertFastModeConfirmed(c: FastModeConfirmation | null | undefined, now: number, owner: string, project: string): void {
@@ -2137,6 +2182,9 @@ export interface FastReceipt {
   reason: string;
   at: string;
   by: string;
+  // The developer's words fast mode was switched on, and the model that relayed them (t629).
+  quote?: string;
+  acting?: string;
 }
 
 const SHA = /^[a-f0-9]{40,64}$/;
@@ -2150,7 +2198,7 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
   if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
   if (tests.where !== undefined && !FAST_TEST_WHERE.includes(tests.where as FastTestWhere)) throw new RuleError("bad_receipt", `the receipt says where the tests ran: ${FAST_TEST_WHERE.join(" or ")}`, 400);
   const where = tests.where as FastTestWhere | undefined;
-  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor };
+  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
 }
 
 // The builder a commit's message names: its last Agent: line, as harness/model.

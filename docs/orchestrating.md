@@ -805,16 +805,31 @@ reason, so every review brief carries it. Fast mode has no end time.
 
 Fast mode lands tasks without the gate, so it is held to what an override
 of the independent review is (Astra's audit of 2026-10-13, finding 3). The
-developer token alone does not switch to it: the developer first presses
-"Allow fast mode from the command line" on the project's Settings page,
-under their Cloudflare Access sign-in or giving the server's confirmation
-secret (OVERRIDE_SECRET), and then runs `atelier mode fast` within 15
-minutes; one permission allows one switch. Without it the command is
-refused and says so. A project set up with `atelier init --no-override`
-refuses the switch to fast mode and every fast landing. Switching back with
-`atelier mode full` needs no confirmation.
-`atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`, and
-the project's Overview says so while fast mode stands.
+developer's direction switches to it: the developer's own words in
+`--quote` and the model acting on them in `--as H/M`, with the developer
+token, on any project (t629, the developer's decision of 2026-10-13: their
+recorded direction suffices):
+
+```text
+atelier mode fast --reason "Artifacts fails every new fork" --quote "go to fast mode" --as claude-code/opus-5.5 --project demo
+```
+
+Both are required and both are recorded: on the mode, its standing
+decision and its `mode.fast` event, and in each fast landing's receipt.
+Without them the developer token alone does not switch: the developer
+first presses "Allow fast mode from the command line" on the project's
+Settings page, under their Cloudflare Access sign-in or giving the
+server's confirmation secret (OVERRIDE_SECRET), and then runs `atelier mode
+fast` within 15 minutes; one permission allows one switch. Without either
+the command is refused and says so. A project set up with `atelier init
+--no-override` refuses the switch to fast mode and every fast landing.
+Switching back with `atelier mode full` needs no confirmation. A server
+without `projects.developer-direction.v1` takes no `--quote`; the command
+says so, and the Settings page is the way until it is deployed.
+`atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`,
+followed for a switch on the developer's direction by their words and the
+model that relayed them, and the project's Overview says so while fast
+mode stands.
 
 ### Runner builds in fast mode
 

@@ -148,7 +148,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "publish", "push", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "start", "stuck", "token", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "adopt", "area", "board", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "publish", "push", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "start", "stuck", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
@@ -161,7 +161,9 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
   // mode switches the project's mode and fast lands in it (t585); fast take,
   // ready and status call the fast build's routes (t589).
-  assert.deepEqual(COMMAND_CAPABILITIES.mode, ["projects.mode.v1"]);
+  // mode fast, accept and merge send the developer's direction with --quote (t629).
+  assert.deepEqual(COMMAND_CAPABILITIES.mode, ["projects.mode.v1", "projects.developer-direction.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.accept, ["projects.developer-direction.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.fast, ["projects.mode.v1", "land.fast.v1", "runners.fast-build.v1"]);
   // stuck reads the owner's stuck report route (t441).
   assert.deepEqual(COMMAND_CAPABILITIES.stuck, ["projects.stuck.v1"]);
@@ -171,7 +173,7 @@ test("each command that relies on a named capability declares it in its module",
   for (const command of ["criteria-review", "criteria-review-claim", "criteria-verdict", "criteria-review-failed", "criteria-finding"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-review.v1"], command);
   for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
   // merge posts the owner's review and, for an accepted plan that conflicts with main, the plan refresh route.
-  assert.deepEqual(COMMAND_CAPABILITIES.merge, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "plans.refresh.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.merge, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "plans.refresh.v1", "projects.developer-direction.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.plan, ["plans.refresh.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES["review-unparsable"], ["reviews.unparsable.v1"]);
   // The declarations are the modules' own: the module says what the registry reads.
@@ -254,7 +256,7 @@ test("post-merge runs are guaranteed from legacy level 27 alone, and init and la
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 27).map((c) => c.name), ["land.post-merge.v1"]);
   for (const command of ["init", "land"]) {
     // init also requires the criteria review (t438) and the publication policy (t433), which no legacy level guarantees, checked below.
-    const upTo27 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.triage.v1" && n !== "reviews.criteria-review.v1" && n !== "projects.publication-policy.v1");
+    const upTo27 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.triage.v1" && n !== "reviews.criteria-review.v1" && n !== "projects.publication-policy.v1" && n !== "projects.developer-direction.v1");
     assert.deepEqual(checkCapabilities({ routeLevel: 26 }, upTo27).missing, ["land.post-merge.v1"], command);
     assert.equal(checkCapabilities({ routeLevel: 27 }, upTo27).ok, true, command);
   }
@@ -282,7 +284,7 @@ test("init and publish REMOTE require the publication policy by name, which no l
 test("the landing's triage is guaranteed from legacy level 28 alone, and init and land require it (t475)", () => {
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 28).map((c) => c.name), ["land.triage.v1"]);
   for (const command of ["init", "land"]) {
-    const upTo28 = COMMAND_CAPABILITIES[command].filter((n) => n !== "reviews.criteria-review.v1" && n !== "projects.publication-policy.v1");
+    const upTo28 = COMMAND_CAPABILITIES[command].filter((n) => n !== "reviews.criteria-review.v1" && n !== "projects.publication-policy.v1" && n !== "projects.developer-direction.v1");
     assert.deepEqual(checkCapabilities({ routeLevel: 27 }, upTo28).missing, ["land.triage.v1"], command);
     assert.equal(checkCapabilities({ routeLevel: 28 }, upTo28).ok, true, command);
   }
@@ -366,8 +368,8 @@ test("main's identity and reviewer admission guarantees keep their legacy bounda
   for (const command of ["adopt", "revert", "claim", "start", "wrap", "init", "land", "merge"]) {
     assert.ok(COMMAND_CAPABILITIES[command].includes("projects.commit-identity.v1"), command);
     // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477) and the triage step (28, t475),
-    // and init the criteria review (t438) and the publication policy (t433), which no level guarantees.
-    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1" && n !== "land.triage.v1" && n !== "reviews.criteria-review.v1" && n !== "projects.publication-policy.v1");
+    // and init the criteria review (t438) and the publication policy (t433), and merge the developer's direction (t629), which no level guarantees.
+    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1" && n !== "land.triage.v1" && n !== "reviews.criteria-review.v1" && n !== "projects.publication-policy.v1" && n !== "projects.developer-direction.v1");
     assert.deepEqual(checkCapabilities({ routeLevel: 23 }, upTo24).missing, ["projects.commit-identity.v1"]);
     assert.equal(checkCapabilities({ routeLevel: 24 }, upTo24).ok, true);
   }
@@ -521,7 +523,7 @@ function invocations(root) {
     { argv: ["new", "A short title", "--area", "a1", "--project", "proj"], required: COMMAND_CAPABILITIES.new },
     { argv: ["edit", "t1", "--title", "Another", "--project", "proj"], required: COMMAND_CAPABILITIES.edit },
     { argv: ["init", "--title", "Proj"], required: COMMAND_CAPABILITIES.init },
-    { argv: ["merge", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.merge },
+    { argv: ["merge", "t1", "--project", "proj"], required: requiredForCommand("merge", "t1", {}) },
     { argv: ["plan", "refresh", "t1", "--project", "proj"], required: ["plans.refresh.v1"] },
     { argv: ["models", "admit", "gpt", "--project", "proj", "--reason", "independent"], required: ["reviews.admission.v1"] },
     { argv: ["models", "withdraw", "gpt", "--project", "proj", "--reason", "retired"], required: ["reviews.admission.v1"] },
@@ -646,4 +648,35 @@ test("post-merge audits require a named capability without raising the frozen ro
   assert.equal(CAPABILITIES.find((c) => c.name === capability).level, undefined);
   assert.equal(checkCapabilities({ routeLevel: ROUTE_LEVEL + 100 }, [capability]).ok, false);
   assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, [capability]).ok, true);
+});
+
+// t629: the developer's direction (--quote with the acting model) lets the
+// developer token alone switch to fast mode or override a missing review, on
+// a server that publishes projects.developer-direction.v1. The live server
+// (dd7ebfe8) does not until it is deployed again, so --quote asks for the
+// capability, and a server without it is refused before any request, naming
+// the Settings page and the task page as the way until then. Without --quote
+// nothing more is asked, so the page's permission keeps working there.
+test("--quote asks for the developer's direction by name, and a server without it names the pages as the way until then (t629)", async (t) => {
+  const DIRECTION = "projects.developer-direction.v1";
+  assert.deepEqual(requiredForCommand("mode", "fast", { reason: "r" }), ["projects.mode.v1"]);
+  assert.deepEqual(requiredForCommand("mode", "fast", { reason: "r", quote: "go" }), ["projects.mode.v1", DIRECTION]);
+  assert.deepEqual(requiredForCommand("mode", "full", { quote: "go" }), ["projects.mode.v1"]);
+  assert.deepEqual(requiredForCommand("accept", "t1", { "override-review": "r" }), []);
+  assert.deepEqual(requiredForCommand("accept", "t1", { "override-review": "r", quote: "go" }), [DIRECTION]);
+  assert.ok(!requiredForCommand("merge", "t1", { head: SHA, "override-review": "r" }).includes(DIRECTION));
+  assert.ok(requiredForCommand("merge", "t1", { head: SHA, "override-review": "r", quote: "go" }).includes(DIRECTION));
+  const without = { commit: "dd7ebfe8aaaaaaaa", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES.filter((n) => n !== DIRECTION) };
+  for (const argv of [
+    ["mode", "fast", "--reason", "forks fail", "--quote", "go fast", "--project", "proj"],
+    ["accept", "t1", "--override-review", "no reviewer", "--quote", "override it", "--project", "proj"],
+    ["merge", "t1", "--head", SHA, "--override-review", "no reviewer", "--quote", "override it", "--project", "proj"],
+  ]) {
+    const f = await stub(t, without);
+    const r = await f.run(argv);
+    assert.equal(r.status, 1, `${argv.join(" ")}: ${r.output}`);
+    assert.match(r.output, /lacks capabilities projects\.developer-direction\.v1/, argv.join(" "));
+    assert.match(r.output, /Until then, the developer gives the permission on the project's Settings page \(Allow fast mode from the command line\) or the task's page \(Allow an override from the command line\), and the command runs again without --quote/, argv.join(" "));
+    assert.deepEqual(f.requests, [{ method: "GET", path: "/api/version" }], argv.join(" "));
+  }
 });

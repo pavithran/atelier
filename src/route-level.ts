@@ -100,7 +100,8 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, readonly string[]>> =
 // new declares area support, but only requires it when --area is supplied;
 // publish declares the mirror policy, required only by publish REMOTE.
 // models add declares the standing (t389), but only requires it with
-// --state, --roles or --tier.
+// --state, --roles or --tier. mode fast, accept and merge declare the
+// developer's direction (t629), but only require it with --quote.
 export function requiredForCommand(command: string, word?: string, flags: Readonly<Record<string, unknown>> = {}): string[] {
   const d = DECLARED[command];
   if (!d) return [];
@@ -110,7 +111,17 @@ export function requiredForCommand(command: string, word?: string, flags: Readon
     // Bare publish pushes the baseline; only publish REMOTE reads the mirror policy.
     (command !== "publish" || name !== "projects.publication-policy.v1" || word !== undefined) &&
     (command !== "models" || word !== "add" || name !== "models.standing.v1" || ["state", "roles", "tier"].some((f) => flags[f] !== undefined)),
-  );
+  ).filter((name) => name !== DIRECTION || flags.quote !== undefined);
+}
+
+// The developer's direction (t629): a server without it takes no --quote,
+// and the developer's permission on the pages is the way until it is
+// deployed. The refusal says so (capabilityFallback).
+export const DIRECTION = "projects.developer-direction.v1";
+export function capabilityFallback(missing: readonly string[]): string {
+  return missing.includes(DIRECTION)
+    ? "Until then, the developer gives the permission on the project's Settings page (Allow fast mode from the command line) or the task's page (Allow an override from the command line), and the command runs again without --quote"
+    : "";
 }
 
 // What each runner job needs. A job absent here runs without asking. Every

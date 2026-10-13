@@ -10,7 +10,9 @@ test("atelier mode fast's refusal says how to confirm and what to run again", ()
   const server = 'fast_mode_unconfirmed: fast mode needs the developer\'s confirmation, as an override of the independent review does: open https://a.test/p/demo/settings as the developer, press "Allow fast mode from the command line" giving the server\'s confirmation secret, then run atelier mode fast again within 15 minutes; the developer token alone does not confirm it';
   const said = fastRefusal(server, "demo", "forks fail");
   assert.ok(said.startsWith(server));
-  assert.match(said, /\nOnce allowed, run: atelier mode fast --reason "forks fail" --project demo$/);
+  assert.match(said, /\nOnce allowed, run: atelier mode fast --reason "forks fail" --project demo\n/);
+  // t629: or, on the developer's direction, the same command with their words and the acting model.
+  assert.match(said, /\nOr, on the developer's direction: atelier mode fast --reason "forks fail" --quote "the developer's words" --as H\/M --project demo$/);
   const forbidden = "fast_mode_forbidden: this project forbids overrides of the independent review (atelier init --no-override), and fast mode lands without that review, so fast mode is refused";
   assert.equal(fastRefusal(forbidden, "demo", "x"), forbidden);
 });
