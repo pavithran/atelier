@@ -17,9 +17,10 @@
 // the older, supplied vendor descriptions; they stay there, labelled as
 // priors, and are shown beside the cards, never stored as cards.
 
-import { RuleError } from "../rules.ts";
+import { modelKey, RuleError } from "../rules.ts";
+import { canonicalModel, type PoolNames } from "./judgement.ts";
 import { HARNESSES, LOOKS_LIKE_KEY } from "./pool.ts";
-import type { ModelEvidence } from "./registry.ts";
+import { MODEL_PROFILES, type ModelEvidence } from "./registry.ts";
 
 export interface CardConditions {
   harness?: string;    // the harness or scaffold the vendor ran it in: Claude Code, Codex, Terminus 2
@@ -149,6 +150,14 @@ function day(v: unknown, what: string): string {
 const PRIVATE_HOST = /(?:^|\.)(?:localhost|local|localdomain|internal|intranet|lan|home|corp|private|home\.arpa)$/;
 export function cleanSource(v: unknown): string {
   const raw = text(v, "source", 500, true)!;
+  // The authority as it was typed, decoded and NFKC-normalised as the URL
+  // parser decodes a host but before it lowercases it, so a key's case-bound
+  // prefix (AKIA) survives an encoded or full-width spelling (Astra's third
+  // review of t625, 2026-10-13, finding 2).
+  const authority = /^[a-z][a-z0-9+.-]*:\/*([^/?#\\]*)/i.exec(raw)?.[1] ?? "";
+  let typed = authority;
+  try { typed = decodeURIComponent(authority); } catch { /* the parser refuses it below, or the raw form is scanned */ }
+  if (LOOKS_LIKE_KEY.test(authority) || LOOKS_LIKE_KEY.test(typed.normalize("NFKC"))) throw bad("source looks like it carries a key; a key belongs in the Keychain");
   let url: URL;
   try { url = new URL(raw); } catch { throw bad("source must be a URL, such as https://vendor.example/model-card"); }
   if (url.protocol !== "https:") throw bad("source must be an https URL");
@@ -254,27 +263,51 @@ function endings(records: readonly CardRecord[]): Map<string, { state: CardState
   return ended;
 }
 
-// What a new record does among the model's records, before it is stored:
-// the record that already says the same thing (a retry, answered with it and
-// stored again never, whatever has happened to it since: a replay neither
-// brings back a withdrawn card nor is refused for a later ending, Astra's
-// review of t625, 2026-10-13, finding 2), or a refusal when it names a card that is not the
-// model's or has already ended. `records` are the model's, oldest first.
+// Two questions kept apart, so no change to the pool can bring a withdrawn
+// card back (the third reviews of t625, 2026-10-13, by gpt-6-astra and
+// gemini-4-argon, which found pool removals and alias moves did):
+//
+// A card's state is read from every record in the table that names its id
+// (endings), never from those filed under one model: a correction,
+// supersession or withdrawal attaches to the card id alone, and is filed
+// under the key of the card it names, so the two always travel together.
+//
+// Which model a card is listed under is read now, from the key it was filed
+// under, through canonicalModel with the current pool: one model for every
+// card. Removing a model from the pool, or giving its name to another as an
+// alias, changes where a card is listed, never its state. A card is also
+// found, for a retry or for a record that names it, by the name it was sent
+// under, where that name now means the model asked for.
+export interface CardFiling { model: string; listed: ModelCard[]; reachable: Set<string> }
+export function cardFiling(all: readonly CardRecord[], pool: PoolNames, named: string): CardFiling {
+  const model = canonicalModel(named, pool);
+  const cards = all.filter((r): r is ModelCard => r.kind === "card");
+  const listed = cards.filter((c) => canonicalModel(c.model, pool) === model);
+  const reachable = new Set([...listed, ...cards.filter((c) => canonicalModel(c.named, pool) === model)].map((c) => c.id));
+  return { model, listed, reachable };
+}
+
+// What a new record does, before it is stored: the record that already says
+// the same thing (a retry, answered with it and stored again never, whatever
+// has happened to it since: a replay neither brings back a withdrawn card nor
+// is refused for a later ending, Astra's review of t625, 2026-10-13, finding
+// 2), or a refusal when it names a card the model does not reach or one
+// already ended. Otherwise the key to file it under: the model's for a new
+// card, the named card's for a record that names one.
 const content = (r: CardInput | ModelCard | WithdrawalInput | CardWithdrawal) => {
   const { id: _i, model: _m, named: _n, at: _a, by: _b, ...rest } = r as ModelCard;
   return JSON.stringify(rest);
 };
-export function admitCardRecord(records: readonly CardRecord[], input: CardInput | WithdrawalInput, model: string): CardRecord | null {
-  const same = records.find((r) => content(r) === content(input));
-  if (same) return same;
-  const ended = endings(records);
+export function admitCardRecord(all: readonly CardRecord[], input: CardInput | WithdrawalInput, filing: CardFiling): { existing: CardRecord } | { fileAs: string } {
+  const same = all.find((r) => (r.kind === "withdrawal" || filing.reachable.has(r.id)) && content(r) === content(input));
+  if (same) return { existing: same };
   const target = input.kind === "withdrawal" ? input.withdraws : input.corrects ?? input.supersedes;
-  if (!target) return null;
-  const card = records.find((r): r is ModelCard => r.id === target && r.kind === "card");
-  if (!card) throw new RuleError("no_card", `${target} is not a card of ${model}`, 404);
-  const end = ended.get(target);
+  if (!target) return { fileAs: filing.model };
+  const card = all.find((r): r is ModelCard => r.id === target && r.kind === "card");
+  if (!card || !filing.reachable.has(card.id)) throw new RuleError("no_card", `${target} is not a card of ${filing.model}`, 404);
+  const end = endings(all).get(target);
   if (end) throw new RuleError("card_ended", `${target} is already ${end.state} by ${end.by}; name ${end.state === "withdrawn" ? "an active card" : end.by} instead`, 409);
-  return null;
+  return { fileAs: card.model };
 }
 
 // Two claims say the same thing when they name one benchmark, version and
@@ -305,14 +338,17 @@ export function cardDisagreements(cards: readonly ShownCard[]): CardDisagreement
   return out;
 }
 
-// A model's records as the developer reads them, oldest first.
-export function cardView(model: string, pool: string[], records: readonly CardRecord[], priors: ModelEvidence[]): CardView {
-  const ended = endings(records);
-  const cards = records.filter((r): r is ModelCard => r.kind === "card").map((card): ShownCard => {
+// A model's cards as the developer reads them, oldest first, each with the
+// state every record in the table gives it, and the withdrawals of them.
+export function cardView(filing: CardFiling, all: readonly CardRecord[], pool: string[], priors: ModelEvidence[]): CardView {
+  const ended = endings(all);
+  const cards = filing.listed.map((card): ShownCard => {
     const end = ended.get(card.id);
     return end ? { ...card, state: end.state, endedBy: end.by, endedAt: end.at, ...(end.reason ? { endReason: end.reason } : {}) } : { ...card, state: "active" };
   });
-  return { model, pool, cards, withdrawals: records.filter((r): r is CardWithdrawal => r.kind === "withdrawal"), disagreements: cardDisagreements(cards), priors };
+  const ids = new Set(cards.map((c) => c.id));
+  const withdrawals = all.filter((r): r is CardWithdrawal => r.kind === "withdrawal" && ids.has(r.withdraws));
+  return { model: filing.model, pool, cards, withdrawals, disagreements: cardDisagreements(cards), priors };
 }
 
 // Each claim as the registry's evidence: a model card, dated by its
@@ -328,4 +364,22 @@ export function cardEvidence(card: ModelCard): ModelEvidence[] {
       source: card.source, date: card.published,
     };
   });
+}
+
+// A model's cards as the routes answer them: its filing in the whole table,
+// the pool entries that are this model now, and the registry's priors for it.
+export function modelCardView(all: readonly CardRecord[], pool: PoolNames, named: string): CardView {
+  const filing = cardFiling(all, pool, named);
+  const entries = pool.filter((m) => canonicalModel(`${m.harness}/${m.id}`, pool) === filing.model).map((m) => `${m.harness}/${m.id}`);
+  const priors = MODEL_PROFILES.filter((p) => modelKey(p.id) === filing.model).flatMap((p) => p.evidence.filter((e) => e.prior));
+  return cardView(filing, all, entries, priors);
+}
+
+// A record about to be added: the one already stored that says the same, or
+// the record to store, filed as admitCardRecord says.
+export type StoredCardRecord = Omit<ModelCard, "id"> | Omit<CardWithdrawal, "id">;
+export function newCardRecord(all: readonly CardRecord[], pool: PoolNames, named: string, input: CardInput | WithdrawalInput, by: string, at: string): { existing: CardRecord } | { store: StoredCardRecord } {
+  const admitted = admitCardRecord(all, input, cardFiling(all, pool, named));
+  if ("existing" in admitted) return admitted;
+  return { store: { ...input, model: admitted.fileAs, named, at, by } as StoredCardRecord };
 }
