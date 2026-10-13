@@ -21,7 +21,7 @@ Owner      accept ID [--head SHA] [--override-review REASON] [--note TEXT] · me
            decide "text" --quote "owner's words" [--project P] [--as H/M] · decisions [--all] [--project P] · decisions withdraw ID --note "why"
            refreshes [--enqueue] [--json] · ship [--dry-run] [--push]
            mode [--project P] · mode fast --reason TEXT [--project P] · mode full [--project P]
-           fast land tN=SHA [tM=SHA ...] [--reviewer H/M] [--test CMD] [--typecheck CMD] [--regen CMD] · fast status [--project P] · fast close [--project P]
+           fast land tN=SHA [tM=SHA ...] [--reviewer H/M] [--test CMD] [--typecheck CMD] [--regen CMD] · fast status [--json] [--project P] · fast close [--project P]
 Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json]
            plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT
            plan reroute ID --to H/M · plan retry ID · plan refresh ID [--resolve [--to H/M]] · plan stop ID [--note TEXT]
