@@ -3,6 +3,7 @@ import { formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
+import { serverFetch } from "../server-fetch.mjs";
 
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
@@ -17,7 +18,7 @@ export default async function statusCommand() {
     const soft = (promise) => promise.catch(() => null);
     const [standing, version, queue, usage, lease] = await Promise.all([
       call("GET", `${P(name)}/standing`, undefined, as),
-      soft(fetch(server() + "/api/version").then((r) => (r.ok ? r.json() : null))),
+      soft(serverFetch(server() + "/api/version").then((r) => (r.ok ? r.json() : null))),
       soft(request("GET", "/queue", undefined, as)),
       soft(request("GET", "/usage", undefined, as)),
       landingLease(name, as),
