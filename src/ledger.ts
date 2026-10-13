@@ -1898,7 +1898,7 @@ export class Ledger extends DurableObject<Env> {
   // (recordRunnerPolls), which the offer, the claim check, atelier queue and
   // atelier stuck all read, so each judges an orphaned claim from the polls
   // as they stand when it asks (t540).
-  runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
+  runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[]; busy: { runner: string; id: string }[] } {
     if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
     if (polls) this.recordRunnerPolls(polls);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
@@ -2379,9 +2379,10 @@ export class Ledger extends DurableObject<Env> {
   // The open criteria reviews (t438) are offered with the code reviews:
   // each carries its own dispatch, whose job names criteria-review, and
   // its request is the criteria review's own number.
-  queued(polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
+  queued(polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[]; busy: { runner: string; id: string }[] } {
     if (polls) this.recordRunnerPolls(polls);
-    return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting(), ...this.prereviewWaiting()] };
+    const busy = this.items().filter((i) => i.state === "claimed" && i.owner && i.runner).map((i) => ({ runner: i.runner!, id: i.id }));
+    return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting(), ...this.prereviewWaiting()], busy };
   }
 
   // The runners' last polls as the queue route last read them from the

@@ -15,10 +15,10 @@ const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 type Why = { kind: string; line: string };
 type Entry = { project: string; item: { id: string; why?: Why[] } };
 
-function request(method: string, path: string, token: string, actor: string, body?: unknown) {
+function request(method: string, path: string, token: string, actor: string, body?: unknown, extraHeaders: Record<string, string> = {}) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json", ...extraHeaders },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }), testEnv);
 }
@@ -200,3 +200,65 @@ it("a runner token's why poll carries no brief, note or other runner's refusal o
   expect(entry?.item).toMatchObject({ title: "Someone else's", dispatch: { to: "home", agent: "codex", model: "other", job: null } });
   expect(entry?.item.why?.map((r) => r.kind)).not.toContain("refused");
 });
+
+it("explains when an offering runner's token is scoped to another project, when the offering runner is busy, or when it skipped the job", async () => {
+  await runInDurableObject(index(), async (_instance, state) => {
+    state.storage.sql.exec(`DELETE FROM runner_offers`);
+  });
+  const other = "atelier-why";
+  const micah = "micahapp-why";
+  for (const name of [other, micah]) {
+    const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+    const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+    await L.setProject(p, "owner");
+    await index().registerProject(p);
+  }
+  const Lother = env.LEDGER.get(env.LEDGER.idFromName(`project:${other}`));
+  const Lmicah = env.LEDGER.get(env.LEDGER.idFromName(`project:${micah}`));
+  const t6 = await Lmicah.newItem("Micah job six", [], "owner");
+  const t7 = await Lmicah.newItem("Micah job seven", [], "owner");
+  await Lmicah.dispatch(t6.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
+  await Lmicah.dispatch(t7.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
+
+  // 1. A runner token scoped only to `other` polls with opencode/glm-5.3:
+  // it never receives micahapp's t6/t7, and GET /queue says why (unoffered: serves only other, not micahapp).
+  const scopedRes = await request("POST", "/tokens", OWNER, "owner", { runner: "home:paviMBP", projects: [other] });
+  expect(scopedRes.status).toBe(201);
+  const scopedToken = (await scopedRes.json() as { token: string }).token;
+  const offer = { runner: "home:paviMBP", kind: "home", agents: [{ agent: "opencode", models: ["glm-5.3"] }], started: new Date(Date.now() - 60_000).toISOString() };
+  const scopedPoll = await (await request("POST", "/queue", scopedToken, "opencode/glm-5.3", offer)).json() as Entry[];
+  expect(scopedPoll.filter((q) => q.project === micah)).toEqual([]);
+
+  const qScoped = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect((qScoped.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([
+    { kind: "unoffered", line: `No live runner can take it: home:pavimbp serves only ${other}, not ${micah}.` },
+  ]);
+
+  // 2. Polling with an unscoped credential (or a token for micahapp) lets home:pavimbp see micahapp t6 and t7.
+  const fullPoll = await (await request("POST", "/queue", OWNER, "opencode/glm-5.3", offer)).json() as Entry[];
+  expect(fullPoll.filter((q) => q.project === micah).map((q) => q.item.id)).toEqual([t6.id, t7.id]);
+
+  // 3. When home:pavimbp is busy holding a claimed job in `other`, GET /queue says `busy` for micahapp t6 and t7.
+  const active = await Lother.newItem("Busy task", [], "owner");
+  await Lother.dispatch(active.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
+  await Lother.claim(active.id, "opencode/glm-5.3", { runner: "home:pavimbp", kind: "home" });
+  const qBusy = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect((qBusy.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([
+    { kind: "busy", line: `Offered, busy: home:pavimbp is working on ${other}/${active.id}.` },
+  ]);
+  await Lother.release(active.id, "owner", "");
+
+  // 4. When home:pavimbp reports a local skip (kind: "skipped"), GET /queue says why with the skip note.
+  const skipRes = await request("POST", `/projects/${micah}/items/${t6.id}/run-skip`, OWNER, "owner", {
+    actor: "opencode/glm-5.3", kind: "skipped", failures: 1, note: "validation_blocked: broken lockfile",
+  }, { "x-atelier-runner": "home:paviMBP" });
+  expect(skipRes.status).toBe(200);
+  const qSkipped = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect((qSkipped.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([
+    {
+      kind: "skipped",
+      line: `Refused by home:pavimbp (validation_blocked: broken lockfile); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch ${t6.id} --to home --agent opencode --model glm-5.3.`,
+    },
+  ]);
+});
+
