@@ -66,8 +66,8 @@ const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 // otherwise let a project command swap a credential blob, or a commit, for a
 // harmless one in every read the scan makes, while the history that lands
 // still holds the original.
-function runGit(cwd, args, { encoding = "utf8", env } = {}) {
-  return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, env: { ...gitEnv(), GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
+function runGit(cwd, args, { encoding = "utf8", env, input } = {}) {
+  return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, input, env: { ...gitEnv(), GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
 }
 
 // What can make Git show history other than the history that lands:
@@ -202,6 +202,35 @@ function parseTree(raw, idBytes, hash) {
 
 function readTree(cwd, hash) {
   return parseTree(readObject(cwd, "tree", hash), objectFormat(cwd) === "sha256" ? 32 : 20, hash);
+}
+
+// Whether every object the batch's commits reach (start..head: the commits,
+// their trees and blobs) is still present and still hashes to its id,
+// checked after the tests, so a test command that deletes or rewrites one
+// after the scan stops the batch (eighth review of t592). One rev-list and
+// one cat-file --batch read them all. Answers the problems found, at most
+// `limit`, each naming the object.
+function objectProblems(cwd, start, head, limit = 20) {
+  const list = runGit(cwd, ["rev-list", "--objects", `${start}..${head}`]);
+  if (list.status !== 0) return [`git rev-list --objects could not walk the batch: ${(list.stderr || "").trim().split("\n").at(-1)}`];
+  const ids = list.stdout.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+  if (!ids.length) return [];
+  const r = runGit(cwd, ["cat-file", "--batch"], { encoding: "buffer", input: Buffer.from(ids.join("\n") + "\n") });
+  if (r.status !== 0) return [`git cat-file --batch failed: ${String(r.stderr || "").trim().split("\n").at(-1)}`];
+  const out = r.stdout, problems = [], algo = objectFormat(cwd);
+  let i = 0;
+  for (const id of ids) {
+    if (problems.length >= limit) break;
+    const eol = out.indexOf(0x0a, i);
+    if (eol < 0) { problems.push(`${id.slice(0, 12)} was not answered`); break; }
+    const [got, type, size] = out.toString("latin1", i, eol).split(" ");
+    if (got !== id || type === "missing" || size === undefined) { problems.push(`${id.slice(0, 12)} is missing`); i = eol + 1; continue; }
+    const body = out.subarray(eol + 1, eol + 1 + Number(size));
+    i = eol + 1 + Number(size) + 1;
+    const hash = createHash(algo).update(`${type} ${body.length}\0`).update(body).digest("hex");
+    if (body.length !== Number(size) || hash !== id) problems.push(`${id.slice(0, 12)} does not hash to its id`);
+  }
+  return problems;
 }
 
 // A commit's tree and first parent, from its verified bytes.
@@ -461,6 +490,12 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       if (branch !== "main" || now !== scanned || changed) {
         failure = { step: "checkout changed", detail: `the checkout changed after the secret scan of ${scanned.slice(0, 12)}: ${branch !== "main" ? `it is on ${branch}, not main` : now !== scanned ? `main moved to ${now.slice(0, 12)}` : `tracked files changed:\n${changed}`}` };
       }
+    }
+    // The objects the scan read are all still there, unchanged, after the
+    // tests (eighth review of t592).
+    if (!failure) {
+      const problems = objectProblems(cwd, start, scanned);
+      if (problems.length) failure = { step: "objects changed", detail: `objects of the batch changed after the secret scan: ${problems.join(", ")}` };
     }
     // Every merge a receipt will name is in the scanned head's history, so
     // no receipt records a merge main does not hold (fourth review of t592).
