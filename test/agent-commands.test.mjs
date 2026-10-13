@@ -299,8 +299,8 @@ test("done's help names each outcome, its exit code and --json", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["done", "--help"]);
   assert.equal(r.status, 0, r.output);
-  for (const text of ["[--json]", "Outcome: submitted, ready for the owner", "Outcome: checked but blocked", "Outcome: failed checks", "0 submitted and ready", "2 failed checks", "3 checked but blocked", "4 a server or Artifacts step failed"]) assert.ok(r.output.includes(text), text);
-  assert.ok(!r.output.includes("`Ready for the owner`"));
+  for (const text of ["[--json]", "Outcome: submitted, ready for the developer", "Outcome: checked but blocked", "Outcome: failed checks", "0 submitted and ready", "2 failed checks", "3 checked but blocked", "4 a server or Artifacts step failed"]) assert.ok(r.output.includes(text), text);
+  assert.ok(!r.output.includes("`Ready for the developer`"));
 });
 
 for (const failStep of ["push", "submit"]) test(`done names a failed ${failStep} and keeps the infrastructure exit code`, async (t) => {
@@ -403,7 +403,7 @@ test("finish keeps its existing output and exit codes", async (t) => {
     const r = await f.run(["finish"], f.workspace);
     assert.equal(r.status, failed ? 2 : 0, r.output);
     assert.ok(!r.output.includes("check failed:"));
-    assert.ok(!r.output.includes("Ready for the owner"));
+    assert.ok(!r.output.includes("Ready for the developer"));
     if (!failed) assert.match(r.output, /t1 submitted and ready for/);
   }
 });

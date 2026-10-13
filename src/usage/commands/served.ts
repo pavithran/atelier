@@ -4,7 +4,7 @@ const spec: CommandSpec = {
   name: "served",
   forms: [
     {
-      group: "Owner", line: 3, slot: 20,
+      group: "Developer", line: 3, slot: 20,
       form: "served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply]",
       about: "The developer records which model served events recorded under another, as when zcode served deepseek-flash while its events named glm-5.3. Each event recorded as `--recorded` from `--from` up to `--to`, on the tasks `--item` names or on every task, gets an annotation of its own, and the track record, the reliability record and the graph count it under the served model; the event itself never changes. Without `--apply` it lists the matches and records nothing. `--note` says how the developer knows.",
     },

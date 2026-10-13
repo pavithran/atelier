@@ -8,12 +8,12 @@ const spec: CommandSpec = {
   capabilities: ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "plans.refresh.v1"],
   forms: [
     {
-      group: "Owner", line: 1, slot: 20,
+      group: "Developer", line: 1, slot: 20,
       form: "merge ID [--head SHA [--approve [--note TEXT]] [--override-review REASON]] [--policy-changed-ok]",
       about: "The developer lands the accepted head in the registered checkout and publishes the merge to the baseline. With `--head`, a submitted task is accepted at that exact revision first: `--approve` records the developer's review, with `--note` as its reason, which is not the independent review, and `--override-review` accepts with their override, as `accept` does, under the same confirmation from the task's page. Run again, it resumes an interrupted merge; `--cancel` ends one. A plan whose branch would conflict with main is not accepted, and one accepted that conflicts at the merge is put back to building through `plan refresh`, which takes main into its branch.",
     },
     {
-      group: "Owner", line: 1, slot: 30,
+      group: "Developer", line: 1, slot: 30,
       form: "merge ID --cancel [--discard-local]",
       about: "Ends an interrupted merge: the landing lease is released, so the task's holder can push again. An unpublished merge commit in the checkout is kept unless `--discard-local` removes it and returns the branch to where the merge began.",
     },

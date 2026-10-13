@@ -225,7 +225,7 @@ export const NO_OWNER_FACTOR = "this server can take no confirmation: put its pa
 // Ledger does not; null for a server that takes none).
 export function overrideConfirmationHint(project: string, id: string, origin = "", factor?: OwnerFactor | null): string {
   const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the developer, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
-  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the owner token alone does not confirm it`;
+  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
 }
 
 // The merged items that went in on the owner's override: those whose override
@@ -652,7 +652,7 @@ export function assertHandoffTarget(actor: string, owner: string): void {
 }
 
 export function assertReviewAllowed(item: Item, proved: boolean): void {
-  if (proved && item.state === "accepted") throw new RuleError("accepted", "only the owner token may reopen accepted work by reviewing", 403);
+  if (proved && item.state === "accepted") throw new RuleError("accepted", "only the developer token may reopen accepted work by reviewing", 403);
 }
 
 // "claude-code/opus-5.5" → "opus-5.5". The model, not the harness, is what
@@ -1123,12 +1123,12 @@ export function recordedText(r: Review, owner = DEFAULT_OWNER): string | null {
   if (r.proved) return `recorded by ${r.recordedBy ?? r.by} with its own token`;
   const who = r.recordedBy === owner ? "the developer" : r.recordedBy;
   if (sameActor(r.by, owner)) return `recorded by ${who}`;
-  return `recorded by ${who} with the owner token${r.claimed ? ", answering a review request it claimed" : ""}`;
+  return `recorded by ${who} with the developer token${r.claimed ? ", answering a review request it claimed" : ""}`;
 }
 
 // The gate's words for an approval unprovedReview sets aside.
 export function unprovedBlocker(r: Review): string {
-  return `the approval by ${r.by} was recorded by ${r.recordedBy ?? "the developer"} with the owner token and answers no review request ${r.by} claimed at this head, so it is not the independent review`;
+  return `the approval by ${r.by} was recorded by ${r.recordedBy ?? "the developer"} with the developer token and answers no review request ${r.by} claimed at this head, so it is not the independent review`;
 }
 
 // The owner's override that stands at the item's current head, if any. One

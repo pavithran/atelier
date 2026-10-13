@@ -17,7 +17,7 @@ export interface StuckFinding {
   owner: string | null;
   reason: string;
   since: string;
-  suggestion: "hand off" | "check in with the owner";
+  suggestion: "hand off" | "check in with the holder";
 }
 
 const HOUR = 3_600_000;
@@ -55,7 +55,7 @@ export function detectStuck(items: Item[], events: LedgerEvent[], now: Date, lim
         out.push({
           itemId: item.id, owner: item.owner,
           reason: `no push for ${Math.floor(hours)}h`, since: active,
-          suggestion: "check in with the owner",
+          suggestion: "check in with the holder",
         });
       }
     }
@@ -86,7 +86,7 @@ export function detectStuck(items: Item[], events: LedgerEvent[], now: Date, lim
           out.push({
             itemId: item.id, owner: item.owner,
             reason: `changes requested by ${last.actor} ${Math.floor(hours)}h ago with no push since`,
-            since: last.at, suggestion: "check in with the owner",
+            since: last.at, suggestion: "check in with the holder",
           });
         }
       }

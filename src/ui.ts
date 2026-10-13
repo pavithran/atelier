@@ -1208,7 +1208,7 @@ export function judgementSection(j: JudgementRecord): string {
   const causes = rows.flatMap((r) => r.contradictions.map((c) => ({ ...c, model: r.model })));
   return `<section class="judgement" aria-label="Judgements by acting model">
   <h2 class="section-title">The orchestrator's judgements · ${e(from)} to ${e(to)}</h2>
-  <p class="meta">What each harness/model acting for the developer recorded from ${e(from)} to ${e(to)} (the last ${j.window.days} days, every project), named with <code>--as</code>; the authority stays the developer's. The acting model is declared, not verified: Atelier checks it names a model in the pool, but the owner token cannot prove which model typed the command. A verdict on a finding is upheld when a later verdict by another named model agrees, contradicted when a later verdict corrects it or a defect names it with <code>atelier defect --contradicts</code>, and unresolved otherwise: no defect is not proof a verdict was right. Decisions and overrides are counted, never scored. Events recorded before Atelier kept the acting model, or without one, stay unknown.</p>
+  <p class="meta">What each harness/model acting for the developer recorded from ${e(from)} to ${e(to)} (the last ${j.window.days} days, every project), named with <code>--as</code>; the authority stays the developer's. The acting model is declared, not verified: Atelier checks it names a model in the pool, but the developer token cannot prove which model typed the command. A verdict on a finding is upheld when a later verdict by another named model agrees, contradicted when a later verdict corrects it or a defect names it with <code>atelier defect --contradicts</code>, and unresolved otherwise: no defect is not proof a verdict was right. Decisions and overrides are counted, never scored. Events recorded before Atelier kept the acting model, or without one, stay unknown.</p>
   <p class="meta">Totals: ${plural(totals.verdicts, "verdict")}: ${totals.upheld} upheld, ${totals.contradicted} contradicted, ${totals.unresolved} unresolved; ${plural(totals.decisionsRecorded, "decision")} recorded, ${totals.decisionsWithdrawn} withdrawn; ${plural(totals.overrides, "override")}.</p>
   ${rows.length ? `<table class="usage-table">
     <thead><tr><th scope="col">Acting model (declared)</th><th scope="col">Verdicts</th><th scope="col">Upheld</th><th scope="col">Contradicted</th><th scope="col">Unresolved</th><th scope="col">Decisions</th><th scope="col">Overrides</th></tr></thead>
@@ -2163,7 +2163,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Models</dt><dd>${e(familyModeText(p.policy))}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
-    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the developer on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the owner token"}</dd>
+    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the developer on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the developer token"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
   const cp = p.policy.approval
@@ -2633,12 +2633,12 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     ? `<label>Confirmation secret<input type="password" name="confirmation" required autocomplete="off"></label>`
     : "";
   const confirmWords = factor === "access"
-    ? "Your Cloudflare Access sign-in is the confirmation an override needs; the owner token alone cannot give it."
-    : "The confirmation secret is the confirmation an override needs: the server's own OVERRIDE_SECRET, which no session is given, so the owner token alone cannot give it.";
+    ? "Your Cloudflare Access sign-in is the confirmation an override needs; the developer token alone cannot give it."
+    : "The confirmation secret is the confirmation an override needs: the server's own OVERRIDE_SECRET, which no session is given, so the developer token alone cannot give it.";
   const override = overridable && d.policy.noOverride
     ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from ${single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor"}.</p>`
     : overridable && factor === null
-    ? `<p class="meta">An override of the independent review needs the developer's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
+    ? `<p class="meta">An override of the independent review needs the developer's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The developer token alone, and the session it signs in, cannot confirm one.</p>`
     : overridable
     // A native disclosure (t457), drawn as one and not as a button: a marker
     // that turns and words that change when it opens. Opening it submits
