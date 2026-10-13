@@ -6787,6 +6787,12 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('main-head', ?)`, JSON.stringify({ head, at }));
   }
 
+  // Main's head as last observed, for GET /api/version (t556): the commit
+  // a runner reloads to, which moves with every merge the ledger records.
+  observedMain(): string | null {
+    return this.mainHead();
+  }
+
   // The Worker reports main's head as it read it from the baseline.
   // A head that moved since the last observation queues the refreshes of
   // every task that should take it (t462), as a recorded merge does.
