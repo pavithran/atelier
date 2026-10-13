@@ -1272,6 +1272,57 @@ test("a post-merge review's failures count by task and head, not by request", as
   assert.notEqual(failureKey(open(50)), failureKey(open(51)));
 });
 
+// t591 (fifth review): the baseline is read and lacks the merge, but the
+// branch the claim's target names (a plan's, in another repository) could
+// not be fetched (a 503). That source was never read, so the merge is not
+// known to be missing: the job fails as a fetch failure, served again with
+// backoff, and once the target answers the review records its verdict,
+// though the baseline's head never moved.
+test("a target branch that fails transiently is retried, not taken as a missing merge, and recovers with the baseline unchanged", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task } = missingMergeFixture();
+  const B1 = "1".repeat(40), TARGET = "https://artifacts.example/plan";
+  const fixtureCli = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    const answer = await fixtureCli(argv, cwd, options);
+    if (argv[0] !== "review-claim") return answer;
+    const claim = JSON.parse(answer);
+    return JSON.stringify({ ...claim, target: { remote: TARGET, token: "plan-read", branch: "plan" } });
+  };
+  let held = false, targetFetches = 0, polls = 0;
+  const claimPolls = [];
+  io.hasCommit = async () => held;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (ref === merge) throw new Error("fatal: remote error: upload-pack: not our ref");
+    if (remote !== TARGET) return; // the baseline answers, without the merge
+    if (++targetFetches <= 2) throw new Error("fatal: unable to access 'https://artifacts.example/plan/': The requested URL returned error: 503");
+    held = true;
+  };
+  io.checkout = async (_dir, head) => { assert.ok(held); assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : ref === "FETCH_HEAD" ? B1 : assert.fail(`unexpected rev-parse ${ref}`);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [], runs = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { skips.push(body); },
+    async reportRun(body) { runs.push(body); },
+    async baselineHead() { return B1; },
+    async queue() {
+      if (++polls > 12 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      claimPolls.push(polls);
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  const claims = calls.filter((c) => c.argv?.[0] === "review-claim").length;
+  assert.equal(claims, 3, `claimed ${claims} times`);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict once the target answers");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+  assert.deepEqual([skips.length, runs.length], [0, 0], "nothing was reported as missing");
+});
+
 // t591 (second review, finding 2): one poll may list several requests for
 // the same task and head; after the first misses, the rest are passed by
 // within the same batch.

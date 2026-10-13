@@ -1912,13 +1912,18 @@ export async function fetchLandedCommit(io, workspace, claimed, { project, actor
   if (target?.remote && target?.branch && !sources.some((s) => s.remote === target.remote)) {
     sources.push({ name: `the branch ${target.branch} the task merged into`, remote: target.remote, token: target.token, branch: target.branch });
   }
+  // The sources whose branch could not be read (fifth review of t591): a
+  // merge is known to be missing only when every source was read.
+  const unread = [];
   for (const source of sources) {
     const failed = [];
+    let read = false;
     for (const ref of [source.branch, commit]) {
       if (io.stopped()) throw new Error("interrupted");
       try {
         await io.fetch(workspace, source.remote, source.token, ref);
         if (source.baseline && ref === source.branch) baseline = (await io.revParse(workspace, "FETCH_HEAD")).trim() || null;
+        if (ref === source.branch) read = !source.baseline || !!baseline;
       } catch (error) {
         failed.push(`${ref === commit ? "the commit" : source.branch}: ${String(error.message).split("\n").at(-1)}`);
       }
@@ -1927,6 +1932,7 @@ export async function fetchLandedCommit(io, workspace, claimed, { project, actor
         return { source: source.name };
       }
     }
+    if (!read) unread.push(source.name);
     const at = source.baseline && baseline ? ` (${source.branch} at ${baseline.slice(0, 8)})` : "";
     looked.push(`${source.name}${at}${failed.length ? ` (${failed.join("; ")})` : ""}`);
   }
@@ -1939,6 +1945,11 @@ export async function fetchLandedCommit(io, workspace, claimed, { project, actor
   // Such failures are counted by task and head in the runner's loop, served
   // again with backoff and given up after FETCH_TRIES (fetchFailed).
   if (!baseline) throw Object.assign(new Error(`could not read the baseline for the merge commit ${commit}: looked in ${looked.join(", ")}`), { fetchFailed: { commit } });
+  // The baseline was read without the merge, but another source the claim
+  // names (the target's branch, a plan's) could not be: the merge may live
+  // there, so this too is a fetch failure, served again with backoff, not a
+  // missing commit kept until the baseline moves (fifth review of t591).
+  if (unread.length) throw Object.assign(new Error(`could not read ${unread.join(" or ")} for the merge commit ${commit}: looked in ${looked.join(", ")}`), { fetchFailed: { commit } });
   throw Object.assign(new Error(`the merge commit ${commit} is not in ${looked.join(", nor ")}; publish main to the baseline (atelier publish), and this runner reviews it once the baseline moves`), { missingCommit: { commit, baseline } });
 }
 
