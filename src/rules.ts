@@ -2098,12 +2098,17 @@ export function assertFastMode(mode: ProjectMode): asserts mode is Extract<Proje
 
 // What a landing in fast mode records: the commit merged, the merge commit,
 // the builder its Agent line names, the test command and the sha256 of its
-// output, and the mode's reason.
+// output, and the mode's reason. Since t588 the tests also say where they
+// ran: "clean clone" for the default run in a temporary clone of the
+// batch's head, "checkout" for a --test the owner gave, which runs in the
+// owner's checkout. A receipt from an older CLI says neither.
+export const FAST_TEST_WHERE = ["clean clone", "checkout"] as const;
+export type FastTestWhere = (typeof FAST_TEST_WHERE)[number];
 export interface FastReceipt {
   commit: string;
   mergeCommit: string;
   builder: string;
-  tests: { command: string; sha256: string };
+  tests: { command: string; sha256: string; where?: FastTestWhere };
   reason: string;
   at: string;
   by: string;
@@ -2112,13 +2117,15 @@ export interface FastReceipt {
 const SHA = /^[a-f0-9]{40,64}$/;
 export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, actor: string, at: string): FastReceipt {
   assertFastMode(mode);
-  const tests = body.tests as { command?: unknown; sha256?: unknown } | undefined;
+  const tests = body.tests as { command?: unknown; sha256?: unknown; where?: unknown } | undefined;
   if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw new RuleError("bad_receipt", "the receipt names the commit merged, a full SHA", 400);
   if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw new RuleError("bad_receipt", "the receipt names the merge commit, a full SHA", 400);
   if (typeof body.builder !== "string" || !body.builder.includes("/") || !validActor(body.builder)) throw new RuleError("bad_receipt", "the receipt names the builder as harness/model, from the commit's Agent line", 400);
   if (!tests || typeof tests.command !== "string" || !tests.command.trim() || tests.command.length > 2000) throw new RuleError("bad_receipt", "the receipt names the test command the batch ran", 400);
   if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
-  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256 }, reason: mode.reason, at, by: actor };
+  if (tests.where !== undefined && !FAST_TEST_WHERE.includes(tests.where as FastTestWhere)) throw new RuleError("bad_receipt", `the receipt says where the tests ran: ${FAST_TEST_WHERE.join(" or ")}`, 400);
+  const where = tests.where as FastTestWhere | undefined;
+  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor };
 }
 
 // The builder a commit's message names: its last Agent: line, as harness/model.

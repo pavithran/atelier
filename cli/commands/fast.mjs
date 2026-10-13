@@ -1,7 +1,7 @@
 // atelier fast. Its forms, flags and help are declared in src/usage/commands/fast.ts.
 import { COMMAND_USAGE } from "../help.mjs";
 import { I, OWNER, P, actingHeaders, args, call, die, project } from "../atelier.mjs";
-import { DEFAULT_REGEN, fastLand, parsePairs } from "../fast.mjs";
+import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 
 export default async function fastCommand() {
@@ -29,10 +29,13 @@ export default async function fastCommand() {
     titles[id] = it.title;
   }
   const cwd = process.cwd();
+  // The default test runs in a temporary clean clone of the batch's head
+  // (t588); a --test the owner gives runs in the checkout, where it says.
   const result = await fastLand({
     cwd, pairs, titles, reason: mode.reason,
     typecheck: args.typecheck ?? "npm run typecheck",
     test: args.test ?? "npm test",
+    cleanClone: args.test === undefined ? { setup: CLEAN_CLONE_SETUP } : null,
     regen: args.regen ?? DEFAULT_REGEN(cwd),
     log: (line) => console.log(line),
     record: (id, receipt) => call("POST", `${I(name, id)}/landed-fast`, { ...receipt, ...(args.reviewer ? { reviewer: args.reviewer } : {}) }, OWNER, actingHeaders()),
