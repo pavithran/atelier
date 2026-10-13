@@ -2386,3 +2386,165 @@ test('conflicted preparation goes to the resolving harness, even with an old val
   assert.match(f.calls.find((c) => c.brief).brief, /Resolve input then run npm ci && npm run types/);
   assert.match(f.calls.find((c) => c.brief).brief, /host slot wrapper:.*load\.mjs/);
 });
+
+test('an idle runner offering home opencode/glm-5.3 claims micahapp t6 and t7 within one poll interval past a failing or validation-blocked head job', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'atelier-t626-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cfgPath = join(dir, 'runner.json');
+  const paviConfig = {
+    agents: [{ agent: 'opencode', models: ['glm-5.3'], command: ['opencode', 'run', '--model', '{model}', '--file', '{brief_file}', '{workspace}'] }],
+  };
+  writeFileSync(cfgPath, JSON.stringify(paviConfig));
+
+  const makeAssignment = (project, id, title, updatedAt = '2026-10-10T12:00:00.000Z') => ({
+    project,
+    agent: 'opencode',
+    model: 'glm-5.3',
+    actor: 'opencode/glm-5.3',
+    item: {
+      id,
+      title,
+      state: 'open',
+      owner: null,
+      scope: ['**'],
+      head: `head-${id}`,
+      updatedAt,
+      dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:00:00.000Z' },
+    },
+  });
+
+  const claimed = [];
+  const skips = [];
+  let t0UpdatedAt = '2026-10-10T11:00:00.000Z';
+  let polls = 0;
+
+  const { io } = fixture();
+  io.workspacePath = (p, id) => `/ws/${p}/${id}`;
+  const heads = new Map();
+  io.head = async (ws) => {
+    if (ws.endsWith('/t0')) return 'head-t0';
+    const n = (heads.get(ws) ?? 0) + 1;
+    heads.set(ws, n);
+    return ws.endsWith('/t6') ? (n === 1 ? 'head-t6' : 'head-t6-after') : (n === 1 ? 'head-t7' : 'head-t7-after');
+  };
+  io.readValidationBlock = async (ws) => (ws.endsWith('/t0')
+    ? { actor: 'opencode/glm-5.3', head: 'head-t0', detail: 'validation_blocked: broken env', prepared: true, prepareKey: 'ready' }
+    : null);
+  io.prepare = async () => ({ key: 'ready' });
+  const origCli = io.cli;
+  io.cli = async (argv, cwd) => {
+    if (argv[0] === 'claim') {
+      const proj = argv[argv.indexOf('--project') + 1];
+      claimed.push(`${proj}:${argv[1]}`);
+      if (argv[1] === 't0') t0UpdatedAt = `2026-10-10T11:00:0${polls}.000Z`;
+      if (argv[1] === 't1') throw new Error('claim failed');
+    }
+    if (argv[0] === 'release' && argv[1] === 't0') {
+      t0UpdatedAt = `2026-10-10T11:01:0${polls}.000Z`;
+    }
+    return origCli(argv, cwd);
+  };
+
+  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath }, {
+    workspacePath: io.workspacePath,
+    taskIO: io,
+    wait: async () => {},
+    reportRunSkip: async (body) => { skips.push(body); },
+    queue: async () => {
+      polls++;
+      if (polls === 1) {
+        // Poll 1: t0 is validation-blocked after prepare (bumping t0UpdatedAt on claim+release),
+        // t1 fails on claim/execution, and micahapp t6 sits behind them in the same poll.
+        return [
+          makeAssignment('other', 't0', 'Blocked after prepare', t0UpdatedAt),
+          makeAssignment('other', 't1', 'Fails on claim'),
+          makeAssignment('micahapp', 't6', 'Micah six'),
+          makeAssignment('micahapp', 't7', 'Micah seven'),
+        ];
+      }
+      if (polls === 2) {
+        // Poll 2: t0 still at head of queue with its newly bumped updatedAt from release;
+        // runner must remember the validation block without re-claiming t0, and claim t7!
+        return [
+          makeAssignment('other', 't0', 'Blocked after prepare', t0UpdatedAt),
+          makeAssignment('micahapp', 't7', 'Micah seven'),
+        ];
+      }
+      process.emit('SIGINT');
+      return [];
+    },
+  });
+
+  // Within poll 1, micahapp:t6 was claimed despite t0 being validation-blocked and t1 failing!
+  assert.ok(claimed.includes('micahapp:t6'), `expected micahapp:t6 to be claimed in poll 1, got ${JSON.stringify(claimed)}`);
+  // On poll 2, t0 was NOT claimed a second time despite its updatedAt changing on release, and micahapp:t7 was claimed!
+  assert.equal(claimed.filter((c) => c === 'other:t0').length, 1, `expected other:t0 to be claimed only once, got ${JSON.stringify(claimed)}`);
+  assert.ok(claimed.includes('micahapp:t7'), `expected micahapp:t7 to be claimed in poll 2, got ${JSON.stringify(claimed)}`);
+  // And the local validation-block skip on t0 was reported to the server so atelier queue can show why!
+  assert.equal(skips.length, 1, `expected 1 run-skip report, got ${JSON.stringify(skips)}`);
+  assert.equal(skips[0].project, 'other');
+  assert.equal(skips[0].item, 't0');
+  assert.equal(skips[0].kind, 'skipped');
+  assert.match(skips[0].note, /validation_blocked/);
+});
+
+test('atelier queue prints why a queued job is unclaimed (no runner offers it, offered but busy, or refused and the reason)', async (t) => {
+  const { createServer } = await import('node:http');
+  const http = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(req.url === '/api/queue' ? [
+      {
+        project: 'micahapp',
+        item: {
+          id: 't6',
+          title: 'Unclaimed model',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'unoffered', line: 'No live runner can take it: home:paviMBP serves only atelier, not micahapp.' }],
+        },
+      },
+      {
+        project: 'micahapp',
+        item: {
+          id: 't7',
+          title: 'Busy runner',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'busy', line: 'Offered, busy: home:paviMBP is working on atelier/t1.' }],
+        },
+      },
+      {
+        project: 'micahapp',
+        item: {
+          id: 't8',
+          title: 'Refused job',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'refused', line: 'Refused by home:paviMBP at 2026-10-10 12:00 UTC (check_failed: tests red); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch t8 --to home --agent opencode --model glm-5.3.' }],
+        },
+      },
+    ] : { actor: 'owner' }));
+  });
+  t.after(() => http.close());
+  await new Promise((done) => http.listen(0, '127.0.0.1', done));
+  const root = mkdtempSync(join(tmpdir(), 'atelier-queue-why-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const out = await new Promise((done) => {
+    const child = spawn(process.execPath, [join(process.cwd(), 'cli/atelier.mjs'), 'queue'], {
+      cwd: root,
+      env: { ...process.env, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, 'cache'), ATELIER_TOKEN: 'atl_' + 'a'.repeat(64), ATELIER_SERVER: `http://127.0.0.1:${http.address().port}` },
+    });
+    let output = '';
+    child.stdout.on('data', (s) => (output += s));
+    child.stderr.on('data', (s) => (output += s));
+    child.on('close', (status) => done({ status, output }));
+  });
+  assert.equal(out.status, 0, out.output);
+  assert.deepEqual(out.output.trim().split('\n'), [
+    'micahapp/t6  for home opencode/glm-5.3  Unclaimed model',
+    '  No live runner can take it: home:paviMBP serves only atelier, not micahapp.',
+    'micahapp/t7  for home opencode/glm-5.3  Busy runner',
+    '  Offered, busy: home:paviMBP is working on atelier/t1.',
+    'micahapp/t8  for home opencode/glm-5.3  Refused job',
+    '  Refused by home:paviMBP at 2026-10-10 12:00 UTC (check_failed: tests red); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch t8 --to home --agent opencode --model glm-5.3.',
+  ]);
+});
+
+

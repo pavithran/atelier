@@ -22,5 +22,6 @@ export default async function queueCommand() {
     // the hold's text when a live blocker holds the task too, else alone.
     if (item.held) console.log(`  held: ${holdText(item.held, project)}`);
     else if (item.orphaned?.length) console.log(`  held: ${orphanText(item.orphaned, project)}`);
+    for (const r of (item.why ?? []).filter((r) => !item.held || r.kind !== "held")) console.log(`  ${r.line}`);
   }
 }
