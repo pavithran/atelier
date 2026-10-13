@@ -316,11 +316,21 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       // Through the pipeline (t587): a declared generated output both sides
       // changed is regenerated from the merged sources, not merged as text.
       // Fast land's git, not localGit, and no commit hooks (review of t593).
+      const before = git(cwd, "rev-parse", "HEAD");
       const r = await mergeThrough(cwd, commit, { git: fastGit, verify: false, message, run, log });
       if (r.state === "held") { failure = { step: `merge ${id}`, detail: `main already holds ${commit.slice(0, 12)}, so there is nothing of ${id} to land` }; break; }
       if (r.state === "conflicts") { failure = { step: `merge ${id}`, detail: describeConflicts(r, r.manifest) }; break; }
       if (r.state !== "merged") { failure = { step: `merge ${id}`, detail: String(r.reason ?? r.state).trim().split("\n").slice(-5).join("\n") }; break; }
-      merged.push({ id, commit, builder, mergeCommit: git(cwd, "rev-parse", "HEAD") });
+      // The merge commit's parents are exactly main as it was and the task's
+      // commit: a generator run inside the merge can rewrite MERGE_HEAD,
+      // which the pipeline's checks of the work tree do not see, and the
+      // commit then leaves the task out (sixth review of t592).
+      const [mergeCommit, ...parents] = git(cwd, "rev-list", "--parents", "-n", "1", "HEAD").split(" ");
+      if (parents.length !== 2 || parents[0] !== before || parents[1] !== commit) {
+        failure = { step: `merge ${id}`, detail: `the merge commit ${mergeCommit.slice(0, 12)} has parents ${parents.map((p) => p.slice(0, 12)).join(", ") || "none"}, not main (${before.slice(0, 12)}) and ${id}'s commit (${commit.slice(0, 12)})` };
+        break;
+      }
+      merged.push({ id, commit, builder, mergeCommit });
       log(`merged ${id} (${commit.slice(0, 12)}) as ${merged.at(-1).mergeCommit.slice(0, 12)}`);
       for (const g of r.regenerated ?? []) log(`regenerated ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}`);
     }
@@ -394,8 +404,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     // Every merge a receipt will name is in the scanned head's history, so
     // no receipt records a merge main does not hold (fourth review of t592).
     if (!failure) {
-      const lost = merged.filter((m) => runGit(cwd, ["merge-base", "--is-ancestor", m.mergeCommit, scanned]).status !== 0);
-      if (lost.length) failure = { step: "checkout changed", detail: `main moved: ${scanned.slice(0, 12)} does not hold the merge of ${lost.map((m) => `${m.id} (${m.mergeCommit.slice(0, 12)})`).join(", ")}` };
+      // The task's commit too, not only its merge (sixth review of t592).
+      const held = (c) => runGit(cwd, ["merge-base", "--is-ancestor", c, scanned]).status === 0;
+      const lost = merged.filter((m) => !held(m.mergeCommit) || !held(m.commit));
+      if (lost.length) failure = { step: "checkout changed", detail: `main moved: ${scanned.slice(0, 12)} does not hold ${lost.map((m) => `${m.id} (its commit ${m.commit.slice(0, 12)} merged as ${m.mergeCommit.slice(0, 12)})`).join(", ")}` };
     }
     if (failure) return { ok: false, start, ...restore(), landed: [], failure };
   } catch (err) {
