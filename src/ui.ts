@@ -661,7 +661,12 @@ const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
 
 // A page's numbers count only the projects whose threads it draws, so the
 // headline and the picture agree. Callers' totals are not used.
-const drawnTotal = (stories: Story[]) => stories.filter((s) => s.threads.length).reduce((acc, s) => addTally(acc, s.tally), emptyTally());
+// A story has tasks when it draws a thread, or when its tally, counted over
+// the whole record (Story.counted), saw a task taken that the drawing's
+// window no longer reaches (t578).
+const hasTasks = (s: Story) => s.threads.length > 0 || (s.counted?.taken ?? 0) > 0;
+const tasksOf = (s: Story) => s.counted?.taken ?? s.threads.length;
+const drawnTotal = (stories: Story[]) => stories.filter(hasTasks).reduce((acc, s) => addTally(acc, s.tally), emptyTally());
 
 interface FlowParts { stages: string; moments: string; journey: string; shown: Story[] }
 
@@ -682,7 +687,7 @@ function importedBlock(h: ImportedHistory | undefined, owner: string, title: str
 // A project with no Atelier task at all: none drawn, none planned, and a
 // record read in full. A planned task nobody has claimed draws no thread but
 // is still a task.
-const noTasks = (s: Story) => !s.threads.length && !s.tally.planned && !s.partial;
+const noTasks = (s: Story) => !hasTasks(s) && !s.tally.planned && !s.partial;
 
 // Dates as the owner reads them, in the owner's zone: "4 Sept to 5 Oct", with
 // years only when the two ends fall in different years.
@@ -716,8 +721,8 @@ const SAME_MIN = 50;
 // projects' tasks stands against it.
 function comparePick(stories: Story[], imported: Map<string, ImportedHistory>): { same?: Story; before?: Story } {
   const total = (s: Story) => imported.get(s.project)?.total ?? 0;
-  const both = stories.filter((s) => s.threads.length && total(s) > 0);
-  const byTasks = (a: Story, b: Story) => b.threads.length - a.threads.length;
+  const both = stories.filter((s) => hasTasks(s) && total(s) > 0);
+  const byTasks = (a: Story, b: Story) => tasksOf(b) - tasksOf(a);
   const same = both.filter((s) => total(s) >= SAME_MIN).sort(byTasks)[0] ?? both.sort(byTasks)[0];
   const before = stories.filter((s) => noTasks(s) && total(s) > 0).sort((a, b) => total(b) - total(a))[0];
   if (same && (total(same) >= SAME_MIN || !before)) return { same };
@@ -735,7 +740,7 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
   const pick = comparePick(stories, imported);
   const same = pick.same;
   const before = same ?? pick.before;
-  const withs = same ? [same] : stories.filter((s) => s.threads.length);
+  const withs = same ? [same] : stories.filter(hasTasks);
   if (!before || !withs.length || (!same && !t.claims)) return "";
   if (same) t = same.tally;
   const h = imported.get(before.project)!;
@@ -745,7 +750,7 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
     ? `<div class="none"><dt>—</dt><dd>${e(label)}</dd></div>`
     : `<div><dt>${n(v)}</dt><dd>${e(label)}</dd></div>`;
   const withTitle = withs.map((s) => e(s.title)).join(" and ");
-  const tasks = withs.reduce((sum, s) => sum + s.threads.length, 0);
+  const tasks = withs.reduce((sum, s) => sum + tasksOf(s), 0);
   const reviews = t.approvals + t.sentBack;
   // A share that rounds to 0% or 100% without being exactly that says so.
   const pct = (a: number, d: number) => {
@@ -754,11 +759,12 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
   };
   // Dates for the same-project card. The commits' span is from the messages'
   // own times; the Atelier side starts at the first thing the record shows.
-  const began = same ? [...same.moments].sort((a, b) => a.at.localeCompare(b.at))[0]?.at : undefined;
+  // A tally counted over the whole record (Story.counted) begins at its first event.
+  const began = same ? (same.counted ? same.counted.from ?? undefined : [...same.moments].sort((a, b) => a.at.localeCompare(b.at))[0]?.at) : undefined;
   const beforeDates = same
     ? `<p class="compare-dates">${e(spanLabel(h.first, h.last))}${h.complete ? "" : " · only the most recent part of the history was read"}</p>` : "";
   const withDates = same && began
-    ? `<p class="compare-dates">since ${e(dayLabel(began, false))}${same.partial ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
+    ? `<p class="compare-dates">since ${e(dayLabel(began, false))}${same.partial && !same.counted ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
   return `<section class="show-section compare-section" aria-labelledby="compare-h">
   <h2 class="show-h2" id="compare-h">Git keeps what a commit claims. Atelier keeps what happened.</h2>
   <div class="compare">
@@ -868,13 +874,20 @@ export interface ShownProject {
   story: Story;
   pulse?: Pulse;
   allTimeMerged?: number;
+  inProgress?: number;         // tasks claimed, submitted or accepted now, from the items
+  featured?: Story;            // one merged task, told from its own events
 }
 
 // The task stories under the cards: two or three threads from different shown
 // projects, the ones with the most recorded moves, each drawn alone.
+// Only a merged task is told: an open or failing one is no story yet (t578).
+// A card's featured task, read from its own events, comes first.
 function taskStories(cards: ShownProject[]): { card: ShownProject; thread: Story["threads"][number]; one: Story }[] {
+  const featured = cards.flatMap((card) => card.featured?.threads.filter((th) => th.ending === "merged").map((thread) => ({ card, thread, one: { ...card.featured!, threads: [thread] } })) ?? [])
+    .sort((a, b) => (b.thread.beads.some((x) => x.kind === "reject") ? 1 : 0) - (a.thread.beads.some((x) => x.kind === "reject") ? 1 : 0) || b.thread.beads.length - a.thread.beads.length);
+  if (featured.length) return featured.slice(0, 3);
   const best = new Map<ShownProject, Story["threads"][number]>();
-  for (const { card, thread } of cards.flatMap((card) => card.story.threads.map((thread) => ({ card, thread })))
+  for (const { card, thread } of cards.flatMap((card) => card.story.threads.filter((th) => th.ending === "merged").map((thread) => ({ card, thread })))
     .sort((a, b) => b.thread.beads.length - a.thread.beads.length)) {
     if ([...best.keys()].some((other) => other.story.project === card.story.project)) continue;
     if (!best.has(card)) best.set(card, thread);
@@ -980,10 +993,11 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
   // The tally's window: from the oldest to the newest event read of the
   // projects whose threads it counts.
-  const counted = stories.filter((s) => s.threads.length);
-  const ats = counted.flatMap((s) => s.times.map((x) => x.at)).filter(Boolean).sort();
+  // A tally the Ledger counted over the whole record spans that record.
+  const counted = stories.filter(hasTasks);
+  const ats = counted.flatMap((s) => s.counted ? [s.counted.from ?? "", s.counted.to ?? ""] : s.times.map((x) => x.at)).filter(Boolean).sort();
   const window = ats.length
-    ? `${spanLabel(Date.parse(ats[0]) / 1000, Date.parse(ats[ats.length - 1]) / 1000)}${counted.some((s) => s.partial) ? " · the most recent part of the record" : ""}`
+    ? `${spanLabel(Date.parse(ats[0]) / 1000, Date.parse(ats[ats.length - 1]) / 1000)}${counted.some((s) => s.partial && !s.counted) ? " · the most recent part of the record" : ""}`
     : "";
   const tally = `<section class="show-band" aria-labelledby="tally-h"><div class="show-section">
     <h2 class="show-h2" id="tally-h">${tallyHeadline(total, who)}</h2>
@@ -999,7 +1013,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
   const cardList = cards.map((c, i) => {
     const t = c.story.tally;
-    const inProgress = c.story.threads.filter((th) => th.end === null && ["claimed", "submitted", "accepted"].includes(th.state)).length;
+    const inProgress = c.inProgress ?? c.story.threads.filter((th) => th.end === null && ["claimed", "submitted", "accepted"].includes(th.state)).length;
     const families = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
       .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`).join("");
     if (!families) return `<li class="show-card idle" id="card-${i + 1}"><h3>${e(shownLabel(c))}</h3><p class="idle-note">No agent has worked here yet.</p></li>`;
@@ -1007,12 +1021,12 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     return `<li class="show-card" id="card-${i + 1}">
     <h3>${e(shownLabel(c))}</h3>
     ${c.pulse ? pulseGraph(c.pulse, false) : ""}
-    <dl class="card-figures">${figure(t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${figure(t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
+    <dl class="card-figures">${figure(c.pulse?.merges ?? t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${figure(c.pulse?.sentBack ?? t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
     <ul class="legend-line" aria-label="Who worked on it">${families}${t.decisions ? `<li><i style="--c:var(--m-owner)"></i>${e(cap(who))}</li>` : ""}</ul>
   </li>`;
   }).join("");
 
-  // One task, the one with the most recorded moves of any shown project.
+  // One merged task: one a review sent back first when there is one, then the one with the most recorded moves.
   const pick = taskStories(cards)[0];
   const story = pick ? `<section class="show-section" aria-labelledby="story-h" id="story">
     <h2 class="show-h2" id="story-h">One task, as it happened</h2>
