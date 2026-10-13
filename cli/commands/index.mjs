@@ -25,6 +25,7 @@ import command_diff from "./diff.mjs";
 import command_dispatch from "./dispatch.mjs";
 import command_done from "./done.mjs";
 import command_edit from "./edit.mjs";
+import command_fast from "./fast.mjs";
 import command_finding from "./finding.mjs";
 import command_finish from "./finish.mjs";
 import command_gc from "./gc.mjs";
@@ -39,6 +40,7 @@ import command_land from "./land.mjs";
 import command_login from "./login.mjs";
 import command_ls from "./ls.mjs";
 import command_merge from "./merge.mjs";
+import command_mode from "./mode.mjs";
 import command_models from "./models.mjs";
 import command_new from "./new.mjs";
 import command_notes_remote from "./notes-remote.mjs";
@@ -113,6 +115,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/dispatch.mjs", run: command_dispatch },
   { path: "cli/commands/done.mjs", run: command_done },
   { path: "cli/commands/edit.mjs", run: command_edit },
+  { path: "cli/commands/fast.mjs", run: command_fast },
   { path: "cli/commands/finding.mjs", run: command_finding },
   { path: "cli/commands/finish.mjs", run: command_finish },
   { path: "cli/commands/gc.mjs", run: command_gc },
@@ -127,6 +130,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/login.mjs", run: command_login },
   { path: "cli/commands/ls.mjs", run: command_ls },
   { path: "cli/commands/merge.mjs", run: command_merge },
+  { path: "cli/commands/mode.mjs", run: command_mode },
   { path: "cli/commands/models.mjs", run: command_models },
   { path: "cli/commands/new.mjs", run: command_new },
   { path: "cli/commands/notes-remote.mjs", run: command_notes_remote },
