@@ -341,6 +341,9 @@ export interface Review {
   // the gate as any review does.
   topTier?: boolean;
   postMerge?: boolean; // an audit of the recorded landing, preserving its state
+  // Set on a post-merge review of a task landed in fast mode whose reviewer
+  // shares a contributor's family (t585): "same-family (fast mode)".
+  independence?: string;
   // The binding of the acceptance criteria the reviewer was given
   // (src/criteria.ts): the hash its review claim captured, or that the
   // reviewer read with the task. A review counts only while it is the
@@ -599,6 +602,9 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     // contributor: it counts as the holder's. Seen while nobody holds the
     // item, it was made with a write token an earlier holder had before the
     // release revoked it, and every holder is listed already, so it adds no one.
+    // A task landed in fast mode (t585) names its builder from the merged
+    // commit's Agent line: that builder is a contributor, as a pusher is.
+    if (event.kind === "item.landed_fast" && typeof event.data.builder === "string" && validActor(event.data.builder)) actors.add(event.data.builder);
     if (event.kind === "push.observed") {
       const by = event.actor === "atelier/events" ? holder : event.actor;
       if (by) actors.add(by);
@@ -2035,4 +2041,111 @@ export const REVIEW_RENEW_MS = 30_000;
 export const REVIEW_LEASE_MS = 5 * 60_000;
 export function reviewLeaseExpired(renewedAt: string | null | undefined, now: number): boolean {
   return !renewedAt || !Number.isFinite(Date.parse(renewedAt)) || now - Date.parse(renewedAt) >= REVIEW_LEASE_MS;
+}
+
+// ── modes (t585) ─────────────────────────────────────────────────────────────
+// Atelier has two modes. Full mode is the default: every change goes through
+// the gate. Fast mode is the owner's: switched on with a reason when the
+// gated path cannot run (on 2026-10-13 Artifacts failed every new fork, so
+// no task could be claimed and four finished tasks were merged by hand,
+// outside the record), it lets the owner land finished work in batches from
+// a local checkout, each landing recorded with a receipt and audited by a
+// post-merge review. It has no end time; the owner switches back to full.
+export type ProjectMode =
+  | { mode: "full" }
+  | { mode: "fast"; since: string; reason: string; by: string; decision: string | null };
+
+export const MODE_REASON_MAX = 500;
+
+// The mode a stored record says, full for anything else: a project that
+// never switched, or a record that cannot be read, is in full mode.
+export function projectMode(record: unknown): ProjectMode {
+  const r = record as Record<string, unknown> | null | undefined;
+  if (!r || r.mode !== "fast" || typeof r.since !== "string" || typeof r.reason !== "string" || typeof r.by !== "string") return { mode: "full" };
+  return { mode: "fast", since: r.since, reason: r.reason, by: r.by, decision: typeof r.decision === "string" ? r.decision : null };
+}
+
+const utcMinute = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+
+// The one line every surface prints: "Mode: full" or
+// "Mode: fast since 2026-10-13 14:05 UTC (reason)".
+export function modeLine(mode: ProjectMode): string {
+  return mode.mode === "fast" ? `Mode: fast since ${utcMinute(mode.since)} (${mode.reason})` : "Mode: full";
+}
+
+// The switch the owner asks for, checked before anything is written.
+export function modeSwitch(current: ProjectMode, actor: string, owner: string, to: unknown, reason: unknown, at: string): ProjectMode {
+  if (actor !== owner) throw new RuleError("not_project_owner", "only the project owner switches the project's mode", 403);
+  if (to !== "fast" && to !== "full") throw new RuleError("bad_mode", "the mode is fast or full", 400);
+  if (to === "full") {
+    if (current.mode === "full") throw new RuleError("already_full", "the project is already in full mode", 409);
+    return { mode: "full" };
+  }
+  const why = typeof reason === "string" ? reason.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
+  if (!why) throw new RuleError("bad_reason", "fast mode needs a reason: atelier mode fast --reason TEXT", 400);
+  if (why.length > MODE_REASON_MAX) throw new RuleError("too_long", `the reason is at most ${MODE_REASON_MAX} characters`, 400);
+  if (current.mode === "fast") throw new RuleError("already_fast", `the project is already in fast mode (${modeLine(current)}); switch to full first`, 409);
+  return { mode: "fast", since: at, reason: why, by: actor, decision: null };
+}
+
+export function assertFastMode(mode: ProjectMode): asserts mode is Extract<ProjectMode, { mode: "fast" }> {
+  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", "the project is in full mode; the owner switches with atelier mode fast --reason TEXT before landing fast", 409);
+}
+
+// What a landing in fast mode records: the commit merged, the merge commit,
+// the builder its Agent line names, the test command and the sha256 of its
+// output, and the mode's reason.
+export interface FastReceipt {
+  commit: string;
+  mergeCommit: string;
+  builder: string;
+  tests: { command: string; sha256: string };
+  reason: string;
+  at: string;
+  by: string;
+}
+
+const SHA = /^[a-f0-9]{40,64}$/;
+export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, actor: string, at: string): FastReceipt {
+  assertFastMode(mode);
+  const tests = body.tests as { command?: unknown; sha256?: unknown } | undefined;
+  if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw new RuleError("bad_receipt", "the receipt names the commit merged, a full SHA", 400);
+  if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw new RuleError("bad_receipt", "the receipt names the merge commit, a full SHA", 400);
+  if (typeof body.builder !== "string" || !validActor(body.builder)) throw new RuleError("bad_receipt", "the receipt names the builder as harness/model, from the commit's Agent line", 400);
+  if (!tests || typeof tests.command !== "string" || !tests.command.trim() || tests.command.length > 2000) throw new RuleError("bad_receipt", "the receipt names the test command the batch ran", 400);
+  if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
+  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256 }, reason: mode.reason, at, by: actor };
+}
+
+// The builder a commit's message names: its last Agent: line, as harness/model.
+export function agentOfMessage(message: string): string | null {
+  const lines = message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l));
+  const last = lines.at(-1)?.replace(/^Agent:\s*/i, "").trim() ?? "";
+  return last && validActor(last) ? last : null;
+}
+
+// The family rule for a post-merge review. Outside fast mode a reviewer of
+// the same family as a contributor is refused; a task landed in fast mode
+// may be reviewed by one (PAVI, 2026-10-13: fast mode permits single-family
+// models), and the review record says so. The same model is never its own
+// reviewer, in either mode (contributed, checked by the callers).
+export const SAME_FAMILY_FAST = "same-family (fast mode)";
+export function postMergeIndependence(reviewer: string, contributors: readonly string[], single: PoolFamily | null, landedFast: boolean): { refusal: string | null; independence: string | null } {
+  const refusal = familyRefusal(reviewer, contributors, single);
+  if (!refusal) return { refusal: null, independence: null };
+  return landedFast ? { refusal: null, independence: SAME_FAMILY_FAST } : { refusal, independence: null };
+}
+
+// The fix task a rejected post-merge review of a fast landing files: its
+// criteria are the review's findings, or the note when it gave none.
+export function fastFixTask(itemId: string, title: string, review: { by: string; head: string; note: string; request?: number; findings?: Finding[] }): { title: string; brief: string; accept: string[] } {
+  const findings = review.findings ?? [];
+  const accept = findings.length
+    ? findings.map((f) => `${f.file}${f.line === null ? "" : `:${f.line}`}: ${f.text}`.slice(0, 1000))
+    : [`Resolve the post-merge review's rejection of ${itemId}: ${review.note}`.slice(0, 1000)];
+  return {
+    title: `Fix after fast landing of ${itemId}: ${title}`,
+    brief: `${itemId} landed in fast mode and its post-merge review by ${review.by} at ${review.head.slice(0, 12)} rejected it${review.request !== undefined ? ` (review request ${review.request})` : ""}. Note: ${review.note}`.slice(0, 3000),
+    accept,
+  };
 }

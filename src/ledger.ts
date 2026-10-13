@@ -21,6 +21,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
+  projectMode, modeSwitch, modeLine, fastReceipt, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -79,6 +80,14 @@ import { refreshReview } from "./refresh/review.ts";
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
 // is enforced by construction: two agents claiming the same item are serialised
 // and the second is refused. The instance named "__index" also lists projects.
+
+export interface FastLanding {
+  item: string;
+  title: string;
+  receipt: FastReceipt;
+  review: { state: string; request: number | null; by: string | null };
+  fix: string | null;
+}
 
 export interface LedgerEvent {
   seq: number;
@@ -2776,11 +2785,13 @@ export class Ledger extends DurableObject<Env> {
     // A review answering a gate's request asked of a tier model gives the
     // tier review too (gateServesTier): the gate's review, top tier.
     const topTier = !tierClaim && boundClaims.some((c) => c.tier !== 1 && c.topTier === 1);
-    r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
+    const fastReceiptOf = item.state === "merged" ? this.landedFastReceipt(item.id) : null;
+    const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
+    r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
@@ -2796,7 +2807,14 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "merged" && item.kind === "part" && !r.approve && (r.findings ?? []).some((f) => f.severity === "blocking")) {
       this.reworkPart(item, r, at, proved);
     }
-    if (item.state === "merged") {
+    // A rejected post-merge review of a fast landing files its fix task
+    // (t585), its criteria the review's findings.
+    if (fastReceiptOf && !r.approve) {
+      const fix = fastFixTask(item.id, item.title, { by: r.by, head: r.head, note: r.note, request: r.request, findings: r.findings });
+      const made = this.newItem(shortTitle(fix.title), item.scope, ORCHESTRATOR, { brief: fix.brief, accept: fix.accept });
+      this.log(made.id, ORCHESTRATOR, "item.fix_of", { itemId: item.id, head: r.head, by: r.by, request: r.request, fast: true }, at);
+      this.log(item.id, ORCHESTRATOR, "item.fix_filed", { mergeCommit: r.head, foundIn: made.id, fast: true }, at);
+    } else if (item.state === "merged") {
       const blocking = (r.findings ?? []).filter((f) => f.severity === "blocking");
       if (blocking.length) {
         const defect = this.newItem(shortTitle(`Defect in ${item.id}: ${item.title}`), item.scope, ORCHESTRATOR, {
@@ -4478,6 +4496,83 @@ export class Ledger extends DurableObject<Env> {
     return withdrawDecision(this.decisionStore, actor, id, note, new Date().toISOString(), acting);
   }
 
+  // ── modes (t585, src/rules.ts projectMode) ─────────────────────────────────
+  // Full mode is the default and stores nothing; fast mode is a meta row the
+  // owner's switch writes, and each switch is a standing decision too: fast
+  // mode records one with the owner's reason, and the switch back to full
+  // withdraws it, so every review brief says while it stands.
+  mode(): ProjectMode & { line: string } {
+    this.project();
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode'`).toArray()[0];
+    const mode = projectMode(row ? JSON.parse(row.value as string) : null);
+    return { ...mode, line: modeLine(mode) };
+  }
+
+  setMode(actor: string, to: unknown, reason: unknown, acting: string | null = null): ProjectMode & { line: string; landed?: FastLanding[] } {
+    const current = this.mode();
+    const at = new Date().toISOString();
+    const next = modeSwitch(current, actor, this.owner, to, reason, at);
+    if (next.mode === "fast") {
+      const d = recordDecision(this.decisionStore, actor, { text: `Atelier runs in fast mode since ${at}: ${next.reason}`, quote: next.reason }, at, acting);
+      next.decision = d.id;
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?)`, JSON.stringify(next));
+      this.log(null, actor, "mode.fast", { reason: next.reason, decision: d.id }, at);
+      return { ...next, line: modeLine(next) };
+    }
+    const was = current as Extract<ProjectMode, { mode: "fast" }>;
+    const landed = this.fastLandings(was.since);
+    if (was.decision) {
+      try { withdrawDecision(this.decisionStore, actor, was.decision, `returned to full mode on ${at.slice(0, 16)} UTC`, at, acting); } catch (err) { if (!(err instanceof RuleError)) throw err; }
+    }
+    this.sql.exec(`DELETE FROM meta WHERE key = 'mode'`);
+    this.log(null, actor, "mode.full", { since: was.since, reason: was.reason, landed: landed.map((l) => l.item) }, at);
+    return { mode: "full", line: modeLine({ mode: "full" }), landed };
+  }
+
+  // Every task landed in fast mode since `since` (all of them when null),
+  // with its receipt and the state of its post-merge review.
+  fastLandings(since: string | null = null): FastLanding[] {
+    this.project();
+    const rows = this.sql.exec(`SELECT item_id, data, at FROM events WHERE kind = 'item.landed_fast' ORDER BY seq`).toArray();
+    return rows.filter((r) => since === null || (r.at as string) >= since).map((r) => {
+      const receipt = JSON.parse(r.data as string) as FastReceipt;
+      const id = r.item_id as string;
+      const req = this.sql.exec(`SELECT id, state FROM review_requests WHERE item = ? AND head = ? ORDER BY id DESC LIMIT 1`, id, receipt.mergeCommit).toArray()[0];
+      const review = this.reviewsFor(id).filter((v) => v.head === receipt.mergeCommit).at(-1);
+      const fix = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.fix_of' AND json_extract(data, '$.itemId') = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+      const reviewState = review ? (review.approve ? "approved" : "rejected") : req ? (req.state as string) : "not requested";
+      return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, fix: fix ? fix.item_id as string : null };
+    });
+  }
+
+  // The owner records a task landed in fast mode: its receipt, and the item
+  // merged at the merge commit. Main on the server has not seen the commit
+  // yet (the owner publishes after), so the merge is not observed on the
+  // baseline, and the event says it landed fast.
+  landedFast(id: string, actor: string, body: Record<string, unknown>): { item: Item; receipt: FastReceipt } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands in fast mode", 403);
+    const at = new Date().toISOString();
+    const receipt = fastReceipt(body, this.mode(), actor, at);
+    const item = this.item(id);
+    const prior = this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "item.landed_fast");
+    if (item.state === "merged" && prior?.data.mergeCommit === receipt.mergeCommit) return { item, receipt: prior.data as unknown as FastReceipt };
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409);
+    this.assertPostMergeFree(id);
+    this.ctx.storage.transactionSync(() => {
+      this.update(id, { head: receipt.commit, accepted_head: receipt.commit }, at);
+      this.update(id, { state: "merged", owner: null }, at);
+      this.log(id, actor, "item.landed_fast", { ...receipt }, at);
+      this.log(id, actor, "item.merged", { mergeCommit: receipt.mergeCommit, head: receipt.commit, observedOnBaseline: false, fast: true }, at);
+    });
+    this.afterPlanChange(id);
+    return { item: this.item(id), receipt };
+  }
+
+  landedFastReceipt(id: string): FastReceipt | null {
+    const e = this.events(id, Number.MAX_SAFE_INTEGER).find((x) => x.kind === "item.landed_fast");
+    return e ? e.data as unknown as FastReceipt : null;
+  }
+
   // ── protected actions (src/actions.ts) ──────────────────────────────────
   // Approvals bound to one revision of the main line, and the steps a ship
   // ran. Each is a project-level event: approved, withdrawn, consumed, ran.
@@ -5947,6 +6042,13 @@ export class Ledger extends DurableObject<Env> {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
       if (contributed(reviewer, contributorsOf(item))) {
         throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
+      }
+      // A post-merge review of a task landed in fast mode may come from a
+      // model of the builder's family (t585); any other recorded merge is
+      // audited by another family, as the gate would have asked.
+      if (item.state === "merged") {
+        const family = postMergeIndependence(reviewer, contributorsOf(item), singleFamily(policy), !!this.landedFastReceipt(id));
+        if (family.refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${id} after its merge: ${family.refusal}; only a task landed in fast mode takes a same-family review`, 409);
       }
       this.assertStanding(reviewer, "review", pool);
       // Under single-family mode even a named reviewer is one of the
