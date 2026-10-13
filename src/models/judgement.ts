@@ -82,11 +82,33 @@ export function registeredActing(acting: string, pool: PoolNames): string {
 // in the row's actors; only counting and agreement use this.
 export type PoolNames = readonly Pick<ModelEntry, "id" | "harness" | "aliases">[];
 
+// Entries that share a name, an id or alias by modelKey, are one model under
+// several harnesses: gemini-cli/gemini-4-argon and an antigravity entry
+// gemini-4-argon-ag that lists gemini-4-argon as an alias. Such a group
+// counts as the model named by the smallest of its entries' ids, so every
+// name in it gives one key, whichever harness is named (gemini-4-argon's
+// review of t625, 2026-10-13, finding 1). A lone entry keeps its own id.
+function groupKey(entry: PoolNames[number], pool: PoolNames): string {
+  const keys = (m: PoolNames[number]) => [m.id, ...m.aliases].map((n) => modelKey(n));
+  const group = new Set([entry]);
+  const names = new Set(keys(entry));
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const m of pool) {
+      if (group.has(m) || !keys(m).some((k) => names.has(k))) continue;
+      group.add(m);
+      for (const k of keys(m)) names.add(k);
+      grew = true;
+    }
+  }
+  return [...group].map((m) => modelKey(m.id)).sort()[0];
+}
+
 export function canonicalModel(acting: string, pool: PoolNames): string {
   const names = (m: PoolNames[number]) => [m.id, ...m.aliases];
   const entry = pool.find((m) => names(m).some((id) => sameActor(acting, `${m.harness}/${id}`)))
     ?? pool.find((m) => names(m).some((id) => modelKey(`${m.harness}/${id}`) === modelKey(acting)));
-  return entry ? modelKey(`${entry.harness}/${entry.id}`) : modelKey(acting);
+  return entry ? groupKey(entry, pool) : modelKey(acting);
 }
 
 // The acting model an event records, or null: unknown for an event recorded

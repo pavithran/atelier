@@ -123,6 +123,31 @@ it("a card recorded for a model nobody knew stays reachable, replayable and with
   expect((await view("stranded-model-a")).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "withdrawn"]]);
 });
 
+it("removing the model that adopted a name, or giving the name to a third, never shows a withdrawn card active", async () => {
+  // Astra's third review of t625, 2026-10-13, finding 1.
+  const a = await post("orphan-model-a", card(22));
+  await index().putModel(entry("orphan-model-b", "codex", ["orphan-model-a"]));
+  await post("orphan-model-b", { withdraws: a.record.id, reason: "Not this model's." });
+  await index().removeModel("orphan-model-b");
+  expect((await view("orphan-model-a")).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "withdrawn"]]);
+  expect((await view("orphan-model-a")).withdrawals.map((w) => w.withdraws)).toEqual([a.record.id]);
+  await index().putModel(entry("orphan-model-c", "opencode", ["orphan-model-a"]));
+  expect((await view("orphan-model-c")).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "withdrawn"]]);
+});
+
+it("one model under two harnesses, linked by a pool alias, has one set of cards through the routes", async () => {
+  // gemini-4-argon's third review of t625, 2026-10-13, finding 1.
+  await index().putModel(entry("argon-x", "gemini-cli"));
+  await index().putModel(entry("argon-x-ag", "antigravity", ["argon-x"]));
+  const one = await post("antigravity/argon-x-ag", card(30));
+  const two = await post("gemini-cli/argon-x", card(31));
+  for (const name of ["argon-x", "argon-x-ag", "gemini-cli/argon-x", "antigravity/argon-x"]) {
+    const shown = await view(name);
+    expect(shown.cards.map((c) => c.id)).toEqual([one.record.id, two.record.id]);
+    expect(shown.pool).toEqual(["gemini-cli/argon-x", "antigravity/argon-x-ag"]);
+  }
+});
+
 it("a card stays with the model it was recorded for when its alias moves to another model, withdrawal and all", async () => {
   // Astra's review of t625, 2026-10-13, finding 1: B showed c1 as active, without A's withdrawal.
   await index().putModel(entry("alias-model-a", "codex", ["alias-preview"]));
