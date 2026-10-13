@@ -113,7 +113,7 @@ writeFileSync("out/index.txt", names.map((n) => n + "\\n").join(""));
 `;
 const MANIFEST = { version: 1, generators: [{ name: "index", command: [process.execPath, "gen.mjs"], inputs: ["cmds/**", "gen.mjs"], outputs: ["out/index.txt"] }], records: [], registries: [] };
 
-function generatedRepo() {
+function generatedRepo(generator = GENERATOR) {
   const dir = mkdtempSync(join(tmpdir(), "fast-land-gen-"));
   const commit = (files, message) => {
     for (const [path, text] of Object.entries(files)) { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), text); }
@@ -122,7 +122,7 @@ function generatedRepo() {
     return git(dir, "rev-parse", "HEAD");
   };
   git(dir, "init", "-q", "-b", "main");
-  commit({ "gen.mjs": GENERATOR, [MANIFEST_PATH]: JSON.stringify(MANIFEST, null, 2), ".gitattributes": "out/index.txt merge=atelier-generated\n", "cmds/help.txt": "name: help\n" }, "start");
+  commit({ "gen.mjs": generator, [MANIFEST_PATH]: JSON.stringify(MANIFEST, null, 2), ".gitattributes": "out/index.txt merge=atelier-generated\n", "cmds/help.txt": "name: help\n" }, "start");
   const branch = (name, agent) => {
     git(dir, "checkout", "-q", "-b", name, "main");
     const sha = commit({ [`cmds/${name}.txt`]: `name: ${name}\n` }, `Add the ${name} command\n\nAgent: ${agent}`);
@@ -462,6 +462,31 @@ test("a subtree the scan cannot read stops the batch, naming its path (finding 4
     assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
     assert.match(r.failure.detail, /(^|[ :,])nested\/ \(.*cannot be read/);
     assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Sixth review of t592 (codex/gpt-6-astra): a declared generator, run inside
+// the merge, could point MERGE_HEAD at HEAD. Its write checks read git
+// status, which ignores Git's own files, so the merge commit left out the
+// task's commit, and fast land recorded it as landed.
+const MERGE_HEAD_GENERATOR = `${GENERATOR}
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+const mergeHead = execFileSync("git", ["rev-parse", "--git-path", "MERGE_HEAD"], { encoding: "utf8" }).trim();
+if (existsSync(mergeHead)) writeFileSync(mergeHead, execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }));
+`;
+
+test("a merge whose commit does not have the task's commit as a parent stops the batch, nothing recorded (finding 4)", async () => {
+  const { dir, push, land } = generatedRepo(MERGE_HEAD_GENERATOR);
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const recorded = [];
+    const r = await fastLand({ ...base, titles: { t1: "Push", t2: "Land" }, cwd: dir, pairs: [{ id: "t1", sha: push }, { id: "t2", sha: land }], test: "true", record: (id) => { recorded.push(id); return { ok: true }; } });
+    assert.equal(r.ok, false, "the batch is refused");
+    assert.equal(r.failure.step, "merge t2");
+    assert.match(r.failure.detail, /parents/);
+    assert.deepEqual(recorded, []);
+    assert.equal(git(dir, "rev-parse", "main"), start);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
