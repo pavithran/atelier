@@ -95,13 +95,29 @@ export function scanBatch(cwd, start) {
   return hits;
 }
 
+// The clone each named commit can be fetched from (t589): the workspace a
+// runner's fast-build report names, when it reports the same commit and the
+// folder is on this machine. Only those are fetched; any other commit must
+// already be in the checkout.
+export function readySources(ready, pairs) {
+  const out = {};
+  for (const { id, sha } of pairs) {
+    const r = ready.find((x) => x?.item === id && typeof x.commit === "string" && x.commit.startsWith(sha));
+    if (typeof r?.workspace === "string" && existsSync(join(r.workspace, ".git"))) out[id] = r.workspace;
+  }
+  return out;
+}
+
+const hasCommit = (cwd, sha) => spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd }).status === 0;
+
 // `titles` maps each task to its title; `record(id, receipt)` posts one
 // receipt; `log` prints a step; `run` runs a declared generator for the merge
 // pipeline (its default where omitted). `cleanClone`, when given as { setup },
 // runs the test command in a temporary clean clone of the batch's head after
 // that setup (testInCleanClone); without it the test runs in the checkout.
-// Returns { ok, start, head, landed, failure }.
-export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, log = () => {} }) {
+// `sources` maps a task to the local clone its commit is fetched from when the
+// checkout lacks it (readySources). Returns { ok, start, head, landed, failure }.
+export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -109,6 +125,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   let failure = null, tests = null;
   try {
     for (const { id, sha } of pairs) {
+      if (sources[id] && !hasCommit(cwd, sha)) {
+        git(cwd, "fetch", "--quiet", "--no-tags", sources[id], "HEAD");
+        log(`fetched ${id}'s build from ${sources[id]}`);
+      }
       const commit = git(cwd, "rev-parse", "--verify", `${sha}^{commit}`);
       const builder = agentOfMessage(git(cwd, "log", "-1", "--format=%B", commit));
       if (!builder) { failure = { step: `merge ${id}`, detail: `${commit.slice(0, 12)} has no Agent: line naming its builder` }; break; }
