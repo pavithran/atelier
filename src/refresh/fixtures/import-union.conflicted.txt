@@ -1,0 +1,14 @@
+<<<<<<< HEAD
+import { a } from "./a.ts";
+import { task } from "./task.ts";
+import { b } from "./b.ts";
+||||||| merged common ancestors
+import { a } from "./a.ts";
+import { b } from "./b.ts";
+=======
+import { a } from "./a.ts";
+import { b } from "./b.ts";
+import { main } from "./main.ts";
+>>>>>>> 1111111
+
+export const all = [a, b];

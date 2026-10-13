@@ -1,3 +1,4 @@
+import "./refresh/lifecycle.cases.mjs";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, expect, it, vi } from "vitest";

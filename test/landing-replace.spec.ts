@@ -20,7 +20,7 @@ import type { LandingWorkflowRecord } from "../src/ledger.ts";
 // runs and keeps the queue place, and the old instance's lease calls are
 // refused. Local workerd cannot show production terminate latency.
 
-const H0 = "0".repeat(40), H1 = "a".repeat(40);
+const H0 = "0".repeat(40), H1 = "a".repeat(40), MAIN = "c".repeat(40);
 const OPUS = "claude-code/opus-5.5";
 const TOKEN = "landing-replace-token";
 
@@ -70,8 +70,13 @@ async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<
 
 const refusal = async (p: Promise<unknown>) => { try { await p; return null; } catch (error) { return String((error as Error).message ?? error); } };
 
-// A start the real binding runs: a blocker holds the lease, so the instance
-// queues for it and sleeps between asks at the stretched cadence.
+// The executor's report of the merged head, which since t550 comes before
+// the checks, the review and the lease.
+const report = async (instance: string) => (await env.LANDING_WORKFLOW.get(instance)).sendEvent({ type: "workspace", payload: { round: 0, head: H1, mainHead: MAIN, mergedIn: false } });
+
+// A start the real binding runs: a blocker holds the lease, so once its head
+// is reported, checked and reviewed (none needed here) the instance queues
+// for it and sleeps between asks at the stretched cadence.
 async function queuedLanding(project: string) {
   const { L, id } = await task(project);
   const blocker = (await L.newItem("Hold the lease", [], "owner")).id;
@@ -79,7 +84,10 @@ async function queuedLanding(project: string) {
   const started = await call(project, id, { checks: "local", pollMs: 10 });
   expect(started.status).toBe(201);
   const { instance } = await started.json() as { instance: string };
+  await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
+  await report(instance);
   await until(() => L.readLandingQueue(), (rows) => rows.some((row) => row.item === id));
+  await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "lease");
   return { L, id, blocker, instance };
 }
 
@@ -102,7 +110,10 @@ it("attaches below the lease-wait limit and replaces past it, only after the old
   expect(body.replaced.detail).toMatch(/has waited for the landing lease since .* at or past the 3 hours limit/);
   expect((await (await env.LANDING_WORKFLOW.get(old)).status()).status).toBe("terminated");
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: fresh, replaced: { from: old, reason: "lease-wait" } });
-  // The replacement asks again under the same row, so the place is kept.
+  // The replacement asks for the workspace again; once reported (and the
+  // review standing) it asks again under the same row, so the place is kept.
+  await until(() => L.landingWorkflowOf(id), (r) => r?.instance === fresh && r.stage === "workspace");
+  await report(fresh);
   await until(() => L.readLandingQueue(), (rows) => Date.parse(rows.find((r) => r.item === id)?.renewedAt ?? "0") > Date.parse(queued.find((r) => r.item === id)!.renewedAt!));
   expect((await L.readLandingQueue()).map((r) => ({ item: r.item, at: r.at }))).toEqual(queued.map((r) => ({ item: r.item, at: r.at })));
 });
@@ -287,9 +298,9 @@ it("persists the review options, and before acceptance an eligible named reviewe
   const body = await swapped.json() as { instance: string; reviewer: string; replaced: { from: string; to: string; reason: string } };
   expect(body).toMatchObject({ reviewer: "codex/gpt-5.5", replaced: { from: old, to: body.instance, reason: "reviewer" } });
   expect((await (await env.LANDING_WORKFLOW.get(old)).status()).status).toBe("terminated");
-  // The replacement takes the task's own lease back and asks for the workspace.
+  // The replacement asks for the workspace, holding no lease (t550).
   await until(() => L.landingWorkflowOf(id), (r) => r?.instance === body.instance && r.stage === "workspace");
-  expect(await L.readProjectLanding()).toMatchObject({ item: id });
+  expect(await L.readProjectLanding()).toBeNull();
 
   // A rerun naming nobody attaches, and the remembered reviewer stands.
   expect(await (await call(project, id, { checks: "local" })).json()).toMatchObject({ instance: body.instance, created: false, reviewer: "codex/gpt-5.5" });
@@ -299,19 +310,20 @@ it("persists the review options, and before acceptance an eligible named reviewe
   // The old instance's executor is fenced: its lease calls and its events are refused.
   expect(await refusal(L.cancelProjectLanding(id, "owner", old))).toMatch(/is no longer .*'s landing Workflow/);
   expect(await refusal(L.renewProjectLanding(id, "owner", old))).toMatch(/is no longer/);
-  expect(await L.readProjectLanding()).toMatchObject({ item: id });
+  expect(await refusal(L.beginProjectLanding(id, "owner", old))).toMatch(/is no longer/);
+  expect(await L.readProjectLanding()).toBeNull();
   const lease = (body: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect((await lease({ item: id, cancel: true, instance: old })).status).toBe(409);
-  expect(await L.readProjectLanding()).toMatchObject({ item: id });
+  expect(await L.readProjectLanding()).toBeNull();
   const stale = await call(project, id, { event: { type: "workspace", payload: { round: 0, head: H1 } }, instance: old });
   expect(stale.status).toBe(409);
   expect(((await stale.json()) as { detail: string }).detail).toMatch(new RegExp(`${old} is no longer ${id}'s landing Workflow: ${body.instance} replaced it`));
   expect((await call(project, id, { event: { type: "workspace", payload: { round: 0, head: H1 } } })).status).toBe(400);
   expect((await L.item(id)).state).not.toBe("submitted");
   // The replacement's own calls pass.
-  expect((await lease({ item: id, renew: true, instance: body.instance })).status).toBe(200);
+  expect((await lease({ item: id, cancel: true, instance: body.instance })).status).toBe(200);
 });
 
 it("an instance whose record was replaced while it ran stops without releasing the lease, writing the stage or submitting", async () => {
@@ -322,10 +334,11 @@ it("an instance whose record was replaced while it ran stops without releasing t
   await wf.modify(async (m) => { await m.disableSleeps(); });
   await env.LANDING_WORKFLOW.create({ id: "wf-stale-old", params: { project, key: project, item: id, actor: "owner", pollMs: 10 } });
   await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
-  expect(await L.readProjectLanding()).toMatchObject({ item: id });
+  // A lease the replacement holds for the task (t550: once it took it).
+  await setLease(L, id);
   // Its termination failed to take, and the record names a replacement.
   await L.claimLandingWorkflow(id, "wf-stale-old", "wf-stale-new", "owner", { checks: "container" }, { from: "wf-stale-old", reason: "lease-wait", detail: "a test replacement" });
-  await (await env.LANDING_WORKFLOW.get("wf-stale-old")).sendEvent({ type: "workspace", payload: { round: 0, head: H1 } });
+  await report("wf-stale-old");
   await wf.waitForStatus("errored");
   // Its failure handler found itself fenced: the lease and the record are the replacement's.
   expect(await L.readProjectLanding()).toMatchObject({ item: id });
@@ -342,6 +355,7 @@ it("a lease-wait timeout names the holder of the final attempt when the holder c
   await L.setLandingWorkflow(id, "wf-timeout-holder", "owner");
   await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-timeout-holder");
   await env.LANDING_WORKFLOW.create({ id: "wf-timeout-holder", params: { project, key: project, item: id, actor: "owner", pollMs: 400, waitTimeoutMs: 1200 } });
+  await report("wf-timeout-holder");
   expect(await wf.waitForStepResult({ name: "ask for the landing lease r0 #0" })).toMatchObject({ took: false, holder: { item: first } });
   await setLease(L, second);
   await wf.waitForStatus("errored");
@@ -361,6 +375,7 @@ it("a lease-wait timeout says explicitly that no landing held the lease when the
   await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-timeout-nobody");
   await wf.modify(async (m) => { await m.disableSleeps(); });
   await env.LANDING_WORKFLOW.create({ id: "wf-timeout-nobody", params: { project, key: project, item: id, actor: "owner", pollMs: 50, waitTimeoutMs: 100 } });
+  await report("wf-timeout-nobody");
   await wf.waitForStatus("errored");
   const detail = (await L.landingWorkflowOf(id))?.detail ?? "";
   expect(detail).toMatch(new RegExp(`at the final attempt \\(.* UTC\\) no landing held it; the server said: owner's landing of ${ahead} has been waiting for the lease`));

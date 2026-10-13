@@ -1,0 +1,6 @@
+import { a } from "./a.ts";
+import { task } from "./task.ts";
+import { b } from "./b.ts";
+import { main } from "./main.ts";
+
+export const all = [a, b];
