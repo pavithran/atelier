@@ -60,7 +60,7 @@ const isModel = (a: string, owner: string) => a !== owner && a.includes("/") && 
 // than recorded as unknown, so a typo never hides who acted.
 export function cleanActing(header: string | null, owner: string, agentToken: boolean): string | null {
   if (header === null) return null;
-  if (agentToken) throw new RuleError("acting_owner_only", "X-Atelier-Acting is for the owner token; an agent token already names its actor", 403);
+  if (agentToken) throw new RuleError("acting_owner_only", "X-Atelier-Acting is for the developer token; an agent token already names its actor", 403);
   const acting = header.trim();
   if (!isModel(acting, owner)) throw new RuleError("bad_acting", "X-Atelier-Acting (atelier --as) must name the harness/model acting for the developer, such as claude-code/opus-5.5", 400);
   return acting;

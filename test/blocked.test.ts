@@ -101,6 +101,6 @@ test("stuck detection skips a blocked task, however long it has been silent or f
   ];
   // The same record, unblocked, is stuck twice over: silent for days, and failing on two heads.
   const silent = item({ state: "claimed", blocked: undefined, lastPushAt: null });
-  assert.deepEqual(detectStuck([silent], events, NOW).map((f) => f.suggestion), ["check in with the owner", "hand off"]);
+  assert.deepEqual(detectStuck([silent], events, NOW).map((f) => f.suggestion), ["check in with the holder", "hand off"]);
   assert.deepEqual(detectStuck([item({ lastPushAt: null })], events, NOW), []);
 });

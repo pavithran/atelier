@@ -241,7 +241,7 @@ atelier done "Fix the off-by-one in pagination"
 
 `done` pushes, runs the required checks in a clean clone of the pushed head,
 and submits only when they pass and the head has not moved. Its last line
-says `Ready for the owner` or names what still blocks the task. Here the
+says `Ready for the developer` or names what still blocks the task. Here the
 developer's token acts for the agent named by `--as`; a real agent gets a token
 of its own (see [Further setup](#further-setup)).
 

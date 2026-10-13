@@ -4,7 +4,7 @@ const spec: CommandSpec = {
   name: "abandon",
   forms: [
     {
-      group: "Owner", line: 1, slot: 50,
+      group: "Developer", line: 1, slot: 50,
       form: "abandon ID [--note TEXT] [--delivered-by tN]",
       about: "Closes the task without merging it. The holder's write token is revoked; the history and evidence stay. `--note` says why. `--delivered-by` records that the merged task tN delivered it, for work another task already brought in.",
     },

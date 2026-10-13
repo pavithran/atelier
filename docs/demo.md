@@ -292,7 +292,7 @@ atelier done "Add JSON output to the export script"
 
 `start` claims the part, prints the workspace to work in, and prints its
 title, scope and dispatch note. `done` is `finish` with a required summary,
-and its last line is `Ready for the owner` or what still blocks the part.
+and its last line is `Ready for the developer` or what still blocks the part.
 
 ## 5. Checks
 

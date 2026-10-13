@@ -3231,7 +3231,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // buys, they are refused as the API's override is.
       let factor: OwnerFactor | undefined;
       if (verb === "override" || verb === "allow-override") {
-        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's own sign-in, not the developer token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
         factor = ownerFactorIn(env, c, form, project, id);
       }
       // A change of owner takes the write token with it, as on the API routes:
@@ -3819,7 +3819,7 @@ export default {
             req.headers.set("x-atelier-runner", token.runner);
           }
         } else if (token) {
-          if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
+          if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
         let res: Response;
