@@ -319,7 +319,7 @@ test("On this Mac gives each workspace one line, and a task with no workspace he
   assert.ok(r.output.includes("  t5  clean, pushed\n"), r.output);
   assert.ok(!r.output.includes("t9"), "a task with no workspace here is left out");
   assert.ok(!/  t[68]  /.test(r.output), "a merged or abandoned task's workspace is not listed");
-  assert.ok(r.output.includes("  2 workspaces of merged or abandoned tasks left here; atelier gc --project demo previews removing them\n"), r.output);
+  assert.ok(r.output.includes("  2 workspaces of merged or abandoned tasks left here; atelier clean --project demo removes those whose work is in main or the ledger\n"), r.output);
   assert.ok(r.output.includes("  Landing: no landing is running on this Mac; the server's landing lease is held by no one.\n"), r.output);
 });
 
