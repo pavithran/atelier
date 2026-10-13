@@ -1096,8 +1096,13 @@ test("a landed-fast receipt needs both commits, the builder, the test command an
   const r = fastReceipt(body, fast, "owner", "2026-10-13T01:00:00Z");
   assert.deepEqual(r, { ...body, reason: "forks fail", at: "2026-10-13T01:00:00Z", by: "owner" });
   assert.throws(() => fastReceipt(body, { mode: "full" }, "owner", "x"), (e: RuleError) => e.code === "not_fast_mode");
-  for (const bad of [{ commit: "abc" }, { mergeCommit: null }, { builder: "nobody" }, { tests: { command: "npm test", sha256: "short" } }, { tests: { command: "", sha256: "c".repeat(64) } }]) {
+  for (const bad of [{ commit: "abc" }, { mergeCommit: null }, { builder: "nobody" }, { tests: { command: "npm test", sha256: "short" } }, { tests: { command: "", sha256: "c".repeat(64) } }, { tests: { command: "npm test", sha256: "c".repeat(64), where: "laptop" } }]) {
     assert.throws(() => fastReceipt({ ...body, ...bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
+  }
+  // Where the tests ran (t588): the default run in a clean clone, a given --test in the checkout.
+  for (const where of ["clean clone", "checkout"] as const) {
+    const withWhere = { ...body, tests: { ...body.tests, where } };
+    assert.deepEqual(fastReceipt(withWhere, fast, "owner", "x").tests, { command: "npm test", sha256: "c".repeat(64), where });
   }
   assert.equal(agentOfMessage("Fix it\n\nAgent: codex/gpt-6\nAgent: claude-code/opus-5.5\nCo-Authored-By: x"), "claude-code/opus-5.5");
   assert.equal(agentOfMessage("no trailer"), null);
