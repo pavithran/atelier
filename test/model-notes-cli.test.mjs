@@ -21,6 +21,10 @@ const pool = [
   { id: "gemini-3", harness: "gemini-cli", where: "cloud", provider: "google", family: "google", aliases: [], note: "", addedBy: "owner", addedAt: NOTE.at },
 ];
 
+// models show also reads the model's vendor cards (t625); none here.
+const NO_CARDS = { model: "gpt-6.1-sol", pool: [], cards: [], withdrawals: [], disagreements: [], priors: [] };
+const CARDLESS = "  No vendor cards yet. Record one: atelier models card ID --file card.json";
+
 async function stub(t, answer) {
   const requests = [];
   const server = createServer(async (req, res) => {
@@ -28,7 +32,7 @@ async function stub(t, answer) {
     for await (const chunk of req) raw += chunk;
     if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : undefined });
-    const { status = 200, data } = answer(req.method, req.url);
+    const { status = 200, data } = req.url.endsWith("/cards") ? { data: NO_CARDS } : answer(req.method, req.url);
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });
@@ -82,7 +86,7 @@ test("models show prints a model with its notes, oldest first, and says when it 
   assert.equal(shown.status, 0, shown.output);
   const lines = shown.output.trim().split("\n");
   assert.match(lines[0], /^home  codex\/gpt-6\.1-sol  openai/);
-  assert.deepEqual(lines.slice(1), ["  2026-10-01 by owner: Stalls on long refactors.", "  2026-10-09 by owner on atelier/t406: Commits without the full suite."]);
+  assert.deepEqual(lines.slice(1), ["  2026-10-01 by owner: Stalls on long refactors.", "  2026-10-09 by owner on atelier/t406: Commits without the full suite.", CARDLESS]);
 
   const bare = await f.run(["models", "show", "gemini-3"]);
   assert.equal(bare.status, 0, bare.output);
@@ -98,7 +102,7 @@ test("models show names a task by its project's current name, after a rename", a
   const f = await stub(t, () => ({ data: [{ ...pool[0], notes: [renamed] }] }));
   const shown = await f.run(["models", "show", "gpt-6.1-sol"]);
   assert.equal(shown.status, 0, shown.output);
-  assert.deepEqual(shown.output.trim().split("\n").slice(1), ["  2026-10-09 by owner on atelier/t406: Commits without the full suite."]);
+  assert.deepEqual(shown.output.trim().split("\n").slice(1), ["  2026-10-09 by owner on atelier/t406: Commits without the full suite.", CARDLESS]);
 });
 
 test("models lists the pool with each model's notes beneath its line, oldest first", async (t) => {

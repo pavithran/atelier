@@ -15,6 +15,7 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "reviews.skip-as-runner.v1", level: 22, summary: "a runner token posts review-skip for a review job it was offered, under the job's actor" },
   { name: "reviews.admission.v1", level: 25, summary: "developer admission, withdrawal and listing of outside reviewers" },
   { name: "models.note.v1", level: 18, summary: "dated developer notes under a pool model" },
+  { name: "models.card.v1", summary: "vendor model cards (t625): the developer's GET and POST /models/ID/cards, which record a vendor's claims with their source and conditions, and their corrections, supersessions and withdrawals" },
   { name: "projects.require-criteria.v1", level: 19, summary: "a project that requires criteria refuses a task filed or cleared without them" },
   { name: "projects.commit-identity.v1", level: 24, summary: "project policy carries commitIdentity; init records commitName, commitEmail, agentEmails, privateEmails and publicMirrors" },
   { name: "runners.scoped-token.v1", level: 20, summary: "runner-scoped API credentials and the revocable Git gateway" },
