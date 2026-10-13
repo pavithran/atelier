@@ -296,3 +296,17 @@ test("clone runs no hook the baseline carries, even under a relative global core
   assert.ok(!existsSync(f.marker), existsSync(f.marker) ? readFileSync(f.marker, "utf8") : "");
   assert.equal(f.git(dir, "status", "--porcelain"), "", "the work tree matches HEAD");
 });
+
+// Astra's second review of t643: the clone named its remote by Git's
+// default, so a Mac whose global clone.defaultRemoteName is upstream got the
+// baseline as upstream, though clone says, and later commands assume, origin.
+test("clone names the baseline origin whatever clone.defaultRemoteName says", async (t) => {
+  const f = setup(t);
+  const dir = join(f.root, "demo");
+  const r = await run(t, f, ["clone", "demo", dir], { globalConfig: "[clone]\n\tdefaultRemoteName = upstream\n" });
+  assert.equal(r.code, 0, r.output);
+  assert.equal(f.git(dir, "remote"), "origin");
+  assert.equal(f.git(dir, "remote", "get-url", "origin"), f.bare);
+  assert.equal(f.git(dir, "rev-parse", "refs/remotes/origin/main"), f.head);
+  assert.equal(f.git(dir, "rev-parse", "--abbrev-ref", "main@{upstream}"), "origin/main");
+});
