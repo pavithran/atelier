@@ -2297,9 +2297,15 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   const short = (v: unknown) => e(String(v ?? "").slice(0, 12));
   const ran = tests.where === "clean clone" ? " in a clean clone of the batch's head" : tests.where === "checkout" ? " in the developer's checkout" : "";
   const sameFamily = d.reviews.filter((x) => x.independence).map((x) => `<li>${e(x.by)}: ${e(x.independence!)}</li>`).join("");
+  // What the receipt says of the review is what happened: a fast landing asks
+  // for one only when the developer names a reviewer (t605, Astra's review).
+  const after = d.events.filter((x) => x.at >= ev.at);
+  const reviewed = d.reviews.some((x) => x.postMerge) || after.some((x) => x.kind === "review.approved" || x.kind === "review.rejected");
+  const requested = after.some((x) => x.kind === "review.requested");
+  const reviewLine = reviewed ? "It skipped the gate; its post-merge review is recorded." : requested ? "It skipped the gate; a post-merge review was requested and is not recorded yet." : "It skipped the gate, and no post-merge review was requested.";
   const fixes = d.events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
   return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}.</p>
-  <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. It skipped the gate; its post-merge review audits it.</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
+  <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. ${reviewLine}</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
 }
 
 // A task a runner built in fast mode (t589) and reported ready: the commit

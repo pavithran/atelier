@@ -313,3 +313,13 @@ test("/how says what fast mode is: chosen with a reason, batch checks, review af
     assert.ok(prose.includes(said), `/how does not say "${said}"`);
   }
 });
+
+// t595's review (codex/gpt-6-astra, 2026-10-13): independence of review holds
+// against agents, not against whoever holds the developer token; /how and the
+// README must keep saying so.
+test("/how and the README say review independence holds against agents, not the developer token", () => {
+  for (const file of ["README.md", "src/how-data.ts"]) {
+    const text = read(file).replace(/\s+/g, " ");
+    assert.match(text, /against agents, not against whoever holds (the|that) (developer )?token/i, `${file} keeps the developer-token caveat`);
+  }
+});
