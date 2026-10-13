@@ -44,6 +44,43 @@ pushed. Wrap never deploys or publishes a release. The note records the commit
 and each remote result. A remote that fails is named in the relay line, and
 wrap exits 1 once the note and the baseline are recorded.
 
+`atelier publish REMOTE` publishes the registered branch to a public mirror
+the registered project's commit identity declares (there is no file in the
+checkout): `--public-mirror REMOTE` names the remote,
+`--public-mirror-destination REMOTE=URL` pins where it pushes, `--commit-email`
+is the GitHub no-reply address every published commit must carry, and
+`--private-email`, `--private-path GLOB` and `--private-pattern REGEX` add to
+the built-in rules (docs/setup.md, "Commit identity").
+Bare `publish` still pushes the baseline only. It fetches the mirror's branch,
+then checks every commit the mirror lacks (all history when it is empty,
+merged ancestry included, content deleted later included): author and committer
+email must equal `commitEmail`; no added line, no line of the commit object
+(author and committer names, every header and the whole message) and no path
+name a commit adds, renames or deletes may match the push scan's secret rules, a
+private address (RFC 1918, carrier-grade NAT, link-local, unique-local and
+link-local IPv6 including compressed endings such as `fe80::`, `.internal`,
+`.local`, `.lan`, `.corp`, `.intranet`, `.home.arpa` hosts), a declared private
+email or a `privatePatterns` regex; no path may match a `privatePaths` glob (a
+glob with no `/` matches a name at any depth). Replace refs and grafts
+(`refs/replace/*`, `info/grafts`) are ignored, as the push ignores them, and
+`diff.ignoreSubmodules` or `submodule.*.ignore` cannot hide a submodule. A Git LFS pointer publishes its
+object, so the object is read from the checkout's LFS storage and scanned, or
+the commit is refused. Findings name commit, path and line, never the matched
+text; a path whose name matches is given by its place in the commit's file list
+(`git diff-tree -r -c --root --no-renames COMMIT`), not by name. Binary, oversized, unreadable or submodule content is refused with its
+path and reason. A missing or invalid policy, a remote whose URL is not the
+declared destination, and a diverged or ahead mirror are refused before any
+push. The push sends only the scanned commit to the branch at the declared
+destination, never forced; tags, notes and rescue refs are not pushed.
+
+Once any public mirror is declared, `wrap --push` trusts no remote by its URL:
+every checkout remote, declared or not, gets the same check of the commits it
+lacks before it is pushed, and any refusal (including an invalid policy) fails
+that remote. Each of a remote's push URLs is fetched, checked and pushed by
+that URL. A project that pushes agent commits to a private remote as well
+declares no public mirror, and publishes with `publish REMOTE` from a checkout
+whose history is clean.
+
 When `docs/control-plane/context-budget.v1.json` is committed at HEAD, wrap
 counts lines in its named surfaces. Any absolute ceiling exceeded refuses the
 commit, even with an advisory policy. Move history into `docs/history/` rather
