@@ -1,12 +1,15 @@
 // Fast mode's batch landing (t585): `atelier fast land tN=SHA [tM=SHA ...]`.
 //
 // In the owner's own checkout (a clean main), each SHA is merged in order
-// with git merge --no-ff, the generated files are regenerated and committed,
-// then the batch is checked once: the typecheck, the secret scan over the
-// batch's added lines, and one run of the test command. Anything that fails
-// resets main to where it started, so main is never left half-merged. Only
-// on success are the receipts recorded, one per task, through `record`. It
-// never pushes or deploys; the caller prints the owner's next commands.
+// through the merge pipeline (t463's mergeThrough, cli/merge-pipeline.mjs),
+// so declared generated outputs are regenerated after the sources merge and
+// never stop a batch on a text conflict (t587). The generated files are then
+// regenerated and committed, and the batch is checked once: the typecheck,
+// the secret scan over the batch's added lines, and one run of the test
+// command. Anything that fails resets main to where it started, so main is
+// never left half-merged. Only on success are the receipts recorded, one per
+// task, through `record`. It never pushes or deploys; the caller prints the
+// owner's next commands.
 //
 // The work is here, apart from the command, so a test drives it in a
 // temporary repository with stand-in commands and a stand-in recorder.
@@ -16,6 +19,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { scanLine } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
+import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
 
 const SHA = /^[0-9a-f]{7,64}$/;
 
@@ -58,8 +62,10 @@ export function scanBatch(cwd, start) {
 }
 
 // `titles` maps each task to its title; `record(id, receipt)` posts one
-// receipt; `log` prints a step. Returns { ok, start, head, landed, failure }.
-export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, record, log = () => {} }) {
+// receipt; `log` prints a step; `run` runs a declared generator for the merge
+// pipeline (its default where omitted). Returns { ok, start, head, landed,
+// failure }.
+export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, record, run, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -71,10 +77,15 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const builder = agentOfMessage(git(cwd, "log", "-1", "--format=%B", commit));
       if (!builder) { failure = { step: `merge ${id}`, detail: `${commit.slice(0, 12)} has no Agent: line naming its builder` }; break; }
       const message = `Merge ${id}: ${titles[id] ?? id}\n\nLanded fast: ${reason}`;
-      const r = spawnSync("git", ["merge", "--no-ff", "--no-edit", "-m", message, commit], { cwd, encoding: "utf8" });
-      if (r.status !== 0) { failure = { step: `merge ${id}`, detail: (r.stdout + r.stderr).trim().split("\n").slice(-5).join("\n") }; break; }
+      // Through the pipeline (t587): a declared generated output both sides
+      // changed is regenerated from the merged sources, not merged as text.
+      const r = await mergeThrough(cwd, commit, { message, run, log });
+      if (r.state === "held") { failure = { step: `merge ${id}`, detail: `main already holds ${commit.slice(0, 12)}, so there is nothing of ${id} to land` }; break; }
+      if (r.state === "conflicts") { failure = { step: `merge ${id}`, detail: describeConflicts(r, r.manifest) }; break; }
+      if (r.state !== "merged") { failure = { step: `merge ${id}`, detail: String(r.reason ?? r.state).trim().split("\n").slice(-5).join("\n") }; break; }
       merged.push({ id, commit, builder, mergeCommit: git(cwd, "rev-parse", "HEAD") });
       log(`merged ${id} (${commit.slice(0, 12)}) as ${merged.at(-1).mergeCommit.slice(0, 12)}`);
+      for (const g of r.regenerated ?? []) log(`regenerated ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}`);
     }
     if (!failure && regen) {
       const r = sh(cwd, regen);
