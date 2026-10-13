@@ -1,6 +1,6 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+  "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
   "sourceDirty": false,
   "browser": {
     "name": "chromium",
@@ -69,9 +69,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 3944,
+      "height": 3966,
       "filename": "public-showcase-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -107,9 +107,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 5210,
+      "height": 5231,
       "filename": "public-showcase-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -145,9 +145,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 17884,
+      "height": 18644,
       "filename": "public-how-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -183,9 +183,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 28154,
+      "height": 29645,
       "filename": "public-how-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -223,7 +223,7 @@
       "colorScheme": "light",
       "height": 968,
       "filename": "public-owner-route-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -260,7 +260,7 @@
       "colorScheme": "light",
       "height": 947,
       "filename": "public-owner-route-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -297,7 +297,7 @@
       "colorScheme": "light",
       "height": 954,
       "filename": "signin-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -335,7 +335,7 @@
       "colorScheme": "light",
       "height": 963,
       "filename": "signin-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -373,7 +373,7 @@
       "colorScheme": "light",
       "height": 2049,
       "filename": "home-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -411,7 +411,7 @@
       "colorScheme": "light",
       "height": 4480,
       "filename": "home-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -449,7 +449,7 @@
       "colorScheme": "light",
       "height": 1915,
       "filename": "decisions-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -488,7 +488,7 @@
       "colorScheme": "light",
       "height": 2669,
       "filename": "decisions-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -527,7 +527,7 @@
       "colorScheme": "light",
       "height": 1915,
       "filename": "decisions-sent-back-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -566,7 +566,7 @@
       "colorScheme": "light",
       "height": 1103,
       "filename": "decisions-sent-back-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -605,7 +605,7 @@
       "colorScheme": "light",
       "height": 1915,
       "filename": "decisions-blocked-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -644,7 +644,7 @@
       "colorScheme": "light",
       "height": 1014,
       "filename": "decisions-blocked-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -683,7 +683,7 @@
       "colorScheme": "light",
       "height": 6068,
       "filename": "studio-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -721,7 +721,7 @@
       "colorScheme": "light",
       "height": 9745,
       "filename": "studio-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -759,7 +759,7 @@
       "colorScheme": "light",
       "height": 10714,
       "filename": "flow-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -798,7 +798,7 @@
       "colorScheme": "light",
       "height": 9997,
       "filename": "flow-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -837,7 +837,7 @@
       "colorScheme": "light",
       "height": 1952,
       "filename": "flow-filtered-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -876,7 +876,7 @@
       "colorScheme": "light",
       "height": 3062,
       "filename": "flow-filtered-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -915,7 +915,7 @@
       "colorScheme": "light",
       "height": 18867,
       "filename": "history-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -953,7 +953,7 @@
       "colorScheme": "light",
       "height": 33043,
       "filename": "history-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -991,7 +991,7 @@
       "colorScheme": "light",
       "height": 3241,
       "filename": "models-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1029,7 +1029,7 @@
       "colorScheme": "light",
       "height": 5420,
       "filename": "models-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1067,7 +1067,7 @@
       "colorScheme": "light",
       "height": 2404,
       "filename": "usage-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1105,7 +1105,7 @@
       "colorScheme": "light",
       "height": 4214,
       "filename": "usage-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1141,9 +1141,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 21293,
+      "height": 1469,
       "filename": "project-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1179,9 +1179,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 114423,
+      "height": 2505,
       "filename": "project-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1219,7 +1219,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "project-empty-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1240,7 +1240,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 5
+        "external": 4
       }
     },
     {
@@ -1257,7 +1257,7 @@
       "colorScheme": "light",
       "height": 1030,
       "filename": "project-empty-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1278,7 +1278,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 5
+        "external": 4
       }
     },
     {
@@ -1295,7 +1295,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "project-unavailable-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1333,7 +1333,7 @@
       "colorScheme": "light",
       "height": 1030,
       "filename": "project-unavailable-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1371,7 +1371,7 @@
       "colorScheme": "light",
       "height": 19556,
       "filename": "tasks-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1409,7 +1409,7 @@
       "colorScheme": "light",
       "height": 111256,
       "filename": "tasks-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1447,7 +1447,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "tasks-empty-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1485,7 +1485,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "tasks-empty-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1523,7 +1523,7 @@
       "colorScheme": "light",
       "height": 6438,
       "filename": "project-flow-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1562,7 +1562,7 @@
       "colorScheme": "light",
       "height": 5831,
       "filename": "project-flow-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1601,7 +1601,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "plans-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1639,7 +1639,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "plans-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1677,7 +1677,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "ship-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1715,7 +1715,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "ship-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1753,7 +1753,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "settings-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1791,7 +1791,7 @@
       "colorScheme": "light",
       "height": 1123,
       "filename": "settings-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1829,7 +1829,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1867,7 +1867,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "code-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1905,7 +1905,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-dir-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1943,7 +1943,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "code-dir-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1981,7 +1981,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-file-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2019,7 +2019,7 @@
       "colorScheme": "light",
       "height": 1079,
       "filename": "code-file-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2057,7 +2057,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "code-no-commits-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2095,7 +2095,7 @@
       "colorScheme": "light",
       "height": 1030,
       "filename": "code-no-commits-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2133,7 +2133,7 @@
       "colorScheme": "light",
       "height": 2522,
       "filename": "log-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2171,7 +2171,7 @@
       "colorScheme": "light",
       "height": 4903,
       "filename": "log-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2209,7 +2209,7 @@
       "colorScheme": "light",
       "height": 2522,
       "filename": "log-page-2-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2247,7 +2247,7 @@
       "colorScheme": "light",
       "height": 4903,
       "filename": "log-page-2-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2285,7 +2285,7 @@
       "colorScheme": "light",
       "height": 1531,
       "filename": "commit-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2323,7 +2323,7 @@
       "colorScheme": "light",
       "height": 1621,
       "filename": "commit-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2361,7 +2361,7 @@
       "colorScheme": "light",
       "height": 1095,
       "filename": "path-history-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2399,7 +2399,7 @@
       "colorScheme": "light",
       "height": 1913,
       "filename": "path-history-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2437,7 +2437,7 @@
       "colorScheme": "light",
       "height": 1526,
       "filename": "task-open-long-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2476,7 +2476,7 @@
       "colorScheme": "light",
       "height": 2355,
       "filename": "task-open-long-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2515,7 +2515,7 @@
       "colorScheme": "light",
       "height": 2317,
       "filename": "task-working-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2554,7 +2554,7 @@
       "colorScheme": "light",
       "height": 3052,
       "filename": "task-working-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2593,7 +2593,7 @@
       "colorScheme": "light",
       "height": 2317,
       "filename": "task-stale-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2632,7 +2632,7 @@
       "colorScheme": "light",
       "height": 3052,
       "filename": "task-stale-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2671,7 +2671,7 @@
       "colorScheme": "light",
       "height": 2493,
       "filename": "task-blocked-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2710,7 +2710,7 @@
       "colorScheme": "light",
       "height": 3464,
       "filename": "task-blocked-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2749,7 +2749,7 @@
       "colorScheme": "light",
       "height": 2577,
       "filename": "task-failed-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2788,7 +2788,7 @@
       "colorScheme": "light",
       "height": 3411,
       "filename": "task-failed-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2827,7 +2827,7 @@
       "colorScheme": "light",
       "height": 2402,
       "filename": "task-unreadable-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2866,7 +2866,7 @@
       "colorScheme": "light",
       "height": 3403,
       "filename": "task-unreadable-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2905,7 +2905,7 @@
       "colorScheme": "light",
       "height": 2456,
       "filename": "task-ready-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2944,7 +2944,7 @@
       "colorScheme": "light",
       "height": 3402,
       "filename": "task-ready-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2983,7 +2983,7 @@
       "colorScheme": "light",
       "height": 2884,
       "filename": "task-protected-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3022,7 +3022,7 @@
       "colorScheme": "light",
       "height": 4048,
       "filename": "task-protected-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3061,7 +3061,7 @@
       "colorScheme": "light",
       "height": 2681,
       "filename": "task-sent-back-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3100,7 +3100,7 @@
       "colorScheme": "light",
       "height": 3773,
       "filename": "task-sent-back-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3139,7 +3139,7 @@
       "colorScheme": "light",
       "height": 2480,
       "filename": "task-accepted-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3178,7 +3178,7 @@
       "colorScheme": "light",
       "height": 3407,
       "filename": "task-accepted-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3217,7 +3217,7 @@
       "colorScheme": "light",
       "height": 2446,
       "filename": "task-scope-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3256,7 +3256,7 @@
       "colorScheme": "light",
       "height": 3367,
       "filename": "task-scope-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3295,7 +3295,7 @@
       "colorScheme": "light",
       "height": 2019,
       "filename": "task-merged-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3334,7 +3334,7 @@
       "colorScheme": "light",
       "height": 2736,
       "filename": "task-merged-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3373,7 +3373,7 @@
       "colorScheme": "light",
       "height": 1988,
       "filename": "task-abandoned-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3412,7 +3412,7 @@
       "colorScheme": "light",
       "height": 2623,
       "filename": "task-abandoned-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3451,7 +3451,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "task-not-found-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3489,7 +3489,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "task-not-found-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3527,7 +3527,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "fork-code-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3565,7 +3565,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "fork-code-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3603,7 +3603,7 @@
       "colorScheme": "light",
       "height": 1026,
       "filename": "fork-none-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3641,7 +3641,7 @@
       "colorScheme": "light",
       "height": 1076,
       "filename": "fork-none-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3679,7 +3679,7 @@
       "colorScheme": "light",
       "height": 968,
       "filename": "public-showcase-none-1440.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3716,7 +3716,7 @@
       "colorScheme": "light",
       "height": 947,
       "filename": "public-showcase-none-390.png",
-      "source": "28331828f79ac6adf8e6daadea4756d1e2377b26",
+      "source": "3457d0b434395ae1e8619777b4b73c74cd7d27fd",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
