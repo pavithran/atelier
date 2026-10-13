@@ -6,6 +6,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
+import { modelCardView } from "../src/models/cards.ts";
+import { modelKey } from "../src/rules.ts";
 
 // atelier models card and the cards models show prints (t625), against a
 // stub server. The stub publishes the capabilities it is given, so a test
@@ -151,16 +153,69 @@ test("models show prints the cards of a model the pool does not have, and refuse
   assert.match(missing.output, /no-such-model is not in the pool and has no vendor cards/);
 });
 
-test("models show finds a pooled model by an alias, harness/id or the canonical name its cards give", async (t) => {
-  // gemini-4-argon's review of t625, 2026-10-13: an alias printed "not in the pool" for a pooled model.
-  const pooled = [{ ...POOL[0], id: "Example-5-API", aliases: ["example-5-preview"] }];
-  const f = await stub(t, (method, path) => ({ data: path.endsWith("/cards") ? VIEW([{ ...stored("c4", "example-5"), state: "active" }], { pool: ["codex/Example-5-API"] }) : pooled }));
-  for (const name of ["example-5-preview", "codex/Example-5-API", "example-5"]) {
+// A stub that answers /cards as the server does (modelCardView over the
+// records and the pool), so no test can hand the CLI an identity the server
+// would not give. The fifth reviews of t625 (2026-10-13) found the earlier
+// stub answered every name with the same card.
+const entry = (id, aliases = [], notes = []) => ({ ...POOL[0], id, aliases, notes });
+const card = (id, named) => ({ ...stored(id, named), model: modelKey(named) });
+async function serverLike(t, pool, records) {
+  return stub(t, (method, path) => ({ data: path.endsWith("/cards") ? modelCardView(records, pool, decodeURIComponent(path.split("/")[3])) : pool }));
+}
+
+test("models show attributes cards by the server's key, never to an entry that only aliases the name", async (t) => {
+  // Astra's fifth review of t625, 2026-10-13, finding 2: c1 is model-a's;
+  // model-a left the pool and model-b took the alias model-a; showing
+  // model-a printed model-b's entry and notes above model-a's card.
+  const pool = [entry("model-b", ["model-a"], [{ at: "2026-10-12T00:00:00.000Z", by: "owner", text: "B's own note." }])];
+  const f = await serverLike(t, pool, [card("c1", "model-a"), card("c2", "model-b")]);
+  const a = await f.run(["models", "show", "model-a"]);
+  assert.equal(a.status, 0, a.output);
+  assert.deepEqual(a.output.trim().split("\n").filter((l) => !l.startsWith("    ")), [
+    "model-a is not in the pool; its vendor cards are kept under model-a.",
+    "  Vendor card c1: Example Labs, https://vendor.example/card, published 2026-10-01, read 2026-10-13 by owner",
+    "  model-a is also a pool alias of codex/model-b, whose cards are kept under its own name: atelier models show codex/model-b",
+  ]);
+  const b = await f.run(["models", "show", "model-b"]);
+  assert.equal(b.status, 0, b.output);
+  assert.match(b.output, /^cloud codex\/model-b  other  not checked\n  2026-10-12 by owner: B's own note\.\n  Vendor card c2: /);
+  assert.doesNotMatch(b.output, /c1/);
+});
+
+test("two pool entries whose aliases collide each show only their own cards", async (t) => {
+  const pool = [entry("model-a", ["shared"]), entry("model-b", ["shared", "model-a"])];
+  const f = await serverLike(t, pool, [card("c1", "model-a"), card("c2", "codex/model-b")]);
+  for (const [name, own, other] of [["model-a", "c1", "c2"], ["model-b", "c2", "c1"], ["codex/model-b", "c2", "c1"]]) {
     const r = await f.run(["models", "show", name]);
     assert.equal(r.status, 0, r.output);
-    assert.match(r.output, /^cloud codex\/Example-5-API  other  not checked\n/, name);
-    assert.match(r.output, /Vendor card c4: /);
+    assert.match(r.output, new RegExp(`^cloud codex/${modelKey(name)}  other  not checked\n`), name);
+    assert.match(r.output, new RegExp(`Vendor card ${own}: `), name);
+    assert.doesNotMatch(r.output, new RegExp(`Vendor card ${other}`), name);
   }
+  // A name only aliases share names no model's cards; both entries are named, no card shown.
+  const shared = await f.run(["models", "show", "shared"]);
+  assert.equal(shared.status, 0, shared.output);
+  assert.equal(shared.output.trim(), "shared is a pool alias of codex/model-a and codex/model-b; cards are kept under each model's own name: atelier models show codex/model-a");
+});
+
+test("models show by a pool alias follows it to the entry's own name and says which key it shows", async (t) => {
+  // gemini-4-argon's fifth review of t625, 2026-10-13, asked that cards be
+  // found by pool aliases; the identity contract keys cards by the model's
+  // own name, so the CLI follows the alias to that name instead.
+  const pool = [entry("Example-5-API", ["example-5-preview"])];
+  const f = await serverLike(t, pool, [card("c4", "Example-5-API")]);
+  const byAlias = await f.run(["models", "show", "example-5-preview"]);
+  assert.equal(byAlias.status, 0, byAlias.output);
+  assert.match(byAlias.output, /^example-5-preview is a pool alias of codex\/Example-5-API; cards are kept under a model's own name, so these are the cards kept under example-5-api\.\ncloud codex\/Example-5-API  other  not checked\n/);
+  assert.match(byAlias.output, /Vendor card c4: /);
+  assert.deepEqual(f.requests.filter((q) => q.path.endsWith("/cards")).map((q) => q.path), ["/api/models/example-5-preview/cards", "/api/models/codex%2FExample-5-API/cards"]);
+  const byHarness = await f.run(["models", "show", "codex/Example-5-API"]);
+  assert.equal(byHarness.status, 0, byHarness.output);
+  assert.match(byHarness.output, /^cloud codex\/Example-5-API  other  not checked\n[^]*Vendor card c4: /);
+  // A name neither the pool nor any card gives is refused, not guessed at.
+  const unrelated = await f.run(["models", "show", "example-5"]);
+  assert.equal(unrelated.status, 1);
+  assert.match(unrelated.output, /example-5 is not in the pool and has no vendor cards/);
 });
 
 test("against a server without models.card.v1, show says so and card refuses before sending", async (t) => {

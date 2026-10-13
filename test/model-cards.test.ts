@@ -141,8 +141,9 @@ test("a source hiding a key behind percent-encoding, or a local host behind a tr
     [`https://vendor.example/card#${encodeURIComponent(key)}`, /carries a key/],
     ["https://LOCALHOST/card", /public host/],
     ["https://api.localhost./card", /public host/],
-    ["https://127.1/card", /public host/],
-    ["https://0x7f000001/card", /public host/],
+    // The parser rewrites these numeric hosts (127.0.0.1), so they are refused as not written as it reads them.
+    ["https://127.1/card", /as the parser reads it/],
+    ["https://0x7f000001/card", /as the parser reads it/],
     ["https://[::1]/card", /public host/],
     ["https://printer.local/card", /public host/],
     ["https://wiki.internal./card", /public host/],
@@ -173,6 +174,36 @@ test("a source hiding a key behind percent-encoding, or a local host behind a tr
   ] as const) assert.throws(() => cleanCard({ ...structuredClone(CARD), source }, TODAY), why, source);
   // A public host with a trailing dot or capitals is kept in its plain form.
   assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://Vendor.Example./card?x=1" }, TODAY).source, "https://vendor.example/card?x=1");
+});
+
+test("a source is checked on the host the parser reads, so no spelling of the slashes or the authority hides it", () => {
+  // Astra's fifth review of t625, 2026-10-13, finding 1: a pre-check of the
+  // typed authority read an extra slash as an empty authority, while new URL
+  // found and decoded the host behind it; these passed at 185b81fc.
+  for (const source of [
+    "https:////%41%4b%49%41A1B2C3D4E5F6G7H8.example/card",
+    "https:///ＡＫＩＡA1B2C3D4E5F6G7H8.example/card",
+    "https:///%73%6b%2dAbC123xyzQrS456.example/card",
+    "https:///localhost/card",
+    "https:////10.0.0.1/card",
+    "https:///vendor.example/card",
+    "https:////vendor.example/card",
+    "https:/vendor.example/card",
+    "https:\\\\vendor.example/card",
+    "https:/\\vendor.example/card",
+    "https://\\vendor.example/card",
+    "HtTpS:///vendor.example/card",
+    "https://@vendor.example/card",
+    "https://:@vendor.example/card",
+    "https://vendor.example:443/card",
+  ]) assert.throws(() => cleanCard({ ...structuredClone(CARD), source }, TODAY), /written in plain ASCII as the parser reads it/, source);
+  for (const source of ["https://user@vendor.example/card", "https://user:pw@vendor.example/card", "HTTPS://user@vendor.example/card"]) {
+    assert.throws(() => cleanCard({ ...structuredClone(CARD), source }, TODAY), /user name or password/, source);
+  }
+  // A scheme in capitals and a host with a port are kept, in their plain form.
+  assert.equal(cleanCard({ ...structuredClone(CARD), source: "HtTpS://Vendor.Example/card" }, TODAY).source, "https://vendor.example/card");
+  assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://vendor.example:8443/card" }, TODAY).source, "https://vendor.example:8443/card");
+  assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://vendor.example" }, TODAY).source, "https://vendor.example/");
 });
 
 test("a correction, supersession or withdrawal names an active card of the same model, and history is kept", () => {
