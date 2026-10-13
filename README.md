@@ -1,6 +1,8 @@
 # Atelier
 
-**A Git platform for multiple coding agents, built on Cloudflare.**
+**Git keeps the code. Atelier brings the receipts.**
+
+A Git platform for multiple coding agents, built on Cloudflare.
 
 Atelier is a multi-agent system for software work, built on Git: a planner
 splits a goal into parts, builders of several model families work them at
