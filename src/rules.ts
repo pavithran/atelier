@@ -2252,3 +2252,54 @@ export function fastReadyLines(ready: readonly { item: string; commit: string; b
     `Land them: atelier fast land ${ready.map((r) => `${r.item}=${r.commit}`).join(" ")}`,
   ];
 }
+
+// A Ledger left on older code after a deploy (t586). A Durable Object that
+// is busy keeps running the code it started with, so a deploy that adds a
+// Ledger method leaves the Worker calling a method the Ledger lacks, and
+// the call fails with the runtime's "The RPC receiver does not implement
+// the method" until the Ledger goes idle. The caller answers
+// UPDATING_DETAIL with status 503 instead of a 500, and the Ledger is asked
+// to restart (ledgerRestart says when it may).
+export const UPDATING_DETAIL = "the server is updating; try again in a minute";
+export const LEDGER_RESTART_GAP_MS = 60_000;
+
+// The method a stale Ledger said it lacks, or null when the error is
+// anything else. Production says "does not implement the method NAME"; the
+// Workers test pool says "does not implement \"NAME\"".
+export function missingLedgerMethod(err: unknown): string | null {
+  const text = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  const m = /The RPC receiver does not implement (?:the method\s*)?["'`]?([A-Za-z_$][\w$]*)/.exec(text);
+  return m ? m[1] : null;
+}
+
+// The last restart a Ledger made for an update: when, the DEPLOYED_MAIN its
+// code was built for, and the one the Worker that asked runs.
+export type LedgerRestart = { at: number; from: string | null; for: string | null };
+
+// Whether a Ledger restarts. `ledger` is the DEPLOYED_MAIN its own code was
+// built for, `worker` the one the asking Worker runs (null when unset, as in
+// local development); `missing` says the Worker saw a method missing. A
+// Ledger restarts when the two differ or a method was missing, at most once
+// a minute, and not again for the same Worker once a restart for it brought
+// the same code back (the asker was the older one, as an old Worker isolate
+// may be for a moment after a deploy).
+export function ledgerRestart(o: { ledger: string | null; worker: string | null; last: LedgerRestart | null; now: number; missing?: boolean }): { restart: boolean; why: string } {
+  if (!o.missing) {
+    if (!o.ledger || !o.worker) return { restart: false, why: "unknown" };
+    if (o.ledger === o.worker) return { restart: false, why: "current" };
+  }
+  if (o.last && o.now - o.last.at < LEDGER_RESTART_GAP_MS) return { restart: false, why: "too_soon" };
+  if (o.last && o.worker && o.last.for === o.worker && o.last.from === o.ledger) return { restart: false, why: "no_change" };
+  return { restart: true, why: o.missing ? "missing_method" : "stale" };
+}
+
+// The stored last restart, or null when there is none or it cannot be read.
+export function parseLedgerRestart(raw: unknown): LedgerRestart | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const v = JSON.parse(raw) as Partial<LedgerRestart>;
+    if (typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+    const str = (x: unknown) => (typeof x === "string" && x ? x : null);
+    return { at: v.at, from: str(v.from), for: str(v.for) };
+  } catch { return null; }
+}

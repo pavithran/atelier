@@ -58,6 +58,7 @@ import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed,
 import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
 import { triageSettingRefusal } from "./review/triage.ts";
+import { guardLedger, serverUpdating } from "./ledger-stub.ts";
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
@@ -196,9 +197,13 @@ async function rootFiles(env: Env, repo: string): Promise<string[] | null> {
 // kind with each task titled by its kind of work, and with its two weeks of
 // moves for the card's bar graph. A project that cannot be read is left out,
 // and the caller sees fewer shown projects than the setting names.
-async function publicStories(env: Env, entries: { project: ProjectRecord; mode: ShowMode }[]): Promise<{ shown: ShownProject[]; cutoffs: Map<string, number | null> }> {
+// `updating` says a Ledger a deploy left on older code lacked a method the
+// page reads (t586), so the page says the server is updating rather than
+// printing the figures it could not count.
+async function publicStories(env: Env, entries: { project: ProjectRecord; mode: ShowMode }[]): Promise<{ shown: ShownProject[]; cutoffs: Map<string, number | null>; updating: boolean }> {
   const owner = ownerActor(env);
   const cutoffs = new Map<string, number | null>();
+  let updating = false;
   const found = await Promise.all(entries.map(async ({ project: p, mode }) => {
     try {
       const L = ledgerOf(env, p);
@@ -212,7 +217,11 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
       const since = new Date(now.getTime() - (PULSE_DAYS + 1) * 86400_000).toISOString();
       const [record, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
       const counts = await (L.showcaseCounts(since, timeZone()) as unknown as Promise<ShowcaseCounts>)
-        .catch((err: unknown) => { console.error(`showcase: the whole-record counts of ${p.name} could not be read: ${errorText(err)}`); return null; });
+        .catch((err: unknown) => {
+          if (serverUpdating(err)) updating = true;
+          else console.error(`showcase: the whole-record counts of ${p.name} could not be read: ${errorText(err)}`);
+          return null;
+        });
       cutoffs.set(p.name, firstTaskAt(items));
       const anon = mode === "anonymous";
       const title = anon
@@ -249,13 +258,15 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
         inProgress: items.filter((i) => ["claimed", "submitted", "accepted"].includes(i.state)).length,
       };
     } catch (err) {
-      // Left out; the page says a project could not be read, and the log says why.
-      console.error(`showcase: ${p.name} could not be read: ${errorText(err)}`);
+      // Left out; the page says a project could not be read, or that the
+      // server is updating, and the log says why.
+      if (serverUpdating(err)) updating = true;
+      else console.error(`showcase: ${p.name} could not be read: ${errorText(err)}`);
       return null;
     }
   }));
   const shown = found.filter((f): f is NonNullable<typeof f> => f !== null);
-  return { shown, cutoffs };
+  return { shown, cutoffs, updating };
 }
 
 // The public page, read without signing in. It reads only the projects the
@@ -270,10 +281,17 @@ async function showcase(env: Env, url: URL): Promise<Response> {
   const hit = await caches.default.match(key);
   if (hit) return hit;
   const owner = ownerActor(env);
-  const { shown, cutoffs } = await publicStories(env, entries);
+  const { shown, cutoffs, updating } = await publicStories(env, entries);
   const imported = await importedAll(env, shown.map((s) => s.project), cutoffs);
   const stories = shown.map((s) => s.story);
-  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), shown.length < entries.length, imported, shown));
+  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), updating ? "updating" : shown.length < entries.length, imported, shown));
+  // A page drawn while a Ledger is updating (t586) is held for ten seconds
+  // and kept out of the cache, so the figures return as soon as it restarts.
+  if (updating) {
+    res.headers.set("cache-control", "public, max-age=10, s-maxage=10");
+    res.headers.set("cdn-cache-control", "max-age=10");
+    return res;
+  }
   // The zone and browsers may hold the page for a minute at most, so a
   // project removed from the showcase disappears within a minute.
   res.headers.set("cache-control", "public, max-age=60, s-maxage=60");
@@ -302,9 +320,10 @@ async function backdropStories(env: Env, entries: { project: ProjectRecord; mode
   const key = new Request(`https://atelier.internal/login-stories?projects=${encodeURIComponent(JSON.stringify(entries.map((e) => [e.project.name, e.mode])))}&who=${encodeURIComponent(ownerName(env) ?? "")}`);
   const hit = await caches.default.match(key).catch(() => undefined);
   if (hit) return (await hit.json()) as Story[];
-  const { shown } = await publicStories(env, entries);
+  const { shown, updating } = await publicStories(env, entries);
   const stories = shown.map((s) => s.story);
-  await caches.default.put(key, new Response(JSON.stringify(stories), { headers: { "cache-control": "max-age=60" } })).catch(() => undefined);
+  // Stories drawn while a Ledger is updating (t586) are not kept.
+  if (!updating) await caches.default.put(key, new Response(JSON.stringify(stories), { headers: { "cache-control": "max-age=60" } })).catch(() => undefined);
   return stories;
 }
 
@@ -475,14 +494,18 @@ const LIVE_REFRESH = 15;
 // A project's Ledger is the Durable Object named after its key: the name it
 // was created with, which a rename keeps. Routes that take a project name
 // resolve it once (resolveProject) and address storage by the key only.
+// Every stub goes through guardLedger (src/ledger-stub.ts, t586): a Ledger a
+// deploy left on older code is told to restart, and a call it cannot serve
+// answers that the server is updating instead of failing.
 function ledger(env: Env, key: string) {
-  return env.LEDGER.get(env.LEDGER.idFromName(`project:${key}`));
+  const name = `project:${key}`;
+  return guardLedger(env.LEDGER.get(env.LEDGER.idFromName(name)), name, (env as unknown as Settings).DEPLOYED_MAIN);
 }
 function ledgerOf(env: Env, p: ProjectRecord) {
   return ledger(env, p.key ?? p.name);
 }
 function index(env: Env) {
-  return env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  return guardLedger(env.LEDGER.get(env.LEDGER.idFromName("__index")), "__index", (env as unknown as Settings).DEPLOYED_MAIN);
 }
 // Sends the pool to every project's Ledger after the owner changes it, so the
 // ticks that run there without the index (tier reviews, a plan's reviews)

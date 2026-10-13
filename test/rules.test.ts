@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
+import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
@@ -1195,4 +1196,49 @@ test("fast status prints each ready commit as a tN=SHA line atelier fast land ta
   ]);
   // Each line's first word is what atelier fast land parses.
   for (const l of lines.slice(1, 3)) assert.match(l.split(" ")[0], /^t\d+=[0-9a-f]{40}$/);
+});
+
+// t586: on 2026-10-13 from 09:35 to 10:05 EDT, after the deploys of t578
+// and t585, the busy atelier Ledger kept its old code and answered "The RPC
+// receiver does not implement the method" for showcaseCounts and mode.
+test("the runtime's missing-method answer is recognised, and nothing else is", () => {
+  assert.equal(missingLedgerMethod(new Error('The RPC receiver does not implement the method "showcaseCounts".')), "showcaseCounts");
+  assert.equal(missingLedgerMethod(new Error("The RPC receiver does not implement the method mode")), "mode");
+  assert.equal(missingLedgerMethod("The RPC receiver does not implement the method 'fastLandings'."), "fastLandings");
+  assert.equal(missingLedgerMethod(new TypeError('The RPC receiver does not implement "mode".')), "mode");
+  assert.equal(missingLedgerMethod(new Error("409|closed|t1 is merged")), null);
+  assert.equal(missingLedgerMethod(undefined), null);
+  assert.equal(UPDATING_DETAIL, "the server is updating; try again in a minute");
+});
+
+test("a Ledger restarts when its build differs from the Worker's or a method was missing, at most once a minute", () => {
+  const OLD = "a".repeat(40), NEW = "b".repeat(40), now = 10_000_000;
+  assert.deepEqual(ledgerRestart({ ledger: OLD, worker: NEW, last: null, now }), { restart: true, why: "stale" });
+  assert.deepEqual(ledgerRestart({ ledger: NEW, worker: NEW, last: null, now }), { restart: false, why: "current" });
+  // Local development and tests set no DEPLOYED_MAIN: no version restart.
+  assert.deepEqual(ledgerRestart({ ledger: null, worker: NEW, last: null, now }), { restart: false, why: "unknown" });
+  assert.deepEqual(ledgerRestart({ ledger: OLD, worker: null, last: null, now }), { restart: false, why: "unknown" });
+  // A missing method restarts whatever the versions say.
+  assert.deepEqual(ledgerRestart({ ledger: null, worker: null, last: null, now, missing: true }), { restart: true, why: "missing_method" });
+  assert.deepEqual(ledgerRestart({ ledger: NEW, worker: NEW, last: null, now, missing: true }), { restart: true, why: "missing_method" });
+  // Once a minute at most.
+  const recent = { at: now - LEDGER_RESTART_GAP_MS + 1, from: "c".repeat(40), for: OLD };
+  assert.deepEqual(ledgerRestart({ ledger: OLD, worker: NEW, last: recent, now }), { restart: false, why: "too_soon" });
+  assert.deepEqual(ledgerRestart({ ledger: null, worker: null, last: recent, now, missing: true }), { restart: false, why: "too_soon" });
+  assert.equal(ledgerRestart({ ledger: OLD, worker: NEW, last: { ...recent, at: now - LEDGER_RESTART_GAP_MS }, now }).restart, true);
+  // A restart for a Worker that brought the same code back is not repeated
+  // for that Worker: it was the older one (an old isolate after a deploy).
+  const back = { at: now - 5 * LEDGER_RESTART_GAP_MS, from: NEW, for: OLD };
+  assert.deepEqual(ledgerRestart({ ledger: NEW, worker: OLD, last: back, now }), { restart: false, why: "no_change" });
+  assert.equal(ledgerRestart({ ledger: NEW, worker: "d".repeat(40), last: back, now }).restart, true, "the next deploy restarts it");
+  // An earlier restart that moved the code does not stop the next deploy's.
+  assert.equal(ledgerRestart({ ledger: NEW, worker: "d".repeat(40), last: { at: 0, from: OLD, for: NEW }, now }).restart, true);
+});
+
+test("the stored last restart is read back, and anything unreadable is none", () => {
+  assert.deepEqual(parseLedgerRestart(JSON.stringify({ at: 5, from: "a", for: "b" })), { at: 5, from: "a", for: "b" });
+  assert.deepEqual(parseLedgerRestart(JSON.stringify({ at: 5, from: null, for: "" })), { at: 5, from: null, for: null });
+  assert.equal(parseLedgerRestart(undefined), null);
+  assert.equal(parseLedgerRestart("not json"), null);
+  assert.equal(parseLedgerRestart(JSON.stringify({ at: "soon" })), null);
 });
