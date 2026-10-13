@@ -766,7 +766,7 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
   const withDates = same && began
     ? `<p class="compare-dates">since ${e(dayLabel(began, false))}${same.partial && !same.counted ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
   return `<section class="show-section compare-section" aria-labelledby="compare-h">
-  <h2 class="show-h2" id="compare-h">Git keeps what a commit claims. Atelier keeps what happened.</h2>
+  <h2 class="show-h2" id="compare-h">Git keeps the code. Atelier brings the receipts.</h2>
   <div class="compare">
   <article class="compare-card before">
     <p class="compare-kicker"><span>Before Atelier · from git</span><span>${e(before.title)}</span></p>
