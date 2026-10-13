@@ -10,6 +10,7 @@ export interface ModelEvidence {
   claim: string;
   source: string;
   date: string | null;       // null when the supplied source gives no date
+  prior?: true;              // a supplied vendor description kept here from before model cards (t625); never a card
 }
 
 export interface ModelProfile {
@@ -38,9 +39,12 @@ function qualification(taskKind: ModelEvidence["taskKind"], claim: string, date:
   return { kind: "local-qualification", taskKind, claim, source: STUDIO, date };
 }
 
+// The vendor's word as task t14 supplied it, labelled a prior. Vendor cards
+// the developer records since (t625, src/models/cards.ts) live in the index
+// ledger, not here; these stay as they are and are shown beside them as priors.
 const prior: ModelEvidence = {
   kind: "model-card", taskKind: "general",
-  claim: "vendor-described strength; not yet measured by Atelier", source: PRIOR, date: null,
+  claim: "vendor-described strength; not yet measured by Atelier", source: PRIOR, date: null, prior: true,
 };
 
 // Missing specifications stay unknown. These sources are the supplied task facts,

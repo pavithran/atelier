@@ -8,6 +8,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type L
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
+import { admitCardRecord, cardView, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
 import { ledgerRestart, parseLedgerRestart } from "./rules";
@@ -73,7 +74,7 @@ import {
 } from "./review/criteria.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
-import { linkVerdict, type Contradicts } from "./models/judgement.ts";
+import { canonicalModel, linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
 import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
 import { parseReport } from "./refresh/mechanical.ts";
@@ -759,6 +760,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS model_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS model_cards (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -1187,6 +1189,38 @@ export class Ledger extends DurableObject<Env> {
     const stored = named ? { ...note, project: named.key } : note;
     this.sql.exec(`INSERT INTO model_notes (model, json) VALUES (?, ?)`, id, JSON.stringify(stored));
     return named ? { ...stored, projectName: named.name } : stored;
+  }
+
+  // Vendor model cards (t625, src/models/cards.ts), beside the notes but
+  // never on a pool entry: filed under the model's canonical key, whether or
+  // not the pool has the model now, so removing it from the pool and adding
+  // it back loses none, and nothing that reads the pool reads them. A record
+  // filed under a name the pool has since made an alias is found by it too.
+  private cardsOf(named: string): { model: string; pool: ModelEntry[]; records: CardRecord[] } {
+    const pool = this.models();
+    const model = canonicalModel(named, pool);
+    const records = this.sql.exec(`SELECT id, json FROM model_cards ORDER BY id`).toArray()
+      .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }))
+      .filter((r) => r.model === model || canonicalModel(r.named, pool) === model);
+    return { model, pool, records };
+  }
+
+  modelCards(named: string): CardView {
+    const { model, pool, records } = this.cardsOf(named);
+    const entries = pool.filter((m) => canonicalModel(`${m.harness}/${m.id}`, pool) === model).map((m) => `${m.harness}/${m.id}`);
+    const priors = MODEL_PROFILES.filter((p) => modelKey(p.id) === model).flatMap((p) => p.evidence.filter((e) => e.prior));
+    return cardView(model, entries, records, priors);
+  }
+
+  // A card or a withdrawal, stored once: the same record sent again (a
+  // retry) is answered with the one stored, and nothing is added.
+  addModelCard(named: string, input: CardInput | WithdrawalInput, by: string, at: string): { record: CardRecord; retried: boolean; view: CardView } {
+    const { model, records } = this.cardsOf(named);
+    const existing = admitCardRecord(records, input, model);
+    if (existing) return { record: existing, retried: true, view: this.modelCards(named) };
+    const stored = { ...input, model, named, at, by };
+    const row = this.sql.exec(`INSERT INTO model_cards (model, json) VALUES (?, ?) RETURNING id`, model, JSON.stringify(stored)).one();
+    return { record: { ...stored, id: `c${row.id as number}` } as CardRecord, retried: false, view: this.modelCards(named) };
   }
 
   putModel(entry: ModelEntry): ModelEntry {

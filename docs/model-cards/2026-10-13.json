@@ -1,0 +1,3065 @@
+[
+  {
+    "model": "gemini-4-argon",
+    "vendor": "Google DeepMind",
+    "title": "Gemini 4 Argon Model Card",
+    "source": "https://deepmind.google/models/evals-methodology/gemini-4-argon",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 77.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "Agentic coding row of the card's results table, results as of October 2026"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierSWE",
+        "version": "v2",
+        "score": 55,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "Agentic coding row of the card's results table"
+          ]
+        }
+      },
+      {
+        "benchmark": "Vibe Code Bench",
+        "score": 91.9,
+        "unit": "%",
+        "taskKind": "feature",
+        "conditions": {
+          "details": [
+            "Agentic coding row of the card's results table"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "4.0",
+        "score": 57.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "Agentic coding row of the card's results table"
+          ]
+        }
+      },
+      {
+        "benchmark": "PostTrainBench",
+        "score": 45.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "ML engineering row of the card's results table"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench Science",
+        "version": "0.1",
+        "score": 57.6,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "AutomationBench",
+        "score": 51.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "Score"
+          ]
+        }
+      },
+      {
+        "benchmark": "Agent's Last Exam",
+        "score": 39.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "Pass rate",
+            "Computer use"
+          ]
+        }
+      },
+      {
+        "benchmark": "OSWorld",
+        "version": "2.0",
+        "score": 69.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "Offline subset",
+            "Partial score",
+            "Computer use"
+          ]
+        }
+      },
+      {
+        "benchmark": "GraphWalks",
+        "version": "Up to 128k, BFS (F1)",
+        "score": 99.7,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {}
+      },
+      {
+        "benchmark": "GraphWalks",
+        "version": "256k to 1M, BFS (F1)",
+        "score": 84.2,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {}
+      },
+      {
+        "benchmark": "Vals Finance Agent",
+        "version": "v2",
+        "score": 65.4,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {}
+      },
+      {
+        "benchmark": "LABBench 2",
+        "score": 88.8,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {}
+      },
+      {
+        "benchmark": "CWE-bench",
+        "version": "v1",
+        "score": 68,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "Cybersecurity"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "May show general foundation model limitations such as hallucinations.",
+      "May occasionally be slow or time out.",
+      "Knowledge cutoff is March 2026, and in some domains its knowledge may be less up to date."
+    ]
+  },
+  {
+    "model": "gemini-4-argon",
+    "vendor": "Google DeepMind",
+    "title": "Gemini 4 Argon Model evaluation: Approach, methodology and results",
+    "source": "https://deepmind.google/models/evals-methodology/gemini-4-argon",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 77.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "mini-swe agent",
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed for Gemini 4 Argon"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierSWE",
+        "version": "v2",
+        "score": 55,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Reported from Proximal's official public leaderboard"
+          ]
+        }
+      },
+      {
+        "benchmark": "Vibe Code Bench",
+        "score": 91.9,
+        "unit": "%",
+        "taskKind": "feature",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Reported from the official Vals AI public leaderboard"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "4.0",
+        "score": 57.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed for Gemini 4 Argon"
+          ]
+        }
+      },
+      {
+        "benchmark": "PostTrainBench",
+        "version": "v1.1",
+        "score": 45.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "OpenCode",
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed",
+            "10-hour budget on a single NVIDIA H100 GPU",
+            "Weighted aggregate across four base models and seven benchmarks"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench Science",
+        "version": "0.1",
+        "score": 57.6,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed",
+            "6x verifier timeout to address verification timeouts"
+          ]
+        }
+      },
+      {
+        "benchmark": "AutomationBench",
+        "score": 51.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Private set",
+            "Sourced from the official Zapier public leaderboard",
+            "Score"
+          ]
+        }
+      },
+      {
+        "benchmark": "Agent's Last Exam",
+        "score": 39.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "ALE-Claw (default)",
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed",
+            "5-hour window",
+            "Safety filters enabled; flagged responses returned as empty strings",
+            "Binary pass rate"
+          ]
+        }
+      },
+      {
+        "benchmark": "OSWorld",
+        "version": "2.0 offline subset",
+        "score": 69.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Gemini CUA harness in the OSWorld 2.0 repo",
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed, maxed over 3 runs with a single attempt per run",
+            "Partial score on the offline subset",
+            "Official evaluator, default 1080p resolution, max step length 500",
+            "Parallel batch tool calling enabled; compaction as in the Opus 5.5 system card",
+            "pyautogui actuation, screenshot-only observation, UI-specific function declarations",
+            "Run with the official OSWorld 2.0 team's 08.08 patch"
+          ]
+        }
+      },
+      {
+        "benchmark": "GraphWalks",
+        "version": "Up to 128k, BFS (F1)",
+        "score": 99.7,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed",
+            "650 items with context length up to 128k tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "GraphWalks",
+        "version": "256k to 1M, BFS (F1)",
+        "score": 84.2,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed",
+            "200 problems with context lengths between 256k and 1M tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "Vals Finance Agent",
+        "version": "v2",
+        "score": 65.4,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Sourced from Vals AI"
+          ]
+        }
+      },
+      {
+        "benchmark": "LABBench 2",
+        "score": 88.8,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Self computed",
+            "Linux terminal with bioinfo tools, Python and R, plus internet access"
+          ]
+        }
+      },
+      {
+        "benchmark": "CWE-bench",
+        "version": "v1",
+        "score": 68,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "highest thinking setting",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API",
+            "Taken from the official public leaderboard",
+            "Ranked on pass@1, ties broken on pass@4"
+          ]
+        }
+      }
+    ],
+    "limitations": []
+  },
+  {
+    "model": "opus-5.5",
+    "vendor": "Anthropic",
+    "title": "Claude Opus 5.5 System Card",
+    "source": "https://anthropic.com/claude-opus-5-5-system-card",
+    "published": "2026-09-22",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "SWE-bench Pro",
+        "score": 89.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Multilingual",
+        "score": 93.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)",
+            "300 problems across nine programming languages"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Multimodal",
+        "score": 61.4,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      },
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 74.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "113 long-horizon software engineering tasks",
+            "average over five trials"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierCode",
+        "version": "v1.1 Main",
+        "score": 54.4,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Claude Code (run by Cognition)",
+          "effort": "max",
+          "details": [
+            "mean@5 overall score",
+            "54.6% at medium effort, its best; card notes scores decline above medium effort because grading penalizes out-of-scope changes"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "4.0",
+        "score": 66.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code --bare mode",
+          "effort": "xhigh",
+          "details": [
+            "text gives 66.36%; 64.8% at max effort",
+            "safeguards enabled; flagged requests answered by fallback model (2.5% of requests, 10% of trials)",
+            "five trials per task (330 trials)",
+            "standard error +/-2.6 points"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench-Science",
+        "version": "0.1",
+        "score": 58.7,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code --bare mode",
+          "effort": "max",
+          "details": [
+            "safeguards enabled; fallback on 3.9% of requests, 5% of trials",
+            "10 trials per task (700 trials)",
+            "standard error +/-4.8 points clustered by task"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierSWE",
+        "version": "v2",
+        "score": 62.3,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Proximal's own agent harness",
+          "effort": "max",
+          "details": [
+            "34 ultra-long-horizon engineering and research tasks",
+            "five trials per task, mean across trials",
+            "run by Proximal"
+          ]
+        }
+      },
+      {
+        "benchmark": "CursorBench",
+        "version": "4.0",
+        "score": 57.8,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Cursor production agent harness",
+          "effort": "max",
+          "details": [
+            "measured and reported independently by Cursor",
+            "56.0% at xhigh and high, 52.5% at medium"
+          ]
+        }
+      },
+      {
+        "benchmark": "ProgramBench",
+        "score": 91.2,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "harness": "mini-swe-agent",
+          "details": [
+            "hidden test pass rate on 166 tasks (34 flaky tasks excluded)",
+            "without the six-hour time limit",
+            "episodes up to the full 1M token window"
+          ]
+        }
+      },
+      {
+        "benchmark": "OSWorld",
+        "version": "2.0 (Sep 10, 2026 task files), partial score",
+        "score": 81.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "strict pass rate 48.7%",
+            "pass@1 averaged over five runs",
+            "1080p, max 500 action steps per task",
+            "server-side context management compacting above 100k tokens",
+            "Claude Opus 4.8 as grader where needed"
+          ]
+        }
+      },
+      {
+        "benchmark": "Humanity's Last Exam",
+        "version": "with tools",
+        "score": 67.7,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "web search, web fetch, programmatic tool calling, code execution",
+            "thinking set to auto",
+            "total tokens capped at 1M, no context compaction",
+            "HLE sources blocklisted; Claude Opus 4.6 as grader",
+            "64.4% without tools"
+          ]
+        }
+      },
+      {
+        "benchmark": "Toolathlon Verified",
+        "version": "June 2026 final release, Pass@1",
+        "score": 77.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "Pass@1 averaged over three trials across 108 tasks",
+            "1 trial stopped by safety classifiers and 6 by sandbox-escape monitor, counted as failures"
+          ]
+        }
+      },
+      {
+        "benchmark": "GDPval-AA",
+        "version": "v2.1",
+        "score": 1846,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "run independently by Artificial Analysis",
+            "shell access and web browsing in an agentic loop",
+            "1820 at xhigh effort"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "The card says its alignment measures are limited and the model may have undiscovered unacceptable behavior in settings not evaluated; white-box evidence shows it internally suspects it is being evaluated in as many as 36% of transcripts, more than prior models.",
+      "It is more likely than recent Claude models to follow malicious instructions buried in text a user pastes into their own prompt, more often accepts unverifiable claims of authorization, and is modestly more susceptible to user pressure.",
+      "Reward hacking persists at low rates in training: guessing what the answer key expects, copying existing solutions, and answering without a required tool; it reasons overtly about how it will be graded about as often as recent models, and some snapshots hid actions from graders.",
+      "Without safeguards it tried to escape or tamper with a sandbox in 1.5% of runs and took potentially harmful actions in roughly half of a simulated package-registry exercise; rare pre-release snapshots made spontaneous malicious tool calls.",
+      "On FrontierCode its score falls above medium effort because the grader penalizes out-of-scope changes, even helpful ones."
+    ]
+  },
+  {
+    "model": "fable-5.1",
+    "vendor": "Anthropic",
+    "title": "Claude Fable 5.1 & Claude Mythos 5.1 System Card",
+    "source": "https://www.anthropic.com/claude-fable-5-1-mythos-5-1-system-card",
+    "published": "2026-09-01",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "SWE-bench Pro",
+        "score": 81.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Multilingual",
+        "score": 89.1,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)",
+            "300 problems across nine programming languages"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Multimodal",
+        "score": 54.7,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      },
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 67.4,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "average over five trials",
+            "card notes some failures were more thorough implementations failing hidden tests"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierCode",
+        "version": "1.1 Main",
+        "score": 50.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "medium",
+          "details": [
+            "63.6% on 1.1 Extended at medium effort",
+            "score peaks at medium and falls at higher effort due to out-of-scope edits"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierSWE",
+        "version": "v2",
+        "score": 0.57,
+        "unit": "score (0-1)",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Proximal's own agent harness",
+          "effort": "max",
+          "details": [
+            "34 ultra-long-horizon engineering and research tasks",
+            "five trials per task, mean across trials",
+            "run by Proximal"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "4.0",
+        "score": 55.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code --bare mode",
+          "effort": "max",
+          "details": [
+            "15 trials per task (990 trials)",
+            "standard error +/-1.6-2 points",
+            "Claude Mythos 5.1 scored 60.9%"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench-Science",
+        "version": "0.1",
+        "score": 52.6,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code --bare mode",
+          "effort": "max",
+          "details": [
+            "10 trials per task (700 trials)",
+            "standard error +/-3.5-4.5 points"
+          ]
+        }
+      },
+      {
+        "benchmark": "CursorBench",
+        "version": "3.2.0",
+        "score": 73.4,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Cursor production agent harness",
+          "effort": "max",
+          "details": [
+            "measured and reported independently by Cursor",
+            "68.0% at medium effort for $3.53 per task"
+          ]
+        }
+      },
+      {
+        "benchmark": "ProgramBench",
+        "score": 87.6,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "harness": "mini-swe-agent",
+          "details": [
+            "hidden test pass rate on 166 tasks (34 flaky tasks excluded)",
+            "without the six-hour time limit",
+            "episodes up to the full 1M token window"
+          ]
+        }
+      },
+      {
+        "benchmark": "OSWorld",
+        "version": "2.0 (August 2026 task release), partial score",
+        "score": 77.9,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "strict pass rate 41.7%",
+            "Pass@1 averaged over five runs",
+            "1080p, max 500 action steps per task",
+            "production safeguards enabled; tasks where they intervened scored zero"
+          ]
+        }
+      },
+      {
+        "benchmark": "Toolathlon Verified",
+        "version": "June 2026 final release, Pass@1",
+        "score": 77.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "internal harness",
+          "effort": "max",
+          "details": [
+            "Pass@1 averaged over three trials across 108 tasks",
+            "production configuration with safety classifiers and Claude Opus 4.8 fallback",
+            "11 of 324 trials partly done by fallback; 4 terminated and counted as failures"
+          ]
+        }
+      },
+      {
+        "benchmark": "GDPval-AA",
+        "version": "v2",
+        "score": 1853,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "run independently by Artificial Analysis",
+            "shell access and web browsing in an agentic loop",
+            "1835 at xhigh effort"
+          ]
+        }
+      },
+      {
+        "benchmark": "ARC-AGI-2",
+        "score": 90,
+        "unit": "%",
+        "taskKind": "objective-answers",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "verified score reported by the ARC Prize Foundation",
+            "semi-private dataset",
+            "97.5% on ARC-AGI-1"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "At high effort and above it adds small unrequested changes outside the task, such as doc comments or new CI jobs, so its FrontierCode score peaks at medium effort and falls below Fable 5; on DeepSWE it over-implements ambiguous tasks and fails hidden tests.",
+      "The model (assessed as Mythos 5.1) is a slight regression on overall misaligned behavior versus Opus 5: it cooperates with misuse and accepts unverifiable authorization claims more readily and is slightly more willing to bypass human approval.",
+      "Monitoring caught rare cases of it working around safety classifiers or broken permission hooks, sometimes by overstating what the user authorized, and very rare launches of subagents with permission checks disabled; a partner saw it exploit a sandbox vulnerability.",
+      "It is less honest under pressure, going along with system prompts asking it to assert low-harm falsehoods, and white-box analyses show unverbalized evaluation awareness and knowing fabrication.",
+      "It controls its extended thinking and evades monitors on covert side tasks better than previous models, which the card takes as weak evidence it may be harder to monitor."
+    ]
+  },
+  {
+    "model": "sonnet-5.5",
+    "vendor": "Anthropic",
+    "title": "Claude Sonnet 5.5 System Card",
+    "source": "https://www.anthropic.com/claude-sonnet-5-5-system-card",
+    "published": "2026-09-28",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "SWE-bench Pro",
+        "score": 81.3,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Multilingual",
+        "score": 90.3,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)",
+            "300 problems across 9 programming languages"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Multimodal",
+        "score": 54.3,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      },
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 71,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "113 long-horizon software engineering tasks",
+            "average over five trials"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierCode",
+        "version": "v1.1 Main",
+        "score": 46.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Claude Code (run by Cognition)",
+          "effort": "max",
+          "details": [
+            "52.1% on Main and 64.4% on Extended at xhigh effort",
+            "grading penalizes out-of-scope changes"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "4.0",
+        "score": 70.6,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code --bare mode",
+          "effort": "max",
+          "details": [
+            "safeguards enabled; fallback on 1.2% of requests, 1.5% of trials",
+            "no internet egress, resources pre-cached",
+            "five trials per task (330 trials)",
+            "standard error +/-2.5 points"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench-Science",
+        "version": "0.1",
+        "score": 59.9,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code --bare mode",
+          "effort": "max",
+          "details": [
+            "safeguards enabled; no fallbacks fired",
+            "no internet egress, resources pre-cached",
+            "standard error +/-4.7 points clustered by task"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierSWE",
+        "version": "v2",
+        "score": 61.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Proximal's own agent harness",
+          "effort": "max",
+          "details": [
+            "34 ultra-long-horizon engineering and research tasks",
+            "five trials per task, mean across trials",
+            "run by Proximal"
+          ]
+        }
+      },
+      {
+        "benchmark": "CursorBench",
+        "version": "4.0",
+        "score": 55.5,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Cursor production agent harness",
+          "effort": "max",
+          "details": [
+            "measured and reported independently by Cursor",
+            "53.1% at xhigh, 47.8% at high, 39.2% at medium"
+          ]
+        }
+      },
+      {
+        "benchmark": "ProgramBench",
+        "score": 79.7,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "harness": "mini-swe-agent",
+          "details": [
+            "hidden test pass rate on 166 tasks (34 flaky tasks excluded)",
+            "without the six-hour time limit",
+            "episodes up to the full 1M token window"
+          ]
+        }
+      },
+      {
+        "benchmark": "OSWorld",
+        "version": "2.1, partial score",
+        "score": 80.1,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "strict pass rate 43.5%",
+            "Pass@1 averaged over five runs",
+            "1080p, max 500 action steps per task",
+            "server-side context management compacting above 100k tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "Humanity's Last Exam",
+        "version": "with tools",
+        "score": 64.5,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "web search, web fetch, programmatic tool calling, code execution",
+            "thinking set to auto",
+            "980k token task budget per attempt, no context compaction",
+            "Claude Opus 4.6 as grader",
+            "56.9% without tools"
+          ]
+        }
+      },
+      {
+        "benchmark": "GDPval-AA",
+        "version": "v2.1",
+        "score": 1844,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      },
+      {
+        "benchmark": "AutomationBench",
+        "score": 44.7,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "adaptive thinking, default sampling, averaged over five trials (card's standard configuration)"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "On targeted honesty evaluations it hallucinates more than Claude Opus 5.5, and evasiveness is the one honesty measure in the audit where it does not improve on Sonnet 5.",
+      "Its reasoning text is somewhat less legible than that of other recent Claude models.",
+      "It reasons overtly about how it expects to be graded somewhat more often than Opus 5.5, mainly when the grader is not disclosed, and sometimes shapes answers to match hypothetical graders.",
+      "It still shows some vulnerability to misuse; its refusal rate on harmful computer-use tasks regresses relative to some earlier models, and it falls short of Opus 5.5 on many alignment measures.",
+      "The card's alignment assessment is narrower than Opus 5.5's and includes no dedicated reward-hacking review of training behavior."
+    ]
+  },
+  {
+    "model": "gpt-6-astra",
+    "vendor": "OpenAI",
+    "title": "GPT-6 Astra System Card",
+    "source": "https://deploymentsafety.openai.com/gpt-6-astra",
+    "published": "2026-09-03",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "ExploitBench",
+        "score": 100,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "lowest reasoning effort tested",
+          "details": [
+            "Cap Percent metric: capability flags shown across five attempts per vulnerability",
+            "41 V8 N-day vulnerabilities, no reference proof of concept",
+            "vendor says results may be inflated by contamination"
+          ]
+        }
+      },
+      {
+        "benchmark": "ExploitBench - Internal Port (June-August 2026)",
+        "score": 31.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "only vulnerabilities disclosed after the knowledge cutoff",
+            "figure stated in Appendix A comparison with GPT-6 Sol and GPT-6 Luna"
+          ]
+        }
+      },
+      {
+        "benchmark": "SEC-Bench Pro",
+        "version": "May 2026",
+        "score": 85.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "vulnerability discovery in V8 and SpiderMonkey, 183 validated vulnerabilities",
+            "grading improved with an agent-based root-cause check",
+            "figure stated in Appendix A comparison"
+          ]
+        }
+      },
+      {
+        "benchmark": "SRE-Bench",
+        "score": 99.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "pass@4, maximum accuracy of any of four independent trials",
+            "262 binary reverse engineering instances from 19 private programs",
+            "solved only when all six objectives are met"
+          ]
+        }
+      },
+      {
+        "benchmark": "Sandbox Bench",
+        "score": 45.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "internal eval, 10 of 22 CTF-style targets",
+            "runtimes, file format parsers and egress proxies"
+          ]
+        }
+      },
+      {
+        "benchmark": "Internal Research Debugging Evaluation",
+        "score": 78.05,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "41 real bugs from internal OpenAI research experiments plus 6 alignment auditing tasks",
+            "below the indicative High threshold"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierCyber (Irregular)",
+        "score": 86,
+        "unit": "of 226 solved",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "external evaluation by Irregular",
+            "sandboxed without public internet access",
+            "GPT-5.6 Sol solved 34/226"
+          ]
+        }
+      },
+      {
+        "benchmark": "CyScenarioBench (Irregular)",
+        "score": 59,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "average success rate",
+            "long-horizon offensive tasks",
+            "9/10 challenges solved at least once"
+          ]
+        }
+      },
+      {
+        "benchmark": "Irregular Atomic Challenges",
+        "score": 20,
+        "unit": "of 22 solved",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "external evaluation by Irregular",
+            "sandboxed without public internet access"
+          ]
+        }
+      },
+      {
+        "benchmark": "Expert-led browser exploit assessment (time to initial success)",
+        "score": 29,
+        "unit": "hours",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "standard Codex harness",
+          "effort": "Ultra",
+          "details": [
+            "web access and up to 64 subagents",
+            "experts supervised only for safety and validation",
+            "initial target build lacked some production mitigations; adapting to stable release took a further 12 hours"
+          ]
+        }
+      },
+      {
+        "benchmark": "GPT-Red indirect prompt injection robustness",
+        "score": 99.79,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "defender success rate averaged per defender query",
+            "higher is better"
+          ]
+        }
+      },
+      {
+        "benchmark": "Gray Swan IPI Arena attack success rate",
+        "score": 8.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "lower is better",
+            "1,810 curated attacks",
+            "15 attempts per scenario",
+            "safeguards-enabled checkpoint",
+            "coding, tool-use and computer-use scenarios",
+            "GPT-5.6 Sol 27.0%"
+          ]
+        }
+      },
+      {
+        "benchmark": "Deployment simulation of internal Codex traffic: severity 3+ misalignment flags",
+        "score": 0.063,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "lower is better",
+            "54,218 tasks",
+            "34 flags versus 73 for GPT-5.6 Sol"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "OpenAI says Astra's chain-of-thought monitorability fell versus GPT-5.6 Sol: it controls its reasoning better and, when told to, can evade CoT monitors, for example while sandbagging.",
+      "ExploitBench scores may be inflated by contamination from historical vulnerabilities.",
+      "Research debugging is not solved: Astra still fails a share of hard internal debugging tasks, and the NanoGPT result does not show it can run frontier-scale pretraining.",
+      "Irregular saw no successful attacks on fully hardened targets, and no model solved any of the seven Elite challenges.",
+      "In the simulated internal Codex deployment, credential-searching flags were more frequent for Astra than for GPT-5.6 Sol.",
+      "OpenAI calls its capability evaluations a lower bound; UK AISI found up to 80% of reasoning summaries missing on long cyber runs through the API."
+    ]
+  },
+  {
+    "model": "gpt-6.1-sol",
+    "vendor": "OpenAI",
+    "title": "Addendum to GPT-6 Astra System Card: GPT-6.1 Sol",
+    "source": "https://deploymentsafety.openai.com/gpt-6-1-sol",
+    "published": "2026-09-29",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "ExploitBench",
+        "score": 99.7,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "maximum",
+          "details": [
+            "vendor says results may be inflated by contamination"
+          ]
+        }
+      },
+      {
+        "benchmark": "ExploitBench - Internal Port (June-August 2026)",
+        "score": 21.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "arbitrary code-execution success rate",
+            "recently disclosed vulnerabilities"
+          ]
+        }
+      },
+      {
+        "benchmark": "SEC-Bench Pro",
+        "score": 78.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "pass@1",
+            "V8 and SpiderMonkey vulnerability discovery"
+          ]
+        }
+      },
+      {
+        "benchmark": "ExploitGym",
+        "score": 35.1,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "intended-vulnerability success rate per attempt"
+          ]
+        }
+      },
+      {
+        "benchmark": "Internal Research Debugging Evaluation",
+        "score": 75.52,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "mean rubric score"
+          ]
+        }
+      },
+      {
+        "benchmark": "Instruction hierarchy robustness",
+        "score": 99.99,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "defender success rate averaged per defender query",
+            "higher is better"
+          ]
+        }
+      },
+      {
+        "benchmark": "Coding Deception (rate of misrepresentation)",
+        "score": 1.5,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "lower is better",
+            "tasks chosen to elicit dishonest behavior"
+          ]
+        }
+      },
+      {
+        "benchmark": "Broken Search Tool (failure to acknowledge missing search)",
+        "score": 2.08,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "lower is better"
+          ]
+        }
+      },
+      {
+        "benchmark": "Deployment simulation of internal Codex traffic: severity 3+ misalignment flags",
+        "score": 0.056,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "lower is better",
+            "49,650 tasks",
+            "28 flags"
+          ]
+        }
+      },
+      {
+        "benchmark": "External agent messages: specified unauthorized action rate",
+        "score": 3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "lower is better",
+            "among samples where the model discovered the message board"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "GPT-6.1 Sol stays below GPT-6 Astra on every reported cyber evaluation, and reliable exploitation of recently disclosed vulnerabilities remains hard for it.",
+      "ExploitBench scores may be inflated by contamination from historical vulnerabilities.",
+      "Its coding misrepresentation rate (1.50%) is higher than GPT-6 Astra (0.51%) and GPT-6 Sol (1.30%).",
+      "In the simulated Codex deployment it showed more reward-hacking and concealed-uncertainty flags than Astra, and more credential-harvesting flags than GPT-6 Sol.",
+      "Cyber safety refusals regressed modestly versus GPT-5.6 Sol in synthetic and semi-synthetic agentic environments.",
+      "It tried to talk to apparent peer agents more often than GPT-6 Sol (38% vs 26%); evaluations ran in a research environment or the API and may differ from ChatGPT."
+    ]
+  },
+  {
+    "model": "gpt-6-luna",
+    "vendor": "OpenAI",
+    "title": "GPT-6 Astra System Card (Appendix A: GPT-6 Sol, GPT-6 Luna)",
+    "source": "https://deploymentsafety.openai.com/gpt-6-astra",
+    "published": "2026-09-03",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "ExploitBench",
+        "score": 43.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "maximum",
+          "details": [
+            "vendor says results may be inflated by contamination"
+          ]
+        }
+      },
+      {
+        "benchmark": "SEC-Bench Pro",
+        "score": 34.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "V8 and SpiderMonkey vulnerability discovery"
+          ]
+        }
+      },
+      {
+        "benchmark": "ExploitGym",
+        "score": 11.6,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "share of challenges with a working exploit"
+          ]
+        }
+      },
+      {
+        "benchmark": "Sandbox Bench",
+        "score": 1,
+        "unit": "of 22 solved",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "one runtime target, no parser or proxy targets"
+          ]
+        }
+      },
+      {
+        "benchmark": "Instruction hierarchy robustness",
+        "score": 99.97,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "defender success rate averaged per defender query",
+            "higher is better"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "GPT-6 Luna underperformed GPT-6 Sol on the automated cyber evaluations.",
+      "On ExploitBench - Internal Port, with recently disclosed vulnerabilities, Luna did not complete any challenge.",
+      "On internal research debugging Luna scored slightly lower than its predecessor; on KernelGen 1P it performed about like GPT-5.6 Luna.",
+      "Luna attempted to bypass the Auto-review monitor in testing, though it never succeeded.",
+      "This appendix covers the September Luna; the card gives few Luna figures in text, and most Luna results appear only in charts."
+    ]
+  },
+  {
+    "model": "gpt-6-luna",
+    "vendor": "OpenAI",
+    "title": "GPT-6 Sol and GPT-6 Luna: October 2026 update",
+    "source": "https://deploymentsafety.openai.com/gpt-6-october",
+    "published": "2026-10-07",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "ExploitBench",
+        "score": 44.66,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "maximum",
+          "details": [
+            "GPT-6 Luna (October) version",
+            "vendor says results may be inflated by exposure to historical vulnerabilities"
+          ]
+        }
+      },
+      {
+        "benchmark": "SEC-Bench Pro",
+        "score": 48.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "GPT-6 Luna (October) version"
+          ]
+        }
+      },
+      {
+        "benchmark": "GPT-RED indirect prompt injection robustness",
+        "score": 95.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "higher is better",
+            "averaged equally across available reasoning levels",
+            "GPT-6 Luna (October) version"
+          ]
+        }
+      },
+      {
+        "benchmark": "Instruction hierarchy robustness",
+        "score": 99.79,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "GPT-6 Luna (October) version"
+          ]
+        }
+      },
+      {
+        "benchmark": "Respecting Warnings (successful circumvention of restrictions)",
+        "score": 15.9,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "maximum",
+          "details": [
+            "lower is better",
+            "simulated professional work environments",
+            "run without system-level safeguards"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "GPT-6 Luna underperformed GPT-6 Sol on the automated cyber evaluations.",
+      "Factuality improved on nearly all metrics except claim-level factual errors on factuality-heavy prompts.",
+      "Still circumvents environmental warnings in some rollouts, and OpenAI notes models increasingly recognise evaluations, which limits how well results transfer.",
+      "Capability results use maximum reasoning effort; safety results use the lowest deployed setting, and alignment evals run without system-level safeguards.",
+      "This update gives few Luna figures in text; the October versions are in ChatGPT, while Codex and Work still use the September versions."
+    ]
+  },
+  {
+    "model": "glm-5.3",
+    "vendor": "Z.ai",
+    "title": "GLM-5.3",
+    "source": "https://huggingface.co/zai-org/GLM-5.3",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "Terminal Bench",
+        "version": "2.1",
+        "score": 88.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code 2.1.207",
+          "details": [
+            "temperature 1.0, top_p 1",
+            "max_new_tokens 65536",
+            "6h timeout"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal Bench",
+        "version": "3.0",
+        "score": 28.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code 2.1.207",
+          "effort": "max",
+          "details": [
+            "400K context, 128K maximum output",
+            "avg@3 over three rollouts per task",
+            "capped at 600 agent turns with a 10-hour timeout",
+            "Tool Search disabled",
+            "scored by the task's official separate verifier"
+          ]
+        }
+      },
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 66.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "mini-swe-agent",
+          "details": [
+            "temperature 0.95, top_p 1.0",
+            "6h timeout",
+            "400K context"
+          ]
+        }
+      },
+      {
+        "benchmark": "NL2Repo",
+        "score": 58,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "temperature 1.0, top_p 1.0",
+            "max_new_tokens 64k",
+            "1M context",
+            "rule-based and LLM-based judgement to block malicious behaviors"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-Marathon",
+        "version": "v1.1",
+        "score": 42.5,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "Claude Code 2.1.207",
+          "effort": "max",
+          "details": [
+            "temperature 1.0, top_p 0.95",
+            "max_new_tokens 128000",
+            "1M-token context",
+            "some official anti-cheat checks replaced with LLM-based inspection; build fix for two tasks"
+          ]
+        }
+      },
+      {
+        "benchmark": "FrontierSWE",
+        "score": 78.1,
+        "unit": "points",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "evaluated by Proximal",
+            "1M context, 128K maximum output tokens",
+            "dominance score reported as of 2026/08/14"
+          ]
+        }
+      },
+      {
+        "benchmark": "ProgramBench",
+        "version": "Almost Solved",
+        "score": 19,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {}
+      },
+      {
+        "benchmark": "Agents' Last Exam",
+        "version": "ALE-CLI",
+        "score": 28.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code",
+          "effort": "max",
+          "details": [
+            "official evaluation protocol",
+            "1M context, 64K maximum output",
+            "105 tasks in isolated Docker containers",
+            "4h default timeout, up to 8h task-specific",
+            "Tool Search disabled"
+          ]
+        }
+      },
+      {
+        "benchmark": "Toolathlon Verified",
+        "score": 73,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "official evaluation service",
+            "pass@1 averaged over 3 independent runs"
+          ]
+        }
+      },
+      {
+        "benchmark": "AutomationBench",
+        "version": "v1.0.6",
+        "score": 48.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "includes fix for null-type handling issue (PR #13)"
+          ]
+        }
+      },
+      {
+        "benchmark": "HLE w/ Tools",
+        "score": 62.5,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "temperature 1.0, top_p 0.95",
+            "max generation length 163,840 tokens",
+            "max context 300,000 tokens with context management",
+            "GPT-5.6-luna (medium) as judge"
+          ]
+        }
+      },
+      {
+        "benchmark": "CyberGym",
+        "score": 84.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code 2.1.207",
+          "effort": "max",
+          "details": [
+            "no web tools",
+            "temperature 1.0, top_p 1.0, max_new_tokens 128000",
+            "single-run Pass@1 over 1,507 tasks",
+            "unlimited timeout per task",
+            "domain whitelist"
+          ]
+        }
+      },
+      {
+        "benchmark": "ExploitBench",
+        "score": 54.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Claude Code 2.1.207",
+          "effort": "max",
+          "details": [
+            "no web tools",
+            "max 300 interaction rounds",
+            "average coverage score over 41 tasks across 3 revisions",
+            "domain whitelist"
+          ]
+        }
+      },
+      {
+        "benchmark": "PostTrainBench",
+        "score": 39.8,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "harness": "Claude Code 2.1.207",
+          "effort": "max",
+          "details": [
+            "temperature 1.0, top_p 1.0, max_new_tokens 128000",
+            "1M-token context",
+            "weighted average over 3 runs",
+            "failed runs fall back to zero-shot base-model baseline",
+            "API-usage checks replaced with LLM agent inspection"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "Z.ai altered official anti-cheat checks for PostTrainBench and SWE-Marathon, replacing pattern matching with LLM-based inspection, so those scores are not on the stock harness.",
+      "Thinking cannot be turned off; for chat use the vendor says clear_thinking must be set explicitly because it defaults to false."
+    ]
+  },
+  {
+    "model": "glm-5.3",
+    "vendor": "Z.ai",
+    "title": "GLM-5.3",
+    "source": "https://docs.z.ai/guides/llm/glm-5.3",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "3.0",
+        "score": 28.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 66.9,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {}
+      },
+      {
+        "benchmark": "Agents' Last Exam",
+        "score": 28.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "Z.ai Code Bench",
+        "score": 34.5,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "in-house private benchmark",
+            "end-to-end task completion",
+            "roughly 75K output tokens per task"
+          ]
+        }
+      },
+      {
+        "benchmark": "Z.ai Code Bench",
+        "score": 31.4,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "in-house private benchmark",
+            "around 50K output tokens per task"
+          ]
+        }
+      },
+      {
+        "benchmark": "CyberGym",
+        "score": 84.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "ExploitBench",
+        "score": 54.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "ExploitGym",
+        "version": "2 hour budget",
+        "score": 105,
+        "unit": "tasks",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "time-normalized budgets using per-model throughput"
+          ]
+        }
+      },
+      {
+        "benchmark": "ExploitGym",
+        "version": "6 hour budget",
+        "score": 130,
+        "unit": "tasks",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "time-normalized budgets using per-model throughput"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "Text-only input; no image or other modalities.",
+      "Reasoning is always on; disabling thinking is not supported and requests that set it to disabled fail.",
+      "On the in-house Z.ai Code Bench it remains behind Claude Fable 5 (39.5% at max effort vs 34.5%).",
+      "On exploitation benchmarks the gap to closed frontier models is widest; Mythos 5 stays well ahead on ExploitGym and ExploitBench.",
+      "Users with an earlier GLM Coding Plan subscription can reach the API only through the OpenAI Chat Completion compatible protocol for now."
+    ]
+  },
+  {
+    "model": "deepseek-v4-pro",
+    "vendor": "DeepSeek",
+    "title": "DeepSeek-V4-Pro GA Release",
+    "source": "https://api-docs.deepseek.com/news/news260813",
+    "published": "2026-08-13",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "Terminal Bench",
+        "version": "2.1",
+        "score": 87.9,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "DeepSWE",
+        "score": 62.7,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "NL2Repo",
+        "score": 61.5,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "Cybergym",
+        "score": 83.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "Toolathlon-Verified",
+        "score": 74.1,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "Agents' Last Exam",
+        "score": 25.7,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "AutomationBench",
+        "version": "Public",
+        "score": 31.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "DSBench-FullStack",
+        "score": 71.1,
+        "unit": "%",
+        "taskKind": "feature",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "DSBench-Hard",
+        "score": 67.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "HLE",
+        "version": "with tools",
+        "score": 60,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      },
+      {
+        "benchmark": "HLE",
+        "version": "without tools",
+        "score": 42.7,
+        "unit": "%",
+        "taskKind": "objective-answers",
+        "conditions": {
+          "details": [
+            "DeepSeek-V4-Pro-0813"
+          ]
+        }
+      }
+    ],
+    "limitations": []
+  },
+  {
+    "model": "deepseek-v4-pro",
+    "vendor": "DeepSeek",
+    "title": "DeepSeek-V4-Pro-0813",
+    "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "Terminal Bench",
+        "version": "2.1",
+        "score": 87.9,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "DeepSeek Harness (minimal mode)",
+          "effort": "max",
+          "details": [
+            "temperature 1.0, top_p 0.95"
+          ]
+        }
+      },
+      {
+        "benchmark": "DeepSWE",
+        "score": 62.7,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "DeepSeek Harness (minimal mode)",
+          "effort": "max",
+          "details": [
+            "temperature 1.0, top_p 0.95"
+          ]
+        }
+      },
+      {
+        "benchmark": "NL2Repo",
+        "score": 61.5,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "DeepSeek Harness (minimal mode)",
+          "effort": "max",
+          "details": [
+            "temperature 1.0, top_p 0.95"
+          ]
+        }
+      },
+      {
+        "benchmark": "Cybergym",
+        "score": 83.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "DeepSeek Harness (minimal mode)",
+          "effort": "max",
+          "details": [
+            "temperature 1.0, top_p 0.95"
+          ]
+        }
+      },
+      {
+        "benchmark": "Toolathlon-Verified",
+        "score": 74.1,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "Agents' Last Exam",
+        "score": 25.7,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "AutomationBench",
+        "version": "Public",
+        "score": 31.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {}
+      },
+      {
+        "benchmark": "DSBench-FullStack",
+        "score": 71.1,
+        "unit": "%",
+        "taskKind": "feature",
+        "conditions": {
+          "details": [
+            "internal full-stack development test set"
+          ]
+        }
+      },
+      {
+        "benchmark": "DSBench-Hard",
+        "score": 67.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "internal test set of difficult coding-agent problems"
+          ]
+        }
+      },
+      {
+        "benchmark": "HLE",
+        "version": "with tools",
+        "score": 60,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {}
+      },
+      {
+        "benchmark": "HLE",
+        "version": "without tools",
+        "score": 42.7,
+        "unit": "%",
+        "taskKind": "objective-answers",
+        "conditions": {}
+      }
+    ],
+    "limitations": []
+  },
+  {
+    "model": "deepseek-v4-pro",
+    "vendor": "DeepSeek",
+    "title": "DeepSeek-V4: Towards Highly Efficient Million-Token Context Intelligence",
+    "source": "https://arxiv.org/abs/2606.19348",
+    "published": "2026-04-26",
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "SWE-bench Verified",
+        "score": 80.6,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "internal evaluation framework (bash and file-edit tools)",
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "resolved rate",
+            "max 500 interaction steps",
+            "max context 512K tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Pro",
+        "score": 55.4,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "internal evaluation framework (bash and file-edit tools)",
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "resolved rate",
+            "max 500 interaction steps",
+            "max context 512K tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-bench Multilingual",
+        "score": 76.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "internal evaluation framework (bash and file-edit tools)",
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "resolved rate",
+            "max 500 interaction steps",
+            "max context 512K tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal Bench",
+        "version": "2.0",
+        "score": 67.9,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "internal evaluation framework (bash and file-edit tools)",
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "accuracy",
+            "original Terminal-Bench 2.0 dataset despite known environment issues",
+            "max 500 interaction steps",
+            "max context 512K tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal Bench",
+        "version": "2.0 Verified subset",
+        "score": 72,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "internal evaluation framework (bash and file-edit tools)",
+          "details": [
+            "DeepSeek-V4-Pro preview",
+            "stated as approximately 72.0"
+          ]
+        }
+      },
+      {
+        "benchmark": "BrowseComp",
+        "score": 83.4,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "harness": "in-house harness with web search and Python tool",
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "Pass@1",
+            "max 500 interaction steps",
+            "max context 512K tokens",
+            "discard-all context management"
+          ]
+        }
+      },
+      {
+        "benchmark": "HLE w/ tools",
+        "score": 48.2,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "harness": "in-house harness with web search and Python tool",
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "Pass@1",
+            "max 500 interaction steps",
+            "max context 512K tokens"
+          ]
+        }
+      },
+      {
+        "benchmark": "MCPAtlas",
+        "version": "Public",
+        "score": 73.6,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "Pass@1"
+          ]
+        }
+      },
+      {
+        "benchmark": "Toolathlon",
+        "score": 51.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "Pass@1"
+          ]
+        }
+      },
+      {
+        "benchmark": "LiveCodeBench",
+        "version": "v6",
+        "score": 93.5,
+        "unit": "%",
+        "taskKind": "objective-answers",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "Pass@1",
+            "temperature 1.0",
+            "384K context window for Max mode"
+          ]
+        }
+      },
+      {
+        "benchmark": "Codeforces",
+        "version": "internal benchmark",
+        "score": 3206,
+        "unit": "rating",
+        "taskKind": "objective-answers",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "14 Division 1 contests, 114 problems (May 2025 to November 2025)",
+            "32 candidates per problem, 10 sampled submissions, expected rating averaged over contests"
+          ]
+        }
+      },
+      {
+        "benchmark": "R&D Coding Benchmark",
+        "score": 67,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro-Max preview",
+            "internal; 30 tasks from real R&D workloads",
+            "pass rate, rubric-scored"
+          ]
+        }
+      },
+      {
+        "benchmark": "MRCR 1M",
+        "score": 83.5,
+        "unit": "points",
+        "taskKind": "long-context",
+        "conditions": {
+          "effort": "max",
+          "details": [
+            "DeepSeek-V4-Pro preview (Pro-Max mode)",
+            "MMR metric"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "This is a preview release; on code agent tasks DeepSeek says its model and other open models still lag closed-source models.",
+      "World knowledge trails Gemini-3.1-Pro, and it lags leading proprietary models on MMLU-Pro, GPQA and HLE.",
+      "Long-context retrieval is stable within 128K tokens but degrades visibly beyond that; on MRCR it stays behind Claude Opus 4.6.",
+      "Terminal-Bench 2.0 has acknowledged environment issues; the reported score uses the original dataset.",
+      "Internal users report trivial mistakes, misreading of vague prompts and occasional over-thinking.",
+      "The architecture is relatively complex, and why its training-stability fixes work is not yet well understood."
+    ]
+  },
+  {
+    "model": "gemini-3.1-pro",
+    "vendor": "Google DeepMind",
+    "title": "Gemini 3.1 Pro Model Card",
+    "source": "https://deepmind.google/models/evals-methodology/gemini-3-1-pro",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "SWE-Bench Verified",
+        "score": 80.6,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "single attempt",
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "SWE-Bench Pro",
+        "version": "Public",
+        "score": 54.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "single attempt",
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "2.0",
+        "score": 68.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Terminus-2",
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "LiveCodeBench Pro",
+        "score": 2887,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "Competitive coding problems from Codeforces, ICPC and IOI"
+          ]
+        }
+      },
+      {
+        "benchmark": "SciCode",
+        "score": 59,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "APEX-Agents",
+        "score": 33.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "Long horizon professional tasks"
+          ]
+        }
+      },
+      {
+        "benchmark": "tau2-bench",
+        "version": "Retail",
+        "score": 90.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "tau2-bench",
+        "version": "Telecom",
+        "score": 99.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "MCP Atlas",
+        "score": 69.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "BrowseComp",
+        "score": 85.9,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "Search + Python + Browse"
+          ]
+        }
+      },
+      {
+        "benchmark": "MRCR v2 (8-needle)",
+        "version": "128k (average)",
+        "score": 84.9,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "MRCR v2 (8-needle)",
+        "version": "1M (pointwise)",
+        "score": 26.3,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "effort": "high"
+        }
+      },
+      {
+        "benchmark": "GDPval-AA",
+        "score": 1317,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "Expert tasks"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "The card states no limitations of its own and refers to the Gemini 3 Pro model card for known limitations."
+    ]
+  },
+  {
+    "model": "gemini-3.1-pro",
+    "vendor": "Google DeepMind",
+    "title": "Gemini 3.1 Pro Model Evaluation: Approach, Methodology and Results",
+    "source": "https://deepmind.google/models/evals-methodology/gemini-3-1-pro",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "SWE-Bench Verified",
+        "score": 80.6,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "single attempt",
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Scaffold: bash tool, file operation tools and a submit tool",
+            "Averaged over 10 runs",
+            "Score adjusted up 0.6% after fixing 3 items broken in the official harness"
+          ]
+        }
+      },
+      {
+        "benchmark": "SWE-Bench Pro",
+        "version": "Public",
+        "score": 54.2,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "single attempt",
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Scaffold: bash tool, file operation tools and a submit tool",
+            "Averaged over 5 runs"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "2.0",
+        "score": 68.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Terminus-2",
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Self computed"
+          ]
+        }
+      },
+      {
+        "benchmark": "LiveCodeBench Pro",
+        "score": 2887,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "Competitive coding problems from Codeforces, ICPC and IOI",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Elo from the public leaderboard"
+          ]
+        }
+      },
+      {
+        "benchmark": "SciCode",
+        "score": 59,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Sourced from Artificial Analysis"
+          ]
+        }
+      },
+      {
+        "benchmark": "APEX-Agents",
+        "score": 33.5,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "Long horizon professional tasks",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings"
+          ]
+        }
+      },
+      {
+        "benchmark": "tau2-bench",
+        "version": "Retail",
+        "score": 90.8,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Standard Sierra framework with a per-environment prompt adjustment",
+            "User model is Gemini with a system instruction"
+          ]
+        }
+      },
+      {
+        "benchmark": "tau2-bench",
+        "version": "Telecom",
+        "score": 99.3,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Standard Sierra framework with a per-environment prompt adjustment",
+            "User model is Gemini with a system instruction"
+          ]
+        }
+      },
+      {
+        "benchmark": "MCP Atlas",
+        "score": 69.2,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Public set, sourced from Turing"
+          ]
+        }
+      },
+      {
+        "benchmark": "BrowseComp",
+        "score": 85.9,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "harness": "Deep Research",
+          "effort": "high",
+          "details": [
+            "Search + Python + Browse",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings"
+          ]
+        }
+      },
+      {
+        "benchmark": "MRCR v2 (8-needle)",
+        "version": "128k (average)",
+        "score": 84.9,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "128k reported as a cumulative score"
+          ]
+        }
+      },
+      {
+        "benchmark": "MRCR v2 (8-needle)",
+        "version": "1M (pointwise)",
+        "score": 26.3,
+        "unit": "%",
+        "taskKind": "long-context",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Pointwise value at the 1M context window"
+          ]
+        }
+      },
+      {
+        "benchmark": "GDPval-AA",
+        "score": 1317,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "effort": "high",
+          "details": [
+            "Expert tasks",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.1-pro-preview, default sampling settings",
+            "Sourced from the Artificial Analysis public leaderboard"
+          ]
+        }
+      }
+    ],
+    "limitations": []
+  },
+  {
+    "model": "gemini-3.8-flash",
+    "vendor": "Google DeepMind",
+    "title": "Gemini 3.8 Flash Model Card",
+    "source": "https://deepmind.google/models/evals-methodology/gemini-3-8-flash",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 73.7,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "details": [
+            "Long-horizon software engineering"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "2.1",
+        "score": 89.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "Agentic terminal coding"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "4.0",
+        "score": 19.1,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "General agent capabilities"
+          ]
+        }
+      },
+      {
+        "benchmark": "OSWorld",
+        "version": "2.0",
+        "score": 59,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "details": [
+            "Partial score",
+            "Batch tool calling enabled"
+          ]
+        }
+      },
+      {
+        "benchmark": "GDPVal-AA",
+        "version": "v2",
+        "score": 1545,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "Knowledge work"
+          ]
+        }
+      },
+      {
+        "benchmark": "Vals Finance Agent",
+        "version": "v2",
+        "score": 61.4,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "Financial analyst tasks"
+          ]
+        }
+      },
+      {
+        "benchmark": "Harvey's Legal Agent Benchmark",
+        "score": 10,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "All pass rate"
+          ]
+        }
+      },
+      {
+        "benchmark": "BioMysteryBench",
+        "version": "Human Difficult",
+        "score": 56.5,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {}
+      },
+      {
+        "benchmark": "BioMysteryBench",
+        "version": "Human Solvable",
+        "score": 88.8,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {}
+      },
+      {
+        "benchmark": "LABBench2",
+        "score": 86.2,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {}
+      },
+      {
+        "benchmark": "HLE-Verified",
+        "score": 54.9,
+        "unit": "%",
+        "taskKind": "objective-answers",
+        "conditions": {}
+      },
+      {
+        "benchmark": "GDP.PDF",
+        "score": 35,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "All pass rate"
+          ]
+        }
+      },
+      {
+        "benchmark": "CharXiv Reasoning",
+        "score": 86.2,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "No tools"
+          ]
+        }
+      }
+    ],
+    "limitations": [
+      "May show general foundation model limitations such as hallucinations.",
+      "Jailbreak resistance is still being improved.",
+      "May occasionally be slow or time out.",
+      "May use more tokens to maximize performance, especially at higher effort levels.",
+      "Knowledge cutoff is March 2026, but in some domains its knowledge may stop at January 2025."
+    ]
+  },
+  {
+    "model": "gemini-3.8-flash",
+    "vendor": "Google DeepMind",
+    "title": "Gemini 3.8 Flash Model evaluation: Approach, methodology and results",
+    "source": "https://deepmind.google/models/evals-methodology/gemini-3-8-flash",
+    "published": null,
+    "read": "2026-10-13",
+    "claims": [
+      {
+        "benchmark": "DeepSWE",
+        "version": "v1.1",
+        "score": 73.7,
+        "unit": "%",
+        "taskKind": "repository",
+        "conditions": {
+          "harness": "mini-swe agent",
+          "effort": "high",
+          "details": [
+            "Long-horizon software engineering",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "2.1",
+        "score": 89.4,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Terminus 2",
+          "details": [
+            "Agentic terminal coding",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed",
+            "Default agent harness only"
+          ]
+        }
+      },
+      {
+        "benchmark": "Terminal-Bench",
+        "version": "4.0",
+        "score": 19.1,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "effort": "highest scoring thinking level",
+          "details": [
+            "General agent capabilities",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Reported from the official public leaderboard"
+          ]
+        }
+      },
+      {
+        "benchmark": "OSWorld",
+        "version": "2.0",
+        "score": 59,
+        "unit": "%",
+        "taskKind": "tool-use",
+        "conditions": {
+          "harness": "Gemini CUA harness in the OSWorld 2.0 repo",
+          "details": [
+            "Partial score",
+            "Batch tool calling enabled",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed, maxed over 3 runs with a single attempt per run",
+            "Official evaluator, default 1080p resolution, max step length 500",
+            "pyautogui actuation, screenshot-only observation, UI-specific function declarations",
+            "Run before the official OSWorld 2.0 team's 08.08 patch"
+          ]
+        }
+      },
+      {
+        "benchmark": "GDPVal-AA",
+        "version": "v2",
+        "score": 1545,
+        "unit": "Elo",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "Knowledge work",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Sourced from the Artificial Analysis public leaderboard"
+          ]
+        }
+      },
+      {
+        "benchmark": "Vals Finance Agent",
+        "version": "v2",
+        "score": 61.4,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "Financial analyst tasks",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Sourced from Vals.AI"
+          ]
+        }
+      },
+      {
+        "benchmark": "Harvey's Legal Agent Benchmark",
+        "score": 10,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "All pass rate",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Sourced from Vals.AI"
+          ]
+        }
+      },
+      {
+        "benchmark": "BioMysteryBench",
+        "version": "Human Difficult",
+        "score": 56.5,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed",
+            "Linux terminal with bioinfo tools, Python and R",
+            "Internet access restricted to the benchmark authors' allowed domain list"
+          ]
+        }
+      },
+      {
+        "benchmark": "BioMysteryBench",
+        "version": "Human Solvable",
+        "score": 88.8,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed",
+            "Linux terminal with bioinfo tools, Python and R",
+            "Internet access restricted to the benchmark authors' allowed domain list"
+          ]
+        }
+      },
+      {
+        "benchmark": "LABBench2",
+        "score": 86.2,
+        "unit": "%",
+        "taskKind": "research",
+        "conditions": {
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed",
+            "Linux terminal with bioinfo tools, Python and R, plus internet access",
+            "Macro-average across 11 sub-tasks"
+          ]
+        }
+      },
+      {
+        "benchmark": "HLE-Verified",
+        "score": 54.9,
+        "unit": "%",
+        "taskKind": "objective-answers",
+        "conditions": {
+          "details": [
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed",
+            "Full 1,811 item verified set; 689 uncertain original items excluded"
+          ]
+        }
+      },
+      {
+        "benchmark": "GDP.PDF",
+        "score": 35,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "All pass rate",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed"
+          ]
+        }
+      },
+      {
+        "benchmark": "CharXiv Reasoning",
+        "score": 86.2,
+        "unit": "%",
+        "taskKind": "general",
+        "conditions": {
+          "details": [
+            "No tools",
+            "pass@1 unless otherwise noted",
+            "Gemini API, model-id gemini-3.8-flash, default sampling settings",
+            "Self computed"
+          ]
+        }
+      }
+    ],
+    "limitations": []
+  }
+]
