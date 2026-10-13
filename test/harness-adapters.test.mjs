@@ -230,6 +230,8 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.equal(run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv[codex.indexOf("--sandbox") + 1], "read-only");
   const agy = run("antigravity", s, { model: "gemini-3.1-pro" }).seen.argv;
   assert.equal(agy[agy.indexOf("--model") + 1], "gemini-3.1-pro-high");
+  const argon = run("antigravity", s, { model: "gemini-4-argon" }).seen.argv;
+  assert.equal(argon[argon.indexOf("--model") + 1], "gemini-4-argon-high", "Gemini 4 Argon runs at its high setting");
   // d14 (2026-10-13): Antigravity builds run without the terminal sandbox; reviews keep it.
   assert.ok(!agy.includes("--sandbox"), "an Antigravity build runs without the terminal sandbox");
   assert.ok(run("antigravity", s, { model: "gemini-3.1-pro", review: true }).seen.argv.includes("--sandbox"), "an Antigravity review keeps the sandbox");
