@@ -6,7 +6,7 @@ import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
+import { actorStanding, modelState, OBSERVED_UNDER, poolEntryFor, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
@@ -73,7 +73,7 @@ import {
   attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, lapsedClaim,
   pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
-import { gateServesTier, tierReviewerPick } from "./review/tier.ts";
+import { gateServesTier, reviewTarget, tierEligible, tierReviewerPick } from "./review/tier.ts";
 import { offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
@@ -3930,7 +3930,7 @@ export class Ledger extends DurableObject<Env> {
     });
     if (!offered.length) return { entry: null, why: `no model in the pool is offered for the ${PREREVIEW_JOB} job by a live runner`, reasons: [] };
     const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item) });
-    const entry = pick.reviewer ? offered.find((m) => sameActor(`${m.harness}/${m.id}`, pick.reviewer!.actor)) ?? null : null;
+    const entry = pick.reviewer ? poolEntryFor(pick.reviewer.actor, offered) ?? null : null;
     return entry ? { entry, why: "", reasons: pick.reviewer!.reasons } : { entry: null, why: pick.unpicked ?? "no model qualifies", reasons: [] };
   }
 
@@ -6532,7 +6532,9 @@ export class Ledger extends DurableObject<Env> {
       choiceReason = pick.reviewer.reasons.join(" ");
     }
     const slash = chosen.indexOf("/");
-    const where = records || reviewerAdmission(chosen, policy)?.active ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
+    // The entry chosen, as the one check finds it (reviewTarget), so its
+    // destination is its own and not another entry's of the same model.
+    const where = records || reviewerAdmission(chosen, policy)?.active ? reviewTarget(pool, chosen).where : "home";
     const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
     if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
       throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
@@ -6603,24 +6605,18 @@ export class Ledger extends DurableObject<Env> {
     // tier model outside the pool is the project's explicit choice and is
     // asked as before, home, but no assignment moves it ahead
     // (tierReviewerPick).
-    const entryOf = (a: string) => pool.find((e) => [e.id, ...e.aliases].some((id) => sameActor(`${e.harness}/${id}`, a)));
-    const mayReview = (a: string): true | string => {
-      if (!mayAssess(a, policy, this.owner)) return "may not review under the project's policy";
-      const e = entryOf(a);
-      if (!e) return true;
-      const held = actorStanding(pool, a, "review");
-      if (held) return held;
-      if (e.status?.state === "refused") return `status refused, reported by ${e.status.by} at ${e.status.at}${e.status.detail ? `: ${e.status.detail}` : ""}`;
-      if (paidPerToken(e)) return `paid per token (${e.provider}); paid models are not allowed for this review`;
-      const offered = offers ? offering({ to: e.where, job: "review" }, offers) : null;
-      if (offered && !offered.actors.has(a.toLowerCase())) return `no live runner offers ${a} for the review job ${e.where === "home" ? "at home" : "in the cloud"}`;
-      return true;
-    };
+    // The pool entry a tier name is, its eligibility and the dispatch all
+    // come from the one check (tierEligible, reviewTarget in
+    // src/review/tier.ts; poolEligibility in src/models/pool.ts), so an
+    // alias another entry lists never lends its standing, and the request
+    // names the entry a runner offers (gpt-6-astra's and gemini-4-argon's
+    // fourth reviews of t622).
+    const mayReview = (a: string): true | string => mayAssess(a, policy, this.owner) ? tierEligible(pool, offers, a) : "may not review under the project's policy";
     const pick = tierReviewerPick(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
-    const reviewer = pick.actor;
-    if (!reviewer) return;
-    const slash = reviewer.indexOf("/");
-    const dispatch = { ...this.standingDispatch({ to: entryOf(reviewer)?.where ?? "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
+    if (!pick.actor) return;
+    const target = reviewTarget(pool, pick.actor);
+    const reviewer = target.actor;
+    const dispatch = { ...this.standingDispatch({ to: target.where, agent: target.agent, model: target.model }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
     // What the role assignments said of this choice, kept on the request
     // (gpt-6-astra's review of t622, finding 7).

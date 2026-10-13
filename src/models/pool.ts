@@ -5,7 +5,7 @@
 // machine reads the key when it needs it. Families are recognised by the
 // model's name, so a new release is coloured correctly the day it appears.
 
-import { modelKey, RuleError } from "../rules.ts";
+import { modelKey, RuleError, sameActor } from "../rules.ts";
 
 export type PoolFamily = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "moonshot" | "xai" | "xiaomi" | "bytedance" | "cohere" | "other";
 export const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"] as const;
@@ -133,10 +133,67 @@ export function entryRuns(entry: Pick<ModelEntry, "id" | "aliases">, name: strin
   return [entry.id, ...entry.aliases].some((id) => modelKey(id) === key);
 }
 
-// The entry whose standing holds for an actor: of the entries running its
-// model, the one under the actor's own harness when the pool has it; else,
-// for a role, the first that refuses it; else the first.
+// The pool entry a harness/model name is, in the name's harness, or
+// undefined: the entry whose id is the name exactly, then one with the name
+// exactly as an alias, then one whose id, then whose alias, is the same
+// model by sameActor. An entry's own id comes before any entry's alias, so
+// an alias naming another entry's id never takes that entry's identity
+// (gpt-6-astra's second review of t622, finding 1), and an exact name comes
+// before a model-key match, so two entries in one harness that share a
+// model (claude-code/opus-5.5 and claude-code/claude-opus-5-5, or two
+// profiles of one model) stay two entries (gemini-4-argon's third review of
+// t622, finding 2). Identity is still the canonical model (canonicalModel);
+// this says which pool entry, so which harness, profile and standing.
+export function poolEntryFor<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(actor: string, pool: readonly E[]): E | undefined {
+  const lower = actor.toLowerCase();
+  const full = (m: E, id: string) => `${m.harness}/${id}`;
+  return pool.find((m) => full(m, m.id).toLowerCase() === lower)
+    ?? pool.find((m) => m.aliases.some((id) => full(m, id).toLowerCase() === lower))
+    ?? pool.find((m) => sameActor(actor, full(m, m.id)))
+    ?? pool.find((m) => m.aliases.some((id) => sameActor(actor, full(m, id))));
+}
+
+// Whether an entry is paid per token: a provider billed by the token, or an
+// OpenAI-compatible endpoint in the cloud. A subscription, AI Studio's free
+// tier or a local endpoint is not.
+export function paidPerToken(entry: Pick<ModelEntry, "provider" | "where">): boolean {
+  if (entry.provider === "ai-studio" || entry.provider === "subscription") return false;
+  return entry.provider !== "openai-compatible" || entry.where === "cloud";
+}
+
+// The one eligibility check every reader of role assignments makes of an
+// actor before it orders, promotes or dispatches it (gpt-6-astra's and
+// gemini-4-argon's fourth reviews of t622): the pool entry the actor is,
+// found by poolEntryFor (an exact id before another entry's alias, and two
+// entries that share a model kept apart), and the rules that entry's own
+// fields decide: the developer's standing (paused, reserved, without the
+// role), a refused status and, unless allowed, a cost per token. A pool
+// that is given and lacks the actor, an empty one included, refuses it:
+// only a pool that was not given at all (null) knows nothing and refuses
+// nothing. The readers' other rules (project policy, independence, offers,
+// availability, size) are their own and come after this one.
+export interface PoolEligibility { entry: ModelEntry | null; actor: string; refusals: string[] }
+export function poolEligibility(pool: readonly ModelEntry[] | null, actor: string, role: ModelRole, opts: { allowPaid?: boolean } = {}): PoolEligibility {
+  if (pool === null) return { entry: null, actor, refusals: [] };
+  const entry = poolEntryFor(actor, pool) ?? null;
+  if (!entry) return { entry: null, actor, refusals: ["not in the pool"] };
+  const refusals: string[] = [];
+  const held = standingRefusal(entry, role);
+  if (held) refusals.push(held);
+  if (entry.status?.state === "refused") refusals.push(`status refused, reported by ${entry.status.by} at ${entry.status.at}${entry.status.detail ? `: ${entry.status.detail}` : ""}`);
+  if (!opts.allowPaid && paidPerToken(entry)) refusals.push(`paid per token (${entry.provider}); paid models are not allowed here`);
+  return { entry, actor: `${entry.harness}/${entry.id}`, refusals };
+}
+
+// The entry whose standing holds for an actor: the pool entry it names
+// (poolEntryFor), so an alias another entry lists, or another entry of the
+// same model in its harness, never lends its standing (gemini-4-argon's
+// fourth review of t622, finding 1); else, of the entries running its model
+// under other harnesses, for a role the first that refuses it, else the
+// first.
 function standingEntry(pool: readonly ModelEntry[], actor: string, role?: ModelRole): ModelEntry | undefined {
+  const named = poolEntryFor(actor, pool);
+  if (named) return named;
   const runs = pool.filter((e) => entryRuns(e, actor));
   const slash = actor.indexOf("/");
   const harness = slash === -1 ? null : actor.slice(0, slash).toLowerCase();
