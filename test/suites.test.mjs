@@ -172,3 +172,30 @@ test("npm test executes real runner-token routes and propagates a failed token a
   assert.match(failed.stdout + failed.stderr, /deliberately-wrong-runner/);
   assert.match(failed.stdout, /1 failed/);
 });
+
+// t568: a failed Node pool used to end npm test before vitest started, so a
+// landing saw only the first pool's failures. Both pools now run, and the
+// exit is the worst status either ended with.
+test("npm test runs the vitest pool after a failed Node pool and exits with the worst status", (t) => {
+  const dir = tree(t, []);
+  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs"]) {
+    mkdirSync(join(dir, file, ".."), { recursive: true });
+    cpSync(file, join(dir, file));
+  }
+  writeFileSync(join(dir, "a.test.mjs"), `import { test } from "node:test"; test("fails", () => { throw new Error("node pool fails"); });`);
+  writeFileSync(join(dir, "test/b.spec.ts"), "");
+  // The real vitest resolves which files it owns; a stand-in for its binary
+  // records that it ran and exits with VITEST_STATUS.
+  mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
+  symlinkSync(resolve("node_modules/vitest"), join(dir, "node_modules/vitest"), "dir");
+  writeFileSync(join(dir, "node_modules/.bin/vitest"), `#!/bin/sh\necho ran > "${join(dir, "vitest-ran")}"\nexit "$VITEST_STATUS"\n`, { mode: 0o755 });
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
+  for (const [vitestStatus, expected] of [[0, 1], [3, 3]]) {
+    rmSync(join(dir, "vitest-ran"), { force: true });
+    const r = spawnSync(process.execPath, ["test/run.mjs"], { cwd: dir, env: { ...env, VITEST_STATUS: String(vitestStatus) }, encoding: "utf8", timeout: 60_000 });
+    assert.match(r.stdout + r.stderr, /node pool fails/);
+    assert.equal(readFileSync(join(dir, "vitest-ran"), "utf8").trim(), "ran", "vitest ran after the Node pool failed");
+    assert.equal(r.status, expected, r.stdout + r.stderr);
+  }
+});
