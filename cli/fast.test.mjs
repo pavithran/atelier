@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
-import { fastLand, parsePairs, recordPending, scanBatch } from "./fast.mjs";
+import { fastLand, parsePairs, recordPending, scanBatch, worktreeHolding } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
@@ -425,6 +425,28 @@ test("a rollback that cannot restore main says so, naming main's head and the fi
   } finally {
     rmSync(dir, { recursive: true, force: true }); rmSync(dirname(holder), { recursive: true, force: true });
   }
+});
+
+// t639: atelier's own checkout keeps its repository off iCloud, with .git a
+// gitdir file naming it. Git then lists the main worktree under the
+// repository's path, so comparing paths with cwd's --show-toplevel took the
+// checkout itself for another worktree holding main, and rollback would have
+// sent the developer to reset the repository folder.
+test("worktreeHolding tells worktrees apart by Git directory when the checkout's .git is a gitdir file (t639)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "fast-land-gitdir-")));
+  try {
+    const checkout = join(root, "checkout"), repository = join(root, "repository.git"), linked = join(root, "linked");
+    git(root, "init", "-q", "-b", "main", "--separate-git-dir", repository, checkout);
+    assert.ok(readFileSync(join(checkout, ".git"), "utf8").startsWith("gitdir: "), "the checkout's .git is a gitdir file");
+    git(checkout, "commit", "-q", "--allow-empty", "-m", "one");
+    git(checkout, "branch", "other");
+    git(checkout, "worktree", "add", "-q", linked, "other");
+    assert.match(git(checkout, "worktree", "list", "--porcelain"), new RegExp(`^worktree ${repository}$`, "m"), "Git lists the main worktree under the repository's path");
+    assert.equal(worktreeHolding(checkout, "refs/heads/main"), null, "the checkout's own main is not another worktree's");
+    assert.equal(worktreeHolding(checkout, "refs/heads/other"), linked, "finds the linked worktree holding a branch");
+    assert.equal(worktreeHolding(linked, "refs/heads/other"), null, "the linked worktree's own branch is not another worktree's");
+    assert.equal(worktreeHolding(linked, "refs/heads/main"), repository, "from the linked worktree, the main worktree holds main");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 // Fourth review of t592 (codex/gpt-6-astra): a typecheck or regeneration
