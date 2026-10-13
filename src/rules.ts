@@ -2111,7 +2111,7 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
   const tests = body.tests as { command?: unknown; sha256?: unknown } | undefined;
   if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw new RuleError("bad_receipt", "the receipt names the commit merged, a full SHA", 400);
   if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw new RuleError("bad_receipt", "the receipt names the merge commit, a full SHA", 400);
-  if (typeof body.builder !== "string" || !validActor(body.builder)) throw new RuleError("bad_receipt", "the receipt names the builder as harness/model, from the commit's Agent line", 400);
+  if (typeof body.builder !== "string" || !body.builder.includes("/") || !validActor(body.builder)) throw new RuleError("bad_receipt", "the receipt names the builder as harness/model, from the commit's Agent line", 400);
   if (!tests || typeof tests.command !== "string" || !tests.command.trim() || tests.command.length > 2000) throw new RuleError("bad_receipt", "the receipt names the test command the batch ran", 400);
   if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
   return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256 }, reason: mode.reason, at, by: actor };
@@ -2121,7 +2121,7 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
 export function agentOfMessage(message: string): string | null {
   const lines = message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l));
   const last = lines.at(-1)?.replace(/^Agent:\s*/i, "").trim() ?? "";
-  return last && validActor(last) ? last : null;
+  return last.includes("/") && validActor(last) ? last : null;
 }
 
 // The family rule for a post-merge review. Outside fast mode a reviewer of

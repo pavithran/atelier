@@ -1064,3 +1064,55 @@ test("only the project owner can port to an open unclaimed task", () => {
     assert.equal(ownerPortAllowed(item({ state, owner: null }), "person", "person"), false);
   }
 });
+
+// ── modes (t585) ─────────────────────────────────────────────────────────────
+// On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
+// merged by hand outside the record. Fast mode records that path; these pin
+// its pure rules.
+import { projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, agentOfMessage, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
+
+test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
+  assert.deepEqual(projectMode(null), { mode: "full" });
+  assert.deepEqual(projectMode({ mode: "fast" }), { mode: "full" });
+  assert.equal(modeLine({ mode: "full" }), "Mode: full");
+  const at = "2026-10-13T14:05:09.000Z";
+  assert.throws(() => modeSwitch({ mode: "full" }, "codex/gpt-6", "owner", "fast", "forks fail", at), (e: RuleError) => e.code === "not_project_owner");
+  assert.throws(() => modeSwitch({ mode: "full" }, "owner", "owner", "fast", "  ", at), (e: RuleError) => e.code === "bad_reason");
+  assert.throws(() => modeSwitch({ mode: "full" }, "owner", "owner", "slow", "x", at), (e: RuleError) => e.code === "bad_mode");
+  assert.throws(() => modeSwitch({ mode: "full" }, "owner", "owner", "full", undefined, at), (e: RuleError) => e.code === "already_full");
+  const fast = modeSwitch({ mode: "full" }, "owner", "owner", "fast", "Artifacts fails\nevery fork", at);
+  assert.deepEqual(fast, { mode: "fast", since: at, reason: "Artifacts fails every fork", by: "owner", decision: null });
+  assert.equal(modeLine(fast), "Mode: fast since 2026-10-13 14:05 UTC (Artifacts fails every fork)");
+  assert.deepEqual(projectMode(JSON.parse(JSON.stringify(fast))), fast);
+  assert.throws(() => modeSwitch(fast, "owner", "owner", "fast", "again", at), (e: RuleError) => e.code === "already_fast");
+  assert.deepEqual(modeSwitch(fast, "owner", "owner", "full", undefined, at), { mode: "full" });
+  assert.throws(() => assertFastMode({ mode: "full" }), (e: RuleError) => e.code === "not_fast_mode");
+  assertFastMode(fast);
+});
+
+test("a landed-fast receipt needs both commits, the builder, the test command and its output's sha256, in fast mode only", () => {
+  const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
+  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };
+  const r = fastReceipt(body, fast, "owner", "2026-10-13T01:00:00Z");
+  assert.deepEqual(r, { ...body, reason: "forks fail", at: "2026-10-13T01:00:00Z", by: "owner" });
+  assert.throws(() => fastReceipt(body, { mode: "full" }, "owner", "x"), (e: RuleError) => e.code === "not_fast_mode");
+  for (const bad of [{ commit: "abc" }, { mergeCommit: null }, { builder: "nobody" }, { tests: { command: "npm test", sha256: "short" } }, { tests: { command: "", sha256: "c".repeat(64) } }]) {
+    assert.throws(() => fastReceipt({ ...body, ...bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
+  }
+  assert.equal(agentOfMessage("Fix it\n\nAgent: codex/gpt-6\nAgent: claude-code/opus-5.5\nCo-Authored-By: x"), "claude-code/opus-5.5");
+  assert.equal(agentOfMessage("no trailer"), null);
+  // The builder becomes a contributor, as a pusher is.
+  assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5" } }]), ["claude-code/opus-5.5"]);
+});
+
+test("a same-family post-merge review is accepted only for a task landed in fast mode, and says so", () => {
+  const contributors = ["claude-code/opus-5.5"];
+  assert.deepEqual(postMergeIndependence("claude-code/sonnet-5", contributors, null, true), { refusal: null, independence: SAME_FAMILY_FAST });
+  assert.match(postMergeIndependence("claude-code/sonnet-5", contributors, null, false).refusal ?? "", /same family/);
+  assert.deepEqual(postMergeIndependence("codex/gpt-6", contributors, null, false), { refusal: null, independence: null });
+  assert.equal(SAME_FAMILY_FAST, "same-family (fast mode)");
+  const fix = fastFixTask("t9", "Add a thing", { by: "claude-code/sonnet-5", head: H2, note: "breaks x", request: 3, findings: [{ file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] });
+  assert.equal(fix.title, "Fix after fast landing of t9: Add a thing");
+  assert.deepEqual(fix.accept, ["src/a.ts:4: null deref"]);
+  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
+});
