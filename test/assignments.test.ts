@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ALL_PROJECTS, applicableAssignments, assignmentHistory, checkEvidence, cleanAssignmentInput, currentAssignments,
-  assignmentSnapshot, FALLBACK, orderByAssignment, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
+  assignmentSnapshot, FALLBACK, orderByAssignment, seedProject, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
   type Assignment, type AssignmentRecord, type AssignmentStore, type ResolvedAssignment,
 } from "../src/models/assignments.ts";
 import type { ModelEntry } from "../src/models/pool.ts";
@@ -83,6 +83,39 @@ test("choices resolve to pool entries with one canonical model; ambiguous, unkno
   refused(() => resolveChoices(["claude-code/claude-opus-5.5"], twin, "build"), "bad_choices", /ambiguous: the pool has claude-code\/opus-5.5 and claude-code\/claude-opus-5-5/);
   // A paused or reserved choice is recorded: the standing is temporary, and routing skips it while it holds.
   assert.equal(resolveChoices(["codex/gpt-6-astra"], [entry("codex", "gpt-6-astra", { state: "paused" })], "review").length, 1);
+});
+
+// gpt-6-astra's second review of t622 (finding 1): with Astra's aliases
+// naming gpt-6-luna, assigning the exact codex/gpt-6-luna recorded the
+// canonical model gpt-6-astra, and routing then promoted Astra.
+test("an exact pool id wins over another entry's alias, in the choice and in its canonical model", () => {
+  const pool = [entry("codex", "gpt-6-astra", { family: "openai", aliases: ["gpt-6-luna"] }), entry("codex", "gpt-6-luna", { family: "openai" })];
+  const [luna] = resolveChoices(["codex/gpt-6-luna"], pool, "review");
+  assert.deepEqual(luna, { actor: "codex/gpt-6-luna", model: "gpt-6-luna" });
+  const a: Assignment = { id: "a1", kind: "assigned", scope: ALL_PROJECTS, role: "review", choices: [luna], reason: "r", quote: "q", evidence: [], by: OWNER, at: AT };
+  const r = orderByAssignment(["codex/gpt-6-astra", "codex/gpt-6-luna"], (c) => c, [a], () => null, FALLBACK.review, pool);
+  assert.deepEqual(r.order, ["codex/gpt-6-luna", "codex/gpt-6-astra"]);
+});
+
+// gpt-6-astra's second review of t622 (finding 4): the init installed its
+// snapshot before registering the project, so a withdrawal broadcast in
+// between never reached it, and the project kept the withdrawn assignment.
+test("a project is registered before its snapshot is read, so a withdrawal at any point in its initialisation reaches it", async () => {
+  for (const at of ["after-register", "after-read"] as const) {
+    const store = memoryStore();
+    recordAssignment(store, OWNER, input(), AT);
+    const registered = new Set<string>();
+    let held: ReturnType<typeof assignmentSnapshot> | null = null;
+    const install = (s: ReturnType<typeof assignmentSnapshot>) => { if (snapshotApplies(held, s)) held = s; };
+    // A withdrawal broadcasts to every project registered when it runs.
+    const withdraw = () => { withdrawAssignment(store, OWNER, "a1", "withdrawn", AT); if (registered.has("p")) install(assignmentSnapshot(store.records())); };
+    await seedProject({
+      register: async () => { registered.add("p"); if (at === "after-register") withdraw(); },
+      snapshot: async () => { const s = assignmentSnapshot(store.records()); if (at === "after-read") withdraw(); return s; },
+      install: async (s) => install(s),
+    });
+    assert.deepEqual(held!.assignments, [], at);
+  }
 });
 
 test("evidence is checked to exist and kept by the project's stable key, so a former name resolves", async () => {

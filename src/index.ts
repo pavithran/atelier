@@ -27,7 +27,7 @@ import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
-import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, resolveChoices } from "./models/assignments.ts";
+import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, inputFingerprint, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -1173,6 +1173,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 1 && m === "GET") return json({ ...(await I.roleAssignments()), fallback: FALLBACK, inPool: (await I.models()).map((e) => `${e.harness}/${e.id}`) });
     if (parts.length === 1 && m === "POST") {
       const input = cleanAssignmentInput(body);
+      // A retry is answered from its stored request before the pool or the
+      // projects are read again, so what changed since cannot fail it; the
+      // same id with other content is refused (gpt-6-astra's second review,
+      // finding 5).
+      const fingerprint = inputFingerprint(input);
+      const prior = await I.assignmentForRequest(input.request);
+      if (prior) {
+        if (prior.fingerprint === fingerprint) return json({ ...prior, retried: true, unreached: [] }, 200);
+        throw new RuleError("request_reused", `request ${input.request} already recorded ${prior.id}, with other content; a new decision needs a new request id`, 409);
+      }
       let scope = ALL_PROJECTS;
       if (input.scope !== ALL_PROJECTS) {
         const ref = await resolveProject(env, input.scope);
@@ -1181,7 +1191,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const evidence = await checkEvidence(input.evidence, (name) => resolveProject(env, name), (key, item, seq) => ledger(env, key).evidenceMissing(item, seq));
       const choices = resolveChoices(input.choices, await I.models(), input.role);
-      const record = await I.assignRole(actor, { ...input, scope, choices, evidence }, c.acting ?? null);
+      const record = await I.assignRole(actor, { ...input, fingerprint, scope, choices, evidence }, c.acting ?? null);
       const unreached = await sendAssignments(env);
       return json({ ...record, unreached }, record.retried ? 200 : 201);
     }
@@ -1476,9 +1486,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const record = await L.initProject(init, actor);
     // The pool and the role assignments standing now, so a project made
     // after an assignment for every project reads it from the start
-    // (gpt-6-astra's review of t622, finding 3).
-    await L.poolChanged(await index(env).models(), await index(env).assignmentSnapshotFor(ref?.key ?? project));
-    await index(env).registerProject(record);
+    // (gpt-6-astra's review of t622, finding 3); registered first, so no
+    // broadcast between the read and the install misses it (finding 4 of
+    // the second review).
+    const models = await index(env).models();
+    await seedProject({
+      register: () => index(env).registerProject(record),
+      snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
+      install: (snapshot) => L.poolChanged(models, snapshot),
+    });
     return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }
   if (parts.length === 2 && m === "DELETE") {
@@ -2907,7 +2923,8 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
   // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
   // harness/model that acted for the owner (src/models/judgement.ts).
-  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
+  // Role assignments are recorded on the index, one more source (t622).
+  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: await I.assignmentEvents() }], judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
   return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
 }
 

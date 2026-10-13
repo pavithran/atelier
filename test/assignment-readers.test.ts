@@ -259,6 +259,32 @@ test("suggestBuilder: an assigned model no live runner offers is passed over for
   assert.equal(suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers: [] }).actor, "claude-code/opus-5.5");
 });
 
+// gpt-6-astra's second review of t622, finding 2: the offer checks ignored
+// the job and the destination, so a model offered only for review won a
+// build suggestion, and a review offered on another destination qualified.
+test("suggestBuilder: a model offered only for review, or on another destination, is not offered for a build", () => {
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] };
+  const a = assigned("build", ["codex/gpt-6-astra"]);
+  const offers = [...live([{ agent: "codex", models: ["gpt-6-astra"] }], ["review"]), ...live([{ agent: "antigravity", models: ["gemini-4-argon"] }], ["build"])];
+  const pick = suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers });
+  assert.equal(pick.actor, "antigravity/gemini-4-argon");
+  said(pick.reasons, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for a build in the cloud/);
+  const home = [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build"], at: new Date().toISOString() }, ...live([{ agent: "antigravity", models: ["gemini-4-argon"] }], ["build"])];
+  assert.equal(suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers: home }).actor, "antigravity/gemini-4-argon");
+});
+
+test("pickReviewer: a review is offered only where the ledger will send it", () => {
+  const a = assigned("review", ["codex/gpt-6-astra"]);
+  // Astra is offered for review by a cloud runner, but this review goes home.
+  const offers = [...live([{ agent: "codex", models: ["gpt-6-astra"] }], ["review"]),
+    { runner: "home:studio", kind: "home" as const, agents: [{ agent: "antigravity", models: ["gemini-4-argon"] }], jobs: ["review"], at: new Date().toISOString() }];
+  const pick = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: [a], offers, destination: () => "home" });
+  assert.equal(pick.reviewer?.actor, "antigravity/gemini-4-argon");
+  said(pick.assignment?.lines, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the review job at home/);
+  // Sent to each model's own destination, the cloud runner serves Astra.
+  assert.equal(pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: [a], offers }).reviewer?.actor, "codex/gpt-6-astra");
+});
+
 test("pickReviewer and suggestReviewer: an assigned reviewer no live runner offers for the review job is passed over", () => {
   const a = assigned("review", ["codex/gpt-6-astra"]);
   const offers = live([{ agent: "antigravity", models: ["gemini-4-argon"] }, { agent: "codex", models: ["gpt-6-astra"] }], ["build"]).concat(live([{ agent: "antigravity", models: ["gemini-4-argon"] }], ["review"]));

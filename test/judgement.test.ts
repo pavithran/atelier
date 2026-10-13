@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
-import { actingOf, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, linkVerdict, registeredActing, type JudgementRecord } from "../src/models/judgement.ts";
+import { actingOf, buildJudgement, canonicalModel, cleanActing, cleanContradicts, judgementTotals, judgementWindow, linkVerdict, registeredActing, type JudgementRecord } from "../src/models/judgement.ts";
 import { RuleError } from "../src/rules.ts";
 
 // t440: the orchestrator's judgements measured as a reviewer's verdicts are.
@@ -249,6 +249,15 @@ test("role assignments recorded and withdrawn count as decisions of the acting m
   // Opus under Antigravity is the same model as under Claude Code.
   assert.deepEqual([row(r, "opus-5.5")!.decisionsRecorded, row(r, "opus-5.5")!.decisionsWithdrawn], [1, 1]);
   assert.equal(r.unknown.decisionsRecorded, 1);
+});
+
+// gpt-6-astra's second review of t622, finding 1: an entry's alias that is
+// another entry's id must not take that entry's identity.
+test("canonicalModel reads an exact pool id before any alias", () => {
+  const pool = [{ id: "gpt-6-astra", harness: "codex" as const, aliases: ["gpt-6-luna"] }, { id: "gpt-6-luna", harness: "codex" as const, aliases: [] }];
+  assert.equal(canonicalModel("codex/gpt-6-luna", pool), "gpt-6-luna");
+  assert.equal(canonicalModel("codex/gpt-6-astra", pool), "gpt-6-astra");
+  assert.equal(canonicalModel("codex/gpt-6-luna", pool.slice(0, 1)), "gpt-6-astra");
 });
 
 test("the window counts what was recorded in it; an outcome found after it still counts", () => {

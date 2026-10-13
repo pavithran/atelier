@@ -57,6 +57,10 @@ export interface PickInput {
   // unclaimed (gpt-6-astra's review of t622, finding 6). With no live runner,
   // or none given, nothing is restricted.
   offers?: readonly SeenOffer[] | null;
+  // Where the ledger sends this review to a model: its own destination
+  // unless the ledger says otherwise. The offer is judged there, not on any
+  // runner (gpt-6-astra's second review of t622, finding 2).
+  destination?: (entry: ModelEntry) => "home" | "cloud";
 }
 
 // The invariant: unpicked is null exactly when reviewer is set.
@@ -202,13 +206,12 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
     if (refusal) failed.push(`${refusal}, so the ledger would refuse its review`);
   }
 
-  // Any live runner that offers the model for the review job, home or cloud:
-  // where the request is sent is the ledger's to decide.
-  const reviewOffer = input.offers ? offering({ to: "any", job: "review" }, input.offers) : null;
+  const to = input.destination?.(entry) ?? entry.where;
+  const reviewOffer = input.offers ? offering({ to, job: "review" }, input.offers) : null;
   if (reviewOffer) {
     const runners = reviewOffer.actors.get(actor.toLowerCase());
     if (runners) passed.push(`Offered for the review job by ${[...new Set(runners)].join(", ")}`);
-    else failed.push(`no live runner offers ${actor} for the review job: ${reviewOffer.instead.join("; ")}`);
+    else failed.push(`no live runner offers ${actor} for the review job ${to === "home" ? "at home" : "in the cloud"}: ${reviewOffer.instead.join("; ")}`);
   }
 
   const status = entry.status;

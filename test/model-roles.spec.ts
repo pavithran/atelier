@@ -198,3 +198,74 @@ it("the listing names the pool's models, so a choice the pool lost is marked", a
   const listed = await (await call("GET", "/model-roles")).json() as { inPool: string[] };
   expect(listed.inPool).toContain("codex/gpt-6-astra");
 });
+
+// gpt-6-astra's second review of t622, finding 3: the separate tier review
+// checked only the project's policy and the standing, so an assignment
+// promoted a tier model that was refused, paid, out of the pool or unoffered.
+it("an assignment never promotes a tier model that is refused, paid or no longer in the pool", async () => {
+  const H = "a".repeat(40);
+  for (const [name, change] of [
+    ["roles-tier-refused", (e: ModelEntry): ModelEntry => ({ ...e, status: { state: "refused", at: AT, by: "cloud:x", detail: "quota" } })],
+    ["roles-tier-paid", (e: ModelEntry): ModelEntry => ({ ...e, provider: "anthropic" })],
+    ["roles-tier-gone", null],
+  ] as const) {
+    const fable = entry("claude-code", "fable-5.1");
+    const pool = [...POOL, entry("claude-code", "sonnet-5.5"), ...(change ? [change(fable)] : [])];
+    for (const m of [...pool, fable]) await index().putModel(m);
+    const policy = { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/sonnet-5.5", "claude-code/fable-5.1"] };
+    const record = { name, repo: name, policy, createdAt: AT };
+    const L = ledger(name);
+    await L.setProject(record, "owner");
+    await index().registerProject(record);
+    await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
+    await L.claim("t1", "codex/gpt-6-astra");
+    await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+    await L.recordPush("t1", "codex/gpt-6-astra", H, H);
+    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+    await L.submit("t1", "codex/gpt-6-astra");
+    // The assignment puts fable first while it is a sound pool model; then it is refused, made paid or removed.
+    const a = await (await call("POST", "/model-roles", body({ choices: ["claude-code/fable-5.1"], evidence: [`${name}/t1`], scope: name }))).json() as Assignment;
+    if (change) await index().putModel(change(fable));
+    else await index().removeModel("fable-5.1");
+    await L.poolChanged(pool);
+    expect((await L.requestReview("t1", "owner", "antigravity/gemini-4-argon", pool)).requested).toBe(true);
+    const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+    const tier = events.find((e) => e.kind === "review.requested" && e.data.tier === true);
+    expect(tier?.data.reviewer, name).toBe("claude-code/sonnet-5.5");
+    expect(String(tier?.data.reason), name).toMatch(new RegExp(`Role assignment ${a.id} skipped: no choice is eligible here \\(claude-code/fable-5.1: `));
+    await index().putModel(fable);
+  }
+});
+
+// gpt-6-astra's second review of t622, finding 5: a retry was validated
+// against the pool as it is now, so removing the model after the first
+// request made its retry fail instead of returning the record.
+it("a retry is answered from the stored request before anything mutable is checked again", async () => {
+  await project("roles-retry");
+  await index().putModel(entry("codex", "gpt-6-luna"));
+  const first = body({ evidence: ["roles-retry/t1"], scope: "roles-retry", choices: ["codex/gpt-6-luna"], request: "roles-retry-request" });
+  const made = await (await call("POST", "/model-roles", first)).json() as Assignment;
+  await index().removeModel("gpt-6-luna");
+  const again = await call("POST", "/model-roles", first);
+  expect(again.status).toBe(200);
+  expect(await again.json()).toMatchObject({ id: made.id, retried: true });
+  const changed = await call("POST", "/model-roles", { ...first, reason: "Another reason." });
+  expect(changed.status).toBe(409);
+  expect(JSON.stringify(await changed.json())).toMatch(/request_reused/);
+});
+
+// gpt-6-astra's second review of t622, follow-up: without suggestion records
+// the gate's pick kept no reason, so its assignment explanation was lost.
+it("a review requested without suggestion records keeps the selector's reasons", async () => {
+  const L = await project("roles-no-records");
+  const H = "a".repeat(40);
+  await L.setFork("t1", "roles-no-records--t1", "0".repeat(40), "claude-code/opus-5.5");
+  await L.recordPush("t1", "claude-code/opus-5.5", H, H);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit("t1", "claude-code/opus-5.5");
+  const a = await (await call("POST", "/model-roles", body({ evidence: ["roles-no-records/t1"], scope: "roles-no-records" }))).json() as Assignment;
+  expect((await L.requestReview("t1", "owner", null, POOL)).reviewer).toBe("codex/gpt-6-astra");
+  const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+  const asked = events.find((e) => e.kind === "review.requested");
+  expect(String(asked?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id}`));
+});
