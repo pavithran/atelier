@@ -498,19 +498,6 @@ export function orderByAssignment<T>(candidates: readonly T[], actorOf: (c: T) =
 
 const skippedLines = (skipped: readonly { id: string; why: string }[]) => skipped.map((s) => `Role assignment ${s.id} skipped: ${s.why}`);
 
-// ── display ─────────────────────────────────────────────────────────────
-
-// A project key shown by the project's current name, so a renamed project's
-// assignments and evidence read under the name it has now.
-export function evidenceText(ref: string, names: ReadonlyMap<string, string>): string {
-  const slash = ref.indexOf("/");
-  const key = ref.slice(0, slash);
-  return `${names.get(key) ?? key}${ref.slice(slash)}`;
-}
-
-export function assignmentLine(v: AssignmentView, names: ReadonlyMap<string, string>, pool: readonly Pick<ModelEntry, "id" | "harness">[] | null = null): string {
-  const gone = (actor: string) => pool !== null && !pool.some((e) => `${e.harness}/${e.id}` === actor);
-  const choices = v.choices.map((c) => `${c.actor}${gone(c.actor) ? " (not in the pool now)" : ""}`).join(", then ");
-  const status = v.status === "current" ? "" : v.status === "superseded" ? ` [superseded by ${v.supersededBy!.id} on ${v.supersededBy!.at.slice(0, 10)}]` : ` [withdrawn ${v.withdrawal!.at.slice(0, 10)} by ${v.withdrawal!.by}${v.withdrawal!.acting ? ` (acting ${v.withdrawal!.acting})` : ""}: ${v.withdrawal!.note}]`;
-  return `${v.id} ${v.at.slice(0, 10)} ${v.role} in ${scopeText(v.scope, names)}: ${choices}${status}. Why: ${v.reason} Evidence: ${v.evidence.map((e) => evidenceText(e, names)).join(", ")}. The developer's words: “${v.quote}” Recorded by ${v.by}${v.acting ? ` (acting ${v.acting})` : ""}${v.supersedes ? `, superseding ${v.supersedes}` : ""}.`;
-}
+// The listing lives in cli/model-roles.mjs: each scope and piece of evidence
+// by the project's name now (the names GET /model-roles returns), and each
+// choice the pool no longer has marked as such.

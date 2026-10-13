@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentLine, checkEvidence, cleanAssignmentInput, currentAssignments,
+  ALL_PROJECTS, applicableAssignments, assignmentHistory, checkEvidence, cleanAssignmentInput, currentAssignments,
   assignmentSnapshot, FALLBACK, orderByAssignment, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
   type Assignment, type AssignmentRecord, type AssignmentStore, type ResolvedAssignment,
 } from "../src/models/assignments.ts";
@@ -200,14 +200,12 @@ test("withdrawal needs a note, restores the fallback rather than the superseded 
   assert.equal(recordAssignment(store, OWNER, input({ reason: "Back to astra." }), AT).supersedes, undefined);
 });
 
-test("the history reads a renamed project and a removed model under what they are now", () => {
+test("the history keeps a renamed project's key and a removed model's choice as recorded", () => {
   const store = memoryStore();
   recordAssignment(store, OWNER, input({ scope: "old-key", evidence: ["old-key/t5#9"] }), AT);
   const [view] = assignmentHistory(store.records());
-  const line = assignmentLine(view, new Map([["old-key", "atelier"]]), POOL.filter((e) => e.id !== "gpt-6-astra"));
-  assert.match(line, /^a1 2026-10-13 security-review in atelier: codex\/gpt-6-astra \(not in the pool now\)\. Why: /);
-  assert.match(line, /Evidence: atelier\/t5#9\./);
-  assert.match(line, /The developer's words: “astra does security reviews” Recorded by pavi\.$/);
+  // The listing (cli/model-roles.mjs) shows the key by the project's name now and marks a choice the pool lost.
+  assert.deepEqual([view.scope, view.evidence, view.choices.map((c) => c.actor)], ["old-key", ["old-key/t5#9"], ["codex/gpt-6-astra"]]);
 });
 
 test("applicable assignments go most specific first: the role's own, then review; this project's, then every project's", () => {

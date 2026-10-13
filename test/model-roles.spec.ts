@@ -162,3 +162,39 @@ it("the API answers an unauthenticated model-roles request with 401, as every AP
   const r = await worker.fetch(new Request("https://atelier.test/api/model-roles"), testEnv);
   expect(r.status).toBe(401);
 });
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 7: the separate tier
+// request named no reason, so the assignment that chose its reviewer, or why
+// none did, was never recorded where the reviewer is chosen.
+it("a separate tier review request records the assignment that chose its reviewer", async () => {
+  const name = "roles-tier";
+  const pool = [...POOL, entry("claude-code", "sonnet-5.5"), entry("claude-code", "fable-5.1")];
+  for (const m of pool) await index().putModel(m);
+  const policy = { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/sonnet-5.5", "claude-code/fable-5.1"] };
+  const record = { name, repo: name, policy, createdAt: AT };
+  const L = ledger(name);
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  const H = "a".repeat(40);
+  await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
+  await L.claim("t1", "codex/gpt-6-astra");
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush("t1", "codex/gpt-6-astra", H, H);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit("t1", "codex/gpt-6-astra");
+  const a = await (await call("POST", "/model-roles", body({ role: "security-review", choices: ["claude-code/fable-5.1"], evidence: ["roles-tier/t1"], scope: name }))).json() as Assignment;
+  // The task's title and scope say nothing of security; its changed paths do (src/lease.ts),
+  // so the security-review assignment bears (gemini-4-argon's follow-up 4).
+  const asked = await L.requestReview("t1", "owner", "antigravity/gemini-4-argon", pool);
+  expect(asked.requested).toBe(true);
+  const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+  const tier = events.find((e) => e.kind === "review.requested" && e.data.tier === true);
+  expect(tier?.data.reviewer).toBe("claude-code/fable-5.1");
+  expect(String(tier?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id} \\(security-review`));
+});
+
+// gemini-4-argon's review of t622 at 53bf739d, finding 3.
+it("the listing names the pool's models, so a choice the pool lost is marked", async () => {
+  const listed = await (await call("GET", "/model-roles")).json() as { inPool: string[] };
+  expect(listed.inPool).toContain("codex/gpt-6-astra");
+});

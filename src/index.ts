@@ -1168,7 +1168,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "model-roles") {
     requireOwner(env, actor);
     const I = index(env);
-    if (parts.length === 1 && m === "GET") return json({ ...(await I.roleAssignments()), fallback: FALLBACK });
+    // inPool names the pool's models, so the listing marks a choice the pool
+    // has lost (gemini-4-argon's review of t622, finding 3).
+    if (parts.length === 1 && m === "GET") return json({ ...(await I.roleAssignments()), fallback: FALLBACK, inPool: (await I.models()).map((e) => `${e.harness}/${e.id}`) });
     if (parts.length === 1 && m === "POST") {
       const input = cleanAssignmentInput(body);
       let scope = ALL_PROJECTS;

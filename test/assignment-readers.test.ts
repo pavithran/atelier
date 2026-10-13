@@ -8,7 +8,7 @@ import type { PlanPart } from "../src/plans/schema.ts";
 import { pickPlanner } from "../src/plans/state.ts";
 import { pickReviewer } from "../src/review/reviewer.ts";
 import { suggestReviewer } from "../src/review/suggest.ts";
-import { pickTierReviewer } from "../src/review/tier.ts";
+import { pickTierReviewer, tierReviewerPick } from "../src/review/tier.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
 
 // Every reader of role assignments (t622, src/models/assignments.ts): the
@@ -112,6 +112,24 @@ test("pickTierReviewer: an assignment orders the tier's eligible models and adds
   // A choice outside the tier is not added; one that may not review is not moved.
   assert.equal(pickTierReviewer(tier, ["claude-code/opus-5.5"], [], () => true, null, null, [assigned("review", ["zcode/glm-5.3"])]), "antigravity/gemini-4-argon");
   assert.equal(pickTierReviewer(tier, ["claude-code/opus-5.5"], [], (a) => a !== "codex/gpt-6-astra", null, null, [assigned("review", ["codex/gpt-6-astra"])]), "antigravity/gemini-4-argon");
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 7: the tier reader kept
+// only the order and dropped which assignment applied, which were skipped
+// and the fallback. Gemini-4-argon's follow-up 6: without the pool, a tier
+// naming a model by an alias was never matched to the assignment's choice.
+test("tierReviewerPick: says which assignment chose the tier reviewer, or why none did, and reads aliases through the pool", () => {
+  const a = assigned("security-review", ["codex/gpt-6-astra"]);
+  const pool = [{ ...astra, aliases: ["astra-alias"] }, argon];
+  const tier = ["antigravity/gemini-4-argon", "codex/astra-alias"];
+  const pick = tierReviewerPick(tier, ["claude-code/opus-5.5"], [], () => true, null, null, [a], pool);
+  assert.equal(pick.actor, "codex/astra-alias");
+  said(pick.reasons, new RegExp(`Role assignment ${a.id} \\(security-review, every project, 2026-10-13\\): choice 1 of 1`));
+  const none = tierReviewerPick(tier, ["claude-code/opus-5.5"], [], (x) => x !== "codex/astra-alias", null, null, [a], pool);
+  assert.equal(none.actor, "antigravity/gemini-4-argon");
+  said(none.reasons, new RegExp(`Role assignment ${a.id} skipped: no choice is eligible here`));
+  said(none.reasons, /No role assignment applies, so the reviewer selector asks/);
+  assert.deepEqual(tierReviewerPick(tier, ["claude-code/opus-5.5"], [], () => true).reasons, []);
 });
 
 // ── plan routing (routeParts) and the planner (pickPlanner) ─────────────
