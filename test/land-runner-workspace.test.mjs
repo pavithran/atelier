@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { runLand } from "../cli/land.mjs";
 import { recordTokenExpiry, storeWorkspaceToken } from "../cli/atelier.mjs";
 
@@ -88,7 +88,7 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
   const fresh = new Date(Date.now() + 8 * 3600_000).toISOString();
   const request = async (method, path, body, as, extra) => {
     calls.push({ method, path, body, as, extra });
-    if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
+    if (path === "/version") return { capabilities: SERVER_CAPABILITIES, commit: "c0ffee" };
     if (path === leasePath && method === "GET") return { lease: null, waiting: [] };
     if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state } };
     if (path === itemPath) return { item: { id: "t1", state, owner: holder, runner, head, acceptedHead: state === "accepted" ? head : null }, policy: { checks: [] } };
@@ -169,8 +169,11 @@ for (const [label, expiresAt] of [["a valid expiry", "2999-01-01T00:00:00.000Z"]
     assert.equal(l.claims()[0].as, "codex/gpt-6-astra");
     assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
     const claimAt = l.indexOf((c) => c.path.endsWith("/claim"));
-    const leaseAt = l.indexOf((c) => c.method === "POST" && c.path.endsWith("/landing-lease") && !c.body.cancel);
-    assert.ok(claimAt >= 0 && leaseAt > claimAt, "the re-claim comes before the lease");
+    // Before the merge of main, so before anything that could take the
+    // lease (which --no-review never takes, t550).
+    const mergeAt = l.indexOf((c) => c.path.endsWith("/base-token"));
+    assert.ok(claimAt >= 0 && mergeAt > claimAt, "the re-claim comes before the merge of main");
+    assert.equal(l.leaseTaken(), false);
     assertOnFork(l);
     assert.deepEqual(l.adoption, ["store", "record", "fetch"], "the expiry is recorded before the fetch");
     assert.deepEqual(l.commands, ["push", "check", "submit"]);
@@ -212,8 +215,11 @@ for (const pushUrls of [[ROUTE, "fork"], ["fork", ROUTE]]) {
     assert.equal(l.claims()[0].as, "codex/gpt-6-astra");
     assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
     const claimAt = l.indexOf((c) => c.path.endsWith("/claim"));
-    const leaseAt = l.indexOf((c) => c.method === "POST" && c.path.endsWith("/landing-lease") && !c.body.cancel);
-    assert.ok(claimAt >= 0 && leaseAt > claimAt, "the re-claim comes before the lease");
+    // Before the merge of main, so before anything that could take the
+    // lease (which --no-review never takes, t550).
+    const mergeAt = l.indexOf((c) => c.path.endsWith("/base-token"));
+    assert.ok(claimAt >= 0 && mergeAt > claimAt, "the re-claim comes before the merge of main");
+    assert.equal(l.leaseTaken(), false);
     assertOnFork(l);
     assert.deepEqual(l.adoption, ["store", "record", "fetch"]);
     assert.ok(l.lines.some((x) => /pushes to the runner route https:\/\/atelier\.invalid\/git\/runner\/proj\/t1\.git/.test(x) && /re-claiming t1 for its holder/.test(x)), l.lines.join("\n"));
@@ -377,7 +383,7 @@ test("a fork workspace keeps its expiry refresh: far from expiry nothing is clai
   const far = landing(t, { onFork: true });
   await runLand(far.io);
   assert.equal(far.claims().length, 0);
-  assert.ok(far.leaseTaken());
+  assert.equal(far.leaseTaken(), false, "--no-review never takes the lease (t550)");
   assert.deepEqual(headers(far.dir), [`http.${far.fork}.extraheader Authorization: Bearer old-fork-token`]);
   assert.deepEqual(far.commands, ["push", "check", "submit"]);
   assert.ok(!far.lines.some((x) => /runner route|Moved t1's workspace/.test(x)), far.lines.join("\n"));
