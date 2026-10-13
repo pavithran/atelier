@@ -881,6 +881,22 @@ after any landing, so the reviewer can read the merge. A commit a runner
 built on this machine and reported ready is fetched from its clone when the
 checkout lacks it.
 
+Before posting any receipt, fast land writes the batch's receipts (task,
+commit, merge commit, builder, tests) to
+`.git/atelier-fast-land/START..HEAD.json` in the checkout, marks each one
+as the server records it, and removes the file when all are. If a receipt
+fails (the network or the server), main already holds the batch, so
+landing again would refuse every task; fast land says which receipts were
+recorded and prints the command that records the rest:
+
+    atelier fast record .git/atelier-fast-land/START..HEAD.json --project P
+
+`atelier fast record` (with no file, the only one waiting) posts only the
+receipts not yet recorded and never merges. It refuses, posting nothing,
+when main no longer holds a receipt's merge commit, or the merge is not of
+that task's commit. The server answers a receipt it already holds for the
+same merge commit with the one it recorded, so posting again is safe.
+
 The post-merge review of a fast landing may come from a model of the
 builder's family (PAVI: fast mode permits single-family models), never
 from the builder itself; the review record says "same-family (fast mode)".
