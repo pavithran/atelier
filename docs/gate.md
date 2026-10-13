@@ -184,6 +184,34 @@ who made it but not its reason; it names each review's reviewer, verdict, head
 and recorder in the same way, without the review's note. Both stay in the
 ledger.
 
+The developer's direction confirms an override from the command line: the
+developer's own words in `--quote`, and the model acting on them in `--as
+H/M` (or ATELIER_ACTOR, sent as X-Atelier-Acting), with the developer token:
+
+```text
+atelier accept t3 --override-review "no other family is available" --quote "override it, nobody else can review" --as claude-code/opus-5.5
+```
+
+Both are required, and both are recorded with the override, on its
+`review.overridden` event (`confirmed: "direction"`), and shown on the task
+page, in `atelier status` and in the landing receipt, so every override says
+afterwards who asked and why. Without them, the developer token alone does
+not override: the developer first presses "Allow an override from the
+command line" on the task's page, under their Cloudflare Access sign-in or
+giving the server's confirmation secret, as before. An agent token is
+refused either way, and a project set up with `atelier init --no-override`
+refuses every override, words or not.
+
+This reverses the confirmation Astra's audit of 2026-10-13 (finding 3) and
+t596 had made the only way from the command line. The developer decided
+that day that their recorded direction suffices, on every project: "even
+touch id is too much. why isn't my direction sufficient?" The accepted risk
+is that a session acting on a mistaken or injected instruction can lower
+the gate; the record of the words and the acting model is what makes that
+visible. A server without the capability `projects.developer-direction.v1`
+takes no `--quote`, and the command says the task's page is the way until
+it is deployed.
+
 ### Single-family mode
 
 A project may run on one company's models alone, for a client who allows

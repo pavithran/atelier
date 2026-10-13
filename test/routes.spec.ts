@@ -774,12 +774,12 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   // what to set. One permission takes one override, for 15 minutes.
   const unconfirmed = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(unconfirmed.status).toBe(403);
-  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the developer's confirmation: open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the developer token alone does not confirm it` });
+  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the developer's confirmation: open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; or run it again with --quote "the developer's words" and --as H/M naming the model acting on them; the developer token alone does not confirm it` });
   expect((await L.item("t1")).state).toBe("submitted");
   // On a server with neither Access nor a secret, the refusal says what to set.
   const nowhere = await as(TOKEN, "owner", bare)("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(nowhere.status).toBe(403);
-  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the developer, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the developer token alone does not confirm it`);
+  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the developer, then run the command again within 15 minutes; or run it again with --quote "the developer's words" and --as H/M naming the model acting on them; ${NO_OWNER_FACTOR}; the developer token alone does not confirm it`);
   const page = (headers: Record<string, string>, on = bindings, confirmation?: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/allow-override`, {
     method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "", ...(confirmation === undefined ? {} : { confirmation }) }),
   }), on);
@@ -820,6 +820,73 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   expect(detail.events.find((e) => e.kind === "override.allowed")?.data).toMatchObject({ head: H1, factor: "secret" });
   expect(detail.item.overrideConfirmation).toBeUndefined();
   expect(detail.reviews).toHaveLength(1);
+});
+
+// t629 reverses t371's page confirmation as the only way from the command
+// line (Astra's audit of 2026-10-13, finding 3, and t596; the developer's
+// decision of 2026-10-13, "why isn't my direction sufficient?"): the
+// developer token alone overrides a missing independent review when the
+// request carries the developer's quoted words and names the model acting on
+// them, and the override records both. No words, no override; an agent token
+// is refused; a project that forbids overrides refuses, words or not.
+it("t629: the developer token overrides a missing review on the developer's quoted words and the acting model", async () => {
+  const name = "override-direction", A = "claude-code/opus-5.5", G = "codex/gpt-6-astra", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name, ["AGENTS.md"]);
+  for (const [harness, id] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"]]) {
+    expect((await call("PUT", `/models/${id}`, "owner", { harness, where: "cloud" })).status).toBe(200);
+  }
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  for (const id of ["t1", "t2"]) {
+    await L.newItem("Rewrite the agent instructions", [], "owner");
+    await L.claim(id, A);
+    await L.setFork(id, `${name}--${id}`, H0, A);
+    await L.recordPush(id, A, H1, H1);
+    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+    await L.submit(id, A);
+  }
+  const log = [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }];
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: log, [`${name}--t2`]: log, [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "developer-only-word" } as typeof env;
+  const post = (path: string, body: unknown, headers: Record<string, string>, bearer = TOKEN, actor: string | null = "owner") =>
+    worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+      method: "POST", headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json", ...headers }, body: JSON.stringify(body),
+    }), bindings);
+  const reason = "No model of another family is available", QUOTE = "every project, fast mode and overrides both";
+  const acting = { "x-atelier-acting": G };
+
+  // No words: refused, naming the page and the --quote way.
+  const bare = await post("/items/t1/accept", { head: H1, overrideReview: reason }, acting);
+  expect(bare.status).toBe(403);
+  expect(await bare.json()).toMatchObject({ error: "override_unconfirmed", detail: expect.stringContaining("--quote") });
+  // Words without an acting model, blank words, or words with no override: refused.
+  expect(await (await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: QUOTE }, {})).json()).toMatchObject({ error: "no_acting" });
+  expect(await (await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: " " }, acting)).json()).toMatchObject({ error: "bad_quote" });
+  expect(await (await post("/items/t1/accept", { head: H1, quote: QUOTE }, acting)).json()).toMatchObject({ error: "bad_quote" });
+  // An agent token is refused, with or without an acting header.
+  const agent = (await (await call("POST", "/tokens", "owner", { actor: G, projects: [name] })).json() as { token: string }).token;
+  expect((await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: QUOTE }, acting, agent, null)).status).toBe(403);
+  expect((await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: QUOTE }, {}, agent, null)).status).toBe(403);
+  expect((await L.item("t1")).state).toBe("submitted");
+
+  // With both: accepted, the words and the acting model on the override and its event.
+  const ok = await post("/items/t1/accept", { head: H1, overrideReview: reason, quote: QUOTE }, acting);
+  expect(ok.status, await ok.clone().text()).toBe(200);
+  expect(await ok.json()).toMatchObject({ state: "accepted", reviewOverride: { head: H1, by: "owner", reason, quote: QUOTE, acting: G } });
+  const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+  const overridden = events.find((e) => e.kind === "review.overridden")!;
+  expect(overridden.data).toMatchObject({ reason, confirmed: "direction", quote: QUOTE, acting: G });
+  expect(overridden.data).not.toHaveProperty("factor");
+  // The task page shows whose words and which model.
+  const cookie = await signIn(TOKEN, bindings);
+  const page = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie } }), bindings)).text();
+  expect(page).toContain("relayed by codex/gpt-6-astra");
+  expect(page).toContain("every project, fast mode and overrides both");
+
+  // A project that forbids overrides refuses, words or not.
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["AGENTS.md"], noOverride: true }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  expect(await (await post("/items/t2/accept", { head: H1, overrideReview: reason, quote: QUOTE }, acting)).json()).toMatchObject({ error: "override_forbidden" });
+  expect((await L.item("t2")).state).toBe("submitted");
 });
 
 // t371: a project set up with `atelier init --no-override` refuses every

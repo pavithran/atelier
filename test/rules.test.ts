@@ -1112,6 +1112,29 @@ test("fast mode is refused where overrides are, and the switch needs the develop
   assert.match(fastModeConfirmationHint("proj", "", null), /this server can take no confirmation/);
 });
 
+// t629 reverses t596's confirmation for the command line (Astra's audit of
+// 2026-10-13, finding 3; the developer's decision of 2026-10-13: "why isn't
+// my direction sufficient?"). The developer token alone switches to fast mode
+// or overrides a missing review when the request carries the developer's own
+// words and names the model acting on them, so every such switch says who
+// asked and why; a blank quote, or none, or no acting model is refused.
+import { ownerDirection, overrideConfirmationHint, DIRECTION_QUOTE_MAX } from "../src/rules.ts";
+
+test("the developer's direction is their quoted words and the model acting on them, both required", () => {
+  assert.equal(ownerDirection(undefined, "claude-code/opus-5.5", "fast mode"), null);
+  assert.deepEqual(ownerDirection("  go fast,\n forks fail  ", "claude-code/opus-5.5", "fast mode"), { quote: "go fast, forks fail", acting: "claude-code/opus-5.5" });
+  for (const bad of ["", "   ", 42, null]) assert.throws(() => ownerDirection(bad, "claude-code/opus-5.5", "fast mode"), (e: RuleError) => e.code === "bad_quote" && e.status === 400 && /--quote/.test(e.detail), String(bad));
+  assert.throws(() => ownerDirection("x".repeat(DIRECTION_QUOTE_MAX + 1), "claude-code/opus-5.5", "fast mode"), (e: RuleError) => e.code === "too_long");
+  for (const none of [null, undefined, ""]) assert.throws(() => ownerDirection("go fast", none as never, "an override of the independent review"), (e: RuleError) => e.code === "no_acting" && e.status === 400 && /--as H\/M/.test(e.detail) && /an override/.test(e.detail));
+  // The mode line says whose words switched it, and who relayed them.
+  const fast = { mode: "fast" as const, since: "2026-10-13T14:05:00.000Z", reason: "forks fail", by: "owner", decision: "d1" };
+  assert.equal(modeLine(fast), "Mode: fast since 2026-10-13 14:05 UTC (forks fail)");
+  assert.equal(modeLine({ ...fast, quote: "go fast", acting: "claude-code/opus-5.5" }), "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: \u201cgo fast\u201d, relayed by claude-code/opus-5.5");
+  // Both refusals name the direction as the other way to confirm.
+  assert.match(fastModeConfirmationHint("proj"), /Allow fast mode from the command line.*; or run it again with --quote "the developer's words" and --as H\/M naming the model acting on them/);
+  assert.match(overrideConfirmationHint("proj", "t1"), /Allow an override from the command line.*; or run it again with --quote "the developer's words" and --as H\/M naming the model acting on them/);
+});
+
 test("a landed-fast receipt needs both commits, the builder, the test command and its output's sha256, in fast mode only", () => {
   const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
   const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };

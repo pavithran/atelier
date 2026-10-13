@@ -11,7 +11,7 @@ import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
@@ -45,7 +45,7 @@ export default async function mergeCommand() {
     die(`merge conflicts: ${id}'s branch does not merge with main, so nothing was merged. Its acceptance at ${short(item.acceptedHead)} is withdrawn and the plan is building again: a refresh from main at ${short(main)} is queued for atelier/integrator, and if it conflicts the plan adds a merge-main part whose builder resolves it. The integrator submits the plan again once every part is integrated; then merge it with atelier merge ${id} --head H, H being the integration head atelier plan show ${id} prints`);
   };
   // An override is recorded only while accepting, which needs the revision.
-  if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
+  if ((args["override-review"] !== undefined || args.quote !== undefined) && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
   const name = project(), id = itemArg();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
   // Ends a landing. It holds the landing lock throughout, as merge does, so
@@ -141,12 +141,14 @@ export default async function mergeCommand() {
   if (args.head !== undefined) {
     if (!/^[a-f0-9]{40,64}$/.test(args.head)) die(COMMAND_USAGE.merge);
     const reason=overrideArg("merge ID --head FULL_REVISION");
+    // The developer's words, with the acting model, confirm the override without the page (t629).
+    const direction=reason!==undefined?directionArg("merge ID --head FULL_REVISION --override-review REASON"):{};
     const d=await call("GET",I(name,id),undefined,OWNER);
     if (d.item.state==="submitted") {
       if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
       // The owner approves here the criteria this command read with the head.
       if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
-      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER,reason!==undefined?actingHeaders():{});
+      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason,...direction}:{})},OWNER,reason!==undefined?actingHeaders():{});
     }
   }
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);

@@ -126,10 +126,19 @@ function linesFor(e, verdicts, used, owner) {
     case "item.submitted":
       return [`submitted by ${flat(e.actor)} at ${short(d.head)}${d.summary ? `: ${flat(d.summary)}` : ""}`];
     case "review.overridden":
-      return [`independent review overridden by ${flat(e.actor)}${typeof d.acting === "string" && d.acting ? `, declared acting ${flat(d.acting)}` : ""}: ${flat(d.reason)}`];
+      return [`independent review overridden by ${flat(e.actor)}${typeof d.acting === "string" && d.acting ? `, declared acting ${flat(d.acting)}` : ""}: ${flat(d.reason)}${typeof d.quote === "string" && d.quote ? `; on the developer's words: “${flat(d.quote)}”` : ""}`];
     // t407: the reply itself is kept on the task; show ID --reviews prints it.
     case "review.unparsable":
       return [`unparsable review reply from ${flat(e.actor)} at ${short(d.head)}, kept on the task${d.note ? `: ${flat(d.note)}` : ""}`];
+    // A fast landing (t585) with its receipt: what merged, the builder, the
+    // tests and where they ran, the mode's reason and, for fast mode switched
+    // on the developer's direction (t629), their words and the acting model.
+    case "item.landed_fast": {
+      const tests = d.tests ?? {};
+      const where = tests.where ? ` in a ${flat(tests.where)}` : "";
+      const words = typeof d.quote === "string" && d.quote ? `; on the developer's words: \u201c${flat(d.quote)}\u201d, relayed by ${flat(d.acting ?? "an unnamed model")}` : "";
+      return [`landed in fast mode by ${flat(e.actor)}: ${short(d.commit)} built by ${flat(d.builder)}, merge commit ${short(d.mergeCommit)}; ${flat(tests.command)} passed${where}, output sha256 ${String(tests.sha256 ?? "").slice(0, 12)}; fast mode: ${flat(d.reason)}${words}`];
+    }
     case "item.accepted":
       return [`accepted by ${flat(e.actor)} at ${short(d.head)}${d.note ? `: ${flat(d.note)}` : ""}`];
     case "item.merged":
