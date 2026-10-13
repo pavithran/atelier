@@ -14,7 +14,7 @@ const spec: CommandSpec = {
   flags: { force: true, rollback: true },
   help: {
     flags: {
-      "--force": "after atelier update: pushes the rebased head, with a lease on the head Atelier recorded",
+      "--force": "after an atelier update that rebased: pushes the rebased head, with a lease on the head Atelier recorded",
       "--rollback": "returns the fork to the workspace's HEAD, an earlier commit of the recorded history, dropping what was recorded after it, with a lease on the recorded head; the plan integrator's rollback",
     },
     example: "atelier push",
