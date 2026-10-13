@@ -481,7 +481,7 @@ test("--moved-ok bypasses only the findings: a Git conflict still stops the land
   });
   const l = landIo(w, { args: { "moved-ok": true } });
   const error = await l.land();
-  assert.match(error.message, /stops on conflicts in:\nwork\.txt/);
+  assert.match(error.message, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
   assert.ok(l.records().some((r) => r.resolvedBy === "owner with --moved-ok"));
   assert.equal(l.leased(), false);
 });
