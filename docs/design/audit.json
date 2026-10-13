@@ -1,6 +1,6 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "306b72fc37922e97996e3d2a400ca4f4d45ed0c4",
+  "source": "7a4411760aa311cf51adef722e952fea7e91104c",
   "sourceDirty": false,
   "browser": {
     "name": "chromium",
@@ -5435,7 +5435,7 @@
     "tasks": {
       "390": {
         "structure": {
-          "height": 111256,
+          "height": 27733,
           "navs": [
             {
               "label": "Atelier",
@@ -5477,7 +5477,7 @@
       },
       "1440": {
         "structure": {
-          "height": 19556,
+          "height": 15194,
           "navs": [
             {
               "label": "Atelier",
