@@ -68,6 +68,59 @@ test("a signal ends the landing with its status after the release, though the ac
   }
 });
 
+// t590, from codex/gpt-6-astra's review: the reverse order. A landing that
+// fails on its own starts the release, which marks the lease released before
+// the server answers; a signal meanwhile released nothing more and exited at
+// once, the cancel still unanswered, so a slow server kept the lease. And a
+// second, different signal during a signal's release exited the same way.
+// Every release, the signal's included, now waits for the one in flight.
+// Here the server holds the cancel until the test lets it go.
+const cancelHeld = (f) => f.box.holding === "/api/projects/proj/landing-lease" && f.posts("/landing-lease").some((x) => x.body.cancel === true);
+const stillRunning = async (landing, ms = 500) => {
+  let ended = false; landing.done.then(() => { ended = true; });
+  await new Promise((ok) => setTimeout(ok, ms));
+  return !ended;
+};
+test("a signal while the failed landing's release is unanswered waits for that release, then ends with the signal's status", async (t) => {
+  for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) {
+    const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+    // The server reads another main under the lease: the landing stops
+    // unaccepted, on its own, and releases the lease.
+    f.box.serverMain = "f".repeat(40);
+    let letGo = false;
+    f.box.holdOn = (url, body) => url.endsWith("/landing-lease") && body.cancel === true && !letGo;
+    const landing = spawnLanding(f);
+    await until(() => cancelHeld(f), CEILING_MS, "the failed landing's release");
+    landing.child.kill(signal);
+    assert.ok(await stillRunning(landing), `the landing ended before its release was answered:\n${landing.output()}`);
+    letGo = true;
+    const ended = await landing.done;
+    assert.equal(ended.status, status, landing.output());
+    assert.equal(f.box.lease, null, landing.output());
+    assert.equal(f.posts("/accept").length, 0);
+  }
+});
+
+test("a second, different signal during a signal's release waits for it, and the first signal's status stands", async (t) => {
+  if (!canInspectSlots(t)) return;
+  for (const [first, second, status] of [["SIGTERM", "SIGINT", 143], ["SIGINT", "SIGTERM", 130]]) {
+    const f = await landFixture(t);
+    let letGo = false;
+    f.box.holdOn = (url, body) => url.endsWith("/accept") || (url.endsWith("/landing-lease") && body.cancel === true && !letGo);
+    const landing = spawnLanding(f);
+    await until(() => underLease(f), CEILING_MS, "the acceptance under the lease");
+    landing.child.kill(first);
+    await until(() => cancelHeld(f), CEILING_MS, `the release ${first} started`);
+    landing.child.kill(second);
+    assert.ok(await stillRunning(landing), `the landing ended before its release was answered:\n${landing.output()}`);
+    letGo = true;
+    const ended = await landing.done;
+    assert.equal(ended.status, status, landing.output());
+    assert.equal(f.box.lease, null, landing.output());
+    assert.equal(f.box.states.t1, "submitted");
+  }
+});
+
 // t419: a landing signalled while its regenerate command runs ends that
 // command's process group, and what it started, as it releases the lease.
 test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
