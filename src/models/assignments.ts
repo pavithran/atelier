@@ -490,10 +490,19 @@ export function applicableAssignments(current: readonly Assignment[], project: s
 // share a model, such as two profiles of it, are two candidates
 // (gemini-4-argon's third review of t622, finding 2). Otherwise, as for a
 // choice the pool has since lost, the same harness and the same model.
+//
+// A choice is the entry recorded, by its exact harness/id. When the pool is
+// known and no longer has that entry, the choice matches nothing: the model
+// was removed, so its assignment stops applying, and never passes to an
+// entry that now lists its id as an alias or runs the same model
+// (gpt-6-astra's fifth review of t622, finding 2). With no pool given, the
+// same harness and the same model match.
 export function choiceMatches(choice: AssignmentChoice, actor: string, pool: PoolNames = []): boolean {
+  if (pool.length) {
+    const chosen = pool.find((e) => `${e.harness}/${e.id}`.toLowerCase() === choice.actor.toLowerCase());
+    return chosen !== undefined && poolEntryFor(actor, pool) === chosen;
+  }
   if (choice.actor.toLowerCase() === actor.toLowerCase()) return true;
-  const chosen = poolEntryFor(choice.actor, pool), entry = poolEntryFor(actor, pool);
-  if (chosen && entry) return chosen === entry;
   if (sameActor(choice.actor, actor)) return true;
   const harness = (a: string) => a.slice(0, Math.max(0, a.indexOf("/"))).toLowerCase();
   return harness(choice.actor) === harness(actor) && canonicalModel(actor, pool) === choice.model;

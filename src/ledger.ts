@@ -6569,9 +6569,9 @@ export class Ledger extends DurableObject<Env> {
   // Whether the gate's request just being made for a protected change is
   // asked of a tier model that gives the tier review too (gateServesTier in
   // src/review/tier.ts), so no separate tier request is needed.
-  private gateIsTier(item: Item, need: ReviewRequired, reviewer: string): boolean {
+  private gateIsTier(item: Item, need: ReviewRequired, reviewer: string, pool: readonly ModelEntry[] = this.poolStanding()): boolean {
     const policy = this.project().policy;
-    return need.changeClass === "protected" && gateServesTier(policy.reviewTier, reviewer, contributorsOf(item), singleFamily(policy));
+    return need.changeClass === "protected" && gateServesTier(policy.reviewTier, reviewer, contributorsOf(item), singleFamily(policy), pool);
   }
 
   // Asks the project's top review tier (src/review/tier.ts) for a separate
@@ -6585,7 +6585,7 @@ export class Ledger extends DurableObject<Env> {
   private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers?: readonly SeenOffer[]): void {
     const policy = this.project().policy;
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
-    if (this.gateIsTier(item, need, gateReviewer)) return;
+    if (this.gateIsTier(item, need, gateReviewer, pool)) return;
     // A request or review for criteria the item no longer has does not count:
     // the tier is asked again for the new ones. A request superseded by a
     // change of criteria never counts, even when the criteria return to the

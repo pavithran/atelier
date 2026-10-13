@@ -8,7 +8,7 @@ import type { PlanPart } from "../src/plans/schema.ts";
 import { pickPlanner } from "../src/plans/state.ts";
 import { pickReviewer } from "../src/review/reviewer.ts";
 import { suggestReviewer } from "../src/review/suggest.ts";
-import { pickTierReviewer, reviewTarget, tierEligible, tierReviewerPick } from "../src/review/tier.ts";
+import { gateServesTier, pickTierReviewer, reviewTarget, tierEligible, tierReviewerPick } from "../src/review/tier.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
 
 // Every reader of role assignments (t622, src/models/assignments.ts): the
@@ -122,10 +122,12 @@ test("tierReviewerPick: says which assignment chose the tier reviewer, or why no
   const a = assigned("security-review", ["codex/gpt-6-astra"]);
   const pool = [{ ...astra, aliases: ["astra-alias"] }, argon];
   const tier = ["antigravity/gemini-4-argon", "codex/astra-alias"];
+  // The tier name is read as the entry it names, so the pick is that entry
+  // by its own id (gpt-6-astra's and gemini-4-argon's fifth reviews).
   const pick = tierReviewerPick(tier, ["claude-code/opus-5.5"], [], () => true, null, null, [a], pool);
-  assert.equal(pick.actor, "codex/astra-alias");
+  assert.equal(pick.actor, "codex/gpt-6-astra");
   said(pick.reasons, new RegExp(`Role assignment ${a.id} \\(security-review, every project, 2026-10-13\\): choice 1 of 1`));
-  const none = tierReviewerPick(tier, ["claude-code/opus-5.5"], [], (x) => x !== "codex/astra-alias", null, null, [a], pool);
+  const none = tierReviewerPick(tier, ["claude-code/opus-5.5"], [], (x) => x !== "codex/gpt-6-astra", null, null, [a], pool);
   assert.equal(none.actor, "antigravity/gemini-4-argon");
   said(none.reasons, new RegExp(`Role assignment ${a.id} skipped: no choice is eligible here`));
   said(none.reasons, /No role assignment applies, so the reviewer selector asks/);
@@ -434,4 +436,43 @@ test("tierReviewerPick: an empty pool moves no tier model; only a pool not given
   assert.equal(empty.actor, "codex/gpt-6-astra");
   said(empty.reasons, new RegExp(`Role assignment ${luna.id} skipped: no choice is eligible here \\(codex/gpt-6-luna: not in the pool`));
   assert.equal(tierReviewerPick(tier, ["claude-code/opus-5.5"], [], () => true, null, null, [luna]).actor, "codex/gpt-6-luna");
+});
+
+// gpt-6-astra's fifth review of t622, finding 2: a choice whose entry was
+// removed resolved through another entry's alias, so the assignment passed
+// to that entry.
+test("an assignment whose chosen entry left the pool stops applying, whatever now lists its id as an alias", () => {
+  const trapAstra = { ...astra, aliases: ["gpt-6-luna"] };
+  const luna = entry("codex", "gpt-6-luna");
+  const a = { ...assigned("review", ["codex/gpt-6-luna"]), choices: [{ actor: "codex/gpt-6-luna", model: "gpt-6-luna" }] };
+  assert.equal(pickReviewer({ item: built, pool: [trapAstra, luna, argon], policy, allowPaid: false, assigned: [a] }).reviewer?.actor, "codex/gpt-6-luna");
+  const gone = pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, assigned: [a] });
+  assert.equal(gone.assignment?.applied, null);
+  assert.equal(gone.reviewer?.actor, "antigravity/gemini-4-argon");
+  // The same for two profiles of one model: the other profile does not inherit it.
+  const big = { ...assigned("build", ["opencode/qwen-3:72b"]), choices: [{ actor: "opencode/qwen-3:72b", model: "qwen-3" }] };
+  const [r] = routeParts(plan(part("a")), { pool: [entry("opencode", "qwen-3:32b"), argon, opus], events: [], policy, allowPaid: false, assignments: [big] });
+  assert.notEqual(r.builder?.actor, "opencode/qwen-3:32b");
+  said(r.builder?.reasons, /No role assignment applies/);
+});
+
+// gpt-6-astra's and gemini-4-argon's fifth reviews of t622 (findings 3 and
+// 2): the tier checked contribution, the gate's requests, single-family
+// mode, precision and the project's policy against the tier name as
+// written, then dispatched the entry it names, so an alias of the builder
+// was asked to review its own work, or a second time beside the gate.
+test("tierReviewerPick and gateServesTier read every tier, gate and contributor name as the entry it names", () => {
+  const sonnetAliased = { ...sonnet, aliases: ["sonnet-alias"] };
+  const pool = [sonnetAliased, argon, astra];
+  const tier = ["claude-code/sonnet-alias", "antigravity/gemini-4-argon"];
+  const promote = [assigned("review", ["claude-code/sonnet-5.5"])];
+  // Sonnet built it: its alias is not asked to review it.
+  assert.equal(tierReviewerPick(tier, ["claude-code/sonnet-5.5"], [], () => true, null, null, promote, pool).actor, "antigravity/gemini-4-argon");
+  // Sonnet is the gate's reviewer: it is not asked again, and it serves the tier.
+  assert.equal(tierReviewerPick(tier, ["codex/gpt-6-astra"], ["claude-code/sonnet-5.5"], () => true, null, null, promote, pool).actor, "antigravity/gemini-4-argon");
+  assert.equal(gateServesTier(tier, "claude-code/sonnet-5.5", ["codex/gpt-6-astra"], null, pool), true);
+  // The project's policy and eligibility are asked of the entry, not the alias.
+  const asked: string[] = [];
+  tierReviewerPick(tier, ["codex/gpt-6-astra"], [], (a) => { asked.push(a); return true; }, null, null, promote, pool);
+  assert.ok(asked.includes("claude-code/sonnet-5.5") && !asked.includes("claude-code/sonnet-alias"));
 });
