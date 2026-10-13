@@ -11,9 +11,10 @@ import { UPDATING_DETAIL } from "../src/rules.ts";
 // showcaseCounts and mode, and the showcase showed zeros, until every
 // runner was stopped for about 70 s and it went idle.
 //
-// A stale Ledger is played here by taking a method off Ledger.prototype:
-// the Ledgers run in this isolate, so a call to the method meets the
-// runtime's own missing-method answer, as one to an older build does. A
+// A stale Ledger is played here by a method on Ledger.prototype that
+// throws the runtime's missing-method answer (without, below): the Ledgers
+// run in this isolate, so a call to the method meets that answer, as one to
+// an older build does. A
 // Ledger built for an older DEPLOYED_MAIN is played by giving its instance
 // that var, since a Durable Object reads the vars of the deploy it runs.
 
@@ -35,12 +36,19 @@ function api(method: string, path: string) {
   }), testEnv);
 }
 
-// Runs fn while every Ledger in this isolate lacks the method.
+// Runs fn while every Ledger in this isolate answers the method as one
+// without it does: the method throws the runtime's own missing-method error,
+// in the words a deployed Ledger answers. It is not deleted from the
+// prototype (t619): the Workers test pool looks a method up as soon as the
+// call arrives and runs the calls to one object in turn, so the lookup of a
+// deleted method failed while its call still waited behind the Worker's
+// ledgerVersion, and under load that failure was reported as an unhandled
+// rejection, ending npm test with exit 1 though every test passed.
 async function without<T>(method: string, fn: () => Promise<T>): Promise<T> {
   const proto = Ledger.prototype as unknown as Record<string, unknown>;
   const saved = Object.getOwnPropertyDescriptor(proto, method)!;
   expect(saved, `Ledger.prototype.${method}`).toBeTruthy();
-  delete proto[method];
+  Object.defineProperty(proto, method, { ...saved, value() { throw new TypeError(`The RPC receiver does not implement the method "${method}".`); } });
   try { return await fn(); } finally { Object.defineProperty(proto, method, saved); }
 }
 
@@ -75,6 +83,40 @@ it("the mode route says the server is updating when the Ledger lacks the method,
   const ok = await api("GET", "/projects/stale-mode/mode");
   expect(ok.status).toBe(200);
   expect(await ok.json()).toMatchObject({ mode: "full" });
+});
+
+// t619: under the full suite's load the test above left an unhandled
+// rejection behind ("The RPC receiver does not implement "mode"", from
+// getDurableObjectRPCProperty in the Workers test pool), and npm test exited
+// 1 with every test passing. The pool looks a method up as soon as the call
+// arrives, but runs calls to one object in turn; the Worker sends its
+// ledgerVersion first (src/ledger-stub.ts), so the lookup of a method taken
+// off the prototype failed while the call still waited, with nothing yet to
+// handle it. Here ledgerVersion's lookup is held for 300 ms, which makes that
+// wait certain; the stale Ledger must still leave no unhandled rejection.
+it("a stale Ledger's missing method leaves no unhandled rejection while the call waits behind ledgerVersion", async () => {
+  const proc = (globalThis as unknown as { process: { on(e: string, f: (r: unknown) => void): void; off(e: string, f: (r: unknown) => void): void } }).process;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  // Ahead of Vitest's own listener would be better, but the count suffices:
+  // Vitest still reports what this sees, and this test says why.
+  proc.on("unhandledRejection", onUnhandled);
+  const proto = Ledger.prototype as unknown as Record<string, unknown>;
+  const saved = Object.getOwnPropertyDescriptor(proto, "ledgerVersion")!;
+  Object.defineProperty(proto, "ledgerVersion", {
+    configurable: true,
+    get(this: object) { const f = (saved.value as (...a: unknown[]) => unknown).bind(this); return new Promise((r) => setTimeout(() => r(f), 300)); },
+  });
+  try {
+    await project("stale-queued");
+    const res = await without("mode", () => api("GET", "/projects/stale-queued/mode"));
+    expect(res.status).toBe(503);
+    await wait(600);
+  } finally {
+    Object.defineProperty(proto, "ledgerVersion", saved);
+    proc.off("unhandledRejection", onUnhandled);
+  }
+  expect(unhandled.map((r) => String(r instanceof Error ? r.message : r))).toEqual([]);
 });
 
 it("the showcase says the server is updating instead of printing figures it could not count", async () => {
