@@ -78,6 +78,17 @@ function shallowOf(cwd) {
   const file = join(git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"), "shallow");
   return existsSync(file) ? readFileSync(file, "utf8") : "";
 }
+// The worktree, other than `cwd`'s own, that has `ref` checked out, or null.
+// It runs during rollback, so it never throws.
+function worktreeHolding(cwd, ref) {
+  const here = runGit(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
+  for (const block of (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n")) {
+    const path = /^worktree (.+)$/m.exec(block)?.[1];
+    if (path && path !== here && new RegExp(`^branch ${ref}$`, "m").test(block)) return path;
+  }
+  return null;
+}
+
 function historyOverrides(cwd, shallowAtStart) {
   const common = git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir");
   const found = [];
@@ -232,11 +243,40 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   const shallowAtStart = shallowOf(cwd);
   // A refused batch puts main back where it started, whatever branch a
   // project command left checked out; any other branch is left as it is
-  // (second review of t592).
+  // (second review of t592). Each step's result is checked and main's ref
+  // is verified afterwards (third review of t592): when main cannot be
+  // restored, the answer says so, with main's head and the fix.
   const restore = () => {
     runGit(cwd, ["merge", "--abort"]);
-    runGit(cwd, ["checkout", "-q", "-f", "main"]);
-    runGit(cwd, ["reset", "-q", "--hard", start]);
+    const main = () => runGit(cwd, ["rev-parse", "--verify", "-q", "refs/heads/main"]).stdout.trim();
+    const failed = (r) => (r.stderr || r.stdout || "").trim().split("\n").at(-1);
+    const onMain = runGit(cwd, ["symbolic-ref", "-q", "HEAD"]).stdout.trim() === "refs/heads/main";
+    let problem = null, fix = `git checkout -f main && git reset --hard ${start}`;
+    const checkout = onMain ? null : runGit(cwd, ["checkout", "-q", "-f", "main"]);
+    if (onMain || checkout.status === 0) {
+      const r = runGit(cwd, ["reset", "-q", "--hard", start]);
+      if (r.status !== 0) problem = `git reset --hard failed: ${failed(r)}`;
+    } else {
+      // Main cannot be checked out here. When another worktree holds it,
+      // moving its ref would leave that worktree's files out of step, so
+      // fast land leaves it; otherwise it moves the ref, from the head it
+      // read, and touches no branch checked out here.
+      const holder = worktreeHolding(cwd, "refs/heads/main");
+      if (holder) {
+        problem = `main is checked out in the worktree ${holder}, so fast land could not move it`;
+        fix = `git -C ${JSON.stringify(holder)} reset --hard ${start}`;
+      } else {
+        const r = runGit(cwd, ["update-ref", "refs/heads/main", start, main()]);
+        if (r.status !== 0) problem = `git checkout main failed (${failed(checkout)}) and so did git update-ref (${failed(r)})`;
+        else fix = `git checkout -f main`;
+      }
+    }
+    const now = main();
+    if (now === start && !problem) return { restored: true, head: now };
+    return {
+      restored: false, head: now,
+      restoreProblem: `main was NOT restored: refs/heads/main is at ${now ? now.slice(0, 12) : "nothing"}, not ${start.slice(0, 12)}${problem ? `; ${problem}` : ""}. Restore it with: ${fix}`,
+    };
   };
   // Every project command below (regeneration, typecheck, a --test in the
   // checkout) runs code the merged agents may have changed, so it gets the
@@ -322,13 +362,9 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         failure = { step: "checkout changed", detail: `the checkout changed after the secret scan of ${scanned.slice(0, 12)}: ${branch !== "main" ? `it is on ${branch}, not main` : now !== scanned ? `main is at ${now.slice(0, 12)}` : `tracked files changed:\n${changed}`}` };
       }
     }
-    if (failure) {
-      restore();
-      return { ok: false, start, head: git(cwd, "rev-parse", "main"), landed: [], failure };
-    }
+    if (failure) return { ok: false, start, ...restore(), landed: [], failure };
   } catch (err) {
-    restore();
-    return { ok: false, start, head: git(cwd, "rev-parse", "main"), landed: [], failure: { step: err?.step ?? "error", detail: err?.message ?? String(err) } };
+    return { ok: false, start, ...restore(), landed: [], failure: { step: err?.step ?? "error", detail: err?.message ?? String(err) } };
   }
   // Main holds the checked batch now. A receipt the server refuses leaves it
   // so (the merges passed); the caller names what was and was not recorded.

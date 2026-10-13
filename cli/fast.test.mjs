@@ -398,6 +398,34 @@ test("a test that switches branch is refused, and main, not the new branch, goes
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Third review of t592 (codex/gpt-6-astra): rollback ignored its own
+// commands' results. A test that commits, switches branch and checks main
+// out in a new worktree left rollback unable to check out main; it reset
+// the wrong branch and the answer said main was restored.
+test("a rollback that cannot restore main says so, naming main's head and the fix, and resets no other branch (finding 4)", async () => {
+  const { dir, one } = repo();
+  const holder = join(mkdtempSync(join(tmpdir(), "fast-land-holder-")), "wt");
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const id = "-c user.name=t -c user.email=t@example.com";
+    const hijack = `printf 'k\\0AKIA' > late.bin && git ${id} add late.bin && git ${id} commit -q -m late && git checkout -q -b temporary && git worktree add -q ${JSON.stringify(holder)} main`;
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: hijack, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false);
+    assert.equal(r.failure.step, "checkout changed");
+    const main = git(dir, "rev-parse", "refs/heads/main");
+    assert.notEqual(main, start, "the scenario leaves main where rollback cannot reach it");
+    assert.equal(r.restored, false);
+    assert.equal(r.head, main);
+    assert.match(r.restoreProblem, /main was NOT restored/);
+    assert.ok(r.restoreProblem.includes(main.slice(0, 12)), "names main's head");
+    assert.ok(r.restoreProblem.includes(realpathSync(holder)) || r.restoreProblem.includes(holder), "names the worktree holding main");
+    assert.match(r.restoreProblem, new RegExp(`git -C .+ reset --hard ${start}`));
+    assert.equal(git(dir, "rev-parse", "temporary"), main, "the branch the test made was not reset");
+  } finally {
+    rmSync(dir, { recursive: true, force: true }); rmSync(dirname(holder), { recursive: true, force: true });
+  }
+});
+
 test("a blob the scan cannot read stops the batch, naming its path (finding 4)", async () => {
   const { dir } = repo();
   try {
