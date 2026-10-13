@@ -164,10 +164,10 @@ test("a command deleted on one side and another added on the other merge: the re
   git(dir, "tag", "base");
   addCommands(dir, "main", [["hello", "hello"]]);
   git(dir, "checkout", "-q", "-B", "theirs", "base");
-  git(dir, "rm", "-q", `${HANDLERS}/gc.mjs`, `${SPECS}/gc.ts`);
+  git(dir, "rm", "-q", `${HANDLERS}/slots.mjs`, `${SPECS}/slots.ts`);
   writeFileSync(join(dir, SPECS, "index.ts"), specIndex(commandFiles(dir, SPECS, ".ts")));
   writeFileSync(join(dir, HANDLERS, "index.mjs"), handlerIndex(commandFiles(dir, HANDLERS, ".mjs")));
-  git(dir, "commit", "-q", "-am", "remove gc");
+  git(dir, "commit", "-q", "-am", "remove slots");
   git(dir, "checkout", "-q", "main");
   const preview = previewMerge(dir, "HEAD", "theirs");
   assert.deepEqual(preview.source, []);
@@ -178,14 +178,14 @@ test("a command deleted on one side and another added on the other merge: the re
   assert.ok(calls.length >= 1);
   assert.equal(git(dir, "status", "--porcelain"), "");
   const read = (path) => readFileSync(join(dir, path), "utf8");
-  assert.ok(!existsSync(join(dir, HANDLERS, "gc.mjs")) && !existsSync(join(dir, SPECS, "gc.ts")));
-  assert.doesNotMatch(read("cli/commands/index.mjs"), /command_gc/);
-  assert.doesNotMatch(read("src/usage/commands/index.ts"), /command_gc/);
+  assert.ok(!existsSync(join(dir, HANDLERS, "slots.mjs")) && !existsSync(join(dir, SPECS, "slots.ts")));
+  assert.doesNotMatch(read("cli/commands/index.mjs"), /command_slots/);
+  assert.doesNotMatch(read("src/usage/commands/index.ts"), /command_slots/);
   assert.match(read("cli/commands/index.mjs"), /command_hello/);
   const usage = JSON.parse(read("test/fixtures/cli/usage.json"));
-  assert.equal(usage.gc, undefined);
+  assert.equal(usage.slots, undefined);
   assert.ok(usage.hello.startsWith("usage: atelier hello"));
-  assert.doesNotMatch(read("test/fixtures/cli/help.txt"), /\bgc \[--project/);
+  assert.doesNotMatch(read("test/fixtures/cli/help.txt"), /\bslots (set|status)/);
 });
 
 test("two command modules claiming one name stop the merge on the registry key before the generator runs", async (t) => {
