@@ -4654,11 +4654,11 @@ export class Ledger extends DurableObject<Env> {
     const kinds = this.sql.exec(
       `SELECT actor, kind, COUNT(*) AS n, MIN(seq) AS first,
         SUM(CASE WHEN kind = 'evidence.observed' AND json_extract(data, '$.where') = 'sandbox' THEN 1 ELSE 0 END) AS cloud
-       FROM events WHERE kind != 'event.served' GROUP BY actor, kind`,
+       FROM events WHERE kind != 'event.served' AND NOT (kind = 'item.merged' AND IFNULL(json_extract(data, '$.fast'), 0) = 1) GROUP BY actor, kind`,
     ).toArray().map((r) => ({ actor: String(r.actor), kind: String(r.kind), n: num(r.n), first: num(r.first), cloud: num(r.cloud) }));
     const recent = this.sql.exec(
       `SELECT actor, kind, substr(at, 1, 14) || CASE WHEN substr(at, 15, 2) < '30' THEN '00' ELSE '30' END AS slot, COUNT(*) AS n
-       FROM events WHERE at >= ? AND kind != 'event.served' GROUP BY actor, kind, slot`, since,
+       FROM events WHERE at >= ? AND kind != 'event.served' AND NOT (kind = 'item.merged' AND IFNULL(json_extract(data, '$.fast'), 0) = 1) GROUP BY actor, kind, slot`, since,
     ).toArray().map((r) => ({ actor: String(r.actor), kind: String(r.kind), at: `${String(r.slot)}:00.000Z`, n: num(r.n) }));
     // A merge is counted when its task was claimed before it, as the graph
     // counts only the merges of the threads it draws.
@@ -4667,6 +4667,9 @@ export class Ledger extends DurableObject<Env> {
         (SELECT 1 FROM events c WHERE c.item_id = m.item_id AND c.kind = 'item.claimed' AND c.seq < m.seq)`,
     ).one().n);
     const taken = num(this.sql.exec(`SELECT COUNT(DISTINCT item_id) AS n FROM events WHERE kind = 'item.claimed'`).one().n);
+    // Tasks landed in fast mode (t585) are counted apart from gated merges:
+    // their item.merged events are left out of the figures above.
+    const landedFast = num(this.sql.exec(`SELECT COUNT(DISTINCT item_id) AS n FROM events WHERE kind = 'item.landed_fast'`).one().n);
     const span = this.sql.exec(`SELECT MIN(at) AS first, MAX(at) AS last FROM events`).one();
     const served = this.sql.exec(`SELECT * FROM events WHERE kind = 'event.served' ORDER BY seq`).toArray().map(eventOf);
     const seqs = [...new Set(served.map((ev) => ev.data.seq).filter((s): s is number => typeof s === "number"))];
@@ -4686,7 +4689,7 @@ export class Ledger extends DurableObject<Env> {
        ORDER BY back > 0 DESC, n DESC, i.id LIMIT 1`,
     ).toArray()[0];
     return {
-      kinds, recent, merges, taken, served, annotated,
+      kinds, recent, merges, taken, landedFast, served, annotated,
       first: (span.first as string | null) ?? null, last: (span.last as string | null) ?? null,
       story: pick ? String(pick.id) : null,
     };
