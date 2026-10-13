@@ -45,7 +45,7 @@ test("a card without its source, its read date or a finite score, or with an uns
   const claim = CARD.claims[1];
   const cases: [Record<string, unknown>, RegExp][] = [
     [{ source: undefined }, /source is required/],
-    [{ source: "not a url" }, /source must be a URL/],
+    [{ source: "not a url" }, /https URL/],
     [{ source: "http://vendor.example/card" }, /https URL/],
     [{ source: "javascript:alert(1)" }, /https URL/],
     [{ source: "https://user:pw@vendor.example/card" }, /user name or password/],
@@ -104,7 +104,7 @@ test("a key pasted into the model's name or any text a card keeps is refused", (
 
 // The stored record a new one repeats, or null for one to store.
 const admit = (all: CardRecord[], input: Parameters<typeof admitCardRecord>[1], model: string) => {
-  const r = admitCardRecord(all, input, cardFiling(all, [], model));
+  const r = admitCardRecord(all, input, cardFiling(all, model));
   return "existing" in r ? r.existing : null;
 };
 let next = 1;
@@ -148,14 +148,28 @@ test("a source hiding a key behind percent-encoding, or a local host behind a tr
     ["https://wiki.internal./card", /public host/],
     ["https://vendor.example/card?q=%E0%A4%A", /percent-encoding/],
     // Astra's second review of t625, 2026-10-13, finding 2: an encoded key in the host passed.
-    ["https://%73%6b%2dAbC123xyzQrS456.example/card", /carries a key/],
+    ["https://%73%6b%2dAbC123xyzQrS456.example/card", /plain ASCII/],
     [`https://${key.toLowerCase()}.example/card`, /carries a key/],
     // Astra's third review of t625, 2026-10-13, finding 2: the parser lowercased AKIA away.
     ["https://AKIAA1B2C3D4E5F6G7H8.example/card", /carries a key/],
-    ["https://%41%4b%49%41A1B2C3D4E5F6G7H8.example/card", /carries a key/],
-    ["https://%41%4B%49%41%41%31%42%32%43%33%44%34%45%35%46%36%47%37%48%38.example/card", /carries a key/],
-    ["https://ＡＫＩＡA1B2C3D4E5F6G7H8.example/card", /carries a key/],
+    ["https://%41%4b%49%41A1B2C3D4E5F6G7H8.example/card", /plain ASCII/],
+    ["https://%41%4B%49%41%41%31%42%32%43%33%44%34%45%35%46%36%47%37%48%38.example/card", /plain ASCII/],
+    ["https://ＡＫＩＡA1B2C3D4E5F6G7H8.example/card", /plain ASCII/],
     ["https://user@AKIAA1B2C3D4E5F6G7H8.example/card", /carries a key|user name/],
+    // Astra's and gemini-4-argon's fourth reviews, 2026-10-13: a backslash for the
+    // slashes hid the authority; empty labels and edge hyphens passed.
+    ["https:\\%41%4B%49%41A1B2C3D4E5F6G7H8.example/card", /starting https:\/\//],
+    ["https:\\\\%41%4b%49%41A1B2C3D4E5F6G7H8.example/card", /starting https:\/\//],
+    ["https:\\\\ＡＫＩＡA1B2C3D4E5F6G7H8.example/card", /starting https:\/\//],
+    ["https://vendor.example\\card", /backslash/],
+    ["https://bücher.example/card", /plain ASCII/],
+    ["https://xn--bcher-kva.example:8%34%34/card", /plain ASCII/],
+    ["https://.example/card", /public host/],
+    ["https://a..b/card", /public host/],
+    ["https://-.example/card", /public host/],
+    ["https://vendor-.example/card", /public host/],
+    ["https://vendor.example../card", /public host/],
+    ["HTTPS:vendor.example/card", /starting https:\/\//],
   ] as const) assert.throws(() => cleanCard({ ...structuredClone(CARD), source }, TODAY), why, source);
   // A public host with a trailing dot or capitals is kept in its plain form.
   assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://Vendor.Example./card?x=1" }, TODAY).source, "https://vendor.example/card?x=1");
@@ -172,7 +186,7 @@ test("a correction, supersession or withdrawal names an active card of the same 
   const w = stored(cleanWithdrawal({ withdraws: c.id, reason: "Pulled by the vendor." }));
   assert.throws(() => admit([a, b, c, w], cleanWithdrawal({ withdraws: b.id, reason: "x" }), "example-5"), /already superseded/);
 
-  const view = cardView(cardFiling([a, b, c, w], [], "example-5"), [a, b, c, w], [], []);
+  const view = cardView(cardFiling([a, b, c, w], "example-5"), [a, b, c, w], [], []);
   assert.deepEqual(view.cards.map((x) => [x.id, x.state, x.endedBy]), [[a.id, "corrected", b.id], [b.id, "superseded", c.id], [c.id, "withdrawn", w.id]]);
   assert.equal(view.cards[0].endReason, "Misread 71 as 70.");
   assert.deepEqual(view.withdrawals.map((x) => x.id), [w.id]);
@@ -215,8 +229,9 @@ test("a card's claims are model-card evidence, never an Atelier record, and the 
 type Entry = { id: string; harness: string; aliases: string[] };
 function ledger() {
   const all: CardRecord[] = [];
-  const add = (pool: Entry[], named: string, input: Parameters<typeof newCardRecord>[3]) => {
-    const made = newCardRecord(all, pool, named, input, "owner", "2026-10-16T09:00:00.000Z");
+  // The pool is passed and ignored: cards never read it.
+  const add = (_pool: Entry[], named: string, input: Parameters<typeof newCardRecord>[2]) => {
+    const made = newCardRecord(all, named, input, "owner", "2026-10-16T09:00:00.000Z");
     if ("existing" in made) return made.existing;
     const record = { ...made.store, id: `c${all.length + 1}` } as CardRecord;
     all.push(record);
@@ -226,44 +241,38 @@ function ledger() {
 }
 const card = (score: number) => cleanCard({ ...structuredClone(CARD), claims: [{ ...CARD.claims[1], score }] }, TODAY);
 
-test("pool removals and alias changes move where a card is listed, never its state", () => {
-  // Astra's third review of t625, 2026-10-13, finding 1: removing B showed A's withdrawn c1 as active.
+test("a card stays under the key its name gave, whatever the pool's aliases, removals and re-additions", () => {
+  // The fourth reviews of t625, 2026-10-13 (gpt-6-astra, gemini-4-argon): pool aliases moved cards across models.
   const l = ledger();
-  const b: Entry = { id: "model-b", harness: "codex", aliases: ["model-a"] };
-  const c1 = l.add([], "model-a", card(1));
-  l.add([b], "model-b", cleanWithdrawal({ withdraws: c1.id, reason: "Wrong model." }));
-  for (const pool of [[b], [], [{ id: "model-c", harness: "codex", aliases: ["model-a"] }]]) {
-    const models = new Set(["model-a", "model-b", "model-c"].map((m) => l.view(pool, m).model));
-    const listed = [...models].flatMap((m) => l.view(pool, m).cards.map((c) => [m, c.id, c.state]));
-    assert.deepEqual(listed.filter(([, id]) => id === c1.id).map(([, , state]) => state), ["withdrawn"], JSON.stringify(pool));
+  const a: Entry = { id: "model-a", harness: "codex", aliases: ["preview"] };
+  const c1 = l.add([a], "preview", card(1));
+  assert.equal(c1.model, "preview");
+  const c2 = l.add([a], "opencode/model-a", card(2));
+  assert.equal(c2.model, "model-a");
+  // B takes the alias and model-a's name: it can neither withdraw nor replay A's cards.
+  const b: Entry = { id: "model-b", harness: "codex", aliases: ["preview", "model-a"] };
+  assert.throws(() => l.add([b], "model-b", cleanWithdrawal({ withdraws: c2.id, reason: "Not B's." })), /c2 is not a card of model-b/);
+  const b1 = l.add([b], "model-b", card(2));
+  assert.notEqual(b1.id, c2.id);
+  l.add([], "model-a", cleanWithdrawal({ withdraws: c2.id, reason: "Twice." }));
+  for (const pool of [[a], [b], [], [{ id: "model-c", harness: "opencode", aliases: ["model-a"] }]]) {
+    assert.deepEqual(l.view(pool, "model-a").cards.map((c) => [c.id, c.state]), [[c2.id, "withdrawn"]]);
+    assert.deepEqual(l.view(pool, "preview").cards.map((c) => c.id), [c1.id]);
+    assert.deepEqual(l.view(pool, "model-b").cards.map((c) => c.id), [b1.id]);
   }
-  // gemini-4-argon's third review, finding 2: a replay after the pool lost
-  // the model returns the card instead of storing an active duplicate.
-  const sol: Entry = { id: "gpt-6.1-sol", harness: "codex", aliases: ["sol-preview"] };
-  const s1 = l.add([sol], "sol-preview", card(2));
-  assert.equal(l.add([], "sol-preview", card(2)), s1);
-  assert.deepEqual(l.view([sol], "gpt-6.1-sol").cards.map((c) => c.id), [s1.id]);
+  // A registry alias is the registry's model: claude-opus-5-5 under any harness is opus-5.5.
+  const o = l.add([], "antigravity/claude-opus-5-5", card(3));
+  assert.equal(o.model, "opus-5.5");
+  assert.deepEqual(l.view([], "claude-code/Opus-5.5").cards.map((c) => c.id), [o.id]);
+  assert.equal(l.view([], "opus-5.5").known, true);
+  assert.equal(l.view([], "preview").known, false);
 });
 
-test("one model under several harnesses, linked by a pool alias, has one set of cards", () => {
-  // gemini-4-argon's third review of t625, 2026-10-13, finding 1: the two harnesses split the cards.
-  const l = ledger();
-  const pool: Entry[] = [{ id: "gemini-4-argon", harness: "gemini-cli", aliases: [] }, { id: "gemini-4-argon-ag", harness: "antigravity", aliases: ["gemini-4-argon"] }];
-  const a = l.add(pool, "antigravity/gemini-4-argon-ag", card(3));
-  const g = l.add(pool, "gemini-cli/gemini-4-argon", card(4));
-  for (const name of ["gemini-4-argon", "gemini-4-argon-ag", "antigravity/gemini-4-argon", "gemini-cli/gemini-4-argon", "antigravity/gemini-4-argon-ag"]) {
-    const view = l.view(pool, name);
-    assert.equal(view.model, "gemini-4-argon", name);
-    assert.deepEqual(view.cards.map((c) => c.id), [a.id, g.id], name);
-    assert.deepEqual(view.pool, ["gemini-cli/gemini-4-argon", "antigravity/gemini-4-argon-ag"], name);
-  }
-});
-
-test("random sequences of records, withdrawals, corrections and pool changes never show a withdrawn card active, and list each card under one model", () => {
+test("random sequences of records, withdrawals, corrections and pool changes list each card under the key it was written with, and never show a withdrawn card active", () => {
   let seed = 625;
   const rand = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
   const ids = ["m1", "m2", "m3"];
-  const names = ["m1", "m2", "m3", "p1", "p2", "codex/m1", "opencode/p1"];
+  const names = ["m1", "m2", "m3", "p1", "p2", "codex/m1", "opencode/p1", "antigravity/claude-opus-5-5"];
   for (let run = 0; run < 60; run++) {
     const l = ledger();
     const pool = new Map<string, Entry>();
@@ -278,17 +287,20 @@ test("random sequences of records, withdrawals, corrections and pool changes nev
         if (op === 0) l.add(current, name, card(rand(5)));
         if (op === 1 && pick) { const w = l.add(current, name, cleanWithdrawal({ withdraws: pick.id, reason: "Gone." })); if (w.kind === "withdrawal") withdrawn.add(w.withdraws); }
         if (op === 2 && pick) l.add(current, name, cleanCard({ ...structuredClone(CARD), corrects: pick.id, claims: [{ ...CARD.claims[1], score: rand(5) }] }, TODAY));
-        if (op === 3) { const id = ids[rand(3)]; pool.set(id, { id, harness: rand(2) ? "codex" : "opencode", aliases: [...(pool.get(id)?.aliases ?? []), ["p1", "p2"][rand(2)]] }); }
-        if (op === 4) { const alias = ["p1", "p2"][rand(2)]; for (const e of pool.values()) e.aliases = e.aliases.filter((a) => a !== alias); const id = ids[rand(3)]; const e = pool.get(id); if (e) e.aliases = [...e.aliases, alias]; }
+        if (op === 3) { const id = ids[rand(3)]; pool.set(id, { id, harness: rand(2) ? "codex" : "opencode", aliases: [...(pool.get(id)?.aliases ?? []), ["p1", "p2", "m1"][rand(3)]] }); }
+        if (op === 4) { const alias = ["p1", "p2"][rand(2)]; for (const e of pool.values()) e.aliases = e.aliases.filter((x) => x !== alias); const e = pool.get(ids[rand(3)]); if (e) e.aliases = [...e.aliases, alias]; }
         if (op === 5) pool.delete(ids[rand(3)]);
         if (op === 6) { const id = ids[rand(3)]; if (!pool.has(id)) pool.set(id, { id, harness: "codex", aliases: [] }); }
       } catch (e) { assert.match(String(e), /is not a card of|already (withdrawn|corrected|superseded)/); }
       const now = [...pool.values()].map((e) => ({ ...e, aliases: [...e.aliases] }));
-      const models = new Set([...names, ...now.map((e) => e.id)].map((n) => l.view(now, n).model));
-      const listing = [...models].flatMap((m) => l.view(now, m).cards);
       const at = `run ${run} step ${step}`;
-      for (const c of listing) if (withdrawn.has(c.id)) assert.equal(c.state, "withdrawn", `${at}: ${c.id}`);
-      assert.deepEqual(listing.map((c) => c.id).sort(), l.all.filter((r) => r.kind === "card").map((r) => r.id).sort(), `${at}: each card listed once`);
+      const keys = new Set(names.map((n) => l.view(now, n).model));
+      const listing = [...keys].flatMap((k) => l.view(now, k).cards.map((c) => [k, c] as const));
+      for (const [k, c] of listing) {
+        assert.equal(c.model, k, `${at}: ${c.id} listed under the key it was written with`);
+        if (withdrawn.has(c.id)) assert.equal(c.state, "withdrawn", `${at}: ${c.id}`);
+      }
+      assert.deepEqual(listing.map(([, c]) => c.id).sort(), l.all.filter((r) => r.kind === "card").map((r) => r.id).sort(), `${at}: each card listed once`);
     }
   }
 });

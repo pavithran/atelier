@@ -72,10 +72,15 @@ corrects (`"corrects": "c12"`), and one that replaces it with a newer source
 names the card it supersedes (`"supersedes": "c12"`); both keep the old card
 in the history, as a withdrawal does.
 
-A model's cards are filed under its canonical name, so its id, its aliases
-and its harnesses share one set, and taking a model out of the pool and
-adding it back loses none. A model the pool does not have can carry cards
-too. `atelier models show` prints the cards oldest first, then the active
+A card is filed under the key its model's name gives, from the name alone:
+the harness is cut off, letter case is ignored, and a name the registry
+knows (such as `claude-opus-5-5`) is its registry model (`opus-5.5`). So
+`claude-code/opus-5.5` and `antigravity/opus-5.5` share one set of cards.
+Pool aliases are not read: adding, moving or removing an alias, or taking a
+model out of the pool and adding it back, never moves a card. A name neither
+the registry nor the pool knows is kept as it is, and `atelier models card`
+says so. Only cards of the same model can correct, supersede or withdraw a
+card. `atelier models show` prints the cards oldest first, then the active
 claims that give one benchmark different scores under the same conditions
 (a conflict, with both sources) and those that differ only under different
 conditions, which are not conflicts. The registry's static priors are

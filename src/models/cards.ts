@@ -18,8 +18,7 @@
 // priors, and are shown beside the cards, never stored as cards.
 
 import { modelKey, RuleError } from "../rules.ts";
-import { canonicalModel, type PoolNames } from "./judgement.ts";
-import { HARNESSES, LOOKS_LIKE_KEY } from "./pool.ts";
+import { HARNESSES, LOOKS_LIKE_KEY, type ModelEntry } from "./pool.ts";
 import { MODEL_PROFILES, type ModelEvidence } from "./registry.ts";
 
 export interface CardConditions {
@@ -84,8 +83,9 @@ export interface CardDisagreement {
   claims: { card: string; score: number; source: string; conditions: CardConditions }[];
 }
 export interface CardView {
-  model: string;
-  pool: string[];      // the pool entries, harness/id, that are this model
+  model: string;       // the key the cards are stored and listed under (modelKey)
+  known?: boolean;     // whether the registry or a pool entry's id gives that key
+  pool: string[];      // the pool entries, harness/id, whose id gives that key
   cards: ShownCard[];
   withdrawals: CardWithdrawal[];
   disagreements: CardDisagreement[];
@@ -140,35 +140,33 @@ function day(v: unknown, what: string): string {
   return v;
 }
 
-// A source is a public https URL: no credentials in it, no other scheme, no
-// local, private or numeric host, and nothing that looks like a key in its
-// path, query or fragment, read decoded, so percent-encoding hides none. The
-// host is kept lowercased and without a trailing dot. Astra's review of t625
-// (2026-10-13, finding 3) found a key behind %-escapes, and localhost. with
-// its trailing dot, accepted. The URL parser has already turned 127.1 and
-// 0x7f000001 into dotted IPv4, which the digits test refuses.
+// A source is a public https URL, written plainly: it starts https://, its
+// authority (host and port) is plain ASCII with no %-escape and no
+// backslash, so the host the parser reads is the host as typed and the key
+// check on the typed text (text()) covers it. Every review round of t625
+// (2026-10-13) found a spelling the parser decodes or folds (%-escapes,
+// full-width letters, a backslash for the slashes) that a decoded check
+// missed; these are refused outright. The host must then be a domain name
+// of plain labels, neither local, private nor numeric, kept lowercased and
+// without its one trailing dot. The path, query and fragment are scanned
+// decoded, so percent-encoding hides no key there.
 const PRIVATE_HOST = /(?:^|\.)(?:localhost|local|localdomain|internal|intranet|lan|home|corp|private|home\.arpa)$/;
+const LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 export function cleanSource(v: unknown): string {
   const raw = text(v, "source", 500, true)!;
-  // The authority as it was typed, decoded and NFKC-normalised as the URL
-  // parser decodes a host but before it lowercases it, so a key's case-bound
-  // prefix (AKIA) survives an encoded or full-width spelling (Astra's third
-  // review of t625, 2026-10-13, finding 2).
-  const authority = /^[a-z][a-z0-9+.-]*:\/*([^/?#\\]*)/i.exec(raw)?.[1] ?? "";
-  let typed = authority;
-  try { typed = decodeURIComponent(authority); } catch { /* the parser refuses it below, or the raw form is scanned */ }
-  if (LOOKS_LIKE_KEY.test(authority) || LOOKS_LIKE_KEY.test(typed.normalize("NFKC"))) throw bad("source looks like it carries a key; a key belongs in the Keychain");
+  const plain = /^https:\/\/([^/?#]*)/i.exec(raw);
+  if (!plain) throw bad("source must be an https URL, starting https://");
+  if (raw.includes("\\")) throw bad("source must not contain a backslash");
+  if (/[%\u0080-￿]/.test(plain[1])) throw bad("source's host must be written in plain ASCII, without %-escapes");
   let url: URL;
   try { url = new URL(raw); } catch { throw bad("source must be a URL, such as https://vendor.example/model-card"); }
   if (url.protocol !== "https:") throw bad("source must be an https URL");
   if (url.username || url.password) throw bad("source must not carry a user name or password");
-  const host = url.hostname.toLowerCase().replace(/\.+$/, "");
-  if (!host.includes(".") || PRIVATE_HOST.test(host) || /^[\d.]+$/.test(host) || host.startsWith("[") || host.includes(":")) {
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!/^[a-z0-9.-]+$/.test(host) || !host.includes(".") || !host.split(".").every((l) => LABEL.test(l))
+    || PRIVATE_HOST.test(host) || /^[\d.]+$/.test(host)) {
     throw bad("source must name a public host by its domain name");
   }
-  // The parser has already decoded the host; a key there is refused too
-  // (Astra's second review of t625, 2026-10-13, finding 2).
-  if (LOOKS_LIKE_KEY.test(host)) throw bad("source looks like it carries a key; a key belongs in the Keychain");
   url.hostname = host;
   let decoded: string;
   try {
@@ -263,28 +261,27 @@ function endings(records: readonly CardRecord[]): Map<string, { state: CardState
   return ended;
 }
 
-// Two questions kept apart, so no change to the pool can bring a withdrawn
-// card back (the third reviews of t625, 2026-10-13, by gpt-6-astra and
-// gemini-4-argon, which found pool removals and alias moves did):
+// Two rules, so no change to the pool can move a card or bring a withdrawn
+// one back. Four rounds of review of t625 (2026-10-13) found every reading of
+// pool aliases could; cards no longer read them at all.
+//
+// A card belongs to the model its name gives by modelKey (src/rules.ts), the
+// key computed from the name alone: the harness cut off, and a name the
+// registry knows given as the registry's id. It is stored when the card is
+// written and the card is listed by it, so pool aliases, removals and
+// re-additions never change a card's key or where it is listed. A name
+// neither the registry nor the pool knows is kept under its own normalised
+// key, and the answer says so (CardView.known).
 //
 // A card's state is read from every record in the table that names its id
-// (endings), never from those filed under one model: a correction,
-// supersession or withdrawal attaches to the card id alone, and is filed
-// under the key of the card it names, so the two always travel together.
-//
-// Which model a card is listed under is read now, from the key it was filed
-// under, through canonicalModel with the current pool: one model for every
-// card. Removing a model from the pool, or giving its name to another as an
-// alias, changes where a card is listed, never its state. A card is also
-// found, for a retry or for a record that names it, by the name it was sent
-// under, where that name now means the model asked for.
+// (endings): a correction, supersession or withdrawal names the card id, is
+// accepted only from the model the card belongs to, and is stored under the
+// same key.
 export interface CardFiling { model: string; listed: ModelCard[]; reachable: Set<string> }
-export function cardFiling(all: readonly CardRecord[], pool: PoolNames, named: string): CardFiling {
-  const model = canonicalModel(named, pool);
-  const cards = all.filter((r): r is ModelCard => r.kind === "card");
-  const listed = cards.filter((c) => canonicalModel(c.model, pool) === model);
-  const reachable = new Set([...listed, ...cards.filter((c) => canonicalModel(c.named, pool) === model)].map((c) => c.id));
-  return { model, listed, reachable };
+export function cardFiling(all: readonly CardRecord[], named: string): CardFiling {
+  const model = modelKey(named);
+  const listed = all.filter((r): r is ModelCard => r.kind === "card" && r.model === model);
+  return { model, listed, reachable: new Set(listed.map((c) => c.id)) };
 }
 
 // What a new record does, before it is stored: the record that already says
@@ -299,7 +296,7 @@ const content = (r: CardInput | ModelCard | WithdrawalInput | CardWithdrawal) =>
   return JSON.stringify(rest);
 };
 export function admitCardRecord(all: readonly CardRecord[], input: CardInput | WithdrawalInput, filing: CardFiling): { existing: CardRecord } | { fileAs: string } {
-  const same = all.find((r) => (r.kind === "withdrawal" || filing.reachable.has(r.id)) && content(r) === content(input));
+  const same = all.find((r) => filing.reachable.has(r.kind === "withdrawal" ? r.withdraws : r.id) && content(r) === content(input));
   if (same) return { existing: same };
   const target = input.kind === "withdrawal" ? input.withdraws : input.corrects ?? input.supersedes;
   if (!target) return { fileAs: filing.model };
@@ -368,18 +365,19 @@ export function cardEvidence(card: ModelCard): ModelEvidence[] {
 
 // A model's cards as the routes answer them: its filing in the whole table,
 // the pool entries that are this model now, and the registry's priors for it.
-export function modelCardView(all: readonly CardRecord[], pool: PoolNames, named: string): CardView {
-  const filing = cardFiling(all, pool, named);
-  const entries = pool.filter((m) => canonicalModel(`${m.harness}/${m.id}`, pool) === filing.model).map((m) => `${m.harness}/${m.id}`);
-  const priors = MODEL_PROFILES.filter((p) => modelKey(p.id) === filing.model).flatMap((p) => p.evidence.filter((e) => e.prior));
-  return cardView(filing, all, entries, priors);
+export function modelCardView(all: readonly CardRecord[], pool: readonly Pick<ModelEntry, "id" | "harness">[], named: string): CardView {
+  const filing = cardFiling(all, named);
+  const entries = pool.filter((m) => modelKey(`${m.harness}/${m.id}`) === filing.model).map((m) => `${m.harness}/${m.id}`);
+  const profiles = MODEL_PROFILES.filter((p) => modelKey(p.id) === filing.model);
+  const priors = profiles.flatMap((p) => p.evidence.filter((e) => e.prior));
+  return { ...cardView(filing, all, entries, priors), known: profiles.length > 0 || entries.length > 0 };
 }
 
 // A record about to be added: the one already stored that says the same, or
 // the record to store, filed as admitCardRecord says.
 export type StoredCardRecord = Omit<ModelCard, "id"> | Omit<CardWithdrawal, "id">;
-export function newCardRecord(all: readonly CardRecord[], pool: PoolNames, named: string, input: CardInput | WithdrawalInput, by: string, at: string): { existing: CardRecord } | { store: StoredCardRecord } {
-  const admitted = admitCardRecord(all, input, cardFiling(all, pool, named));
+export function newCardRecord(all: readonly CardRecord[], named: string, input: CardInput | WithdrawalInput, by: string, at: string): { existing: CardRecord } | { store: StoredCardRecord } {
+  const admitted = admitCardRecord(all, input, cardFiling(all, named));
   if ("existing" in admitted) return admitted;
   return { store: { ...input, model: admitted.fileAs, named, at, by } as StoredCardRecord };
 }

@@ -74,6 +74,13 @@ test("a list of cards is checked whole before any is sent, then each goes under 
   assert.match(sent.output, /c1 was already recorded for example-5, which is not in the pool; nothing added\./);
 });
 
+test("models card says when the name is one neither the registry nor the pool knows", async (t) => {
+  const f = await stub(t, (method, path, body) => ({ status: 201, data: { record: stored("c8", "gemini-3.8-flash-preview", body), retried: false, view: VIEW([], { model: "gemini-3.8-flash-preview", pool: [], known: false }) } }));
+  const r = await f.run(["models", "card", "Gemini-3.8-Flash-Preview"], JSON.stringify(CARD));
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /^c8 recorded for gemini-3\.8-flash-preview, a name neither the registry nor the pool knows, kept as it is: 1 claim/);
+});
+
 test("models card refuses what it cannot record before sending anything", async (t) => {
   const f = await stub(t, () => ({ data: {} }));
   const cases = [
