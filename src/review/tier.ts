@@ -12,6 +12,7 @@
 // in src/rules.ts), and a landing never waits for it: an open tier request is
 // withdrawn when the change is accepted, integrated or closed.
 
+import { FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
 import type { PoolFamily } from "../models/pool.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
 import { actorFamily, contributed, sameActor } from "../rules.ts";
@@ -32,8 +33,12 @@ export function gateServesTier(tier: readonly string[] | undefined, reviewer: st
 // one actor's later verdict at a head replaces its earlier one), and may
 // review under the project's policy; under single-family mode (`single`,
 // t394) it is also one of that company's models. Null when none remains, and
-// then no tier review is asked for.
-export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null, single: PoolFamily | null = null): string | null {
-  return byPrecision(tier, (a) => [a], precision).find((a) => !contributed(a, contributors) && !gate.some((g) => sameActor(g, a))
-    && (!single || actorFamily(a) === single) && mayReview(a)) ?? null;
+// then no tier review is asked for. The role assignments bearing on the
+// review (`assigned`, most specific first; src/models/assignments.ts) put
+// their eligible choices among the tier's models first: the tier is the
+// project's, so an assignment orders it and never adds to it.
+export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null, single: PoolFamily | null = null, assigned: readonly Assignment[] = []): string | null {
+  const may = (a: string) => !contributed(a, contributors) && !gate.some((g) => sameActor(g, a)) && (!single || actorFamily(a) === single) && mayReview(a);
+  const ordered = orderByAssignment(byPrecision(tier, (a) => [a], precision), (a) => a, assigned, (a) => (may(a) ? null : "may not give the tier review"), FALLBACK.review).order;
+  return ordered.find(may) ?? null;
 }

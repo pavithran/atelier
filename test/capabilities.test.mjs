@@ -194,7 +194,10 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   assert.deepEqual(requiredForCommand("models", "set"), ["models.standing.v1"]);
   assert.deepEqual(requiredForCommand("models", "add", { harness: "codex" }), []);
   for (const flag of ["state", "roles", "tier"]) assert.deepEqual(requiredForCommand("models", "add", { [flag]: "x" }), ["models.standing.v1"], flag);
-  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1", "models.standing.v1"]);
+  // assign and roles record and read role assignments (t622).
+  assert.deepEqual(requiredForCommand("models", "assign"), ["models.roles.v1"]);
+  assert.deepEqual(requiredForCommand("models", "roles"), ["models.roles.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1", "models.standing.v1", "models.roles.v1"]);
   assert.deepEqual(requiredForCommand("token", "issue"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "store"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "ls"), []);

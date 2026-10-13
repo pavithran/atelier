@@ -77,6 +77,20 @@ test("models compare without letter case or profile, and by the registry's id fo
   assert.ok(!sameActor("claude-code/opus-5.5", "claude-code/sonnet-5.5"));
 });
 
+// The shared identity contract of the model-assessment tasks (t622): one
+// model under several harnesses is one model. Antigravity names Opus
+// "claude-opus-5.5", with a dot where the registry's alias has a dash, so
+// before this antigravity/claude-opus-5.5 counted as a model of its own.
+test("a registered model's name with dots for dashes, as another harness spells it, is that model", () => {
+  assert.equal(modelKey("antigravity/claude-opus-5.5"), "opus-5.5");
+  assert.equal(modelKey("antigravity/Claude-Sonnet-5.5:high"), "sonnet-5.5");
+  // A name the registry does not know keeps its own spelling.
+  assert.equal(modelKey("opencode/kimi-k2.7"), "kimi-k2.7");
+  assert.equal(modelKey("opencode/kimi-k2-7"), "kimi-k2-7");
+  assert.equal(modelKey("zcode/glm-5-3"), "glm-5.3");
+  assert.ok(!sameActor("claude-code/opus-5.5", "antigravity/claude-opus-5.5"));
+});
+
 test("one owner: a second actor cannot claim an owned item", () => {
   assert.throws(() => assertClaimable(item({ state: "claimed" }), "codex/gpt-5.5"), /held by claude-code/);
   assert.doesNotThrow(() => assertClaimable(item({ state: "claimed" }), "claude-code/opus-5.5"));

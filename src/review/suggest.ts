@@ -6,6 +6,7 @@ import { latestNote, noteLine } from "../models/pool.ts";
 import { frontier, ranked, sensitive, type SuggestionInput } from "../models/suggest.ts";
 import type { Choice } from "../plans/route.ts";
 import { pickReviewer } from "./reviewer.ts";
+import { applicableAssignments, docsOnly, reviewRoles } from "../models/assignments.ts";
 
 const actorOf = (m: SuggestionInput["pool"][number]) => `${m.harness}/${m.id}`;
 
@@ -20,6 +21,9 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
   const precision = buildPrecision(input.sources, precisionWindow(now), input.owner);
   const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
     allowPaid: false, owner: input.owner, avoid, precision, previous: input.previous ?? null, tier: input.tier,
+    // Security, concurrency or gate work reads security-review, docs alone
+    // claims-review, and both then review (src/models/assignments.ts).
+    assigned: applicableAssignments(input.assignments ?? [], input.project, reviewRoles({ sensitive: sensitive(input.item), docs: docsOnly(input.item.scope) })),
     // Preserve outcome order between equal precision terms.
     recordOrder: ordered.map(({ entry }) => actorOf(entry)),
   });

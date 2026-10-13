@@ -670,13 +670,17 @@ export function modelOf(actor: string): string {
 // model registry knows, as a model's id or one of its aliases, becomes that
 // model's id: "claude-code/Opus-5.5:fast" and "antigravity/claude-opus-5-5"
 // both give "opus-5.5". A name the registry does not know is compared as it
-// is after lowercasing and cutting.
+// is after lowercasing and cutting. The registry is asked with dots read as
+// dashes, so a harness that spells a registered model's alias with a dot
+// (Antigravity's "claude-opus-5.5" for "claude-opus-5-5") names that model:
+// one model under several harnesses is one model (t622).
 const bareModel = (model: string) => model.toLowerCase().split(":")[0];
-const REGISTERED = new Map(MODEL_PROFILES.flatMap((p) => [p.id, ...(p.aliases ?? [])].map((name) => [bareModel(name), bareModel(p.id)] as const)));
+const dashed = (model: string) => model.replaceAll(".", "-");
+const REGISTERED = new Map(MODEL_PROFILES.flatMap((p) => [p.id, ...(p.aliases ?? [])].map((name) => [dashed(bareModel(name)), bareModel(p.id)] as const)));
 
 export function modelKey(actor: string): string {
   const model = bareModel(modelOf(actor));
-  return REGISTERED.get(model) ?? model;
+  return REGISTERED.get(dashed(model)) ?? model;
 }
 
 // Whether two actor names stand for one agent: the same harness, in any

@@ -65,6 +65,8 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
+import { applicableAssignments, assignmentHistory, currentAssignments, docsOnly, recordAssignment, reviewRoles, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentStore, type AssignmentView, type ResolvedAssignment } from "./models/assignments.ts";
+import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import {
@@ -1189,6 +1191,49 @@ export class Ledger extends DurableObject<Env> {
     return named ? { ...stored, projectName: named.name } : stored;
   }
 
+  // ── role assignments (src/models/assignments.ts) ─────────────────────────
+  // On the index instance, beside the pool and its notes: the developer's
+  // dated judgements of which model does what, kept as records never changed.
+  // Each project's ledger holds a copy of those bearing on it
+  // (assignmentsChanged), which its selectors read without the index.
+
+  private get assignmentStore(): AssignmentStore {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS model_assignments (n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, json TEXT NOT NULL)`);
+    return {
+      records: () => this.sql.exec(`SELECT json FROM model_assignments ORDER BY n`).toArray().map((r) => JSON.parse(r.json as string) as AssignmentRecord),
+      insert: (record) => { this.sql.exec(`INSERT INTO model_assignments (id, json) VALUES (?, ?)`, record.id, JSON.stringify(record)); },
+      owner: this.owner,
+      log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()),
+    };
+  }
+
+  assignRole(actor: string, input: ResolvedAssignment, acting: string | null = null): Assignment & { retried?: true } {
+    return recordAssignment(this.assignmentStore, actor, input, new Date().toISOString(), acting);
+  }
+
+  withdrawRoleAssignment(id: string, actor: string, note: unknown, acting: string | null = null) {
+    return withdrawAssignment(this.assignmentStore, actor, id, note, new Date().toISOString(), acting);
+  }
+
+  // Every assignment with its status, oldest first, and the current name of
+  // each project key a scope or a piece of evidence names.
+  roleAssignments(): { assignments: AssignmentView[]; names: Record<string, string> } {
+    const names: Record<string, string> = {};
+    for (const p of this.projects()) names[p.key ?? p.name] = p.name;
+    return { assignments: assignmentHistory(this.assignmentStore.records()), names };
+  }
+
+  // The assignments standing now, every scope.
+  currentRoleAssignments(): Assignment[] {
+    return currentAssignments(this.assignmentStore.records());
+  }
+
+  // The events recording and withdrawing assignments, for the acting
+  // models' judgement record (src/models/judgement.ts).
+  assignmentEvents(): LedgerEvent[] {
+    return this.sql.exec(`SELECT * FROM events WHERE kind IN ('assignment.recorded', 'assignment.withdrawn') ORDER BY seq`).toArray().map(eventOf);
+  }
+
   putModel(entry: ModelEntry): ModelEntry {
     const row = this.sql.exec(`SELECT json FROM models WHERE id = ?`, entry.id).toArray()[0];
     // A status is kept only while the entry is reached the way it was when
@@ -1280,13 +1325,44 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('pool', ?)`, JSON.stringify(kept));
   }
 
+  // The index sends the role assignments bearing on this project (its own
+  // and every project's) whenever one is recorded or withdrawn, and with the
+  // pool (src/models/assignments.ts). The selectors here read this copy.
+  assignmentsChanged(assignments: Assignment[]): void {
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('assignments', ?)`, JSON.stringify(assignments));
+  }
+
+  private heldAssignments(): Assignment[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'assignments'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) as Assignment[] : [];
+  }
+
+  // The assignments bearing on a review of the item, most specific first:
+  // security or gate work reads security-review, docs alone (a docs part, or
+  // a task whose scope is docs) claims-review, then review.
+  private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null): Assignment[] {
+    const docs = part ? part.kind === "docs" || part.taskKind === "docs" : docsOnly(item.scope);
+    return applicableAssignments(this.heldAssignments(), null, reviewRoles({ sensitive: sensitive(item), docs }));
+  }
+
+  // A task or event named as evidence for an assignment: what is missing,
+  // or null when the task is here and the event, when named, is one of its.
+  evidenceMissing(item: string, seq?: number): string | null {
+    if (!this.sql.exec(`SELECT 1 FROM items WHERE id = ?`, item).toArray().length) return `no task ${item} in this project`;
+    if (seq === undefined) return null;
+    const row = this.sql.exec(`SELECT item_id FROM events WHERE seq = ?`, seq).toArray()[0];
+    if (!row) return `no event ${seq} in this project`;
+    return row.item_id === item ? null : `event ${seq} is not one of ${item}'s`;
+  }
+
   // The index sends the pool here when the owner changes it, and every open
   // approved plan ticks, so a review asked of a model just paused, reserved
   // or kept from reviewing is withdrawn and asked of another. A standalone
   // item's unclaimed request to such a model is withdrawn too, so the next
   // landing's gate asks again rather than waiting on it.
-  poolChanged(pool: ModelEntry[]): void {
+  poolChanged(pool: ModelEntry[], assignments?: Assignment[]): void {
     this.keepPool(pool);
+    if (assignments) this.assignmentsChanged(assignments);
     const at = new Date().toISOString();
     const open = this.sql.exec(`SELECT r.id, r.item, r.head, r.dispatch, r.tier, i.plan FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open'`).toArray();
     for (const r of open) {
@@ -3280,6 +3356,7 @@ export class Ledger extends DurableObject<Env> {
       item, pool, policy, allowPaid: false, owner: this.owner,
       precision: this.reviewPrecision(new Date().toISOString()),
       tier: kind === "protected" ? policy.reviewTier : undefined,
+      assigned: this.reviewAssigned(item),
     });
     return pick.reviewer?.actor ?? null;
   }
@@ -3819,7 +3896,7 @@ export class Ledger extends DurableObject<Env> {
       } catch { return false; }
     });
     if (!offered.length) return { entry: null, why: `no model in the pool is offered for the ${PREREVIEW_JOB} job by a live runner`, reasons: [] };
-    const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at) });
+    const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item) });
     const entry = pick.reviewer ? offered.find((m) => sameActor(`${m.harness}/${m.id}`, pick.reviewer!.actor)) ?? null : null;
     return entry ? { entry, why: "", reasons: pick.reviewer!.reasons } : { entry: null, why: pick.unpicked ?? "no model qualifies", reasons: [] };
   }
@@ -4982,7 +5059,7 @@ export class Ledger extends DurableObject<Env> {
       this.assertStanding(chosen, "plan", pool);
       reasons = ["Named by the developer"];
     } else {
-      const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers());
+      const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers(), this.heldAssignments());
       if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model`, 409);
       chosen = pick.actor;
       reasons = pick.reasons;
@@ -5141,7 +5218,7 @@ export class Ledger extends DurableObject<Env> {
     // which is undefined when no runner is live and routing then falls back
     // to the whole pool.
     const routing = offers !== null ? offers : await this.routingOffers();
-    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing, precision: this.reviewPrecision(new Date().toISOString()) });
+    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing, precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments() });
     const unrouted = routes.filter((r) => r.unrouted !== null);
     if (unrouted.length) {
       const why = unrouted.map((r) => `part ${r.key} has no ${r.builder ? "reviewer" : "builder"}: ${r.unrouted}`).join("; ");
@@ -5389,7 +5466,7 @@ export class Ledger extends DurableObject<Env> {
       // the Worker read them, so the reviewers are judged against the review
       // job's offer and warned of when none is live; the ledger reads them
       // itself (routingOffers) when the caller read none.
-      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: offers !== null ? offers : await this.routingOffers(), precision: this.reviewPrecision(new Date().toISOString()) }) : null,
+      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: offers !== null ? offers : await this.routingOffers(), precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments() }) : null,
       // The runner offers this view was read with, for the same judgement.
       ...(offers !== null ? { offers } : {}),
       // The plan branch's integration head (docs/orchestrator.md, section 5).
@@ -5844,6 +5921,7 @@ export class Ledger extends DurableObject<Env> {
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
+        assigned: this.reviewAssigned(p, part),
       });
       if (pick && !pick.reviewer) {
         this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name ${single ? independentReviewerText(single) : "one of another family than every contributor"}, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
@@ -6356,7 +6434,7 @@ export class Ledger extends DurableObject<Env> {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
       const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined },
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined, assignments: this.heldAssignments() },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");
@@ -6370,6 +6448,7 @@ export class Ledger extends DurableObject<Env> {
         avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
+        assigned: this.reviewAssigned(item),
       });
       if (!pick.reviewer) {
         const single = singleFamily(policy);
@@ -6444,7 +6523,7 @@ export class Ledger extends DurableObject<Env> {
     // A tier model the owner has paused, reserved or kept from reviewing is
     // passed over, as the gate's selector passes it over.
     const standing = this.poolStanding();
-    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !actorStanding(standing, a, "review"), this.reviewPrecision(at), singleFamily(policy));
+    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !actorStanding(standing, a, "review"), this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item));
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
     const dispatch = { ...this.standingDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
@@ -7379,7 +7458,7 @@ export class Ledger extends DurableObject<Env> {
     const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the developer with plan refresh --resolve" } } : spec;
     const [route] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
       pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers: offers !== null ? offers : await this.routingOffers(),
-      precision: this.reviewPrecision(at),
+      precision: this.reviewPrecision(at), assignments: this.heldAssignments(),
     });
     const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [], acceptance: spec.acceptance, author: ORCHESTRATOR },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });

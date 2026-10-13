@@ -20,6 +20,7 @@
 // builder's blind spots, so a different model alone is a weaker second
 // opinion.
 
+import { FALLBACK, orderByAssignment, type Assignment, type AssignmentOutcome } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
@@ -45,6 +46,11 @@ export interface PickInput {
   owner?: string;
   recordOrder?: readonly string[];             // eligible task suggestions, best outcome record first
   precision?: PrecisionRecord | null;           // reviewers' precision on blocking findings; orders the tier and the pool only
+  // The role assignments bearing on this review, most specific first
+  // (applicableAssignments in src/models/assignments.ts). The one applied
+  // puts its eligible choices first within the tier and within the pool;
+  // it adds no model to the tier and moves none that fails a rule.
+  assigned?: readonly Assignment[];
 }
 
 // The invariant: unpicked is null exactly when reviewer is set.
@@ -52,6 +58,7 @@ export interface ReviewerPick {
   reviewer: Choice | null;
   passedOver: Choice[];       // candidates that failed a rule, in the order they were asked
   unpicked: string | null;    // why no reviewer qualifies; null when one does
+  assignment?: AssignmentOutcome;  // set when role assignments were given: the one applied, those skipped, the fallback
 }
 
 type Source = { kind: "previous" | "tier" | "routed" | "pool" } | { kind: "alternate"; index: number };
@@ -83,15 +90,37 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   const precision = input.precision ?? null;
   // A tier model's names: its pool entry's id and aliases when the pool has it.
   const tierNames = (actor: string) => { const entry = findEntry(input.pool, actor); return entry ? namesOf(entry) : [actor]; };
-  for (const actor of byPrecision(input.tier ?? [], tierNames, precision)) wanted.push({ actor, source: { kind: "tier" } });
-  if (input.route?.reviewer) wanted.push({ actor: input.route.reviewer.actor, source: { kind: "routed" } });
-  input.route?.alternates.forEach((c, index) => wanted.push({ actor: c.actor, source: { kind: "alternate", index } }));
+  const tierOrder = byPrecision(input.tier ?? [], tierNames, precision);
   const order = (entry: ModelEntry) => {
     const index = input.recordOrder?.indexOf(actorOf(entry)) ?? -1;
     return index < 0 ? Number.MAX_SAFE_INTEGER : index;
   };
-  const pool = byPrecision([...input.pool].sort((a, b) => order(a) - order(b) || a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b))), namesOf, precision);
-  for (const entry of pool) wanted.push({ actor: actorOf(entry), source: { kind: "pool" } });
+  const poolOrder = byPrecision([...input.pool].sort((a, b) => order(a) - order(b) || a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b))), namesOf, precision);
+  // Role assignments order the tier's and the pool's eligible models, each
+  // within its own place: the tier stays ahead of the pool, and the
+  // previous round's reviewer and the plan's routing ahead of both. Which
+  // assignment applies is judged over the two together.
+  const assigned = input.assigned ?? [];
+  const refusal = (actor: string) => {
+    const entry = findEntry(input.pool, actor);
+    if (!entry) return "not in the pool";
+    const failed = judge(entry, contributors, input).failed;
+    return failed.length ? failed.join("; ") : null;
+  };
+  const all = assigned.length ? orderByAssignment([...tierOrder, ...poolOrder.map(actorOf)], (a) => a, assigned, refusal, FALLBACK.review, input.pool) : null;
+  const applied = all?.outcome.applied ? assigned.filter((a) => a.id === all.outcome.applied) : [];
+  for (const actor of orderByAssignment(tierOrder, (a) => a, applied, refusal, FALLBACK.review, input.pool).order) wanted.push({ actor, source: { kind: "tier" } });
+  if (input.route?.reviewer) wanted.push({ actor: input.route.reviewer.actor, source: { kind: "routed" } });
+  input.route?.alternates.forEach((c, index) => wanted.push({ actor: c.actor, source: { kind: "alternate", index } }));
+  for (const entry of orderByAssignment(poolOrder, actorOf, applied, (e) => refusal(actorOf(e)), FALLBACK.review, input.pool).order) wanted.push({ actor: actorOf(entry), source: { kind: "pool" } });
+  const outcome = all?.outcome;
+  const assignmentSaid = (actor: string, source: Source): string[] => {
+    if (!all) return [];
+    if (all.promoted(actor)) return all.reasons(actor);
+    const ahead = source.kind === "previous" || source.kind === "routed" || source.kind === "alternate" || (source.kind === "tier" && !assigned.some((a) => a.id === outcome!.applied && a.choices.some((c) => sameActor(c.actor, actor))))
+      ? [`${source.kind === "tier" ? "The project's review tier" : source.kind === "previous" ? "The previous round's reviewer" : "The plan's routing"} comes before role assignments`] : [];
+    return [...ahead, ...outcome!.lines];
+  };
 
   const seen = new Set<string>();
   const passedOver: Choice[] = [];
@@ -113,10 +142,11 @@ export function pickReviewer(input: PickInput): ReviewerPick {
       continue;
     }
     const said = precision ? [precisionLine(precisionOf(precision, namesOf(entry)), precision.window)] : [];
-    return { reviewer: { actor: actorOf(entry), reasons: [...lead, position(source, input), ...judged.passed, ...said] }, passedOver, unpicked: null };
+    return { reviewer: { actor: actorOf(entry), reasons: [...lead, position(source, input), ...assignmentSaid(actor, source), ...judged.passed, ...said] }, passedOver, unpicked: null, ...(outcome ? { assignment: outcome } : {}) };
   }
   const tried = passedOver.length ? passedOver.map((c) => `${c.actor} (${c.reasons.join("; ")})`).join(", ") : "no model in the pool";
-  return none(`${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} (${describeContributors(contributors)}): ${tried}`, passedOver);
+  const unpicked = none(`${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} (${describeContributors(contributors)}): ${tried}`, passedOver);
+  return outcome ? { ...unpicked, assignment: outcome } : unpicked;
 }
 
 function position(source: Source, input: PickInput): string {
