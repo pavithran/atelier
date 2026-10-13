@@ -1527,6 +1527,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const { apply, ...selection } = cleanServed(body);
     return json({ project, ...selection, ...(await L.annotateServed(selection, actor, apply)) });
   }
+  // The project's mode (t585): full, the default, or fast, the owner's.
+  // GET says which for any token; POST { mode, reason } switches it, for
+  // the owner alone, and the switch back to full names what landed fast.
+  if (parts[2] === "mode" && parts.length === 3) {
+    if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings() });
+    requireOwner(env, actor);
+    if (m === "POST") return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null));
+    throw new RuleError("not_found", "no such route", 404);
+  }
   // Standing decisions (src/decisions.ts): GET lists every one with its
   // status, for the owner and for an agent token (agentRoute); POST records
   // one and POST decisions/ID/withdraw withdraws one, for the owner alone.
@@ -2104,6 +2113,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // letting the pool pick one, and the landing waits for the verdict. With
     // `wanted` and a reviewer the request is made even where the gate needs
     // none, since a reviewer the owner names is a review the owner asks for.
+    // A task the owner landed in fast mode (t585): its receipt, the item
+    // merged, and the post-merge review of the merge asked of the reviewer
+    // the owner names, which may be of the builder's family.
+    case "landed-fast": {
+      requireOwner(env, actor);
+      const landed = await L.landedFast(id, actor, body);
+      const reviewer = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
+      let review: unknown = null;
+      if (reviewer) {
+        try { review = await L.requestReview(id, actor, reviewer, await index(env).models(), true, false, undefined, await index(env).runnerOffers()); }
+        catch (err) { const e = parseRuleError(err); review = { error: e?.code ?? "failed", detail: e?.detail ?? String(err) }; }
+      }
+      return json({ ...landed, review });
+    }
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
