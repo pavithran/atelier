@@ -35,7 +35,7 @@ export function accessSettings(env: Record<string, string | undefined>): AccessS
   const settings = issuer?.startsWith("https://") && audience && email ? { issuer, audience, email } : null;
   if (!settings && (issuer || audience || email) && !warnedOff) {
     warnedOff = true;
-    console.warn("atelier: the Access settings are set but unusable — CF_ACCESS_ISS must be the team's https URL, and CF_ACCESS_ISS, CF_ACCESS_AUD and CF_ACCESS_OWNER_EMAIL are all needed — so the Access check is off and the owner's pages stand without it.");
+    console.warn("atelier: the Access settings are set but unusable — CF_ACCESS_ISS must be the team's https URL, and CF_ACCESS_ISS, CF_ACCESS_AUD and CF_ACCESS_OWNER_EMAIL are all needed — so the Access check is off and the developer's pages stand without it.");
   }
   return settings;
 }

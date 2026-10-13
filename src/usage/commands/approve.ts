@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Owner", line: 3, slot: 30,
       form: "approve ACTION --head SHA [--note T] [--expires 24h]",
-      about: "The project owner approves one protected action, such as `deploy`, `install`, `paid-run` or `photos-writeback`, at one exact revision of the main line: the full SHA of a commit the baseline holds. `atelier ship` uses the approval once, at that revision only, and a later revision needs its own. It stands for 24 hours unless `--expires` gives from `1m` to `30d`; `--note` records why. Any other kind must be one the project's ship files name.",
+      about: "The developer approves one protected action, such as `deploy`, `install`, `paid-run` or `photos-writeback`, at one exact revision of the main line: the full SHA of a commit the baseline holds. `atelier ship` uses the approval once, at that revision only, and a later revision needs its own. It stands for 24 hours unless `--expires` gives from `1m` to `30d`; `--note` records why. Any other kind must be one the project's ship files name.",
     },
   ],
   flags: { head: false, note: false, expires: false },

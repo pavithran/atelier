@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 3, slot: 80,
       form: "review-release ID [--request N] [--note T]",
-      about: "Release the review claim for the actor named by --as, so another reviewer may take it. Agents and runners must send --request with the number returned by review-claim; stale numbers cannot release a successor's claim. Only the owner's credentials may omit --request to recover the actor's current claim.",
+      about: "Release the review claim for the actor named by --as, so another reviewer may take it. Agents and runners must send --request with the number returned by review-claim; stale numbers cannot release a successor's claim. Only the developer's credentials may omit --request to recover the actor's current claim.",
     },
   ],
   flags: { request: false, note: false },

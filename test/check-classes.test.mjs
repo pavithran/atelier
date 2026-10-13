@@ -89,7 +89,7 @@ test("init sends the owner's declaration for each check Atelier cannot read, and
   assert.deepEqual(put.body.checkClasses, [{ command: "./check.sh", by: "owner", note: "Pavi, 2026-10-06: check.sh runs the unit tests" }]);
   assert.match(r.stdout, /^Checks: {5}npm test \| \.\/check\.sh$/m);
   assert.match(r.stdout, /^ {2}npm test: read-only, a known build or test command$/m);
-  assert.match(r.stdout, /^ {2}\.\/check\.sh: read-only, declared by the project owner: Pavi, 2026-10-06: check\.sh runs the unit tests$/m);
+  assert.match(r.stdout, /^ {2}\.\/check\.sh: read-only, declared by the developer: Pavi, 2026-10-06: check\.sh runs the unit tests$/m);
   // Without a declaration the checks go to the server, which decides with what it has recorded.
   f.clear();
   assert.equal(f.run("init", "--check", "./check.sh").status, 0);

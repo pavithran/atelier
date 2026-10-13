@@ -180,7 +180,7 @@ test('plan parts receive their documented retry recovery instead of ordinary dis
   assert.match(report(s).entries[0].recovery, /plan retry t1/);
   s.items[0].state = 'claimed';
   s.events = [event(1, 'item.claimed', 21600001)];
-  assert.match(report(s).entries[0].recovery, /check in with the owner/);
+  assert.match(report(s).entries[0].recovery, /check in with the holder/);
 });
 
 
@@ -209,10 +209,10 @@ test('core holds have an independent limit and recover the held dispatch without
 });
 test('each task rule preserves its suggestion without dispatching or releasing the task', () => {
   const s = snapshot({ events: [event(1, 'item.claimed', 21600001)] });
-  assert.match(report(s).entries[0].recovery, /check in with the owner \(codex\/model\).*show t1 --reviews/);
+  assert.match(report(s).entries[0].recovery, /check in with the holder \(codex\/model\).*show t1 --reviews/);
   s.items[0].state = 'submitted';
   s.events = [event(1, 'review.rejected', 86400001)];
-  assert.match(report(s).entries[0].recovery, /check in with the owner/);
+  assert.match(report(s).entries[0].recovery, /check in with the holder/);
   s.events = [event(1, 'evidence.observed', 2, { passed: false, head: 'a' }), event(2, 'evidence.observed', 1, { passed: false, head: 'b' })];
   assert.match(report(s).entries[0].recovery, /hand off:.*handoff t1 --to H\/M/);
   assert.doesNotMatch(report(s).entries[0].recovery, /dispatch|release/);

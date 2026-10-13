@@ -105,8 +105,8 @@ it("a decision and its withdrawal keep the acting model beside the owner and the
   expect(await made.json()).toMatchObject({ id: "d1", by: "owner", quote: "another company reviews everywhere", acting: OPUS, status: "standing" });
   expect((await call("POST", "/projects/judge-decisions/decisions", OPUS, { text: "Mine.", quote: "mine" }, acting(OPUS))).status).toBe(403);
   expect((await call("POST", "/projects/judge-decisions/decisions", "owner", { text: "Mine.", quote: "mine" }, acting("nobody"))).status).toBe(400);
-  const gone = await call("POST", "/projects/judge-decisions/decisions/d1/withdraw", "owner", { note: "the owner changed course" }, acting(GPT));
-  expect(await gone.json()).toMatchObject({ id: "d1", acting: OPUS, withdrawn: { by: "owner", note: "the owner changed course", acting: GPT } });
+  const gone = await call("POST", "/projects/judge-decisions/decisions/d1/withdraw", "owner", { note: "the developer changed course" }, acting(GPT));
+  expect(await gone.json()).toMatchObject({ id: "d1", acting: OPUS, withdrawn: { by: "owner", note: "the developer changed course", acting: GPT } });
   const plain = await call("POST", "/projects/judge-decisions/decisions", "owner", { text: "Spend at most $5.", quote: "five dollars" });
   expect(await plain.json()).not.toHaveProperty("acting");
   const logged = (await events("judge-decisions")).filter((e) => e.kind.startsWith("decision.")).map((e) => [e.kind, e.actor, e.data.quote, e.data.acting]);
@@ -127,10 +127,10 @@ it("an override of a missing review keeps the acting model beside the owner", as
   await L(name).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L(name).submit("t1", OPUS);
   const refused = await L(name).accept("t1", OPUS, H1, "no reviewer", undefined, undefined, undefined, undefined, GPT).then(() => null, (e: Error) => e.message);
-  expect(refused).toMatch(/only the project owner accepts/);
+  expect(refused).toMatch(/only the developer accepts/);
   // The acting model never stands in for the owner's confirmation (t371).
   const unconfirmed = await L(name).accept("t1", "owner", H1, "No model of another family is available", undefined, undefined, undefined, undefined, GPT).then(() => null, (e: Error) => e.message);
-  expect(unconfirmed).toMatch(/needs the owner's confirmation/);
+  expect(unconfirmed).toMatch(/needs the developer's confirmation/);
   await L(name).confirmOverride("t1", "owner", H1, "secret");
   const item = await L(name).accept("t1", "owner", H1, "No model of another family is available", undefined, undefined, undefined, undefined, GPT);
   expect(item).toMatchObject({ state: "accepted", reviewOverride: { by: "owner" } });

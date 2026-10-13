@@ -132,7 +132,7 @@ it("the orchestrator section draws the plan flow from goal to merge as an inline
   expect(PLAN_FLOW.at(-1)).toMatchObject({ lane: "owner", name: "Accept and merge" });
   for (const note of Object.values(PLAN_FLOW_RETURNS)) expect(text).toContain(`>${note}</text>`);
   expect(svg.match(/class="pf-return"/g)).toHaveLength(3);
-  for (const lane of ["Owner", "Home runners and their agents", "Atelier"]) expect(svg).toContain(`>${lane}</text>`);
+  for (const lane of ["Developer", "Home runners and their agents", "Atelier"]) expect(svg).toContain(`>${lane}</text>`);
   // Every arrowhead resolves inside the fragment.
   for (const id of svg.match(/url\(#([a-z-]+)\)/g) ?? []) expect(svg).toContain(`id="${id.slice(5, -1)}"`);
   // The frame scrolls sideways on a narrow screen: the drawing keeps a

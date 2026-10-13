@@ -22,7 +22,7 @@ type LedgerStub = DurableObjectStub<Ledger>;
 export type MainLine = (commit: string) => Promise<boolean | null>;
 
 function owner(actor: string, ownerActor: string): void {
-  if (actor !== ownerActor) throw new RuleError("not_project_owner", "only the project owner approves, withdraws or runs a protected action", 403);
+  if (actor !== ownerActor) throw new RuleError("not_project_owner", "only the developer approves, withdraws or runs a protected action", 403);
 }
 
 // The checks come before Artifacts is read, so a refusal for the actor or the

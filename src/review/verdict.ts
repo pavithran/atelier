@@ -52,7 +52,7 @@ export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2
 // What may block, when the project sets no review bar of its own (`atelier
 // init --review-bar`). Every review brief states the bar in force, and
 // bin/orchestrate/review.sh reads this one as its default.
-export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; a behaviour change without a test that covers it; docs or help that now contradict the code; a breaking change to a command, route or API field without a migration; or a visible regression on a user-facing page. A claim in a commit message that the code does not support is a correctness defect. A blocking finding names the file and line and what breaks, and is never style or naming. Decisions the project owner made are not defects; anything else is a follow-up.";
+export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; a behaviour change without a test that covers it; docs or help that now contradict the code; a breaking change to a command, route or API field without a migration; or a visible regression on a user-facing page. A claim in a commit message that the code does not support is a correctness defect. A blocking finding names the file and line and what breaks, and is never style or naming. Decisions the developer made are not defects; anything else is a follow-up.";
 
 const FORMAT_EXAMPLES = [
   "End your reply with these lines, each at the start of its own line:",
@@ -120,7 +120,7 @@ export function replyFormat(criteria: number, own = 0, deferred: readonly number
     "",
     ...FORMAT_RULES,
     `Write one CRITERION line for each of the ${count} acceptance criteria, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
-    ...(flagged.length ? [`${flagged.length === 1 ? `Criterion ${flagged[0]} was` : `Criteria ${flagged.join(", ")} were`} flagged by the review of the acceptance criteria as ${flagged.length === 1 ? "a check" : "checks"} after deploy: the builder could not verify ${flagged.length === 1 ? "it" : "them"} in a workspace and neither can you. For ${flagged.length === 1 ? "it" : "each"} write CRITERION n, then deferred, then what the change built for it and what the project owner or the orchestrator checks after deploy; met is allowed only when you proved it. Deferred is refused on any other criterion: prove it met, or reject with a blocking finding.`] : []),
+    ...(flagged.length ? [`${flagged.length === 1 ? `Criterion ${flagged[0]} was` : `Criteria ${flagged.join(", ")} were`} flagged by the review of the acceptance criteria as ${flagged.length === 1 ? "a check" : "checks"} after deploy: the builder could not verify ${flagged.length === 1 ? "it" : "them"} in a workspace and neither can you. For ${flagged.length === 1 ? "it" : "each"} write CRITERION n, then deferred, then what the change built for it and what the developer or the orchestrator checks after deploy; met is allowed only when you proved it. Deferred is refused on any other criterion: prove it met, or reject with a blocking finding.`] : []),
     FORMAT_END,
   ].join("\n");
 }

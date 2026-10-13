@@ -43,20 +43,20 @@ it("the Ledger records a decision for the owner alone, dated, lists it, and with
   const d = await L.recordDecision({ text, quote: "another company reviews everywhere" }, "owner");
   expect(d).toMatchObject({ id: "d1", text, quote: "another company reviews everywhere", by: "owner", status: "standing" });
   expect(d.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  await refusal(L.recordDecision({ text: "No review is overridden.", quote: "no overrides" }, AGENT), "not_project_owner", /only the project owner records/);
+  await refusal(L.recordDecision({ text: "No review is overridden.", quote: "no overrides" }, AGENT), "not_project_owner", /only the developer records/);
   await refusal(L.recordDecision({ text, quote: "said again" }, "owner"), "already_decided", /d1 already records that decision/);
   await refusal(L.recordDecision({ text: "", quote: "words" }, "owner"), "bad_decision", /needs text/);
-  await refusal(L.recordDecision({ text: "No review is overridden." }, "owner"), "bad_quote", /owner's words/);
+  await refusal(L.recordDecision({ text: "No review is overridden." }, "owner"), "bad_quote", /developer's words/);
   const d2 = await L.recordDecision({ text: "No review is overridden.", quote: "no overrides, ever" }, "owner");
   expect(d2.id).toBe("d2");
   expect((await L.standingDecisions()).map((x) => x.id)).toEqual(["d1", "d2"]);
 
-  await refusal(L.withdrawDecision("d2", AGENT, "mine now"), "not_project_owner", /only the project owner withdraws/);
+  await refusal(L.withdrawDecision("d2", AGENT, "mine now"), "not_project_owner", /only the developer withdraws/);
   await refusal(L.withdrawDecision("d2", "owner", ""), "bad_note", /needs a note/);
   await refusal(L.withdrawDecision("d2", "owner", undefined), "bad_note", /needs a note/);
   await refusal(L.withdrawDecision("d9", "owner", "gone"), "no_decision", /no decision d9/);
-  const gone = await L.withdrawDecision("d2", "owner", "the owner allows one override");
-  expect(gone).toMatchObject({ id: "d2", status: "withdrawn", withdrawn: { by: "owner", note: "the owner allows one override" } });
+  const gone = await L.withdrawDecision("d2", "owner", "the developer allows one override");
+  expect(gone).toMatchObject({ id: "d2", status: "withdrawn", withdrawn: { by: "owner", note: "the developer allows one override" } });
   await refusal(L.withdrawDecision("d2", "owner", "again"), "not_standing", /was withdrawn on/);
   // Withdrawn, it stops standing; the full list still shows it, marked.
   expect((await L.standingDecisions()).map((x) => x.id)).toEqual(["d1"]);

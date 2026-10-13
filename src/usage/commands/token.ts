@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Tokens", line: 1, slot: 10,
       form: "token issue --as H/M [--project P]... [--days N] [--label TEXT]",
-      about: "The project owner issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them.",
+      about: "The developer issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them.",
     },
     {
       group: "Tokens", line: 1, slot: 20,
@@ -38,7 +38,7 @@ const spec: CommandSpec = {
       usage: `usage: atelier token issue --as H/M [--project P]... [--days N] [--label TEXT]
        atelier token issue --runner NAME --project P [--days N] [--label TEXT]
 
-Only the owner issues tokens. A runner token binds one normalized runner and
+Only the developer issues tokens. A runner token binds one normalized runner and
 one existing project. NAME defaults to home:NAME. --as and --runner cannot
 be combined. Expiry defaults to 30 days; --days accepts 1 through 365.
 The token is shown once. See docs/runners.md for owner-free build and plan runners.`,

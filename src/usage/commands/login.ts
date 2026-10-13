@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Setup", line: 1, slot: 10,
       form: "login --server URL",
-      about: "Stores this server's address and the owner's token, asking for the token when none is stored for it. A token the server refuses is not stored.",
+      about: "Stores this server's address and the developer's token, asking for the token when none is stored for it. A token the server refuses is not stored.",
     },
     {
       group: "Setup", line: 1, slot: 20,

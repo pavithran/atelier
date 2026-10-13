@@ -26,7 +26,7 @@ test("the help lists the showcase command and its forms", () => {
   const r = run(["help"]);
   assert.equal(r.status, 0);
   assert.match(r.stdout, /showcase set NAME \[--named\|--anonymous\]/);
-  assert.match(r.stdout, /one owner per task/);
+  assert.match(r.stdout, /one holder per task/);
 });
 
 test("showcase --help prints its usage without contacting a server", () => {

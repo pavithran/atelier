@@ -82,7 +82,7 @@ it("the project's landing lease holds one landing, names who holds it and since 
   // A lease whose task has closed no longer guards anything.
   await L.abandon(b, "owner", "not wanted", null);
   await L.beginProjectLanding(a, "owner");
-  await refusal(L.beginProjectLanding(a, "someone"), "not_project_owner", /only the project owner lands/);
+  await refusal(L.beginProjectLanding(a, "someone"), "not_project_owner", /only the developer lands/);
   await refusal(L.beginProjectLanding("t99", "owner"), "no_item", /no item t99/);
 });
 
@@ -99,7 +99,7 @@ it("a lease lapses when not renewed for the expiry: the holder renews it, the ne
   expect(renewed).toMatchObject({ item: a, holder: "owner", at: held.at });
   expect(Date.parse(renewed.renewedAt!)).toBeGreaterThanOrEqual(Date.parse(held.at));
   await refusal(L.renewProjectLanding(b, "owner"), "no_lease", new RegExp(`held for ${a}, not ${b}`));
-  await refusal(L.renewProjectLanding(a, "someone"), "not_project_owner", /only the project owner lands/);
+  await refusal(L.renewProjectLanding(a, "someone"), "not_project_owner", /only the developer lands/);
   // Renewed within the expiry, the lease still refuses another landing.
   const stale = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS + 60_000).toISOString();
   await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
@@ -188,7 +188,7 @@ it("the lease is handed to the waiting landings in the order they queued, and a 
   await L.abandon(c, "owner", "not wanted", null);
   expect(await L.readLandingQueue()).toEqual([]);
   await refusal(L.queueProjectLanding("t99", "owner"), "no_item", /no item t99/);
-  await refusal(L.queueProjectLanding(b, "someone"), "not_project_owner", /only the project owner lands/);
+  await refusal(L.queueProjectLanding(b, "someone"), "not_project_owner", /only the developer lands/);
 });
 
 it("the landing-lease route takes, renews and cancels the lease for the owner, and a waiting landing asks and leaves through it", async () => {
@@ -275,7 +275,7 @@ it("the merge of a head into a main other than the one its landing confirmed und
   await refusal(L.confirmLeaseMain(a, "owner", M1), "no_lease", /no landing lease is held/);
   await L.beginProjectLanding(a, "owner");
   await refusal(L.confirmLeaseMain(a, "owner", "main"), "bad_main", /commit hash/);
-  await refusal(L.confirmLeaseMain(a, "someone", M1), "not_project_owner", /only the project owner/);
+  await refusal(L.confirmLeaseMain(a, "someone", M1), "not_project_owner", /only the developer/);
   expect(await L.confirmLeaseMain(a, "owner", M1)).toEqual({ main: M1, head: aHead });
   await L.accept(a, "owner", aHead);
   // The lease lapses while a waits to merge; b takes it, merges and moves main to M2.
@@ -350,7 +350,7 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(typeof asked.request).toBe("number");
   // A contributor cannot be named; the owner alone asks.
   await refusal(L.requestReview(id, "owner", OPUS, POOL), "self_review", /contributed to/);
-  await refusal(L.requestReview(id, OPUS, null, POOL), "not_project_owner", /only the project owner asks/);
+  await refusal(L.requestReview(id, OPUS, null, POOL), "not_project_owner", /only the developer asks/);
   // A runner claims it: the claim carries the need as the gate reads it, with
   // no plan account, and a review at the head answers the request.
   const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { request: number; head: string; need: { basis: string; changeClass: string }; plan: null };
@@ -378,8 +378,8 @@ it("a submitted task with a protected change gets a review request, named or pic
 // with the reason, and nothing is requested or withdrawn.
 it("a named reviewer the owner paused, reserved or kept from reviewing is refused with the reason", async () => {
   for (const [name, change, why] of [
-    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
-    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the developer's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the developer's standing\): astra's credits/],
     ["build-only", { roles: ["build"] }, /codex\/gpt-6-astra is not a reviewer; its roles are build/],
   ] as const) {
     const L = await setup(`land-review-held-${name}`);
@@ -482,7 +482,7 @@ it("a wanted review is requested for the named reviewer though the gate needs no
   await refusal(L.requestReview(id, "owner", OPUS, POOL, true), "self_review", /contributed to/);
   await refusal(L.requestReview(id, "owner", "gpt model", POOL, true), "bad_actor", /is not harness\/model/);
   await refusal(L.requestReview(id, "owner", null, POOL, true), "bad_request", /names its reviewer/);
-  await refusal(L.requestReview(id, OPUS, GPT, POOL, true), "not_project_owner", /only the project owner asks/);
+  await refusal(L.requestReview(id, OPUS, GPT, POOL, true), "not_project_owner", /only the developer asks/);
   expect(await L.reviewWaiting()).toEqual([]);
   // Asked for, the review is requested for the named reviewer, once.
   const asked = await L.requestReview(id, "owner", GPT, POOL, true);
@@ -538,16 +538,16 @@ it("a standalone expired claim is reoffered within one queue poll with its routi
 it("the landing's steps are recorded as land.* events with their duration, and anything else is refused", async () => {
   const L = await setup("land-events");
   const id = (await L.newItem("Landing", [], "owner")).id;
-  await L.landEvent(id, "owner", "merge", 1200, { fromMain: ["b".repeat(40)], conflicts: ["src/x.ts"], resolvedBy: "the project owner, by hand" });
+  await L.landEvent(id, "owner", "merge", 1200, { fromMain: ["b".repeat(40)], conflicts: ["src/x.ts"], resolvedBy: "the developer, by hand" });
   await L.landEvent(id, "owner", "submit", 300, {});
   await L.landEvent(id, "owner", "review", 9000, { verdict: "approve", reviewer: GPT, resolvedBy: GPT });
   const recorded = (await events(L, id)).filter((e) => e.kind.startsWith("land.")).sort((a, b) => a.seq - b.seq);
   expect(recorded.map((e) => [e.kind, e.data.ms])).toEqual([["land.merge", 1200], ["land.submit", 300], ["land.review", 9000]]);
-  expect(recorded[0].data).toMatchObject({ fromMain: ["b".repeat(40)], conflicts: ["src/x.ts"], resolvedBy: "the project owner, by hand" });
+  expect(recorded[0].data).toMatchObject({ fromMain: ["b".repeat(40)], conflicts: ["src/x.ts"], resolvedBy: "the developer, by hand" });
   await refusal(L.landEvent(id, "owner", "deploy", 5, {}), "bad_step", /is not a step of a landing/);
   await refusal(L.landEvent(id, "owner", "merge", -5, {}), "bad_ms", /duration in milliseconds/);
   await refusal(L.landEvent(id, "owner", "merge", 5, { nonsense: true }), "bad_field", /nonsense is not a field/);
-  await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the project owner records/);
+  await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the developer records/);
 });
 
 it("the time before the lease and the time holding it are recorded on the lease and release steps (t550)", async () => {
@@ -580,7 +580,7 @@ it("a triage is recorded as its own land.triage step, by the project owner alone
   ]);
   expect(recorded[0].data).toMatchObject({ triager: GPT, statuses: ["1:met", "2:not-met"] });
   // Only the project owner records a triage, its bypass or its override.
-  await refusal(L.landEvent(id, OPUS, "triage", 0, { ...binding, outcome: "bypassed", reason: "mine" }), "not_project_owner", /only the project owner records/);
+  await refusal(L.landEvent(id, OPUS, "triage", 0, { ...binding, outcome: "bypassed", reason: "mine" }), "not_project_owner", /only the developer records/);
   await refusal(L.landEvent(id, "owner", "triage", 0, { ...binding, outcome: 3 }), "bad_field", /outcome must be text/);
   // Triage is not a review: the item's reviews and its gate are as they were.
   const after = await detail();
@@ -836,7 +836,7 @@ it("the owner ports an unclaimed fork without claiming it, and is a contributor"
   expect((await events(L, id)).find(e => e.kind === "push.observed" && e.actor === "owner")).toMatchObject({ actor: "owner", data: { head: "2".repeat(40) } });
   await L.claim(id, GPT);
   expect((await L.item(id)).head).toBe(port.head);
-  await refusal(L.recordPush(id, "owner", "3".repeat(40), null), "not_owner", /does not own/);
+  await refusal(L.recordPush(id, "owner", "3".repeat(40), null), "not_owner", /does not hold/);
   await L.release(id, GPT, "Blocked port");
   await L.block(id, "owner", "Needs input");
   await refusal(L.recordPush(id, "owner", "3".repeat(40), null), "blocked", /Needs input/);

@@ -46,12 +46,12 @@ const line = (v: unknown) =>
 // orchestrator's own reading alone.
 export function cleanDecisionInput(body: Record<string, unknown>): { text: string; quote: string } {
   if (body.text !== undefined && typeof body.text !== "string") throw new RuleError("bad_decision", "a decision is text", 400);
-  if (body.quote !== undefined && typeof body.quote !== "string") throw new RuleError("bad_quote", "the owner's words are text", 400);
+  if (body.quote !== undefined && typeof body.quote !== "string") throw new RuleError("bad_quote", "the developer's words are text", 400);
   const text = line(body.text), quote = line(body.quote);
-  if (!text) throw new RuleError("bad_decision", "a decision needs text: what the owner decided", 400);
+  if (!text) throw new RuleError("bad_decision", "a decision needs text: what the developer decided", 400);
   if (text.length > DECISION_TEXT_MAX) throw new RuleError("too_long", `a decision is at most ${DECISION_TEXT_MAX} characters`, 400);
-  if (!quote) throw new RuleError("bad_quote", "a decision needs the owner's words: --quote \"what the owner said\"", 400);
-  if (quote.length > DECISION_QUOTE_MAX) throw new RuleError("too_long", `the owner's words are at most ${DECISION_QUOTE_MAX} characters`, 400);
+  if (!quote) throw new RuleError("bad_quote", "a decision needs the developer's words: --quote \"what the developer said\"", 400);
+  if (quote.length > DECISION_QUOTE_MAX) throw new RuleError("too_long", `the developer's words are at most ${DECISION_QUOTE_MAX} characters`, 400);
   return { text, quote };
 }
 
@@ -70,7 +70,7 @@ function rows(sql: SqlStorage): Decision[] {
 }
 
 function ownerOnly(store: DecisionStore, actor: string, what: string): void {
-  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the project owner ${what}`, 403);
+  if (actor !== store.owner) throw new RuleError("not_project_owner", `only the developer ${what}`, 403);
 }
 
 export const decisionStatus = (d: Decision): DecisionStatus => (d.withdrawn ? "withdrawn" : "standing");
@@ -123,14 +123,14 @@ export function withdrawDecision(store: DecisionStore, actor: string, id: string
 // What a brief or the guide says above the decisions: they are the owner's,
 // they bind every agent, and a reviewer must not overrule one.
 export const DECISIONS_HEADING = "Standing decisions";
-export const DECISIONS_RULE = "These are the project owner's standing decisions for this project, recorded with atelier decide and withdrawn only by the owner. They bind every agent and are not open to review: a reviewer must not overrule one, so a finding that contests a decision, or asks for what a decision rules out, is neither blocking nor a follow-up, and a change that does what a decision says is not at fault for doing so.";
-export const NO_DECISIONS = "The project owner has recorded no standing decision for this project.";
+export const DECISIONS_RULE = "These are the developer's standing decisions for this project, recorded with atelier decide and withdrawn only by them. They bind every agent and are not open to review: a reviewer must not overrule one, so a finding that contests a decision, or asks for what a decision rules out, is neither blocking nor a follow-up, and a change that does what a decision says is not at fault for doing so.";
+export const NO_DECISIONS = "The developer has recorded no standing decision for this project.";
 
 // One line per standing decision, oldest first: its id, its date, the
 // decision and the owner's words. The text was kept to one line when it was
 // recorded, so each decision is one line here too.
 export function decisionLines(decisions: readonly Pick<Decision, "id" | "text" | "quote" | "at">[]): string[] {
-  return decisions.map((d) => `- ${d.id} (${d.at.slice(0, 10)}): ${d.text} The owner's words: “${d.quote}”`);
+  return decisions.map((d) => `- ${d.id} (${d.at.slice(0, 10)}): ${d.text} The developer's words: “${d.quote}”`);
 }
 
 // The section as the guide prints it and the brief carries it: the heading,

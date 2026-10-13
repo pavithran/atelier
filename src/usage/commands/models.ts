@@ -6,12 +6,12 @@ const spec: CommandSpec = {
     {
       group: "Models", line: 1, slot: 60,
       form: "models admit ID --project NAME --reason TEXT",
-      about: "Owner only: admits a registered model as a reviewer in this project, including its aliases. A known independent family is still required.",
+      about: "Developer only: admits a registered model as a reviewer in this project, including its aliases. A known independent family is still required.",
     },
     {
       group: "Models", line: 1, slot: 70,
       form: "models withdraw ID --project NAME --reason TEXT",
-      about: "Owner only: withdraws reviewer admission and outstanding requests. Past approvals keep their bindings.",
+      about: "Developer only: withdraws reviewer admission and outstanding requests. Past approvals keep their bindings.",
     },
     {
       group: "Models", line: 1, slot: 80,
@@ -65,7 +65,7 @@ const spec: CommandSpec = {
   },
   help: {
     flags: {
-      "--reason TEXT": "why the owner admits or withdraws a reviewer",
+      "--reason TEXT": "why the developer admits or withdraws a reviewer",
       "--harness H": "the harness that runs the model: opencode, claude-code, codex, zcode, gemini-cli or antigravity",
       "--where home|cloud": "home, a harness on a home runner; cloud, a hosted service",
       "--provider P": "the provider the harness reaches the model through; a cloud opencode model must name one",
@@ -73,7 +73,7 @@ const spec: CommandSpec = {
       "--keychain NAME": "the Keychain entry that holds the key; the key itself is never sent",
       "--alias A": "another name the harness reports the model under; once per alias",
       "--note TEXT": "a note kept with the entry",
-      "--state paused|reserved|available": "with set, the owner's standing; paused and reserved keep the model out of routing, dispatch suggestions and review requests",
+      "--state paused|reserved|available": "with set, the developer's standing; paused and reserved keep the model out of routing, dispatch suggestions and review requests",
       "--roles build,review,plan": "with set or add, the jobs the model may take; a review-only model is never a builder",
       "--tier frontier|execution|budget": "with set or add, the model's tier, stored and returned in JSON",
       "--json": "prints the pool as JSON, carrying each entry's state, roles, tier and notes",

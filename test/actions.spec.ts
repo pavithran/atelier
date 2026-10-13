@@ -54,7 +54,7 @@ it("the Ledger records approvals, uses each once at its revision only, and recor
   const a = await L.approveAction({ kind: "deploy", commit: H2, note: "release" }, "owner");
   expect(a).toMatchObject({ id: "a1", kind: "deploy", commit: H2, note: "release", status: "active", by: "owner" });
   await refusal(L.approveAction({ kind: "deploy", commit: H2 }, "owner"), "already_approved", /already approved as a1/);
-  await refusal(L.approveAction({ kind: "deploy", commit: H1 }, "codex/gpt-6-astra"), "not_project_owner", /only the project owner/);
+  await refusal(L.approveAction({ kind: "deploy", commit: H1 }, "codex/gpt-6-astra"), "not_project_owner", /only the developer/);
   await refusal(L.consumeAction({ kind: "deploy", commit: H1 }, "owner"), "not_approved", /approved only at another revision \(a1 at 22222222\)/);
   expect(await L.consumeAction({ kind: "deploy", commit: H2 }, "owner")).toMatchObject({ id: "a1", status: "consumed" });
   await refusal(L.consumeAction({ kind: "deploy", commit: H2 }, "owner"), "not_approved", /a1 for it is consumed/);
@@ -62,7 +62,7 @@ it("the Ledger records approvals, uses each once at its revision only, and recor
   await L.recordActionRun(run, "owner");
   await refusal(L.recordActionRun({ ...run, approval: "a2" }, "owner"), "bad_run", /a2 was not used/);
   await L.approveAction({ kind: "push", commit: H2 }, "owner");
-  await refusal(L.withdrawAction("a2", "codex/gpt-6-astra", ""), "not_project_owner", /only the project owner/);
+  await refusal(L.withdrawAction("a2", "codex/gpt-6-astra", ""), "not_project_owner", /only the developer/);
   expect(await L.withdrawAction("a2", "owner", "not today")).toMatchObject({ status: "withdrawn" });
   expect((await L.actionApprovals()).map((x) => [x.id, x.status])).toEqual([["a2", "withdrawn"], ["a1", "consumed"]]);
   expect((await L.actionRuns()).map((r) => [r.step, r.approval, r.passed])).toEqual([["deploy", "a1", true]]);

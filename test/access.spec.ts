@@ -296,7 +296,7 @@ it("behind Access, the owner's Access sign-in confirms an override, and the reco
       method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
     }), on);
     expect(api.status).toBe(403);
-    expect((await api.json() as { detail: string }).detail).toContain(`open https://atelier.test/p/${name}/t1 as the owner, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation`);
+    expect((await api.json() as { detail: string }).detail).toContain(`open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation`);
     // The page's forms ask for no secret: the sign-in is the factor.
     const task = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie, "cf-access-jwt-assertion": jwt } }), on)).text();
     expect(task).toContain("Your Cloudflare Access sign-in is the confirmation an override needs");

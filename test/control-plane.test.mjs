@@ -323,7 +323,7 @@ test("merge in a project with no commit identity refuses before Git merge, namin
   rmSync(join(dir, "docs/control-plane"), { recursive: true });
   const result = command(["merge", "t1"], { TEST_NO_IDENTITY: "1" });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /example has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL .*\. Nothing was merged\./);
+  assert.match(result.stderr, /example has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL .*\. Nothing was merged\./);
   assert.ok(!gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
 }));
 

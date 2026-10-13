@@ -70,7 +70,7 @@ test("atelier decide needs the decision and the owner's words, before any server
   assert.match(noQuote.stderr, /a decision needs the owner's words: atelier decide "text" --quote/);
   const bare = await f.run(["decide", "Another company reviews every change.", "--quote", "--project", "proj"]);
   assert.equal(bare.status, 1);
-  assert.match(bare.stderr, /--quote needs the owner's words/);
+  assert.match(bare.stderr, /--quote needs the developer's words/);
   const noText = await f.run(["decide", "--quote", "words", "--project", "proj"]);
   assert.equal(noText.status, 1);
   assert.match(noText.stderr, /usage: atelier decide/);
@@ -113,7 +113,7 @@ test("atelier guide --role orchestrate for a project ends with the decisions tha
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, `${ROLE_PROMPTS.orchestrate}\n${decisionsSection([standing])}\n`);
   assert.ok(r.stdout.includes(DECISIONS_RULE));
-  assert.ok(r.stdout.includes("- d1 (2026-10-09): Another company reviews every change. The owner's words: “another company reviews everywhere”"));
+  assert.ok(r.stdout.includes("- d1 (2026-10-09): Another company reviews every change. The developer's words: “another company reviews everywhere”"));
   assert.ok(!r.stdout.includes("Spend at most"));
   assert.deepEqual(f.requests.map((q) => [q.method, q.path, q.actor]), [["GET", "/api/projects/proj/decisions", "owner"]]);
 });

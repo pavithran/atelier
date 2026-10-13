@@ -51,7 +51,7 @@ test("formatReviews prints each review at each head, newest first, whole and fla
   const text = formatReviews(REVIEWS, "owner");
   const lines = text.split("\n");
   // The review that decides the current head leads; each line names its head.
-  assert.match(lines[1], /^  zcode\/glm-5\.3 rejected at 22222222 \(2026-10-07 14:03 UTC; recorded by the project owner with the owner token, answering a review request it claimed\)\.$/);
+  assert.match(lines[1], /^  zcode\/glm-5\.3 rejected at 22222222 \(2026-10-07 14:03 UTC; recorded by the developer with the owner token, answering a review request it claimed\)\.$/);
   assert.match(lines[2], /^    Note: The parser is not ready:.*names the real fault$/);
   assert.ok(lines[2].length > 120, "the note is printed whole, past the brief's 120-character clip");
   assert.equal(lines[3], "    blocking src/parser.ts:42 The loop exits before the final row is read, so a file without a trailing newline drops its last row");

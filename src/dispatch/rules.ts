@@ -184,7 +184,7 @@ export function overrideDispatch(input: Record<string, unknown>, previous: Dispa
 // written. Releasing a dispatch already released changes nothing.
 export function retainDispatch(item: Item, input: { agent?: unknown; model?: unknown; retainAt?: unknown }, items: readonly Item[], policy: ProjectPolicy, owner = DEFAULT_OWNER): Dispatch {
   if (item.owner || item.state !== "open") {
-    throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
   }
   const d = item.dispatch;
   if (!d) throw new RuleError("not_dispatched", `${item.id} is not queued for a runner, so there is no dispatch to release`, 409);
@@ -578,7 +578,7 @@ function heldReasonLine(item: Item, h: CoreHold): string {
 }
 
 function overlapReasonLine(o: OverlapRefusal, item: Item): string {
-  return `Overlap refused: ${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the owner narrows a scope with atelier edit ${item.id} --scope GLOB (or atelier edit ${o.id} --scope GLOB), or allows overlaps with atelier init --refuse-overlap=false.`;
+  return `Overlap refused: ${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the developer narrows a scope with atelier edit ${item.id} --scope GLOB (or atelier edit ${o.id} --scope GLOB), or allows overlaps with atelier init --refuse-overlap=false.`;
 }
 
 function skippedReasonLine(s: SkippedBy, item: Item): string {
@@ -598,7 +598,7 @@ function unofferedReasonLine(dead: string, item: Item): string {
 
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
-    throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
   }
 }
 
