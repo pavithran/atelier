@@ -1194,8 +1194,8 @@ export class Ledger extends DurableObject<Env> {
   // Vendor model cards (t625, src/models/cards.ts), beside the notes but
   // never on a pool entry, and never read by what reads the pool. The whole
   // table is read: a card's state comes from every record naming its id, and
-  // the model it is listed under from the pool as it is now
-  // (cardFiling), so no pool change can split a card from its withdrawal.
+  // it is listed under the modelKey it was written with (cardFiling), which
+  // no pool alias, removal or re-addition changes.
   private cardRecords(): CardRecord[] {
     return this.sql.exec(`SELECT id, json FROM model_cards ORDER BY id`).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }));
@@ -1210,7 +1210,7 @@ export class Ledger extends DurableObject<Env> {
   addModelCard(named: string, input: CardInput | WithdrawalInput, by: string, at: string): { record: CardRecord; retried: boolean; view: CardView } {
     const all = this.cardRecords();
     const pool = this.models();
-    const made = newCardRecord(all, pool, named, input, by, at);
+    const made = newCardRecord(all, named, input, by, at);
     if ("existing" in made) return { record: made.existing, retried: true, view: modelCardView(all, pool, named) };
     const row = this.sql.exec(`INSERT INTO model_cards (model, json) VALUES (?, ?) RETURNING id`, made.store.model, JSON.stringify(made.store)).one();
     const record = { ...made.store, id: `c${row.id as number}` } as CardRecord;

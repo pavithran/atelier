@@ -173,7 +173,8 @@ async function cardCommand(id) {
   for (const { named, body } of sends) {
     const { record, retried, view } = await call("POST", `/models/${encodeURIComponent(named)}/cards`, body, OWNER);
     if (record.kind === "withdrawal") { console.log(withdrawnLine(record, retried, view)); continue; }
-    const pool = view.pool.length ? ` (${view.pool.join(", ")})` : ", which is not in the pool";
+    // A name neither the registry nor the pool knows is kept under its normalised key, said here.
+    const pool = view.pool.length ? ` (${view.pool.join(", ")})` : view.known === false ? ", a name neither the registry nor the pool knows, kept as it is" : ", which is not in the pool";
     const replaces = record.corrects ? `, correcting ${record.corrects}` : record.supersedes ? `, superseding ${record.supersedes}` : "";
     const claims = `${record.claims.length} claim${record.claims.length === 1 ? "" : "s"}`;
     console.log(retried

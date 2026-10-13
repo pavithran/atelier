@@ -90,75 +90,61 @@ it("corrections, supersessions and withdrawals name a card and keep the history"
   expect(shown.disagreements).toEqual([]);
 });
 
-it("a card outlives its model's pool entry, follows a pool alias, and a model the pool never had keeps its own", async () => {
+it("a card is listed by the key its name gives, which no pool removal, re-addition or alias changes", async () => {
+  // The fourth reviews of t625, 2026-10-13: every reading of pool aliases moved cards across models.
   await index().putModel(entry("gpt-6.1-sol", "codex", ["sol-preview"]));
-  const sol = await post("sol-preview", card(64));
+  const sol = await post("codex/gpt-6.1-sol", card(64));
   expect(sol.record.model).toBe("gpt-6.1-sol");
   await index().removeModel("gpt-6.1-sol");
-  const out = await view("gpt-6.1-sol");
-  expect(out.pool).toEqual([]);
-  expect(out.cards.map((c) => c.id)).toEqual([sol.record.id]);
+  expect((await view("gpt-6.1-sol")).cards.map((c) => c.id)).toEqual([sol.record.id]);
   await index().putModel(entry("gpt-6.1-sol", "codex", ["sol-preview"]));
-  expect((await view("sol-preview")).cards.map((c) => c.id)).toEqual([sol.record.id]);
+  expect((await view("opencode/gpt-6.1-sol")).cards.map((c) => c.id)).toEqual([sol.record.id]);
+  // A pool alias is not the model's name for cards: a card sent under it is kept under it.
+  const preview = await post("sol-preview", card(65));
+  expect(preview.record.model).toBe("sol-preview");
+  expect(preview.view).toMatchObject({ model: "sol-preview", known: false, pool: [] });
+  expect((await view("gpt-6.1-sol")).cards.map((c) => c.id)).toEqual([sol.record.id]);
 
-  // A model nobody registered: kept under its own name, with no pool entry
-  // and no priors.
-  const unknown = await post("gemini-3.8-flash-preview", card(55));
-  expect(unknown.status).toBe(201);
-  expect(unknown.view).toMatchObject({ model: "gemini-3.8-flash-preview", pool: [], priors: [] });
+  // A model nobody registered is kept under its normalised name, and the answer says so.
+  const unknown = await post("Gemini-3.8-Flash-Preview", card(55));
+  expect(unknown.view).toMatchObject({ model: "gemini-3.8-flash-preview", known: false, pool: [], priors: [] });
+  expect(sol.view.known).toBe(true);
 });
 
-it("a card recorded for a model nobody knew stays reachable, replayable and withdrawable once the pool makes that name an alias", async () => {
-  // Astra's second review of t625, 2026-10-13, finding 1: model-a's card became unreachable.
-  const a = await post("stranded-model-a", card(21));
-  expect(a.record.model).toBe("stranded-model-a");
-  await index().putModel(entry("stranded-model-b", "codex", ["stranded-model-a"]));
-  for (const name of ["stranded-model-a", "stranded-model-b", "codex/stranded-model-a"]) {
-    expect((await view(name)).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "active"]]);
-  }
-  const replay = await post("stranded-model-a", card(21));
-  expect(replay).toMatchObject({ status: 200, retried: true, record: { id: a.record.id } });
-  const gone = await post("stranded-model-b", { withdraws: a.record.id, reason: "Belongs to model-b's preview." });
-  expect(gone.status).toBe(201);
-  expect((await view("stranded-model-a")).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "withdrawn"]]);
-});
-
-it("removing the model that adopted a name, or giving the name to a third, never shows a withdrawn card active", async () => {
-  // Astra's third review of t625, 2026-10-13, finding 1.
-  const a = await post("orphan-model-a", card(22));
-  await index().putModel(entry("orphan-model-b", "codex", ["orphan-model-a"]));
-  await post("orphan-model-b", { withdraws: a.record.id, reason: "Not this model's." });
-  await index().removeModel("orphan-model-b");
-  expect((await view("orphan-model-a")).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "withdrawn"]]);
-  expect((await view("orphan-model-a")).withdrawals.map((w) => w.withdraws)).toEqual([a.record.id]);
-  await index().putModel(entry("orphan-model-c", "opencode", ["orphan-model-a"]));
-  expect((await view("orphan-model-c")).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "withdrawn"]]);
-});
-
-it("one model under two harnesses, linked by a pool alias, has one set of cards through the routes", async () => {
-  // gemini-4-argon's third review of t625, 2026-10-13, finding 1.
+it("one model's name under any harness is one key; the same model through a registry alias too", async () => {
+  // gemini-4-argon's fourth review: removing one harness's entry hid a surviving harness's cards.
   await index().putModel(entry("argon-x", "gemini-cli"));
-  await index().putModel(entry("argon-x-ag", "antigravity", ["argon-x"]));
-  const one = await post("antigravity/argon-x-ag", card(30));
+  await index().putModel(entry("argon-x", "antigravity"));
+  const one = await post("antigravity/argon-x", card(30));
   const two = await post("gemini-cli/argon-x", card(31));
-  for (const name of ["argon-x", "argon-x-ag", "gemini-cli/argon-x", "antigravity/argon-x"]) {
-    const shown = await view(name);
-    expect(shown.cards.map((c) => c.id)).toEqual([one.record.id, two.record.id]);
-    expect(shown.pool).toEqual(["gemini-cli/argon-x", "antigravity/argon-x-ag"]);
+  await index().removeModel("argon-x");
+  for (const name of ["argon-x", "gemini-cli/argon-x", "antigravity/argon-x", "opencode/Argon-X"]) {
+    expect((await view(name)).cards.map((c) => c.id)).toEqual([one.record.id, two.record.id]);
   }
 });
 
-it("a card stays with the model it was recorded for when its alias moves to another model, withdrawal and all", async () => {
-  // Astra's review of t625, 2026-10-13, finding 1: B showed c1 as active, without A's withdrawal.
+it("a model never withdraws, corrects or replays another model's card, whatever the pool's aliases say", async () => {
+  // Astra's fourth review of t625, 2026-10-13, finding 1: B could withdraw A's card after an alias moved.
   await index().putModel(entry("alias-model-a", "codex", ["alias-preview"]));
-  const c1 = await post("alias-preview", card(33));
-  expect(c1.record.model).toBe("alias-model-a");
-  await post("alias-model-a", { withdraws: c1.record.id, reason: "Recorded under the wrong model." });
+  const c1 = await post("alias-model-a", card(33));
   await index().putModel(entry("alias-model-a", "codex"));
-  await index().putModel(entry("alias-model-b", "codex", ["alias-preview"]));
-  expect((await view("alias-model-b")).cards).toEqual([]);
-  expect((await view("alias-preview")).cards).toEqual([]);
+  await index().putModel(entry("alias-model-b", "codex", ["alias-preview", "alias-model-a"]));
+  expect((await post("alias-model-b", { withdraws: c1.record.id, reason: "Not B's." })).status).toBe(404);
+  expect((await post("alias-preview", card(34, { corrects: c1.record.id }))).status).toBe(404);
+  // The same content sent for B is B's own card, not a retry of A's.
+  const b1 = await post("alias-model-b", card(33));
+  expect(b1).toMatchObject({ status: 201, retried: false, record: { model: "alias-model-b" } });
+  expect((await view("alias-model-b")).cards.map((c) => c.id)).toEqual([b1.record.id]);
+
+  // A withdraws its own card; no pool change shows it active anywhere.
+  await post("alias-model-a", { withdraws: c1.record.id, reason: "Recorded twice." });
+  await index().removeModel("alias-model-a");
+  await index().removeModel("alias-model-b");
+  await index().putModel(entry("alias-model-c", "opencode", ["alias-model-a"]));
   expect((await view("alias-model-a")).cards.map((c) => [c.id, c.state])).toEqual([[c1.record.id, "withdrawn"]]);
+  expect((await view("alias-model-c")).cards).toEqual([]);
+  const replay = await post("alias-model-a", card(33));
+  expect(replay).toMatchObject({ status: 200, retried: true, record: { id: c1.record.id } });
 });
 
 it("cards are the developer's alone, are checked on the server, and change neither the pool nor its notes", async () => {
