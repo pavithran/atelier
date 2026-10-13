@@ -557,6 +557,27 @@ test("objects of the batch deleted after the scan stop the batch, named by path 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Tenth review of t592 (t618): the post-test check read only the objects
+// new to start..head, so a blob the batch reuses from earlier history (here
+// a.txt's first content, which a batch commit puts back) was never checked
+// again, and a test that deleted it after the scan had receipts recorded
+// for history main could no longer show. Every object the scan read is now
+// checked again, reused ones included.
+test("a reused blob deleted after the scan stops the batch, named by path (t618)", async () => {
+  const { dir } = repo();
+  try {
+    const reused = git(dir, "rev-parse", "main:a.txt");
+    const sha = leakBranch(dir, [{ "a.txt": "changed\n" }, { "a.txt": "a\n", "b.txt": "b\n" }]);
+    assert.equal(git(dir, "rev-parse", `${sha}:a.txt`), reused, "the batch's head holds the blob main held before it");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Reused" }, cwd: dir, pairs: [{ id: "t3", sha }], test: `rm -f .git/objects/${reused.slice(0, 2)}/${reused.slice(2)}`, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false, "the batch is refused");
+    assert.equal(r.failure.step, "objects changed", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])a\.txt \(/);
+    assert.equal(git(dir, "rev-parse", "main"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Ninth review of t592: the history checks (replacement refs, grafts, a
 // shallow boundary) ran only before the tests, so a test that wrote
 // .git/shallow after the scan cut the post-test object walk short.

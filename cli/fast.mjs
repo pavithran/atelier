@@ -164,7 +164,10 @@ function objectFormat(cwd) {
 }
 
 // The object's content, verified against its id; throws as unreadable.
-function readObject(cwd, kind, hash) {
+// `read`, when given, collects the id of every object asked for, so the
+// post-test check can verify again exactly what the scan read (t618).
+function readObject(cwd, kind, hash, read) {
+  read?.add(hash.toLowerCase());
   const r = runGit(cwd, ["cat-file", kind, hash], { encoding: "buffer" });
   if (r.status !== 0) throw unreadable(kind, hash);
   const id = createHash(objectFormat(cwd)).update(`${kind} ${r.stdout.length}\0`).update(r.stdout).digest("hex");
@@ -200,19 +203,23 @@ function parseTree(raw, idBytes, hash) {
   return out;
 }
 
-function readTree(cwd, hash) {
-  return parseTree(readObject(cwd, "tree", hash), objectFormat(cwd) === "sha256" ? 32 : 20, hash);
+function readTree(cwd, hash, read) {
+  return parseTree(readObject(cwd, "tree", hash, read), objectFormat(cwd) === "sha256" ? 32 : 20, hash);
 }
 
 // Whether every object the batch's commits reach (start..head: the commits,
-// their trees and blobs) is still present and still hashes to its id,
-// checked after the tests, so a test command that deletes or rewrites one
-// after the scan stops the batch (eighth review of t592). One rev-list and
-// one cat-file --batch read them all. When any is missing or changed, the
-// batch is walked again object by object (namedObjectProblems) so each
-// problem is named by its path. Answers the problems found, at most `limit`.
-function objectProblems(cwd, start, head, limit = 20) {
-  const problems = batchObjectProblems(cwd, start, head, limit);
+// their trees and blobs) and every object the scan read is still present
+// and still hashes to its id, checked after the tests, so a test command
+// that deletes or rewrites one after the scan stops the batch (eighth
+// review of t592). The objects the scan read (`read`) include those the
+// batch reuses from earlier history, which start..head leaves out (t618:
+// a test deleted a blob a batch commit put back, and receipts were recorded
+// for history main could no longer show). One rev-list and one cat-file
+// --batch read them all. When any is missing or changed, the batch is
+// walked again object by object (namedObjectProblems) so each problem is
+// named by its path. Answers the problems found, at most `limit`.
+function objectProblems(cwd, start, head, read = new Set(), limit = 20) {
+  const problems = batchObjectProblems(cwd, start, head, read, limit);
   return problems.length ? namedObjectProblems(cwd, start, head, limit, problems) : [];
 }
 
@@ -220,15 +227,22 @@ function objectProblems(cwd, start, head, limit = 20) {
 // level at a time (as the scan reads it), descending only into entries the
 // parent does not hold, so every missing, malformed or changed object is
 // named by its path, a directory with a trailing slash (ninth review of
-// t592). `fallback` is answered when the walk finds nothing to name.
+// t592). A tree is walked once per base it is compared with (t618: the
+// merge's tree is its task commit's, and the walk against main had marked
+// it seen, so the reused blob the task commit put back was never reached).
+// A problem object no walk reaches, such as one the scan read only as a
+// parent's content, is named by the paths that hold it in the batch's
+// trees or main's (pathsOf). `fallback`, the problems as { id, text }, is
+// answered as text where nothing names them.
 function namedObjectProblems(cwd, start, head, limit, fallback) {
   const commits = runGit(cwd, ["rev-list", "--parents", `${start}..${head}`]);
   if (commits.status !== 0) return [`the batch's commits cannot be listed: ${(commits.stderr || "").trim().split("\n").at(-1)}`];
-  const found = new Set(), seen = new Set();
+  const found = new Set(), seen = new Set(), trees = new Set();
   const why = (err) => `${err?.message ?? err}`;
   const walk = (tree, baseTree, prefix) => {
-    if (found.size >= limit || seen.has(`${tree}\0${prefix}`)) return;
-    seen.add(`${tree}\0${prefix}`);
+    const key = `${tree}\0${baseTree}\0${prefix}`;
+    if (found.size >= limit || seen.has(key)) return;
+    seen.add(key);
     let entries, base = new Map();
     try { entries = readTree(cwd, tree); } catch (err) { found.add(`${prefix || "the root tree"} (${why(err)})`); return; }
     if (baseTree) { const b = listTree(cwd, baseTree); for (const e of b ?? []) base.set(e.name, e); }
@@ -244,38 +258,44 @@ function namedObjectProblems(cwd, start, head, limit, fallback) {
     const [commit, parent] = line.split(" ");
     try {
       const head = commitOf(cwd, commit);
+      trees.add(head.tree);
       walk(head.tree, parent ? commitOf(cwd, parent).tree : null, "");
     } catch (err) { found.add(`commit ${commit} (${why(err)})`); }
   }
-  return found.size ? [...found] : fallback;
+  if (found.size) return [...found];
+  try { trees.add(commitOf(cwd, start).tree); } catch { /* main's own tree is not the batch's to name */ }
+  return fallback.map((p) => {
+    const paths = p.id ? pathsOf(cwd, p.id, [...trees]).filter((x) => x !== "the root tree") : [];
+    return paths.length ? paths.map((x) => `${x} (${p.text})`).join(", ") : p.text;
+  });
 }
 
-function batchObjectProblems(cwd, start, head, limit) {
+function batchObjectProblems(cwd, start, head, read, limit) {
   const list = runGit(cwd, ["rev-list", "--objects", `${start}..${head}`]);
-  if (list.status !== 0) return [`git rev-list --objects could not walk the batch: ${(list.stderr || "").trim().split("\n").at(-1)}`];
-  const ids = list.stdout.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+  if (list.status !== 0) return [{ text: `git rev-list --objects could not walk the batch: ${(list.stderr || "").trim().split("\n").at(-1)}` }];
+  const ids = [...new Set([...list.stdout.split("\n").map((l) => l.split(" ")[0]).filter(Boolean), ...read])];
   if (!ids.length) return [];
   const r = runGit(cwd, ["cat-file", "--batch"], { encoding: "buffer", input: Buffer.from(ids.join("\n") + "\n") });
-  if (r.status !== 0) return [`git cat-file --batch failed: ${String(r.stderr || "").trim().split("\n").at(-1)}`];
+  if (r.status !== 0) return [{ text: `git cat-file --batch failed: ${String(r.stderr || "").trim().split("\n").at(-1)}` }];
   const out = r.stdout, problems = [], algo = objectFormat(cwd);
   let i = 0;
   for (const id of ids) {
     if (problems.length >= limit) break;
     const eol = out.indexOf(0x0a, i);
-    if (eol < 0) { problems.push(`${id.slice(0, 12)} was not answered`); break; }
+    if (eol < 0) { problems.push({ id, text: `${id.slice(0, 12)} was not answered` }); break; }
     const [got, type, size] = out.toString("latin1", i, eol).split(" ");
-    if (got !== id || type === "missing" || size === undefined) { problems.push(`${id.slice(0, 12)} is missing`); i = eol + 1; continue; }
+    if (got !== id || type === "missing" || size === undefined) { problems.push({ id, text: `${id.slice(0, 12)} is missing` }); i = eol + 1; continue; }
     const body = out.subarray(eol + 1, eol + 1 + Number(size));
     i = eol + 1 + Number(size) + 1;
     const hash = createHash(algo).update(`${type} ${body.length}\0`).update(body).digest("hex");
-    if (body.length !== Number(size) || hash !== id) problems.push(`${id.slice(0, 12)} does not hash to its id`);
+    if (body.length !== Number(size) || hash !== id) problems.push({ id, text: `${id.slice(0, 12)} does not hash to its id` });
   }
   return problems;
 }
 
 // A commit's tree and first parent, from its verified bytes.
-function commitOf(cwd, hash) {
-  const text = readObject(cwd, "commit", hash).toString("utf8");
+function commitOf(cwd, hash, read) {
+  const text = readObject(cwd, "commit", hash, read).toString("utf8");
   const header = text.slice(0, text.indexOf("\n\n") + 1 || text.length);
   return { tree: /^tree ([0-9a-f]+)$/m.exec(header)?.[1], parent: /^parent ([0-9a-f]+)$/m.exec(header)?.[1] ?? null };
 }
@@ -285,10 +305,10 @@ function listTree(cwd, hash) {
   try { return readTree(cwd, hash); } catch { return null; }
 }
 
-export function gitReader(cwd) {
+export function gitReader(cwd, read) {
   return {
-    tree: async (hash) => readTree(cwd, hash),
-    blob: async (hash) => new Uint8Array(readObject(cwd, "blob", hash)),
+    tree: async (hash) => readTree(cwd, hash, read),
+    blob: async (hash) => new Uint8Array(readObject(cwd, "blob", hash, read)),
   };
 }
 
@@ -326,9 +346,11 @@ function pathsOf(cwd, object, trees) {
 // blocks a push. It names the file and line, or the file and why, never the
 // value. An object the scan cannot read is listed unscanned under the path
 // that holds it (or the commit, when no path does), so it stops the batch
-// too. Returns { hits, unscanned } as strings, each once.
+// too. Returns { hits, unscanned } as strings, each once, and `read`, the
+// id of every object the scan read, for the post-test check (t618).
 export async function scanBatch(cwd, start, head = "HEAD") {
-  const reader = gitReader(cwd);
+  const read = new Set();
+  const reader = gitReader(cwd, read);
   const emptyTree = git(cwd, "hash-object", "-t", "tree", "--stdin");
   const hits = new Set(), unscanned = new Set();
   for (const line of git(cwd, "rev-list", "--parents", `${start}..${head}`).split("\n").filter(Boolean)) {
@@ -337,10 +359,10 @@ export async function scanBatch(cwd, start, head = "HEAD") {
     // parent rev-list walked must be the one the commit names.
     let baseTree, headTree;
     try {
-      const head = commitOf(cwd, commit);
+      const head = commitOf(cwd, commit, read);
       if ((head.parent ?? undefined) !== parent) throw unreadable("commit", commit, `names parent ${head.parent?.slice(0, 12) ?? "none"}, not ${parent?.slice(0, 12) ?? "none"} as Git listed it`);
       headTree = head.tree;
-      baseTree = parent ? commitOf(cwd, parent).tree : emptyTree;
+      baseTree = parent ? commitOf(cwd, parent, read).tree : emptyTree;
     } catch (err) {
       unscanned.add(`commit ${commit.slice(0, 12)} (cannot be read: ${err?.message ?? err})`);
       continue;
@@ -357,7 +379,7 @@ export async function scanBatch(cwd, start, head = "HEAD") {
     for (const h of scan.hits) hits.add(`${h.file}:${h.line}`);
     for (const u of scan.unscanned) unscanned.add(`${u.file} (${u.reason})`);
   }
-  return { hits: [...hits], unscanned: [...unscanned] };
+  return { hits: [...hits], unscanned: [...unscanned], read };
 }
 
 // The clone each named commit can be fetched from (t589): the workspace a
@@ -432,7 +454,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   // developer's files and Keychain.
   const env = checkEnv();
   const merged = [];
-  let failure = null, tests = null, scanned = null;
+  let failure = null, tests = null, scanned = null, read = new Set();
   try {
     for (const { id, sha } of pairs) {
       if (sources[id] && !hasCommit(cwd, sha)) {
@@ -510,7 +532,9 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     }
     if (!failure) {
       scanned = expected;
-      const { hits, unscanned } = await scanBatch(cwd, start, scanned);
+      const scan = await scanBatch(cwd, start, scanned);
+      const { hits, unscanned } = scan;
+      read = scan.read;
       const found = [];
       if (hits.length) found.push(`added lines that look like credentials: ${hits.slice(0, 20).join(", ")}`);
       if (unscanned.length) found.push(`changes the scan cannot read as text: ${unscanned.slice(0, 20).join(", ")}`);
@@ -538,10 +562,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const overrides = historyOverrides(cwd, shallowAtStart);
       if (overrides.length) failure = { step: "checkout changed", detail: `after the secret scan the checkout has ${overrides.join(", ")}, which change the history Git shows` };
     }
-    // The objects the scan read are all still there, unchanged, after the
-    // tests (eighth review of t592).
+    // The objects the scan read, reused ones included, are all still there,
+    // unchanged, after the tests (eighth review of t592, t618).
     if (!failure) {
-      const problems = objectProblems(cwd, start, scanned);
+      const problems = objectProblems(cwd, start, scanned, read);
       if (problems.length) failure = { step: "objects changed", detail: `objects of the batch changed after the secret scan: ${problems.join(", ")}` };
     }
     // Every merge a receipt will name is in the scanned head's history, so
