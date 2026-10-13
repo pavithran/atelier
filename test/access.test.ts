@@ -74,7 +74,13 @@ test("Access set in part, or with a value it cannot use, is broken, naming what 
     [{ CF_ACCESS_AUD: AUD }, [/CF_ACCESS_ISS is not set/, /CF_ACCESS_OWNER_EMAIL is not set/]],
     [{ CF_ACCESS_ISS: " ", CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER }, [/CF_ACCESS_ISS is not set/]],
     // A plain-word team, an http URL or a scheme alone is not an issuer Access reports.
-    ...["t.access-test", "http://t.access-test", "https://", "https://t.access-test/path"].map((bad) =>
+    // Nor is anything URL parsing would normalise to one, for the raw string
+    // is what a token's issuer is compared with: a dot segment, an empty
+    // fragment or query, credentials, a port (review of t597).
+    ...["t.access-test", "http://t.access-test", "https://", "https://t.access-test/path",
+      "https://t.access-test/path/..", "https://t.access-test#", "https://t.access-test?", "https://t.access-test?x=1",
+      "https://user@t.access-test", "https://t.access-test:443", "https://t.access-test:8443", "https:t.access-test",
+      "https://t.access-test/.", "https://t.access-test\\\\", "https://T.Access-Test"].map((bad) =>
       [{ CF_ACCESS_ISS: bad, CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER }, [/CF_ACCESS_ISS is not the team's https URL/]] as [Record<string, string>, RegExp[]]),
     [{ CF_ACCESS_ISS: iss, CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: "owner" }, [/CF_ACCESS_OWNER_EMAIL is not an email address/]],
   ];

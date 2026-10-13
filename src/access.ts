@@ -38,10 +38,16 @@ export type AccessConfig =
   | { state: "on"; settings: AccessSettings }
   | { state: "broken"; problem: string };
 
+// Whether the issuer, as kept (trimmed, trailing slashes removed), is exactly
+// https://HOST: the raw string must equal the origin URL parsing gives it, so
+// nothing the parser would normalise away (a dot segment, an empty fragment
+// or query, a default port, upper case) passes, since the raw string is what
+// a token's issuer is compared with. No port, no credentials: Access reports
+// its team URL without either.
 function teamIssuer(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname !== "" && url.pathname === "/" && !url.search && !url.hash && !url.username && !url.password && value.startsWith("https://");
+    return url.protocol === "https:" && url.hostname !== "" && url.port === "" && !url.username && !url.password && value === url.origin;
   } catch {
     return false;
   }

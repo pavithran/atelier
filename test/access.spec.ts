@@ -230,9 +230,11 @@ it("an unconfigured server sends a visitor to sign in for Home, and signing in l
 it("with Access set in part or unusably, the developer's routes are refused, naming what is wrong", async () => {
   const partial = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: ISS, CF_ACCESS_OWNER_EMAIL: OWNER } as typeof env;
   const invalid = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: "http://atelier-test.cloudflareaccess.com", CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER } as typeof env;
+  // URL parsing would normalise this one to the team URL (review of t597).
+  const dotted = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: `${ISS}/path/..`, CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER } as typeof env;
   const send = serveKeys();
   try {
-    for (const [bindings, problem] of [[partial, "CF_ACCESS_AUD is not set"], [invalid, "CF_ACCESS_ISS is not the team"]] as const) {
+    for (const [bindings, problem] of [[partial, "CF_ACCESS_AUD is not set"], [invalid, "CF_ACCESS_ISS is not the team"], [dotted, "CF_ACCESS_ISS is not the team"]] as const) {
       const fetchWith = (path: string, init: RequestInit = {}) => worker.fetch(new Request(`https://atelier.test${path}`, { redirect: "manual", ...init }), bindings);
       const jwt = await assertion();
       for (const res of [
