@@ -504,8 +504,20 @@ export async function runLand(io) {
     catch { /* the row lapses on its own after the expiry */ }
   };
   // `why` is what the release step records: the merge, main moving under
-  // the lease, or the failure that ended the landing.
-  const release = async (why = "the landing ended") => {
+  // the lease, or the failure that ended the landing. Releases run one at a
+  // time, and each caller waits for every release asked before its own
+  // (t590): one marks the lease released before the server answers its
+  // cancel, so a second caller (a signal during the failed landing's
+  // release, or a second signal during the first's) that found nothing left
+  // to release would otherwise go on, and end the landing, while the
+  // cancel is still unanswered.
+  let releasing = Promise.resolve();
+  const release = (why = "the landing ended") => {
+    const next = releasing.then(() => releaseNow(why));
+    releasing = next.catch(() => {});
+    return next;
+  };
+  const releaseNow = async (why) => {
     beating = false;
     if (everQueued && !leased) { everQueued = false; await leaveQueue(); }
     if (!leased) return;
@@ -543,9 +555,13 @@ export async function runLand(io) {
   // (cli/group.mjs), so that step fails while the release is still asked,
   // and the landing's failure path below runs beside it. That path waits
   // for the signal's ending (`stopping`) rather than end the landing itself
-  // with exit 1, the lease still held (t590).
+  // with exit 1, the lease still held (t590). The signal's release waits
+  // for any release already in flight (above), and a second signal of
+  // another kind changes nothing: the first signal's ending stands, with
+  // its status.
   let stopping = null;
   const onSignal = (signal) => {
+    if (stopping) return;
     print(`${signal} received; releasing the landing lease of ${name}…`);
     stopping = release(`${signal} ended the landing`).finally(() => process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
   };
@@ -843,14 +859,15 @@ export async function runLand(io) {
       break;
     }
   } catch (error) {
-    // A step the signal ended fails here before its release is answered;
-    // the signal's handler ends the landing, with the signal's status.
-    if (stopping) await stopping;
+    // A step the signal ended fails here before its release is answered,
+    // and a signal can come while this release is: either way the signal's
+    // handler ends the landing, with the signal's status.
     await release(`stopped: ${String(error.message).split("\n")[0]}`);
+    if (stopping) await stopping;
     die(error.message);
   }
-  if (stopping) await stopping;
   await release("merged");
+  if (stopping) await stopping;
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
   print(`${id} spent ${span(Date.now() - began - heldMs)} landing without the lease and held it ${span(heldMs)}.`);
   // When another landing took the lease over, release() has said where it
