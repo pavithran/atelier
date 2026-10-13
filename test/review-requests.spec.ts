@@ -1428,7 +1428,8 @@ it("t485: concurrent claims, same-name restart and same-actor takeover fence eve
   await refusal(L.releaseReview(partId, GPT, "late SIGTERM", true, old.request), "stale_request", /no longer current/);
   await refusal(L.releaseReview(partId, GPT, "missing generation", true), "stale_request", /no longer current/);
   await refusal(L.addReview(verdict, undefined, true), "stale_request", /withdrawn or replaced/);
-  await refusal(L.addReview({ ...verdict, request: undefined }, undefined, true), "stale_request", /withdrawn or replaced/);
+  // t575: a verdict naming no request says so, never "request undefined".
+  await refusal(L.addReview({ ...verdict, request: undefined }, undefined, true), "stale_request", /names no review request, but .* claimed (request \d+|one) at .*--request N.*withdrawn or replaced/);
   expect(await L.unparsableReview(partId, GPT, head, "late", "no verdict", true, old.request)).toEqual({ released: false });
   await L.releaseReview(partId, GPT, "restart", true, restarted.request);
   const takeover = await L.claimReview(partId, GPT, { runner: "home:other", kind: "home" }, true) as unknown as ReviewClaim;
