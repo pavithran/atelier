@@ -1,3 +1,4 @@
+// atelier slots. Its forms, flags and help are declared in src/usage/commands/slots.ts.
 import { args, die } from "../atelier.mjs";
 import { formatSlots, setSlotCapacity, slotStatus } from "../load.mjs";
 

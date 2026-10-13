@@ -1,3 +1,4 @@
+// atelier review-request. Its forms, flags and help are declared in src/usage/commands/review-request.ts.
 import { I, OWNER, args, call, die, itemArg, project } from "../atelier.mjs";
 
 export default async function reviewRequestCommand() {

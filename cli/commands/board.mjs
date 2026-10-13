@@ -1,3 +1,4 @@
+// atelier board. Its forms, flags and help are declared in src/usage/commands/board.ts.
 import { P, args, call, die, project } from "../atelier.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { boardText } from "../../src/board.ts";

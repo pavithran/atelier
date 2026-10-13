@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -81,7 +81,7 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check, prepa
     return { status, stdout, stderr };
   }
   const evidence = () => posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body);
-  return { run, evidence, posts, head, mainHead, forkPoint, baseline, fork };
+  return { run, evidence, posts, head, mainHead, forkPoint, baseline, fork, root };
 }
 
 const addFile = (name) => (cwd) => writeFileSync(join(cwd, name), `${name}\n`);
@@ -109,12 +109,37 @@ test("check --merged runs the checks on the head merged with main's head, and re
   assert.equal("mainHead" in last, false);
 });
 
+// Both sides declare gen.txt as generated from in/*.txt and each adds an
+// input, so the merge regenerates gen.txt from both.
+const generating = (input) => (cwd) => {
+  mkdirSync(join(cwd, "bin"), { recursive: true }); mkdirSync(join(cwd, "in"), { recursive: true });
+  writeFileSync(join(cwd, "bin", "merge-manifest.json"), JSON.stringify({ version: 1, generators: [{ name: "gen", command: ["sh", "-c", "cat in/*.txt > gen.txt"], inputs: ["in/**"], outputs: ["gen.txt"] }] }));
+  writeFileSync(join(cwd, ".gitattributes"), "gen.txt merge=atelier-generated\n");
+  writeFileSync(join(cwd, "in", `${input}.txt`), `${input}\n`);
+  writeFileSync(join(cwd, "gen.txt"), `${input}\n`);
+};
+
+test("check --merged keeps the merge's provenance and generator logs after the clone is removed", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await fixture(t, { mainChange: generating("main"), taskChange: generating("task"), check: "grep -q main gen.txt && grep -q task gen.txt" });
+  const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const [e] = f.evidence();
+  assert.equal(e.passed, true);
+  assert.match(e.outputTail, new RegExp(`^Merged with main at ${f.mainHead} through the merge pipeline:\nAtelier-Regenerated: gen \\(sh -c cat in/\\*\\.txt > gen\\.txt\\): gen\\.txt matches neither side; log sha256 [0-9a-f]{64}\nAtelier-Generator-Log: gen: (.+\\.log)\n`));
+  const log = /Atelier-Generator-Log: gen: (.+\.log)/.exec(e.outputTail)[1];
+  assert.ok(log.startsWith(join(f.root, "cache", "merge-logs", "proj", "t1")), log);
+  assert.ok(existsSync(log), "the log outlives the clone");
+  assert.match(readFileSync(log, "utf8"), /^generator: gen\n[\s\S]*--- run 2: exit 0/);
+  assert.match(r.stderr, new RegExp(`regenerated gen\\.txt \\(matches neither side\\) with sh -c cat in/\\*\\.txt > gen\\.txt; log ${log.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
 test("check --merged stops on a conflict with main, naming the path, and records nothing", async (t) => {
   const edit = (text) => (cwd) => writeFileSync(join(cwd, "STATE.md"), text);
   const f = await fixture(t, { mainChange: edit("main's line one\nline two\n"), taskChange: edit("the task's line one\nline two\n"), check: "true" });
   const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
   assert.equal(r.status, 2, r.stdout + r.stderr);
-  assert.match(r.stderr, new RegExp(`the merge of t1 with main at ${f.mainHead.slice(0, 8)} stops on conflicts in:\\nSTATE.md`));
+  assert.match(r.stderr, new RegExp(`the merge of t1 with main at ${f.mainHead.slice(0, 8)} stops on conflicts; nothing was regenerated\\.\\nSource conflicts to resolve:\\n  STATE\\.md\\n`));
   assert.match(r.stderr, /run atelier update, resolve them, commit, and atelier push --force; then check again/);
   assert.deepEqual(f.evidence(), []);
 });
@@ -183,4 +208,26 @@ test("preparation timeout stops checks and names the signal", async (t) => {
   assert.match(r.stderr, /Preparation `sleep 30` failed: (signal|exit)/);
   assert.match(r.stderr, /timed out/);
   assert.deepEqual(f.evidence(), []);
+});
+
+test("failed speculative generation keeps and names its log after check deletes the clone", async (t) => {
+  const failing = (input) => (cwd) => {
+    generating(input)(cwd);
+    const path = join(cwd, "bin", "merge-manifest.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    manifest.generators[0].command = ["sh", "-c", "echo generation-diagnostic >&2; exit 3"];
+    writeFileSync(path, JSON.stringify(manifest));
+  };
+  const f = await fixture(t, { mainChange: failing("main"), taskChange: failing("task"), check: "exit 0" });
+  const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /failed generator gen/);
+  const discardedLog = /its log is (.+\.log)/.exec(r.stderr)?.[1];
+  assert.ok(discardedLog, r.stderr);
+  assert.equal(existsSync(discardedLog), false, "the speculative clone was deleted");
+  const log = /Atelier-Generator-Log: gen: (.+\.log)/.exec(r.stderr)?.[1];
+  assert.ok(log, r.stderr);
+  assert.ok(log.startsWith(join(f.root, "cache", "merge-logs", "proj", "t1")));
+  assert.match(readFileSync(log, "utf8"), /--- run 1: exit 3\ngeneration-diagnostic/);
+  assert.equal(f.posts.filter((p) => p.path.endsWith("/evidence")).length, 0);
 });
