@@ -68,6 +68,10 @@ const KEY_PATTERNS: RegExp[] = [
   /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/,     // OpenAI, Anthropic and other sk- keys
   /(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/, // Stripe key
   /xox[baprs]-[A-Za-z0-9-]{10,}/,        // Slack token
+  // Atelier's own token, as tokenFromBytes (src/tokens.ts) mints it: "atl_"
+  // and the hex of at least 32 random bytes, lowercase, standing alone, so a
+  // name such as atl_config never matches (t594).
+  /(?<![A-Za-z0-9_])atl_(?:[0-9a-f]{2}){32,}(?![A-Za-z0-9_])/,
 ];
 
 // A variable name segment that marks a `.env`-style assignment as a secret.
