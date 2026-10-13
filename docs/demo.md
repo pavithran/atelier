@@ -493,23 +493,29 @@ atelier land t13 --project demo
 ```
 
 ```text
-Landing lease taken for t13 (submitted); one landing at a time in demo.
 Merged main at 1e0f77a2 into t13's workspace (4 commits from main).
 Pushed 5d31b9c0 to t13's fork.
 Review requested for claude-code/opus-5.5: …. Waiting for the verdict…
 claude-code/opus-5.5 approved t13 at 5d31b9c0.
+Landing lease taken for t13 (submitted) for its merge alone; one merge at a time in demo.
+5d31b9c0 was merged with main, checked and reviewed in 9 min without the lease.
+main is still at 1e0f77a2, the commit 5d31b9c0 was checked and reviewed against.
 t13 landed: t13 merged as 2b8d41e7 in /Users/pavi/Projects/demo; baseline and ledger agree.
-The landing lease for demo is released; another task may land.
+t13 spent 9 min landing without the lease and held it 20 s.
+The landing lease for demo is released; another task may merge.
 ```
 
-`land` takes the project's landing lease on the server, so two sessions
-never race main; merges main into the task's workspace, stopping on
-conflicts and naming the files for the owner to resolve by hand; runs the
-project's regenerate command when `init --regenerate` declared one;
-pushes; runs the required checks; submits; asks the server for the
-independent review the gate needs and waits for the verdict; then accepts
-and merges through the CLI's own `accept` and `merge`, run as its children,
-whose output it prints only when one fails. Each step and its duration are
+`land` merges main into the task's workspace, stopping on conflicts and
+naming the files for the owner to resolve by hand; runs the project's
+regenerate command when `init --regenerate` declared one; pushes; runs the
+required checks; submits; and asks the server for the independent review
+the gate needs and waits for the verdict, all without the project's
+landing lease, beside any other task's landing. Only with the head
+checked and approved does it take the lease on the server, for the merge
+alone, so two sessions never race main (a second landing queues behind
+it); it confirms main is still the commit the head was checked against,
+then accepts and merges through the CLI's own `accept` and `merge`, run as
+its children, whose output it prints only when one fails. Each step and its duration are
 recorded on the task as `land.*` events. `--reviewer H/M`
 names the reviewer, `--no-review` leaves the task submitted for the owner
 to settle by hand, and `--dry-run` prints the steps and the refusals

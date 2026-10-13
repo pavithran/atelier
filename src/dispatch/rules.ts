@@ -33,7 +33,12 @@ export interface Dispatch {
   // "prereview" is a pre-review's dispatch (t524,
   // src/dispatch/prereview.ts), stored with the pre-review like a review's
   // and offered only to a runner whose offer lists the job.
-  job?: "plan" | "review" | "prereview" | "criteria-review" | "integrate" | "refresh" | "merge-main";
+  // "task-refresh" and "task-resolve" are the task refresh's jobs (t462,
+  // src/refresh/): the integrator merges main into a task's head in a
+  // workspace of its own, and a resolver resolves the mechanical conflicts
+  // that merge left. Neither is stored on the item: the queue makes them
+  // from the refresh targets, and the lease they run under is the Ledger's.
+  job?: "plan" | "review" | "prereview" | "criteria-review" | "integrate" | "refresh" | "merge-main" | "task-refresh" | "task-resolve";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
   // refresh job, `head` is the main head to merge. For merge-main it is
@@ -47,6 +52,9 @@ export interface Dispatch {
   // workspace before the builder starts. Only a runner that offers the
   // "merge-plan" job takes such a dispatch.
   planHead?: string;
+  // For a task-refresh or task-resolve job: the task's head the refresh
+  // starts from, which its lease must still find (`head` is main's).
+  expectedHead?: string;
   // Set on a merge-main job the owner dispatched for a task outside a plan
   // (t243), whose runner reads main through the task's own base token rather
   // than a plan's. A runner from before t243 offers merge-main but refuses
@@ -649,7 +657,7 @@ function missingJob(d: Pick<Dispatch, "job" | "planHead" | "task">, offer: Runne
 export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
   // The integrate and refresh jobs always run as the reserved integrator,
   // which the queue returns to a runner that offers the job.
-  if (d.job === "integrate" || d.job === "refresh") {
+  if (d.job === "integrate" || d.job === "refresh" || d.job === "task-refresh") {
     if (!(offer.jobs ?? []).includes(d.job)) return null;
     if (d.to !== "any" && d.to !== offer.kind) return null;
     return { agent: "atelier", model: "integrator", actor: "atelier/integrator" };

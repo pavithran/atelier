@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -23,6 +23,7 @@ import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { mergeMainAndRegenerate } from "./land.mjs";
+import { runTaskRefresh } from "./task-refresh.mjs";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 
@@ -633,7 +634,9 @@ export function removeDataHome({ dir, onExit }) {
 // command fails; every other command's goes to the runner's own output, as
 // the owner watching it expects. The integrate and refresh jobs read check's
 // to say what failed, and log it either way.
-const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "baseline-token", "check"]);
+// The task refresh (cli/task-refresh.mjs) reads its lease and the answers
+// to its reports.
+const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "base-token", "baseline-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 export async function checked(argv, options, executeChild = execute) {
@@ -2626,21 +2629,36 @@ export async function reexecSelf(env, { argv = process.argv, execArgv = process.
   }
 }
 
-// What an idle runner does about the deployed commit: nothing while the
-// server cannot say which it is (no answer, no commit), or while the commit
-// it started from already contains it (the reloaded process, or a checkout
-// ahead of the deploy, so nothing reloads twice); "reload" when the
-// checkout's HEAD now contains it; "behind" until then.
+// What an idle runner does about the server's version. Its target is
+// Atelier's main head as the ledger last saw it (`main`, t556), which moves
+// with every merge, a merge of cli/** alone among them, though only a change
+// to the Worker deploys it; else, from a server that names no main, the
+// deployed commit. Nothing while the server names neither (no answer, no
+// commit), or while the commit it started from already contains the target
+// (the reloaded process, or a checkout ahead of main, so nothing reloads
+// twice); "reload" when the checkout's HEAD now contains it; "behind" until
+// then. A checkout that holds the deployed commit but not yet main's head
+// still reloads to the deployed one, and to main's once it is pulled.
 export async function reloadCheck(started, { version, checkout, signal }) {
   if (!started || !version || !checkout) return { action: "none" };
   let answer = null;
   try { answer = await version(signal); } catch { return { action: "none" }; }
-  const deployed = answer?.commit;
-  if (typeof deployed !== "string" || !COMMIT.test(deployed) || deployed === started) return { action: "none" };
-  if (await checkout.contains(deployed, started)) return { action: "none" };
+  const named = (commit) => typeof commit === "string" && COMMIT.test(commit) ? commit : null;
+  const deployed = named(answer?.commit), main = named(answer?.main);
+  const pending = [];
+  for (const target of new Set([main, deployed])) {
+    if (target && target !== started && !await checkout.contains(target, started)) pending.push(target);
+  }
+  if (!pending.length) return { action: "none" };
   const head = await checkout.head();
-  return { action: head && await checkout.contains(deployed, head) ? "reload" : "behind", deployed, head };
+  const why = (target) => ({ target, deployed, ...(main ? { main } : {}), head });
+  for (const target of pending) if (head && await checkout.contains(target, head)) return { action: "reload", ...why(target) };
+  return { action: "behind", ...why(pending[0]) };
 }
+
+// The target reloadCheck names, said as the server's state: main's head
+// when it is that, else the commit the server runs.
+const targetLine = (check) => check.target === check.main ? `main is at ${short(check.target)}` : `the server runs ${short(check.target)}`;
 
 export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
@@ -2651,13 +2669,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   const integrating = args.integrate === true;
   if (typeof args.name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(args.name)) throw new Error("use --name home:NAME");
   // The integrator runs no model: it offers the integrate and refresh jobs
-  // alone, under the reserved actor, and takes no config.
+  // and the task refresh's (t462) alone, under the reserved actor, and
+  // takes no config.
   const config = integrating ? { agents: [] } : readConfig(args.config);
   // The offer says when this process started (t420): what it passes by
   // after failures or a refused claim it forgets on a restart, so the
   // server's reasons naming this runner count only from then.
   const offer = {
-    ...(integrating ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] } : offerFrom(config, args.name)),
+    ...(integrating ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] } : offerFrom(config, args.name)),
     started: new Date().toISOString(),
   };
   const controller = new AbortController();
@@ -2777,7 +2796,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       return checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
         env: runnerChildEnv(process.env, offer.runner, credential, options.token),
         step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
+        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed" || (argv[0] === "refresh-lease" && argv.includes("--release"))) && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
     },
     prepareSubmission: (assignment, workspace, resolve) => prepareBuildSubmission(assignment, workspace, io, resolve),
     // Git as the landing's merge of main calls it (mergeMainAndRegenerate in
@@ -2788,9 +2807,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // with `allowFail` the answer is git's own status and output, as the
     // landing's git answers, and otherwise a failure throws with the
     // arguments redacted.
-    git: async (args, { cwd, token, allowFail = false, raw = false, env = null } = {}) => {
+    git: async (args, { cwd, token, allowFail = false, raw = false, env = null, timeoutMs } = {}) => {
       const childEnv = token || env ? { ...(token ? gitAuth(token) : process.env), ...(env ?? {}) } : null;
-      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], ...(childEnv ? { env: childEnv } : {}) });
+      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], timeoutMs, ...(childEnv ? { env: childEnv } : {}) });
       if (result.timedOut) throw new Error(`git ${args[0]} timed out`);
       if (controller.signal.aborted) throw new Error("interrupted");
       const output = result.output ?? "", stderr = result.stderr ?? "";
@@ -2877,6 +2896,34 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // The workspace half of a rollback; runIntegrate and runRefresh push it with atelier push --rollback.
     rollback: (cwd, before) => checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal, step: "rollback" }, executeChild),
     writeDiff, removeDiff, verdictPath, readVerdict, now,
+    // The task refresh's own workspace (t462, cli/task-refresh.mjs): a fresh
+    // directory, never a builder's, removed when the job ends.
+    tempDir: async (prefix) => mkdtempSync(join(tmpdir(), prefix)),
+    // A resolver's harness on a refresh's mechanical conflicts, in that
+    // workspace, with the brief the job wrote; what it leaves is verified
+    // by the job before anything is committed.
+    resolveConflicts: async (assignment, cwd, text) => {
+      const entry = config.agents.find((a) => a.agent === assignment.agent && a.models.includes(assignment.model));
+      if (!entry) throw new Error(`this runner has no harness for ${assignment.actor}`);
+      excludeScratch(cwd);
+      const brief = writeBrief(cwd, text);
+      let dataHome;
+      try {
+        const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+        dataHome = OWN_DATA_HOME.has(assignment.agent) ? makeDataHome(cwd) : null;
+        const result = await io.harness(commandFor(entry, { model: assignment.model, briefFile: brief.file, workspace: cwd }), cwd, harnessRunEnv(env, dataHome, assignment.item.id, "build", offer.runner, assignment.project, assignment.actor), { capture: true, stream: true });
+        // A provider's usage limit is routed as a build's is (t487): the job
+        // gives its lease back and the loop pauses the harness, with no
+        // failure counted.
+        const limit = !io.stopped() ? providerLimitOf(result, now()) : null;
+        if (limit) throw Object.assign(new Error(`${assignment.agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: assignment.agent } });
+        if (result.timedOut) throw new Error("harness timed out resolving the refresh");
+        if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving the refresh`);
+      } finally {
+        if (dataHome) removeDataHome(dataHome);
+        removeBrief(brief);
+      }
+    },
     ...taskIO,
   };
   try {
@@ -2886,7 +2933,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // first poll, so a runner that would fail its calls one by one stops
     // here instead, saying to deploy.
     if (version) {
-      const refusal = versionRefusal(await version(controller.signal), offer.jobs);
+      const answer = await version(controller.signal);
+      // The integrator's task refresh (t462) is the one job it drops rather
+      // than refuse for: a server from before it still has its plans
+      // integrated and refreshed, and the line below says the job is off.
+      if (integrating && versionRefusal(answer, ["task-refresh"])) offer.jobs = offer.jobs.filter((job) => job !== "task-refresh");
+      const refusal = versionRefusal(answer, offer.jobs);
       if (refusal) throw new Error(refusal);
     }
     // Said once, before the first poll (t289): the jobs this runner takes
@@ -2895,39 +2947,40 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // queue's silence.
     io.log(jobsLine(offer.jobs));
     // The commit this process started from (t265), against which an idle
-    // runner compares the deployed one. A --once run never reloads.
+    // runner compares main's head and the deployed one. A --once run never
+    // reloads.
     const reloading = reload && !args.once;
     const started = reloading ? await reload.checkout.head().catch(() => null) : null;
     const target = process.env[RELOAD_TARGET];
     delete process.env[RELOAD_TARGET];
     if (target && (!started || !await reload.checkout.contains(target, started))) {
-      throw new Error("replacement checkout no longer contains the deployed commit");
+      throw new Error("replacement checkout no longer contains the commit it reloaded for");
     }
     const reloadedFrom = process.env[RELOADED_FROM];
     delete process.env[RELOADED_FROM];
     if (reloading && reloadedFrom) line(`reloaded: was ${short(reloadedFrom)}, now ${short(started)}`);
     if (reloading && !started) line(`the commit this runner started from cannot be read in ${reload.checkout.dir}; it will not reload itself after a deploy`);
-    // The deployed commit last said to be missing from the checkout, and the
-    // one a re-exec failed for: each is said once, and a failed one is not
-    // tried again until the next deploy.
+    // The target last said to be missing from the checkout, and the one a
+    // re-exec failed for: each is said once, and a failed one is not tried
+    // again until main or the deploy moves.
     let saidBehind = null, failedReload = null;
     const reloadIfDeployed = async () => {
       const check = await reloadCheck(started, { version, checkout: reload.checkout, signal: controller.signal });
       if (controller.signal.aborted || check.action === "none") return;
       if (check.action === "behind") {
-        if (saidBehind === check.deployed) return;
-        saidBehind = check.deployed;
-        line(`behind: started from ${short(started)}, the server runs ${short(check.deployed)}, and this checkout (${reload.checkout.dir}) at ${short(check.head)} does not contain it; update it (git -C '${reload.checkout.dir}' pull --ff-only) and this runner reloads itself when next idle`);
+        if (saidBehind === check.target) return;
+        saidBehind = check.target;
+        line(`behind: started from ${short(started)}, ${targetLine(check)}, and this checkout (${reload.checkout.dir}) at ${short(check.head)} does not contain it; update it (git -C '${reload.checkout.dir}' pull --ff-only) and this runner reloads itself when next idle`);
         return;
       }
       // A skip report not yet taken lives only in this process: the reload
       // waits until the server has it.
-      if (failedReload === check.deployed || pendingSkips.size) return;
-      line(`reloading: started from ${short(started)}, the server runs ${short(check.deployed)}; starting replacement runner from ${reload.checkout.dir} at ${short(check.head)}`);
-      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started, [RELOAD_TARGET]: check.deployed }); }
+      if (failedReload === check.target || pendingSkips.size) return;
+      line(`reloading: started from ${short(started)}, ${targetLine(check)}; starting replacement runner from ${reload.checkout.dir} at ${short(check.head)}`);
+      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started, [RELOAD_TARGET]: check.target }); }
       catch (error) {
-        failedReload = check.deployed;
-        line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.deployed)}`);
+        failedReload = check.target;
+        line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.target)}`);
       }
     };
     // Pauses a restart finds in the file, said as the runner's status.
@@ -3025,6 +3078,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                   ? runIntegrate(task, config, offer.runner, io)
                   : task.item.dispatch?.job === "refresh"
                     ? runRefresh(task, config, offer.runner, io)
+                    : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
+                      ? runTaskRefresh(task, config, offer.runner, io)
                     : runTask(task, config, offer.runner, io), heartbeat && (() => heartbeat(offer, controller.signal)), { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
           if (state.providerLimit) {

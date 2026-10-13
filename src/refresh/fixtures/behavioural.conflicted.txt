@@ -1,0 +1,9 @@
+export function limit() {
+<<<<<<< HEAD
+  return 20;
+||||||| merged common ancestors
+  return 10;
+=======
+  return 30;
+>>>>>>> 1111111
+}
