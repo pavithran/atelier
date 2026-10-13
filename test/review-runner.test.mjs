@@ -1211,6 +1211,67 @@ test("a baseline that cannot be fetched is served with backoff, given up after t
   assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
 });
 
+// t591 (fourth review): when the baseline's Git endpoint is down the clone
+// fails before the merge is looked for, and that failure released the
+// review under a new number each poll, as the fetch's did before it. Every
+// failure of a post-merge review's job after its claim is counted by task
+// and head with the same backoff, cap and single report.
+test("a post-merge review whose clone fails is served with backoff, given up after three tries with one report, and served again once the baseline moves", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task } = missingMergeFixture();
+  const B1 = "1".repeat(40), B2 = "2".repeat(40);
+  let broken = true, polls = 0, clock = 0;
+  const claimPolls = [];
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => { if (argv[0] === "review-claim") claimPolls.push(polls); return cli(argv, cwd, options); };
+  io.clone = async () => { if (broken) throw new Error("git clone: fatal: unable to access 'https://artifacts.example/p--t21/': The requested URL returned error: 503"); };
+  io.hasCommit = async () => !broken;
+  io.checkout = async (_dir, head) => { assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : assert.fail(`unexpected rev-parse ${ref}`);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const runs = [], skips = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    version: async () => ({ capabilities: SERVER_CAPABILITIES }),
+    async reportRun(body) { runs.push(body); },
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return polls > 30 ? B2 : B1; },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls === 31) broken = false;
+      if (polls > 45 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.deepEqual(claimPolls.slice(0, 3), [1, 2, 4]);
+  assert.equal(claimPolls.length, 4, JSON.stringify(claimPolls));
+  assert.ok(claimPolls[3] > 30, JSON.stringify(claimPolls));
+  assert.equal(runs.length, 1, JSON.stringify(runs));
+  assert.equal(runs[0].outcome, "infrastructure_miss");
+  assert.match(runs[0].detail, new RegExp(merge));
+  assert.match(runs[0].detail, /returned error: 503/);
+  assert.equal(skips.length, 0);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict once the clone works");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+});
+
+// t591 (fourth review): a post-merge review's failed runs that end without
+// throwing (the reviewer's harness exits, times out or replies without a
+// verdict) are counted by task and head too, so the two-failure cap holds
+// across the new number each release gives the request; a review of a task
+// not yet merged keeps its count by request (t353).
+test("a post-merge review's failures count by task and head, not by request", async () => {
+  const { failureKey } = await import("../cli/runner.mjs");
+  const merged = (request) => ({ project: "atelier", item: { id: "t21", state: "merged", head: "e".repeat(40), request, dispatch: { job: "review" } } });
+  const open = (request) => ({ project: "atelier", item: { id: "t21", state: "open", head: "e".repeat(40), request, dispatch: { job: "review" } } });
+  assert.equal(failureKey(merged(50)), failureKey(merged(51)));
+  assert.notEqual(failureKey(open(50)), failureKey(open(51)));
+});
+
 // t591 (second review, finding 2): one poll may list several requests for
 // the same task and head; after the first misses, the rest are passed by
 // within the same batch.

@@ -1611,6 +1611,10 @@ export function orderJobs(tasks) {
 // owner asks for after editing them, as counting them under the task did.
 export function failureKey(task) {
   const job = task.item.dispatch?.job;
+  // A merged task's post-merge review (t591, fourth review) counts by its
+  // task and head alone: each release of it makes the request anew under
+  // another number, which would start the count fresh on every poll.
+  if (job === "review" && task.item.state === "merged") return JSON.stringify([task.project, task.item.id, task.item.head]);
   if (job === "review" || job === PREREVIEW_JOB) return JSON.stringify([task.project, task.item.id, task.item.head, task.item.request]);
   if (job === "criteria-review") return JSON.stringify([task.project, task.item.id, "criteria-review", task.item.request]);
   return taskKey(task);
@@ -1670,7 +1674,7 @@ export function jobOf(task) {
 // request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO, preclaimed = null) {
   const { project, item, agent, model, actor } = assignment;
-  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO;
+  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO, landedCommit = null;
   const generation = () => request === undefined ? [] : ["--request", String(request)];
   const release = async (reason) => {
     released = true;
@@ -1699,6 +1703,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     const claimed = preclaimed ?? JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
     request = claimed.request;
     claimedRequest = request !== undefined;
+    landedCommit = claimed.landed?.commit ?? null;
     if (request !== undefined) {
       // One renewal in flight; network failures recover on the next interval.
       // A refused generation must never post a verdict, even for this actor.
@@ -1860,7 +1865,12 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     // A baseline that could not be fetched (t591) is counted by task and
     // head in the loop (fetchFailures), not under the request's number,
     // which every release renews.
-    if (error.fetchFailed) return { phase: "failed", reason: error.message, skipped: true, fetchFailed: error.fetchFailed };
+    // So is every other failure a post-merge review's job throws after its
+    // claim (t591, fourth review): the clone, the checkout, the diff, the
+    // verdict's post. An interrupt is the runner's own, and counts nothing.
+    if (error.fetchFailed || (landedCommit && !io.stopped() && error.message !== "interrupted")) {
+      return { phase: "failed", reason: error.message, skipped: true, fetchFailed: { commit: error.fetchFailed?.commit ?? landedCommit } };
+    }
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   } finally {
     clearInterval(renewal);
@@ -2602,8 +2612,8 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   // the baseline to move, whatever number the request has since.
   const absent = missing.get(missingKey(task));
   const unread = fetchFailures.get(missingKey(task));
-  if (unread && poll < unread.due) return `Passed by: the baseline could not be fetched for its merge commit ${unread.commit.slice(0, 8)} (${unread.count} of ${FETCH_TRIES} tries); it is served again in ${unread.due - poll} poll${unread.due - poll === 1 ? "" : "s"}.`;
-  if (absent?.fetchFailed) return `Passed by: the baseline could not be fetched for its merge commit ${absent.commit.slice(0, 8)} after ${FETCH_TRIES} tries; it is tried again once the baseline moves or this runner restarts.`;
+  if (unread && poll < unread.due) return `Passed by: its post-merge review of ${unread.commit.slice(0, 8)} failed before a verdict (${unread.count} of ${FETCH_TRIES} tries); it is served again in ${unread.due - poll} poll${unread.due - poll === 1 ? "" : "s"}.`;
+  if (absent?.fetchFailed) return `Passed by: its post-merge review of ${absent.commit.slice(0, 8)} failed before a verdict ${FETCH_TRIES} times (the baseline, the clone or the checkout); it is tried again once the baseline moves or this runner restarts.`;
   if (absent) return `Passed by: its merge commit ${absent.commit.slice(0, 8)} is not in the baseline${absent.baseline ? ` (at ${absent.baseline.slice(0, 8)})` : ""}; it is tried again once the baseline moves (publish main with atelier publish) or this runner restarts.`;
   // A task the server answered task_terminal for while this runner held it
   // (t476) is not taken again by this process, whatever later polls say.
@@ -3483,8 +3493,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                 catch (error) { if (!controller.signal.aborted) io.log(`could not read ${task.project}'s baseline head for ${task.item.id}'s review: ${error.message}`); }
               }
               missing.set(fkey, { commit: state.fetchFailed.commit, baseline: head, checked: now(), fetchFailed: true });
-              io.log(`${task.project}/${task.item.id}'s post-merge review is passed by after ${FETCH_TRIES} tries to fetch the baseline: ${state.reason}`);
-              const note = `gave up after ${FETCH_TRIES} tries: ${state.reason}`;
+              io.log(`${task.project}/${task.item.id}'s post-merge review is passed by after ${FETCH_TRIES} failures before a verdict: ${state.reason}`);
+              const note = `gave up the post-merge review of the merge commit ${state.fetchFailed.commit} after ${FETCH_TRIES} failures before a verdict: ${state.reason}`;
               if (reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) await reportSkip(`miss:${fkey}:fetch`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: note }, 0, "miss");
               else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
             }
