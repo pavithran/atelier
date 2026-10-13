@@ -119,8 +119,8 @@ test("models show prints the cards after the notes, with their states, conflicts
     { ...stored("c3", "example-5"), state: "active" },
   ], {
     disagreements: [{ kind: "conflict", benchmark: "SWE-bench Pro", unit: "%", claims: [
-      { card: "c2", score: 58, source: second.source, conditions: CARD.claims[0].conditions },
-      { card: "c3", score: 61.2, source: CARD.source, conditions: CARD.claims[0].conditions },
+      { card: "c2", score: 58, unit: "%", benchmark: "SWE-bench Pro", source: second.source, conditions: CARD.claims[0].conditions },
+      { card: "c3", score: 61.2, unit: "%", benchmark: "SWE-bench Pro", source: CARD.source, conditions: CARD.claims[0].conditions },
     ] }],
     priors: [{ kind: "model-card", taskKind: "general", claim: "vendor-described strength; not yet measured by Atelier", source: "Task t14: supplied cloud model prior", date: null, prior: true }],
   });
@@ -216,6 +216,18 @@ test("models show by a pool alias follows it to the entry's own name and says wh
   const unrelated = await f.run(["models", "show", "example-5"]);
   assert.equal(unrelated.status, 1);
   assert.match(unrelated.output, /example-5 is not in the pool and has no vendor cards/);
+});
+
+test("models show prints each claim in its own unit: megabytes and megabits are not one unit, and no conflict", async (t) => {
+  // Astra's eighth review of t625, 2026-10-13: units were case-folded, so
+  // 100 MB/s and 800 Mb/s were a conflict under MB/s, printed as 800 MB/s.
+  const speed = (score, unit) => ({ ...CARD, claims: [{ benchmark: "Throughput", score, unit, conditions: {} }], limitations: [] });
+  const f = await serverLike(t, [entry("example-5")], [{ ...card("c1", "example-5"), ...speed(100, "MB/s") }, { ...card("c2", "example-5"), ...speed(800, "Mb/s") }]);
+  const r = await f.run(["models", "show", "example-5"]);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Throughput: 100 MB\/s\n/);
+  assert.match(r.output, /Throughput: 800 Mb\/s\n/);
+  assert.doesNotMatch(r.output, /Conflict|differs|800 MB\/s/);
 });
 
 test("against a server without models.card.v1, show says so and card refuses before sending", async (t) => {
