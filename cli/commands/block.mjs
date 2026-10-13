@@ -13,5 +13,5 @@ export default async function blockCommand() {
   const name = project(), id = named ?? wsConfig("item");
   if (!id) die(`which item? pass its id (t3) or run inside its workspace: ${COMMAND_USAGE.block}`);
   const item = await call("POST", `${I(name, id)}/block`, { reason }, await actor(OWNER));
-  console.log(`${id} is blocked: ${flat(item.blocked?.reason ?? reason)}. It keeps its owner and workspace; run atelier unblock ${id} when it can go on.`);
+  console.log(`${id} is blocked: ${flat(item.blocked?.reason ?? reason)}. It keeps its holder and workspace; run atelier unblock ${id} when it can go on.`);
 }

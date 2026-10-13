@@ -23,11 +23,11 @@ exports[`init offer and general project guide snapshots 2`] = `
 `;
 
 exports[`status --brief snapshot: submitted tasks land, accepted tasks merge 1`] = `
-"Demo (demo) as of 2026-10-10 12:00 UTC\\nRecent merges:\\n  none\\nDeployed: the server's version could not be read.\\nLive builds: none.\\nReviews: 3 submitted or accepted (t1 submitted, t2 submitted, t3 accepted); none waiting for a runner.\\nLanding: none running.\\nWaiting on the owner: t1 accept; next: atelier land t1 --reviewer H/M --project demo, t2 assess; next: atelier land t2 --reviewer reviewer/model --project demo, t3 merge; next: atelier merge t3 --project demo.\\nSpend: not readable from the server."
+"Demo (demo) as of 2026-10-10 12:00 UTC\\nRecent merges:\\n  none\\nDeployed: the server's version could not be read.\\nLive builds: none.\\nReviews: 3 submitted or accepted (t1 submitted, t2 submitted, t3 accepted); none waiting for a runner.\\nLanding: none running.\\nWaiting on the developer: t1 accept; next: atelier land t1 --reviewer H/M --project demo, t2 assess; next: atelier land t2 --reviewer reviewer/model --project demo, t3 merge; next: atelier merge t3 --project demo.\\nSpend: not readable from the server."
 `;
 
 exports[`status --project snapshot: submitted tasks land, accepted tasks merge 1`] = `
-"Demo (demo) as of 2026-10-10 12:00 UTC, from Atelier's record\\n\\nHeld now:\\n  t1  submitted  held by builder/model, since when is not shown  Ready for owner\\n  t2  submitted  held by builder/model, since when is not shown  Needs assessment\\n  t3  accepted  held by builder/model, since when is not shown  Already accepted\\n\\nWaiting on the project owner:\\n  t1  accept  Ready for owner  Recorded gate result  next: atelier land t1 --reviewer H/M --project demo\\n  t2  assess  Needs assessment  Recorded gate result  next: atelier land t2 --reviewer reviewer/model --project demo\\n  t3  merge  Already accepted  Recorded gate result  next: atelier merge t3 --project demo"
+"Demo (demo) as of 2026-10-10 12:00 UTC, from Atelier's record\\n\\nHeld now:\\n  t1  submitted  held by builder/model, since when is not shown  Ready for owner\\n  t2  submitted  held by builder/model, since when is not shown  Needs assessment\\n  t3  accepted  held by builder/model, since when is not shown  Already accepted\\n\\nWaiting on the developer:\\n  t1  accept  Ready for owner  Recorded gate result  next: atelier land t1 --reviewer H/M --project demo\\n  t2  assess  Needs assessment  Recorded gate result  next: atelier land t2 --reviewer reviewer/model --project demo\\n  t3  merge  Already accepted  Recorded gate result  next: atelier merge t3 --project demo"
 `;
 
 exports[`status JSON forms preserve their records 1`] = `
@@ -190,7 +190,7 @@ exports[`status JSON forms preserve their records 3`] = `
     "Live builds: none.",
     "Reviews: 3 submitted or accepted (t1 submitted, t2 submitted, t3 accepted); none waiting for a runner.",
     "Landing: none running.",
-    "Waiting on the owner: t1 accept; next: atelier land t1 --reviewer H/M --project demo, t2 assess; next: atelier land t2 --reviewer reviewer/model --project demo, t3 merge; next: atelier merge t3 --project demo.",
+    "Waiting on the developer: t1 accept; next: atelier land t1 --reviewer H/M --project demo, t2 assess; next: atelier land t2 --reviewer reviewer/model --project demo, t3 merge; next: atelier merge t3 --project demo.",
     "Spend: not readable from the server."
   ]
 }

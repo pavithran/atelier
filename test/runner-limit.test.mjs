@@ -304,7 +304,7 @@ test("a limit pauses every model of the harness for the runner, offers the other
   assert.ok(seen.finished.includes("t1"), "the released task finished on its next run");
   // The infrastructure event is no model report and no failure.
   assert.deepEqual(seen.reports.filter((r) => r.item === "t1"), []);
-  assert.ok(!seen.logs.some((l) => /needs the owner's attention/.test(l)));
+  assert.ok(!seen.logs.some((l) => /needs the developer's attention/.test(l)));
   // The file says it, and is empty of pauses after the resume.
   const kept = readLimits(limitFile);
   assert.deepEqual(kept.pauses, {});
@@ -324,7 +324,7 @@ test("limits never reach the failure caps: the same task is served again after a
   assert.equal(seen.served.length, 5, "four limits, then the run that finished");
   assert.deepEqual(seen.released, ["t1", "t1", "t1", "t1"]);
   assert.ok(seen.finished.includes("t1"));
-  assert.ok(!seen.logs.some((l) => /needs the owner's attention/.test(l)), "neither 2 failures nor 3 infrastructure failures");
+  assert.ok(!seen.logs.some((l) => /needs the developer's attention/.test(l)), "neither 2 failures nor 3 infrastructure failures");
   assert.deepEqual(seen.reports, []);
 });
 
@@ -476,7 +476,7 @@ test("a task-resolve job whose resolver hits a limit gives its lease back, pause
     assert.match(r[r.indexOf("--reason") + 1], /^opencode usage limit: usage limit reached/);
   }
   assert.ok(logs.some((l) => l.startsWith("infrastructure event: provider limit on opencode during task-resolve of atelier/t7; opencode paused until")));
-  assert.ok(!logs.some((l) => /needs the owner's attention/.test(l)), "neither failure cap moves");
+  assert.ok(!logs.some((l) => /needs the developer's attention/.test(l)), "neither failure cap moves");
   assert.deepEqual(reports, [], "no run is reported against the model");
   assert.equal(git(dir, "--git-dir", fork, "rev-parse", "main"), taskHead, "nothing pushed");
 });

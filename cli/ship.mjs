@@ -321,7 +321,7 @@ export function formatPlan({ name, plan, branch, head, commit, approvals, push, 
     else if (s.step === "wrap") lines.push(`${n}atelier wrap, committing what the steps changed and recording the session`);
     else if (s.step === "push") {
       const what = target ? pushLabel(target, branch) : "git push to the branch's tracked upstream";
-      lines.push(push ? `${n}${what}  (no approval: the owner's own act at this revision)` : `${n}not run without --push (${what})`);
+      lines.push(push ? `${n}${what}  (no approval: the developer's own act at this revision)` : `${n}not run without --push (${what})`);
     } else {
       s.runs.forEach((r, j) => lines.push(`${j ? " ".repeat(n.length) : n}${r.argv ? r.argv.map(quote).join(" ") : r.label}${r.kind ? `  ${approvalText(approvals, r.kind, commit)}` : ""}`));
       if (!s.runs.length) lines.push(`${n}nothing to run`);
@@ -437,13 +437,13 @@ export async function ship(ctx) {
   print(formatPlan({ name, plan, branch, head, commit: commit ?? head, approvals, push: ctx.push, target, refusals: ctx.dryRun ? refusals : [] }));
   const missing = commit ? missingApprovals({ name, plan, approvals, commit }) : [];
   if (ctx.dryRun) {
-    if (missing.length) print(`Missing approvals; ${name}'s owner gives them at this revision with:\n${missing.map((c) => `  ${c}`).join("\n")}`);
+    if (missing.length) print(`Missing approvals; ${name}'s developer gives them at this revision with:\n${missing.map((c) => `  ${c}`).join("\n")}`);
     print("Dry run: nothing was run, approved or recorded.");
     return;
   }
   const stops = [...plan.problems, ...refusals];
   if (stops.length) fail(`ship refused before running anything:\n${stops.map((p) => `  ${p}`).join("\n")}`);
-  if (missing.length) fail(`ship refused before running anything: ${missing.length === 1 ? "an approval is" : "approvals are"} missing at ${short(commit)}. The project owner approves with:\n${missing.map((c) => `  ${c}`).join("\n")}\nthen runs atelier ship again.`);
+  if (missing.length) fail(`ship refused before running anything: ${missing.length === 1 ? "an approval is" : "approvals are"} missing at ${short(commit)}. The developer approves with:\n${missing.map((c) => `  ${c}`).join("\n")}\nthen runs atelier ship again.`);
 
   const id = `s-${Date.now().toString(36)}`;
   const ran = [];
@@ -510,7 +510,7 @@ export async function ship(ctx) {
       fail([
         `ship stopped at ${s.step}: ${failed.command ?? s.step} ${failed.signal ? `ended by ${failed.signal}` : failed.status !== null && failed.status !== undefined ? `exited ${failed.status}` : "failed"}.`,
         `Ran before it: ${ran.join(", ") || "nothing"}. Not run: ${rest(i + 1).join(", ") || "nothing"}. Each step that ran is recorded on the ledger.`,
-        usedText ? `The approval used here (${usedText}) is spent; after fixing the cause, the owner approves again: ${Object.keys(used).map((k) => `atelier approve ${k} --head ${commit} --project ${quote(name)}`).join(" and ")}` : "",
+        usedText ? `The approval used here (${usedText}) is spent; after fixing the cause, the developer approves again: ${Object.keys(used).map((k) => `atelier approve ${k} --head ${commit} --project ${quote(name)}`).join(" and ")}` : "",
       ].filter(Boolean).join("\n"));
     }
     ran.push(s.step);

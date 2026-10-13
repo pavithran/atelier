@@ -175,7 +175,7 @@ test("plan post sends the file's document as the planner, and prints every error
   const r = await f.run(["plan", "post", "t1", file, "--as", PLANNER]);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(f.requests[0], { method: "POST", path: "/api/projects/proj/items/t1/plan", actor: PLANNER, body: proposedView.plan });
-  assert.equal(r.stdout, `Proposed 1 part for t1 as ${HASH}.\nThe owner reads it with atelier plan show t1 and approves that hash. Release your claim: atelier release t1 --project proj\n`);
+  assert.equal(r.stdout, `Proposed 1 part for t1 as ${HASH}.\nThe developer reads it with atelier plan show t1 and approves that hash. Release your claim: atelier release t1 --project proj\n`);
   writeFileSync(file, JSON.stringify({ ...proposedView.plan, extra: true }));
   const refused = await f.run(["plan", "post", "t1", file, "--as", PLANNER]);
   assert.equal(refused.status, 1);

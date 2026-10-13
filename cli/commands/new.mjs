@@ -38,7 +38,7 @@ export default async function newCommand() {
   if (args["duplicate-ok"] !== true) {
     const { items } = await call("GET", P(name), undefined, as);
     const twins = liveDuplicates(filedTitle, scope, items);
-    if (twins.length) die(`a live task already covers this work, so nothing was filed:\n${twins.map((i) => `  ${i.id}  ${flat(i.title)}  (${i.state}, ${i.owner ?? "unowned"})`).join("\n")}\nPass --duplicate-ok to file it anyway.`);
+    if (twins.length) die(`a live task already covers this work, so nothing was filed:\n${twins.map((i) => `  ${i.id}  ${flat(i.title)}  (${i.state}, ${i.owner ?? "unclaimed"})`).join("\n")}\nPass --duplicate-ok to file it anyway.`);
   }
   const item = await call("POST", `${P(name)}/items`, { title, scope, ...fields }, as);
   console.log([

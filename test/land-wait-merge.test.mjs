@@ -313,7 +313,7 @@ test("a conflict stops the landing with the files named and the merge left for t
   // The step that stopped is recorded, with the file and who resolves it.
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.equal(merge.body.failed, true); assert.deepEqual(merge.body.conflicts, ["work.txt"]); assert.deepEqual(merge.body.source, ["work.txt"]);
-  assert.equal(merge.body.resolvedBy, "the project owner, by hand");
+  assert.equal(merge.body.resolvedBy, "the developer, by hand");
   // The project declares no manifest, so the regenerate command's
   // settlement was tried and could not settle the conflict, and says so.
   assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
@@ -380,7 +380,7 @@ test("a conflict that also touches a file the regenerate command does not rewrit
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.equal(merge.body.failed, true);
   assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt", "work.txt"]);
-  assert.equal(merge.body.resolvedBy, "the project owner, by hand");
+  assert.equal(merge.body.resolvedBy, "the developer, by hand");
   assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
 });
 
@@ -455,7 +455,7 @@ test("a source conflict beside a generated one stops the landing before anything
   const merge = f.posts("/land").find((x) => x.body.step === "merge");
   assert.equal(merge.body.failed, true);
   assert.deepEqual([merge.body.source, merge.body.generated], [["work.txt"], ["gen-fixtures.txt"]]);
-  assert.equal(merge.body.resolvedBy, "the project owner, by hand");
+  assert.equal(merge.body.resolvedBy, "the developer, by hand");
   assert.match(merge.body.mainHead, /^[0-9a-f]{40}$/);
   sameMergeStep("stopped", merge.body);
 });

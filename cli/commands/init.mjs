@@ -45,7 +45,7 @@ export default async function initCommand() {
     const replaced = args.reset === true ? "--reset starts the policy over" : args["history-since"] !== undefined ? "--history-since replaces the baseline" : null;
     const recorded = replaced ? null : await recordedApproval(name);
     if (!recorded) {
-      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the developer's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
     }
   }
   // Only what this command names is sent; the server keeps everything else
@@ -246,7 +246,7 @@ export default async function initCommand() {
   saveConfig(cfg);
   const pol = r.project.policy;
   if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
-  if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; owner approval recorded`);
+  if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; developer approval recorded`);
   console.log(fresh
     ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
     : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
@@ -274,7 +274,7 @@ export default async function initCommand() {
   console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
   console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
   console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
-  console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the owner confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
+  console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the developer confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
   // A server older than --no-override ignores it and answers without it.
   if (args["no-override"] === true && !pol.noOverride) console.log("Warning: the server did not record --no-override; deploy the server, then run atelier init --no-override again.");
   console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);

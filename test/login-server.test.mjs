@@ -80,7 +80,7 @@ test("a token NEW accepts is stored, and only then does config.json name NEW and
   assert.deepEqual(f.seen, [`Bearer ${TYPED}`]);
   assert.deepEqual(f.config(), { ...f.before, server: f.url, owner: "beta", ownerName: "Beta" });
   assert.equal(f.stored(), TYPED);
-  assert.match(r.output, /Signed in to http:\/\/127\.0\.0\.1:\d+ as the project owner, actor "beta"\. The token is now stored in the file .*secrets\.json\./);
+  assert.match(r.output, /Signed in to http:\/\/127\.0\.0\.1:\d+ as the developer, actor "beta"\. The token is now stored in the file .*secrets\.json\./);
 });
 
 test("login --server naming the stored token's own server reuses it", async (t) => {
@@ -188,7 +188,7 @@ for (const status of [401, 503]) test(`ATELIER_TOKEN for SELF that SELF answers 
 // this machine is the one exception.
 test("https anywhere and plain http on this machine pass; plain http elsewhere and non-URLs are refused", () => {
   for (const url of ["https://atelier.example.com", "https://atelier.example.workers.dev", "http://localhost:8787", "http://127.0.0.1:8787", "http://[::1]:8787"]) assert.equal(insecureServer(url), undefined, url);
-  for (const url of ["http://atelier.example.com", "http://atelier.example.workers.dev", "http://0.0.0.0:8787", "http://10.0.0.2:8787"]) assert.match(insecureServer(url) ?? "", /is not https: the owner token goes with every request/, url);
+  for (const url of ["http://atelier.example.com", "http://atelier.example.workers.dev", "http://0.0.0.0:8787", "http://10.0.0.2:8787"]) assert.match(insecureServer(url) ?? "", /is not https: the developer's token goes with every request/, url);
   assert.match(insecureServer("ftp://localhost") ?? "", /is not https/);
   assert.match(insecureServer("atelier.example.com") ?? "", /is not a URL/);
 });
@@ -201,7 +201,7 @@ test("an http server on another host is refused before any request, named by ATE
   for (const env of [{ ATELIER_SERVER: plain(f.url), ATELIER_TOKEN: ENV }, {}]) {
     const r = await f.run(["ls", "--project", "p"], { env });
     assert.equal(r.code, 1, r.output);
-    assert.match(r.output, /http:\/\/0\.0\.0\.0:\d+ is not https: the owner token goes with every request/);
+    assert.match(r.output, /http:\/\/0\.0\.0\.0:\d+ is not https: the developer's token goes with every request/);
   }
   const login = await f.run(["login", "--server", `${plain(f.url)}/`], { input: `${TYPED}\n` });
   assert.equal(login.code, 1, login.output);

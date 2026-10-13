@@ -53,7 +53,7 @@ test("the receipt prints the whole story in the order the ledger recorded it", (
   assert.match(rejected, /rejected by opencode\/glm-5\.3 at aaaaaaaa: One blocking defect$/);
   assert.equal(finding, " ".repeat(22) + "1. blocking src/parser.ts:12 Drops the last row");
   // The verdict's event number, which atelier defect --contradicts names (t440).
-  assert.equal(verdict, " ".repeat(22) + "owner's verdict: fixed. Fixed in the second head (event 8)");
+  assert.equal(verdict, " ".repeat(22) + "developer's verdict: fixed. Fixed in the second head (event 8)");
   assert.match(lines.at(-5), /head bbbbbbbb pushed by/);
   assert.match(lines.at(-3), /approved by opencode\/glm-5\.3 at bbbbbbbb/);
   assert.match(lines.at(-2), /merged by pavi: bbbbbbbb accepted, merge commit 5af22431 on the baseline$/);
@@ -117,7 +117,7 @@ test("the receipt names the acting model and the verdict a defect contradicts", 
     ev(1, "2026-10-07T21:02:06.195Z", "opencode/glm-5.3", "review.rejected", { note: "One blocking defect", head: A, findings: [{ file: "src/parser.ts", line: 12, severity: "blocking", text: "Drops the last row" }] }),
   ] };
   const lines = receiptText("atelier", "t1", story).split("\n").slice(2);
-  assert.equal(lines[2], " ".repeat(22) + "owner's verdict: refuted (event 2, declared acting claude-code/opus-5.5)");
+  assert.equal(lines[2], " ".repeat(22) + "developer's verdict: refuted (event 2, declared acting claude-code/opus-5.5)");
   assert.match(lines[3], /independent review overridden by pavi, declared acting claude-code\/opus-5\.5: No other family$/);
   assert.match(lines[4], /defect recorded by pavi at bbbbbbbb: Still drops the last row; contradicts the refuted verdict, event 2, on finding 1$/);
 });

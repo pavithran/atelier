@@ -104,9 +104,9 @@ export function pasteScript(project) {
 cat >&2 <<'EOF'
 control-plane-paste: no command renders a paste any more; this project works through Atelier.
 Write the relay envelope yourself, as the relay rule in AGENTS.md says: one complete fenced
-block with a language tag (bash for a command the owner runs, text for prose, a brief or an
+block with a language tag (bash for a command the developer runs, text for prose, a brief or an
 envelope), and save a copy under ~/Documents/ai-project-data/${project}/, never the portfolio root.
-\`atelier handoff\` transfers ownership of a task to another agent. It is not a relay and is
+\`atelier handoff\` hands a task to another agent. It is not a relay and is
 never part of a paste request.
 EOF
 exit 2
@@ -278,7 +278,7 @@ export function leftovers(checkout) {
   if (UNRECONCILED.includes(work?.state)) {
     const plan = work.plan_id ?? work.planId ?? null;
     const owner = work.owner ?? null;
-    out.push(`docs/control-plane/work-item.v1.json: plan ${plan ?? "with no plan id recorded"} is ${work.state}, owned by ${owner ?? "nobody recorded"}`);
+    out.push(`docs/control-plane/work-item.v1.json: plan ${plan ?? "with no plan id recorded"} is ${work.state}, held by ${owner ?? "nobody recorded"}`);
   }
   for (const capability of capabilities(readJson(join(checkout, "docs", "control-plane", "project-adapter.v1.json")))) {
     for (const file of commandFiles(capability)) {

@@ -46,7 +46,7 @@ export default async function planCommand() {
     try { document = JSON.parse(readFileSync(file, "utf8")); } catch (error) { die(`${file} is not a JSON plan document: ${error.message}`); }
     const r = await call("POST", `${I(name, id)}/plan`, document, await actor());
     console.log(`Proposed ${r.parts} part${r.parts === 1 ? "" : "s"} for ${id} as ${r.hash}.`);
-    console.log(`The owner reads it with atelier plan show ${id} and approves that hash. Release your claim: atelier release ${id} ${flag}`);
+    console.log(`The developer reads it with atelier plan show ${id} and approves that hash. Release your claim: atelier release ${id} ${flag}`);
     return;
   }
   if (sub === "approve") {

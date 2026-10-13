@@ -320,7 +320,7 @@ export async function gatherLogs(harnesses, io) {
 // What a model's probe is, or why it has none. Studio models and Codex are
 // never probed, with or without --probe; nothing else is probed without it.
 export function probePlan(entry, { probe = false } = {}) {
-  if (entry.provider === "ai-studio") return { kind: null, reason: "paused by owner" };
+  if (entry.provider === "ai-studio") return { kind: null, reason: "paused by the developer" };
   if (entry.harness === "codex") return { kind: null, reason: "Codex is never probed: its weekly allowance is reserved" };
   if (!probe) return { kind: null, reason: "not probed; add --probe" };
   if (entry.harness === "claude-code") return { kind: "claude" };
@@ -472,7 +472,7 @@ export function decideRow(entry, ctx) {
   else if (!ctx.log && !found && !LOCAL_SOURCES.has(entry.harness)) notes.push(`no local record is read for ${entry.harness}`);
   if (found?.absent) Object.assign(row, { label: "no recent record", detail: found.detail });
   else if (found) Object.assign(row, { state: found.state, label: found.state, served: found.served ?? null, source: found.source, mismatch: !!found.mismatch, post: true, detail: `${found.source}: ${found.detail}` });
-  if (paused) Object.assign(row, { state: "unknown", label: "paused by owner", post: true, detail: ["paused by owner; not probed", found && row.detail].filter(Boolean).join("; ") });
+  if (paused) Object.assign(row, { state: "unknown", label: "paused by the developer", post: true, detail: ["paused by the developer; not probed", found && row.detail].filter(Boolean).join("; ") });
   row.detail = [row.detail, ...notes].filter(Boolean).join("; ");
   return row;
 }

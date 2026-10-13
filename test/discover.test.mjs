@@ -306,11 +306,11 @@ test("nothing is probed unless asked, the Studio is paused and Codex is never pr
   const plan = (e, probe) => probePlan(e, { probe });
   for (const probe of [false, true]) {
     for (const harness of ["opencode", "zcode", "claude-code", "gemini-cli"]) {
-      assert.deepEqual(plan(entry("m", harness, "ai-studio"), probe), { kind: null, reason: "paused by owner" }, `ai-studio under ${harness}`);
+      assert.deepEqual(plan(entry("m", harness, "ai-studio"), probe), { kind: null, reason: "paused by the developer" }, `ai-studio under ${harness}`);
     }
     assert.match(plan(entry("m", "codex", "subscription"), probe).reason, /^Codex is never probed/);
     assert.equal(plan(entry("m", "codex", "openai"), probe).kind, null);
-    assert.equal(plan(entry("m", "codex", "ai-studio"), probe).reason, "paused by owner", "the pause comes first");
+    assert.equal(plan(entry("m", "codex", "ai-studio"), probe).reason, "paused by the developer", "the pause comes first");
   }
   assert.equal(probePlan(entry("m", "claude-code", "subscription")).kind, null, "off by default");
   assert.equal(plan(entry("m", "claude-code", "subscription"), false).reason, "not probed; add --probe");
@@ -467,11 +467,11 @@ test("a probe that is answered by another model is a mismatch; one that could no
 test("a paused Studio model says so, with what its log shows, and is still reported", () => {
   const studio = POOL[0];
   const bare = decideRow(studio, ctxFor(studio));
-  assert.deepEqual([bare.state, bare.label, bare.post, bare.source], ["unknown", "paused by owner", true, "none"]);
-  assert.equal(bare.detail, "paused by owner; not probed");
+  assert.deepEqual([bare.state, bare.label, bare.post, bare.source], ["unknown", "paused by the developer", true, "none"]);
+  assert.equal(bare.detail, "paused by the developer; not probed");
   const withLog = decideRow(studio, ctxFor(studio, { log: { seen: parseOpencodeRows([opencodeRow("GLM-5.3-Flash-4_8bit", hoursAgo(3))]) } }));
-  assert.deepEqual([withLog.state, withLog.label, withLog.source, withLog.served], ["unknown", "paused by owner", "log", "GLM-5.3-Flash-4_8bit"]);
-  assert.match(withLog.detail, /^paused by owner; not probed; log: last answered/);
+  assert.deepEqual([withLog.state, withLog.label, withLog.source, withLog.served], ["unknown", "paused by the developer", "log", "GLM-5.3-Flash-4_8bit"]);
+  assert.match(withLog.detail, /^paused by the developer; not probed; log: last answered/);
 });
 
 // ── the command ────────────────────────────────────────────────────────────
@@ -500,7 +500,7 @@ test("the pool is listed with each home model's harness and provider, with nothi
   assert.match(text, /Probes: none sent\. Add --probe/);
   for (const re of [
     /^MODEL +HARNESS +PROVIDER +SERVED +STATUS +EVIDENCE$/m,
-    /^GLM-5\.3-Flash-4_8bit +opencode +ai-studio +GLM-5\.3-Flash-4_8bit +paused by owner +log$/m,
+    /^GLM-5\.3-Flash-4_8bit +opencode +ai-studio +GLM-5\.3-Flash-4_8bit +paused by the developer +log$/m,
     /^glm-5\.3 +zcode +subscription +deepseek-flash +refused +log$/m,
     /^gpt-6-astra +codex +subscription +gpt-6-astra +available +log$/m,
     /^sonnet-5\.5 +claude-code +subscription +not known +not checked +none$/m,
@@ -524,7 +524,7 @@ test("each finding is reported under the runner's name, with the served model; m
   assert.deepEqual([sent["glm-5.3"].state, sent["glm-5.3"].served], ["refused", "deepseek-flash"], "the served model is reported where it differs");
   assert.match(sent["glm-5.3"].detail, /^log: deepseek-flash answered at 2026-10-05T20:00Z, after GLM-5\.3 last answered at 2026-10-03T21:00Z$/);
   assert.equal(sent["GLM-5.3-Flash-4_8bit"].state, "unknown");
-  assert.match(sent["GLM-5.3-Flash-4_8bit"].detail, /^paused by owner; not probed; log: /);
+  assert.match(sent["GLM-5.3-Flash-4_8bit"].detail, /^paused by the developer; not probed; log: /);
   assert.equal(sent["gpt-6-astra"].state, "available");
   assert.match(sent["gpt-6-astra"].detail, /5-hour not reported; weekly 81% used, resets 2026-10-09T21:00Z/);
   // What the status route would store is exactly what was sent: nothing cut or redacted on the way.
@@ -624,8 +624,8 @@ test("no probe is sent for a model whose provider is ai-studio, whatever its har
   await runDiscover(args("probe", "dry-run"), io);
   assert.deepEqual(calls.run, []);
   assert.deepEqual(calls.secrets, []);
-  assert.match(calls.printed[0], /^a +opencode +ai-studio .* paused by owner/m);
-  assert.equal((calls.printed[0].match(/paused by owner +/g) ?? []).length, 3);
+  assert.match(calls.printed[0], /^a +opencode +ai-studio .* paused by the developer/m);
+  assert.equal((calls.printed[0].match(/paused by the developer +/g) ?? []).length, 3);
 });
 
 test("a probe that cannot be made is not reported, and says why", async (t) => {
