@@ -13,7 +13,7 @@ import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -126,17 +126,19 @@ function ownerFactorOf(env: Env): OwnerFactor | null {
 // request's vouched identity (`c.access`, set at the entry); else the secret
 // the form's `confirmation` field holds, compared in constant time. Refused,
 // naming how to confirm on this server, when the form carries no factor, or
-// the server takes none.
-function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: string): OwnerFactor {
+// the server takes none. With no task id (null) it is the Settings page's
+// permission for fast mode (Astra's audit of 2026-10-13, finding 3).
+function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: string | null): OwnerFactor {
   const factor = ownerFactorOf(env);
-  const hint = overrideConfirmationHint(project, id, c.url.origin, factor);
+  const hint = id === null ? fastModeConfirmationHint(project, c.url.origin, factor) : overrideConfirmationHint(project, id, c.url.origin, factor);
+  const [code, what] = id === null ? ["fast_mode_unconfirmed", "fast mode"] : ["override_unconfirmed", "an override of the independent review"];
   if (factor === "access" && c.access) return "access";
   if (factor === "secret") {
     const given = String(form.get("confirmation") ?? "");
     if (given && sameString(given, (env as unknown as Settings).OVERRIDE_SECRET!.trim())) return "secret";
-    throw new RuleError("override_unconfirmed", `an override of the independent review needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
+    throw new RuleError(code, `${what} needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
   }
-  throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
+  throw new RuleError(code, `${what} needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
 }
 
 function thresholds(env: Env): Thresholds {
@@ -1590,7 +1592,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "mode" && parts.length === 3) {
     if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList() });
     requireOwner(env, actor);
-    if (m === "POST") return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null));
+    // The switch to fast mode takes the developer's permission from the
+    // Settings page (Astra's audit of 2026-10-13, finding 3); the refusal
+    // names that page on this server and the factor it takes.
+    if (m === "POST") {
+      try { return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null)); } catch (err) {
+        const rule = parseRuleError(err);
+        if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project, c.url.origin, ownerFactorOf(env))}`, rule.status);
+        throw err;
+      }
+    }
     throw new RuleError("not_found", "no such route", 404);
   }
   // Standing decisions (src/decisions.ts): GET lists every one with its
@@ -3193,6 +3204,14 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.newItem(String(form.get("title") ?? ""), String(form.get("scope") ?? "").split(",").map(s=>s.trim()).filter(Boolean), owner, brief.trim() ? { brief } : {});
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${item.id}`,c.url).toString(),303);
     }
+    // The Settings tab's permission for atelier mode fast, given as the task
+    // page's override permission is: from the developer's own sign-in, with
+    // the factor no agent holds (Astra's audit of 2026-10-13, finding 3).
+    if (id === "mode" && verb === "allow-fast") {
+      if (!c.signedIn) throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's own sign-in, not the developer token: ${fastModeConfirmationHint(project, c.url.origin, ownerFactorOf(env))}`, 403);
+      await L.confirmFastMode(owner, ownerFactorIn(env, c, form, project, null));
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/settings`, c.url).toString(), 303);
+    }
     // The Ship tab's protected-action forms: approve at the head it showed, or withdraw.
     if (id === "actions") {
       await actionForm(L, verb, form, owner, async (commit) => onMainLine(env, (await L.project()).repo, commit));
@@ -3569,7 +3588,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
         return html(renderProjectShip(p, renderActions(p.name, await L.actionApprovals(), await L.actionRuns(10), head), ownerName(env)));
       }
       case "settings":
-        return html(renderProjectSettings(p, ownerName(env)));
+        return html(renderProjectSettings(p, ownerName(env), ownerFactorOf(env)));
     }
   }
   const res = await browse(env, c.url, ref, parts.slice(2));

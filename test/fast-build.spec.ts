@@ -72,6 +72,7 @@ it("in full mode the queue marks nothing fast, a fast take is refused, and the c
 
 it("in fast mode the runner takes the build with no fork and no write token, reports its commit, and the owner lands it", async () => {
   const t = await setup();
+  await t.L.confirmFastMode("owner", "access");
   await t.L.setMode("owner", "fast", "Artifacts fails every new fork");
   const [job] = await t.poll();
   expect(job).toMatchObject({ project: t.name, actor: ACTOR, fast: true });
@@ -115,6 +116,7 @@ it("in fast mode the runner takes the build with no fork and no write token, rep
 
 it("back in full mode a ready report is refused and the queue claims with a fork again", async () => {
   const t = await setup();
+  await t.L.confirmFastMode("owner", "access");
   await t.L.setMode("owner", "fast", "forks fail");
   await t.poll();
   expect((await t.api("POST", `${t.base}/fast-take`, {})).status).toBe(200);

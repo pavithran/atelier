@@ -2155,7 +2155,21 @@ export function renderProjectShip(p: ProjectRecord, actions: string, ownerName: 
 // Settings: the project's own rules. Checks with their classes and path
 // conditions, the protected paths, the eligible agents, and the ControlPlane
 // policy when the project is governed by one.
-export function renderProjectSettings(p: ProjectRecord, ownerName: string | null = null): string {
+// The fast mode row (Astra's audit of 2026-10-13, finding 3): refused where
+// overrides are; else the permission `atelier mode fast` needs, given here
+// with the factor no agent holds, as the task page's override permission is.
+function fastModeSetting(p: ProjectRecord, factor: OwnerFactor | null | undefined): string {
+  if (p.policy.noOverride) return "Refused: fast mode lands without the independent review, and this project forbids overrides of it";
+  if (factor === undefined) return "Needs the developer's confirmation on this page";
+  if (factor === null) return `Needs the developer's confirmation, which ${e(NO_OWNER_FACTOR)}`;
+  return `<form class="stack" method="post" action="${href("ui", p.name, "mode", "allow-fast")}">
+      ${factor === "secret" ? `<label>Confirmation secret<input type="password" name="confirmation" required autocomplete="off"></label>` : ""}
+      <p class="meta">Fast mode lands tasks without the gate, so it needs the confirmation an override needs: ${factor === "access" ? "your Cloudflare Access sign-in" : "the server's confirmation secret"}, never the developer token alone. This allows <code>atelier mode fast --reason TEXT --project ${e(p.name)}</code> for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one switch; switching back to full needs none.</p>
+      <button>Allow fast mode from the command line</button>
+    </form>`;
+}
+
+export function renderProjectSettings(p: ProjectRecord, ownerName: string | null = null, ownerFactor?: OwnerFactor | null): string {
   const policy = `<dl>
     <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
@@ -2164,6 +2178,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the developer on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the developer token"}</dd>
+    <dt>Fast mode</dt><dd>${fastModeSetting(p, ownerFactor)}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
   const cp = p.policy.approval

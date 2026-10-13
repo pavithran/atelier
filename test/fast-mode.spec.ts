@@ -4,6 +4,7 @@ import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
+import { signIn } from "./signin.ts";
 import { renderItem } from "../src/ui.ts";
 import type { ShowcaseCounts } from "../src/graph.ts";
 
@@ -51,6 +52,7 @@ it("the owner alone switches modes; fast is a standing decision until the switch
   expect(await L.mode()).toMatchObject({ mode: "full", line: "Mode: full" });
   await refusal(L.setMode(GPT, "fast", "forks fail"), "not_project_owner", /only the developer/);
   await refusal(L.setMode("owner", "fast", ""), "bad_reason", /needs a reason/);
+  await L.confirmFastMode("owner", "access");
   const fast = await L.setMode("owner", "fast", "Artifacts fails every new fork");
   expect(fast).toMatchObject({ mode: "fast", reason: "Artifacts fails every new fork", decision: "d1" });
   expect(fast.line).toMatch(/^Mode: fast since \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC \(Artifacts fails every new fork\)$/);
@@ -61,6 +63,7 @@ it("the owner alone switches modes; fast is a standing decision until the switch
 
   // Through the routes: any token reads, only the owner switches.
   expect((await api("POST", "/projects/fast-switch/mode", GPT, { mode: "fast", reason: "mine" })).status).toBe(403);
+  await L.confirmFastMode("owner", "access");
   const made = await api("POST", "/projects/fast-switch/mode", "owner", { mode: "fast", reason: "forks fail" });
   expect(made.status).toBe(200);
   const read = await (await api("GET", "/projects/fast-switch/mode", GPT)).json() as { mode: string; line: string };
@@ -72,6 +75,7 @@ it("a landing is refused in full mode, records its receipt in fast mode, and que
   const L = await project("fast-land");
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
   await refusal(L.landedFast(item.id, "owner", receipt(C1, M1)), "not_fast_mode", /full mode/);
+  await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
   await refusal(L.landedFast(item.id, GPT, receipt(C1, M1)), "not_project_owner", /only the developer/);
   const landed = await L.landedFast(item.id, "owner", receipt(C1, M1));
@@ -116,6 +120,7 @@ it("a same-family post-merge review is refused for a merge that did not land fas
 it("a rejected post-merge review of a fast landing files a fix task from its findings, and full mode lists the landing", async () => {
   const L = await project("fast-fix");
   const item = await L.newItem("Risky", ["src/**"], "owner", { accept: ["Works"] });
+  await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
   await L.landedFast(item.id, "owner", receipt(C1, M2));
   await L.requestReview(item.id, "owner", GPT, POOL);
@@ -126,4 +131,63 @@ it("a rejected post-merge review of a fast landing files a fix task from its fin
   expect(fix).toMatchObject({ title: expect.stringMatching(/^Fix after fast landing of t1: Risky/), state: "open", accept: ["src/a.ts:3: Drops the record"] });
   const full = await L.setMode("owner", "full", undefined);
   expect(full.landed).toEqual([expect.objectContaining({ item: "t1", review: expect.objectContaining({ state: "rejected" }), fix: "t2" })]);
+});
+
+// Astra's audit of 2026-10-13, finding 3: the switch to fast mode and a fast
+// landing took the developer token alone, though fast mode lands without the
+// gate, so they skipped the confirmation an override of the independent
+// review needs and a project's --no-override. Now the switch needs the
+// developer's permission from the Settings page, given with the factor no
+// agent holds and spent by one switch, and a project that forbids overrides
+// refuses the switch and every fast landing.
+it("the switch to fast mode needs the developer's confirmation from the Settings page, not the developer token", async () => {
+  const name = "fast-confirm";
+  const L = await project(name);
+  const SECRET = "fast-confirm-secret-no-session-holds";
+  const bindings = { ...testEnv, OVERRIDE_SECRET: SECRET } as typeof env;
+  const switchFast = () => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/mode`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ mode: "fast", reason: "forks fail" }),
+  }), bindings);
+  const allow = (headers: Record<string, string>, fields: Record<string, string>) => worker.fetch(new Request(`https://atelier.test/ui/${name}/mode/allow-fast`, {
+    method: "POST", redirect: "manual", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams(fields),
+  }), bindings);
+
+  await refusal(L.setMode("owner", "fast", "forks fail"), "fast_mode_unconfirmed", /developer token alone does not confirm it/);
+  const refused = await switchFast();
+  expect(refused.status).toBe(403);
+  expect(await refused.json()).toMatchObject({ error: "fast_mode_unconfirmed" });
+  expect(await L.mode()).toMatchObject({ mode: "full" });
+
+  // The form posted with the developer token as a bearer, or from a session without the secret, confirms nothing.
+  expect((await allow({ authorization: `Bearer ${TOKEN}` }, { confirmation: SECRET })).status).not.toBe(303);
+  const cookie = await signIn(TOKEN, bindings);
+  expect((await allow({ cookie }, {})).status).not.toBe(303);
+  expect((await switchFast()).status).toBe(403);
+  // The Settings page offers the permission, with the secret's field.
+  const settings = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/settings`, { headers: { cookie } }), bindings)).text();
+  expect(settings).toContain("Allow fast mode from the command line");
+  expect(settings).toContain('name="confirmation"');
+
+  // With the factor, the permission is given, and one switch spends it.
+  expect((await allow({ cookie }, { confirmation: SECRET })).status).toBe(303);
+  expect((await switchFast()).status).toBe(200);
+  expect(await L.mode()).toMatchObject({ mode: "fast" });
+  // Switching back to full needs no confirmation; switching to fast again needs a new one.
+  expect(await L.setMode("owner", "full", undefined)).toMatchObject({ mode: "full" });
+  await refusal(L.setMode("owner", "fast", "again"), "fast_mode_unconfirmed", /Allow fast mode from the command line/);
+});
+
+it("a project that forbids overrides refuses the switch to fast mode and every fast landing", async () => {
+  const name = "fast-no-override";
+  const L = await project(name);
+  const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, noOverride: true }, createdAt: AT }, "owner");
+  await refusal(L.landedFast(item.id, "owner", receipt(C1, M1)), "fast_mode_forbidden", /forbids overrides.*--no-override/);
+  expect((await L.item(item.id)).state).toBe("open");
+  expect((await api("POST", `/projects/${name}/items/${item.id}/landed-fast`, "owner", receipt(C1, M1))).status).toBe(403);
+  await L.setMode("owner", "full", undefined);
+  await refusal(L.confirmFastMode("owner", "access"), "fast_mode_forbidden", /forbids overrides/);
+  await refusal(L.setMode("owner", "fast", "forks fail"), "fast_mode_forbidden", /fast mode is refused/);
 });
