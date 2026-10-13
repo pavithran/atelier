@@ -196,3 +196,65 @@ it("a project that forbids overrides refuses the switch to fast mode and every f
   await refusal(L.confirmFastMode("owner", "access"), "fast_mode_forbidden", /forbids overrides/);
   await refusal(L.setMode("owner", "fast", "forks fail"), "fast_mode_forbidden", /fast mode is refused/);
 });
+
+// t629 reverses t596's confirmation for the switch (Astra's audit of
+// 2026-10-13, finding 3; the developer's decision of 2026-10-13, "why isn't
+// my direction sufficient?"): the developer token alone switches to fast
+// mode when the request carries the developer's quoted words and names the
+// model acting on them. The switch records both, so it says afterwards who
+// asked and why. No words, no switch; an agent token is refused; a project
+// that forbids overrides still refuses; the Settings page still works.
+it("the developer token switches to fast mode on the developer's quoted words and the acting model, and records both", async () => {
+  const name = "fast-direction";
+  const L = await project(name);
+  for (const [harness, id] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"]]) {
+    expect((await api("PUT", `/models/${id}`, "owner", { harness, where: "cloud" })).status).toBe(200);
+  }
+  const post = (body: unknown, headers: Record<string, string> = {}, bearer = TOKEN, actor: string | null = "owner") => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/mode`, {
+    method: "POST", headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json", ...headers }, body: JSON.stringify(body),
+  }), testEnv);
+  const QUOTE = "every project, fast mode and overrides both";
+
+  // No words: refused as before, naming the page and the --quote way.
+  const bare = await post({ mode: "fast", reason: "forks fail" }, { "x-atelier-acting": OPUS });
+  expect(bare.status).toBe(403);
+  expect(await bare.json()).toMatchObject({ error: "fast_mode_unconfirmed", detail: expect.stringContaining("--quote") });
+  // Words with no acting model, or blank words: refused.
+  expect(await (await post({ mode: "fast", reason: "forks fail", quote: QUOTE })).json()).toMatchObject({ error: "no_acting" });
+  expect(await (await post({ mode: "fast", reason: "forks fail", quote: "  " }, { "x-atelier-acting": OPUS })).json()).toMatchObject({ error: "bad_quote" });
+  // An agent token is refused, with or without an acting header.
+  const agent = (await (await api("POST", "/tokens", "owner", { actor: GPT, projects: [name] })).json() as { token: string }).token;
+  expect((await post({ mode: "fast", reason: "forks fail", quote: QUOTE }, { "x-atelier-acting": OPUS }, agent, null)).status).toBe(403);
+  expect((await post({ mode: "fast", reason: "forks fail", quote: QUOTE }, {}, agent, null)).status).toBe(403);
+  expect(await L.mode()).toMatchObject({ mode: "full" });
+
+  // With both: switched, the words and the acting model on the record, the event and the decision.
+  const ok = await post({ mode: "fast", reason: "forks fail", quote: QUOTE }, { "x-atelier-acting": OPUS });
+  expect(ok.status).toBe(200);
+  const fast = await ok.json() as { line: string; decision: string };
+  expect(fast).toMatchObject({ mode: "fast", reason: "forks fail", quote: QUOTE, acting: OPUS });
+  expect(fast.line).toContain(`the developer's words: “${QUOTE}”, relayed by ${OPUS}`);
+  expect(await L.mode()).toMatchObject({ mode: "fast", quote: QUOTE, acting: OPUS });
+  const switched = (await L.events(undefined, 50) as unknown as LedgerEvent[]).find((e) => e.kind === "mode.fast")!;
+  expect(switched.data).toMatchObject({ reason: "forks fail", confirmed: "direction", quote: QUOTE, acting: OPUS });
+  expect((await L.decisions()).find((d) => d.id === fast.decision)).toMatchObject({ quote: QUOTE, acting: OPUS });
+  // The standing atelier status prints carries the same line.
+  const standing = await (await api("GET", `/projects/${name}/standing`, "owner")).json() as { mode?: string };
+  expect(standing.mode).toBe(fast.line);
+  // A fast landing's receipt carries the words the mode was switched on.
+  const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
+  const { receipt: landed } = await L.landedFast(item.id, "owner", receipt(C1, M1));
+  expect(landed).toMatchObject({ reason: "forks fail", quote: QUOTE, acting: OPUS });
+
+  // The page's permission still works, with no words.
+  await L.setMode("owner", "full", undefined);
+  await L.confirmFastMode("owner", "access");
+  expect(await L.setMode("owner", "fast", "page path")).toMatchObject({ mode: "fast" });
+  expect(await L.mode()).not.toHaveProperty("quote");
+  await L.setMode("owner", "full", undefined);
+
+  // A project that forbids overrides refuses the switch, words or not.
+  await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, noOverride: true }, createdAt: AT }, "owner");
+  expect(await (await post({ mode: "fast", reason: "forks fail", quote: QUOTE }, { "x-atelier-acting": OPUS })).json()).toMatchObject({ error: "fast_mode_forbidden" });
+  await refusal(L.setMode("owner", "fast", "forks fail", OPUS, QUOTE), "fast_mode_forbidden", /fast mode is refused/);
+});

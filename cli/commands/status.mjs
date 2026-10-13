@@ -65,12 +65,15 @@ export default async function statusCommand() {
   // as `atelier inbox` lists it, and the others are still shown.
   const views = await Promise.all(chosen.map(async (p) => {
     const read = await request("GET", P(p.name), undefined, OWNER).catch(() => null);
+    // Fast mode's line while it stands (t629), as status --project prints it;
+    // a server without the mode route, or one that cannot answer, leaves none.
+    const mode = await request("GET", `${P(p.name)}/mode`, undefined, OWNER).catch(() => null);
     // Where the project's recorded policy and its instructions disagree (t422).
     const path = cfg.projects?.[p.name]?.path;
     const mismatches = read?.project?.policy && path ? reviewDisagreements(read.project.policy, readInstructions(path)) : [];
     // The policy comes along so the listing can say a project runs in
     // single-family mode (formatStatus).
-    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null };
+    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());

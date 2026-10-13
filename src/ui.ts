@@ -44,7 +44,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, changeClass, confirmationAt, contributorsOf, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, protectedNeed, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily, standingFastReady,
+  bindingOf, changeClass, confirmationAt, contributorsOf, directionText, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, protectedNeed, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily, standingFastReady,
   type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 import { STEPS, TAGLINE, TAKEAWAYS, type Verb } from "./how-data.ts";
@@ -515,7 +515,7 @@ function decisionDetail({ project: p, detail: d, diff }: ReviewContext, lead?: O
   const reviews = current.length
     ? current.map((r) => evidenceRow(r.approve ? "Approved" : "Sent back", r.approve ? "go" : "bad", e(r.note || "No note provided."), `${e(r.by)} · ${when(r.at)}`)).join("")
     : gate.overridden
-      ? evidenceRow("Overridden", "ask", e(gate.overridden.reason), `${e(gate.overridden.by)} · ${when(gate.overridden.at)}`)
+      ? evidenceRow("Overridden", "ask", `${e(gate.overridden.reason)}${gate.overridden.quote ? ` · on ${e(directionText(gate.overridden))}` : ""}`, `${e(gate.overridden.by)} · ${when(gate.overridden.at)}`)
       : gate.needsAssessor
         ? evidenceRow("Review", "signal", `None yet. ${e(cap(gate.requirement ?? protectedNeed(single)))}.`)
         : "";
@@ -1677,7 +1677,8 @@ export interface Standing {
   // Every merge that went in on the owner's override of the independent
   // review (t371), newest first, with the reason recorded; `overrides.length`
   // is the count the page and `atelier status` show.
-  overrides: { id: string; title: string; at: string; reason: string }[];
+  // An override on the developer's direction (t629) carries their words and the acting model.
+  overrides: { id: string; title: string; at: string; reason: string; quote?: string; acting?: string }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
   // The project's model policy (t394): single-family mode naming the
@@ -1694,6 +1695,8 @@ export interface Standing {
   // not. Absent when both were read. The Overview says each as not read,
   // never as none.
   unread?: ("tasks" | "notices")[];
+  // While the project is in fast mode, its mode line (modeLine in src/rules.ts).
+  mode?: string;
 }
 
 // How many waiting tasks get a brief, how many merges are listed, and how many
@@ -1771,7 +1774,7 @@ export function buildStanding(
       id: i.id, title: i.title, to: i.dispatch!.to, agent: i.dispatch!.agent ?? null, model: i.dispatch!.model ?? null, by: i.dispatch!.by, at: i.dispatch!.at, note: i.dispatch!.note ?? "",
     })),
     merged,
-    overrides: mergedByOverride(items).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((i) => ({ id: i.id, title: i.title, at: i.reviewOverride!.at, reason: i.reviewOverride!.reason })),
+    overrides: mergedByOverride(items).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((i) => ({ id: i.id, title: i.title, at: i.reviewOverride!.at, reason: i.reviewOverride!.reason, ...(i.reviewOverride!.quote ? { quote: i.reviewOverride!.quote, acting: i.reviewOverride!.acting } : {}) })),
     handoffs,
     // A project governed by ControlPlane carries the owner's recorded approval.
     controlPlane: p.policy.approval
@@ -1844,7 +1847,7 @@ function standingMore(p: ProjectRecord, s: Standing): string {
     : `${plural(s.queued.length, "task")} queued · <span class="merged-by-override">${plural(overrides.length, "merge")} by override</span> · ${plural(s.handoffs.length, "handoff note")}`;
   return `<details class="disclosure standing-more"><summary>${summary}</summary>
   ${group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(notePreview(q.note))}` : ""}</span></li>`))}
-  ${group(`Merged by override: ${plural(overrides.length, "merge")}`, overrides.map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the developer's override, not a review: ${e(o.reason)}</span></li>`))}
+  ${group(`Merged by override: ${plural(overrides.length, "merge")}`, overrides.map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the developer's override, not a review: ${e(o.reason)}${o.quote ? ` · on ${e(directionText(o))}` : ""}</span></li>`))}
   ${group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`))}
   ${s.session ? `<h3>Newest session</h3>${sessionNoteText(s.session).split("\n").map((line) => `<p class="meta">${e(line)}</p>`).join("")}` : ""}
   ${overlapDisclosure({ project: p.name, owner: [], pipeline: [], overlaps: s.overlaps ?? [], unknown: [] })}
@@ -2168,7 +2171,7 @@ function fastModeSetting(p: ProjectRecord, factor: OwnerFactor | null | undefine
   if (factor === null) return `Needs the developer's confirmation, which ${e(NO_OWNER_FACTOR)}`;
   return `<form class="stack" method="post" action="${href("ui", p.name, "mode", "allow-fast")}">
       ${factor === "secret" ? `<label>Confirmation secret<input type="password" name="confirmation" required autocomplete="off"></label>` : ""}
-      <p class="meta">Fast mode lands tasks without the gate, so it needs the confirmation an override needs: ${factor === "access" ? "your Cloudflare Access sign-in" : "the server's confirmation secret"}, never the developer token alone. This allows <code>atelier mode fast --reason TEXT --project ${e(p.name)}</code> for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one switch; switching back to full needs none.</p>
+      <p class="meta">Fast mode lands tasks without the gate, so it needs the confirmation an override needs: your direction, which <code>atelier mode fast --reason TEXT --quote "your words" --as H/M --project ${e(p.name)}</code> records with the model acting on it, or this permission, given with ${factor === "access" ? "your Cloudflare Access sign-in" : "the server's confirmation secret"}. It allows <code>atelier mode fast --reason TEXT --project ${e(p.name)}</code> for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one switch; switching back to full needs none.</p>
       <button>Allow fast mode from the command line</button>
     </form>`;
 }
@@ -2181,7 +2184,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Models</dt><dd>${e(familyModeText(p.policy))}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
-    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the developer on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the developer token"}</dd>
+    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, on the developer's direction (their quoted words and the model acting on them, with the developer token) or confirmed by the developer on the task's page with the Cloudflare Access sign-in or the server's confirmation secret"}</dd>
     <dt>Fast mode</dt><dd>${fastModeSetting(p, ownerFactor)}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
@@ -2894,7 +2897,7 @@ ${submissionRounds(d)}
   const overrideEvent = overridden ? d.events.filter((v) => v.kind === "review.overridden" && str(v.data.head) === overridden.head).sort((a, b) => a.seq - b.seq).at(-1) : undefined;
   const overrideNote = overridden
     ? `<div class="review-note">${tag(voided ? "Override not counted" : "Review overridden", "ask")}
-    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the developer's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p>${overrideEvent ? `<p class="meta">${e(availabilityText(overrideEvent.data.availability))}</p>` : ""}</div>`
+    <p>${e(overridden.reason)}</p>${overridden.quote ? `<p class="meta">On ${e(directionText(overridden))}</p>` : ""}<p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the developer's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p>${overrideEvent ? `<p class="meta">${e(availabilityText(overrideEvent.data.availability))}</p>` : ""}</div>`
     : "";
   const blockers = live && !gate.ready
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`

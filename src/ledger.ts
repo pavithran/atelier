@@ -24,7 +24,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, type FastModeConfirmation, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
 } from "./rules";
 import { cleanSummary } from "./brief";
@@ -3170,8 +3170,10 @@ export class Ledger extends DurableObject<Env> {
   // while the route was away (checking the revision, looking for a
   // reviewer) refuse the acceptance rather than accept under criteria the
   // owner never read (t457).
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null): Item {
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null, quote?: unknown): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer accepts", 403);
+    // The developer's words go with an override (t629); alone they direct nothing.
+    if (quote !== undefined && overrideReason === undefined) throw new RuleError("bad_quote", "the developer's words (--quote) go with an override of the independent review: --override-review REASON --quote \"what the developer said\"", 400);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
@@ -3180,7 +3182,8 @@ export class Ledger extends DurableObject<Env> {
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
     const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
     const now = Date.now(), at = new Date(now).toISOString();
-    const confirmation = overrideReason === undefined || confirmedBy ? null : confirmationAt(current, now, this.owner);
+    // Words sent with the override take the direction's path, and never spend the page's permission.
+    const confirmation = overrideReason === undefined || confirmedBy || quote !== undefined ? null : confirmationAt(current, now, this.owner);
     const override = overrideReason === undefined ? null
       : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
     if (override) override.override.confirmedAt = confirmation?.at ?? at;
@@ -3203,9 +3206,13 @@ export class Ledger extends DurableObject<Env> {
     // confirmation: a forbidden override, a missing reason, nothing to
     // override or another blocker are told first, so the owner is sent to
     // the page only for an override that is ready to be made.
-    if (override && !confirmedBy && !confirmation) {
+    // Since t629 the developer's direction confirms it too: their quoted
+    // words and the model acting on them, recorded with the override.
+    const direction = override && !confirmedBy ? ownerDirection(quote, acting, "an override of the independent review") : null;
+    if (override && !confirmedBy && !confirmation && !direction) {
       throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403);
     }
+    if (override && direction) Object.assign(override.override, { quote: direction.quote, acting: direction.acting });
     if (override) {
       // The permission, when one was used, is spent: one confirmation, one override.
       this.update(id, { review_override: JSON.stringify(override.override), ...(item.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
@@ -3213,7 +3220,8 @@ export class Ledger extends DurableObject<Env> {
       const factor = confirmedBy ?? confirmation?.factor;
       this.log(id, actor, "review.overridden", {
         head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
-        confirmed: confirmedBy ? "page" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
+        confirmed: confirmedBy ? "page" : direction ? "direction" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
+        ...(direction ? { quote: direction.quote } : {}),
         availability: availability ?? { known: false, reviewer: null, source: "none", at, why: "no reviewer was looked for as the override was made" },
         ...(acting ? { acting } : {}),
       }, at);
@@ -4571,23 +4579,32 @@ export class Ledger extends DurableObject<Env> {
     return { ...mode, line: modeLine(mode) };
   }
 
-  setMode(actor: string, to: unknown, reason: unknown, acting: string | null = null): ProjectMode & { line: string; landed?: FastLanding[] } {
+  setMode(actor: string, to: unknown, reason: unknown, acting: string | null = null, quote?: unknown): ProjectMode & { line: string; landed?: FastLanding[] } {
     const current = this.mode();
     const at = new Date().toISOString();
     const next = modeSwitch(current, actor, this.owner, to, reason, at);
     if (next.mode === "fast") {
       // Fast mode lands without the gate (Astra's audit of 2026-10-13,
-      // finding 3): refused where overrides are, and only on the developer's
-      // permission from the Settings page (confirmFastMode), which this spends.
+      // finding 3): refused where overrides are. It takes the developer's
+      // direction, their quoted words and the acting model (t629, which
+      // reverses t596 for the command line), recorded on the mode, its
+      // decision and its event; else the developer's permission from the
+      // Settings page (confirmFastMode), which this spends.
       const project = this.project();
       assertFastModeAllowed(project.policy);
-      const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode_confirmation'`).toArray()[0];
-      assertFastModeConfirmed(row ? JSON.parse(row.value as string) as FastModeConfirmation : null, Date.now(), this.owner, project.name);
-      this.sql.exec(`DELETE FROM meta WHERE key = 'mode_confirmation'`);
-      const d = recordDecision(this.decisionStore, actor, { text: `Atelier runs in fast mode since ${at}: ${next.reason}`, quote: next.reason }, at, acting);
+      const direction = ownerDirection(quote, acting, "fast mode");
+      if (direction) {
+        next.quote = direction.quote;
+        next.acting = direction.acting;
+      } else {
+        const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'mode_confirmation'`).toArray()[0];
+        assertFastModeConfirmed(row ? JSON.parse(row.value as string) as FastModeConfirmation : null, Date.now(), this.owner, project.name);
+        this.sql.exec(`DELETE FROM meta WHERE key = 'mode_confirmation'`);
+      }
+      const d = recordDecision(this.decisionStore, actor, { text: `Atelier runs in fast mode since ${at}: ${next.reason}`, quote: direction?.quote ?? next.reason }, at, acting);
       next.decision = d.id;
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?)`, JSON.stringify(next));
-      this.log(null, actor, "mode.fast", { reason: next.reason, decision: d.id }, at);
+      this.log(null, actor, "mode.fast", { reason: next.reason, decision: d.id, ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : { confirmed: "page" }) }, at);
       return { ...next, line: modeLine(next) };
     }
     const was = current as Extract<ProjectMode, { mode: "fast" }>;

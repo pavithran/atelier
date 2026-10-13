@@ -122,6 +122,31 @@ test("the receipt names the acting model and the verdict a defect contradicts", 
   assert.match(lines[4], /defect recorded by pavi at bbbbbbbb: Still drops the last row; contradicts the refuted verdict, event 2, on finding 1$/);
 });
 
+// t629: an override on the developer's direction says whose words and which
+// model relayed them, so every such override says afterwards who asked and why.
+test("the receipt names the developer's words an override was made on", () => {
+  const story = { item: detail().item, events: [
+    ev(1, "2026-10-13T21:20:00.000Z", "pavi", "review.overridden", { head: B, reason: "No other family", confirmed: "direction", quote: "override it, nobody else can review", acting: "claude-code/opus-5.5" }),
+  ] };
+  const text = receiptText("atelier", "t1", story);
+  assert.match(text, /independent review overridden by pavi, declared acting claude-code\/opus-5\.5: No other family; on the developer's words: “override it, nobody else can review”/);
+});
+
+// t629 review (codex/gpt-6-astra): a fast landing was dropped from the text
+// receipt, so the developer's words fast mode was switched on, and the model
+// that relayed them, did not show though the stored receipt held them.
+test("the receipt names a fast landing with its receipt and the developer's words fast mode was switched on", () => {
+  const story = { item: detail().item, events: [
+    ev(2, "2026-10-13T22:00:01.000Z", "pavi", "item.merged", { mergeCommit: M, head: B, observedOnBaseline: false, fast: true }),
+    ev(1, "2026-10-13T22:00:00.000Z", "pavi", "item.landed_fast", { commit: B, mergeCommit: M, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "f".repeat(64), where: "clean clone" }, reason: "forks fail", at: "2026-10-13T22:00:00.000Z", by: "pavi", quote: "go to fast mode", acting: "claude-code/opus-5.5" }),
+  ] };
+  const text = receiptText("atelier", "t1", story);
+  assert.match(text, /landed in fast mode by pavi: bbbbbbbb built by claude-code\/opus-5\.5, merge commit 5af22431; npm test passed in a clean clone, output sha256 ffffffffffff; fast mode: forks fail; on the developer's words: “go to fast mode”, relayed by claude-code\/opus-5\.5/);
+  // A fast landing switched on the page's permission names no words.
+  const paged = receiptText("atelier", "t1", { item: detail().item, events: [ev(1, "2026-10-13T22:00:00.000Z", "pavi", "item.landed_fast", { commit: B, mergeCommit: M, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "f".repeat(64) }, reason: "forks fail" })] });
+  assert.match(paged, /landed in fast mode by pavi: bbbbbbbb built by claude-code\/opus-5\.5, merge commit 5af22431; npm test passed, output sha256 ffffffffffff; fast mode: forks fail$/m);
+});
+
 test("the receipt as JSON carries the item's events in the ledger's order, whole", () => {
   const json = receiptJson("atelier", "t1", detail());
   assert.deepEqual(json, { project: "atelier", id: "t1", title: "Fix the parser", state: "merged", events: [...detail().events].sort((a, b) => a.seq - b.seq) });
