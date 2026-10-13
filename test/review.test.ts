@@ -11,7 +11,7 @@ import { BRIEF_LIMITS, criteriaCount, EVIDENCE_OUTPUT_MAX, evidenceGroups, revie
 import { largeKey } from "../src/large.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
-import { DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, replyFormat, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
+import { criteriaAsked, DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, replyFormat, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
 
 const H0 = "0".repeat(40);
 const H1 = "a".repeat(40);
@@ -474,6 +474,13 @@ test("parseVerdict: the format the brief asks for, exactly as REPLY_FORMAT shows
     findings: [{ file: "src/example.ts", line: 12, severity: "follow-up", text: "What is wrong, and why it matters." }],
     checks: [],
   });
+  // The count a brief's reply format asks for is read back from the brief
+  // (criteriaAsked, t608), from its last match: the reply format closes the
+  // brief, so a criterion quoting the rule earlier does not change the count.
+  assert.equal(criteriaAsked(replyFormat(3, 1, [2])), 3);
+  assert.equal(criteriaAsked(`Write one CRITERION line for each of the 9 acceptance criteria\n\n${replyFormat(2)}`), 2);
+  assert.equal(criteriaAsked(REPLY_FORMAT), 0);
+  assert.equal(criteriaAsked("Write one CRITERION line for each of the 0 acceptance criteria"), 0);
 });
 
 test("parseVerdict: an approval proves every acceptance criterion; one missing or unmet is refused", () => {
