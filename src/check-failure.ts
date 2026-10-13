@@ -88,6 +88,7 @@
 // is never left without the command that prints what was left out.
 
 import { LARGE_MAX, type LargeRef } from "./large.ts";
+import { FAILURE_LINES_CHARS } from "./text.ts";
 import { blockingMergedRuns, countingRunsAt, evidenceAt, type Evidence, type ProjectPolicy } from "./rules.ts";
 
 // What a check run on someone's machine keeps of its output inline:
@@ -97,6 +98,25 @@ import { blockingMergedRuns, countingRunsAt, evidenceAt, type Evidence, type Pro
 // output was longer (src/sandbox/runner.ts).
 export const LOCAL_OUTPUT_TAIL = 3500;
 export const SANDBOX_OUTPUT_TAIL = 4000;
+
+// The failure lines of a failed check run on a machine (t569). Its last
+// LOCAL_OUTPUT_TAIL characters can hold only noise: `npm test` writes stdout
+// before stderr, and since t568 it runs the vitest pool after a failed node
+// pool, so the lines naming a failing node test fall out of the tail (t567
+// at 881860ea, evidence #2957: the tail held only a design fixture's stderr,
+// and the failing test could not be named without a rerun, which passed).
+// `atelier check` therefore reads the whole output for the lines that name
+// a failure and posts them beside the tail as `failureLines`: at most
+// FAILURE_LINES_MAX lines and FAILURE_LINES_CHARS characters, terminal
+// control sequences dropped, each line cut at FAILURE_LINE_CHARS. The Worker
+// refuses more than FAILURE_LINES_CHARS rather than cutting it. The sha256
+// posted with the tail stays the sha256 of the whole output.
+export const FAILURE_LINES_MAX = 40;
+export { FAILURE_LINES_CHARS };
+const FAILURE_LINE_CHARS = 300;
+// How many of them the failure summary shows, per failed check, before it
+// points at check-log for the rest.
+export const SUMMARY_FAILURE_LINES = 10;
 
 // The bound on the log tail the failure summary shows, per failed check.
 export const SUMMARY_TAIL_LINES = 20;
@@ -129,6 +149,7 @@ export interface CheckFailure {
   attempt: number;         // which run of the check at this head this is, counting from 1 (attemptNumbers)
   attempts: number;        // how many runs of the check the head holds, this one included (attemptNumbers)
   outputTail: string;
+  failureLines: string;    // the failure lines read from the whole output, posted beside the tail; "" when none
   log: LargeRef | null;
 }
 
@@ -146,6 +167,7 @@ const failureOf = (e: Evidence, attempt: number, attempts: number): CheckFailure
   attempt,
   attempts,
   outputTail: String(e.outputTail ?? ""),
+  failureLines: typeof e.failureLines === "string" ? e.failureLines : "",
   log: e.log ?? null,
 });
 
@@ -204,6 +226,10 @@ export interface CheckLog {
   source: "stored" | "inline";
   whole: boolean;                // whether `text` is the check's whole output
   label: string;                 // what `text` is, in words: whole, a tail only, cut, or unavailable
+  // The failure lines read from the whole output and kept beside an inline
+  // tail that is not the whole (t569); absent when there are none, or when
+  // the log read is the whole output, which holds them already.
+  failureLines?: string[];
 }
 
 // The lines a recorder appends after it has cut the tail, which are no part
@@ -227,7 +253,13 @@ const thousands = (n: number) => n.toLocaleString("en-US");
 // The log of one run: the stored whole log when the run names one and it
 // can be read, else the inline tail, each labelled as what it is. A reader
 // that throws, or answers nothing, leaves the stored log unavailable.
-export async function readCheckLog(e: Pick<Evidence, "outputTail" | "log" | "where">, read: LogReader): Promise<CheckLog> {
+export async function readCheckLog(e: Pick<Evidence, "outputTail" | "log" | "where" | "failureLines">, read: LogReader): Promise<CheckLog> {
+  const log = await readLog(e, read);
+  const lines = typeof e.failureLines === "string" ? plainLines(e.failureLines).filter((line) => line.trim()) : [];
+  return lines.length && !log.whole && log.source === "inline" ? { ...log, failureLines: lines } : log;
+}
+
+async function readLog(e: Pick<Evidence, "outputTail" | "log" | "where">, read: LogReader): Promise<CheckLog> {
   const tail = String(e.outputTail ?? "");
   const kept = e.where === "sandbox" ? SANDBOX_OUTPUT_TAIL : LOCAL_OUTPUT_TAIL;
   const runOn = e.where === "sandbox" ? "a container" : "a check run on a machine";
@@ -249,6 +281,55 @@ export async function readCheckLog(e: Pick<Evidence, "outputTail" | "log" | "whe
     return { text: stored, source: "stored", whole: false, label: `stored log ${sha}, cut to its last ${thousands(LARGE_MAX)} characters (${thousands(e.log.bytes)} bytes)` };
   }
   return { text: stored, source: "stored", whole: true, label: `whole log, stored (${thousands(e.log.bytes)} bytes, ${sha})` };
+}
+
+// ── the failure lines ───────────────────────────────────────────────────────
+
+// The lines that name a failure, by the formats failingTests reads: a
+// failing test's own line (node:test's `✖`, TAP's `not ok`, vitest's ` FAIL `
+// and `×`, jest's `●`, pytest's `FAILED`/`ERROR`, go's `--- FAIL:`), with
+// the assertion or error line that follows it, and the summary counts that
+// say how many failed (`ℹ fail N`, vitest's `Test Files … failed` and
+// `Tests … failed`). Read from the whole output, in its order, each line
+// once, within FAILURE_LINES_MAX lines and FAILURE_LINES_CHARS characters;
+// a last `[atelier]` line counts the lines left out.
+const FAILED_TEST = /^\s*(?:not ok \d+|✖ |FAIL {1,2}\S|× |● |FAILED \S|ERROR \S+::|--- FAIL: )/;
+const FAIL_COUNT = /^\s*(?:ℹ fail [1-9]\d*\b|Test Files\b.*\b\d+ failed\b|Tests\b.*\b\d+ failed\b|Tests: .*\b\d+ failed\b)/;
+const ASSERTION = /\b(?:AssertionError|[A-Z]\w*Error)\b|^\s*(?:error|expected|actual|Expected|Received):/;
+const SKIPPED = /^\s*not ok \d+.*# (?:SKIP|TODO)\b/i;
+
+export function collectFailureLines(output: string): string {
+  const all = plainLines(output).map((line) => line.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").trimEnd());
+  const picked: string[] = [];
+  const seen = new Set<string>();
+  const take = (line: string) => {
+    const kept = line.length > FAILURE_LINE_CHARS ? `${line.slice(0, FAILURE_LINE_CHARS - 1)}…` : line;
+    if (!seen.has(kept)) { seen.add(kept); picked.push(kept); }
+  };
+  for (let i = 0; i < all.length; i++) {
+    const line = all[i];
+    if (FAIL_COUNT.test(line)) { take(line); continue; }
+    if (!FAILED_TEST.test(line) || SKIPPED.test(line)) continue;
+    take(line);
+    // The assertion that follows a failing test's line: its first error
+    // line within the next few, before the next test's line.
+    for (let j = i + 1; j < Math.min(all.length, i + 8); j++) {
+      if (FAILED_TEST.test(all[j]) || FAIL_COUNT.test(all[j])) break;
+      if (ASSERTION.test(all[j])) { take(all[j]); break; }
+    }
+  }
+  if (picked.length <= FAILURE_LINES_MAX && picked.join("\n").length <= FAILURE_LINES_CHARS) return picked.join("\n");
+  // Too many: the first ones, leaving room for the line that counts the rest.
+  const kept: string[] = [];
+  let size = 0;
+  for (const line of picked) {
+    if (kept.length >= FAILURE_LINES_MAX - 1 || size + line.length + 1 > FAILURE_LINES_CHARS - 80) break;
+    kept.push(line);
+    size += line.length + 1;
+  }
+  const left = picked.length - kept.length;
+  if (left) kept.push(`[atelier] and ${count(left, "more failure line")} not kept`);
+  return kept.join("\n");
 }
 
 // ── the failing tests ───────────────────────────────────────────────────────
@@ -361,7 +442,7 @@ export function failingTests(output: string): FailingTests | null {
 // tail may have lost the lines naming the tests, and the line says so
 // instead of concluding that the check failed for another reason. At most
 // `names` names are listed; the rest are counted.
-export function failingTestsLine(tests: FailingTests | null, whole = true, names = SUMMARY_TEST_NAMES): string {
+export function failingTestsLine(tests: FailingTests | null, whole = true, names = SUMMARY_TEST_NAMES, fromLines = false): string {
   if (!tests) {
     return whole
       ? "failing tests: names unavailable (no test reporter format this summary reads was recognised in the output)"
@@ -376,7 +457,7 @@ export function failingTestsLine(tests: FailingTests | null, whole = true, names
   }
   const shown = tests.names.slice(0, Math.max(1, names));
   const more = tests.names.length - shown.length;
-  const from = whole ? "" : ", read from a tail of the output, so names cut with the rest are not listed";
+  const from = whole ? "" : fromLines ? ", read from the failure lines kept from the whole output and from its tail" : ", read from a tail of the output, so names cut with the rest are not listed";
   return `failing tests (${tests.reporters.join(", ")}${from}): ${shown.map(flatLine).join("; ")}${more ? `; and ${more} more` : ""}`;
 }
 
@@ -390,8 +471,10 @@ export interface ResolvedFailure extends CheckFailure {
 export async function resolveFailures(failures: CheckFailure[], read: LogReader): Promise<ResolvedFailure[]> {
   const out: ResolvedFailure[] = [];
   for (const f of failures) {
-    const logRead = await readCheckLog({ outputTail: f.outputTail, log: f.log ?? undefined, where: f.where }, read);
-    out.push({ ...f, logRead, tests: failingTests(logRead.text) });
+    const logRead = await readCheckLog({ outputTail: f.outputTail, log: f.log ?? undefined, where: f.where, failureLines: f.failureLines }, read);
+    // The failure lines read from the whole output come first: they name
+    // the tests a tail of the output may have lost.
+    out.push({ ...f, logRead, tests: failingTests(logRead.failureLines ? `${logRead.failureLines.join("\n")}\n${logRead.text}` : logRead.text) });
   }
   return out;
 }
@@ -436,7 +519,10 @@ const when = (at: string) => `${at.slice(0, 16).replace("T", " ")} UTC`;
 export interface FailureFit {
   names?: number;
   tailLines?: number;
+  failLines?: number;   // how many of the failure lines kept beside the tail it shows (the first ones)
 }
+
+const summaryFailureLines = (f: ResolvedFailure): string[] => (f.logRead.failureLines ?? []).slice(0, SUMMARY_FAILURE_LINES).map(flatLine).filter((line) => line.length);
 
 // One failed check's lines of the summary, as every caller prints them.
 export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[] {
@@ -453,9 +539,13 @@ export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[]
     : lines.length < tail.total ? `last ${lines.length} of ${thousands(tail.total)} lines${fitted ? " (fewer, for this summary's size)" : ""}${cut}`
     : tail.cut ? `${count(tail.total, "line")}${cut}`
     : `${count(tail.total, "line")}, whole`;
+  const failing = summaryFailureLines(f);
+  const fails = fit.failLines === undefined ? failing : failing.slice(0, Math.max(0, fit.failLines));
+  const all = f.logRead.failureLines?.length ?? 0;
   return [
     `\`${flatLine(f.claim)}\` failed${on} ${WHERE_TEXT[f.where]} at ${when(f.at)}${f.load !== null ? `, load ${f.load}` : ""}: ${ident}`,
-    `  ${failingTestsLine(f.tests, f.logRead.whole, fit.names)}`,
+    `  ${failingTestsLine(f.tests, f.logRead.whole, fit.names, all > 0)}`,
+    ...(all ? [`  failure lines, read from the whole output: ${fails.length < all ? `first ${fails.length} of ${all}` : `${count(all, "line")}`}${fails.length ? ":" : ""}`, ...fails.map((line) => `    ${line}`)] : []),
     `  log: ${f.logRead.label}; ${shown}${lines.length ? ":" : ""}`,
     ...lines.map((line) => `    ${line}`),
   ];
@@ -487,11 +577,12 @@ export function failureSummary(id: string, head: string, failures: ResolvedFailu
   const heading = `Failed checks at ${short(head)}, as the gate reads them (the latest counting run of each required check at this head):`;
   const pointer = checkLogPointer(id);
   const tails = failures.map((f) => boundedTail(f.logRead.text).lines.length);
-  const text = (kept: number, names: number, shown: number[]): string => {
+  const fails = failures.map((f) => summaryFailureLines(f).length);
+  const text = (kept: number, names: number, shown: number[], failShown: number[] = fails): string => {
     const left = failures.slice(kept);
     return [
       heading,
-      ...failures.slice(0, kept).flatMap((f, i) => failureLines(f, { names, tailLines: shown[i] }).map((line) => `  ${line}`)),
+      ...failures.slice(0, kept).flatMap((f, i) => failureLines(f, { names, tailLines: shown[i], failLines: failShown[i] }).map((line) => `  ${line}`)),
       ...(left.length ? [`  And ${count(left.length, "more failed check")}, left out of this summary for its size: ${left.map((f) => `\`${flatLine(f.claim)}\``).join(", ")}`] : []),
       pointer,
     ].join("\n");
@@ -500,25 +591,28 @@ export function failureSummary(id: string, head: string, failures: ResolvedFailu
   if (full.length <= maxChars) return full;
   for (let kept = failures.length; kept >= 1; kept--) {
     for (const names of [SUMMARY_TEST_NAMES, 10, 5, 2, 1]) {
-      const shown = failures.map(() => 0);
-      if (text(kept, names, shown).length > maxChars) continue;
-      // The bare blocks fit: the tails' last lines are given back one at a
-      // time, each check in turn, while the whole still fits.
-      const done = new Set<number>();
-      while (done.size < kept) {
-        for (let i = 0; i < kept; i++) {
-          if (done.has(i)) continue;
-          if (shown[i] >= tails[i]) { done.add(i); continue; }
-          shown[i]++;
-          if (text(kept, names, shown).length > maxChars) { shown[i]--; done.add(i); }
+      const shown = failures.map(() => 0), failShown = failures.map(() => 0);
+      if (text(kept, names, shown, failShown).length > maxChars) continue;
+      // The bare blocks fit: the failure lines read from the whole output
+      // are given back first, the first ones one at a time, each check in
+      // turn, then the tails' last lines, while the whole still fits.
+      for (const [given, most] of [[failShown, fails], [shown, tails]] as [number[], number[]][]) {
+        const done = new Set<number>();
+        while (done.size < kept) {
+          for (let i = 0; i < kept; i++) {
+            if (done.has(i)) continue;
+            if (given[i] >= most[i]) { done.add(i); continue; }
+            given[i]++;
+            if (text(kept, names, shown, failShown).length > maxChars) { given[i]--; done.add(i); }
+          }
         }
       }
-      return text(kept, names, shown);
+      return text(kept, names, shown, failShown);
     }
   }
   // Not even one check's bare block fits: the first check, cut at the size,
   // and the check-log line kept whole.
-  const bare = text(1, 1, failures.map(() => 0));
+  const bare = text(1, 1, failures.map(() => 0), failures.map(() => 0));
   return `${bare.slice(0, Math.max(0, maxChars - pointer.length - 2))}…\n${pointer}`;
 }
 
@@ -531,6 +625,7 @@ export function failureJson(f: ResolvedFailure) {
     merged: f.merged, mainHead: f.mainHead, load: f.load, attempt: f.attempt, attempts: f.attempts,
     log: { source: f.logRead.source, whole: f.logRead.whole, label: f.logRead.label, sha256: f.log?.sha256 ?? null, bytes: f.log?.bytes ?? null },
     failingTests: f.tests,
+    ...(f.logRead.failureLines ? { failureLines: f.logRead.failureLines } : {}),
     tail: tail.lines, lines: tail.total, cut: tail.cut,
   };
 }

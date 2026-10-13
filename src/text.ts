@@ -21,6 +21,9 @@ export function withoutAddresses(text: string): string {
 export const NOTE_MAX = 2000;
 export const CLAIM_MAX = 500;
 export const OUTPUT_MAX = 4000;
+// The lines naming a failed check's failure, read from its whole output and
+// posted beside its tail (t569, collectFailureLines in src/check-failure.ts).
+export const FAILURE_LINES_CHARS = 4000;
 // Text only the owner writes and every runner and page reads back: the note
 // on a dispatch and the approval recorded with a policy.
 export const OWNER_TEXT_MAX = 500;
