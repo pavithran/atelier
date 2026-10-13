@@ -420,10 +420,15 @@ it("the fast-mode count says what fast mode is, and no count appears without fas
   const story = buildStory("quick", [{ id: "t1", title: "Work", state: "claimed" }] as never, evs as never, "pavi", false, "Quick", { redact: true, ownerLabel: "PAVI" });
   const shown = (landedFast?: number): ShownProject => ({ project: { name: "quick", repo: "quick", policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story, allTimeMerged: 20, landedFast });
   const html = renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [shown(13)]);
-  const count = html.split("landed in fast mode, all time")[0].split("<div").pop()!;
-  expect(count).toContain(`title="${FAST_MODE_NOTE}"`);
-  expect(FAST_MODE_NOTE).toMatch(/with a reason/);
-  expect(FAST_MODE_NOTE).toMatch(/review follows its merge/);
-  expect(FAST_MODE_NOTE).toMatch(/Full mode.*is the default/);
+  // Visible text in the card, after its figures, not a tooltip a keyboard
+  // or a touch screen never reaches (codex/gpt-6-astra's review of t605).
+  const cardHtml = html.split('class="show-card"')[1].split("</li>")[0];
+  const note = /<\/dl><p class="card-note">([^<]*)<\/p>/.exec(cardHtml)?.[1] ?? "";
+  expect(cardHtml).toContain("landed in fast mode, all time");
+  expect(cardHtml).not.toContain("title=");
+  expect(note).toBe(FAST_MODE_NOTE);
+  expect(note).toMatch(/with a reason/);
+  expect(note).toMatch(/reviewed after the merge/);
+  expect(note).toMatch(/Full mode, review first, is the default/);
   expect(renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [shown()])).not.toContain("landed in fast mode");
 });

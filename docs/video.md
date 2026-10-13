@@ -83,7 +83,7 @@ without proof · 4 Big goals become plans · 5 It measures, and it learns ·
 
 > Many AI agents, one repository. When their work merges, what can you trust?
 >
-> Three things to remember. One: the tests run on the exact head, not on the agent's word. Two: independent review, by another company's model. Three: every step is on the record.
+> Three things to remember. One: a check counts only when it names the exact head, and a project can demand checks in a Cloudflare container, which no agent can forge (`--sandbox-only`); a local pass is the word of the machine that ran it. Two: independent review, by another company's model. Three: every step is on the record.
 
 ## 2. Why Git alone isn't enough {#why}
 
@@ -132,7 +132,7 @@ seconds after the approval. Then the live page of t278: its Thread, with the
 two send-backs, and its Checks and reviews, with Gemini's approval. Tag:
 from the ledger, t278, 7 October 2026; on the footage, the live page.
 
-> Proof comes first, then review. Tests run on a runner, in a clean clone of the exact head pushed to Artifacts, and Atelier records what it saw, never the agent's claim.
+> Proof comes first, then review. Tests run on a runner, in a clean clone of the exact head pushed to Artifacts, and Atelier records the runner's result against that head; a project can demand a Cloudflare container instead, whose result no agent can forge.
 >
 > Opus 5.5 built task t278, so no Anthropic model could approve it. Gemini rejected it twice, quoting file and line: a pull could drop logs past a thousand, then one bad log could end paging early. All four findings were real, and fixed; the third head merged eleven seconds after its approval.
 >
@@ -237,7 +237,7 @@ On screen, dark: the field of light returns. Four lines, then "Git keeps
 the code. Atelier brings the receipts.", 321 tasks and 240 merged counting up,
 with the rest beneath; then atelier.zone and the repository's address.
 
-> Tests run on the exact head, not on the agent's word. Independent review, by another company's model. Every step is on the record.
+> Checks that name the exact head, run in a Cloudflare container when a project demands it. Independent review, by another company's model. Every step is on the record.
 >
 > Git keeps the code. Atelier brings the receipts. It built itself this way: 321 tasks, 240 merged.
 >
@@ -268,7 +268,7 @@ than kept; they are listed at the end.
 | 7a | Fifteen tasks held at once at 12:59:32 UTC on 6 October, the most in the ledger; not measured beyond | ledger `peak` (every holding interval swept in time order, `derive.mjs`) | yes; all fifteen were held by Anthropic models during the waiver of that day |
 | 7b | Each task is its own fork in Artifacts; each project's ledger its own Durable Object; checks run on as many runners as are started; only landing on main waits its turn (a lease per project); a plan's parts meet first on the plan's branch | README.md:67, 86, 179, 342; `wrangler.jsonc` | yes, as design; scale beyond the ledger's peak is not claimed |
 | 9 | On screen, per agent: merged tasks built (final builder) and reviews recorded | ledger `facts.mergedByFinalBuilder`, `facts.reviewsByModel` | yes |
-| 10 | Checks run on the lead developer's machine, in a clean clone of the exact head pushed to Artifacts; Atelier records what it saw | `evidence.observed` events carry `where: "runner"` (the runner on the lead developer's Mac) or are run by `atelier land` there; `cli/atelier.mjs` runs each check "in a second, clean clone of exactly the head" Atelier read; the live page labels these "Agent's machine" | yes; checks in a Cloudflare Container are built, not proven (claim 33) |
+| 10 | Checks run on the lead developer's machine, in a clean clone of the exact head pushed to Artifacts; Atelier records the result the runner posted | `evidence.observed` events carry `where: "runner"` (the runner on the lead developer's Mac) or are run by `atelier land` there; `cli/atelier.mjs` runs each check "in a second, clean clone of exactly the head" Atelier read; the live page labels these "Agent's machine" | yes; checks in a Cloudflare Container are built, not proven (claim 33) |
 | 11 | t278: built by Opus 5.5; rejected twice by Gemini 3.1 Pro at 2d7ac626 (21:02:06 UTC; src/index.ts:1694, src/usage/gateway.ts:201) and 04cafbf6 (21:20:50 UTC; src/usage/gateway.ts:190); four findings, each judged "fixed"; approved at de671943 21:28:33, merged 21:28:44 UTC on 7 October as 5af22431 (11 s) | ledger `stories.t278` | yes |
 | 12 | t278's live page shows two send-backs on its Thread and Gemini's approval under Checks and reviews | `video/public/footage/t278-2-thread.png`, `t278-3-reviews.png`, captured signed in on 2026-10-08 | yes |
 | 13 | t283: GLM-5.3's 524-line Browser Rendering check; the run released "harness timed out" at 00:29:05 UTC on 8 October; the reclaim deleted the work; recovered only from a patch the orchestrator had saved | ledger `stories.t283` events; t296's title (filed 00:33:30 UTC), which gives the 524 lines and the recovery | yes, from the ledger; the line count is t296's title's |
