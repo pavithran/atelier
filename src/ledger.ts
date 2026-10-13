@@ -761,6 +761,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS model_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS model_cards (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS model_cards_model ON model_cards (model, id);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -1201,28 +1202,44 @@ export class Ledger extends DurableObject<Env> {
   private cardsOf(named: string): { model: string; pool: ModelEntry[]; records: CardRecord[] } {
     const pool = this.models();
     const model = canonicalModel(named, pool);
-    const records = this.sql.exec(`SELECT id, json FROM model_cards ORDER BY id`).toArray()
-      .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }))
-      .filter((r) => r.model === model);
+    // The keys a record may be stored under and still be this model's: its
+    // own, and each name that resolves to it now, so a card recorded under a
+    // name before the pool made it this model's alias stays reachable,
+    // replayable and withdrawable (Astra's second review of t625, 2026-10-13,
+    // finding 1). A card recorded while an alias meant another model was
+    // stored under that model's key and stays there.
+    const keys = new Set([model]);
+    for (const m of pool) {
+      if (canonicalModel(`${m.harness}/${m.id}`, pool) === model) for (const n of [m.id, ...m.aliases]) keys.add(modelKey(n));
+    }
+    for (const p of MODEL_PROFILES) if (modelKey(p.id) === model) for (const n of p.aliases ?? []) keys.add(modelKey(n));
+    const list = [...keys];
+    const records = this.sql.exec(`SELECT id, json FROM model_cards WHERE model IN (${list.map(() => "?").join(", ")}) ORDER BY id`, ...list).toArray()
+      .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }));
     return { model, pool, records };
   }
 
   modelCards(named: string): CardView {
-    const { model, pool, records } = this.cardsOf(named);
+    return this.cardViewOf(this.cardsOf(named));
+  }
+
+  private cardViewOf({ model, pool, records }: { model: string; pool: ModelEntry[]; records: CardRecord[] }): CardView {
     const entries = pool.filter((m) => canonicalModel(`${m.harness}/${m.id}`, pool) === model).map((m) => `${m.harness}/${m.id}`);
     const priors = MODEL_PROFILES.filter((p) => modelKey(p.id) === model).flatMap((p) => p.evidence.filter((e) => e.prior));
     return cardView(model, entries, records, priors);
   }
 
   // A card or a withdrawal, stored once: the same record sent again (a
-  // retry) is answered with the one stored, and nothing is added.
+  // retry) is answered with the one stored, and nothing is added. The pool
+  // and the model's records are read once.
   addModelCard(named: string, input: CardInput | WithdrawalInput, by: string, at: string): { record: CardRecord; retried: boolean; view: CardView } {
-    const { model, records } = this.cardsOf(named);
-    const existing = admitCardRecord(records, input, model);
-    if (existing) return { record: existing, retried: true, view: this.modelCards(named) };
-    const stored = { ...input, model, named, at, by };
-    const row = this.sql.exec(`INSERT INTO model_cards (model, json) VALUES (?, ?) RETURNING id`, model, JSON.stringify(stored)).one();
-    return { record: { ...stored, id: `c${row.id as number}` } as CardRecord, retried: false, view: this.modelCards(named) };
+    const found = this.cardsOf(named);
+    const existing = admitCardRecord(found.records, input, found.model);
+    if (existing) return { record: existing, retried: true, view: this.cardViewOf(found) };
+    const stored = { ...input, model: found.model, named, at, by };
+    const row = this.sql.exec(`INSERT INTO model_cards (model, json) VALUES (?, ?) RETURNING id`, found.model, JSON.stringify(stored)).one();
+    const record = { ...stored, id: `c${row.id as number}` } as CardRecord;
+    return { record, retried: false, view: this.cardViewOf({ ...found, records: [...found.records, record] }) };
   }
 
   putModel(entry: ModelEntry): ModelEntry {

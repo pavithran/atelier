@@ -108,6 +108,21 @@ it("a card outlives its model's pool entry, follows a pool alias, and a model th
   expect(unknown.view).toMatchObject({ model: "gemini-3.8-flash-preview", pool: [], priors: [] });
 });
 
+it("a card recorded for a model nobody knew stays reachable, replayable and withdrawable once the pool makes that name an alias", async () => {
+  // Astra's second review of t625, 2026-10-13, finding 1: model-a's card became unreachable.
+  const a = await post("stranded-model-a", card(21));
+  expect(a.record.model).toBe("stranded-model-a");
+  await index().putModel(entry("stranded-model-b", "codex", ["stranded-model-a"]));
+  for (const name of ["stranded-model-a", "stranded-model-b", "codex/stranded-model-a"]) {
+    expect((await view(name)).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "active"]]);
+  }
+  const replay = await post("stranded-model-a", card(21));
+  expect(replay).toMatchObject({ status: 200, retried: true, record: { id: a.record.id } });
+  const gone = await post("stranded-model-b", { withdraws: a.record.id, reason: "Belongs to model-b's preview." });
+  expect(gone.status).toBe(201);
+  expect((await view("stranded-model-a")).cards.map((c) => [c.id, c.state])).toEqual([[a.record.id, "withdrawn"]]);
+});
+
 it("a card stays with the model it was recorded for when its alias moves to another model, withdrawal and all", async () => {
   // Astra's review of t625, 2026-10-13, finding 1: B showed c1 as active, without A's withdrawal.
   await index().putModel(entry("alias-model-a", "codex", ["alias-preview"]));
