@@ -1,7 +1,7 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "d9c0db28714d50aaa2a4d62600fe02666168c671",
-  "sourceDirty": false,
+  "source": "504b3af71c1fd2292368eaaa323ad444159c066e",
+  "sourceDirty": true,
   "browser": {
     "name": "chromium",
     "version": "156.0.8078.4",
@@ -200,7 +200,7 @@
     "public-how": {
       "390": {
         "structure": {
-          "height": 28177,
+          "height": 29667,
           "navs": [
             {
               "label": "Elsewhere",
@@ -243,7 +243,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 16147
+          "words": 17624
         },
         "targets": {
           "total": 29,
@@ -326,7 +326,7 @@
       },
       "1440": {
         "structure": {
-          "height": 17892,
+          "height": 18652,
           "navs": [
             {
               "label": "Elsewhere",
@@ -369,7 +369,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 16147
+          "words": 17624
         },
         "targets": {
           "total": 29,
@@ -452,13 +452,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 978,
+            "checked": 1026,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 978,
+            "checked": 1026,
             "unknown": 0,
             "failures": []
           }
@@ -4701,7 +4701,7 @@
     "project": {
       "390": {
         "structure": {
-          "height": 114423,
+          "height": 2505,
           "navs": [
             {
               "label": "Atelier",
@@ -4725,97 +4725,99 @@
           "h1": 1,
           "headings": [
             "h1 Ledger Core",
-            "h2 Where it stands",
-            "h2 Unsorted 156/200 merged"
+            "h2 Waiting on you · 9",
+            "h2 Running · 9",
+            "h2 Last five merges",
+            "h2 Ship requests"
           ],
-          "words": 4696
+          "words": 1983
         },
         "targets": {
-          "total": 666,
+          "total": 470,
           "small": [
             {
               "tag": "a",
-              "label": "t166",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t167",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t191",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t192",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t193",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t194",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t200",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t195",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t196",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t156",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t155",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t154",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t153",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t152",
-              "width": 48,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
@@ -4914,12 +4916,12 @@
               "height": 22
             }
           ],
-          "smallCount": 430
+          "smallCount": 416
         }
       },
       "1440": {
         "structure": {
-          "height": 21293,
+          "height": 1469,
           "navs": [
             {
               "label": "Atelier",
@@ -4943,97 +4945,99 @@
           "h1": 1,
           "headings": [
             "h1 Ledger Core",
-            "h2 Where it stands",
-            "h2 Unsorted 156/200 merged"
+            "h2 Waiting on you · 9",
+            "h2 Running · 9",
+            "h2 Last five merges",
+            "h2 Ship requests"
           ],
-          "words": 4696
+          "words": 1983
         },
         "targets": {
-          "total": 666,
+          "total": 470,
           "small": [
             {
               "tag": "a",
-              "label": "t166",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t167",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t191",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t192",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t193",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t194",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t200",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t195",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t196",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t156",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t155",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t154",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t153",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
-              "label": "t152",
-              "width": 51,
-              "height": 15
+              "label": "",
+              "width": 30,
+              "height": 22
             },
             {
               "tag": "a",
@@ -5132,24 +5136,24 @@
               "height": 22
             }
           ],
-          "smallCount": 430
+          "smallCount": 416
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 1685,
+            "checked": 881,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 1685,
+            "checked": 881,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 200,
+          "stops": 44,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -5205,13 +5209,15 @@
           "h1": 1,
           "headings": [
             "h1 blank-slate",
-            "h2 Where it stands",
-            "h2 Unsorted 0/0 merged"
+            "h2 Waiting on you · 0",
+            "h2 Running · 0",
+            "h2 Last five merges",
+            "h2 Ship requests"
           ],
-          "words": 79
+          "words": 95
         },
         "targets": {
-          "total": 25,
+          "total": 27,
           "small": [
             {
               "tag": "summary",
@@ -5249,13 +5255,15 @@
           "h1": 1,
           "headings": [
             "h1 blank-slate",
-            "h2 Where it stands",
-            "h2 Unsorted 0/0 merged"
+            "h2 Waiting on you · 0",
+            "h2 Running · 0",
+            "h2 Last five merges",
+            "h2 Ship requests"
           ],
-          "words": 79
+          "words": 95
         },
         "targets": {
-          "total": 25,
+          "total": 27,
           "small": [
             {
               "tag": "summary",
@@ -5269,19 +5277,19 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 46,
+            "checked": 50,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 46,
+            "checked": 50,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 15,
+          "stops": 17,
           "first": {
             "tag": "a",
             "label": "Skip to content",

@@ -158,6 +158,10 @@ it("stays in Night on any device, under the canvas's ruled bar, with each card's
   expect(layout).toMatch(/\.show-page \.public-bar nav a\[href="\/login"\] \{[^}]*border: 1px solid var\(--line-bright\)/);
   // The column is the canvas's 1200 px inside 32 px of padding.
   expect(layout).toMatch(/\.show-section \{ max-width: 1264px;[^}]*padding: 48px 32px; box-sizing: border-box/);
+  // The footer's rule runs the page's width; its text keeps to the column.
+  expect(html).toContain('<footer class="show-foot"><div class="show-foot-in">');
+  expect(layout).toMatch(/\.show-foot \{ border-top: 1px solid var\(--line\); \}/);
+  expect(layout).toMatch(/\.show-foot-in \{ max-width: 1264px;[^}]*padding: 28px 32px 40px; box-sizing: border-box/);
   const { built: story, evs } = seeded();
   const drawn = renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [{ ...card(story), pulse: buildPulse(evs as never, "pavi", new Date(at(5, 12))) }]);
   const built = section(drawn, "portfolio-h").split('id="card-1"')[1].split("</li>\n")[0];
