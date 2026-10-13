@@ -20,6 +20,8 @@ Owner      accept ID [--head SHA] [--override-review REASON] [--note TEXT] · me
            run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT] · served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply] · approve ACTION --head SHA [--note T] [--expires 24h] · approvals [--all] · approvals withdraw ID [--note T]
            decide "text" --quote "owner's words" [--project P] [--as H/M] · decisions [--all] [--project P] · decisions withdraw ID --note "why"
            refreshes [--enqueue] [--json] · ship [--dry-run] [--push]
+           mode [--project P] · mode fast --reason TEXT [--project P] · mode full [--project P]
+           fast land tN=SHA [tM=SHA ...] [--reviewer H/M] [--test CMD] [--typecheck CMD] [--regen CMD] · fast status [--project P] · fast close [--project P]
 Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json]
            plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT
            plan reroute ID --to H/M · plan retry ID · plan refresh ID [--resolve [--to H/M]] · plan stop ID [--note TEXT]

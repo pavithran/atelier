@@ -26,6 +26,7 @@ import command_diff from "./diff.ts";
 import command_dispatch from "./dispatch.ts";
 import command_done from "./done.ts";
 import command_edit from "./edit.ts";
+import command_fast from "./fast.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
 import command_gc from "./gc.ts";
@@ -40,6 +41,7 @@ import command_land from "./land.ts";
 import command_login from "./login.ts";
 import command_ls from "./ls.ts";
 import command_merge from "./merge.ts";
+import command_mode from "./mode.ts";
 import command_models from "./models.ts";
 import command_new from "./new.ts";
 import command_notes_remote from "./notes-remote.ts";
@@ -114,6 +116,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/dispatch.ts", spec: command_dispatch },
   { path: "src/usage/commands/done.ts", spec: command_done },
   { path: "src/usage/commands/edit.ts", spec: command_edit },
+  { path: "src/usage/commands/fast.ts", spec: command_fast },
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
   { path: "src/usage/commands/gc.ts", spec: command_gc },
@@ -128,6 +131,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/login.ts", spec: command_login },
   { path: "src/usage/commands/ls.ts", spec: command_ls },
   { path: "src/usage/commands/merge.ts", spec: command_merge },
+  { path: "src/usage/commands/mode.ts", spec: command_mode },
   { path: "src/usage/commands/models.ts", spec: command_models },
   { path: "src/usage/commands/new.ts", spec: command_new },
   { path: "src/usage/commands/notes-remote.ts", spec: command_notes_remote },
