@@ -97,8 +97,40 @@ test("a card sent again is the card already stored, and a withdrawal sent again 
   assert.equal(admitCardRecord([first], cleanCard(structuredClone(CARD), TODAY), "example-5"), first);
   const gone = stored(cleanWithdrawal({ withdraws: first.id, reason: "Wrong model." }));
   assert.equal(admitCardRecord([first, gone], cleanWithdrawal({ withdraws: first.id, reason: "Wrong model." }), "example-5"), gone);
-  // Withdrawn, the same card sent again is a new card, not the withdrawn one.
-  assert.equal(admitCardRecord([first, gone], cleanCard(structuredClone(CARD), TODAY), "example-5"), null);
+  // Replaying an import after the withdrawal is still the stored card, never
+  // a new active copy (Astra's review of t625, 2026-10-13, finding 2).
+  assert.equal(admitCardRecord([first, gone], cleanCard(structuredClone(CARD), TODAY), "example-5"), first);
+});
+
+test("a correction replayed after it was itself withdrawn is the stored correction, not a refusal", () => {
+  // Astra's review of t625, 2026-10-13, finding 2: the replay answered 409 card_ended.
+  const a = stored(cleanCard(structuredClone(CARD), TODAY));
+  const fix = { ...structuredClone(CARD), claims: [{ ...CARD.claims[1], score: 71 }], corrects: a.id, reason: "Misread 71 as 70." };
+  const b = stored(cleanCard(fix, TODAY));
+  const gone = stored(cleanWithdrawal({ withdraws: b.id, reason: "Wrong table." }));
+  assert.equal(admitCardRecord([a, b, gone], cleanCard(structuredClone(fix), TODAY), "example-5"), b);
+  assert.equal(admitCardRecord([a, b, gone], cleanWithdrawal({ withdraws: b.id, reason: "Wrong table." }), "example-5"), gone);
+});
+
+test("a source hiding a key behind percent-encoding, or a local host behind a trailing dot or another spelling, is refused", () => {
+  // Astra's review of t625, 2026-10-13, finding 3: the first two were accepted.
+  const key = ["sk-", "AbC123xyzQrS456"].join("");
+  for (const [source, why] of [
+    ["https://localhost./card", /public host/],
+    ["https://vendor.example/card?key=%73%6b%2dAbC123xyzQrS456", /carries a key/],
+    [`https://vendor.example/${encodeURIComponent(key)}/card`, /carries a key/],
+    [`https://vendor.example/card#${encodeURIComponent(key)}`, /carries a key/],
+    ["https://LOCALHOST/card", /public host/],
+    ["https://api.localhost./card", /public host/],
+    ["https://127.1/card", /public host/],
+    ["https://0x7f000001/card", /public host/],
+    ["https://[::1]/card", /public host/],
+    ["https://printer.local/card", /public host/],
+    ["https://wiki.internal./card", /public host/],
+    ["https://vendor.example/card?q=%E0%A4%A", /percent-encoding/],
+  ] as const) assert.throws(() => cleanCard({ ...structuredClone(CARD), source }, TODAY), why, source);
+  // A public host with a trailing dot or capitals is kept in its plain form.
+  assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://Vendor.Example./card?x=1" }, TODAY).source, "https://vendor.example/card?x=1");
 });
 
 test("a correction, supersession or withdrawal names an active card of the same model, and history is kept", () => {

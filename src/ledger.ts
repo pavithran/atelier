@@ -1195,13 +1195,15 @@ export class Ledger extends DurableObject<Env> {
   // never on a pool entry: filed under the model's canonical key, whether or
   // not the pool has the model now, so removing it from the pool and adding
   // it back loses none, and nothing that reads the pool reads them. A record
-  // filed under a name the pool has since made an alias is found by it too.
+  // is read under the key it was stored with and no other: a name the pool
+  // later gives another model does not move a card, or split it from its
+  // withdrawal (Astra's review of t625, 2026-10-13, finding 1).
   private cardsOf(named: string): { model: string; pool: ModelEntry[]; records: CardRecord[] } {
     const pool = this.models();
     const model = canonicalModel(named, pool);
     const records = this.sql.exec(`SELECT id, json FROM model_cards ORDER BY id`).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }))
-      .filter((r) => r.model === model || canonicalModel(r.named, pool) === model);
+      .filter((r) => r.model === model);
     return { model, pool, records };
   }
 

@@ -102,12 +102,23 @@ it("a card outlives its model's pool entry, follows a pool alias, and a model th
   expect((await view("sol-preview")).cards.map((c) => c.id)).toEqual([sol.record.id]);
 
   // A model nobody registered: kept under its own name, with no pool entry
-  // and no priors; once the pool names it as an alias, the card follows.
+  // and no priors.
   const unknown = await post("gemini-3.8-flash-preview", card(55));
   expect(unknown.status).toBe(201);
   expect(unknown.view).toMatchObject({ model: "gemini-3.8-flash-preview", pool: [], priors: [] });
-  await index().putModel(entry("gemini-3.8-flash", "gemini-cli", ["gemini-3.8-flash-preview"]));
-  expect((await view("gemini-3.8-flash")).cards.map((c) => c.id)).toEqual([unknown.record.id]);
+});
+
+it("a card stays with the model it was recorded for when its alias moves to another model, withdrawal and all", async () => {
+  // Astra's review of t625, 2026-10-13, finding 1: B showed c1 as active, without A's withdrawal.
+  await index().putModel(entry("alias-model-a", "codex", ["alias-preview"]));
+  const c1 = await post("alias-preview", card(33));
+  expect(c1.record.model).toBe("alias-model-a");
+  await post("alias-model-a", { withdraws: c1.record.id, reason: "Recorded under the wrong model." });
+  await index().putModel(entry("alias-model-a", "codex"));
+  await index().putModel(entry("alias-model-b", "codex", ["alias-preview"]));
+  expect((await view("alias-model-b")).cards).toEqual([]);
+  expect((await view("alias-preview")).cards).toEqual([]);
+  expect((await view("alias-model-a")).cards.map((c) => [c.id, c.state])).toEqual([[c1.record.id, "withdrawn"]]);
 });
 
 it("cards are the developer's alone, are checked on the server, and change neither the pool nor its notes", async () => {
