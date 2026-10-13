@@ -42,5 +42,6 @@ export async function readStanding(
   const sessions = await L.sessions(1).catch(() => null);
   const standing = buildStanding(project, items ?? [], taskEvents, limit, attention, details, now);
   if (!sessions) standing.partial.push("The last session's note could not be read.");
-  return { ...standing, session: sessions?.[0] };
+  const unread = [...items ? [] : ["tasks" as const], ...inbox ? [] : ["notices" as const]];
+  return { ...standing, session: sessions?.[0], ...unread.length ? { unread } : {} };
 }
