@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
+import { NO_VERDICT, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
 import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, metadataEscaped } from "./providers.mjs";
 
@@ -79,9 +80,23 @@ export function reviewPrompt(brief, diff) {
     diff.replace(/\n+$/, ""),
     fence,
     "",
-    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it. End with a VERDICT: APPROVE or VERDICT: REJECT line, a SUMMARY: line and one FINDING: blocking|follow-up PATH:LINE text line per finding.",
+    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it.",
+    VERDICT_DEMAND,
   ].join("\n");
 }
+
+// What every review prompt ends with. GLM 5.3 under opencode answered
+// review after review in prose with no VERDICT line, 48 replies released
+// overnight on 2026-10-13 ("the reply states no verdict"), yet answered at
+// once when the brief ended by demanding the line as the reply's last (t576).
+export const VERDICT_DEMAND = "Your reply MUST end with exactly one line, the last line of your reply, either VERDICT: APPROVE or VERDICT: REJECT, preceded by a SUMMARY: line on what you checked and one FINDING: blocking|follow-up PATH:LINE text line per finding.";
+
+// The second ask, in the same opencode session, when the first reply states
+// no verdict: the lines alone, no new review (t576).
+export const VERDICT_FOLLOW_UP = [
+  "Your reply above states no verdict, so Atelier cannot read it. Do not review again and run nothing.",
+  "Reply with only these lines: a SUMMARY: line on what you checked, one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.",
+].join("\n");
 
 // The prompt for the job, which goes to the harness on standard input.
 export function promptFor(harness, args, read = (f) => readFileSync(f, "utf8")) {
@@ -140,6 +155,11 @@ export const HARNESSES = {
     executable: "opencode",
     command(args, kind, setup) {
       return { argv: ["run", "--model", `${setup.provider}/${setup.providerModel}`], verdictFrom: "stdout" };
+    },
+    // The same session again: the run's own data folder (runHome) holds this
+    // job's session alone, so --continue resumes the review just answered.
+    followUp(args, kind, setup) {
+      return ["run", "--model", `${setup.provider}/${setup.providerModel}`, "--continue"];
     },
   },
   antigravity: {
@@ -337,6 +357,25 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
     try { answer = JSON.parse(answer.trim()).response; } catch { return fail(`${exe} printed no JSON`); }
   }
   if (typeof answer !== "string" || !answer.trim()) return fail(`${exe} gave an empty answer`);
+  // A reply with no verdict at all is asked once more, in the same session,
+  // for the verdict lines alone (t576); the kept reply is both answers, so
+  // findings the first gave as lines still count. Any failure of the second
+  // ask leaves the first reply, which the runner records as unparsable.
+  const followUp = HARNESSES[harness].followUp;
+  if (followUp && noVerdict(answer)) {
+    const again = spawn(exe, followUp(args, kind, setup), {
+      cwd: args.workspace, env: childEnv, input: VERDICT_FOLLOW_UP, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    const more = !again.error && again.status === 0 && typeof again.stdout === "string" ? again.stdout.trim() : "";
+    if (more) answer = `${answer.replace(/\n+$/, "")}\n\n${more}\n`;
+    else (io.stderr ?? ((text) => process.stderr.write(text)))(`atelier-${harness}: the reply states no verdict and asking again for it failed${again.error ? `: ${again.error.message}` : ` (exit ${again.status})`}\n`);
+  }
   writeFileSync(args.verdict, answer, "utf8");
   return 0;
+}
+
+function noVerdict(answer) {
+  const parsed = parseVerdict(answer);
+  return !parsed.ok && parsed.error === NO_VERDICT;
 }

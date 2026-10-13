@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODEX_FEATURES_OFF, agentRules, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERDICT_FOLLOW_UP, agentRules, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
 import { redactKeys } from "../src/models/pool.ts";
+import { parseVerdict } from "../src/review/verdict.ts";
 
 // t374: the four harness adapters ship in bin/harness/, carry the agent
 // rules, hold no key, give every prompt on standard input and are what the
@@ -58,7 +59,10 @@ const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_MET
 const list = (dir) => dir && fs.existsSync(dir) ? fs.readdirSync(dir) : null;
 const configHome = list(process.env.XDG_CONFIG_HOME), home = list(process.env.HOME);
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: process.cwd(), configHome, home, env: Object.fromEntries(pick.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) }));
-const answer = "VERDICT: APPROVE\\nSUMMARY: fine";
+fs.appendFileSync(${JSON.stringify(record)} + ".calls", JSON.stringify({ argv, input }) + "\\n");
+// FAKE_ANSWER, when set, is the first reply and FAKE_FOLLOW_UP the reply in
+// the continued session (opencode run --continue).
+const answer = !process.env.FAKE_ANSWER ? "VERDICT: APPROVE\\nSUMMARY: fine" : argv.includes("--continue") ? process.env.FAKE_FOLLOW_UP : process.env.FAKE_ANSWER;
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
 else if (argv.includes("--format") && argv[argv.indexOf("--format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "text", part: { text: answer } }));
@@ -173,9 +177,42 @@ for (const [harness, model] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-as
     assert.match(seen.input, /diff --git a\/x b\/x/);
     assert.match(seen.input, /````diff/, "the fence is longer than the diff's own backticks");
     assert.match(seen.input, /Edit nothing/);
+    assert.ok(seen.input.endsWith(VERDICT_DEMAND), "the prompt ends by demanding a final VERDICT line (t576)");
     assert.equal(readFileSync(verdict, "utf8"), "VERDICT: APPROVE\nSUMMARY: fine");
+    assert.equal(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").length, 1, "a reply with a verdict is not asked again");
   });
 }
+
+// The finding t576 names: GLM 5.3 under opencode answered reviews in prose
+// with no VERDICT line, and the runner released 48 of them overnight on
+// 2026-10-13 ("the reply states no verdict"). The adapter now asks once more,
+// in the same session, for the verdict lines alone.
+test("an opencode review reply with no verdict is asked once more in the same session, and the verdict is recorded", (t) => {
+  const s = setup(t);
+  const narrative = "I read the diff and ran the tests; the change looks correct and complete.";
+  const { verdict } = run("opencode", s, { model: "deepseek-v4-pro", review: true, env: {
+    FAKE_ANSWER: narrative, FAKE_FOLLOW_UP: "SUMMARY: read the diff, tests pass\nVERDICT: APPROVE",
+  } });
+  const calls = readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(calls.length, 2, "one second ask, no more");
+  assert.deepEqual(calls[1].argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--continue", "--format", "json"], "the second ask continues the run's session");
+  assert.equal(calls[1].input, VERDICT_FOLLOW_UP, "and asks for the verdict lines alone");
+  const kept = readFileSync(verdict, "utf8");
+  assert.ok(kept.startsWith(narrative), "the first reply is kept");
+  assert.ok(kept.trimEnd().endsWith("VERDICT: APPROVE"));
+  const parsed = parseVerdict(kept);
+  assert.equal(parsed.ok, true, parsed.error);
+  assert.equal(parsed.verdict, "approve");
+});
+
+test("an opencode review whose second ask also states no verdict keeps both replies for the runner to record as unparsable", (t) => {
+  const s = setup(t);
+  const { verdict } = run("opencode", s, { model: "deepseek-v4-pro", review: true, env: { FAKE_ANSWER: "Looks fine to me.", FAKE_FOLLOW_UP: "Still fine." } });
+  assert.equal(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").length, 2, "asked once more, not again");
+  const parsed = parseVerdict(readFileSync(verdict, "utf8"));
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.error, /states no verdict/);
+});
 
 test("the harnesses are started with their own permission rules", (t) => {
   const s = setup(t);
