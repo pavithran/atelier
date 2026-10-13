@@ -1007,9 +1007,9 @@ test("a post-merge review whose merge commit no source holds is released once an
   // One skip report per failure, under the request claimed, naming the commit.
   assert.deepEqual(reports.map((r) => r.request), [50, 51]);
   for (const r of reports) assert.match(r.note, new RegExp(merge));
-  // The baseline's head is read at each miss and at most every five minutes
-  // besides, not each poll: polls 1 and 16 (the misses), 6, 11 and 16.
-  assert.deepEqual(heads.map(([poll]) => poll), [1, 6, 11, 16, 16]);
+  // The baseline's head is read at most every five minutes, not each poll;
+  // each miss is kept against the head its Git fetch saw.
+  assert.deepEqual(heads.map(([poll]) => poll), [6, 11, 16]);
   assert.ok(logs.some((l) => /baseline moved/.test(l)), logs.join("\n"));
 });
 
@@ -1100,6 +1100,97 @@ test("a missing merge is reported as an infrastructure_miss run where the server
       assert.match(skips[0].note, new RegExp(merge));
     }
   }
+});
+
+// t591 (codex/gpt-6-astra's second review, finding 1): the developer
+// publishes the merge between the job's Git fetch (baseline at B1) and the
+// runner's next read of the head (B2). The miss is kept against B1, the head
+// the fetch saw, so B2 is a move and the review is claimed again.
+test("a missing merge published between the fetch and the head read is claimed again at the next check", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, state, task } = missingMergeFixture();
+  const B2 = "2".repeat(40);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  let polls = 0, clock = 0;
+  const claim = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    const answer = await claim(argv, cwd, options);
+    // The publish lands just after the first job's fetch saw B1.
+    if (argv[0] === "review-release") state.baseline = B2;
+    return answer;
+  };
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    async reportReviewSkip() {},
+    async baselineHead() { return state.baseline === B2 ? B2 : "1".repeat(40); },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls > 20) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  // Claimed on poll 1, again at the first check (poll 6), then kept at B2.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+});
+
+// t591 (second review, finding 2): one poll may list several requests for
+// the same task and head; after the first misses, the rest are passed by
+// within the same batch.
+test("several requests for one missing merge in one poll are claimed and reported once", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, task } = missingMergeFixture();
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [];
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      if (++polls > 3) { process.emit("SIGINT"); return []; }
+      return [task(50), task(51), task(52)];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+  assert.equal(skips.length, 1);
+});
+
+// t591 (second review, finding 3): an infrastructure_miss report the server
+// did not take is kept and sent again on a later poll, with the skip
+// reports' backoff, until it lands; it is not traded for a review skip.
+test("an infrastructure_miss report that meets a transient failure is sent again and lands", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, logs, task } = missingMergeFixture();
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const attempts = [], landed = [], skips = [];
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    version: async () => ({ capabilities: SERVER_CAPABILITIES }),
+    async reportRun(body) {
+      attempts.push(polls);
+      if (attempts.length === 1) throw new Error("503");
+      landed.push(body);
+    },
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      if (++polls > 6) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+  assert.deepEqual(attempts, [1, 2]);
+  assert.equal(landed.length, 1);
+  assert.equal(landed[0].outcome, "infrastructure_miss");
+  assert.match(landed[0].detail, new RegExp(merge));
+  assert.equal(skips.length, 0, "the run report is not traded for a review skip");
+  assert.ok(logs.some((l) => /infrastructure_miss.*503.*again next poll/.test(l)), logs.join("\n"));
 });
 
 // t490: the claim's evidence at the head reaches the brief the reviewer

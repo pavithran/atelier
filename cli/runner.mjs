@@ -1634,6 +1634,11 @@ export const MISSING_RECHECK_MS = 5 * 60_000;
 // (src/capability-declarations.ts).
 export const INFRASTRUCTURE_MISS = "runs.infrastructure-miss.v1";
 
+// How many times a runner sends an infrastructure_miss report the server
+// did not take before it gives the report up (t591): with the skip reports'
+// backoff, about half an hour of polls.
+export const MISS_REPORT_TRIES = 8;
+
 // The job an assignment is, as the offer names jobs: the dispatch's own, the
 // merge jobs a build carries (a task's merge-main under "merge-main-task",
 // a part returned after an integration conflict under "merge-plan"), or a
@@ -2958,10 +2963,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // The server's answer to GET /api/version at start, for the capabilities
   // a report needs (the infrastructure_miss run report, t591).
   let serverVersion = null;
-  // The baseline head a miss is kept against: the one `baselineHead` reads
-  // over HTTP at the miss, the same source the recheck reads, or else the
-  // one the job's Git fetch saw, or null (unknown) when neither was read.
+  // The baseline head a miss is kept against: the one the job's Git fetch
+  // saw when it read the baseline, since a head read later may already hold
+  // a merge published in between (codex/gpt-6-astra's second review of
+  // t591, finding 1); else the one `baselineHead` reads over HTTP now; or
+  // null (unknown) when neither was read.
   const headAtMiss = async (task, miss) => {
+    if (miss.baseline) return miss.baseline;
     if (baselineHead) {
       try {
         const head = await baselineHead(task.project, task.actor, controller.signal);
@@ -3029,21 +3037,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // A build or plan job given up goes the same way, to run-skip (t420), so
   // status and show name this runner as what passes it by, the
   // infrastructure failures that send no run report among them.
+  // An infrastructure_miss run report (t591) goes the same way, as "miss",
+  // to the run reports, tried MISS_REPORT_TRIES times at most.
   const reportSkip = async (key, body, misses = 0, what = "review") => {
-    const send = what === "review" ? reportReviewSkip : reportRunSkip;
+    const send = what === "review" ? reportReviewSkip : what === "miss" ? reportRun : reportRunSkip;
+    const named = what === "miss" ? `${body.project}/${body.item} as infrastructure_miss` : `the ${what} skip for ${body.project}/${body.item}`;
     try {
       await send(body, offer.runner, controller.signal);
       pendingSkips.delete(key);
-      io.log(`reported the ${what} skip for ${body.project}/${body.item}`);
+      io.log(`reported ${named}`);
     } catch (error) {
       if (controller.signal.aborted) return;
-      if (skipRefusedForGood(error)) {
+      if (skipRefusedForGood(error) || (what === "miss" && misses + 1 >= MISS_REPORT_TRIES)) {
         pendingSkips.delete(key);
-        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}`);
+        io.log(`could not report ${named}: ${error.message}${what === "miss" && !skipRefusedForGood(error) ? `; given up after ${MISS_REPORT_TRIES} tries` : ""}`);
       } else {
         const after = skipRetryPolls(misses + 1);
         pendingSkips.set(key, { body, misses: misses + 1, due: polls + after, what });
-        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
+        io.log(`could not report ${named}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
       }
     }
   };
@@ -3375,6 +3386,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
           if (terminalTasks.has(taskKey(task)) || limits.pauses[task.agent]) continue;
+          // An earlier job of this batch may have changed what passes this
+          // one by: several requests for one missing merge (t591, second
+          // review, finding 2) are claimed once, not once each.
+          if (passBy(task) !== null) continue;
           // A task this runner may take is not an idle poll.
           ranTask = true;
           // A dispatch carrying job: "plan" asks for the plan job, one
@@ -3431,15 +3446,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // A merge commit no source held (t591) is reported as a run that
           // ended on the infrastructure, naming the commit, where the server
           // takes that outcome (runs.infrastructure-miss.v1), which counts
-          // against no model; a server without it, or a report it did not
-          // take, has the review skip below instead.
+          // against no model; a server without it has the review skip below
+          // instead. A report the server did not take is kept and sent again
+          // on later polls with the skip reports' backoff (reportSkip), not
+          // traded for a review skip (second review of t591, finding 3).
           let missReported = false;
           if (state.missingCommit && reportRun && checkCapabilities(serverVersion, [INFRASTRUCTURE_MISS]).ok) {
-            try {
-              await reportRun({ actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: state.reason }, offer.runner, controller.signal);
-              missReported = true;
-              io.log(`reported ${task.project}/${task.item.id} as infrastructure_miss`);
-            } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as infrastructure_miss: ${error.message}`); }
+            missReported = true;
+            await reportSkip(`miss:${missingKey(task)}:${task.item.request}`, { actor: task.actor, role: "review", outcome: "infrastructure_miss", project: task.project, item: task.item.id, detail: state.reason }, 0, "miss");
           }
           if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
