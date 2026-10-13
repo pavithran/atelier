@@ -1,0 +1,82 @@
+atelier atelier/t560 "tasks page at phone width: the title column wraps a letter or two per line"
+accepted head eba4a0352c5c7a72909e37d6a156c6ffdd69b35f
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — atelier/integrator 2026-10-13T03:33:20.293Z
+OBSERVED pass npm run types && npm run typecheck — atelier/integrator 2026-10-13T03:33:23.683Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-13T04:35:42.827Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-13T04:35:45.849Z
+REVIEW approve by opencode/glm-5.3 at eba4a0352c5c7a72909e37d6a156c6ffdd69b35f, recorded by opencode/glm-5.3
+2026-10-12T20:12:01.157Z pavi item.created
+2026-10-12T21:48:00.107Z pavi item.dispatched
+2026-10-12T22:11:08.899Z claude-code/sonnet-5.5 item.claimed
+2026-10-12T22:11:35.121Z claude-code/sonnet-5.5 fork.created
+2026-10-12T22:13:23.418Z claude-code/sonnet-5.5 push.observed
+2026-10-12T22:20:34.886Z claude-code/sonnet-5.5 evidence.observed
+2026-10-12T22:20:37.561Z claude-code/sonnet-5.5 evidence.observed
+2026-10-12T22:27:00.372Z claude-code/sonnet-5.5 push.observed
+2026-10-12T22:27:02.344Z atelier/events secret.flagged
+2026-10-12T22:33:26.135Z claude-code/sonnet-5.5 evidence.observed
+2026-10-12T22:33:29.104Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:02:40.166Z claude-code/sonnet-5.5 push.observed
+2026-10-13T00:02:46.607Z atelier/events secret.flagged
+2026-10-13T00:06:42.548Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:06:46.634Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:11:41.176Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:11:44.527Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:37:00.998Z claude-code/sonnet-5.5 push.observed
+2026-10-13T00:37:02.710Z atelier/events secret.flagged
+2026-10-13T00:42:14.669Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:42:17.605Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:48:02.076Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:48:05.069Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T00:48:05.764Z claude-code/sonnet-5.5 item.submitted
+2026-10-13T00:48:22.774Z atelier/orchestrator refresh.queued
+2026-10-13T01:10:10.165Z atelier/integrator refresh.leased
+2026-10-13T01:11:42.508Z atelier/integrator item.refreshed
+2026-10-13T01:13:47.863Z atelier/orchestrator refresh.queued
+2026-10-13T01:16:46.107Z atelier/integrator evidence.observed
+2026-10-13T01:16:49.793Z atelier/integrator evidence.observed
+2026-10-13T01:16:50.744Z atelier/integrator refresh.checked
+2026-10-13T01:29:09.742Z atelier/integrator refresh.leased
+2026-10-13T01:30:45.533Z atelier/integrator item.refreshed
+2026-10-13T01:35:58.999Z atelier/integrator evidence.observed
+2026-10-13T01:36:02.339Z atelier/integrator evidence.observed
+2026-10-13T01:36:03.345Z atelier/integrator refresh.checked
+2026-10-13T01:48:38.930Z atelier/orchestrator refresh.queued
+2026-10-13T02:21:10.821Z atelier/integrator refresh.leased
+2026-10-13T02:22:49.563Z atelier/integrator item.refreshed
+2026-10-13T02:27:57.060Z atelier/integrator evidence.observed
+2026-10-13T02:28:00.350Z atelier/integrator evidence.observed
+2026-10-13T02:28:01.252Z atelier/integrator refresh.checked
+2026-10-13T02:28:52.660Z atelier/orchestrator refresh.queued
+2026-10-13T02:43:26.025Z atelier/integrator refresh.leased
+2026-10-13T02:47:08.832Z atelier/integrator refresh.returned
+2026-10-13T02:56:14.941Z claude-code/sonnet-5.5 push.observed
+2026-10-13T02:56:20.577Z atelier/events secret.flagged
+2026-10-13T02:56:45.342Z atelier/integrator refresh.leased
+2026-10-13T02:57:54.632Z claude-code/sonnet-5.5 push.observed
+2026-10-13T02:57:55.460Z atelier/events secret.flagged
+2026-10-13T02:58:12.039Z atelier/integrator refresh.released
+2026-10-13T02:58:43.165Z atelier/integrator refresh.leased
+2026-10-13T02:59:22.268Z pavi secret.cleared
+2026-10-13T03:00:01.907Z atelier/integrator refresh.held
+2026-10-13T03:18:28.316Z atelier/orchestrator refresh.queued
+2026-10-13T03:24:41.166Z atelier/integrator refresh.leased
+2026-10-13T03:26:35.288Z atelier/integrator item.refreshed
+2026-10-13T03:33:20.908Z atelier/integrator evidence.observed
+2026-10-13T03:33:23.958Z atelier/integrator evidence.observed
+2026-10-13T03:33:24.775Z atelier/integrator refresh.checked
+2026-10-13T04:30:22.789Z pavi land.merge
+2026-10-13T04:30:35.915Z pavi land.regenerate
+2026-10-13T04:30:37.069Z pavi land.push
+2026-10-13T04:35:42.972Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T04:35:45.840Z claude-code/sonnet-5.5 evidence.observed
+2026-10-13T04:35:46.032Z pavi land.check
+2026-10-13T04:35:49.018Z pavi review.requested
+2026-10-13T04:35:59.991Z opencode/glm-5.3 review.claimed
+2026-10-13T04:39:36.983Z opencode/glm-5.3 review.approved
+2026-10-13T04:39:51.490Z pavi land.review
+2026-10-13T04:39:51.973Z pavi land.lease
+2026-10-13T04:39:52.752Z pavi item.accepted
+2026-10-13T04:39:52.780Z pavi land.accept
