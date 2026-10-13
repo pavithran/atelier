@@ -23,6 +23,7 @@ import {
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
+  assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -89,6 +90,10 @@ export interface FastLanding {
   review: { state: string; request: number | null; by: string | null };
   fix: string | null;
 }
+
+// A build a runner made in fast mode (t589) and reported ready for the
+// owner's batch: the commit atelier fast land takes as tN=SHA.
+export type FastReadyEntry = FastReady & { item: string; title: string; at: string; by: string };
 
 export interface LedgerEvent {
   seq: number;
@@ -2088,7 +2093,8 @@ export class Ledger extends DurableObject<Env> {
   // recorded token is still the one the claim replaces. Of two rotations in
   // flight, only the later reservation can record. Otherwise nothing is
   // written, and the caller revokes the token it minted instead of returning it.
-  recordToken(id: string, actor: string, generation: number, replaces: string | null, tokenId: string): boolean {
+  // A fast take (t589) records null: it mints none, and the one it replaces is gone.
+  recordToken(id: string, actor: string, generation: number, replaces: string | null, tokenId: string | null): boolean {
     const row = this.sql.exec(`SELECT owner, claim_gen, token_id FROM items WHERE id = ?`, id).toArray()[0];
     if (!row || row.owner !== actor || row.claim_gen !== generation || ((row.token_id as string | null) ?? null) !== replaces) return false;
     this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
@@ -4575,6 +4581,56 @@ export class Ledger extends DurableObject<Env> {
   landedFastReceipt(id: string): FastReceipt | null {
     const e = this.events(id, Number.MAX_SAFE_INTEGER).find((x) => x.kind === "item.landed_fast");
     return e ? e.data as unknown as FastReceipt : null;
+  }
+
+  // ── fast builds (t589, src/rules.ts fastBuildRefusal) ──────────────────────
+  // While the project is in fast mode a runner takes a dispatched build
+  // without a fork. The take is a claim in all but the fork and the write
+  // token: the same checks (the dispatch, the role, the standing, the
+  // criteria review, the runner's job), the same holder and generation and
+  // the same item.claimed event, then item.fast_taken. The caller makes no
+  // fork, revokes the token the claim replaces and records none.
+  takeFast(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; generation: number; replaces: string | null } {
+    const item = this.item(id);
+    assertNotTerminal(item);
+    assertFastBuild(this.mode(), item);
+    const { item: taken, generation, replaces } = this.claim(id, actor, runner, proved, runnerToken);
+    this.log(id, actor, "item.fast_taken", { ...(runner ? { runner: runner.runner } : {}), mode: "fast" }, new Date().toISOString(), proved);
+    return { item: taken, generation, replaces };
+  }
+
+  // The holder reports the commit its fast build made. The task stays
+  // claimed by its builder until the owner's batch lands it (landedFast), and
+  // its dispatch is cleared, so no runner is offered the build again; the
+  // dispatch stays in the record as its item.dispatched event.
+  reportFastReady(id: string, actor: string, body: Record<string, unknown>, proved = false): { item: Item; ready: FastReady } {
+    const item = this.item(id);
+    assertNotTerminal(item);
+    const ready = fastReady(body, this.mode(), item, actor);
+    const at = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      this.update(id, { dispatch: null }, at);
+      this.log(id, actor, "item.fast_ready", { ...ready }, at, proved);
+    });
+    return { item: this.item(id), ready };
+  }
+
+  // Every open task's standing fast-build report, oldest first: what atelier
+  // fast status lists as tN=SHA for atelier fast land.
+  fastReadyList(): FastReadyEntry[] {
+    this.project();
+    const kinds = ["item.fast_ready", ...FAST_READY_STALE];
+    const rows = this.sql.exec(`SELECT * FROM events WHERE item_id IN (SELECT DISTINCT item_id FROM events WHERE kind = 'item.fast_ready') AND kind IN (SELECT value FROM json_each(?)) ORDER BY seq`, JSON.stringify(kinds)).toArray().map(eventOf);
+    const byItem = new Map<string, LedgerEvent[]>();
+    for (const e of rows) byItem.set(e.itemId!, [...(byItem.get(e.itemId!) ?? []), e]);
+    const out: FastReadyEntry[] = [];
+    for (const [id, events] of byItem) {
+      const item = this.item(id);
+      if (item.state === "merged" || item.state === "abandoned") continue;
+      const ready = standingFastReady(events);
+      if (ready) out.push({ item: id, title: item.title, ...ready });
+    }
+    return out.sort((a, b) => a.at.localeCompare(b.at));
   }
 
   // ── protected actions (src/actions.ts) ──────────────────────────────────
