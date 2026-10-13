@@ -26,7 +26,7 @@
 // temporary repository with stand-in commands and a stand-in recorder.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
@@ -81,11 +81,29 @@ function shallowOf(cwd) {
 }
 // The worktree, other than `cwd`'s own, that has `ref` checked out, or null.
 // It runs during rollback, so it never throws.
-function worktreeHolding(cwd, ref) {
-  const here = runGit(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
-  for (const block of (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n")) {
+//
+// Entries are told apart by their Git directories, never by working-tree
+// paths (t639): a checkout whose .git is a gitdir file pointing outside the
+// tree (atelier's own, which keeps .git off iCloud) is listed by Git under
+// its repository's path, not its own, so comparing that with cwd's
+// --show-toplevel took cwd's own checkout for another worktree holding main.
+// The first entry is the main worktree, whose Git directory is the common
+// one; a linked worktree's is what rev-parse answers inside it.
+export function worktreeHolding(cwd, ref) {
+  const real = (path) => { try { return realpathSync(path); } catch { return path; } };
+  const gitDirOf = (dir, ...flags) => {
+    const r = runGit(dir, ["rev-parse", ...flags]);
+    return r.status === 0 && r.stdout.trim() ? real(r.stdout.trim()) : null;
+  };
+  const here = gitDirOf(cwd, "--absolute-git-dir");
+  const common = gitDirOf(cwd, "--path-format=absolute", "--git-common-dir");
+  const blocks = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n");
+  for (const [i, block] of blocks.entries()) {
     const path = /^worktree (.+)$/m.exec(block)?.[1];
-    if (path && path !== here && new RegExp(`^branch ${ref}$`, "m").test(block)) return path;
+    if (!path || !new RegExp(`^branch ${ref}$`, "m").test(block)) continue;
+    const gitDir = i === 0 ? common : existsSync(path) ? gitDirOf(path, "--absolute-git-dir") : null;
+    if (here && gitDir === here) continue;
+    return path;
   }
   return null;
 }
