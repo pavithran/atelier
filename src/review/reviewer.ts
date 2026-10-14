@@ -23,7 +23,7 @@
 import { aheadOfAssignments, FALLBACK, orderByAssignment, type Assignment, type AssignmentOutcome } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { exactEntry } from "../models/identity.ts";
-import { offering, type SeenOffer } from "../dispatch/rules.ts";
+import { claimants, offering, type SeenOffer } from "../dispatch/rules.ts";
 import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
@@ -241,8 +241,10 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   const to = input.destination?.(entry) ?? entry.where;
   const reviewOffer = input.offers ? offering({ to, job: "review" }, input.offers) : null;
   if (reviewOffer) {
-    const runners = reviewOffer.actors.get(actor.toLowerCase());
-    if (runners) passed.push(`Offered for the review job by ${[...new Set(runners)].join(", ")}`);
+    // Offered as assign() hands the review job out: the agent and model the
+    // request will name, exactly (claimants in src/dispatch/rules.ts).
+    const runners = claimants({ to, job: "review", agent: entry.harness, model: entry.id }, input.offers ?? []);
+    if (runners?.length) passed.push(`Offered for the review job by ${[...new Set(runners)].join(", ")}`);
     else failed.push(`no live runner offers ${actor} for the review job ${to === "home" ? "at home" : "in the cloud"}: ${reviewOffer.instead.join("; ")}`);
   }
 

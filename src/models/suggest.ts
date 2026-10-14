@@ -5,7 +5,7 @@ import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEv
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
-import { offering, type SeenOffer } from "../dispatch/rules.ts";
+import { claimants, offering, type SeenOffer } from "../dispatch/rules.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
@@ -88,7 +88,7 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     const held = standingRefusal(entry, "build");
     if (held) return held;
     const offered = offeredFor(entry);
-    if (offered && !offered.actors.has(actor.toLowerCase())) return `no live runner offers ${actor} for a build ${entry.where === "home" ? "at home" : "in the cloud"}, so no runner could claim its dispatch`;
+    if (offered && !claimants({ to: entry.where, agent: entry.harness, model: entry.id }, input.offers ?? [])?.length) return `no live runner offers ${actor} for a build ${entry.where === "home" ? "at home" : "in the cloud"}, so no runner could claim its dispatch`;
     if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
     if (strict && !frontier(entry)) return "not frontier";
     if (stalledBuilder(entry, input)) return "two consecutive stalled builds; no successful build since";

@@ -696,6 +696,17 @@ export function describe(d: Dispatch): string {
   return `${where}, ${what}`;
 }
 
+// The live runners that would be handed a dispatch, by assign() itself, so a
+// selector's offer check and the claim it leads to cannot disagree: the job,
+// the destination and the agent and model exactly as the dispatch will name
+// them (gemini-4-argon's and gpt-6-astra's eighteenth reviews of t622). Null
+// when no runner is live, and then nothing is restricted.
+export function claimants(d: OfferAsk & Pick<Dispatch, "agent" | "model">, offers: readonly SeenOffer[], now = new Date()): string[] | null {
+  const live = liveOffers(offers, now);
+  if (!live.length) return null;
+  return live.filter((offer) => assign(d as Dispatch, offer) !== null).map((offer) => offer.runner);
+}
+
 // An offer as the server holds it (putRunnerOffer): what a runner can run
 // and when it last asked for work with that offer.
 export interface SeenOffer extends RunnerOffer {

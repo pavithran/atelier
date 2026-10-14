@@ -781,3 +781,27 @@ test("selectors tell entries whose ids differ only in letter case apart, end to 
     assert.equal(after.assignment?.applied, null, "removed");
   }
 });
+
+// gemini-4-argon's and gpt-6-astra's eighteenth reviews of t622, finding 2:
+// the selectors' offer checks read offered names in any letter case, while
+// assign() hands a dispatch only to a runner offering its agent and model as
+// spelled; the uppercase entry passed the check and could not be claimed.
+// Every offer check now asks assign() itself (claimants).
+test("an offer check agrees with assign(): a runner offering only the lowercase id does not serve the uppercase entry", () => {
+  const lower = entry("codex", "gpt-6-astra", { where: "home" }), upper = entry("codex", "GPT-6-ASTRA", { where: "home" });
+  const pool = [lower, upper, { ...argon, where: "home" as const }];
+  const offers = [{ runner: "home:studio", kind: "home" as const, jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "antigravity", models: ["gemini-4-argon"] }], at: new Date().toISOString() }];
+  const toUpper = (role: AssignmentRole) => ({ ...assigned(role, ["codex/GPT-6-ASTRA"]), choices: [{ actor: "codex/GPT-6-ASTRA", model: "GPT-6-ASTRA" }] });
+  const review = pickReviewer({ item: built, pool, policy, allowPaid: false, assigned: [toUpper("review")], offers });
+  assert.notEqual(review.reviewer?.actor, "codex/GPT-6-ASTRA");
+  said(review.assignment?.lines, /codex\/GPT-6-ASTRA: no live runner offers codex\/GPT-6-ASTRA for the review job/);
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
+  const build = suggestBuilder({ item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner", assignments: [toUpper("build")], offers });
+  assert.notEqual(build.actor, "codex/GPT-6-ASTRA");
+  assert.match(String(tierEligible(pool, offers, "codex/GPT-6-ASTRA")), /no live runner offers codex\/GPT-6-ASTRA/);
+  assert.equal(tierEligible(pool, offers, "codex/gpt-6-astra"), true);
+  const [r] = routeParts(plan(part("a")), { pool, events: [], policy, allowPaid: false, offers, assignments: [toUpper("build")] });
+  assert.notEqual(r.builder?.actor, "codex/GPT-6-ASTRA");
+  const planner = pickPlanner(pool, [], policy, undefined, [{ ...offers[0], jobs: ["plan"] }], [toUpper("plan")]);
+  assert.notEqual(planner.actor, "codex/GPT-6-ASTRA");
+});

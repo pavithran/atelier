@@ -6,7 +6,7 @@
 // `node --test` as phase.ts's are.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { liveOffers, offeredActors, offering, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
+import { claimants, liveOffers, offeredActors, offering, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { standingRefusal } from "../models/pool.ts";
@@ -320,7 +320,7 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     if (held) refusals.push(held);
     if (paidPerToken(entry)) refusals.push(`paid per token (${entry.provider}); name it with --planner to use it`);
     if (offered && !offered.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor}, so no runner could claim the plan job`);
-    else if (planOffer && !planOffer.actors.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor} for the plan job at home: ${planOffer.instead.join("; ")}`);
+    else if (planOffer && !claimants({ ...PLAN_JOB, agent: entry.harness, model: entry.id }, offers ?? [])?.length) refusals.push(`no live runner offers ${actor} for the plan job at home: ${planOffer.instead.join("; ")}`);
     try { assertEligible(actor, policy, DEFAULT_OWNER, "planner"); } catch (err) {
       const rule = parseRuleError(err);
       if (!rule) throw err;

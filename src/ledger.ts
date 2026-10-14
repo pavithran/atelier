@@ -6565,9 +6565,13 @@ export class Ledger extends DurableObject<Env> {
     const slash = chosen.indexOf("/");
     // The entry chosen, as the one check finds it (reviewTarget), so its
     // destination is its own and not another entry's of the same model.
-    // The chosen reviewer may be a name the developer declared, found as main
-    // finds it (sameActor on the pool's ids).
-    const where = records || reviewerAdmission(chosen, policy)?.active ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
+    // A reviewer a selector chose is an exact pool id: the request goes where
+    // that entry runs, profile included. One the developer named is a
+    // declared name: its exact entry when it is one, else the entry main
+    // finds by sameActor (gemini-4-argon's and gpt-6-astra's eighteenth
+    // reviews of t622, finding 1).
+    const chosenEntry = exactEntry(pool, chosen) ?? (reviewer !== null ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen)) : undefined);
+    const where = records || reviewerAdmission(chosen, policy)?.active ? chosenEntry?.where ?? "home" : "home";
     const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
     if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
       throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
