@@ -1059,8 +1059,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 1 && m === "POST") {
       const options = tokenOptions(body, ownerActor(env), Date.now());
       if (options.runner) {
-        const ref = await resolveProject(env, options.projects![0]);
-        if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+        for (const name of options.projects!) {
+          const ref = await resolveProject(env, name);
+          if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+        }
       }
       const token = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
       const hash = await sha256(token);
@@ -1240,10 +1242,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // answered from them in the same call. The claim check reads the
         // same record of the polls, kept current by every poll and
         // heartbeat, so it judges an orphaned claim as the queue does (t540).
-        const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls) : null;
+        const idleRunner = offer && body.why === true ? offer.runner : undefined;
+        const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls, idleRunner) : null;
         // The task refresh's jobs (t462) are offered to a runner that names them.
         const refreshing = !!offer && (offer.jobs ?? []).some((j) => j === "task-refresh" || j === "task-resolve");
-        const [held, { waiting, reviews, busy: projectBusy = [] }, refreshes] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls), refreshing ? L.refreshJobs(offer) : Promise.resolve([])]);
+        const [held, { waiting, reviews, busy: projectBusy = [] }, refreshes] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls, idleRunner), refreshing ? L.refreshJobs(offer) : Promise.resolve([])]);
         for (const b of projectBusy) busy.set(b.runner.toLowerCase(), `${p.name}/${b.id}`);
         // While the project is in fast mode (t589) a plain build is marked
         // fast, and the runner takes it without a fork (fast-take); every
