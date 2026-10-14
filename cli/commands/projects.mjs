@@ -18,12 +18,16 @@ export default async function projectsCommand() {
     let local = `No local config entry was called ${r.from}.`;
     const held = cfg.projects?.[r.from];
     if (held && !cfg.projects[r.to]) {
-      cfg.projects[r.to] = held;
+      // The old name is kept with the entry: a task workspace made before
+      // the rename still names it, and the private-file guard finds the
+      // entry by it (t645).
+      cfg.projects[r.to] = { ...held, formerNames: [...new Set([...(held.formerNames ?? []), r.from])] };
       delete cfg.projects[r.from];
       saveConfig(cfg);
       local = `The local config entry ${r.from} is now ${r.to}.`;
     } else if (held) {
       const settings = Object.entries(held).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
+      cfg.projects[r.to].formerNames = [...new Set([...(cfg.projects[r.to].formerNames ?? []), r.from])];
       delete cfg.projects[r.from];
       saveConfig(cfg);
       local = `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped (it held: ${settings.join(", ")}).`;

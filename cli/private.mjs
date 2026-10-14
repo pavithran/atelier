@@ -173,37 +173,77 @@ export function discoverPrivate(name, entry, { root, save } = {}) {
 // and an in-process name not yet written is still honoured (Astra's fourth
 // review of t645).
 let shared = null;
-export function useConfig(cfg, save) { shared = cfg ? { cfg, save } : null; }
+export function useConfig(cfg) { shared = cfg ? { cfg } : null; }
+
+const configFile = () => join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "config.json");
+
+// The key a project's entry has in `projects`: its name, or the entry that
+// lists the name among its former names (projects rename records them),
+// since a workspace made before a rename still names the old one (Astra's
+// sixth review of t645).
+export function projectKey(projects, name) {
+  if (!projects || typeof name !== "string") return null;
+  if (Object.hasOwn(projects, name)) return name;
+  return Object.keys(projects).find((key) => Array.isArray(projects[key]?.formerNames) && projects[key].formerNames.includes(name)) ?? null;
+}
+
+// Writes one project's private settings to config.json and nothing else:
+// the file is read again, only that entry's private fields are changed, and
+// it is written whole or not at all, so another project's settings, or a
+// name another process just added, are never overwritten by an older copy
+// in memory (Astra's sixth review of t645). `private` keeps every name the
+// file holds unless `drop` names it; the copy of the list is this entry's;
+// a folder already named is kept unless `home` names another (private add
+// --home). An entry the file does not hold is not
+// written. Returns whether it wrote.
+export function savePrivateFields(project, entry, { drop = [], home = null } = {}) {
+  const file = configFile();
+  let cfg;
+  try { cfg = JSON.parse(readFileSync(file, "utf8")); }
+  catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+  const key = projectKey(cfg.projects, project);
+  if (!key || !entry) return false;
+  const target = cfg.projects[key];
+  const names = [...new Set([...plainPaths(target.private), ...plainPaths(entry.private)])].filter((p) => !drop.includes(p));
+  if (Array.isArray(target.private) || Array.isArray(entry.private)) target.private = names;
+  if (Array.isArray(entry.privateFromList)) target.privateFromList = plainPaths(entry.privateFromList).filter((p) => !drop.includes(p));
+  if (home) target.privateHome = home;
+  else if (entry.privateHome && !target.privateHome) target.privateHome = entry.privateHome;
+  const part = `${file}.${process.pid}.part`;
+  writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  try { renameSync(part, file); } catch (error) { rmSync(part, { force: true }); throw error; }
+  return true;
+}
+
 // `pending` stands for the entry of a project this Mac does not register
 // yet (a first init), used only while the config holds none.
 export function privateGuardFor(project, { root, discover = false, pending = null } = {}) {
   if (typeof project !== "string" || !project) throw new Error("the private-file guard needs the project's name");
-  const run = (entry, save) => {
+  const run = (entry) => {
+    let save = entry ? () => savePrivateFields(project, entry) : null;
     if (!entry && pending) { entry = pending; save = null; }
     if (discover) discoverPrivate(project, entry, { root, save });
     return privateGuard(project, entry, { root, save });
   };
-  const dir = process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), file = join(dir, "config.json");
+  const file = configFile();
   let cfg;
   try { cfg = JSON.parse(readFileSync(file, "utf8")); }
   catch (error) {
     if (error?.code !== "ENOENT") return { paths: [PRIVATE_LIST], refusal: `${file} cannot be read (${error?.code ?? error?.message}), so ${project}'s private files cannot be known. Nothing was pushed.` };
     cfg = { projects: {} };
   }
+  const diskKey = projectKey(cfg.projects, project);
   if (shared) {
-    const onDisk = cfg.projects?.[project];
+    const onDisk = diskKey ? cfg.projects[diskKey] : null;
+    shared.cfg.projects ??= {};
+    let memKey = projectKey(shared.cfg.projects, project) ?? diskKey;
     if (onDisk) {
-      shared.cfg.projects ??= {};
-      const entry = shared.cfg.projects[project] ??= { ...onDisk };
+      const entry = shared.cfg.projects[memKey] ??= { ...onDisk };
       joinPrivate(entry, onDisk);
     }
-    return run(shared.cfg.projects?.[project], shared.save);
+    return run(memKey ? shared.cfg.projects[memKey] : undefined);
   }
-  return run(cfg.projects?.[project], () => {
-    const part = `${file}.${process.pid}.part`;
-    writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
-    renameSync(part, file);
-  });
+  return run(diskKey ? cfg.projects[diskKey] : undefined);
 }
 
 // Joins the private settings of `other` (the entry on disk) into `entry`:

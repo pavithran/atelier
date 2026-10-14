@@ -458,7 +458,7 @@ export const args = parseArgs(process.argv.slice(2));
 export const cfg = isMain ? loadConfig() : {};
 // The private-file guard reads and keeps its copy of the list in this same
 // config (t645), so what it saves is not lost to a later saveConfig.
-if (isMain) useConfig(cfg, () => saveConfig(cfg));
+if (isMain) useConfig(cfg);
 
 // The server says which actor stands for the project owner; `login` records it.
 export const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";

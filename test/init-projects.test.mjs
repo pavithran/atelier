@@ -124,7 +124,8 @@ test("CLI rename asks the server, then moves the local config entry to the new n
   assert.equal(calls()[0].url, "https://atelier.test/api/projects/weblog/rename");
   assert.equal(calls()[0].method, "POST");
   assert.deepEqual(JSON.parse(calls()[0].body), { to: "ikon" });
-  assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  // The old name stays with the entry, for workspaces made before (t645).
+  assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog, formerNames: ["weblog"] } });
   assert.match(renamed.stdout, /weblog is now ikon on https:\/\/atelier\.test\. Its Ledger, baseline weblog and every fork stay where they are\. The local config entry weblog is now ikon\./);
   assert.match(renamed.stdout, /weblog still works/);
 }));
@@ -148,7 +149,7 @@ test("CLI rename keeps an entry already under the new name and says what the dro
   writeFileSync(join(initial.projects.weblog.path, "config.json"), JSON.stringify(both));
   const renamed = command(["projects", "rename", "weblog", "ikon"]);
   assert.equal(renamed.status, 0, renamed.stderr);
-  assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog, formerNames: ["weblog"] } });
   assert.match(renamed.stdout, /already had an entry ikon, which is kept; the entry weblog was dropped \(it held: path \/elsewhere, branch old, notesRemote origin\)/);
 }));
 
