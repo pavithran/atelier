@@ -40,10 +40,6 @@ export default async function fastCommand() {
   const gitDir = landingGit(["rev-parse", "--absolute-git-dir"], { cwd });
   const behind = behindRefusal(landingGit, cwd, { gitDir, name, fresh: cfg.projects?.[name]?.fresh === true, branch: "main", baselineHead, nothing: "Nothing was merged.", command: `atelier fast land ${rest.join(" ")} --project ${name}` });
   if (behind) die(behind);
-  // The typecheck and tests from the checkout's own scripts, or a refusal
-  // naming the flag, before anything merges (t667).
-  const commands = fastCommands(cwd, { typecheck: args.typecheck, test: args.test });
-  if (commands.refusal) die(`fast land: ${commands.refusal}`);
   const titles = {};
   for (const { id } of pairs) {
     const item = await call("GET", I(name, id), undefined, OWNER);
@@ -51,6 +47,10 @@ export default async function fastCommand() {
     if (["merged", "abandoned"].includes(it.state)) die(`${id} is ${it.state}`);
     titles[id] = it.title;
   }
+  // The typecheck and tests from the checkout's own scripts, or a refusal
+  // naming the flag, before anything merges (t667).
+  const commands = fastCommands(cwd, { typecheck: args.typecheck, test: args.test });
+  if (commands.refusal) die(`fast land: ${commands.refusal}`);
   // The default test runs in a temporary clean clone of the batch's head
   // (t588); a --test the owner gives runs in the checkout, where it says.
   const result = await fastLand({
