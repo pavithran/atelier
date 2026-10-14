@@ -215,9 +215,11 @@ test("a gated landing's merge line is unchanged; a merge with no recorded baseli
   const gated = "2026-10-07 21:28 UTC  merged by pavi: bbbbbbbb accepted, merge commit 5af22431 on the baseline";
   assert.equal(line({ mergeCommit: M, head: B, observedOnBaseline: true }), gated);
   assert.equal(receiptText("atelier", "t1", detail()).split("\n").at(-1), gated);
-  for (const data of [{ mergeCommit: M, head: B, via: "t0" }, { mergeCommit: M, head: B }]) {
-    assert.equal(line(data), "2026-10-07 21:28 UTC  merged by pavi: bbbbbbbb accepted, merge commit 5af22431");
-  }
+  assert.equal(line({ mergeCommit: M, head: B }), "2026-10-07 21:28 UTC  merged by pavi: bbbbbbbb accepted, merge commit 5af22431");
+  // A plan's part took no acceptance (integratePart): its line says only
+  // what the event records, the integration and the plan it landed through.
+  assert.equal(line({ mergeCommit: M, head: B, via: "t0" }), "2026-10-07 21:28 UTC  merged by pavi through plan t0: bbbbbbbb integrated onto the plan's branch, no acceptance recorded on the part; merge commit 5af22431");
+  assert.match(line({ mergeCommit: M, via: "t0" }), /through plan t0: integrated onto the plan's branch, no acceptance recorded on the part; merge commit 5af22431$/);
 });
 
 test("the receipt as JSON carries the item's events in the ledger's order, whole", () => {

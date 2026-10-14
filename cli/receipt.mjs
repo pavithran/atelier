@@ -165,6 +165,10 @@ function linesFor(e, verdicts, used, owner, events) {
       // A merge recorded after the fact (t653) is told by its item.merge_recorded line.
       if (d.outside === true) return null;
       const fast = d.fast === true || events.some((x) => x.kind === "item.landed_fast" && x.data?.mergeCommit === d.mergeCommit && (x.seq ?? 0) <= (e.seq ?? 0));
+      // A plan's part was integrated onto the plan's branch and never took an
+      // acceptance of its own; its event records the integrated head and the
+      // plan it landed through, and the line says only that.
+      if (typeof d.via === "string" && d.via) return [`merged by ${flat(e.actor)} through plan ${flat(d.via)}: ${d.head ? `${short(d.head)} integrated onto the plan's branch` : "integrated onto the plan's branch"}, no acceptance recorded on the part; merge commit ${short(d.mergeCommit)}`];
       if (!fast) return [`merged by ${flat(e.actor)}: ${short(d.head)} accepted, merge commit ${short(d.mergeCommit)}${d.observedOnBaseline === true ? " on the baseline" : ""}`];
       const after = events.filter((x) => (x.seq ?? 0) > (e.seq ?? 0));
       const reviewed = after.some((x) => x.kind === "review.approved" || x.kind === "review.rejected");
