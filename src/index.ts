@@ -37,7 +37,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
 import { buildPulse, PULSE_DAYS, pulseFromCounts } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
@@ -1450,8 +1450,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const parsedOffer = m === "POST" ? runnerOffer(body) : null;
-    const offer = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
-    if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
+    const asked = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
+    if (c.token?.runner && (!asked || asked.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -1461,7 +1461,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // letting it wait as though merely unclaimed, and plan routing picks from
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
-    const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    const projects = (await index(env).askQueue(asked, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    // The offer names each project its token serves by its current name too,
+    // as askQueue records it, so a project renamed since the token was
+    // issued reads the runner as serving it (servesProject, t652).
+    const offer = asked?.projects ? { ...asked, projects: [...new Set([...asked.projects, ...projects.map((p) => p.name)])] } : asked;
     // Every runner's last poll, this one's included, goes to each project,
     // where a claim whose runner stopped polling holds no other dispatch
     // (t537, orphanedBy in src/dispatch/rules.ts).
@@ -2386,7 +2390,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
         // The suggestion is checked against runners' offers for the job this
         // dispatch will carry, a plain build unless it names another.
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers }, { to: body.to, model: body.model, job: body.job ?? "build" });
+        // Read for this project (offersFor, t652): a model only a runner
+        // scoped to another project offers is not suggested here.
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -2538,7 +2544,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a run skip names its runner in X-Atelier-Runner", 400);
       const kind = body.kind;
-      if (kind !== "failures" && kind !== "infrastructure" && kind !== "skipped") throw new RuleError("bad_kind", "a run skip's kind is failures, infrastructure or skipped", 400);
+      if (!isRunSkipKind(kind)) throw new RuleError("bad_kind", `a run skip's kind is ${RUN_SKIP_KINDS.join(", ")}`, 400);
       const failures = body.failures;
       if (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1 || failures > 1000) throw new RuleError("bad_failures", "a run skip names how many failures it gave up after", 400);
       // Under a runner token the job's actor is the caller, checked at the gateway.
