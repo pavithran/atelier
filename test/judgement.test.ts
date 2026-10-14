@@ -49,13 +49,14 @@ test("the acting model is the owner token's to name, and must be a harness/model
   }
 });
 
-test("the declared acting model must name a model in the pool, and is kept as declared", () => {
+test("the declared acting model must name a model in the pool, and is recorded as that entry's exact id", () => {
   const pool = [
     { id: "opus-5.5", harness: "claude-code" as const, aliases: ["claude-opus-5-5"] },
     { id: "gpt-6-astra", harness: "codex" as const, aliases: [] },
   ];
   assert.equal(registeredActing(OPUS, pool), OPUS);
-  assert.equal(registeredActing("claude-code/Claude-Opus-5-5", pool), "claude-code/Claude-Opus-5-5", "an alias, in any case, is the same model, kept as typed");
+  // Converted where typed (gpt-6-astra's and gemini-4-argon's eighth reviews of t622).
+  assert.equal(registeredActing("claude-code/Claude-Opus-5-5", pool), OPUS, "an alias, in any case, is converted to the entry's id");
   assert.equal(registeredActing(GPT, pool), GPT);
   // Well formed but not registered: another model, or a registered model in another harness.
   for (const bad of [GLM, "codex/opus-5.5", "claude-code/opus-9"]) refusal(() => registeredActing(bad, pool), "unregistered_acting", 400, /not a model in the pool/);
@@ -179,8 +180,9 @@ test("a model declared under a registered alias is its canonical model: one row,
     { id: "opus-5.5", harness: "claude-code" as const, aliases: [] },
   ];
   const ALIAS = "codex/judge-local-alias";
-  assert.equal(registeredActing(ALIAS, pool), ALIAS, "the alias is accepted and kept as declared");
-  // Alias then canonical, agreeing: the same model saying it again, so neither is upheld.
+  assert.equal(registeredActing(ALIAS, pool), GPT, "the alias is accepted and converted to the entry's id where typed");
+  // Events recorded before that conversion may hold the alias: they are read
+  // as the entry (storedActor in canonicalModel). Alias then canonical, agreeing: the same model saying it again, so neither is upheld.
   const same = buildJudgement([{ project: "atelier", events: [verdict(1, "refuted", ALIAS), verdict(2, "refuted", GPT, { at: LATER })] }], WINDOW, OWNER, pool);
   assert.equal(same.models.length, 1, "alias and id are one row");
   const r = row(same, "gpt-6-astra");
@@ -287,6 +289,6 @@ test("registeredActing refuses a name two pool entries answer to, and accepts an
   const pool = [e("codex", "gpt-6-astra", ["shared"]), e("codex", "gpt-6-luna", ["shared", "gpt-6-astra"])];
   assert.throws(() => registeredActing("codex/shared", pool), (err: Error & { code?: string }) => err.code === "ambiguous_acting" && /codex\/gpt-6-astra and codex\/gpt-6-luna/.test(err.message));
   assert.equal(registeredActing("codex/gpt-6-astra", pool), "codex/gpt-6-astra");
-  assert.equal(registeredActing("codex/GPT-6-Luna", pool), "codex/GPT-6-Luna");
+  assert.equal(registeredActing("codex/GPT-6-Luna", pool), "codex/gpt-6-luna");
   assert.throws(() => registeredActing("codex/gpt-7", pool), /not a model in the pool/);
 });

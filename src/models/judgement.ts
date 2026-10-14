@@ -45,7 +45,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { modelKey, RuleError, sameActor, validActor } from "../rules.ts";
-import { poolEntryFor, type ModelEntry } from "./pool.ts";
+import { entryNamed, storedActor, type ModelEntry } from "./pool.ts";
 import { SERVED } from "./served.ts";
 
 export const ACTING_HEADER = "x-atelier-acting";
@@ -70,39 +70,37 @@ export function cleanActing(header: string | null, owner: string, agentToken: bo
   return acting;
 }
 
-// The declared acting model must name one model registered in the owner's
-// pool, by its harness and its id or an alias (sameActor: letter case and a
-// ":profile" suffix make no other model). An entry's exact id names it;
-// otherwise a name two entries answer to is ambiguous and refused, as an
-// ambiguous assignment choice is (resolveChoices), so attribution never
-// depends on the pool's order (gpt-6-astra's sixth review of t622, finding
-// 1). It is kept as declared.
+// The declared acting model (--as) is a name a person types, so it is
+// converted here, where it enters, to the exact pool entry it names: by its
+// id, or the one entry listing it as an alias (entryNamed), or the one entry
+// whose id is the same model in its harness (a ":profile" or letter case).
+// Two entries answering to it are ambiguous and refused, as an ambiguous
+// assignment choice is (gpt-6-astra's sixth review of t622, finding 1); a
+// name no entry answers to is refused. What is recorded is the entry's
+// exact harness/id (the eighth review's rule, src/models/pool.ts).
 export function registeredActing(acting: string, pool: PoolNames): string {
-  if (pool.some((m) => `${m.harness}/${m.id}`.toLowerCase() === acting.toLowerCase())) return acting;
-  const found = pool.filter((m) => [m.id, ...m.aliases].some((id) => sameActor(acting, `${m.harness}/${id}`)));
-  if (found.length === 1) return acting;
+  let named;
+  try { named = entryNamed(pool, acting); } catch (err) {
+    if (err instanceof RuleError) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}: ${err.detail}`, 400);
+    throw err;
+  }
+  if (named) return `${named.harness}/${named.id}`;
+  const found = pool.filter((m) => sameActor(acting, `${m.harness}/${m.id}`));
   if (found.length > 1) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which the pool has under ${found.map((m) => `${m.harness}/${m.id}`).join(" and ")}; name one by its id`, 400);
+  if (found.length === 1) return `${found[0].harness}/${found[0].id}`;
   throw new RuleError("unregistered_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which is not a model in the pool; add it on the Models page, or name the harness/model you are`, 400);
 }
 
-// The model an acting name counts as: the registered pool entry it names, by
-// its id or one of its aliases, so a model declared under an alias the owner
-// registered is the same model as under its id, in one row and never another
-// hand agreeing with itself. The entry in the declared harness is preferred;
-// a name no entry knows is read by modelKey alone. The declared name is kept
-// in the row's actors; only counting and agreement use this.
+// The model an acting name counts as, by modelKey of the exact entry it is.
+// Acting names are recorded as exact ids since they are converted where
+// typed; one on an event from before may hold an alias, converted once here
+// by storedActor. The declared name is kept in the row's actors; only
+// counting and agreement use this.
 export type PoolNames = readonly Pick<ModelEntry, "id" | "harness" | "aliases">[];
 
 export function canonicalModel(acting: string, pool: PoolNames): string {
-  const names = (m: PoolNames[number]) => [m.id, ...m.aliases];
-  const entry = poolEntryFor(acting, pool)
-    ?? pool.find((m) => names(m).some((id) => modelKey(`${m.harness}/${id}`) === modelKey(acting)));
-  return entry ? modelKey(`${entry.harness}/${entry.id}`) : modelKey(acting);
+  return modelKey(storedActor(pool, acting));
 }
-
-// poolEntryFor lives beside the pool (src/models/pool.ts), with the one
-// eligibility check that reads it.
-export { poolEntryFor };
 
 // The acting model an event records, or null: unknown for an event recorded
 // before t440, without a name, or with a field that is not a model's name.

@@ -329,7 +329,7 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     return refusals;
   };
   const rows = ranked.map((candidate, i) => ({ candidate, i, entry: entries.get(candidate.actor!)!, refusals: refusalsOf(entries.get(candidate.actor!)!) }));
-  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), applicableAssignments(assignments, null, ["plan"]), (r) => (r.refusals.length ? r.refusals.join("; ") : null), FALLBACK.plan, pool);
+  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), applicableAssignments(assignments, null, ["plan"]), (r) => (r.refusals.length ? r.refusals.join("; ") : null), FALLBACK.plan);
   for (const row of byAssignment.order) {
     const { candidate, i, entry, refusals } = row;
     const actor = actorOf(entry);

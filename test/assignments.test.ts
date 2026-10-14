@@ -5,7 +5,7 @@ import {
   assignmentSnapshot, choiceMatches, FALLBACK, isRetryOf, isWithdrawalRetry, orderByAssignment, seedProject, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
   type Assignment, type AssignmentRecord, type AssignmentStore, type ResolvedAssignment,
 } from "../src/models/assignments.ts";
-import type { ModelEntry } from "../src/models/pool.ts";
+import { typedActor, type ModelEntry } from "../src/models/pool.ts";
 
 // Role assignments (t622, src/models/assignments.ts): the developer's dated
 // judgements of which model does what, with evidence, kept as immutable
@@ -93,7 +93,7 @@ test("an exact pool id wins over another entry's alias, in the choice and in its
   const [luna] = resolveChoices(["codex/gpt-6-luna"], pool, "review");
   assert.deepEqual(luna, { actor: "codex/gpt-6-luna", model: "gpt-6-luna" });
   const a: Assignment = { id: "a1", kind: "assigned", scope: ALL_PROJECTS, role: "review", choices: [luna], reason: "r", quote: "q", evidence: [], by: OWNER, at: AT };
-  const r = orderByAssignment(["codex/gpt-6-astra", "codex/gpt-6-luna"], (c) => c, [a], () => null, FALLBACK.review, pool);
+  const r = orderByAssignment(["codex/gpt-6-astra", "codex/gpt-6-luna"], (c) => c, [a], () => null, FALLBACK.review);
   assert.deepEqual(r.order, ["codex/gpt-6-luna", "codex/gpt-6-astra"]);
 });
 
@@ -257,7 +257,7 @@ test("after its project is renamed and its model removed, an assignment keeps it
   // Routing in the renamed project reads it by its key, and passes over the removed choice to the fallback.
   const bearing = applicableAssignments(currentAssignments(store.records()), "k1", ["review"]);
   assert.deepEqual(bearing.map((a) => a.id), [view.id]);
-  const r = orderByAssignment(pool.map((e) => `${e.harness}/${e.id}`), (c) => c, bearing, () => null, FALLBACK.review, pool);
+  const r = orderByAssignment(pool.map((e) => `${e.harness}/${e.id}`), (c) => c, bearing, () => null, FALLBACK.review);
   assert.equal(r.outcome.applied, null);
   assert.match(r.outcome.skipped[0].why, /antigravity\/gemini-4-argon: not a candidate here/);
   assert.match(r.outcome.lines.join("\n"), /No role assignment applies, so the reviewer selector/);
@@ -279,7 +279,7 @@ test("orderByAssignment moves only eligible choices first, in its order; with no
   const a1 = recordAssignment(store, OWNER, input({ role: "review", choices: resolveChoices(["antigravity/gemini-4-argon", "codex/gpt-6-astra"], POOL, "review") }), AT);
   const candidates = ["zcode/glm-5.3", "codex/gpt-6-astra", "antigravity/gemini-4-argon"];
   const held = new Set(["antigravity/gemini-4-argon"]);
-  const r = orderByAssignment(candidates, (c) => c, [a1], (c) => (held.has(c) ? "paused since 2026-10-13 (the developer's standing)" : null), FALLBACK.review, POOL);
+  const r = orderByAssignment(candidates, (c) => c, [a1], (c) => (held.has(c) ? "paused since 2026-10-13 (the developer's standing)" : null), FALLBACK.review);
   // Argon is paused: it is not moved, and astra, the next choice, goes first.
   assert.deepEqual(r.order, ["codex/gpt-6-astra", "zcode/glm-5.3", "antigravity/gemini-4-argon"]);
   assert.equal(r.outcome.applied, "a1");
@@ -288,7 +288,7 @@ test("orderByAssignment moves only eligible choices first, in its order; with no
   assert.match(r.promoted("codex/gpt-6-astra")!, /choice 2 of 2 for review/);
   assert.equal(r.promoted("zcode/glm-5.3"), null);
   // Every choice ineligible: the order is untouched and the fallback is named.
-  const none = orderByAssignment(candidates, (c) => c, [a1], (c) => (c === "zcode/glm-5.3" ? null : "same family as the builder"), FALLBACK.review, POOL);
+  const none = orderByAssignment(candidates, (c) => c, [a1], (c) => (c === "zcode/glm-5.3" ? null : "same family as the builder"), FALLBACK.review);
   assert.deepEqual(none.order, candidates);
   assert.equal(none.outcome.applied, null);
   assert.deepEqual(none.outcome.skipped.map((s) => s.id), ["a1"]);
@@ -297,11 +297,18 @@ test("orderByAssignment moves only eligible choices first, in its order; with no
   assert.deepEqual(orderByAssignment(candidates, (c) => c, [], () => null, FALLBACK.review).outcome.lines, []);
 });
 
-test("a candidate under an alias or another letter case is the choice; the same model under another harness is not", () => {
+// gpt-6-astra's and gemini-4-argon's eighth reviews of t622: readers no
+// longer read aliases. A name typed under an alias is converted where it
+// enters (typedActor), and the reader matches the exact id it became.
+test("a candidate is the choice by its exact id, an alias converted where typed; the same model under another harness is not", () => {
   const store = memoryStore();
   const a1 = recordAssignment(store, OWNER, input({ role: "build", choices: resolveChoices(["claude-code/opus-5.5"], POOL, "build") }), AT);
-  const r = orderByAssignment(["antigravity/claude-opus-5.5", "claude-code/Claude-Opus-5-5"], (c) => c, [a1], () => null, FALLBACK.build, POOL);
-  assert.deepEqual(r.order, ["claude-code/Claude-Opus-5-5", "antigravity/claude-opus-5.5"]);
+  const typed = typedActor(POOL, "claude-code/Claude-Opus-5-5");
+  assert.equal(typed, "claude-code/opus-5.5");
+  const r = orderByAssignment(["antigravity/claude-opus-5.5", typed], (c) => c, [a1], () => null, FALLBACK.build);
+  assert.deepEqual(r.order, ["claude-code/opus-5.5", "antigravity/claude-opus-5.5"]);
+  // The alias itself, reaching a reader unconverted, is no choice.
+  assert.equal(choiceMatches(a1.choices[0], "claude-code/claude-opus-5-5"), false);
 });
 
 // gemini-4-argon's third review of t622, finding 2: two entries in one
@@ -312,17 +319,17 @@ test("an assignment naming one of two entries that share a model in a harness pr
   const [chosen] = resolveChoices(["claude-code/claude-opus-5-5"], twin, "build");
   assert.equal(chosen.actor, "claude-code/claude-opus-5-5");
   const a: Assignment = { id: "a1", kind: "assigned", scope: ALL_PROJECTS, role: "build", choices: [chosen], reason: "r", quote: "q", evidence: [], by: OWNER, at: AT };
-  assert.deepEqual(orderByAssignment(["claude-code/opus-5.5", "claude-code/claude-opus-5-5"], (c) => c, [a], () => null, FALLBACK.build, twin).order, ["claude-code/claude-opus-5-5", "claude-code/opus-5.5"]);
+  assert.deepEqual(orderByAssignment(["claude-code/opus-5.5", "claude-code/claude-opus-5-5"], (c) => c, [a], () => null, FALLBACK.build).order, ["claude-code/claude-opus-5-5", "claude-code/opus-5.5"]);
   // The one named is paused: the other entry is not moved in its place.
-  const held = orderByAssignment(["claude-code/opus-5.5", "claude-code/claude-opus-5-5"], (c) => c, [a], (c) => (c === "claude-code/claude-opus-5-5" ? "paused" : null), FALLBACK.build, twin);
+  const held = orderByAssignment(["claude-code/opus-5.5", "claude-code/claude-opus-5-5"], (c) => c, [a], (c) => (c === "claude-code/claude-opus-5-5" ? "paused" : null), FALLBACK.build);
   assert.equal(held.outcome.applied, null);
   // Two profiles of one model are two entries too.
   const profiles = [entry("opencode", "qwen-3:32b"), entry("opencode", "qwen-3:72b")];
   const [big] = resolveChoices(["opencode/qwen-3:72b"], profiles, "build");
   const b: Assignment = { ...a, choices: [big] };
-  assert.deepEqual(orderByAssignment(["opencode/qwen-3:32b", "opencode/qwen-3:72b"], (c) => c, [b], () => null, FALLBACK.build, profiles).order, ["opencode/qwen-3:72b", "opencode/qwen-3:32b"]);
+  assert.deepEqual(orderByAssignment(["opencode/qwen-3:32b", "opencode/qwen-3:72b"], (c) => c, [b], () => null, FALLBACK.build).order, ["opencode/qwen-3:72b", "opencode/qwen-3:32b"]);
   // An alias of the named entry is still that entry.
-  assert.equal(choiceMatches(chosen, "claude-code/Claude-Opus-5-5", twin), true);
+  assert.equal(choiceMatches(chosen, "claude-code/Claude-Opus-5-5"), true);
 });
 
 // gpt-6-astra's third review of t622, finding 4: a retry was validated

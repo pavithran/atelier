@@ -82,8 +82,7 @@
 
 import { DECISION_NOTE_MAX, DECISION_QUOTE_MAX, DECISION_TEXT_MAX, line } from "../decisions.ts";
 import { RuleError, sameActor } from "../rules.ts";
-import { canonicalModel, type PoolNames } from "./judgement.ts";
-import { poolEntryFor, recordedEntry } from "./pool.ts";
+import { canonicalModel } from "./judgement.ts";
 import { entryRuns, standingRefusal, type ModelEntry, type ModelRole } from "./pool.ts";
 
 export const ASSIGNMENT_ROLES = ["build", "review", "security-review", "claims-review", "plan"] as const;
@@ -485,28 +484,16 @@ export function applicableAssignments(current: readonly Assignment[], project: s
   ]);
 }
 
-// Whether a candidate actor is an assignment's choice. When the pool has
-// both, they match only as the same pool entry (poolEntryFor), so the entry
-// the developer named is the one promoted: two entries in one harness that
-// share a model, such as two profiles of it, are two candidates
-// (gemini-4-argon's third review of t622, finding 2). Otherwise, as for a
-// choice the pool has since lost, the same harness and the same model.
-//
-// A choice is the entry recorded, by its exact harness/id. When the pool is
-// known and no longer has that entry, the choice matches nothing: the model
-// was removed, so its assignment stops applying, and never passes to an
-// entry that now lists its id as an alias or runs the same model
-// (gpt-6-astra's fifth review of t622, finding 2). With no pool given, the
-// same harness and the same model match.
-export function choiceMatches(choice: AssignmentChoice, actor: string, pool: PoolNames = []): boolean {
-  if (pool.length) {
-    const chosen = recordedEntry(choice.actor, pool);
-    return chosen !== undefined && poolEntryFor(actor, pool) === chosen;
-  }
-  if (choice.actor.toLowerCase() === actor.toLowerCase()) return true;
-  if (sameActor(choice.actor, actor)) return true;
-  const harness = (a: string) => a.slice(0, Math.max(0, a.indexOf("/"))).toLowerCase();
-  return harness(choice.actor) === harness(actor) && canonicalModel(actor, pool) === choice.model;
+// Whether a candidate actor is an assignment's choice: the exact
+// harness/id recorded, by plain equality in any letter case. Candidates are
+// exact ids too, every name a person types being converted to one where it
+// enters (src/models/pool.ts, identity), so two entries that share a model
+// are two candidates, and a choice whose entry has left the pool matches
+// nothing: its assignment stops applying and never passes to an entry that
+// lists its id as an alias (gpt-6-astra's and gemini-4-argon's reviews of
+// t622, rounds three to eight).
+export function choiceMatches(choice: AssignmentChoice, actor: string): boolean {
+  return choice.actor.toLowerCase() === actor.toLowerCase();
 }
 
 export interface AssignmentOutcome {
@@ -533,17 +520,24 @@ export const assignmentLabel = (a: Assignment, names?: ReadonlyMap<string, strin
 // over as before. The first assignment in `assigned` (most specific first,
 // applicableAssignments) with an eligible choice among the candidates is
 // applied; earlier ones are skipped as having none, later ones as outranked.
-export function orderByAssignment<T>(candidates: readonly T[], actorOf: (c: T) => string, assigned: readonly Assignment[], refusal: (c: T) => string | null, fallback: string, pool: PoolNames = []): AssignmentOrder<T> {
+//
+// `explicit` names an explicit choice for this one job that comes before
+// every assignment (the developer's --model, a plan's prefer, the previous
+// round's reviewer): the candidates keep their order, and each assignment is
+// named as skipped for it, here, so the order and its explanation come from
+// one place (gemini-4-argon's and gpt-6-astra's eighth reviews of t622).
+export function orderByAssignment<T>(candidates: readonly T[], actorOf: (c: T) => string, assigned: readonly Assignment[], refusal: (c: T) => string | null, fallback: string, explicit: string | null = null): AssignmentOrder<T> {
+  if (explicit !== null) {
+    const outcome = aheadOfAssignments(assigned, explicit);
+    return { order: [...candidates], outcome, promoted: () => null, reasons: () => outcome.lines };
+  }
   const skipped: { id: string; why: string }[] = [];
   const lines: string[] = [];
   for (const [i, a] of assigned.entries()) {
     const firsts: { c: T; k: number }[] = [];
     const missed: string[] = [];
     a.choices.forEach((choice, k) => {
-      // The candidate named exactly as the choice first, then any other name
-      // of its pool entry.
-      const exact = (c: T) => actorOf(c).toLowerCase() === choice.actor.toLowerCase();
-      const matches = candidates.filter((c) => choiceMatches(choice, actorOf(c), pool)).sort((x, y) => Number(exact(y)) - Number(exact(x)));
+      const matches = candidates.filter((c) => choiceMatches(choice, actorOf(c)));
       const ok = matches.find((c) => refusal(c) === null);
       if (ok !== undefined && !firsts.some((f) => f.c === ok)) firsts.push({ c: ok, k });
       else if (ok === undefined) missed.push(`${choice.actor}: ${matches.length ? refusal(matches[0]) : "not a candidate here (not in the pool, or not offered for this job)"}`);

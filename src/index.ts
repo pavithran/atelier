@@ -20,7 +20,7 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_M
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, typedActor, typedModel, type ModelEntry, type PoolFamily } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
@@ -1499,6 +1499,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // (settleCommitIdentity), so an invalid one is refused before anything is made.
       ...(IDENTITY_FIELDS.some(has) ? { commitIdentity: Object.fromEntries(IDENTITY_FIELDS.filter(has).map((k) => [k, body[k]])) } : {}),
     };
+    // The review tier is text the developer typed: each name is converted
+    // here, where it enters, to the pool entry it names (an alias to the
+    // entry's id; an ambiguous one refused), so the policy holds exact ids
+    // (src/models/pool.ts, identity). A name the pool lacks is kept: a tier
+    // may name a model outside the pool.
+    if (init.reviewTier?.length) {
+      const pool = await index(env).models();
+      init.reviewTier = [...new Set(init.reviewTier.map((a) => typedActor(pool, a)))];
+    }
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
     mergeProject(await L.project().catch(() => null), init, new Date().toISOString());
@@ -2128,6 +2137,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           if (body.agent || body.model) await L.poolChanged(await index(env).models());
           return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }));
         }
+      }
+      // The builder the developer types is converted here, where it enters,
+      // to the exact pool entry it names: --agent with --model to that
+      // entry's harness/id, a bare --model to an entry's id (an alias of one
+      // entry to its id; an ambiguous one refused). Every reader after this
+      // matches exact ids (src/models/pool.ts, identity).
+      if (typeof body.model === "string" && body.model && (typeof body.agent === "string" || body.suggest === true)) {
+        const pool = await index(env).models();
+        if (typeof body.agent === "string" && body.agent) {
+          const exact = typedActor(pool, `${body.agent}/${body.model}`);
+          body.model = exact.slice(exact.indexOf("/") + 1);
+        } else body.model = typedModel(pool, body.model);
       }
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch

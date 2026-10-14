@@ -31,8 +31,8 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
-import { aheadOfAssignments, applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
-import { actorStanding, familyOf, paidPerToken, poolEntryFor, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
+import { actorStanding, familyOf, exactEntry, paidPerToken, standingRefusal, storedActor, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -445,10 +445,11 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   let builder: Verdict | undefined;
   if (part.prefer) {
     const { actor, reason } = part.prefer;
-    // A name the plan writes, read as the entry it names (poolEntryFor): an
-    // exact id before another entry's alias (gemini-4-argon's fifth review
-    // of t622, follow-up 4).
-    const named = poolEntryFor(actor, ctx.input.pool);
+    // The prefer is a name the planner wrote in the plan document, kept as
+    // written: it is read once here by storedActor (an entry's exact id, else
+    // the one entry listing it as an alias), then matched exactly
+    // (src/models/pool.ts, identity).
+    const named = exactEntry(ctx.input.pool, storedActor(ctx.input.pool, actor));
     const wanted = named ? verdicts.find((v) => ctx.entries.get(v.actor) === named) : undefined;
     if (!wanted) lead.push(`The plan preferred ${actor} (${reason}); it is not in the pool`);
     else if (wanted.build.length) lead.push(`The plan preferred ${wanted.actor} (${reason}); not chosen: ${wanted.build.join("; ")}`);
@@ -462,16 +463,12 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const assignments = ctx.input.assignments ?? [];
   // Every verdict is a candidate, with the rules it failed as its refusal,
   // so an assigned model that may not build is passed over with its reason.
-  const buildOrder = assignments.length ? orderByAssignment([...able, ...verdicts.filter((v) => v.build.length)], (v) => v.actor, applicableAssignments(assignments, null, ["build"]), (v) => (v.build.length ? v.build.join("; ") : null), FALLBACK.build, ctx.input.pool) : null;
-  // The reasons always say what became of the build assignments: with the
-  // plan's preference chosen, each is skipped as coming after it, as
-  // pickReviewer says of the previous round's reviewer (gpt-6-astra's sixth
-  // review of t622, finding 2); otherwise the one applied, or those skipped
-  // and the fallback.
-  const bearing = applicableAssignments(assignments, null, ["build"]);
-  if (builder && bearing.length) {
-    lead.push(...aheadOfAssignments(bearing, "the plan's preference").lines);
-  } else if (!builder && buildOrder?.outcome.applied) {
+  // With the plan's preference chosen, no assignment reorders anything, and
+  // the same call names each as skipped for it (orderByAssignment's
+  // explicit); otherwise the one applied, or those skipped and the fallback.
+  const buildOrder = assignments.length ? orderByAssignment([...able, ...verdicts.filter((v) => v.build.length)], (v) => v.actor, applicableAssignments(assignments, null, ["build"]), (v) => (v.build.length ? v.build.join("; ") : null), FALLBACK.build, builder ? "the plan's preference" : null) : null;
+  if (builder && buildOrder) lead.push(...buildOrder.outcome.lines);
+  else if (!builder && buildOrder?.outcome.applied) {
     builder = buildOrder.order[0];
     lead.push(...buildOrder.reasons(builder));
   } else if (!builder && buildOrder) lead.push(...buildOrder.outcome.lines);
@@ -508,7 +505,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const roles = reviewRoles({ sensitive: sensitiveText([part.title, part.brief, ...part.scope]), docs: part.kind === "docs" || part.taskKind === "docs" });
   const reviewRefusal = (v: Verdict) => (v.review.length ? v.review.join("; ")
     : independent(v) ? null : single ? "the same model as the builder" : `same family as the builder (${v.family})`);
-  const reviewOrder = assignments.length ? orderByAssignment([...reviewers, ...others.filter((v) => !reviewers.includes(v))], (v) => v.actor, applicableAssignments(assignments, null, roles), reviewRefusal, FALLBACK.review, ctx.input.pool) : null;
+  const reviewOrder = assignments.length ? orderByAssignment([...reviewers, ...others.filter((v) => !reviewers.includes(v))], (v) => v.actor, applicableAssignments(assignments, null, roles), reviewRefusal, FALLBACK.review) : null;
   const reviewer = reviewOrder?.outcome.applied ? { pick: reviewOrder.order[0], lead: null }
     : reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
   if (!reviewer) {

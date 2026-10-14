@@ -4,7 +4,7 @@ import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } fro
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
-import { aheadOfAssignments, applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
 import { offering, type SeenOffer } from "../dispatch/rules.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
@@ -98,17 +98,20 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     return "";
   };
   // The developer's explicit --model and --to narrow the candidates first;
-  // a build assignment then puts its eligible choices ahead of the outcome
-  // ranking (src/models/assignments.ts, precedence).
+  // --model is the model as typed, converted to a pool id where it entered
+  // (typedModel in the dispatch route), and matched here by its id alone.
+  // With --model the developer has chosen: no build assignment reorders the
+  // candidates, and each is named as skipped for it, by the same call that
+  // keeps the order (gemini-4-argon's and gpt-6-astra's eighth reviews of
+  // t622). Without it, a build assignment puts its eligible choices ahead of
+  // the outcome ranking (src/models/assignments.ts, precedence).
   const rows = ranked(input)
     .filter(({ entry }) => !(constraints.model && !entryRuns(entry, String(constraints.model))))
     .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
     .map((row) => ({ ...row, refusal: refusalOf(row.entry) }));
   const assigned = applicableAssignments(input.assignments ?? [], input.project, ["build"]);
-  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), assigned, (r) => r.refusal || null, FALLBACK.build, input.pool);
-  // A model the developer names with --model comes before every build
-  // assignment, which is named as skipped for it.
-  const said = (row: (typeof rows)[number]) => (constraints.model ? aheadOfAssignments(assigned, "the developer's --model").lines : byAssignment.reasons(row));
+  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), assigned, (r) => r.refusal || null, FALLBACK.build, constraints.model ? "the developer's --model" : null);
+  const said = (row: (typeof rows)[number]) => byAssignment.reasons(row);
   for (const row of byAssignment.order) {
     const { entry, score, reason, refusal } = row;
     const actor = actorOf(entry);
