@@ -258,6 +258,10 @@ export interface Detail {
   // every criteria review and resolution; absent from an older server.
   criteriaReview?: CriteriaReviewView;
   events: LedgerEvent[];
+  // The events the fast-landing summary reads, by kind and outside the window
+  // `events` is (fastLandingEvents in src/ledger.ts, t637); unset where the
+  // page is drawn without a ledger, which then reads `events`.
+  fastLanding?: LedgerEvent[];
 }
 export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
@@ -2308,7 +2312,8 @@ function progressBlock(item: Item, checks: { grade: string; passed: boolean | nu
 // recorded, the same-family reviews it allowed, and the fix task a rejected
 // post-merge review filed.
 function fastLandingBlock(p: ProjectRecord, d: Detail): string {
-  const ev = d.events.find((x) => x.kind === "item.landed_fast");
+  const events = d.fastLanding ?? d.events;
+  const ev = events.find((x) => x.kind === "item.landed_fast");
   if (!ev) return "";
   const r = ev.data as Record<string, unknown>;
   const tests = (r.tests ?? {}) as { command?: string; sha256?: string; where?: string };
@@ -2317,12 +2322,16 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   const sameFamily = d.reviews.filter((x) => x.independence).map((x) => `<li>${e(x.by)}: ${e(x.independence!)}</li>`).join("");
   // What the receipt says of the review is what happened: a fast landing asks
   // for one only when the developer names a reviewer (t605, Astra's review).
-  const after = d.events.filter((x) => x.at >= ev.at);
+  const after = events.filter((x) => x.at >= ev.at);
   const reviewed = d.reviews.some((x) => x.postMerge) || after.some((x) => x.kind === "review.approved" || x.kind === "review.rejected");
   const requested = after.some((x) => x.kind === "review.requested");
   const reviewLine = reviewed ? "It skipped the gate; its post-merge review is recorded." : requested ? "It skipped the gate; a post-merge review was requested and is not recorded yet." : "It skipped the gate, and no post-merge review was requested.";
-  const fixes = d.events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
-  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}.</p>
+  const fixes = events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
+  // Fast mode switched on the developer's direction (t629) holds their words
+  // and the acting model on the receipt; they read as the text receipt
+  // (cli/receipt.mjs) and the override block say them, through directionText.
+  const words = typeof r.quote === "string" && r.quote ? `; on ${e(directionText({ quote: r.quote, acting: typeof r.acting === "string" ? r.acting : undefined }))}` : "";
+  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}${words}.</p>
   <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. ${reviewLine}</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
 }
 
