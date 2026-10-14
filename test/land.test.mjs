@@ -334,6 +334,20 @@ test("--reviewer waits for that review and lands on approval even where the gate
   assert.equal(f.box.states.t1, "merged");
 });
 
+// micahapp t9 (t627): --reviewer naming another reviewer while an earlier
+// request is unclaimed redirects it on the server, and the landing says which
+// request it withdrew before it waits on the new one.
+test("--reviewer says which unclaimed request for another reviewer it withdrew (t627)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.review.withdrew = [{ request: 7, reviewer: "codex/gpt-6-astra" }];
+  f.box.review.request = 8;
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "antigravity/gemini-3.1-pro");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Withdrew the unclaimed review request 7 for codex\/gpt-6-astra, since --reviewer names antigravity\/gemini-3\.1-pro\.\nReview requested for antigravity\/gemini-3\.1-pro/);
+  assert.equal(f.box.states.t1, "merged");
+});
+
 test("--reviewer who contributed to the task is refused before the lease and the checks", async (t) => {
   const f = await landFixture(t);
   f.box.pushActors = ["codex/gpt-6-luna"];

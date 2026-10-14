@@ -717,7 +717,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         // every runner offering its reviewer has skipped, left by an earlier
         // landing, is withdrawn and asked anew, so the runners serve it again.
         const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records, await index.runnerOffers());
-        if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
+        // An unclaimed request for another reviewer the named one replaced is said too (t627).
+        const withdrew = (r.withdrew ?? []).map((w) => `Withdrew the unclaimed review request ${w.request}${w.reviewer ? ` for ${w.reviewer}` : ""}. `).join("");
+        if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `${withdrew}Reviewer: ${r.reviewer}. ${r.reason}`);
         // The request's number travels with the ask (t353): the skips the
         // wait counts are that request's alone.
         // `asked` is when this landing asked (t574): only a reply with no

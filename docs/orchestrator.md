@@ -194,6 +194,19 @@ release with a five-second deadline. SIGKILL, lost responses and failed
 cleanup recover through lease expiry. Only developer credentials can omit
 `--request` when manually releasing the current claim for the named actor.
 
+A request no runner has claimed can be withdrawn by the developer (t627):
+`atelier review-withdraw ID --reason TEXT` records the reason on a
+`review.withdrawn` event, and the gate then asks no one until the developer
+asks again, of any reviewer, at the same head; a plan's tick asks a part's
+review of another reviewer its routing allows, never the withdrawn one at
+that head, or waits for the developer. `atelier land ID --reviewer
+H/M` naming a different reviewer does the same in one step: it withdraws the
+unclaimed request, asks the new reviewer and prints which request it
+withdrew. A claimed request is refused both ways, since a runner is serving
+it; its verdict, or its lease lapsing, ends it. Before this, micahapp t9's
+unclaimed request for codex/gpt-6-astra held its head until an empty commit
+moved it.
+
 `addReview` still refuses self-review and stale heads, and `countingReviews` still filters to assessors.
 
 **The generated brief contains:**
