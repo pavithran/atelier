@@ -2799,8 +2799,20 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
 
-  setFork(id: string, fork: string, base: string | null, actor: string, proved = false): void {
+  // The claim route records the fork it made once Artifacts has made it, an
+  // await after the claim. By then the task may have been merged, abandoned
+  // or claimed again (t653, gpt-6-astra: a fork recorded after record-merge
+  // replaced the merged task's head with the fork's base), so the fork is
+  // never recorded on a merged or abandoned task, and, under the claim's
+  // generation the claim route names, only while that claim still holds it.
+  // Tests that set up a plan's fork without a claim name no generation.
+  setFork(id: string, fork: string, base: string | null, actor: string, proved = false, generation?: number): void {
     const at = new Date().toISOString();
+    const item = this.item(id);
+    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
+    if (item.state === "merged" || item.state === "abandoned" || (generation !== undefined && (item.owner !== actor || row.claim_gen !== generation))) {
+      throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409);
+    }
     this.update(id, { fork, base, head: base }, at);
     this.log(id, actor, "fork.created", { fork, base }, at, proved);
     // A plan forks from the baseline, so its base is main's head as it
@@ -4960,6 +4972,26 @@ export class Ledger extends DurableObject<Env> {
     this.recordMergeAllowed(id, actor, body, baseline, new Date().toISOString());
   }
 
+  // A claim still in flight (t653): the task is held but its workspace is
+  // not complete, a fork and a token, because the claim route is still
+  // making them in Artifacts. A fast take (t589) holds no fork by design and
+  // is complete. Recording the merge then would race the claim's later
+  // writes, so it is refused until the claim finishes or is released.
+  private claimInFlight(item: Item): boolean {
+    if (!item.owner) return false;
+    const { fork, token } = this.workspaceOf(item.id);
+    if (fork && token) return false;
+    const last = this.sql.exec(`SELECT kind FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.fast_taken') ORDER BY seq DESC LIMIT 1`, item.id).toArray()[0];
+    return last?.kind !== "item.fast_taken";
+  }
+
+  private assertNoClaimInFlight(id: string): void {
+    const item = this.item(id);
+    if (this.claimInFlight(item)) {
+      throw new RuleError("claim_in_flight", `${id} is being claimed by ${item.owner}, and its workspace is not made yet; wait for the claim to finish, or release it, and record the merge again`, 409);
+    }
+  }
+
   private recordMergeAllowed(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, at: string): { item: Item; record: RecordedMerge; repeat: RecordedMerge | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a merge made outside Atelier", 403);
     const record = recordedMerge(body, actor, at);
@@ -4971,6 +5003,7 @@ export class Ledger extends DurableObject<Env> {
     const refusal = recordedMergeRefusal(record, baseline);
     if (refusal) throw refusal;
     this.assertPostMergeFree(id);
+    this.assertNoClaimInFlight(id);
     return { item, record, repeat: null };
   }
 
@@ -4996,6 +5029,8 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("workspace_changed", `${id} was claimed again while the merge was checked, and its workspace or token changed; record it again`, 409);
     }
     this.ctx.storage.transactionSync(() => {
+      // Decided again where the task is marked merged.
+      this.assertNoClaimInFlight(id);
       this.dropToken(id, workspace.token);
       this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
       this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
