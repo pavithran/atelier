@@ -114,13 +114,13 @@ function mac(f, name) {
   return { name, config: join(dir, "config"), home: join(dir, "home"), cache: join(dir, "cache"), projects: {} };
 }
 
-async function run(t, f, m, argv, { cwd, globalConfig } = {}) {
+async function run(t, f, m, argv, { cwd, globalConfig, env: extra = {} } = {}) {
   if (!f.url) await serve(t, f);
   const from = f.seen.length;
   writeFileSync(join(m.config, "config.json"), JSON.stringify({ server: f.url, owner: "owner", projects: m.projects }));
   const cliConfig = join(m.config, "gitconfig");
   writeFileSync(cliConfig, globalConfig ?? "");
-  const env = { ...f.env, GIT_CONFIG_GLOBAL: cliConfig, HOME: m.home, ATELIER_CONFIG_DIR: m.config, ATELIER_CACHE: m.cache, ATELIER_SERVER: f.url, ATELIER_SECRET_STORE: "file", ATELIER_ACTOR: "owner", ATELIER_TOKEN: "test-token" };
+  const env = { ...f.env, GIT_CONFIG_GLOBAL: cliConfig, HOME: m.home, ATELIER_CONFIG_DIR: m.config, ATELIER_CACHE: m.cache, ATELIER_SERVER: f.url, ATELIER_SECRET_STORE: "file", ATELIER_ACTOR: "owner", ATELIER_TOKEN: "test-token", ...extra };
   const child = spawn(process.execPath, [cli, ...argv], { cwd: cwd ?? f.root, env });
   let output = "";
   child.stdout.on("data", (s) => output += s);
@@ -468,4 +468,38 @@ test("merge names atelier pull while main does not hold the baseline's main", as
   assert.notEqual(r.code, 0);
   assert.match(r.output, new RegExp(`main does not hold the baseline's main \\(${theirs.slice(0, 8)}\\): another checkout has carried commits to the baseline since this one last matched it\\. Nothing was merged\\. Run atelier pull --project demo to bring them into this checkout, then atelier merge t2 again\\.`));
   assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
+});
+
+// Astra's second review of t644: Git also reads a graft file that
+// GIT_GRAFT_FILE names, outside the checkout, and the CLI's Git inherits its
+// environment. A graft there giving the local commit the baseline's head as
+// its parent made a checkout behind the baseline pass the guard.
+test("a graft file GIT_GRAFT_FILE names does not make main hold the baseline, for the guards or for pull", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const local = commitIn(f, dir, "mine.txt", "mine\n");
+  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
+  f.git(dir, "fetch", "-q", f.bare, "main");
+  const graft = join(f.root, "grafts-elsewhere");
+  writeFileSync(graft, `${local} ${theirs}\n`);
+  const env = { GIT_GRAFT_FILE: graft };
+  assert.equal(execFileSync("git", ["merge-base", "--is-ancestor", theirs, "HEAD"], { cwd: dir, env: { ...f.env, ...env } }).toString(), "", "Git, with the graft, says main holds it");
+  const publish = await run(t, f, a, ["publish", "--project", "demo"], { env });
+  assert.notEqual(publish.code, 0);
+  assert.match(publish.output, refusal(theirs, "atelier publish --project demo"));
+  const sync = await run(t, f, a, ["sync", "--project", "demo"], { env });
+  assert.notEqual(sync.code, 0);
+  assert.match(sync.output, refusal(theirs, "atelier sync --project demo"));
+  const fast = await run(t, f, a, ["fast", "land", `t1=${local.slice(0, 7)}`, "--project", "demo"], { cwd: dir, env });
+  assert.notEqual(fast.code, 0);
+  assert.match(fast.output, refusal(theirs, `atelier fast land t1=${local.slice(0, 7)} --project demo`));
+  f.accepted = theirs;
+  const merged = await run(t, f, a, ["merge", "t2", "--project", "demo"], { env });
+  assert.notEqual(merged.code, 0);
+  assert.match(merged.output, /main does not hold the baseline's main .* Run atelier pull --project demo/);
+  const pull = await run(t, f, a, ["pull", "--project", "demo"], { env });
+  assert.equal(pull.code, 0, pull.output);
+  assert.match(pull.output, /brought 1 commit from the baseline's main and merged them with 1 local commit/);
+  assert.deepEqual(f.git(dir, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [local, theirs]);
 });

@@ -5,8 +5,7 @@ import { join } from "node:path";
 import { acceptancePolicy, mergeContext, mergePolicyDecision } from "../../src/control-plane.ts";
 import { pathCollisions } from "../../src/rules.ts";
 import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
-import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
-import { NO_REPLACE } from "../pull.mjs";
+import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
@@ -215,7 +214,7 @@ export default async function mergeCommand() {
         if (!paired) die(behind());
         if (local!==paired) die(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
       }
-      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true,env:NO_REPLACE}).status!==0) die(behind());
+      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true,env:REAL_HISTORY_ENV}).status!==0) die(behind());
       journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
     }
     if (!journal.state.mergeCommit) {
