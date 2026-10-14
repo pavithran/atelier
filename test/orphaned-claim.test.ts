@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { coreHold, coreOrphans, holdGraph, holdText, makeDispatch, OFFER_REFRESH_MS, orphanedBy, orphanText, RUNNER_GONE_MS, type RunnerPolls } from "../src/dispatch/rules.ts";
 import { REPORT_DEFAULTS, reportLimits, stuckReport } from "../src/stuck/report.ts";
 import type { Item } from "../src/rules.ts";
@@ -133,7 +134,7 @@ test("atelier stuck and the hold agree on an orphaned claim whatever --runner-po
 
 // atelier queue prints the orphan on the held: line, with or without a live blocker.
 test("atelier queue's held: line says the claim is orphaned instead of naming it as a blocker", (t) => {
-  const root = mkdtempSync(join(process.cwd(), ".orphaned-claim-test-"));
+  const root = mkdtempSync(join(tmpdir(), "atelier-orphaned-claim-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const orphaned = coreOrphans(item("t358"), [claim("home:studio-5")], core, null, NOW, polls(CLAIMED));
   const queued = [{ project: "atelier", item: { ...item("t358"), title: "Waiting work", orphaned } }];

@@ -1,12 +1,14 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
-const root = resolve(".cache/runner-owner-fallback-tests");
-mkdirSync(root, { recursive: true });
+// Scratch lives under the system temp folder and goes with the run (t640).
+const root = mkdtempSync(join(tmpdir(), "atelier-runner-owner-fallback-tests-"));
+after(() => rmSync(root, { recursive: true, force: true }));
 
 function run(t, extra, argv = ["queue"], stored = {}, jobs = ["build", "review", "plan"]) {
   const dir = mkdtempSync(join(root, "test-"));
