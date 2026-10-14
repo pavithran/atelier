@@ -2,7 +2,7 @@
 import { COMMAND_USAGE } from "../help.mjs";
 import { I, OWNER, P, actingHeaders, actor, args, call, cfg, die, fastTakeWorkspace, git, itemArg, landingGit, project, wsConfig } from "../atelier.mjs";
 import { behindRefusal } from "../pull.mjs";
-import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs, postPending, readPending, readySources, shellQuote } from "../fast.mjs";
+import { DEFAULT_REGEN, fastCommands, fastLand, parsePairs, postPending, readPending, readySources, shellQuote } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
 
@@ -47,6 +47,10 @@ export default async function fastCommand() {
     if (["merged", "abandoned"].includes(it.state)) die(`${id} is ${it.state}`);
     titles[id] = it.title;
   }
+  // The typecheck and tests from the checkout's own scripts, or a refusal
+  // naming the flag, before anything merges (t667).
+  const commands = fastCommands(cwd, { typecheck: args.typecheck, test: args.test });
+  if (commands.refusal) die(`fast land: ${commands.refusal}`);
   // The default test runs in a temporary clean clone of the batch's head
   // (t588); a --test the owner gives runs in the checkout, where it says.
   const result = await fastLand({
@@ -54,9 +58,9 @@ export default async function fastCommand() {
     // A commit a runner built in fast mode on this machine is fetched from
     // the clone its report names, when this checkout lacks it (t589).
     sources: readySources(mode.ready ?? [], pairs),
-    typecheck: args.typecheck ?? "npm run typecheck",
-    test: args.test ?? "npm test",
-    cleanClone: args.test === undefined ? { setup: CLEAN_CLONE_SETUP } : null,
+    typecheck: commands.typecheck,
+    test: commands.test,
+    cleanClone: commands.cleanClone,
     regen: args.regen ?? DEFAULT_REGEN(cwd),
     // Kept in the receipts file, so atelier fast record posts the rest as
     // this run would have (Astra's audit of 2026-10-13, finding 9).

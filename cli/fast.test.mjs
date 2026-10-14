@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
-import { fastLand, parsePairs, recordPending, scanBatch, shellQuote, worktreeHolding } from "./fast.mjs";
+import { CLEAN_CLONE_SETUP, fastCommands, fastLand, parsePairs, recordPending, scanBatch, shellQuote, worktreeHolding } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 import { privateConfig } from "../test/fixtures/private-config.mjs";
 // No test reads this Mac's own iCloud folder (t645).
@@ -902,5 +902,34 @@ test("Git hooks an agent changes neither run nor see the developer's variables d
   } finally {
     if (saved === undefined) delete process.env.FAST_LAND_PROBE_TOKEN; else process.env.FAST_LAND_PROBE_TOKEN = saved;
     rmSync(dir, { recursive: true, force: true }); rmSync(dirname(probe), { recursive: true, force: true });
+  }
+});
+
+// t667: the batch's commands come from the checkout's own scripts, and a
+// project without them is refused before anything merges, naming the flag.
+test("fast land takes its default commands from the checkout's package.json", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-fast-commands-"));
+  try {
+    const scripts = (s) => writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: s }));
+    scripts({ typecheck: "tsc", types: "gen", test: "node --test" });
+    assert.deepEqual(fastCommands(dir), { typecheck: "npm run typecheck", test: "npm test", cleanClone: { setup: CLEAN_CLONE_SETUP } });
+    // No types script: the clean clone installs and does not run it.
+    scripts({ typecheck: "tsc", test: "vitest run" });
+    assert.deepEqual(fastCommands(dir).cleanClone, { setup: "npm ci --prefer-offline" });
+    // ikon-weblog's shape: check and test, no typecheck.
+    scripts({ check: "astro check", test: "vitest run" });
+    const refused = fastCommands(dir);
+    assert.match(refused.refusal, /--typecheck CMD \(no "typecheck" script in package\.json\)/);
+    assert.match(refused.refusal, /nothing was merged/);
+    assert.match(refused.refusal, /Its scripts: check, test/);
+    assert.doesNotMatch(refused.refusal, /--test/);
+    // The flags the owner gives stand in for the missing scripts.
+    assert.deepEqual(fastCommands(dir, { typecheck: "npm run check" }), { typecheck: "npm run check", test: "npm test", cleanClone: { setup: "npm ci --prefer-offline" } });
+    assert.deepEqual(fastCommands(dir, { typecheck: "npm run check", test: "npm test" }).cleanClone, null);
+    // No package.json at all: both flags are named.
+    rmSync(join(dir, "package.json"));
+    assert.match(fastCommands(dir).refusal, /--typecheck CMD .* and --test CMD/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
