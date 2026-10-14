@@ -141,6 +141,13 @@ function linesFor(e, verdicts, used, owner, events) {
     }
     case "item.accepted":
       return [`accepted by ${flat(e.actor)} at ${short(d.head)}${d.note ? `: ${flat(d.note)}` : ""}`];
+    // A merge made outside Atelier and recorded afterwards (t653): the
+    // reviews as the developer gave them, never a gated landing.
+    case "item.merge_recorded":
+      return [
+        `merged outside Atelier, recorded afterwards by ${flat(e.actor)}: ${short(d.commit)} merged as ${short(d.mergeCommit)} on main; no checks or test receipt recorded${d.recordedHead ? `; the task's recorded head was ${short(d.recordedHead)}` : ""}${d.note ? `: ${flat(d.note)}` : ""}`,
+        ...(Array.isArray(d.reviews) ? d.reviews : []).map((v) => `review as given: ${v.verdict === "approve" ? "approved" : "rejected"} by ${flat(v.by)} at ${short(v.head)}${v.at ? ` (${flat(v.at)})` : ""}`),
+      ];
     // A fast landing (t585) records its merge with neither an acceptance nor
     // a baseline observation: the developer publishes main after the record
     // (landedFast in src/ledger.ts). Its line says what happened, in the
@@ -148,6 +155,8 @@ function linesFor(e, verdicts, used, owner, events) {
     // src/ui.ts), and says "on the baseline" only when the event recorded
     // that observation (t660).
     case "item.merged": {
+      // A merge recorded after the fact (t653) is told by its item.merge_recorded line.
+      if (d.outside === true) return null;
       const fast = d.fast === true || events.some((x) => x.kind === "item.landed_fast" && x.data?.mergeCommit === d.mergeCommit && (x.seq ?? 0) <= (e.seq ?? 0));
       if (!fast) return [`merged by ${flat(e.actor)}: ${short(d.head)} accepted, merge commit ${short(d.mergeCommit)} on the baseline`];
       const after = events.filter((x) => (x.seq ?? 0) > (e.seq ?? 0));

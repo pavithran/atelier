@@ -27,6 +27,7 @@ import {
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
+  recordedMerge, recordedMergeRefusal, type RecordedMerge,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -857,6 +858,13 @@ export class Ledger extends DurableObject<Env> {
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
+    // The claim generation a claim reserved and has not completed (t653):
+    // set where a claim reserves its generation (assignOwner), cleared when
+    // the claim records its token (recordToken, recordRunnerGit), when a fast
+    // take completes it with no workspace (takeFast), and by any change of
+    // owner, which supersedes it (update: release, handoff, unclaim, abandon,
+    // merge). A ledger from before holds none: no claim is taken as in flight.
+    if (!columns.includes("claim_pending")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_pending INTEGER`);
     // Database guards cover direct SQL as well as update records assembled by
     // future callers. Only assignOwner opens this gate, inside a synchronous
     // transaction; no permission survives a return, exception or restart.
@@ -2372,7 +2380,7 @@ export class Ledger extends DurableObject<Env> {
         // Renewal alone keeps the owner/runner and advances just one generation.
         if (item.owner !== actor || Object.keys(fields).length) this.update(id, { ...fields, owner: actor }, at);
         const row = reserveClaim
-          ? this.sql.exec(`UPDATE items SET claim_gen = claim_gen + 1 WHERE id = ? RETURNING claim_gen, token_id`, id).one()
+          ? this.sql.exec(`UPDATE items SET claim_gen = claim_gen + 1, claim_pending = claim_gen + 1 WHERE id = ? RETURNING claim_gen, token_id`, id).one()
           : this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
         return { generation: row.claim_gen as number, replaces: (row.token_id as string | null) ?? null };
       } finally {
@@ -2415,7 +2423,8 @@ export class Ledger extends DurableObject<Env> {
   recordToken(id: string, actor: string, generation: number, replaces: string | null, tokenId: string | null): boolean {
     const row = this.sql.exec(`SELECT owner, claim_gen, token_id FROM items WHERE id = ?`, id).toArray()[0];
     if (!row || row.owner !== actor || row.claim_gen !== generation || ((row.token_id as string | null) ?? null) !== replaces) return false;
-    this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
+    // The token is the claim's last step: the claim is complete.
+    this.sql.exec(`UPDATE items SET token_id = ?, claim_pending = NULL WHERE id = ?`, tokenId, id);
     return true;
   }
 
@@ -2817,8 +2826,20 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
 
-  setFork(id: string, fork: string, base: string | null, actor: string, proved = false): void {
+  // The claim route records the fork it made once Artifacts has made it, an
+  // await after the claim. By then the task may have been merged, abandoned
+  // or claimed again (t653, gpt-6-astra: a fork recorded after record-merge
+  // replaced the merged task's head with the fork's base), so the fork is
+  // never recorded on a merged or abandoned task, and, under the claim's
+  // generation the claim route names, only while that claim still holds it.
+  // Tests that set up a plan's fork without a claim name no generation.
+  setFork(id: string, fork: string, base: string | null, actor: string, proved = false, generation?: number): void {
     const at = new Date().toISOString();
+    const item = this.item(id);
+    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
+    if (item.state === "merged" || item.state === "abandoned" || (generation !== undefined && (item.owner !== actor || row.claim_gen !== generation))) {
+      throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409);
+    }
     this.update(id, { fork, base, head: base }, at);
     this.log(id, actor, "fork.created", { fork, base }, at, proved);
     // A plan forks from the baseline, so its base is main's head as it
@@ -4963,6 +4984,88 @@ export class Ledger extends DurableObject<Env> {
     return { item: this.item(id), receipt };
   }
 
+  // The developer records a task merged into main outside Atelier (t653),
+  // after the fact: the merge commit, the commit merged and the reviews as
+  // given, once the route has read from the baseline that main holds the
+  // merge and its parents. The item is marked merged with an item.merged
+  // event that says the merge was made outside Atelier and recorded later
+  // (outside: true), beside item.merge_recorded with the reviews; it is
+  // never an accepted or gated landing, so acceptedHead is left as it was,
+  // and main's recorded head is not moved, since main has gone past the
+  // merge by the time it is recorded. The task's workspace token, if a
+  // holder had one, is dropped with the claim.
+  // The route asks checkRecordMerge first, revokes the workspace token, and
+  // only then records, as abandon and release do: a revocation that fails
+  // leaves the task and its token as they were, so the retry revokes again.
+  checkRecordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }): void {
+    this.recordMergeAllowed(id, actor, body, baseline, new Date().toISOString());
+  }
+
+  // A claim still in flight (t653): a claim generation reserved and not yet
+  // completed, read from claim_pending, which the claim machinery keeps (see
+  // the column). Recording the merge then would race the claim's later
+  // writes, so it is refused until the claim finishes or is released.
+  private claimInFlight(item: Item): boolean {
+    const row = this.sql.exec(`SELECT claim_gen, claim_pending FROM items WHERE id = ?`, item.id).one();
+    return row.claim_pending !== null && row.claim_pending === row.claim_gen;
+  }
+
+  private assertNoClaimInFlight(id: string): void {
+    const item = this.item(id);
+    if (this.claimInFlight(item)) {
+      throw new RuleError("claim_in_flight", `${id} is being claimed by ${item.owner}, and the claim has not finished; wait for it to finish, or release it, and record the merge again`, 409);
+    }
+  }
+
+  private recordMergeAllowed(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, at: string): { item: Item; record: RecordedMerge; repeat: RecordedMerge | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a merge made outside Atelier", 403);
+    const record = recordedMerge(body, actor, at);
+    const item = this.item(id);
+    const prior = this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "item.merge_recorded");
+    if (item.state === "merged" && prior?.data.mergeCommit === record.mergeCommit) return { item, record, repeat: prior.data as unknown as RecordedMerge };
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409);
+    if (item.kind === "plan") throw new RuleError("plan_merge", `${id} is a plan; a plan's merge lands its parts, and atelier merge records it`, 409);
+    const refusal = recordedMergeRefusal(record, baseline);
+    if (refusal) throw refusal;
+    this.assertPostMergeFree(id);
+    this.assertNoClaimInFlight(id);
+    return { item, record, repeat: null };
+  }
+
+  // The task's workspace and its write token, read together, so the token
+  // revoked is revoked in the repository it was made for (t653, gpt-6-astra:
+  // a claim made while the baseline was read gave a token whose fork a
+  // snapshot taken earlier did not name).
+  workspaceOf(id: string): { fork: string | null; token: string | null } {
+    const row = this.sql.exec(`SELECT fork, token_id FROM items WHERE id = ?`, id).toArray()[0];
+    if (!row) throw new RuleError("not_found", `no item ${id}`, 404);
+    return { fork: (row.fork as string | null) ?? null, token: (row.token_id as string | null) ?? null };
+  }
+
+  // `workspace` is what workspaceOf answered before the route revoked its
+  // token: the record is refused if the fork or the token has changed since,
+  // so no token the route did not revoke is taken off the record.
+  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, workspace: { fork: string | null; token: string | null }): { item: Item; record: RecordedMerge } {
+    const at = new Date().toISOString();
+    const { item, record, repeat } = this.recordMergeAllowed(id, actor, body, baseline, at);
+    if (repeat) return { item, record: repeat };
+    const now = this.workspaceOf(id);
+    if (now.fork !== workspace.fork || now.token !== workspace.token) {
+      throw new RuleError("workspace_changed", `${id} was claimed again while the merge was checked, and its workspace or token changed; record it again`, 409);
+    }
+    this.ctx.storage.transactionSync(() => {
+      // Decided again where the task is marked merged.
+      this.assertNoClaimInFlight(id);
+      this.dropToken(id, workspace.token);
+      this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
+      this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
+      this.log(id, actor, "item.merge_recorded", { ...record, ...(item.head && item.head !== item.base && item.head !== record.commit ? { recordedHead: item.head } : {}) }, at);
+      this.log(id, actor, "item.merged", { mergeCommit: record.mergeCommit, head: record.commit, observedOnBaseline: true, outside: true }, at);
+    });
+    this.afterPlanChange(id);
+    return { item: this.item(id), record };
+  }
+
   // The events a task page's fast-landing summary reads (fastLandingBlock in
   // src/ui.ts), newest first, read by kind rather than from the newest 200
   // events detail() carries (t637, codex/gpt-6-astra's review: two hundred
@@ -4993,6 +5096,8 @@ export class Ledger extends DurableObject<Env> {
     assertNotTerminal(item);
     assertFastBuild(this.mode(), item);
     const { item: taken, generation, replaces } = this.claim(id, actor, runner, proved, runnerToken);
+    // A fast take makes no fork and records no token: it is complete here.
+    this.sql.exec(`UPDATE items SET claim_pending = NULL WHERE id = ? AND claim_pending = ?`, id, generation);
     this.log(id, actor, "item.fast_taken", { ...(runner ? { runner: runner.runner } : {}), mode: "fast" }, new Date().toISOString(), proved);
     return { item: taken, generation, replaces };
   }
@@ -8483,7 +8588,9 @@ export class Ledger extends DurableObject<Env> {
     const generation = fields.owner === null
       ? "claim_gen = claim_gen + CASE WHEN owner IS NULL THEN 0 ELSE 1 END"
       : "claim_gen = claim_gen + 1";
-    const set = [...keys.map((k) => `${k} = ?`), ...(owning ? [generation] : [])].join(", ");
+    // A change of owner supersedes any claim in flight (claim_pending); a
+    // claim reserving its generation sets it afterwards (assignOwner).
+    const set = [...keys.map((k) => `${k} = ?`), ...(owning ? [generation, "claim_pending = NULL"] : [])].join(", ");
     // Every change of an item's head is written here (a push, a push seen on
     // the fork, a landing's merge of main pushed, a fork made or moved), so
     // the review requests at the head it leaves are closed here, once, for

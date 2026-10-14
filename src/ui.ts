@@ -2370,6 +2370,21 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. ${reviewLine}</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
 }
 
+// A task merged into main outside Atelier and recorded afterwards (t653):
+// the merge, the commit merged and the reviews as the developer gave them,
+// said plainly so it is never read as a gated landing.
+function recordedMergeBlock(d: Detail): string {
+  const ev = d.events.find((x) => x.kind === "item.merge_recorded");
+  if (!ev) return "";
+  const r = ev.data as Record<string, unknown>;
+  const short = (v: unknown) => e(String(v ?? "").slice(0, 12));
+  const reviews = (Array.isArray(r.reviews) ? r.reviews : []) as { by?: string; verdict?: string; head?: string; at?: string }[];
+  const items = reviews.map((v) => `<li>${e(String(v.by ?? ""))} ${v.verdict === "approve" ? "approved" : "rejected"} <code>${short(v.head)}</code>${v.at ? ` (${e(v.at)})` : ""}</li>`).join("");
+  const prior = typeof r.recordedHead === "string" ? ` The task's recorded head was <code>${short(r.recordedHead)}</code>.` : "";
+  return `<div class="fast-landing"><p><strong>Merged outside Atelier</strong>, recorded afterwards by ${e(ev.actor)} on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: <code>${short(r.commit)}</code> merged as <code>${short(r.mergeCommit)}</code> on main. It did not pass through the gate, and no checks or test receipt are recorded.${prior}</p>
+  ${typeof r.note === "string" && r.note ? `<p class="meta">${e(r.note)}</p>` : ""}<p class="meta">Reviews as the developer gave them:</p><ul>${items}</ul></div>`;
+}
+
 // A task a runner built in fast mode (t589) and reported ready: the commit
 // the owner's batch takes, as atelier fast land takes it.
 function fastReadyBlock(d: Detail): string {
@@ -2956,7 +2971,7 @@ ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
   ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${prereview}${overrideNote}${blockers}
   ${item.state === "merged" ? d.events.filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
-  ${fastLandingBlock(p, d)}${fastReadyBlock(d)}
+  ${fastLandingBlock(p, d)}${recordedMergeBlock(d)}${fastReadyBlock(d)}
 </section>
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
