@@ -159,7 +159,15 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await L("lead-check").merged("t1", "owner", "d".repeat(40), true, head);
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body).toContain('<h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>');
+  // t673 (PAVI chose mockup C, "the" left white): Git's sentence muted,
+  // Atelier's bright, only "receipts." in gold; the nested spans still break
+  // a phone's headline into Git keeps / the code. / Atelier brings / the receipts.
+  expect(body).toContain('<h1><span class="given"><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the <span class="hl">receipts.</span></span></span></h1>');
+  expect(layout).toContain(".show-hero h1 { margin: 0; font: 800 clamp(24px, calc((100vw - 32px) / 13), 88px)/.98 var(--font-display); letter-spacing: -.035em; color: var(--text-bright); }");
+  expect(layout).toContain(".show-hero h1 .given { color: var(--text-muted); }");
+  expect(layout).toContain(".show-hero h1 .hl { color: var(--signal); }");
+  expect(layout).toContain(".show-hero h1 > span { display: block; white-space: nowrap; }");
+  expect(layout).toContain(".show-hero h1 > span > span { display: block; }");
   expect(body).toContain('<p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>');
   expect(body).toContain('<p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>');
   // The canvas's order (d29): the hero, the comparison when there is one, the
