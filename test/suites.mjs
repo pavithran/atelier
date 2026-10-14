@@ -6,7 +6,7 @@
 // own, is rejected before anything runs, so no file is silently skipped or run
 // twice. Vitest ownership comes from its resolved, active configuration.
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createVitest } from "vitest/node";
 
@@ -20,8 +20,10 @@ export const NODE_RUNNER = { name: "node", owns: (file) => /\.test\.(mjs|ts)$/.t
 // Resolve through Vitest itself, including defaults and config/plugin changes.
 // No suite is collected or executed while validating ownership. Close the Vite
 // server before launching either runner, including on invalid assignments.
+// Vitest matches its globs against the real path, so a root reached through
+// a symlink (macOS's /var, say) is resolved first, or nothing matches (t658).
 export async function plan(root = ".") {
-  root = resolve(root);
+  root = realpathSync(resolve(root));
   const vitest = await createVitest("test", { root, watch: false });
   try {
     return assign(discover(root), [NODE_RUNNER, ...vitest.projects.map((project, i) => ({
