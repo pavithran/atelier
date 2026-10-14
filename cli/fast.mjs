@@ -72,6 +72,13 @@ function runGit(cwd, args, { encoding = "utf8", env, input } = {}) {
   return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, input, env: { ...gitEnv(), GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
 }
 
+// A string quoted for a POSIX shell: single quotes, each ' written as '\''.
+// Every path in a command fast land prints for the developer to run goes
+// through it (codex/gpt-6-astra's second review of t646): JSON.stringify's
+// double quotes left $ and backticks to the shell, so a repository at
+// /tmp/project-$batch had $batch expanded and the fix aimed elsewhere.
+export const shellQuote = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
+
 // What can make Git show history other than the history that lands:
 // replacement refs (ignored by runGit, and refused anyway, since they mean
 // something rewrote what Git shows), a grafts file, and a shallow boundary
@@ -511,8 +518,8 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       if (holder) {
         problem = `main is checked out in the worktree ${holder.path}, so fast land could not move it`;
         fix = holder.gitDir && holder.workTree
-          ? `git --git-dir=${JSON.stringify(holder.gitDir)} --work-tree=${JSON.stringify(holder.workTree)} reset --hard ${start}`
-          : `git reset --hard ${start} in the checkout whose .git names ${holder.gitDir ?? holder.path}`;
+          ? `git --git-dir=${shellQuote(holder.gitDir)} --work-tree=${shellQuote(holder.workTree)} reset --hard ${start}`
+          : `git reset --hard ${start} in the checkout whose .git names ${shellQuote(holder.gitDir ?? holder.path)}`;
       } else {
         const r = runGit(cwd, ["update-ref", "refs/heads/main", start, main()]);
         if (r.status !== 0) problem = `git checkout main failed (${failed(checkout)}) and so did git update-ref (${failed(r)})`;

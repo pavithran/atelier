@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
-import { fastLand, parsePairs, recordPending, scanBatch, worktreeHolding } from "./fast.mjs";
+import { fastLand, parsePairs, recordPending, scanBatch, shellQuote, worktreeHolding } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 import { privateConfig } from "../test/fixtures/private-config.mjs";
 // No test reads this Mac's own iCloud folder (t645).
@@ -19,8 +19,9 @@ process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-te
 
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
 
-function repo() {
-  const dir = mkdtempSync(join(tmpdir(), "fast-land-"));
+function repo(name = null) {
+  let dir = mkdtempSync(join(tmpdir(), "fast-land-"));
+  if (name) { dir = join(dir, name); mkdirSync(dir); }
   git(dir, "init", "-q", "-b", "main");
   writeFileSync(join(dir, "a.txt"), "a\n");
   git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "start");
@@ -507,6 +508,34 @@ test("a rollback finds the worktree holding main from Git's registry when its .g
     assert.ok(existsSync(join(dir, "late.bin")), "following the printed fix leaves the checkout's files alone");
     assert.ok(!existsSync(join(dir, "nested", "late.bin")), "following the printed fix resets the holder's files");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// codex/gpt-6-astra's second review of t646: the fix rollback printed quoted
+// paths with JSON.stringify, which a shell does not undo, so a repository at
+// /tmp/project-$batch had $batch expanded and the fix aimed at another
+// directory. Paths are now quoted for a POSIX shell, and the printed fix,
+// run through sh, restores main from a repository whose folder holds $, a
+// backtick and a single quote.
+test("a rollback's printed fix works through sh when the repository's path holds $, a backtick and a quote (t646)", async () => {
+  const { dir, one } = repo("project-$batch-`x`-it's");
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const id = "-c user.name=t -c user.email=t@example.com";
+    const hijack = `printf 'k\\0AKIA' > late.bin && git ${id} add late.bin && git ${id} commit -q -m late && git checkout -q -b temporary && git worktree add -q nested main && rm nested/.git`;
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: hijack, record: () => assert.fail("recorded") });
+    assert.equal(r.restored, false, JSON.stringify(r.failure));
+    const fix = r.restoreProblem.match(/Restore it with: (.+)$/)[1];
+    const ran = spawnSync("sh", ["-c", fix], { cwd: tmpdir(), encoding: "utf8" });
+    assert.equal(ran.status, 0, `${fix}\n${ran.stderr}`);
+    assert.equal(git(dir, "rev-parse", "refs/heads/main"), start, "following the printed fix restores main");
+    assert.ok(!existsSync(join(dir, "nested", "late.bin")), "following the printed fix resets the holder's files");
+  } finally { rmSync(dirname(dir), { recursive: true, force: true }); }
+});
+
+test("shellQuote quotes a path for a POSIX shell (t646)", () => {
+  for (const path of ["/tmp/plain", "/tmp/project-$batch", "/tmp/`x`", "/tmp/it's", "/tmp/a b\\c\"d", ""]) {
+    assert.equal(spawnSync("sh", ["-c", `printf %s ${shellQuote(path)}`], { encoding: "utf8" }).stdout, path);
+  }
 });
 
 // Fourth review of t592 (codex/gpt-6-astra): a typecheck or regeneration
