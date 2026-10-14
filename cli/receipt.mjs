@@ -108,7 +108,11 @@ function linesFor(e, verdicts, used, owner, events) {
       // owner token in the reviewer's name. An event from before the ledger
       // recorded that says nothing.
       const recorded = recordedText({ by: e.actor, recordedBy: d.recordedBy, proved: e.proved === true, claimed: d.claimed === true }, owner);
-      const out = [`${d.tier ? "tier review " : ""}${verdict} by ${flat(e.actor)} at ${short(d.head)}${recorded ? ` (${flat(recorded)})` : ""}: ${flat(d.note) || "(no note)"}`];
+      // A review recorded after the merge is marked postMerge on its event
+      // (addReview in src/ledger.ts); its line says so, as the task page
+      // does, beside the tier mark when the review was one.
+      const marks = [d.postMerge ? "post-merge" : null, d.tier ? "tier" : null].filter(Boolean).join(" ");
+      const out = [`${marks ? `${marks} review ` : ""}${verdict} by ${flat(e.actor)} at ${short(d.head)}${recorded ? ` (${flat(recorded)})` : ""}: ${flat(d.note) || "(no note)"}`];
       (d.findings ?? []).forEach((f, i) => {
         out.push(`${i + 1}. ${flat(f.severity)} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
         const key = findingKey(d.head, e.actor, i + 1, { file: String(f.file ?? ""), text: String(f.text ?? "") });
@@ -153,12 +157,19 @@ function linesFor(e, verdicts, used, owner, events) {
     // (landedFast in src/ledger.ts). Its line says what happened, in the
     // words of the task page's fast-landing block (fastLandingBlock in
     // src/ui.ts), and says "on the baseline" only when the event recorded
-    // that observation (t660).
+    // that observation (t660). The gated line too says the observation only
+    // when the event recorded it (t671): a plan's part, marked merged
+    // through its plan when the plan lands (merged in src/ledger.ts), and an
+    // older event from before observedOnBaseline was, record none.
     case "item.merged": {
       // A merge recorded after the fact (t653) is told by its item.merge_recorded line.
       if (d.outside === true) return null;
       const fast = d.fast === true || events.some((x) => x.kind === "item.landed_fast" && x.data?.mergeCommit === d.mergeCommit && (x.seq ?? 0) <= (e.seq ?? 0));
-      if (!fast) return [`merged by ${flat(e.actor)}: ${short(d.head)} accepted, merge commit ${short(d.mergeCommit)} on the baseline`];
+      // A plan's part was integrated onto the plan's branch and never took an
+      // acceptance of its own; its event records the integrated head and the
+      // plan it landed through, and the line says only that.
+      if (typeof d.via === "string" && d.via) return [`merged by ${flat(e.actor)} through plan ${flat(d.via)}: ${d.head ? `${short(d.head)} integrated onto the plan's branch` : "integrated onto the plan's branch"}, no acceptance recorded on the part; merge commit ${short(d.mergeCommit)}`];
+      if (!fast) return [`merged by ${flat(e.actor)}: ${short(d.head)} accepted, merge commit ${short(d.mergeCommit)}${d.observedOnBaseline === true ? " on the baseline" : ""}`];
       const after = events.filter((x) => (x.seq ?? 0) > (e.seq ?? 0));
       const reviewed = after.some((x) => x.kind === "review.approved" || x.kind === "review.rejected");
       const requested = after.some((x) => x.kind === "review.requested");
