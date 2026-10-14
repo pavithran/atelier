@@ -28,6 +28,6 @@ export async function publishBaseline() {
   // baseline's head is read, and fetched when this checkout lacks it.
   const ref = `refs/heads/${p.branch}`;
   guardedPush({ project: name, cwd: p.path, tip: ref, bases: () => remoteBases({ git, cwd: p.path, remote: t.remote, ref, opts: { token: t.token, ownerRemote: false } }), what: `Publishing ${p.branch} to ${name}'s baseline`, fail: die },
-    () => git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path, token: t.token }));
+    (sha) => git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${sha}:refs/heads/${p.branch}`], { cwd: p.path, token: t.token }));
   console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
 }
