@@ -4,7 +4,7 @@ import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerR
 import assert from "node:assert/strict";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertCriteriaAllowed, assertEligible, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
@@ -1307,4 +1307,15 @@ test("the Mac a branch was pushed from is one short line, without .local", () =>
   assert.equal(branchHost("Pavis-MacBook-Pro.local"), "Pavis-MacBook-Pro");
   assert.equal(branchHost(" studio "), "studio");
   for (const host of ["", "  ", "a\nb", "x".repeat(101), 5, null]) assert.throws(() => branchHost(host), RuleError);
+});
+
+// Astra's review of t641, finding 1: a branches repository's name is one no
+// baseline or task fork can take, since every new baseline is refused the
+// prefix, and a fork begins with its project's baseline name.
+test("a branches repository is named with a prefix no baseline may take", () => {
+  assert.equal(branchesRepoName("Demo"), "branches--demo");
+  assert.equal(branchesRepoName("demo--branches"), "branches--demo--branches");
+  for (const repo of [branchesRepoName("demo"), "branches--x--t1"]) assert.throws(() => assertBaselineName(repo), (e: unknown) => e instanceof RuleError && e.code === "repo_reserved");
+  for (const repo of ["demo", "demo--branches", "branches", "my-branches--x", repoName("branches--demo".slice(1))]) assert.doesNotThrow(() => assertBaselineName(repo), repo);
+  assert.throws(() => branchesRepoName("k".repeat(60)), RuleError);
 });

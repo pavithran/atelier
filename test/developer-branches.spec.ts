@@ -26,6 +26,7 @@ async function setup() {
   await L.setProject(project, "owner");
   await index.registerProject(project);
   const repos = new Set([name]);
+  const descriptions: Record<string, string | null> = { [name]: `Atelier baseline for ${name}` };
   const refs: Record<string, Record<string, string>> = { [name]: { main: HEAD } };
   const minted: Array<{ repo: string; scope: string }> = [];
   const forks: Array<{ from: string; to: string; defaultBranchOnly: unknown }> = [];
@@ -33,8 +34,11 @@ async function setup() {
   const artifacts = { get: async (repo: string) => {
     if (!repos.has(repo)) throw missing(repo);
     return {
-      info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-      fork: async (to: string, opts: { defaultBranchOnly?: boolean }) => { forks.push({ from: repo, to, defaultBranchOnly: opts?.defaultBranchOnly }); repos.add(to); refs[to] = { main: refs[repo].main }; },
+      info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main", description: descriptions[repo] ?? null }),
+      fork: async (to: string, opts: { defaultBranchOnly?: boolean; description?: string }) => {
+        if (repos.has(to)) throw Object.assign(new Error(`repo already exists: ${to}`), { code: "ALREADY_EXISTS" });
+        forks.push({ from: repo, to, defaultBranchOnly: opts?.defaultBranchOnly }); repos.add(to); descriptions[to] = opts?.description ?? null; refs[to] = { main: refs[repo].main };
+      },
       log: async (opts: { ref?: string } = {}) => {
         const hash = refs[repo][opts.ref ?? "main"];
         return hash ? [{ hash, treeHash: "c".repeat(40), parents: [], message: "Draft the idea\n\nMore", author: { name: "Dev" }, committedAt: 1_800_000_000 }] : [];
@@ -49,7 +53,7 @@ async function setup() {
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
   const owner = (method: string, path: string, body?: unknown) => request(method, path, OWNER, "owner", body);
-  return { name, repos, refs, minted, forks, request, owner, branches: `${name}--branches` };
+  return { name, repos, refs, minted, forks, request, owner, branches: `branches--${name}`, index, artifacts: repos, descriptions };
 }
 
 it("the developer's write token is for the branches repository alone, which is made from the baseline's branch on the first push and never the baseline", async () => {
@@ -127,4 +131,53 @@ it("a push is recorded with its commit and Mac only once the branches repository
   expect(list.branches.map((b) => [b.name, b.host])).toEqual([["wip/other", "Air"], ["wip/idea", "Studio"]]);
   // Recording a push moves nothing in the baseline.
   expect(t.refs[t.name]).toEqual({ main: HEAD });
+});
+
+// Astra's review of t641, finding 1: demo's branches repository must never
+// be another project's baseline, in either order. A baseline name may hold
+// any letter Artifacts allows, so the branches repository takes a prefix
+// registration refuses to every new baseline, and the branch routes mint
+// only for the repository this project's Ledger recorded making.
+it("no project can be registered with a baseline named as a branches repository, before or after the branches exist", async () => {
+  const t = await setup();
+  const init = (name: string) => t.owner("PUT", `/projects/${name}`, {});
+  // Before demo has pushed a branch.
+  const before = await init(t.branches);
+  expect(before.status, await before.clone().text()).toBe(409);
+  expect(await before.text()).toContain("repo_reserved");
+  expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
+  // And after: the repository exists, and is still refused as a baseline.
+  const after = await init(t.branches);
+  expect(after.status).toBe(409);
+  expect(await after.text()).toContain("repo_reserved");
+  expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
+});
+
+it("a repository under the branches name that Atelier did not make for this project is refused, and nothing is minted for it", async () => {
+  const t = await setup();
+  // Another project's baseline, or anything made outside the branch route.
+  t.artifacts.add(t.branches);
+  t.refs[t.branches] = { main: "e".repeat(40) };
+  t.descriptions[t.branches] = "Atelier baseline for someone else";
+  for (const scope of ["write", "read"]) {
+    const res = await t.owner("POST", `/projects/${t.name}/branches/token`, { scope });
+    expect(res.status, scope).toBe(scope === "write" ? 409 : 404);
+    expect(await res.text()).not.toContain("upstream-secret");
+  }
+  t.refs[t.branches]["wip/idea"] = WIP;
+  expect((await t.owner("POST", `/projects/${t.name}/branches`, { name: "wip/idea", commit: WIP, host: "Studio" })).status).toBe(404);
+  expect(t.minted).toEqual([]);
+  expect(t.forks).toEqual([]);
+});
+
+it("a fork made for this project whose record was lost is taken once its description names this project", async () => {
+  const t = await setup();
+  const L: any = env.LEDGER.get(env.LEDGER.idFromName(`project:${t.name}`));
+  t.artifacts.add(t.branches);
+  t.refs[t.branches] = { main: HEAD };
+  t.descriptions[t.branches] = `Atelier: the developer's branches of the project stored under ${t.name}`;
+  expect(await L.branchesRepo()).toBe(null);
+  expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
+  expect(await L.branchesRepo()).toBe(t.branches);
+  expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
 });

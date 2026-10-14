@@ -1936,13 +1936,21 @@ export function repoName(project: string, itemId?: string): string {
 
 // The developer's branches (t641): work in progress that travels between
 // the developer's Macs. They live in a repository of their own beside the
-// baseline, BRANCHES_REPO_SUFFIX after the project's key, which only the
-// developer is given a token for: Artifacts scopes a token to a whole
-// repository, read or write, never to refs, so a branch kept in the
-// baseline would be readable with every agent's and runner's read token,
-// and a token that could push it could push main as well. In a repository
-// of their own, no push of a branch can reach the baseline's main, which
-// still moves only through landing and sync.
+// baseline, branchesRepoName(key), which only the developer is given a token
+// for: Artifacts scopes a token to a whole repository, read or write, never
+// to refs, so a branch kept in the baseline would be readable with every
+// agent's and runner's read token, and a token that could push it could push
+// main as well. In a repository of their own, no push of a branch can reach
+// the baseline's main, which still moves only through landing and sync.
+//
+// The two namespaces never meet (Astra's review of t641, finding 1): a
+// project's baseline is repoName(key) and a task fork repoName(key, tN),
+// which may hold any of the letters, digits, . _ - Artifacts allows, so no
+// character is free for the branches repository alone. It takes the fixed
+// prefix BRANCHES_REPO_PREFIX instead, and assertBaselineName refuses that
+// prefix to any baseline a project would be registered with, so no project
+// named branches--demo can be given demo's branches as its baseline, and no
+// fork, which begins with its project's baseline name, can be either.
 //
 // Every developer branch is under DEVELOPER_BRANCH_PREFIX. A NAME given
 // without it is taken under it (`atelier branch push idea` pushes
@@ -1951,8 +1959,16 @@ export function repoName(project: string, itemId?: string): string {
 // another prefix (feature/x, refs/heads/x), which is outside the prefix.
 // The rest of the name keeps to what git check-ref-format takes, more
 // strictly: letters, digits, . _ - and / between parts.
-export const BRANCHES_REPO_SUFFIX = "branches";
+export const BRANCHES_REPO_PREFIX = "branches--";
 export const DEVELOPER_BRANCH_PREFIX = "wip/";
+export function branchesRepoName(key: string): string {
+  const name = `${BRANCHES_REPO_PREFIX}${repoName(key)}`;
+  if (name.length > 63) throw new RuleError("bad_name", `cannot make a branches repository name from "${key}": ${name} is longer than 63 characters`, 400);
+  return name;
+}
+export function assertBaselineName(repo: string): void {
+  if (repo.startsWith(BRANCHES_REPO_PREFIX)) throw new RuleError("repo_reserved", `a baseline cannot be named ${repo}: names beginning ${BRANCHES_REPO_PREFIX} are kept for the developer's branches repositories`, 409);
+}
 const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 export function developerBranch(name: unknown, defaultBranch = "main"): string {
   const refuse = (why: string) => { throw new RuleError("bad_branch", `${typeof name === "string" ? JSON.stringify(name) : "the branch"} ${why}; a developer branch is ${DEVELOPER_BRANCH_PREFIX}NAME, such as ${DEVELOPER_BRANCH_PREFIX}idea`, 400); };

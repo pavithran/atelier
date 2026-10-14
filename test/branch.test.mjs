@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
+import { formatAllDeveloperBranches } from "../cli/status.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 const TOKEN = "branches-secret-641-9f8e7d";
@@ -60,12 +61,12 @@ async function serve(t, f) {
       const developer = req.headers["x-atelier-actor"] === "owner";
       if (req.url === "/api/version") answer = { commit: "c".repeat(40), routeLevel: 28, capabilities: f.capabilities };
       else if (req.url.startsWith("/api/projects/demo/branches") && !developer) { status = 403; answer = { error: "not_project_owner", detail: "only the developer can do this" }; }
-      else if (req.method === "POST" && req.url === "/api/projects/demo/branches/token") answer = { remote: f.branches, token: TOKEN, tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repo: "demo--branches", prefix: "wip/" };
+      else if (req.method === "POST" && req.url === "/api/projects/demo/branches/token") answer = { remote: f.branches, token: TOKEN, tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repo: "branches--demo", prefix: "wip/" };
       else if (req.method === "POST" && req.url === "/api/projects/demo/branches") {
         const held = f.git(f.branches, "rev-parse", `refs/heads/${body.name}`);
         if (held !== body.commit) { status = 409; answer = { error: "branch_not_pushed", detail: "not pushed" }; }
         else { status = 201; answer = f.records[body.name] = { name: body.name, commit: body.commit, subject: f.git(f.branches, "log", "-1", "--format=%s", body.commit), committedAt: null, host: body.host, pushedAt: "2026-10-13T18:30:00.000Z" }; }
-      } else if (req.method === "GET" && req.url === "/api/projects/demo/branches") answer = { repo: "demo--branches", prefix: "wip/", branches: Object.values(f.records) };
+      } else if (req.method === "GET" && req.url === "/api/projects/demo/branches") answer = { repo: "branches--demo", prefix: "wip/", branches: Object.values(f.records) };
       else if (req.url === "/api/projects/demo/standing") answer = { project: { name: "demo", title: "Demo", repo: "demo" }, generatedAt: "2026-10-13T10:00:00.000Z", live: [], waiting: [], queued: [], merged: [], handoffs: [], controlPlane: null, checks: [], partial: [] };
       else if (req.url === "/api/projects/demo/baseline-head") answer = { head: f.git(f.baseline, "rev-parse", "main") };
       else if (req.url === "/api/projects/demo/landing-lease") answer = { lease: null };
@@ -204,4 +205,13 @@ test("a server deployed before the developer's branches refuses the command, say
   assert.match(r.output, /This server predates the developer's branches, so nothing was pushed, fetched or listed/);
   assert.deepEqual(r.seen.map((s) => s.route), ["GET /api/version"]);
   assert.deepEqual(refs(f, f.branches), before);
+});
+
+// Astra's review of t641, follow-up: atelier status names the projects
+// whose branches could not be read rather than showing them as none.
+test("status across projects lists each branch and names the projects whose branches were not read", () => {
+  const b = { name: "wip/idea", commit: "a".repeat(40), subject: "Draft", host: "Studio", pushedAt: "2026-10-13T18:30:00.000Z" };
+  assert.equal(formatAllDeveloperBranches([{ name: "demo", branches: [b] }, { name: "old", branches: null }, { name: "empty", branches: [] }]),
+    "Developer branches\n  demo  wip/idea  aaaaaaaa  Draft  (from Studio, 2026-10-13 18:30 UTC)\n  not read for old (the server keeps none, or could not answer)");
+  assert.equal(formatAllDeveloperBranches([{ name: "empty", branches: [] }]), "");
 });

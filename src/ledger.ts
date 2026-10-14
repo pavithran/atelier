@@ -11,7 +11,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { ledgerRestart, parseLedgerRestart } from "./rules";
+import { assertBaselineName, ledgerRestart, parseLedgerRestart } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -660,6 +660,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
 
 export function assertRepoAvailable(projects: ProjectRecord[], name: string, repo: string): void {
   if (projects.some((p) => p.name === name)) return;
+  // A new baseline never takes a developer branches repository's name (t641).
+  assertBaselineName(repo);
   const other = projects.find((p) => p.name !== name && p.repo === repo);
   if (other) throw new RuleError("repo_taken", `baseline ${repo} is already registered to ${other.name}`, 409);
 }
@@ -1683,6 +1685,25 @@ export class Ledger extends DurableObject<Env> {
   developerBranches(): DeveloperBranch[] {
     return this.sql.exec(`SELECT json FROM developer_branches`).toArray().map((r) => JSON.parse(r.json as string) as DeveloperBranch)
       .sort((a, b) => b.pushedAt.localeCompare(a.pushedAt) || a.name.localeCompare(b.name));
+  }
+
+  // The branches repository Atelier made for this project (t641), recorded
+  // when it was made: the only repository the branch routes mint a token for.
+  branchesRepo(): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'branches-repo'`).toArray()[0];
+    return row ? String(row.value) : null;
+  }
+
+  recordBranchesRepo(actor: string, repo: string): string {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branches repository", 403);
+    const held = this.branchesRepo();
+    if (held && held !== repo) throw new RuleError("branches_repo_mismatch", `this project's branches repository is ${held}, not ${repo}`, 409);
+    if (!held) {
+      const at = new Date().toISOString();
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('branches-repo', ?)`, repo);
+      this.log(null, actor, "branches.repo", { repo }, at);
+    }
+    return repo;
   }
 
   recordDeveloperBranch(actor: string, branch: Omit<DeveloperBranch, "pushedAt">): DeveloperBranch {
