@@ -7,10 +7,10 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, excludesPrivate, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, excludesPrivate, mergeConfigForSave, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
@@ -638,29 +638,6 @@ test("no read removes a name from the copy: a merged copy keeps guarding both en
   assert.deepEqual(entry.privateFromList, ["PROJECT.md", "other-notes.md"]);
 });
 
-// Astra's ninth review of t645: config.json was read, changed and replaced
-// with no lock, so two commands at once lost each other's change. Two
-// processes saving different projects' private names, many times over,
-// keep every name of both.
-test("two processes saving private settings at once lose nothing", async (t) => {
-  const f = setup(t);
-  f.write({ a: { path: f.root, branch: "main" }, b: { path: f.root, branch: "main" } });
-  const module = resolve("cli/private.mjs");
-  const writer = (project) => new Promise((done, fail) => {
-    const child = spawn(process.execPath, ["--input-type=module", "-e", `
-      const { savePrivateFields } = await import(${JSON.stringify(module)});
-      for (let i = 0; i < 40; i++) savePrivateFields(${JSON.stringify(project)}, { private: ["n" + i + ".md"] });
-    `], { env: { ...process.env, ATELIER_CONFIG_DIR: join(f.root, "config") }, stdio: ["ignore", "ignore", "pipe"] });
-    let err = "";
-    child.stderr.on("data", (d) => { err += d; });
-    child.on("close", (code) => (code === 0 ? done() : fail(new Error(err))));
-  });
-  await Promise.all([writer("a"), writer("b")]);
-  const projects = f.read().projects;
-  for (const name of ["a", "b"]) assert.equal(projects[name].private.length, 40, `${name} keeps every name`);
-  assert.ok(!existsSync(join(f.root, "config", "config.json.lock")), "the lock is gone");
-});
-
 test("a lock left by a process that is gone is taken over", (t) => {
   const f = setup(t);
   const lock = join(f.root, "config", "config.json.lock");
@@ -671,4 +648,103 @@ test("a lock left by a process that is gone is taken over", (t) => {
   assert.equal(savePrivateFields("demo", { private: ["x.md"] }), true);
   assert.deepEqual(f.read().projects.demo.private, ["x.md"]);
   assert.ok(!existsSync(lock));
+});
+
+// Astra's ninth and tenth reviews of t645: writers of config.json and of the
+// list in iCloud must not lose each other's change. Each test makes two
+// writers overlap for certain: the first stops between its read and its
+// write (testHold), the second runs meanwhile; with the lock the second
+// waits, without it (ATELIER_TEST_NO_LOCK) the first's stale write loses
+// the second's change, which shows the test can see a lost update.
+function child(script, env) {
+  const proc = spawn(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  proc.stdout.on("data", (d) => { out += d; });
+  proc.stderr.on("data", (d) => { out += d; });
+  const done = new Promise((ok) => proc.on("close", (code) => ok({ code, out })));
+  return { proc, done, exited: () => proc.exitCode !== null };
+}
+const until = async (check, ms = 10_000) => { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 10)); } };
+async function overlap(t, { stage, first, second, env, lock }) {
+  const hold = join(mkdtempSync(join(tmpdir(), "atelier-hold-")), "hold");
+  t.after(() => rmSync(dirname(hold), { recursive: true, force: true }));
+  const off = lock ? {} : { ATELIER_TEST_NO_LOCK: "1" };
+  const a = child(first, { ...env, ...off, ATELIER_TEST_HOLD: hold, ATELIER_TEST_HOLD_STAGE: stage });
+  await until(() => existsSync(`${hold}.read`));
+  const b = child(second, { ...env, ...off });
+  if (lock) {
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(b.exited(), false, "the second writer waits for the lock");
+  } else await b.done;
+  writeFileSync(`${hold}.go`, "");
+  const [ra, rb] = await Promise.all([a.done, b.done]);
+  assert.equal(ra.code, 0, ra.out);
+  assert.equal(rb.code, 0, rb.out);
+}
+const moduleUrl = JSON.stringify(resolve("cli/private.mjs"));
+
+for (const lock of [true, false]) {
+  test(`savePrivateFields for two projects at once ${lock ? "keeps both" : "loses one without the lock"}`, async (t) => {
+    const f = setup(t);
+    f.write({ a: { path: f.root, branch: "main" }, b: { path: f.root, branch: "main" } });
+    const save = (project) => `const { savePrivateFields } = await import(${moduleUrl}); savePrivateFields(${JSON.stringify(project)}, { private: [${JSON.stringify(project + ".md")}] });`;
+    await overlap(t, { stage: "update", first: save("a"), second: save("b"), env: { ATELIER_CONFIG_DIR: join(f.root, "config") }, lock });
+    const p = f.read().projects;
+    assert.deepEqual(p.a.private, ["a.md"]);
+    if (lock) assert.deepEqual(p.b.private, ["b.md"]); else assert.equal(p.b.private, undefined, "b's name was lost");
+  });
+
+  test(`a whole-config save beside another command's private save ${lock ? "keeps both" : "loses one without the lock"}`, async (t) => {
+    const f = setup(t);
+    f.write({ a: { path: f.root, branch: "main" }, b: { path: f.root, branch: "main" } });
+    const env = { ATELIER_CONFIG_DIR: join(f.root, "config") };
+    // The first is a command that read the config at its start and changed a's branch.
+    const whole = `const { readFileSync } = await import("node:fs");
+      const { saveWholeConfig } = await import(${moduleUrl});
+      const file = process.env.ATELIER_CONFIG_DIR + "/config.json";
+      const snapshot = JSON.parse(readFileSync(file, "utf8")), memory = structuredClone(snapshot);
+      memory.projects.a.branch = "next";
+      saveWholeConfig(memory, snapshot);`;
+    const other = `const { savePrivateFields } = await import(${moduleUrl}); savePrivateFields("b", { private: ["b.md"] });`;
+    await overlap(t, { stage: "save", first: whole, second: other, env, lock });
+    const p = f.read().projects;
+    assert.equal(p.a.branch, "next");
+    if (lock) assert.deepEqual(p.b.private, ["b.md"]); else assert.equal(p.b.private, undefined, "b's name was lost");
+  });
+
+  test(`two private add commands at once ${lock ? "keep both names in the list" : "lose one without the lock"}`, async (t) => {
+    const f = setup(t);
+    writeFileSync(join(f.keep, "one.md"), "1\n");
+    writeFileSync(join(f.keep, "two.md"), "2\n");
+    const env = { ...f.env, HOME: f.home, ATELIER_PRIVATE_ROOT: f.icloud, ATELIER_CONFIG_DIR: join(f.root, "config"), ATELIER_CACHE: join(f.root, "cache"), ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_TOKEN: "t", ATELIER_ACTOR: "owner" };
+    const add = (name) => `const { spawnSync } = await import("node:child_process");
+      const r = spawnSync(process.execPath, [${JSON.stringify(resolve("cli/atelier.mjs"))}, "private", "add", ${JSON.stringify(name)}, "--project", "demo"], { encoding: "utf8", env: process.env });
+      process.stdout.write(r.stdout + r.stderr); process.exit(r.status ?? 1);`;
+    await overlap(t, { stage: "list", first: add("one.md"), second: add("two.md"), env, lock });
+    const listed = parsePrivateList(readFileSync(join(f.keep, ".atelier-private"), "utf8")).paths;
+    if (lock) assert.deepEqual(listed, ["one.md", "two.md"]); else assert.deepEqual(listed, ["one.md"], "two.md was lost from the list");
+  });
+}
+
+test("a whole-config save keeps what another command wrote since, and every private name", () => {
+  const snapshot = { server: "s", projects: { a: { path: "/a", branch: "main" }, b: { path: "/b", branch: "main", private: ["x.md"] }, gone: { path: "/g" } } };
+  const memory = structuredClone(snapshot);
+  memory.projects.a.branch = "next";
+  delete memory.projects.gone;
+  memory.projects.b.private = ["x.md"];
+  const disk = structuredClone(snapshot);
+  disk.projects.b.private = ["x.md", "y.md"];
+  disk.projects.b.privateFromList = ["z.md"];
+  disk.projects.c = { path: "/c" };
+  disk.owner = "o";
+  const merged = mergeConfigForSave(disk, memory, snapshot);
+  assert.equal(merged.projects.a.branch, "next", "this process's change is written");
+  assert.equal(merged.projects.gone, undefined, "this process's removal is written");
+  assert.deepEqual(merged.projects.b.private, ["x.md", "y.md"], "another's private name is kept");
+  assert.deepEqual(merged.projects.b.privateFromList, ["z.md"]);
+  assert.deepEqual(merged.projects.c, { path: "/c" }, "another's new entry is kept");
+  assert.equal(merged.owner, "o");
+  // An entry this process changed keeps every private name the disk has too.
+  memory.projects.b.branch = "other";
+  assert.deepEqual(mergeConfigForSave(disk, memory, snapshot).projects.b.private, ["x.md", "y.md"]);
 });
