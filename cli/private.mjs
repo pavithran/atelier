@@ -424,31 +424,43 @@ export function mergeConfigForSave(disk, memory, snapshot) {
     // former names.
     const now = changed && !dp[name] && sp[name] ? Object.keys(dp).find((key) => Array.isArray(dp[key]?.formerNames) && dp[key].formerNames.includes(name)) : null;
     if (now) { renamed.push([name, now]); continue; }
-    // Unchanged here: the disk's entry stands, and one another command
-    // removed or moved since stays gone.
-    const base = changed ? mp[name] : dp[name];
-    if (!base) continue;
-    const entry = { ...base };
-    const other = changed ? dp[name] : mp[name];
-    for (const field of PRIVATE_FIELDS) {
-      const joined = [...new Set([...(Array.isArray(entry[field]) ? entry[field] : []), ...(Array.isArray(other?.[field]) ? other[field] : [])])];
-      if (Array.isArray(entry[field]) || Array.isArray(other?.[field])) entry[field] = field === "formerNames" ? joined : plainPaths(joined);
+    // Field by field (Astra's fourteenth review of t645): a field this
+    // process changed since it read the config is written as it holds it;
+    // every other field is left as the disk has it, so another command's
+    // change to a field this process did not touch (a new privateHome) is
+    // kept. An entry another command removed since stays gone unless this
+    // process changed it.
+    if (!dp[name] && !changed) continue;
+    const entry = { ...(dp[name] ?? mp[name]) };
+    if (dp[name]) applyChanges(entry, mp[name], sp[name] ?? {});
+    joinPrivate(entry, mp[name]);
+    for (const field of ["formerNames"]) {
+      const joined = [...new Set([...(dp[name]?.[field] ?? []), ...(mp[name]?.[field] ?? [])])];
+      if (joined.length) entry[field] = joined;
     }
-    if (!entry.privateHome && other?.privateHome) entry.privateHome = other.privateHome;
     out.projects[name] = entry;
   }
   for (const [name, now] of renamed) {
     const entry = out.projects[now], mine = mp[name], before = sp[name] ?? {};
     if (!entry) continue;
-    for (const [field, value] of Object.entries(mine)) {
-      if (PRIVATE_FIELDS.includes(field) || field === "privateHome") continue;
-      if (!same(value, before[field])) entry[field] = value;
-    }
-    for (const field of Object.keys(before)) if (!(field in mine) && !PRIVATE_FIELDS.includes(field) && field !== "privateHome") delete entry[field];
+    applyChanges(entry, mine, before);
     joinPrivate(entry, mine);
     entry.formerNames = [...new Set([...(entry.formerNames ?? []), ...(Array.isArray(mine.formerNames) ? mine.formerNames : [])])].filter((n) => n !== now);
   }
   return out;
+}
+
+// Writes into `entry` (the disk's) each field `mine` changed since `before`:
+// a set field is set, a removed one removed. The private lists and former
+// names are joined by the caller, never replaced; a folder named on disk is
+// kept unless this process named another.
+function applyChanges(entry, mine, before) {
+  for (const field of new Set([...Object.keys(mine ?? {}), ...Object.keys(before)])) {
+    if (PRIVATE_FIELDS.includes(field)) continue;
+    if (same(mine?.[field], before[field])) continue;
+    if (mine?.[field] === undefined) { if (field !== "privateHome") delete entry[field]; }
+    else entry[field] = mine[field];
+  }
 }
 
 // A whole-config save, as the CLI's saveConfig makes it: under the lock, the
@@ -587,6 +599,25 @@ export function joinPrivate(entry, other) {
   return entry;
 }
 
+// The links Atelier made in a checkout, kept in its Git directory
+// (atelier-private-links, one JSON line each), so a later link to a moved
+// folder can be told from a developer's own.
+function linksFile(checkout) {
+  const r = gitRead(checkout, ["rev-parse", "--git-path", "atelier-private-links"]);
+  if (r.status !== 0) throw new Error(`${checkout} is not a Git checkout`);
+  return resolve(checkout, r.stdout.trim());
+}
+function linkedBefore(checkout) {
+  const made = new Map();
+  let text = "";
+  try { text = readFileSync(linksFile(checkout), "utf8"); } catch { return made; }
+  for (const line of text.split("\n")) { try { const { path, target } = JSON.parse(line); made.set(path, target); } catch { /* not a record */ } }
+  return made;
+}
+function recordLink(checkout, path, target) {
+  appendFileSync(linksFile(checkout), `${JSON.stringify({ path, target })}\n`);
+}
+
 // The checkout's info/exclude file, wherever its Git directory keeps it.
 function excludeFile(checkout) {
   const r = gitRead(checkout, ["rev-parse", "--git-path", "info/exclude"]);
@@ -715,7 +746,16 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
     catch (error) { result.refused.push(path); say(`${path}: cannot be read (${error.code ?? error.message}); not linked.`); continue; }
     if (!there) { result.missing.push(path); say(`${path}: not in ${home}; not linked.`); continue; }
     if (stat?.isSymbolicLink()) {
-      if (readlinkSync(link) === target) { result.kept.push(path); continue; }
+      const points = readlinkSync(link);
+      if (points === target) { result.kept.push(path); continue; }
+      // Only a link Atelier made is replaced (Astra's fourteenth review of
+      // t645): one into the project's folder, or one this checkout's record
+      // says Atelier made there. A developer's own link is left as it is.
+      if (!points.startsWith(`${home}/`) && linkedBefore(checkout).get(path) !== points) {
+        result.refused.push(path);
+        say(`${path}: a link Atelier did not make is already in the checkout (to ${points}); it was left as it is, not linked. Remove it, then run atelier private add ${path} --project ${name} to link it.`);
+        continue;
+      }
       unlinkSync(link);
     } else if (stat) {
       result.refused.push(path);
@@ -724,6 +764,7 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
     }
     mkdirSync(dirname(link), { recursive: true });
     symlinkSync(target, link);
+    recordLink(checkout, path, target);
     result.linked.push(path);
   }
   const done = [...result.linked, ...result.kept];
