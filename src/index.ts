@@ -1708,16 +1708,27 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         if (NOT_FOUND.test(codeOf(err))) return null;
         throw err;
       });
-      const top = await readTop();
-      if (!top || top.hash !== commit) throw new RuleError("branch_not_pushed", `${repo} holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409);
-      const subject = top.message.split("\n")[0].slice(0, 200);
-      const committedAt = Number.isFinite(top.committedAt) ? new Date(top.committedAt * 1000).toISOString() : null;
-      // The Ledger reads the tip again as it writes, so a push another Mac
-      // recorded since is never overwritten by this older one (t641).
-      const result = await L.recordDeveloperBranch(actor, { name, commit, subject, committedAt, host }, async () => (await readTop())?.hash ?? null);
-      if ("recorded" in result) return json(result.recorded, 201);
-      const from = result.current && result.current.commit === result.tip ? ` from ${result.current.host}` : "";
-      return json({ error: "branch_moved", detail: `another Mac pushed ${name} since: the branches repository holds ${result.tip ? result.tip.slice(0, 8) : "no such branch"}${from}, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`, ...result }, 409);
+      // Compare-and-set (t641): the branch's record is read, then its tip
+      // in the branches repository, and the push is recorded only if the
+      // record is still the one read. A record another Mac wrote in between
+      // sends this round again, which then finds that Mac's commit as the
+      // tip and answers branch_moved; an older push never replaces it. The
+      // reads of the tip are the Worker's, outside the Ledger, so one that
+      // fails answers 503 and records nothing.
+      for (let round = 1; ; round++) {
+        const expected = await L.developerBranch(name);
+        const top = await readTop();
+        if (!top || top.hash !== commit) {
+          if (round === 1 && !(expected && top && expected.commit === top.hash)) throw new RuleError("branch_not_pushed", `${repo} holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409);
+          const from = expected && top && expected.commit === top.hash ? ` from ${expected.host}` : "";
+          return json({ error: "branch_moved", detail: `another Mac pushed ${name} since: the branches repository holds ${top ? top.hash.slice(0, 8) : "no such branch"}${from}, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`, tip: top?.hash ?? null, current: expected }, 409);
+        }
+        const subject = top.message.split("\n")[0].slice(0, 200);
+        const committedAt = Number.isFinite(top.committedAt) ? new Date(top.committedAt * 1000).toISOString() : null;
+        const result = await L.recordDeveloperBranch(actor, { name, commit, subject, committedAt, host }, expected);
+        if ("recorded" in result) return json(result.recorded, 201);
+        if (round >= 5) throw new RuleError("branch_busy", `${name} was recorded again by another push on every attempt; nothing was recorded for ${commit.slice(0, 8)}: run atelier branch ls`, 409);
+      }
     }
     throw new RuleError("not_found", "no such route", 404);
   }
