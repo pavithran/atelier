@@ -139,13 +139,16 @@ test("clone makes a checkout of the baseline's main with its history and receipt
   assert.match(s.output, new RegExp(`Checkout: in step\\. main @ ${f.head.slice(0, 8)} holds the baseline's head`));
 });
 
-test("clone defaults to ~/src/PROJECT and takes an empty folder", async (t) => {
+test("clone defaults to ~/ai-projects/PROJECT and takes an empty folder", async (t) => {
   const f = setup(t);
-  const dir = join(f.home, "src", "demo");
+  const dir = join(f.home, "ai-projects", "demo");
   const r = await run(t, f, ["clone", "demo"]);
   assert.equal(r.code, 0, r.output);
   assert.equal(f.git(dir, "rev-parse", "HEAD"), f.head);
   assert.equal(r.config.projects.demo.path, dir);
+  // Not ~/src/PROJECT, the layout before the portfolio moved to ~/ai-projects
+  // (the post-move portfolio audit, 2026-10-14).
+  assert.ok(!existsSync(join(f.home, "src")), "clone made a folder under ~/src");
   // An empty folder already there is fine.
   const g = setup(t), empty = join(g.root, "empty");
   mkdirSync(empty);
@@ -371,13 +374,13 @@ test("a Mac with a fresh config links the files .atelier-private lists with the 
   const f = setup(t);
   const keep = icloudFolder(f);
   writeFileSync(join(keep, ".atelier-private"), "# private\nPROJECT.md\n../outside.md\nnotes/plan.md\n");
-  const dir = join(f.home, "src", "demo");
+  const dir = join(f.home, "ai-projects", "demo");
   const r = await run(t, f, ["clone", "demo"]);
   assert.equal(r.code, 0, r.output);
   assert.equal(readlinkSync(join(dir, "PROJECT.md")), join(keep, "PROJECT.md"));
   assert.equal(readlinkSync(join(dir, "notes", "plan.md")), join(keep, "notes", "plan.md"));
   assert.match(r.output, /\.atelier-private line 3: "\.\.\/outside\.md" has an empty, "\." or "\.\." part.*; skipped\./);
-  assert.ok(!existsSync(join(f.home, "src", "outside.md")));
+  assert.ok(!existsSync(join(f.home, "ai-projects", "outside.md")));
   assert.ok(!existsSync(join(dir, ".atelier-private")), "the list itself is never linked");
   assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
   assert.equal(r.config.projects.demo.private, undefined, "nothing had to be named on this Mac");

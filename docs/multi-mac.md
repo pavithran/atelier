@@ -13,7 +13,7 @@ happens when two Macs disagree. The commands below name the project with
 
 | What | Where it lives on each Mac | How it reaches another Mac |
 | --- | --- | --- |
-| Code and history | The project's checkout, `~/src/PROJECT` unless `atelier clone` is given another folder | Git, through the baseline: `atelier pull` brings what another Mac carried there |
+| Code and history | The project's checkout, `~/ai-projects/PROJECT` unless `atelier clone` is given another folder | Git, through the baseline: `atelier pull` brings what another Mac carried there |
 | Receipts | `refs/notes/atelier` in the checkout, which `git log` shows beside the commits | Fetched by `atelier clone` and merged by `atelier pull` |
 | Work in progress | Branches named `wip/NAME` in the checkout | The project's branches repository, through `atelier branch push` and `atelier branch fetch` |
 | Private files, such as `PROJECT.md` | The project's folder in iCloud, linked into the checkout | iCloud |
@@ -76,7 +76,7 @@ Artifacts holds the pointers alone.
 4. Install the dependencies in the new checkout.
 
    ```bash
-   cd ~/src/PROJECT && npm ci
+   cd ~/ai-projects/PROJECT && npm ci
    ```
 
 5. Check the private files. Any that iCloud had not yet downloaded are listed
