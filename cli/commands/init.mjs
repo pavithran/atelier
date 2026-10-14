@@ -6,7 +6,7 @@ import { checkFiles, preparationPaths } from "../../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
-import { discoverPrivate, guardedPush, privateGuardFor, remoteBases } from "../private.mjs";
+import { discoverPrivate, guardedPush, moveProjectEntry, privateGuardFor, remoteBases } from "../private.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
@@ -27,8 +27,10 @@ export default async function initCommand() {
   try { ({ name, existing } = initName(cfg.projects, top, args.name, args["rename-local"] === true)); }
   catch (err) { die(err.message); }
   if (args["rename-local"] === true) {
-    cfg.projects[name] = cfg.projects[existing];
-    if (name !== existing) delete cfg.projects[existing];
+    // The old name stays with the entry as a former name, so a task
+    // workspace still named it stays guarded (t645).
+    const moved = moveProjectEntry(cfg.projects, existing, name);
+    if (moved.error) die(moved.error);
     saveConfig(cfg);
     console.log(`Local registration changed from ${existing} to ${name}. No server project or repository was changed.`);
     return;

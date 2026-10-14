@@ -1,3 +1,4 @@
+import { projectKey } from "../cli/private.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -113,7 +114,8 @@ test("CLI rename refuses a different name unless it changes only local config", 
   assert.deepEqual(config(), initial);
   const renamed = command(["init", "--name", "ikon", "--rename-local"]);
   assert.equal(renamed.status, 0, renamed.stderr);
-  assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  // The old name stays with the entry, for workspaces made before (t645).
+  assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog, formerNames: ["weblog"] } });
   assert.deepEqual(calls(), []);
 }));
 
@@ -161,7 +163,7 @@ test("CLI rename leaves the local config alone when the server answers the same 
   assert.equal(prepared.status, 0, prepared.stderr);
   const finished = command(["projects", "rename", "ikon", "ikon"]);
   assert.equal(finished.status, 0, finished.stderr);
-  assert.deepEqual(config().projects, { ikon: initial.projects.weblog });
+  assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog, formerNames: ["weblog"] } });
   assert.equal(finished.stdout, "ikon is the project's name on https://atelier.test, and the rename that gave it that name is complete. The local config is unchanged.\n");
 }));
 
@@ -275,4 +277,40 @@ else if (!process.argv.includes('status') && !process.argv.includes('fetch')) pr
   assert.deepEqual(body.execution, execution);
   assert.ok(body.protected.includes("manual/**"));
   assert.ok(body.protected.includes("security/**"));
+}));
+
+// Astra's seventh review of t645: init --rename-local moved the entry
+// without its old name, and projects rename into an existing entry dropped
+// the source's private settings. Both go through moveProjectEntry.
+test("init --rename-local keeps the old name, so a workspace still named it stays guarded", () => fixture(({ command, config }) => {
+  const renamed = command(["init", "--name", "ikon", "--rename-local"]);
+  assert.equal(renamed.status, 0, renamed.stderr);
+  const projects = config().projects;
+  assert.equal(projectKey(projects, "weblog"), "ikon");
+}));
+
+test("projects rename into an existing entry keeps every private setting of both", () => fixture(({ command, initial, config }) => {
+  const prepared = command(["init", "--name", "ikon", "--rename-local"]);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const file = join(initial.projects.weblog.path, "config.json");
+  const both = { ...config(), projects: {
+    ikon: { ...config().projects.ikon, private: ["a.md"], privateFromList: ["b.md"] },
+    weblog: { path: "/elsewhere", branch: "old", private: ["PROJECT.md"], privateFromList: ["notes.md"], privateHome: "/keep/weblog", formerNames: ["older"] },
+  } };
+  writeFileSync(file, JSON.stringify(both));
+  const renamed = command(["projects", "rename", "weblog", "ikon"]);
+  assert.equal(renamed.status, 0, renamed.stderr);
+  const ikon = config().projects.ikon;
+  assert.equal(config().projects.weblog, undefined);
+  assert.deepEqual(ikon.private, ["a.md", "PROJECT.md"]);
+  assert.deepEqual(ikon.privateFromList, ["b.md", "notes.md"]);
+  assert.equal(ikon.privateHome, "/keep/weblog");
+  assert.deepEqual(ikon.formerNames.sort(), ["older", "weblog"]);
+  // Two different folders are not guessed between: refused, nothing changed.
+  const clash = { ...config(), projects: { ikon: { ...ikon, privateHome: "/keep/ikon" }, weblog: { path: "/elsewhere", branch: "old", privateHome: "/keep/weblog" } } };
+  writeFileSync(file, JSON.stringify(clash));
+  const refused = command(["projects", "rename", "weblog", "ikon"]);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /name different folders for their private files \(\/keep\/weblog and \/keep\/ikon\); nothing in the local config was changed/);
+  assert.deepEqual(config(), clash);
 }));
