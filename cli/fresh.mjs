@@ -39,7 +39,8 @@ export function savePairs(gitDir, project, pairs) {
 // A commit object's bytes, read and written without decoding, so a message or
 // name in any encoding passes through unchanged.
 function bytes(cwd, args, input) {
-  const r = spawnSync("git", args, { cwd, input, maxBuffer: 256 * 1024 * 1024 });
+  // The objects themselves, never a replacement (refs/replace) of them.
+  const r = spawnSync("git", args, { cwd, input, maxBuffer: 256 * 1024 * 1024, env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" } });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${String(r.stderr).trim()}`);
   return r.stdout;
 }

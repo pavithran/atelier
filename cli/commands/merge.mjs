@@ -6,6 +6,7 @@ import { acceptancePolicy, mergeContext, mergePolicyDecision } from "../../src/c
 import { pathCollisions } from "../../src/rules.ts";
 import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
 import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
+import { NO_REPLACE } from "../pull.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
@@ -205,13 +206,16 @@ export default async function mergeCommand() {
     // A project whose baseline holds part of its history (cli/fresh.mjs)
     // merges the task's commits rebuilt onto the paired project commit.
     const fresh=p.fresh===true, pairs=fresh?loadPairs(gitDir,name):null;
+    // Another checkout has carried commits to the baseline (t644): pull
+    // brings them in before this checkout lands anything on top.
+    const behind=()=>`${p.branch} does not hold the baseline's ${p.branch} (${short(baselineHead)}): another checkout has carried commits to the baseline since this one last matched it. Nothing was merged. Run atelier pull --project ${name} to bring them into this checkout, then atelier merge ${id} again.`;
     if (!journal.state) {
       if (fresh) {
         const paired=pairs[baselineHead];
-        if (!paired) die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
+        if (!paired) die(behind());
         if (local!==paired) die(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
       }
-      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
+      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true,env:NO_REPLACE}).status!==0) die(behind());
       journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
     }
     if (!journal.state.mergeCommit) {

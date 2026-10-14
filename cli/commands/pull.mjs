@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { carryBaseline, loadPairs, savePairs } from "../fresh.mjs";
+import { NO_REPLACE, historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, P, args, call, cfg, die, landingGit, landingHome, project, short } from "../atelier.mjs";
 
@@ -27,12 +28,22 @@ import { OWNER, P, args, call, cfg, die, landingGit, landingHome, project, short
 // parent, since atelier sync carries only a first-parent line that continues
 // from the commit the baseline matches.
 export default async function pullCommand() {
+  // Every Git command here, and the commit rebuilds in cli/fresh.mjs, reads
+  // the objects themselves, never a replacement of them (refs/replace): a
+  // replacement that gave main the baseline's head as a parent would make
+  // pull report it held what it lacks (review of t644, finding 4).
+  Object.assign(process.env, NO_REPLACE);
   const git = landingGit;
   if (args._.length > 1) die(COMMAND_USAGE.pull);
   const name = project();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; make its checkout with atelier clone ${name}`), cwd = p.path;
   if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first, then pull");
-  if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
+  // The branch by its full name: a tag of the same name is not main.
+  if (git(["symbolic-ref", "-q", "HEAD"], { cwd, allowFail: true }).stdout?.trim() !== `refs/heads/${p.branch}`) die(`check out ${p.branch} in ${cwd} first`);
+  // A grafts file or a shallow boundary changes the history Git shows and
+  // cannot be turned off for one command, so pull reads none.
+  const override = historyOverride(git, cwd);
+  if (override) die(`${override}. Nothing was pulled.`);
   const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
   let unlock;
   try { unlock = landingLock(landing); } catch (error) { die(error.message); }
@@ -52,18 +63,23 @@ export default async function pullCommand() {
     const receipts = notesTip ? mergeNotes(git, cwd, notesTip) : null;
     const receiptsLine = receipts === null ? "The baseline holds no receipts." : `Receipts: ${receipts} new on refs/notes/atelier, merged with this checkout's own.`;
 
-    let target = baselineHead;
+    let target = baselineHead, pair = () => {};
     const fresh = p.fresh === true;
     if (fresh) {
       const pairs = loadPairs(gitDir, name);
       let carried;
       try { carried = carryBaseline(git, cwd, baselineHead, pairs); } catch (error) { die(error.message); }
-      if (Object.keys(carried.pairs).length) savePairs(gitDir, name, { ...pairs, ...carried.pairs });
       target = carried.head;
+      // The new pairs are saved once main holds them, never before: after a
+      // pull that conflicts, main does not hold the baseline's head, and
+      // sync must still find it unpaired and name atelier pull (review of
+      // t644, finding 3). A later pull carries the same commits again.
+      if (Object.keys(carried.pairs).length) pair = () => savePairs(gitDir, name, { ...pairs, ...carried.pairs });
     }
-    const head = git(["rev-parse", "HEAD"], { cwd });
+    const head = git(["rev-parse", "--verify", `refs/heads/${p.branch}^{commit}`], { cwd });
     const holds = (older, newer) => git(["merge-base", "--is-ancestor", older, newer], { cwd, allowFail: true }).status === 0;
     if (holds(target, head)) {
+      pair();
       console.log(`${name}: ${p.branch} @ ${short(head)} already holds the baseline's ${p.branch} @ ${short(baselineHead)}; no commits to bring.`);
       return console.log(receiptsLine);
     }
@@ -73,6 +89,7 @@ export default async function pullCommand() {
     const subjects = git(["log", "--format=  %h %s", "-n", "20", `${head}..${target}`], { cwd });
     if (local === 0) {
       git(["merge", "--ff-only", "--quiet", target], { cwd });
+      pair();
       console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch}; ${p.branch} moved from ${short(head)} to ${short(target)}.`);
       console.log(subjects);
       return console.log(receiptsLine);
@@ -91,6 +108,7 @@ export default async function pullCommand() {
     const parents = fresh ? [target, head] : [head, target];
     const commit = git(["commit-tree", tree, "-p", parents[0], "-p", parents[1], "-m", `Merge the baseline's ${p.branch} into ${p.branch} (atelier pull)`], { cwd });
     git(["merge", "--ff-only", "--quiet", commit], { cwd });
+    pair();
     console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch} and merged them with ${plural(local, "local commit")}; ${p.branch} is at ${short(commit)}.`);
     console.log(subjects);
     console.log(receiptsLine);

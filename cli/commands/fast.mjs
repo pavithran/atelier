@@ -1,7 +1,7 @@
 // atelier fast. Its forms, flags and help are declared in src/usage/commands/fast.ts.
 import { COMMAND_USAGE } from "../help.mjs";
 import { I, OWNER, P, actingHeaders, actor, args, call, cfg, die, fastTakeWorkspace, git, itemArg, landingGit, project, wsConfig } from "../atelier.mjs";
-import { behindBaseline, holdsBaseline } from "../pull.mjs";
+import { behindRefusal } from "../pull.mjs";
 import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs, postPending, readPending, readySources } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
@@ -38,9 +38,8 @@ export default async function fastCommand() {
   landingGit(["fetch", "--quiet", "--no-tags", base.remote, "main"], { cwd, token: base.token });
   const baselineHead = landingGit(["rev-parse", "FETCH_HEAD"], { cwd });
   const gitDir = landingGit(["rev-parse", "--absolute-git-dir"], { cwd });
-  if (!holdsBaseline(landingGit, cwd, { gitDir, project: name, fresh: cfg.projects?.[name]?.fresh === true, baselineHead, head: landingGit(["rev-parse", "main"], { cwd }) })) {
-    die(behindBaseline({ name, branch: "main", baselineHead, nothing: "Nothing was merged.", command: `atelier fast land ${rest.join(" ")} --project ${name}` }));
-  }
+  const behind = behindRefusal(landingGit, cwd, { gitDir, name, fresh: cfg.projects?.[name]?.fresh === true, branch: "main", baselineHead, nothing: "Nothing was merged.", command: `atelier fast land ${rest.join(" ")} --project ${name}` });
+  if (behind) die(behind);
   const titles = {};
   for (const { id } of pairs) {
     const item = await call("GET", I(name, id), undefined, OWNER);

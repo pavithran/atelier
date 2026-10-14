@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Setup", line: 1, slot: 37,
       form: "pull",
-      about: "Brings this Mac's checkout up to the project's baseline, which another Mac may have moved on: fetches the baseline's main and its receipts with a read token it mints and keeps nowhere, with every Git hook off, merges the receipts on `refs/notes/atelier` into the checkout's own (a receipt not yet pushed is kept), then fast-forwards main, or merges it with the local commits, and says what it brought. A merge that conflicts changes nothing and names the paths. For a baseline built with `--history-since`, the baseline's new commits are carried into the checkout through its baseline map first. `sync`, `publish` and `fast land` refuse while main does not hold the baseline's main, and name this command.",
+      about: "Brings this Mac's checkout up to the project's baseline, which another Mac may have moved on: fetches the baseline's main and its receipts with a read token it mints and keeps nowhere, with every Git hook off, merges the receipts on `refs/notes/atelier` into the checkout's own (a receipt not yet pushed is kept), then fast-forwards main, or merges it with the local commits, and says what it brought. A merge that conflicts changes nothing and names the paths. For a baseline built with `--history-since`, the baseline's new commits are carried into the checkout through its baseline map first. A grafts file or a shallow history is refused, and replacement refs are not read. `sync`, `publish`, `merge` and `fast land` refuse while main does not hold the baseline's main, and name this command.",
     },
   ],
   flags: {},
