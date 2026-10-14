@@ -147,6 +147,21 @@ test("the receipt names a fast landing with its receipt and the developer's word
   assert.match(paged, /landed in fast mode by pavi: bbbbbbbb built by claude-code\/opus-5\.5, merge commit 5af22431; npm test passed, output sha256 ffffffffffff; fast mode: forks fail$/m);
 });
 
+// t653: a merge made outside Atelier and recorded afterwards is told as
+// that, with the reviews as given, and never as an accepted head merged on
+// the baseline, the line a gated landing gets.
+test("the receipt names a merge recorded after the fact as made outside Atelier, with the reviews as given", () => {
+  const story = { item: detail().item, events: [
+    ev(2, "2026-10-14T10:00:00.000Z", "pavi", "item.merged", { mergeCommit: M, head: B, observedOnBaseline: true, outside: true }),
+    ev(1, "2026-10-14T10:00:00.000Z", "pavi", "item.merge_recorded", { mergeCommit: M, commit: B, reviews: [{ by: "codex/gpt-6-astra", verdict: "approve", head: B, at: "2026-10-13" }, { by: "antigravity/gemini-4-argon", verdict: "reject", head: A }], note: "merged under the freeze", outside: true }),
+  ] };
+  const text = receiptText("atelier", "t1", story);
+  assert.match(text, /merged outside Atelier, recorded afterwards by pavi: bbbbbbbb merged as 5af22431 on main; no checks or test receipt recorded: merged under the freeze/);
+  assert.match(text, /review as given: approved by codex\/gpt-6-astra at bbbbbbbb \(2026-10-13\)/);
+  assert.match(text, /review as given: rejected by antigravity\/gemini-4-argon at aaaaaaaa$/m);
+  assert.doesNotMatch(text, /accepted, merge commit/);
+});
+
 // t660 (follow-up from t653): a fast landing's merge printed "bbbbbbbb
 // accepted, merge commit 5af22431 on the baseline", though a fast landing
 // records no acceptance and the server had not observed the merge on the
