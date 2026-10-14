@@ -252,7 +252,7 @@ test("models show prints the server's comparison after the cards, asked under th
     model: "example-5", names: ["example-5"], entries: ["codex/example-5"],
     vendor: { claims: [{ ...CARD.claims[0], taskKind: "general", card: "c3", vendor: "Example Labs", source: CARD.source, published: "2026-10-01", read: "2026-10-13" }], limitations: [], ended: 0, disagreements: [], priors: [] },
     roles: [{ role: "review", assignments: [], figures: [{ measure: "pairwise-catches", label: "Pairs", source: "pairwise", window: { from: "2026-09-14T00:00:00.000Z", to: "2026-10-14T00:00:00.000Z", days: 30 }, kind: "share", numerator: 2, denominator: 4, n: 4, value: null, minSamples: 5, state: "too-few", refs: ["atelier/t5@aaaaaaaaaaaa with gemini-4-argon"] }] }],
-    leftOut: [],
+    leftOut: [], coverage: { projects: 2, events: 40, unread: [] },
   };
   const answer = (method, path) => ({ data: path.endsWith("/compare") ? comparison : path.endsWith("/cards") ? VIEW([{ ...stored("c3", "example-5"), state: "active" }]) : POOL });
   const f = await stub(t, answer, SERVER_CAPABILITIES);
@@ -261,6 +261,7 @@ test("models show prints the server's comparison after the cards, asked under th
   const lines = r.output.trim().split("\n");
   assert.deepEqual(lines.slice(lines.indexOf("  Vendor claims beside Atelier's record for example-5 (codex/example-5):")), [
     "  Vendor claims beside Atelier's record for example-5 (codex/example-5):",
+    "    Atelier's figures read 40 events of 2 projects, every project there is.",
     "    The vendor's figures are its benchmarks under its own conditions; Atelier's are shares of its own events. Neither is a measure of the other.",
     "    Vendor claim: SWE-bench Pro 61.2% (general; vendor scaffold; max effort), the vendor's figure from card c3, https://vendor.example/card, published 2026-10-01, read 2026-10-13",
     "    Review:",
@@ -281,7 +282,7 @@ test("models show prints the server's comparison after the cards, asked under th
 // showed neither the cards nor the comparison.
 test("models show by an alias one model's entries share under two harnesses follows it and prints the comparison", async (t) => {
   const pool = ["zcode", "opencode"].map((harness) => ({ ...POOL[0], id: "glm-5.3", harness, aliases: ["glm-fast"] }));
-  const comparison = { model: "glm-5.3", names: ["glm-5.3", "glm-fast"], entries: ["opencode/glm-5.3", "zcode/glm-5.3"], vendor: { claims: [], limitations: [], ended: 0, disagreements: [], priors: [] }, roles: [], leftOut: [] };
+  const comparison = { model: "glm-5.3", names: ["glm-5.3", "glm-fast"], entries: ["opencode/glm-5.3", "zcode/glm-5.3"], vendor: { claims: [], limitations: [], ended: 0, disagreements: [], priors: [] }, roles: [], leftOut: [], coverage: { projects: 1, events: 3, unread: [] } };
   const answer = (method, path) => ({
     data: path.endsWith("/compare") ? comparison
       : path.endsWith("/cards") ? VIEW([], path.includes("glm-fast") ? { model: "glm-fast", pool: [] } : { model: "glm-5.3", pool: ["opencode/glm-5.3", "zcode/glm-5.3"] })
@@ -293,4 +294,19 @@ test("models show by an alias one model's entries share under two harnesses foll
   assert.match(r.output, /^glm-fast is a pool alias of zcode\/glm-5\.3; cards are kept under a model's own name, so these are the cards kept under glm-5\.3\./);
   assert.match(r.output, /Vendor claims beside Atelier's record for glm-5\.3 \(opencode\/glm-5\.3, zcode\/glm-5\.3\):/);
   assert.deepEqual(f.requests.map((q) => q.path), ["/api/models/glm-fast/cards", "/api/models", "/api/models/zcode%2Fglm-5.3/cards", "/api/models/zcode%2Fglm-5.3/compare"]);
+});
+
+// gpt-6-astra's second review of t621, finding 2: when a project's ledger
+// could not be read, the server said so only in a header the CLI never
+// read, and models show printed the partial figures as the whole record.
+test("models show says the record is partial, and which projects it leaves out, when the server could not read one", async (t) => {
+  const comparison = {
+    model: "example-5", names: ["example-5"], entries: ["codex/example-5"], vendor: { claims: [], limitations: [], ended: 0, disagreements: [], priors: [] },
+    roles: [{ role: "review", assignments: [], figures: [{ measure: "review-precision", label: "Held up", source: "precision", window: { from: "2026-09-14T00:00:00.000Z", to: "2026-10-14T00:00:00.000Z", days: 30 }, kind: "share", numerator: 0, denominator: 0, n: 0, value: null, minSamples: 5, state: "none" }] }],
+    leftOut: [], coverage: { projects: 1, events: 12, unread: ["hush-app"] },
+  };
+  const f = await stub(t, (method, path) => ({ data: path.endsWith("/compare") ? comparison : path.endsWith("/cards") ? VIEW([]) : POOL }), SERVER_CAPABILITIES);
+  const r = await f.run(["models", "show", "example-5"]);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /\n    Partial record: Atelier's figures read 12 events of 1 project; hush-app could not be read just now, so its work is in no figure below and the record is partial\.\n/);
 });

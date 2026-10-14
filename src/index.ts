@@ -3260,7 +3260,10 @@ async function modelReaders(env: Env): Promise<ModelReaders> {
   return {
     entries, track, precision, judgement, pairwise,
     keyOf: (named) => canonicalName(named, entries),
-    compare: (named, cards) => compareModel({ named, pool: entries, cards, reliability: track.reliability, precision, speed: track.speed, judgement, pairwise, assignments: standing, projectNames: roles.names }),
+    compare: (named, cards) => compareModel({
+      named, pool: entries, cards, reliability: track.reliability, precision, speed: track.speed, judgement, pairwise, assignments: standing, projectNames: roles.names,
+      coverage: { projects: track.sources.length, events: track.events, unread: track.unread.map((p) => p.name) },
+    }),
   };
 }
 

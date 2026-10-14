@@ -31,7 +31,7 @@ import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, ty
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
 import { pace, stalledText, type Measure, type RoleSpeed, type SpeedRecord } from "./models/speed.ts";
-import { claimText, figureText, ROLE_LABEL, type ModelComparison } from "./models/compare.ts";
+import { claimText, coverageText, figureText, ROLE_LABEL, type ModelComparison } from "./models/compare.ts";
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -1234,7 +1234,8 @@ export function judgementSection(j: JudgementRecord): string {
 export function comparisonSection(views: readonly ModelComparison[]): string {
   if (!views.length) return "";
   const view = (v: ModelComparison) => `<details class="comparison">
-    <summary><code>${e(v.model)}</code>${v.entries.length ? `<span class="meta">${v.entries.map(e).join(", ")}</span>` : ""}</summary>
+    <summary><code>${e(v.model)}</code>${v.entries.length ? `<span class="meta">${v.entries.map(e).join(", ")}</span>` : ""}${v.coverage.unread.length ? ` ${tag("partial record", "ask")}` : ""}</summary>
+    <p class="meta"${v.coverage.unread.length ? ' role="note"' : ""}>${e(coverageText(v.coverage))}</p>
     <h3>The vendor's claims</h3>
     ${v.vendor.claims.length ? `<ul class="causes">${v.vendor.claims.map((c) => `<li class="meta">${e(claimText(c))}</li>`).join("")}</ul>` : `<p class="empty">No vendor card in force. Record one with <code>atelier models card</code>.</p>`}
     ${v.vendor.limitations.map((l) => `<p class="meta">Vendor limitation, card ${e(l.card)}: ${e(l.text)}</p>`).join("")}
