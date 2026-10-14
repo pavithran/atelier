@@ -542,51 +542,67 @@ async function sendAssignments(env: Env): Promise<string[]> {
   return unreachedOf(projects, async (p) => { await ledgerOf(env, p).assignmentsChanged(await I.assignmentSnapshotFor(p.key ?? p.name)); });
 }
 // The one boundary for model names (gpt-6-astra's and gemini-4-argon's
-// eighth and ninth reviews of t622). Every field a request names a
-// harness/model in is converted here, once, before a route reads it, to the
-// exact pool entry it names (typedActor; typedModel for a bare model), an
-// alias to its entry's id and an ambiguous one refused; a name the pool
-// lacks is kept as given, for the places that allow one. The fields:
-//   agent + model   dispatch's builder          model (no agent)  dispatch, a bare model
-//   to              handoff, reroute, plan refresh --resolve (a harness/model)
-//   reviewer        land, review, criteria-review, findings
-//   planner         plan
-//   actor           a run skip's actor; the declared X-Atelier-Actor of an
-//                   owner or runner token (not a token's own actor, POST /tokens)
-//   triage, reviewTier, resolvers   the project's policy (init)
-//   parts[].prefer.actor            a plan document (plan post)
-// --as (X-Atelier-Acting) is converted by registeredActing, which keeps
-// the declaration for retries. The pool is read only when one of these is
-// present.
+// eighth to eleventh reviews of t622). A field that chooses a model to use
+// is converted here, once, before its route reads it, to the exact pool
+// entry it names (typedActor; typedModel for a bare model): an alias to its
+// entry's id, an ambiguous one refused, a name the pool lacks kept as given
+// for the places that allow one. Identities are never converted: the
+// X-Atelier-Actor a request declares, a token's actor, a handoff's new
+// holder and a finding's reviewer stay as written, as on main, so ownership,
+// runner offers and recorded reviews keep matching them; the owner's
+// standing (src/models/pool.ts, alias-aware) holds an alias of a held model
+// wherever one arrives. --as (X-Atelier-Acting) is attribution only and is
+// converted by registeredActing, which keeps the declaration for retries.
+//
+//   route (under /projects/P)                  fields converted
+//   items/ID/dispatch                          agent + model, or a bare model
+//   items/ID/review-request, land-fast,        reviewer
+//     landing-workflow, criteria-review-request
+//   items (POST, kind plan)                    planner
+//   items/ID/plan (a plan document)            parts[].prefer.actor
+//   items/ID/plan/reroute, plan/refresh        to
+//   PUT /projects/P (init)                     reviewTier, triage, resolvers
+//   /ui/P/ID/dispatch (the page's form)        agent + model, or a bare model
+//
+// The pool is read only when such a field is present.
 type NameFields = Record<string, unknown>;
-async function canonicalNames(env: Env, body: NameFields, declaredActor: string | null, tokens = false): Promise<{ actor: string | null }> {
-  const model = (v: unknown) => typeof v === "string" && v.includes("/");
-  const list = (v: unknown) => Array.isArray(v) || (typeof v === "string" && v.includes("/"));
-  const parts = Array.isArray(body.parts) ? body.parts as { prefer?: { actor?: unknown } }[] : [];
-  // A token's actor (POST /tokens) is the identity the token proves, which
-  // may be an alias an admitted reviewer works under (atelier models
-  // admit): it is kept as issued.
-  const fields = ["to", "reviewer", "planner", "triage", ...(tokens ? [] : ["actor"])];
-  const needed = (typeof body.model === "string" && body.model !== "") || fields.some((f) => model(body[f]))
-    || list(body.reviewTier) || list(body.resolvers) || parts.some((p) => model(p?.prefer?.actor))
-    || (declaredActor !== null && declaredActor.includes("/") && declaredActor !== ownerActor(env));
-  if (!needed) return { actor: null };
+const CHOICES: Record<string, string[]> = {
+  dispatch: ["model"], "review-request": ["reviewer"], "landed-fast": ["reviewer"], "landing-workflow": ["reviewer"],
+  "criteria-review-request": ["reviewer"], plan: ["parts"], reroute: ["to"], refresh: ["to"], "new-plan": ["planner"], init: ["reviewTier", "triage", "resolvers"],
+};
+// Which choice fields a request carries, by its route: the item's verb, a
+// plan's sub-verb, a new plan, or the project init.
+function choiceRoute(parts: readonly string[], method: string, body: NameFields): string | null {
+  if (parts[1] !== "projects") return null;
+  if (parts.length === 3 && method === "PUT") return "init";
+  if (parts.length === 4 && parts[3] === "items" && method === "POST" && body.kind === "plan") return "new-plan";
+  if (parts[3] !== "items" || method !== "POST") return null;
+  if (parts[5] === "plan") return parts[6] ?? "plan";
+  return parts[5] ?? null;
+}
+async function canonicalNames(env: Env, body: NameFields, route: string | null): Promise<void> {
+  const fields = route ? CHOICES[route] ?? [] : [];
+  if (!fields.length) return;
+  const named = (v: unknown) => typeof v === "string" && v.includes("/");
+  const parts = fields.includes("parts") && Array.isArray(body.parts) ? body.parts as { prefer?: { actor?: unknown } }[] : [];
+  const needed = (fields.includes("model") && typeof body.model === "string" && body.model !== "")
+    || fields.some((f) => named(body[f]) || Array.isArray(body[f])) || parts.some((p) => named(p?.prefer?.actor));
+  if (!needed) return;
   const pool = await index(env).models();
   const one = (v: string) => typedActor(pool, v.trim());
-  if (typeof body.model === "string" && body.model) {
+  if (fields.includes("model") && typeof body.model === "string" && body.model) {
     if (typeof body.agent === "string" && body.agent) {
       const exact = one(`${body.agent}/${body.model}`);
       body.model = exact.slice(exact.indexOf("/") + 1);
     } else body.model = typedModel(pool, body.model.trim());
   }
-  for (const f of fields) if (model(body[f])) body[f] = one(body[f] as string);
-  for (const f of ["reviewTier", "resolvers"]) {
+  for (const f of fields) {
+    if (f === "model" || f === "parts") continue;
     const v = body[f];
     if (Array.isArray(v)) body[f] = v.map((a) => (typeof a === "string" && a.includes("/") ? one(a) : a));
-    else if (typeof v === "string" && v.includes("/")) body[f] = v.split(",").map((a) => (a.includes("/") ? one(a) : a.trim())).join(",");
+    else if (named(v)) body[f] = (v as string).split(",").map((a) => (a.includes("/") ? one(a) : a.trim())).join(",");
   }
-  for (const part of parts) if (part?.prefer && model(part.prefer.actor)) part.prefer.actor = one(part.prefer.actor as string);
-  return { actor: declaredActor !== null && declaredActor.includes("/") && declaredActor !== ownerActor(env) ? one(declaredActor) : null };
+  for (const part of parts) if (part?.prefer && named(part.prefer.actor)) part.prefer.actor = one(part.prefer.actor as string);
 }
 
 // The acting model a request declared, checked against the pool now, for a
@@ -3357,10 +3373,11 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // the limit the page showed holds. The API and CLI text is never changed.
     const note = verb === "dispatch" ? String(form.get("note") ?? "").replace(/\r\n?/g, "\n") : String(form.get("note") ?? "");
     const owner = ownerActor(env);
-    // The page's dispatch and handoff forms name a builder: converted at the
-    // same boundary as the API's (canonicalNames).
+    // The page's dispatch form names a builder: converted at the same
+    // boundary as the API's (canonicalNames). A handoff's new holder is an
+    // identity and is kept as written.
     const formNames: NameFields = { to: form.get("to") ?? undefined, agent: form.get("agent") ?? undefined, model: form.get("model") ?? undefined };
-    if (verb === "dispatch" || verb === "handoff") await canonicalNames(env, formNames, null);
+    if (verb === "dispatch") await canonicalNames(env, formNames, "dispatch");
     if (id === "new" && !verb) {
       // A long title with no brief becomes the brief, with a short title derived from it (itemText).
       const brief = String(form.get("brief") ?? "");
@@ -3936,7 +3953,7 @@ export default {
           return json({ error: "actor_mismatch", detail: "X-Atelier-Actor must equal the agent token actor" }, 403);
         }
         if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token?.runner ? { runner: token.runner, tokenId: token.id } : token ? { actor: token.actor } : {}) });
-        let actor = token?.runner ? declared ?? token.actor : token?.actor ?? declared ?? "";
+        const actor = token?.runner ? declared ?? token.actor : token?.actor ?? declared ?? "";
         if (!validActor(actor)) {
           if (token?.runner) throw runnerDenied(token);
           return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the developer's actor" }, 400);
@@ -3955,14 +3972,11 @@ export default {
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
           return json({ error: "bad_body", detail: "the request body must be a JSON object" }, 400);
         }
-        // The one boundary for model names (t622): every harness/model the
-        // request names, in the body or as the actor an owner or runner token
-        // declares, is converted here to the exact pool entry it names, before
-        // any route reads it (canonicalNames). An agent token's actor is the
-        // token's own and is not converted; the standing check refuses an
-        // alias wherever one still arrives (actorStanding).
-        const converted = await canonicalNames(env, body as NameFields, token && !token.runner ? null : actor, parts[1] === "tokens");
-        if (converted.actor !== null) actor = converted.actor;
+        // The one boundary for model names (t622): a field that chooses a
+        // model to use is converted here to the exact pool entry it names,
+        // before its route reads it (canonicalNames). The declared actor is an
+        // identity and is kept as declared.
+        await canonicalNames(env, body as NameFields, choiceRoute(parts, req.method, body as NameFields));
         // The project a path names is resolved here, once: a former name
         // reaches the project as the current one does, for a token limited to
         // either, and the answer names the project as it is called now.
