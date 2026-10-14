@@ -2,6 +2,7 @@
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
+import { moveProjectEntry } from "../private.mjs";
 
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {
@@ -16,21 +17,21 @@ export default async function projectsCommand() {
     // local entry moves from that name. An entry already under the new
     // name is kept, and the old one dropped, saying what it held.
     let local = `No local config entry was called ${r.from}.`;
+    // The old name is kept with the entry as a former name, and a merge
+    // into an entry already under the new name keeps every private setting
+    // (moveProjectEntry, t645): a task workspace made before the rename
+    // still names the old one, and the private-file guard finds the entry
+    // by it.
     const held = cfg.projects?.[r.from];
-    if (held && !cfg.projects[r.to]) {
-      // The old name is kept with the entry: a task workspace made before
-      // the rename still names it, and the private-file guard finds the
-      // entry by it (t645).
-      cfg.projects[r.to] = { ...held, formerNames: [...new Set([...(held.formerNames ?? []), r.from])] };
-      delete cfg.projects[r.from];
+    if (held) {
+      const into = !!cfg.projects[r.to];
+      const moved = moveProjectEntry(cfg.projects, r.from, r.to);
+      if (moved.error) die(`${r.from} is now ${r.to} on ${server()}, but ${moved.error}`);
       saveConfig(cfg);
-      local = `The local config entry ${r.from} is now ${r.to}.`;
-    } else if (held) {
-      const settings = Object.entries(held).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
-      cfg.projects[r.to].formerNames = [...new Set([...(cfg.projects[r.to].formerNames ?? []), r.from])];
-      delete cfg.projects[r.from];
-      saveConfig(cfg);
-      local = `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped (it held: ${settings.join(", ")}).`;
+      const settings = Object.entries(moved.dropped ?? {}).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
+      local = into
+        ? `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped${settings.length ? ` (it held: ${settings.join(", ")})` : ""}, its private files joined to ${r.to}'s.`
+        : `The local config entry ${r.from} is now ${r.to}.`;
     }
     console.log(`${r.from} is now ${r.to} on ${server()}. Its Ledger, baseline ${r.project.repo} and every fork stay where they are. ${local}`);
     console.log(`${r.from} still works: the API serves it under that name, old page links redirect, tokens limited to it keep their access, and workspaces under ${join(CACHE, "work", r.from)} need no change.`);

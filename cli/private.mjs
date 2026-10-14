@@ -246,6 +246,37 @@ export function privateGuardFor(project, { root, discover = false, pending = nul
   return run(diskKey ? cfg.projects[diskKey] : undefined);
 }
 
+// Moves a project's local entry from one name to another, or merges it
+// into the entry already under the new name: the one helper every rename
+// of a local entry uses (init --rename-local, projects rename), so no move
+// loses what keeps a project's files private (Astra's seventh review of
+// t645). The old name, and the names it had before, become former names of
+// the destination, so workspaces made under any of them stay guarded. Into
+// an existing entry, the private names and the copy of the list are joined
+// (no name is dropped) and its folder is kept, else the source's; two
+// different folders are refused, changing nothing, since which one keeps
+// the files cannot be guessed. Returns { moved, merged, dropped } (the
+// source's other settings, which a merge does not keep) or { error }.
+export function moveProjectEntry(projects, from, to) {
+  if (!projects?.[from] || from === to) return { moved: false };
+  const source = projects[from], target = projects[to];
+  const former = (...lists) => [...new Set(lists.flatMap((l) => (Array.isArray(l) ? l : [])))].filter((n) => n !== to);
+  if (!target) {
+    projects[to] = { ...source, formerNames: former(source.formerNames, [from]) };
+    delete projects[from];
+    return { moved: true };
+  }
+  if (source.privateHome && target.privateHome && source.privateHome !== target.privateHome) {
+    return { error: `the local entries ${from} and ${to} name different folders for their private files (${source.privateHome} and ${target.privateHome}); nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again` };
+  }
+  joinPrivate(target, source);
+  target.formerNames = former(target.formerNames, source.formerNames, [from]);
+  const kept = new Set(["private", "privateFromList", "privateHome", "formerNames"]);
+  const dropped = Object.fromEntries(Object.entries(source).filter(([k]) => !kept.has(k)));
+  delete projects[from];
+  return { moved: true, merged: true, dropped };
+}
+
 // Joins the private settings of `other` (the entry on disk) into `entry`:
 // each list holds every name either has, and a folder named in either is
 // kept, this one's first. Nothing is ever dropped here.
