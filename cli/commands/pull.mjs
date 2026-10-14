@@ -1,0 +1,111 @@
+// atelier pull. Its forms, flags and help are declared in src/usage/commands/pull.ts.
+import { existsSync } from "node:fs";
+import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
+import { carryBaseline, loadPairs, savePairs } from "../fresh.mjs";
+import { COMMAND_USAGE } from "../help.mjs";
+import { OWNER, P, args, call, cfg, die, landingGit, landingHome, project, short } from "../atelier.mjs";
+
+// The developer, on one of the Macs that share a project's baseline (t644):
+// another Mac has carried commits to the baseline (atelier sync, merge or
+// publish there), and this checkout's main is brought up to it, with the
+// receipts on refs/notes/atelier. As atelier clone does (t643), it keeps no
+// token: it mints a read token, as sync mints its own, and passes it only to
+// the fetches, which read by URL and check nothing out. Every Git command
+// runs with every hook off (landingGit).
+//
+// The notes are fetched to FETCH_HEAD and merged into this checkout's own, so
+// a receipt made here and not yet pushed is kept; a forced refspec onto
+// refs/notes/atelier would drop it. Where both sides hold a different note
+// for one commit, the two are kept together (git notes merge -s union).
+//
+// Main is fast-forwarded when it holds nothing the baseline lacks. With local
+// commits, the merge is made with git merge-tree, which writes no file: a
+// conflict stops the pull with main, the index and the work tree as they
+// were, and names the paths. A baseline holding part of the history
+// (cli/fresh.mjs) has its new commits carried into this checkout through the
+// baseline map first, and the merge takes the baseline's side as its first
+// parent, since atelier sync carries only a first-parent line that continues
+// from the commit the baseline matches.
+export default async function pullCommand() {
+  const git = landingGit;
+  if (args._.length > 1) die(COMMAND_USAGE.pull);
+  const name = project();
+  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; make its checkout with atelier clone ${name}`), cwd = p.path;
+  if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first, then pull");
+  if (git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd }) !== p.branch) die(`check out ${p.branch} in ${cwd} first`);
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd }), landing = landingHome(gitDir);
+  let unlock;
+  try { unlock = landingLock(landing); } catch (error) { die(error.message); }
+  try {
+    try { adoptOldLanding(gitDir, landing); } catch (error) { die(error.message); }
+    if (existsSync(landingJournalFile(landing))) die("a merge is in progress; finish it or cancel it first");
+    const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
+    git(["fetch", "--quiet", "--no-tags", base.remote, p.branch], { cwd, token: base.token });
+    const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
+    const listed = git(["ls-remote", base.remote, "refs/notes/atelier"], { cwd, token: base.token });
+    let notesTip = null;
+    if (listed) {
+      git(["fetch", "--quiet", "--no-tags", base.remote, "refs/notes/atelier"], { cwd, token: base.token });
+      notesTip = git(["rev-parse", "FETCH_HEAD"], { cwd });
+    }
+    // Nothing below reaches the baseline.
+    const receipts = notesTip ? mergeNotes(git, cwd, notesTip) : null;
+    const receiptsLine = receipts === null ? "The baseline holds no receipts." : `Receipts: ${receipts} new on refs/notes/atelier, merged with this checkout's own.`;
+
+    let target = baselineHead;
+    const fresh = p.fresh === true;
+    if (fresh) {
+      const pairs = loadPairs(gitDir, name);
+      let carried;
+      try { carried = carryBaseline(git, cwd, baselineHead, pairs); } catch (error) { die(error.message); }
+      if (Object.keys(carried.pairs).length) savePairs(gitDir, name, { ...pairs, ...carried.pairs });
+      target = carried.head;
+    }
+    const head = git(["rev-parse", "HEAD"], { cwd });
+    const holds = (older, newer) => git(["merge-base", "--is-ancestor", older, newer], { cwd, allowFail: true }).status === 0;
+    if (holds(target, head)) {
+      console.log(`${name}: ${p.branch} @ ${short(head)} already holds the baseline's ${p.branch} @ ${short(baselineHead)}; no commits to bring.`);
+      return console.log(receiptsLine);
+    }
+    const count = (range) => Number(git(["rev-list", "--count", range], { cwd }));
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const brought = count(`${head}..${target}`), local = count(`${target}..${head}`);
+    const subjects = git(["log", "--format=  %h %s", "-n", "20", `${head}..${target}`], { cwd });
+    if (local === 0) {
+      git(["merge", "--ff-only", "--quiet", target], { cwd });
+      console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch}; ${p.branch} moved from ${short(head)} to ${short(target)}.`);
+      console.log(subjects);
+      return console.log(receiptsLine);
+    }
+    const merged = git(["merge-tree", "--write-tree", "--name-only", "--no-messages", head, target], { cwd, allowFail: true });
+    if (merged.status === 1) {
+      const paths = [...new Set(merged.stdout.split("\n").slice(1).filter(Boolean))];
+      console.log(receiptsLine);
+      const byHand = fresh
+        ? `git checkout -B ${p.branch} ${target}, then git merge ${head}, resolve the conflicts and commit (the baseline's side comes first, as atelier sync needs)`
+        : `git merge ${target}, resolve the conflicts and commit`;
+      die(`${p.branch} and the baseline's ${p.branch} both change ${paths.join(", ")}, and the changes conflict. Nothing was merged: ${p.branch} is still at ${short(head)} with its ${plural(local, "local commit")}, and the work tree is as it was. The baseline's ${p.branch} brings ${plural(brought, "commit")}, fetched as ${target}. Merge it by hand: ${byHand}; then run atelier pull --project ${name} again.`);
+    }
+    if (merged.status !== 0) die(`git merge-tree could not merge the baseline's ${p.branch} (${short(target)}) into ${p.branch}; nothing was merged:\n${(merged.stderr || merged.stdout).trim()}`);
+    const tree = merged.stdout.split("\n")[0];
+    const parents = fresh ? [target, head] : [head, target];
+    const commit = git(["commit-tree", tree, "-p", parents[0], "-p", parents[1], "-m", `Merge the baseline's ${p.branch} into ${p.branch} (atelier pull)`], { cwd });
+    git(["merge", "--ff-only", "--quiet", commit], { cwd });
+    console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch} and merged them with ${plural(local, "local commit")}; ${p.branch} is at ${short(commit)}.`);
+    console.log(subjects);
+    console.log(receiptsLine);
+    console.log(fresh ? `atelier sync --project ${name} carries the local commits to the baseline.` : `The local commits reach the baseline with atelier publish --project ${name} or the next atelier merge.`);
+  } finally { unlock(); }
+}
+
+// The baseline's receipts merged into this checkout's: copied when this
+// checkout has none, fast-forwarded or merged otherwise. Returns how many
+// commits carry a note now that carried none before.
+function mergeNotes(git, cwd, tip) {
+  const annotated = () => new Set(git(["notes", "--ref=atelier", "list"], { cwd }).split("\n").filter(Boolean).map((line) => line.split(" ")[1]));
+  const had = git(["rev-parse", "--verify", "-q", "refs/notes/atelier"], { cwd, allowFail: true }).stdout.trim();
+  const before = had ? annotated() : new Set();
+  if (!had) git(["update-ref", "refs/notes/atelier", tip, ""], { cwd });
+  else git(["notes", "--ref=atelier", "merge", "--quiet", "--strategy=union", tip], { cwd });
+  return [...annotated()].filter((object) => !before.has(object)).length;
+}

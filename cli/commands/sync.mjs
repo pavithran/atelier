@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
+import { behindBaseline } from "../pull.mjs";
 import { OWNER, P, call, cfg, die, git, landingGit, landingHome, project, refreshControlPlane, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
@@ -33,7 +34,10 @@ export default async function syncCommand() {
     git(["fetch", "--quiet", base.remote, p.branch], { cwd, token: base.token });
     const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
     const pairs = loadPairs(gitDir, name);
-    const paired = pairs[baselineHead] ?? die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
+    // A baseline head this checkout has no pair for was carried there from
+    // another checkout (t644): the push would be refused as a
+    // non-fast-forward, so sync refuses first and names atelier pull.
+    const paired = pairs[baselineHead] ?? die(behindBaseline({ name, branch: p.branch, baselineHead, nothing: "Nothing was pushed.", command: `atelier sync --project ${name}` }));
     const head = git(["rev-parse", "HEAD"], { cwd });
     if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
     if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
