@@ -411,6 +411,11 @@ export const LAND_JSON_MAX = 4000;
 // What a review request answers: the request made or standing, and any
 // unclaimed request of another reviewer it withdrew in its place (t627).
 export type ReviewAsked = { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number; withdrew?: { request: number; reviewer: string | null }[] };
+// Thrown inside requestReview's transaction when a redirect asks no
+// replacement, so the withdrawal rolls back and the answer is given (t627).
+class KeptRequests extends Error {
+  constructor(readonly kept: { request: number; reviewer: string | null }[], readonly answer: ReviewAsked) { super("kept"); }
+}
 // The longest reason the developer gives for withdrawing a review request (t627).
 export const REVIEW_WITHDRAW_REASON_MAX = 1000;
 
@@ -6538,7 +6543,14 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
     this.reviewItem(id);
     this.keepPool(pool);
-    return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers));
+    try {
+      return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers));
+    } catch (err) {
+      // Rolled back: the requests the redirect would have withdrawn stand.
+      if (!(err instanceof KeptRequests)) throw err;
+      const kept = err.kept.map((k) => `request ${k.request}${k.reviewer ? ` for ${k.reviewer}` : ""}`).join(", ");
+      return { ...err.answer, reason: `${err.answer.reason}; no review of ${reviewer} was asked, so ${kept} stands` };
+    }
   }
 
   private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: (SuggestionRecords & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined): ReviewAsked {
@@ -6619,27 +6631,12 @@ export class Ledger extends DurableObject<Env> {
         withdrew.push({ request: r.id as number, reviewer: asked });
       }
     }
-    // A request at this head whose reviewer has replied to it with no verdict
-    // the server could read (t574) is asked of that reviewer again each time
-    // (unparsableReview releases the claim as a new request), so it may never
-    // be answered, and while a runner serves it again it is claimed. t573 at
-    // cc688bac: opencode/glm-5.3's replies had no VERDICT line, and naming
-    // codex/gpt-6-astra was refused as "already requested from
-    // opencode/glm-5.3" while review-claim said no request was open (the
-    // runner held the next claim). The owner naming another reviewer
-    // replaces it, open or claimed: a claim withdrawn here fences the
-    // verdict of the run holding it (its --request is no longer current).
-    if (reviewer !== null && item.head) {
-      const unread = this.unparsableFor(id).filter((u) => u.head === item.head);
-      const standing = this.sql.exec(`SELECT id, dispatch, state FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL`, id, item.head).toArray();
-      for (const r of standing) {
-        const d = JSON.parse(r.dispatch as string) as Dispatch;
-        const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
-        if (!asked || sameActor(asked, reviewer) || !unread.some((u) => sameActor(u.by, asked))) continue;
-        this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
-        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, request: r.id as number, reason: `${asked} replied with no verdict the server could read, and the developer named ${reviewer} to review it` }, at, proved);
-      }
-    }
+    // A request whose reviewer replied with no verdict the server could read
+    // (t574) is asked of it again; while open, the redirect above replaces
+    // it. Once a runner claims it again it is being served, and naming
+    // another reviewer is refused (review_claimed below) rather than
+    // withdrawing the claim and fencing its verdict (gpt-6-astra's review
+    // of t627, finding 1): a claim ends by its verdict or its lease lapsing.
     // An open request at this head that every runner offering its reviewer
     // has skipped (t353) will never be claimed: each runner keeps its skip
     // until the request changes, and the landing that waited on it said so
@@ -6671,12 +6668,16 @@ export class Ledger extends DurableObject<Env> {
           if (refusal) throw new RuleError("no_reviewer", `the review requested of ${standing} at ${item.head!.slice(0, 8)} cannot count: ${refusal}. Name another with atelier land ${id} --reviewer H/M`, 409);
         }
         if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
-          throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}, and a runner has claimed it; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
+          throw new RuleError("review_claimed", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}, and a runner has claimed it, so it is not withdrawn; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
         const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
-        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
+        return { ...(withdrew.length ? { withdrew } : {}), needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
       }
       if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
+      // No replacement is asked, so the redirect is undone: the withdrawal
+      // and the new request commit together or not at all (gpt-6-astra's
+      // review of t627, finding 2).
+      if (withdrew.length) throw new KeptRequests(withdrew, { needed: false, reason: need.reason });
       return { needed: false, reason: need.reason };
     }
     let chosen: string;

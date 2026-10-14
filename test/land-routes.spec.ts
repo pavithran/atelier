@@ -361,7 +361,7 @@ it("a submitted task with a protected change gets a review request, named or pic
   const again = await L.requestReview(id, "owner", null, POOL);
   expect(again).toMatchObject({ needed: true, requested: false, reviewer: GPT, head, request: asked.request });
   // Naming another reviewer while that request stands is refused, not ignored.
-  await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", NAMED_POOL), "review_requested", /already requested from codex\/gpt-6-astra/);
+  await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", NAMED_POOL), "review_claimed", /already requested from codex\/gpt-6-astra, and a runner has claimed it, so it is not withdrawn/);
   expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, reviewer: GPT });
   expect(await L.reviewWaiting()).toEqual([]);
   expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ head, state: "claimed", claimedBy: GPT });
@@ -534,7 +534,7 @@ it("a standalone expired claim is reoffered within one queue poll with its routi
   expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL)).toMatchObject({ requested: false, reviewer: GEMINI, head });
   // Once a runner claims it, naming another reviewer is refused (t627).
   await L.claimReview(id, GEMINI, RUNNER);
-  await refusal(L.requestReview(id, "owner", GPT, POOL), "review_requested", /already requested from antigravity\/gemini-3.1-pro, and a runner has claimed it/);
+  await refusal(L.requestReview(id, "owner", GPT, POOL), "review_claimed", /already requested from antigravity\/gemini-3.1-pro, and a runner has claimed it, so it is not withdrawn/);
 });
 
 // micahapp t9 (t627): an unclaimed request for codex/gpt-6-astra at 02700476
@@ -590,6 +590,22 @@ it("naming another reviewer redirects an unclaimed review request, says so, and 
   // failing at the head blocks the new request, and the old one stands.
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: false, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
   await refusal(L.requestReview(id, "owner", GEMINI, NAMED_POOL, true), "review_blocked", /failed at/);
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["open"]);
+  expect((await events(L, id)).some((e) => e.kind === "review.withdrawn")).toBe(false);
+  // The same through the review-request route without `wanted`, where a
+  // blocked gate answers normally (gpt-6-astra's review of t627, finding 2):
+  // no replacement is asked, so the withdrawal rolls back with it.
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject({ name: "land-redirect", repo: "land-redirect--baseline", policy, createdAt: new Date().toISOString() });
+  for (const m of NAMED_POOL) await index.putModel(m);
+  const askToken = "land-redirect-ask-token";
+  const askRes = await worker.fetch(new Request(`https://atelier.test/api/projects/land-redirect/items/${id}/review-request`, {
+    method: "POST", headers: { authorization: `Bearer ${askToken}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify({ reviewer: GEMINI }),
+  }), { ...env, ATELIER_TOKEN: askToken } as typeof env);
+  const unasked = await askRes.json() as Record<string, unknown>;
+  expect(askRes.status, JSON.stringify(unasked)).toBe(200);
+  expect(unasked).toMatchObject({ needed: false, reason: expect.stringMatching(new RegExp(`failed at eeeeeeee; the builder fixes that before a review; no review of antigravity/gemini-3.1-pro was asked, so request ${asked.request} for codex/gpt-6-astra stands$`)) });
+  expect(unasked.withdrew).toBeUndefined();
   expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["open"]);
   expect((await events(L, id)).some((e) => e.kind === "review.withdrawn")).toBe(false);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
