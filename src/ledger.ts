@@ -4953,18 +4953,31 @@ export class Ledger extends DurableObject<Env> {
   // and main's recorded head is not moved, since main has gone past the
   // merge by the time it is recorded. The task's workspace token, if a
   // holder had one, is dropped with the claim.
-  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, token?: string | null): { item: Item; record: RecordedMerge } {
+  // The route asks checkRecordMerge first, revokes the workspace token, and
+  // only then records, as abandon and release do: a revocation that fails
+  // leaves the task and its token as they were, so the retry revokes again.
+  checkRecordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }): void {
+    this.recordMergeAllowed(id, actor, body, baseline, new Date().toISOString());
+  }
+
+  private recordMergeAllowed(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, at: string): { item: Item; record: RecordedMerge; repeat: RecordedMerge | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a merge made outside Atelier", 403);
-    const at = new Date().toISOString();
     const record = recordedMerge(body, actor, at);
     const item = this.item(id);
     const prior = this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "item.merge_recorded");
-    if (item.state === "merged" && prior?.data.mergeCommit === record.mergeCommit) return { item, record: prior.data as unknown as RecordedMerge };
+    if (item.state === "merged" && prior?.data.mergeCommit === record.mergeCommit) return { item, record, repeat: prior.data as unknown as RecordedMerge };
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409);
     if (item.kind === "plan") throw new RuleError("plan_merge", `${id} is a plan; a plan's merge lands its parts, and atelier merge records it`, 409);
     const refusal = recordedMergeRefusal(record, baseline);
     if (refusal) throw refusal;
     this.assertPostMergeFree(id);
+    return { item, record, repeat: null };
+  }
+
+  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, token?: string | null): { item: Item; record: RecordedMerge } {
+    const at = new Date().toISOString();
+    const { item, record, repeat } = this.recordMergeAllowed(id, actor, body, baseline, at);
+    if (repeat) return { item, record: repeat };
     this.ctx.storage.transactionSync(() => {
       this.dropToken(id, token);
       this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
