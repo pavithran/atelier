@@ -159,8 +159,13 @@ export function discoverPrivate(name, entry, { root, save } = {}) {
 // forgets) its private configuration. The CLI registers its own config
 // (useConfig), so what it reads and what it saves stay one; elsewhere the
 // config file is read, and a copy of the list kept is written back to it.
+// The config on disk is read at every call even in the CLI, and its private
+// settings joined to the entry in memory: a long-running process (the
+// integrator) sees a name another process made private since it started,
+// and an in-process name not yet written is still honoured (Astra's fourth
+// review of t645).
 let shared = null;
-export function useConfig(cfg, save) { shared = { cfg, save }; }
+export function useConfig(cfg, save) { shared = cfg ? { cfg, save } : null; }
 // `pending` stands for the entry of a project this Mac does not register
 // yet (a first init), used only while the config holds none.
 export function privateGuardFor(project, { root, discover = false, pending = null } = {}) {
@@ -170,7 +175,6 @@ export function privateGuardFor(project, { root, discover = false, pending = nul
     if (discover) discoverPrivate(project, entry, { root, save });
     return privateGuard(project, entry, { root, save });
   };
-  if (shared) return run(shared.cfg.projects?.[project], shared.save);
   const dir = process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), file = join(dir, "config.json");
   let cfg;
   try { cfg = JSON.parse(readFileSync(file, "utf8")); }
@@ -178,11 +182,31 @@ export function privateGuardFor(project, { root, discover = false, pending = nul
     if (error?.code !== "ENOENT") return { paths: [PRIVATE_LIST], refusal: `${file} cannot be read (${error?.code ?? error?.message}), so ${project}'s private files cannot be known. Nothing was pushed.` };
     cfg = { projects: {} };
   }
+  if (shared) {
+    const onDisk = cfg.projects?.[project];
+    if (onDisk) {
+      shared.cfg.projects ??= {};
+      const entry = shared.cfg.projects[project] ??= { ...onDisk };
+      joinPrivate(entry, onDisk);
+    }
+    return run(shared.cfg.projects?.[project], shared.save);
+  }
   return run(cfg.projects?.[project], () => {
     const part = `${file}.${process.pid}.part`;
     writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
     renameSync(part, file);
   });
+}
+
+// Joins the private settings of `other` (the entry on disk) into `entry`:
+// each list holds every name either has, and a folder named in either is
+// kept, this one's first. Nothing is ever dropped here.
+export function joinPrivate(entry, other) {
+  const union = (a, b) => [...new Set([...plainPaths(a), ...plainPaths(b)])];
+  if (Array.isArray(other?.private) || Array.isArray(entry.private)) entry.private = union(entry.private, other?.private);
+  if (Array.isArray(other?.privateFromList) || Array.isArray(entry.privateFromList)) entry.privateFromList = union(entry.privateFromList, other?.privateFromList);
+  if (!entry.privateHome && other?.privateHome) entry.privateHome = other.privateHome;
+  return entry;
 }
 
 // The checkout's info/exclude file, wherever its Git directory keeps it.

@@ -1,5 +1,5 @@
 // atelier private. Its forms, flags and help are declared in src/usage/commands/private.ts.
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { privatePath } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
@@ -15,6 +15,7 @@ export default async function privateCommand() {
   const [, sub, ...rest] = args._;
   if (sub === "add" && (rest.length || typeof args.home === "string")) return add(rest);
   if (sub === "ls" && !rest.length && args.home === undefined) return ls();
+  if (sub === "remove" && rest.length && args.home === undefined) return remove(rest);
   die(COMMAND_USAGE.private);
 }
 
@@ -54,7 +55,11 @@ function add(words) {
   const list = privateList(name, entry);
   if (list.home && existsSync(list.home)) {
     const before = readPrivateList(list.home);
-    try { writePrivateList(list.home, [...before.paths, ...entry.private]); } catch (error) { die(`${error.message}; ${name}'s private files are named on this Mac only`); }
+    // Every name known goes to the list: the list's own, this Mac's config,
+    // the copy of the list this Mac keeps, and the new ones. A list that has
+    // gone missing is never rewritten smaller (Astra's fourth review of
+    // t645); only private remove drops a name.
+    try { writePrivateList(list.home, [...before.paths, ...entry.private, ...(entry.privateFromList ?? [])]); } catch (error) { die(`${error.message}; ${name}'s private files are named on this Mac only`); }
     for (const r of before.refused) console.log(`${PRIVATE_LIST} line ${r.line} was dropped: ${r.error}.`);
     console.log(`${join(list.home, PRIVATE_LIST)} lists them, so atelier clone links them on every Mac.`);
   } else console.log(`${name}'s private files are named on this Mac only: ${list.homeError ?? `${list.home} is not on this Mac`}.`);
@@ -64,6 +69,37 @@ function add(words) {
   try { r = linkPrivate(entry.path, entry, { name }); } catch (error) { die(error.message); }
   for (const line of r.said) console.log(line);
   if (r.refused.length) process.exitCode = 1;
+}
+
+// Drops names from the project's private files: from this Mac's config,
+// the copy of the list it keeps and the list in iCloud; the link Atelier
+// made for each is removed, the file in iCloud is left as it is. The only
+// way a name stops being private.
+function remove(words) {
+  const name = project(), entry = entryOf(name);
+  const paths = [];
+  for (const word of words) {
+    const r = privatePath(word);
+    if ("error" in r) die(`${r.error}; nothing was changed`);
+    if (!paths.includes(r.path)) paths.push(r.path);
+  }
+  const list = privateList(name, entry);
+  if (list.unreadable || (list.home && !existsSync(list.home))) die(`${list.unreadable ?? `${list.home} is not on this Mac`}, so its list cannot be rewritten without these names; nothing was changed`);
+  const keep = (names) => (names ?? []).filter((p) => !paths.includes(p));
+  const known = [...new Set([...(entry.private ?? []), ...(entry.privateFromList ?? []), ...(list.listed ? readPrivateList(list.home).paths : [])])];
+  const gone = paths.filter((p) => known.includes(p));
+  if (!gone.length) die(`${paths.join(", ")} ${paths.length === 1 ? "is" : "are"} not among ${name}'s private files; nothing was changed`);
+  if (list.home && existsSync(list.home)) {
+    try { writePrivateList(list.home, keep(known)); } catch (error) { die(`${error.message}; nothing was changed`); }
+  }
+  if (entry.private) entry.private = keep(entry.private);
+  if (entry.privateFromList) entry.privateFromList = keep(entry.privateFromList);
+  saveConfig(cfg);
+  for (const path of gone) {
+    const link = join(entry.path, path);
+    try { if (lstatSync(link).isSymbolicLink() && list.home && readlinkSync(link) === join(list.home, path)) unlinkSync(link); } catch { /* not linked here */ }
+  }
+  console.log(`${name}: ${gone.join(", ")} ${gone.length === 1 ? "is" : "are"} no longer private; the file${gone.length === 1 ? "" : "s"} in iCloud ${gone.length === 1 ? "is" : "are"} left as ${gone.length === 1 ? "it is" : "they are"}.`);
 }
 
 function ls() {

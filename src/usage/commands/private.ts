@@ -12,13 +12,18 @@ const spec: CommandSpec = {
       about: "Names files of the project that stay private to the developer, such as PROJECT.md: kept in the project's iCloud folder (`~/Library/Mobile Documents/com~apple~CloudDocs/ai-projects/` and the folder named for the project, or DIR), linked into this Mac's checkout, ignored by Git through `.git/info/exclude`, and never committed or pushed by Atelier. The names go to `.atelier-private` in that folder, which iCloud carries to every Mac, so `clone` there links them with no further step; the list itself is never linked or pushed. A file already in the checkout is never overwritten, and a file Git tracks is refused.",
     },
     {
+      group: "Setup", line: 3, slot: 15,
+      form: "private remove PATH…",
+      about: "Stops files being private: drops each name from this Mac's config, its copy of the list and `.atelier-private` in iCloud, and removes the link Atelier made; the file in iCloud is left as it is. The only way a name stops being private: `private add` never writes a list without a name it knows.",
+    },
+    {
       group: "Setup", line: 3, slot: 20,
       form: "private ls",
       about: "Lists the project's private files, whether each is listed in iCloud, on this Mac or both, any line of `.atelier-private` it refuses, the folder that keeps them and whether each is linked into this Mac's checkout and ignored by Git. It changes nothing in the checkout; it keeps this Mac's copy of the list current, which opts the project in when iCloud holds one.",
     },
   ],
   flags: { home: false },
-  subcommands: { add: { takes: ["home"] }, ls: { takes: [] } },
+  subcommands: { add: { takes: ["home"] }, remove: { takes: [] }, ls: { takes: [] } },
   help: {
     flags: {
       "--home DIR": "the folder that keeps the private files, in place of the iCloud ai-projects folder named for the project",
