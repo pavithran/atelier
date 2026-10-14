@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
-import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, UPDATING_DETAIL } from "../src/rules.ts";
+import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, privateExcludeLine, privateFolderMatches, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
@@ -1285,4 +1285,35 @@ test("the stored last restart is read back, and anything unreadable is none", ()
   assert.equal(parseLedgerRestart(undefined), null);
   assert.equal(parseLedgerRestart("not json"), null);
   assert.equal(parseLedgerRestart(JSON.stringify({ at: "soon" })), null);
+});
+
+// Private files (t645).
+test("a private path is made plain, and one outside the checkout or in .git is refused", () => {
+  assert.deepEqual(privatePath("PROJECT.md"), { path: "PROJECT.md" });
+  assert.deepEqual(privatePath("./notes/plan.md"), { path: "notes/plan.md" });
+  assert.deepEqual(privatePath("notes/"), { path: "notes" });
+  for (const bad of ["", "  ", "/etc/passwd", "../outside.md", "notes/../x", "a//b", "./", ".git/config", ".GIT/hooks/x", "a\nb"]) {
+    assert.ok("error" in privatePath(bad), JSON.stringify(bad));
+  }
+});
+
+test("private paths match themselves and what lies under a private folder, as a Mac compares names", () => {
+  const paths = ["PROJECT.md", "project.md", "notes/plan.md", "notes", "notesy.md", "src/PROJECT.md", "Notes/a.md"];
+  assert.deepEqual(privatePathsAmong(paths, ["PROJECT.md", "notes"]), ["PROJECT.md", "project.md", "notes/plan.md", "notes", "Notes/a.md"]);
+  assert.deepEqual(privatePathsAmong(paths, []), []);
+});
+
+test("a project's iCloud folder is the one named for it, case, spaces, hyphens and underscores aside", () => {
+  assert.ok(privateFolderMatches("ikon-weblog", "ikon weblog"));
+  assert.ok(privateFolderMatches("assetsapp", "AssetsApp"));
+  assert.ok(privateFolderMatches("hqpe-control", "HQPe-Control"));
+  assert.ok(!privateFolderMatches("atelier", "atelier-ops"));
+  assert.ok(!privateFolderMatches("", ""));
+});
+
+test("each private path is excluded by an anchored line with its special characters escaped", () => {
+  assert.equal(privateExcludeLine("PROJECT.md"), "/PROJECT.md");
+  assert.equal(privateExcludeLine("notes/a*b?[c].md"), "/notes/a\\*b\\?\\[c\\].md");
+  assert.equal(privateExcludeLine("#plan!"), "/#plan!");
+  assert.equal(privateExcludeLine("trail  "), "/trail\\ \\ ");
 });

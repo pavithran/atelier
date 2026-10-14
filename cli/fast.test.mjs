@@ -72,6 +72,19 @@ test("a batch with a credential in its added lines stops at the secret scan, mai
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// t645: what fast land lands, the next publish pushes, so a batch that adds
+// a private file of the project stops before anything is recorded.
+test("a batch whose commits add a private file of the project stops, main untouched", async () => {
+  const { dir, one } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "true", privatePaths: ["ONE.TXT"], record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "private files");
+    assert.match(r.failure.detail, /The batch would carry private files: one\.txt in [0-9a-f]{12}/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a passing batch merges in order with --no-ff and records each receipt with its builder and the tests' sha256", async () => {
   const { dir, one, two } = repo();
   try {

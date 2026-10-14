@@ -50,6 +50,7 @@ import command_open from "./open.mjs";
 import command_ops from "./ops.mjs";
 import command_owners from "./owners.mjs";
 import command_plan from "./plan.mjs";
+import command_private from "./private.mjs";
 import command_projects from "./projects.mjs";
 import command_publish from "./publish.mjs";
 import command_push from "./push.mjs";
@@ -142,6 +143,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/ops.mjs", run: command_ops },
   { path: "cli/commands/owners.mjs", run: command_owners },
   { path: "cli/commands/plan.mjs", run: command_plan },
+  { path: "cli/commands/private.mjs", run: command_private },
   { path: "cli/commands/projects.mjs", run: command_projects },
   { path: "cli/commands/publish.mjs", run: command_publish },
   { path: "cli/commands/push.mjs", run: command_push },

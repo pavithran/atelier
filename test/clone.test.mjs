@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildHistory, loadPairs } from "../cli/fresh.mjs";
@@ -309,4 +309,92 @@ test("clone names the baseline origin whatever clone.defaultRemoteName says", as
   assert.equal(f.git(dir, "remote", "get-url", "origin"), f.bare);
   assert.equal(f.git(dir, "rev-parse", "refs/remotes/origin/main"), f.head);
   assert.equal(f.git(dir, "rev-parse", "--abbrev-ref", "main@{upstream}"), "origin/main");
+});
+
+// Private files (t645): files the project names as private stay in its
+// iCloud folder; clone links them into the checkout, Git ignores them, and
+// no Atelier command pushes them.
+function icloudFolder(f, name = "Demo") {
+  const keep = join(f.home, "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects", name);
+  mkdirSync(join(keep, "notes"), { recursive: true });
+  writeFileSync(join(keep, "PROJECT.md"), "the plan\n");
+  writeFileSync(join(keep, "notes", "plan.md"), "notes\n");
+  return keep;
+}
+
+test("clone links the private files this Mac names from the project's iCloud folder, and Git ignores them", async (t) => {
+  const f = setup(t);
+  const keep = icloudFolder(f);
+  const dir = join(f.root, "checkouts", "demo");
+  const projects = { demo: { private: ["PROJECT.md", "notes/plan.md", "ghost.md", "file.txt"] } };
+  const r = await run(t, f, ["clone", "demo", dir], { projects });
+  assert.equal(r.code, 0, r.output);
+  for (const path of ["PROJECT.md", "notes/plan.md"]) {
+    assert.ok(lstatSync(join(dir, path)).isSymbolicLink(), path);
+    assert.equal(readlinkSync(join(dir, path)), join(keep, path));
+  }
+  assert.equal(readFileSync(join(dir, "PROJECT.md"), "utf8"), "the plan\n");
+  assert.match(r.output, new RegExp(`Private files linked from ${keep}: PROJECT\\.md, notes/plan\\.md\\.`));
+  // One missing from the folder is said and skipped; a file the baseline
+  // holds is not private there and is left as the clone checked it out.
+  assert.match(r.output, /ghost\.md: not in .*; not linked/);
+  assert.match(r.output, /file\.txt: Git tracks it in the checkout/);
+  assert.equal(readFileSync(join(dir, "file.txt"), "utf8"), "version 3\n");
+  assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
+  assert.equal(f.git(dir, "check-ignore", "--no-index", "PROJECT.md", "notes/plan.md"), "PROJECT.md\nnotes/plan.md");
+  assert.ok(!existsSync(join(dir, ".gitignore")), "nothing pushed says what is private");
+  assert.deepEqual(r.config.projects.demo.private, projects.demo.private);
+});
+
+test("clone of a project whose private folder is not on this Mac says so, clones and still ignores the files", async (t) => {
+  const f = setup(t);
+  const dir = join(f.root, "demo");
+  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"], privateHome: join(f.root, "not-synced-yet") } } });
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /Private files not linked: .*not-synced-yet, the folder that keeps them, is not on this Mac/);
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), f.head);
+  assert.ok(!existsSync(join(dir, "PROJECT.md")));
+  writeFileSync(join(dir, "PROJECT.md"), "written before iCloud caught up\n");
+  assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
+  // --private-home that is not a folder is refused before anything is cloned.
+  const g = setup(t), other = join(g.root, "demo");
+  const refused = await run(t, g, ["clone", "demo", other, "--private-home", join(g.root, "nope")]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.output, /--private-home .*nope is not a folder on this Mac; nothing was cloned/);
+  assert.ok(!existsSync(other));
+});
+
+test("clone --private-home names the folder the private files are linked from", async (t) => {
+  const f = setup(t);
+  const keep = icloudFolder(f, "Somewhere Else");
+  const dir = join(f.root, "demo");
+  const r = await run(t, f, ["clone", "demo", dir, "--private-home", keep], { projects: { demo: { private: ["PROJECT.md"] } } });
+  assert.equal(r.code, 0, r.output);
+  assert.equal(r.config.projects.demo.privateHome, keep);
+  assert.equal(readlinkSync(join(dir, "PROJECT.md")), join(keep, "PROJECT.md"));
+});
+
+test("sync never carries a private file to the baseline, even one committed by hand past the exclude", async (t) => {
+  const f = setup(t, { fresh: true });
+  icloudFolder(f);
+  const dir = join(f.root, "demo");
+  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"] } } });
+  assert.equal(r.code, 0, r.output);
+  const before = f.git(f.bare, "rev-parse", "main");
+  // The link itself, forced past the exclude: Git commits a link as a link,
+  // and Atelier refuses it as it would the file.
+  f.git(dir, "add", "-f", "PROJECT.md");
+  f.git(dir, "commit", "-q", "-m", "oops");
+  const s = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
+  assert.notEqual(s.code, 0, s.output);
+  assert.match(s.output, /Carrying main to demo's baseline would carry private files: PROJECT\.md in [0-9a-f]{12}\. .*Nothing was pushed\./);
+  assert.equal(f.git(f.bare, "rev-parse", "main"), before);
+  // Taken out of the history, the rest is carried.
+  f.git(dir, "reset", "-q", "--hard", "HEAD~1");
+  writeFileSync(join(dir, "code.txt"), "public\n");
+  f.git(dir, "add", "-A");
+  f.git(dir, "commit", "-q", "-m", "code");
+  const ok = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
+  assert.equal(ok.code, 0, ok.output);
+  assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt");
 });

@@ -1,6 +1,6 @@
 // atelier fast. Its forms, flags and help are declared in src/usage/commands/fast.ts.
 import { COMMAND_USAGE } from "../help.mjs";
-import { I, OWNER, P, actingHeaders, actor, args, call, die, fastTakeWorkspace, git, itemArg, project, wsConfig } from "../atelier.mjs";
+import { I, OWNER, P, actingHeaders, actor, args, call, cfg, die, fastTakeWorkspace, git, itemArg, project, wsConfig } from "../atelier.mjs";
 import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs, postPending, readPending, readySources } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
@@ -50,6 +50,8 @@ export default async function fastCommand() {
     // Kept in the receipts file, so atelier fast record posts the rest as
     // this run would have (Astra's audit of 2026-10-13, finding 9).
     note: { project: name, ...(args.reviewer ? { reviewer: args.reviewer } : {}) },
+    // The project's private files (t645), refused in what the batch lands.
+    privatePaths: cfg.projects?.[name]?.private ?? [],
     log: (line) => console.log(line),
     record: recorder(name, args.reviewer),
   });

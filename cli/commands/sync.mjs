@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
+import { privateRefusal } from "../private.mjs";
 import { OWNER, P, call, cfg, die, git, landingGit, landingHome, project, refreshControlPlane, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
@@ -37,6 +38,9 @@ export default async function syncCommand() {
     const head = git(["rev-parse", "HEAD"], { cwd });
     if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
     if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
+    // No commit carried may hold a private file (t645).
+    const held = privateRefusal(cwd, p.private ?? [], head, [paired], `Carrying ${p.branch} to ${name}'s baseline`);
+    if (held) die(`${held} Nothing was pushed.`);
     let built;
     try { built = syncHistory(git, cwd, baselineHead, paired, head); } catch (error) { die(error.message); }
     // The pairs are saved before the push: a push that lands just before a
