@@ -983,3 +983,45 @@ test("a developer's link into the project's folder is left as it is", (t) => {
   assert.match(r.output, /PROJECT\.md: a link Atelier did not make is already in the checkout/);
   assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "draft.md"));
 });
+
+// Astra's sixteenth review of t645, finding 1: names read from the older
+// folder were returned but not kept, so the next call, with the older folder
+// no longer known, dropped them.
+test("names read from an older folder are kept in the copy, so a second guard call still covers them", (t) => {
+  const f = setup(t);
+  const a = join(f.root, "folder-a"), b = join(f.root, "folder-b");
+  mkdirSync(a); mkdirSync(b);
+  writeFileSync(join(a, ".atelier-private"), "a.md\n");
+  writeFileSync(join(b, ".atelier-private"), "b.md\n");
+  f.write({ demo: { path: f.checkout, branch: "main", privateHome: a } });
+  const memory = JSON.parse(readFileSync(join(f.root, "config", "config.json"), "utf8"));
+  useConfig(memory);
+  const previous = { dir: process.env.ATELIER_CONFIG_DIR, root: process.env.ATELIER_PRIVATE_ROOT };
+  process.env.ATELIER_CONFIG_DIR = join(f.root, "config");
+  process.env.ATELIER_PRIVATE_ROOT = f.icloud;
+  t.after(() => {
+    useConfig(null);
+    for (const [key, value] of [["ATELIER_CONFIG_DIR", previous.dir], ["ATELIER_PRIVATE_ROOT", previous.root]]) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  });
+  const disk = f.read();
+  disk.projects.demo.privateHome = b;
+  writeFileSync(join(f.root, "config", "config.json"), JSON.stringify(disk));
+  assert.ok(privateGuardFor("demo").paths.includes("a.md"), "first call");
+  assert.ok(privateGuardFor("demo").paths.includes("a.md"), "second call, with folder A no longer known");
+  assert.ok(f.read().projects.demo.privateFromList.includes("a.md"), "kept in the copy on disk");
+});
+
+// Astra's sixteenth review of t645, finding 2: private remove deleted any
+// link to the expected target, a developer's own included.
+test("private remove leaves a link the developer made, and still drops the name", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
+  f.write({ demo: { path: f.checkout, branch: "main", protect: [], private: ["PROJECT.md"], privateFromList: ["PROJECT.md"] } });
+  symlinkSync(join(f.keep, "PROJECT.md"), join(f.checkout, "PROJECT.md"));
+  const r = f.run("private", "remove", "PROJECT.md");
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /PROJECT\.md: the link in the checkout \(to .*PROJECT\.md\) is not one Atelier made; it was left as it is\./);
+  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "PROJECT.md"));
+  assert.ok(!f.read().projects.demo.private.includes("PROJECT.md"));
+  assert.deepEqual(parsePrivateList(readFileSync(join(f.keep, ".atelier-private"), "utf8")).paths, []);
+});
