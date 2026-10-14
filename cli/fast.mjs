@@ -97,6 +97,13 @@ function shallowOf(cwd) {
 // the porcelain list's first entry, whose Git directory is the common one;
 // each linked worktree is $GIT_COMMON_DIR/worktrees/<name>, holding what its
 // HEAD names, at the folder its gitdir file names.
+//
+// It answers { path, gitDir, workTree }: the folder Git lists, the holder's
+// own Git directory, and its working tree when the registry names one (null
+// for a main worktree Git lists under its Git directory, t639's layout).
+// Advice to the developer acts on gitDir and workTree, never on a command
+// run in `path` (codex/gpt-6-astra's review of t646): with the holder's .git
+// file deleted, Git run there finds the enclosing checkout's repository.
 export function worktreeHolding(cwd, ref) {
   const real = (path) => { try { return realpathSync(path); } catch { return path; } };
   const read = (path) => { try { return readFileSync(path, "utf8").trim(); } catch { return null; } };
@@ -108,7 +115,9 @@ export function worktreeHolding(cwd, ref) {
   const common = gitDirOf("--path-format=absolute", "--git-common-dir");
   const first = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n")[0];
   const mainPath = /^worktree (.+)$/m.exec(first)?.[1];
-  if (mainPath && new RegExp(`^branch ${ref}$`, "m").test(first) && !(here && common === here)) return mainPath;
+  if (mainPath && new RegExp(`^branch ${ref}$`, "m").test(first) && !(here && common === here)) {
+    return { path: mainPath, gitDir: common, workTree: common && real(mainPath) !== common ? mainPath : null };
+  }
   if (!common) return null;
   let names = [];
   try { names = readdirSync(join(common, "worktrees")).sort(); } catch { return null; }
@@ -117,7 +126,8 @@ export function worktreeHolding(cwd, ref) {
     if (read(join(admin, "HEAD")) !== `ref: ${ref}`) continue;
     if (here && real(admin) === here) continue;
     const gitFile = read(join(admin, "gitdir"));
-    return gitFile ? dirname(resolve(admin, gitFile)) : admin;
+    const workTree = gitFile ? dirname(resolve(admin, gitFile)) : null;
+    return { path: workTree ?? admin, gitDir: admin, workTree };
   }
   return null;
 }
@@ -499,8 +509,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       // read, and touches no branch checked out here.
       const holder = worktreeHolding(cwd, "refs/heads/main");
       if (holder) {
-        problem = `main is checked out in the worktree ${holder}, so fast land could not move it`;
-        fix = `git -C ${JSON.stringify(holder)} reset --hard ${start}`;
+        problem = `main is checked out in the worktree ${holder.path}, so fast land could not move it`;
+        fix = holder.gitDir && holder.workTree
+          ? `git --git-dir=${JSON.stringify(holder.gitDir)} --work-tree=${JSON.stringify(holder.workTree)} reset --hard ${start}`
+          : `git reset --hard ${start} in the checkout whose .git names ${holder.gitDir ?? holder.path}`;
       } else {
         const r = runGit(cwd, ["update-ref", "refs/heads/main", start, main()]);
         if (r.status !== 0) problem = `git checkout main failed (${failed(checkout)}) and so did git update-ref (${failed(r)})`;
