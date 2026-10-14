@@ -48,6 +48,20 @@ const SCAN_CONFIG = [
 // else the one folder in the iCloud ai-projects folder named for it.
 export function privateHome(name, entry, root = privateRoot()) {
   if (entry?.privateHome) return { home: entry.privateHome, named: true };
+  const found = folderFor(name, root);
+  // A project renamed since keeps its folder under an old name: each former
+  // name is tried when its own name finds none (Astra's eleventh review of
+  // t645).
+  if (found.none && !found.rootMissing) {
+    for (const former of Array.isArray(entry?.formerNames) ? entry.formerNames : []) {
+      const old = folderFor(former, root);
+      if (old.home || old.unreadable) return old;
+    }
+  }
+  return found;
+}
+
+function folderFor(name, root) {
   let found;
   try {
     found = readdirSync(root, { withFileTypes: true })
@@ -56,7 +70,7 @@ export function privateHome(name, entry, root = privateRoot()) {
   } catch (error) {
     // No iCloud ai-projects folder on this Mac at all is no folder for the
     // project; one that is there and cannot be read hides what may be in it.
-    if (error?.code === "ENOENT") return { error: `there is no ${root} on this Mac`, none: true };
+    if (error?.code === "ENOENT") return { error: `there is no ${root} on this Mac`, none: true, rootMissing: true };
     return { error: `${root} cannot be read (${error?.code ?? error?.message}), so whether ${name} keeps private files there cannot be known; name its folder with atelier private add --home DIR --project ${name}`, unreadable: true };
   }
   if (found.length === 1) return { home: join(root, found[0]), named: false };
@@ -185,10 +199,25 @@ const configFile = () => join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), 
 // lists the name among its former names (projects rename records them),
 // since a workspace made before a rename still names the old one (Astra's
 // sixth review of t645).
+// An entry that lists the name among its former names is the project's
+// entry now, and wins over a stale entry still under the old name (Astra's
+// eleventh review of t645); the loader joins the stale entry's private
+// settings to it.
 export function projectKey(projects, name) {
   if (!projects || typeof name !== "string") return null;
-  if (Object.hasOwn(projects, name)) return name;
-  return Object.keys(projects).find((key) => Array.isArray(projects[key]?.formerNames) && projects[key].formerNames.includes(name)) ?? null;
+  const renamed = Object.keys(projects).find((key) => key !== name && Array.isArray(projects[key]?.formerNames) && projects[key].formerNames.includes(name));
+  if (renamed) return renamed;
+  return Object.hasOwn(projects, name) ? name : null;
+}
+
+// The project's entry by name or former name, with the private settings
+// of a stale entry still under the asked name joined to it.
+function entryFor(projects, name) {
+  const key = projectKey(projects, name);
+  if (!key) return { key: null, entry: undefined };
+  const entry = projects[key];
+  if (key !== name && projects[name]) joinPrivate(entry, projects[name]);
+  return { key, entry };
 }
 
 // Writes one project's private settings to config.json and nothing else:
@@ -342,9 +371,16 @@ export function mergeConfigForSave(disk, memory, snapshot) {
   }
   const dp = disk.projects ?? {}, mp = memory.projects ?? {}, sp = snapshot.projects ?? {};
   out.projects = {};
+  const renamed = [];
   for (const name of new Set([...Object.keys(dp), ...Object.keys(mp), ...Object.keys(sp)])) {
     const changed = !same(mp[name], sp[name]);
     if (changed && !mp[name]) continue; // removed or moved by this process
+    // An entry this process changed that another command renamed since is
+    // never made again under its old name (Astra's eleventh review of
+    // t645): the changes go to the entry that now lists the name among its
+    // former names.
+    const now = changed && !dp[name] && sp[name] ? Object.keys(dp).find((key) => Array.isArray(dp[key]?.formerNames) && dp[key].formerNames.includes(name)) : null;
+    if (now) { renamed.push([name, now]); continue; }
     // Unchanged here: the disk's entry stands, and one another command
     // removed or moved since stays gone.
     const base = changed ? mp[name] : dp[name];
@@ -357,6 +393,17 @@ export function mergeConfigForSave(disk, memory, snapshot) {
     }
     if (!entry.privateHome && other?.privateHome) entry.privateHome = other.privateHome;
     out.projects[name] = entry;
+  }
+  for (const [name, now] of renamed) {
+    const entry = out.projects[now], mine = mp[name], before = sp[name] ?? {};
+    if (!entry) continue;
+    for (const [field, value] of Object.entries(mine)) {
+      if (PRIVATE_FIELDS.includes(field) || field === "privateHome") continue;
+      if (!same(value, before[field])) entry[field] = value;
+    }
+    for (const field of Object.keys(before)) if (!(field in mine) && !PRIVATE_FIELDS.includes(field) && field !== "privateHome") delete entry[field];
+    joinPrivate(entry, mine);
+    entry.formerNames = [...new Set([...(entry.formerNames ?? []), ...(Array.isArray(mine.formerNames) ? mine.formerNames : [])])].filter((n) => n !== now);
   }
   return out;
 }
@@ -394,18 +441,18 @@ export function privateGuardFor(project, { root, discover = false, pending = nul
     if (error?.code !== "ENOENT") return { paths: [PRIVATE_LIST], refusal: `${file} cannot be read (${error?.code ?? error?.message}), so ${project}'s private files cannot be known. Nothing was pushed.` };
     cfg = { projects: {} };
   }
-  const diskKey = projectKey(cfg.projects, project);
+  const { key: diskKey, entry: onDisk } = entryFor(cfg.projects ?? {}, project);
   if (shared) {
-    const onDisk = diskKey ? cfg.projects[diskKey] : null;
     shared.cfg.projects ??= {};
-    let memKey = projectKey(shared.cfg.projects, project) ?? diskKey;
+    const memKey = projectKey(shared.cfg.projects, project) ?? diskKey;
+    if (memKey) entryFor(shared.cfg.projects, project);
     if (onDisk) {
       const entry = shared.cfg.projects[memKey] ??= { ...onDisk };
       joinPrivate(entry, onDisk);
     }
     return run(memKey ? shared.cfg.projects[memKey] : undefined);
   }
-  return run(diskKey ? cfg.projects[diskKey] : undefined);
+  return run(onDisk);
 }
 
 // Moves a project's local entry from one name to another, or merges it
@@ -439,8 +486,9 @@ export function moveProjectEntryOnDisk(projects, from, to) {
 export function moveConflict(projects, from, to) {
   const source = projects?.[from], target = projects?.[to];
   if (!source || !target || from === to) return null;
-  if (source.privateHome && target.privateHome && source.privateHome !== target.privateHome) {
-    return `the local entries ${from} and ${to} name different folders for their private files (${source.privateHome} and ${target.privateHome}); nothing was renamed and nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again`;
+  const sourceHome = source.privateHome || (privateConfigured(source) ? privateHome(from, source).home : null);
+  if (sourceHome && target.privateHome && sourceHome !== target.privateHome) {
+    return `the local entries ${from} and ${to} name different folders for their private files (${sourceHome} and ${target.privateHome}); nothing was renamed and nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again`;
   }
   return null;
 }
@@ -449,11 +497,17 @@ export function moveProjectEntry(projects, from, to) {
   if (!projects?.[from] || from === to) return { moved: false };
   const source = projects[from], target = projects[to];
   const former = (...lists) => [...new Set(lists.flatMap((l) => (Array.isArray(l) ? l : [])))].filter((n) => n !== to);
+  // A folder found by the old name is recorded, so the move does not lose
+  // it (Astra's eleventh review of t645); only a project with private files
+  // configured has its folder looked for.
+  const found = !source.privateHome && privateConfigured(source) ? privateHome(from, source) : null;
+  const home = found?.home ? { privateHome: found.home } : {};
   if (!target) {
-    projects[to] = { ...source, formerNames: former(source.formerNames, [from]) };
+    projects[to] = { ...source, ...home, formerNames: former(source.formerNames, [from]) };
     delete projects[from];
     return { moved: true };
   }
+  if (home.privateHome && !source.privateHome) source.privateHome = home.privateHome;
   const conflict = moveConflict(projects, from, to);
   if (conflict) return { error: conflict };
   joinPrivate(target, source);
