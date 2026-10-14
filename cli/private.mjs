@@ -16,8 +16,8 @@
 // one (privateCommits). Git commits a symbolic link as a link, never the
 // file it points at, and the refusal covers the link too.
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PRIVATE_LIST, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
@@ -275,29 +275,72 @@ export function testHold(stage) {
 export function withLock(lock, what, fn) {
   if (process.env.ATELIER_TEST_NO_LOCK) return fn();
   mkdirSync(dirname(lock), { recursive: true });
+  const token = `${process.pid} ${randomUUID()}`;
+  const wait = Number(process.env.ATELIER_TEST_LOCK_WAIT_MS) || LOCK_WAIT_MS;
   const started = Date.now();
   for (let delay = 10; ; delay = Math.min(delay * 2, 200)) {
     let fd;
     try { fd = openSync(lock, "wx", 0o600); }
     catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      let pid = 0, at = 0;
-      try { [pid, at] = readFileSync(lock, "utf8").trim().split(" ").map(Number); } catch { /* being written or just removed */ }
-      let alive = false;
-      if (pid > 0) { try { process.kill(pid, 0); alive = true; } catch (e) { alive = e?.code === "EPERM"; } }
-      const old = at > 0 && Date.now() - at > LOCK_STALE_MS;
-      if ((pid > 0 && !alive) || old) { try { unlinkSync(lock); } catch { /* another took it over */ } continue; }
-      if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`${what} is locked by another Atelier command (pid ${pid || "unknown"}, ${lock}); try again once it has finished`);
+      const seen = readLock(lock);
+      if (seen !== null && lockIsStale(lock, seen)) {
+        testHold("recover");
+        recoverLock(lock, seen);
+        continue;
+      }
+      if (Date.now() - started > wait) throw new Error(`${what} is locked by another Atelier command (pid ${Number(seen?.split(" ")[0]) || "unknown"}, ${lock}); try again once it has finished, or remove ${lock} if no Atelier command is running`);
       sleep(delay);
       continue;
     }
     try {
-      writeSync(fd, `${process.pid} ${Date.now()}\n`);
+      writeSync(fd, `${token}\n`);
       closeSync(fd);
       return fn();
-    } finally { rmSync(lock, { force: true }); }
+    } finally { releaseLock(lock, token); }
   }
 }
+
+// The lock's content, or null when there is no lock.
+function readLock(lock) {
+  try { return readFileSync(lock, "utf8").trim(); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+}
+
+// A lock is stale only when its owner is gone (Astra's twelfth review of
+// t645): a live owner keeps it however long it holds it. A lock still empty
+// after LOCK_STALE_MS is one whose maker died between making and writing it.
+function lockIsStale(lock, seen) {
+  const pid = Number(seen.split(" ")[0]);
+  if (!seen) {
+    try { return Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS; } catch { return false; }
+  }
+  if (!(pid > 0)) return false;
+  try { process.kill(pid, 0); return false; } catch (error) { return error?.code !== "EPERM"; }
+}
+
+// Takes a stale lock away, atomically: the lock is renamed to a name of this
+// process's own, which only one renamer can do, and read again. If it is
+// the lock judged stale it is removed; if it is not (another waiter
+// recovered the stale one and a new owner made this one since), it is put
+// back where it was, with a link that fails rather than replace a lock made
+// meanwhile, so a live owner's lock is never removed.
+function recoverLock(lock, seen) {
+  const aside = `${lock}.${process.pid}.${randomUUID()}.stale`;
+  try { renameSync(lock, aside); } catch (error) { if (error?.code === "ENOENT") return; throw error; }
+  let content = null;
+  try { content = readFileSync(aside, "utf8").trim(); } catch { /* read below as not the one judged */ }
+  if (content === seen) { rmSync(aside, { force: true }); return; }
+  try { linkSync(aside, lock); } catch { /* a lock was made meanwhile at the path: three waiters raced on one dead lock, and the one put aside cannot be put back without removing that one */ }
+  rmSync(aside, { force: true });
+}
+
+// Releases the lock only while it still holds this process's token, so a
+// lock another owner holds now is never removed.
+function releaseLock(lock, token) {
+  try { if (readLock(lock) === token) unlinkSync(lock); } catch { /* gone already */ }
+}
+
 
 // Every read-modify-write of config.json holds this lock (Astra's ninth
 // review of t645): the atomic rename keeps a reader from half a file, the
@@ -483,12 +526,23 @@ export function moveProjectEntryOnDisk(projects, from, to) {
 
 // Why moving `from` to `to` would be refused, or null: checked before
 // anything is renamed anywhere (projects rename asks this before the server).
+// The folder each side's private files are kept in, as discovery resolves
+// it: the one the entry names, else the one found by its name (or former
+// names). Looked for only when either side has private files configured.
+function resolvedHomes(projects, from, to) {
+  const source = projects[from], target = projects[to];
+  if (!privateConfigured(source) && !privateConfigured(target)) return { sourceHome: source.privateHome ?? null, targetHome: target.privateHome ?? null };
+  return { sourceHome: source.privateHome || privateHome(from, source).home || null, targetHome: target.privateHome || privateHome(to, target).home || null };
+}
+
 export function moveConflict(projects, from, to) {
   const source = projects?.[from], target = projects?.[to];
   if (!source || !target || from === to) return null;
-  const sourceHome = source.privateHome || (privateConfigured(source) ? privateHome(from, source).home : null);
-  if (sourceHome && target.privateHome && sourceHome !== target.privateHome) {
-    return `the local entries ${from} and ${to} name different folders for their private files (${sourceHome} and ${target.privateHome}); nothing was renamed and nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again`;
+  // Both sides' folders as resolved, the one found by name included
+  // (Astra's twelfth review of t645).
+  const { sourceHome, targetHome } = resolvedHomes(projects, from, to);
+  if (sourceHome && targetHome && sourceHome !== targetHome) {
+    return `the local entries ${from} and ${to} name different folders for their private files (${sourceHome} and ${targetHome}); nothing was renamed and nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again`;
   }
   return null;
 }
@@ -507,10 +561,14 @@ export function moveProjectEntry(projects, from, to) {
     delete projects[from];
     return { moved: true };
   }
-  if (home.privateHome && !source.privateHome) source.privateHome = home.privateHome;
   const conflict = moveConflict(projects, from, to);
   if (conflict) return { error: conflict };
-  joinPrivate(target, source);
+  // The destination keeps the folder it resolves to; only when it has none
+  // does it take the source's.
+  const { sourceHome, targetHome } = resolvedHomes(projects, from, to);
+  const keepHome = targetHome || sourceHome;
+  joinPrivate(target, { ...source, privateHome: undefined });
+  if (keepHome) target.privateHome = keepHome;
   target.formerNames = former(target.formerNames, source.formerNames, [from]);
   const kept = new Set(["private", "privateFromList", "privateHome", "formerNames"]);
   const dropped = Object.fromEntries(Object.entries(source).filter(([k]) => !kept.has(k)));
