@@ -340,7 +340,10 @@ test("an assignment naming one of two entries that share a model in a harness pr
 // since failed it. It is judged against what was recorded.
 test("a retry is the same content by the same acting model as recorded; anything else reusing the id is refused", () => {
   const prior = { id: "a4", fingerprint: "fp", acting: "claude-code/opus-5.5" };
-  assert.equal(isRetryOf(prior, "req-1", "fp", "Claude-Code/opus-5.5"), true);
+  assert.equal(isRetryOf(prior, "req-1", "fp", "claude-code/opus-5.5"), true);
+  // The declared text is compared exactly: another letter case may be another
+  // pool entry (gpt-6-astra's nineteenth review of t622, finding 2).
+  refused(() => isRetryOf(prior, "req-1", "fp", "Claude-Code/opus-5.5"), "request_reused", /acting as claude-code\/opus-5.5, not Claude-Code\/opus-5.5/);
   refused(() => isRetryOf(prior, "req-1", "other", "claude-code/opus-5.5"), "request_reused", /already recorded a4, with other content/);
   refused(() => isRetryOf(prior, "req-1", "fp", null), "request_reused", /acting as claude-code\/opus-5.5, not nobody/);
   assert.equal(isWithdrawalRetry({ note: "Reserved this week.", acting: "codex/gpt-6-astra" }, " Reserved this week. ", "codex/gpt-6-astra"), true);
@@ -355,7 +358,8 @@ test("the stored retry of an assignment or a withdrawal is the same acting model
   const store = memoryStore();
   const first = input({ fingerprint: "fp-1" });
   const a = recordAssignment(store, OWNER, first, AT, "claude-code/opus-5.5");
-  assert.equal(recordAssignment(store, OWNER, first, AT, "Claude-Code/opus-5.5").retried, true);
+  assert.equal(recordAssignment(store, OWNER, first, AT, "claude-code/opus-5.5").retried, true);
+  refused(() => recordAssignment(store, OWNER, first, AT, "Claude-Code/opus-5.5"), "request_reused", /not Claude-Code\/opus-5.5/);
   refused(() => recordAssignment(store, OWNER, first, AT, "codex/gpt-6-astra"), "request_reused", /acting as claude-code\/opus-5.5, not codex\/gpt-6-astra/);
   refused(() => recordAssignment(store, OWNER, first, AT, null), "request_reused", /not nobody/);
   // A record kept without a fingerprint is matched by its content and acting model too.

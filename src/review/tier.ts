@@ -36,8 +36,12 @@ import { independenceRefusal } from "./independence.ts";
 // a tier entry when it is any name of that entry, its aliases included
 // (gpt-6-astra's thirteenth review of t622, finding 2).
 export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[], single: PoolFamily | null = null, pool: PoolNames = []): boolean {
+  // An exact pool id (a selector's choice) is compared exactly, so two
+  // profiles of one model stay two; only a declared name that is no entry's
+  // id is read through the entry's names (gpt-6-astra's nineteenth review).
   const names = (a: string) => { const e = exactEntry(pool, a); return e ? [e.id, ...e.aliases].map((id) => `${e.harness}/${id}`) : [a]; };
-  return !!tier?.some((a) => sameActor(a, reviewer) || names(a).some((n) => sameActor(n, reviewer))) && independenceRefusal(reviewer, contributors, single) === null;
+  const serves = (a: string) => exactEntry(pool, reviewer) ? a === reviewer : sameActor(a, reviewer) || names(a).some((n) => sameActor(n, reviewer));
+  return !!tier?.some(serves) && independenceRefusal(reviewer, contributors, single) === null;
 }
 
 // The project's review tier as exact harness/ids. A tier written since
@@ -82,7 +86,7 @@ export function tierReviewerPick(tier: readonly string[], contributors: readonly
   // review of t622, finding 1).
   const isIt = (a: string, who: string) => names(a).some((n) => sameActor(n, who));
   const refusal = (a: string) => contributed(a, contributors) || contributors.some((c) => isIt(a, c)) ? "contributed to this change, and nobody reviews their own work"
-    : gate.some((g) => sameActor(g, a) || isIt(a, g)) ? "already asked for the gate's review"
+    : gate.some((g) => (pool && exactEntry(pool, g) ? g === a : sameActor(g, a) || isIt(a, g))) ? "already asked for the gate's review"
       : single && actorFamily(a) !== single ? `not one of ${single}'s models (single-family mode)`
         : reviewable(mayReview(a));
   // An assignment promotes only a tier model the pool has and that passes

@@ -878,7 +878,11 @@ function parseReviewTier(value: unknown): string[] {
   const out: string[] = [];
   for (const entry of raw.map((a) => a.trim()).filter(Boolean)) {
     if (!validActor(entry) || !entry.includes("/")) throw new RuleError("bad_review_tier", `"${entry}" is not harness/model; the review tier lists actors such as claude-code/opus-5.5`, 400);
-    if (!out.some((a) => sameActor(a, entry))) out.push(entry);
+    // Deduplicated by exact id: the tier's names were converted to exact pool
+    // ids where they entered (canonicalNames), and two entries of one model
+    // (codex/gpt-6-astra:a and :b) are two tier models (gpt-6-astra's
+    // nineteenth review of t622, finding 1).
+    if (!out.includes(entry)) out.push(entry);
   }
   if (out.length > REVIEW_TIER_MAX) throw new RuleError("too_long", `the review tier lists at most ${REVIEW_TIER_MAX} models`, 400);
   return out;

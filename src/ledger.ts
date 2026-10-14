@@ -3943,8 +3943,11 @@ export class Ledger extends DurableObject<Env> {
         return live.some((o) => assign(d, o));
       } catch { return false; }
     });
-    if (!offered.length) return { entry: null, why: `no model in the pool is offered for the ${PREREVIEW_JOB} job by a live runner`, reasons: [] };
+    // The selector runs whether or not any model is offered, so a failure
+    // says what became of the review assignments too (gpt-6-astra's
+    // nineteenth review of t622, finding 3).
     const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item) });
+    if (!offered.length) return { entry: null, why: [`no model in the pool is offered for the ${PREREVIEW_JOB} job by a live runner`, ...(pick.assignment?.lines ?? [])].join(" "), reasons: [] };
     const entry = pick.reviewer ? exactEntry(offered, pick.reviewer.actor) ?? null : null;
     return entry ? { entry, why: "", reasons: pick.reviewer!.reasons } : { entry: null, why: pick.unpicked ?? "no model qualifies", reasons: [] };
   }
@@ -6020,7 +6023,8 @@ export class Ledger extends DurableObject<Env> {
       // asked and why, and later rounds ask that reviewer first.
       const routed = route?.reviewer?.actor ?? null;
       const why = routed ? independenceRefusal(routed, contributors, single) ?? actorStanding(standing, routed, "review") : null;
-      if (routed && why && !sameActor(routed, reviewer)) {
+      // The routed reviewer and the selector's choice are exact ids.
+      if (routed && why && routed !== reviewer) {
         (record.reviewers ??= {})[p.partKey!] = { actor: reviewer, from: routed, reason: why, at };
         this.savePlanRecord(id, record);
         this.log(p.id, ORCHESTRATOR, "plan.reviewer_changed", { from: routed, to: reviewer, reason: why }, at);
@@ -6652,7 +6656,13 @@ export class Ledger extends DurableObject<Env> {
     // fourth reviews of t622).
     const mayReview = (a: string): true | string => mayAssess(a, policy, this.owner) ? tierEligible(pool, offers, a) : "may not review under the project's policy";
     const pick = tierReviewerPick(tierIds(policy, pool), contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
-    if (!pick.actor) return;
+    // No tier model remains: nothing is asked, as before; when assignments
+    // bear on the tier, what became of them is recorded, so the failure is
+    // explained as every selector's is (gpt-6-astra's nineteenth review).
+    if (!pick.actor) {
+      if (pick.reasons.length) this.log(item.id, actor, "review.tier_unasked", { head: need.head, reason: pick.reasons.join(" ") }, at, proved);
+      return;
+    }
     const target = reviewTarget(pool, pick.actor);
     const reviewer = target.actor;
     const dispatch = { ...this.standingDispatch({ to: target.where, agent: target.agent, model: target.model }, "review", ORCHESTRATOR, at, pool), job: "review" as const };

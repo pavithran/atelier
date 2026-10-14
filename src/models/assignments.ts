@@ -468,7 +468,10 @@ export function inputFingerprint(input: AssignmentInput): string {
 // not fail the retry (gpt-6-astra's third review of t622, finding 4). The
 // same id with other content, or another acting model, is another request
 // reusing it, and is refused.
-const sameActing = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").toLowerCase() === (b ?? "").toLowerCase();
+// The --as text a retry sent, compared with the first request's exactly:
+// two pool ids may differ only in letter case (gpt-6-astra's nineteenth
+// review of t622, finding 2).
+const sameActing = (a: string | null | undefined, b: string | null | undefined) => (a ?? "") === (b ?? "");
 
 //
 // `declared` is the --as text as this request sent it, compared with what

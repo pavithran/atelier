@@ -89,18 +89,27 @@ const findEntry = (pool: readonly ModelEntry[], actor: string) => exactEntry(poo
 // A declared identity (the previous round's reviewer, the plan's routed
 // reviewer and alternates, recorded as written) is found as main finds it,
 // by any name of an entry, its aliases included.
-const declaredEntry = (pool: readonly ModelEntry[], actor: string) => pool.find((entry) => namesOf(entry).some((name) => sameActor(name, actor)));
+// An exact id (a selector's earlier choice, the routing's) is its own entry
+// first, so a profile of the same model is never taken for it.
+const declaredEntry = (pool: readonly ModelEntry[], actor: string) => exactEntry(pool, actor) ?? pool.find((entry) => namesOf(entry).some((name) => sameActor(name, actor)));
 
 export function pickReviewer(input: PickInput): ReviewerPick {
   const contributors = contributorsOf(input.item);
   const none = (unpicked: string, passedOver: Choice[] = []): ReviewerPick => ({ reviewer: null, passedOver, unpicked });
-  if (!contributors.length) return none("no contributor is recorded for this item, so no reviewer can be shown to be independent of its authors");
+  // Refused before any candidate is judged: each assignment bearing on the
+  // review is named as skipped, with the reason, by the call every selector
+  // explains by (gpt-6-astra's nineteenth review of t622).
+  const before = (why: string): ReviewerPick => {
+    const outcome = orderByAssignment(input.pool.map(actorOf), (a) => a, input.assigned ?? [], () => why, FALLBACK.review).outcome;
+    return { ...none([why, ...outcome.lines].join(" ")), ...((input.assigned ?? []).length ? { assignment: outcome } : {}) };
+  };
+  if (!contributors.length) return before("no contributor is recorded for this item, so no reviewer can be shown to be independent of its authors");
   // Under single-family mode the reviewer is compared by model, not family,
   // so a contributor whose family is not recognised rules out nothing.
   const single = singleFamily(input.policy);
   const unknown = single ? [] : contributors.filter((c) => actorFamily(c) === "other");
   if (unknown.length) {
-    return none(`no reviewer can be of another family than ${unknown.join(", ")}, whose family is not recognised from ${unknown.length === 1 ? "its name" : "their names"}`);
+    return before(`no reviewer can be of another family than ${unknown.join(", ")}, whose family is not recognised from ${unknown.length === 1 ? "its name" : "their names"}`);
   }
 
   // Outside the plan's routing nothing here scores models: the routing
@@ -224,7 +233,9 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
     else passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
   }
 
-  const avoided = input.avoid?.find((a) => names.some((name) => sameActor(name, a.actor)));
+  // A lapsed reviewer recorded as an exact id is that entry alone; a declared
+  // name is read through this entry's names, as on main.
+  const avoided = input.avoid?.find((a) => { const own = exactEntry(input.pool, a.actor); return own ? own === entry : names.some((name) => sameActor(name, a.actor)); });
   if (avoided) failed.push(avoided.reason);
 
   // Under a governed policy the gate counts only an assessor's review. Without
