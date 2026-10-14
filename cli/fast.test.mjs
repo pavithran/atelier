@@ -437,7 +437,7 @@ test("a rollback that cannot restore main says so, naming main's head and the fi
     assert.match(r.restoreProblem, /main was NOT restored/);
     assert.ok(r.restoreProblem.includes(main.slice(0, 12)), "names main's head");
     assert.ok(r.restoreProblem.includes(realpathSync(holder)) || r.restoreProblem.includes(holder), "names the worktree holding main");
-    assert.match(r.restoreProblem, new RegExp(`git -C .+ reset --hard ${start}`));
+    assert.match(r.restoreProblem, new RegExp(`git --git-dir=.+ --work-tree=.+ reset --hard ${start}`));
     assert.equal(git(dir, "rev-parse", "temporary"), main, "the branch the test made was not reset");
   } finally {
     rmSync(dir, { recursive: true, force: true }); rmSync(dirname(holder), { recursive: true, force: true });
@@ -460,9 +460,13 @@ test("worktreeHolding tells worktrees apart by Git directory when the checkout's
     git(checkout, "worktree", "add", "-q", linked, "other");
     assert.match(git(checkout, "worktree", "list", "--porcelain"), new RegExp(`^worktree ${repository}$`, "m"), "Git lists the main worktree under the repository's path");
     assert.equal(worktreeHolding(checkout, "refs/heads/main"), null, "the checkout's own main is not another worktree's");
-    assert.equal(worktreeHolding(checkout, "refs/heads/other"), linked, "finds the linked worktree holding a branch");
+    assert.equal(worktreeHolding(checkout, "refs/heads/other")?.path, linked, "finds the linked worktree holding a branch");
     assert.equal(worktreeHolding(linked, "refs/heads/other"), null, "the linked worktree's own branch is not another worktree's");
-    assert.equal(worktreeHolding(linked, "refs/heads/main"), repository, "from the linked worktree, the main worktree holds main");
+    assert.equal(worktreeHolding(linked, "refs/heads/main")?.path, repository, "from the linked worktree, the main worktree holds main");
+    // The main worktree's folder is unknown in this layout, so no advice may
+    // name repository.git as a working tree (t646); a linked one's is known.
+    assert.deepEqual(worktreeHolding(linked, "refs/heads/main"), { path: repository, gitDir: repository, workTree: null });
+    assert.equal(worktreeHolding(checkout, "refs/heads/other")?.workTree, linked);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -487,7 +491,21 @@ test("a rollback finds the worktree holding main from Git's registry when its .g
     assert.equal(r.restored, false);
     assert.match(r.restoreProblem, /main was NOT restored/);
     assert.ok(r.restoreProblem.includes(join(realpathSync(dir), "nested")) || r.restoreProblem.includes(join(dir, "nested")), r.restoreProblem);
-    assert.equal(worktreeHolding(dir, "refs/heads/main"), r.restoreProblem.match(/checked out in the worktree (.+?), so/)[1]);
+    assert.equal(worktreeHolding(dir, "refs/heads/main")?.path, r.restoreProblem.match(/checked out in the worktree (.+?), so/)[1]);
+    // codex/gpt-6-astra's review of t646: the printed fix, `git -C <holder>
+    // reset --hard`, found the checkout's repository from the holder's
+    // folder, so following it reset `temporary` and left main where it was.
+    // The fix the developer is given must act on the holder's own Git
+    // directory: run from the checkout, it restores main and nothing else.
+    const fix = r.restoreProblem.match(/Restore it with: (.+)$/)[1];
+    assert.doesNotMatch(fix, /git -C /, fix);
+    const temporary = git(dir, "rev-parse", "temporary");
+    const ran = spawnSync("sh", ["-c", fix], { cwd: dir, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(git(dir, "rev-parse", "refs/heads/main"), start, "following the printed fix restores main");
+    assert.equal(git(dir, "rev-parse", "temporary"), temporary, "following the printed fix leaves the checkout's own branch alone");
+    assert.ok(existsSync(join(dir, "late.bin")), "following the printed fix leaves the checkout's files alone");
+    assert.ok(!existsSync(join(dir, "nested", "late.bin")), "following the printed fix resets the holder's files");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
