@@ -105,9 +105,10 @@ function remove(words) {
   if (list.unreadable || (list.home && !existsSync(list.home))) die(`${list.unreadable ?? `${list.home} is not on this Mac`}, so its list cannot be rewritten without these names; nothing was changed`);
   const keep = (names) => (names ?? []).filter((p) => !paths.includes(p));
   // The list is read and rewritten under its lock (Astra's tenth review of t645).
-  let gone = [];
+  let gone = [], listed = [];
   const rewrite = () => {
     const read = list.home && existsSync(list.home) ? readPrivateList(list.home) : { paths: [] };
+    listed = read.paths;
     if (read.unreadable) throw new Error(read.unreadable);
     const known = [...new Set([...(entry.private ?? []), ...(entry.privateFromList ?? []), ...read.paths])];
     gone = paths.filter((p) => known.includes(p));
@@ -116,7 +117,9 @@ function remove(words) {
   };
   try { if (list.home) withListLock(list.home, rewrite); else rewrite(); } catch (error) { die(`${error.message}; nothing was changed`); }
   if (entry.private) entry.private = keep(entry.private);
-  if (entry.privateFromList) entry.privateFromList = keep(entry.privateFromList);
+  // The copy keeps every name the list still holds, so the project stays
+  // opted in while any name remains (Argon's seventeenth review of t645).
+  entry.privateFromList = keep([...new Set([...(entry.privateFromList ?? []), ...listed])]);
   savePrivateFields(name, entry, { drop: gone });
   // A link is removed only when the checkout's record says Atelier made
   // that link, at that path, to that target (Astra's sixteenth review of
@@ -140,6 +143,7 @@ function ls() {
   const list = privateList(name, entry);
   const where = list.homeError ? `no folder: ${list.homeError}` : `${list.home}${list.named ? "" : ` (found by ${name}'s name)`}${existsSync(list.home) ? "" : ", not on this Mac"}`;
   console.log(`${name}: private files are kept in ${where}.`);
+  if (list.unreadable && !list.homeMissing) console.log(`  Warning: ${list.unreadable}; the private files it names cannot be known here.`);
   for (const r of list.refused) console.log(`  ${PRIVATE_LIST}${r.line ? ` line ${r.line}` : ""}: ${r.error}; skipped.`);
   const paths = list.paths;
   if (!paths.length) return console.log(`${name} names no private files. Name one with atelier private add PATH --project ${name}.`);

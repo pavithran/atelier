@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildHistory, loadPairs } from "../cli/fresh.mjs";
@@ -449,4 +449,19 @@ test("sync pushes what it scanned: a replacement ref cannot slip a private file 
   assert.equal(s.code, 0, s.output);
   assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt\nmore.txt");
   assert.doesNotMatch(f.git(f.bare, "log", "--all", "--name-only", "--format="), /PROJECT\.md/);
+});
+
+// Argon's seventeenth review of t645, finding 2: a clone whose project list
+// was there but could not be read said nothing and left the project unguarded.
+test("clone says when the project's list cannot be read, and opts the project in so pushes refuse", async (t) => {
+  const f = setup(t);
+  const keep = icloudFolder(f);
+  const file = join(keep, ".atelier-private");
+  writeFileSync(file, "PROJECT.md\n");
+  chmodSync(file, 0o000);
+  let r;
+  try { r = await run(t, f, ["clone", "demo", join(f.root, "demo")]); } finally { chmodSync(file, 0o644); }
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /Warning: .*\.atelier-private cannot be read \(EACCES\)/);
+  assert.equal(r.config.projects.demo.privateHome, keep, "opted in, so the guard refuses until the list can be read");
 });
