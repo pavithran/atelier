@@ -3,6 +3,8 @@ import { expect, it } from "vitest";
 import { runInDurableObject } from "cloudflare:test";
 import worker from "../src/index.ts";
 import { RUN_REPORTS } from "../src/ledger.ts";
+import { RUNNER_IDLE_MS } from "../src/dispatch/rules.ts";
+import { parseRuleError } from "../src/rules.ts";
 
 // t420: an idle runner hears why dispatches wait through its own poll, asked
 // with `why`, since a runner token may not GET the owner's listing; and a
@@ -291,3 +293,64 @@ it("explains when an offering runner's token is scoped to another project, when 
   expect((qEdited.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([]);
 });
 
+
+// t652, finding 2 of the review of t626: recordRunSkip kept any kind for a
+// task the reporting runner holds, so a caller past the route's check could
+// keep a kind no reason line knows. The runner reports failures,
+// infrastructure and skipped (gaveUp in cli/runner.mjs), each possibly after
+// a run that kept its claim; the ledger takes those and refuses any other.
+it("a runner's skip of a task it holds is kept for a kind it reports and refused for any other", async () => {
+  const name = "queue-why-held-skip";
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  await L.setProject(p, "owner");
+  await index().registerProject(p);
+  const task = await L.newItem("Held and blocked", [], "owner");
+  await L.dispatch(task.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
+  await L.claim(task.id, "opencode/glm-5.3", { runner: "home:held-skip", kind: "home" });
+  expect(await L.recordRunSkip(task.id, "home:held-skip", "opencode/glm-5.3", "skipped", 1, "validation_blocked: broken lockfile")).toBe(true);
+  expect(await L.recordRunSkip(task.id, "home:held-skip", "opencode/glm-5.3", "failures", 2, "checks failed")).toBe(true);
+  const refused = await L.recordRunSkip(task.id, "home:held-skip", "opencode/glm-5.3", "claim-refused" as never, 1, "").then(() => null, (e: unknown) => e);
+  expect(parseRuleError(refused)).toMatchObject({ status: 400, code: "bad_kind" });
+  // Another runner's word on a task it does not hold is not kept.
+  expect(await L.recordRunSkip(task.id, "home:other-skip", "opencode/glm-5.3", "skipped", 1, "")).toBe(false);
+});
+
+// t652, finding 4 of the review of t626: an idle poll's mark (a runner
+// asking with why: true has a free slot) never lapsed, so a runner that went
+// on to take a job was never said to be busy again. A mark older than
+// RUNNER_IDLE_MS is ignored; a fresh one still says the runner has a slot.
+it("a runner's idle mark lapses after RUNNER_IDLE_MS, and the job it holds makes it busy again", async () => {
+  await runInDurableObject(index(), async (_instance, state) => {
+    state.storage.sql.exec(`DELETE FROM runner_offers`);
+  });
+  const held = "idle-mark-held", waiting = "idle-mark-waiting";
+  for (const name of [held, waiting]) {
+    const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+    const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+    await L.setProject(p, "owner");
+    await index().registerProject(p);
+  }
+  const Lheld = env.LEDGER.get(env.LEDGER.idFromName(`project:${held}`));
+  const Lwaiting = env.LEDGER.get(env.LEDGER.idFromName(`project:${waiting}`));
+  const job = await Lwaiting.newItem("Waits for the runner", [], "owner");
+  await Lwaiting.dispatch(job.id, "owner", { to: "home", agent: "opencode", model: "glm-idle" });
+  const offer = { runner: "home:idle-mark", kind: "home", agents: [{ agent: "opencode", models: ["glm-idle"] }], started: new Date(Date.now() - 60_000).toISOString() };
+  await request("POST", "/queue", OWNER, "opencode/glm-idle", offer);
+  const active = await Lheld.newItem("Being built", [], "owner");
+  await Lheld.dispatch(active.id, "owner", { to: "home", agent: "opencode", model: "glm-idle" });
+  await Lheld.claim(active.id, "opencode/glm-idle", { runner: "home:idle-mark", kind: "home" });
+  const why = async () => ((await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[])
+    .find((q) => q.project === waiting && q.item.id === job.id)?.item.why ?? []);
+  const mark = async (at: string) => runInDurableObject(Lheld, async (_instance, state) => {
+    state.storage.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, "runner-idle:home:idle-mark", JSON.stringify(at));
+  });
+  const busy = [{ kind: "busy", line: `Offered, busy: home:idle-mark is working on ${held}/${active.id}.` }];
+  expect(await why()).toEqual(busy);
+  // A fresh mark: the runner said it has a free slot, so it is not busy.
+  await mark(new Date().toISOString());
+  expect(await why()).toEqual([]);
+  // The same mark once RUNNER_IDLE_MS has passed: ignored, so busy again.
+  await mark(new Date(Date.now() - RUNNER_IDLE_MS - 1000).toISOString());
+  expect(await why()).toEqual(busy);
+});
