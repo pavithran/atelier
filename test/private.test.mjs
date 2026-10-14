@@ -4,13 +4,13 @@
 // os.tmpdir(), HOME included, so the iCloud folder here is a stand-in.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, excludesPrivate, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, excludesPrivate, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
@@ -636,4 +636,39 @@ test("no read removes a name from the copy: a merged copy keeps guarding both en
     assert.deepEqual(guard.paths.sort(), [".atelier-private", "PROJECT.md", "other-notes.md"].sort(), `guard call ${i + 1}`);
   }
   assert.deepEqual(entry.privateFromList, ["PROJECT.md", "other-notes.md"]);
+});
+
+// Astra's ninth review of t645: config.json was read, changed and replaced
+// with no lock, so two commands at once lost each other's change. Two
+// processes saving different projects' private names, many times over,
+// keep every name of both.
+test("two processes saving private settings at once lose nothing", async (t) => {
+  const f = setup(t);
+  f.write({ a: { path: f.root, branch: "main" }, b: { path: f.root, branch: "main" } });
+  const module = resolve("cli/private.mjs");
+  const writer = (project) => new Promise((done, fail) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+      const { savePrivateFields } = await import(${JSON.stringify(module)});
+      for (let i = 0; i < 40; i++) savePrivateFields(${JSON.stringify(project)}, { private: ["n" + i + ".md"] });
+    `], { env: { ...process.env, ATELIER_CONFIG_DIR: join(f.root, "config") }, stdio: ["ignore", "ignore", "pipe"] });
+    let err = "";
+    child.stderr.on("data", (d) => { err += d; });
+    child.on("close", (code) => (code === 0 ? done() : fail(new Error(err))));
+  });
+  await Promise.all([writer("a"), writer("b")]);
+  const projects = f.read().projects;
+  for (const name of ["a", "b"]) assert.equal(projects[name].private.length, 40, `${name} keeps every name`);
+  assert.ok(!existsSync(join(f.root, "config", "config.json.lock")), "the lock is gone");
+});
+
+test("a lock left by a process that is gone is taken over", (t) => {
+  const f = setup(t);
+  const lock = join(f.root, "config", "config.json.lock");
+  writeFileSync(lock, `999999999 ${Date.now()}\n`);
+  const previous = process.env.ATELIER_CONFIG_DIR;
+  process.env.ATELIER_CONFIG_DIR = join(f.root, "config");
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_CONFIG_DIR; else process.env.ATELIER_CONFIG_DIR = previous; });
+  assert.equal(savePrivateFields("demo", { private: ["x.md"] }), true);
+  assert.deepEqual(f.read().projects.demo.private, ["x.md"]);
+  assert.ok(!existsSync(lock));
 });

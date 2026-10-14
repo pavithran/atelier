@@ -16,7 +16,7 @@
 // one (privateCommits). Git commits a symbolic link as a link, never the
 // file it points at, and the refusal covers the link too.
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PRIVATE_LIST, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
@@ -200,23 +200,76 @@ export function projectKey(projects, name) {
 // --home). An entry the file does not hold is not
 // written. Returns whether it wrote.
 export function savePrivateFields(project, entry, { drop = [], home = null } = {}) {
-  const file = configFile();
-  let cfg;
-  try { cfg = JSON.parse(readFileSync(file, "utf8")); }
-  catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-  const key = projectKey(cfg.projects, project);
-  if (!key || !entry) return false;
-  const target = cfg.projects[key];
-  const names = [...new Set([...plainPaths(target.private), ...plainPaths(entry.private)])].filter((p) => !drop.includes(p));
-  if (Array.isArray(target.private) || Array.isArray(entry.private)) target.private = names;
-  if (Array.isArray(entry.privateFromList) || Array.isArray(target.privateFromList)) target.privateFromList = [...new Set([...plainPaths(target.privateFromList), ...plainPaths(entry.privateFromList)])].filter((p) => !drop.includes(p));
-  if (home) target.privateHome = home;
-  else if (entry.privateHome && !target.privateHome) target.privateHome = entry.privateHome;
-  const part = `${file}.${process.pid}.part`;
-  writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
-  try { renameSync(part, file); } catch (error) { rmSync(part, { force: true }); throw error; }
-  return true;
+  if (!entry) return false;
+  return updateConfig((cfg) => {
+    const key = projectKey(cfg.projects, project);
+    if (!key) return false;
+    const target = cfg.projects[key];
+    const names = [...new Set([...plainPaths(target.private), ...plainPaths(entry.private)])].filter((p) => !drop.includes(p));
+    if (Array.isArray(target.private) || Array.isArray(entry.private)) target.private = names;
+    if (Array.isArray(entry.privateFromList) || Array.isArray(target.privateFromList)) target.privateFromList = [...new Set([...plainPaths(target.privateFromList), ...plainPaths(entry.privateFromList)])].filter((p) => !drop.includes(p));
+    if (home) target.privateHome = home;
+    else if (entry.privateHome && !target.privateHome) target.privateHome = entry.privateHome;
+    return true;
+  }) === true;
 }
+
+// Every read-modify-write of config.json this task makes holds this lock
+// (Astra's ninth review of t645): a file beside config.json made with
+// O_EXCL, holding the owner's pid and when it was taken. Another holder is
+// waited for, with a short backoff, for up to LOCK_WAIT_MS; a lock whose
+// owner is gone, or older than LOCK_STALE_MS, is taken over. The atomic
+// rename alone keeps a reader from seeing half a file; the lock keeps two
+// writers from losing each other's change.
+const LOCK_WAIT_MS = 5000, LOCK_STALE_MS = 30_000;
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+export function withConfigLock(fn) {
+  const file = configFile(), lock = `${file}.lock`;
+  mkdirSync(dirname(file), { recursive: true });
+  const started = Date.now();
+  for (let delay = 10; ; delay = Math.min(delay * 2, 200)) {
+    let fd;
+    try { fd = openSync(lock, "wx", 0o600); }
+    catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      let pid = 0, at = 0;
+      try { [pid, at] = readFileSync(lock, "utf8").trim().split(" ").map(Number); } catch { /* being written or just removed */ }
+      let alive = false;
+      if (pid > 0) { try { process.kill(pid, 0); alive = true; } catch (e) { alive = e?.code === "EPERM"; } }
+      const old = at > 0 && Date.now() - at > LOCK_STALE_MS;
+      if ((pid > 0 && !alive) || old) { try { unlinkSync(lock); } catch { /* another took it over */ } continue; }
+      if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`${file} is locked by another Atelier command (pid ${pid || "unknown"}, ${lock}); try again once it has finished`);
+      sleep(delay);
+      continue;
+    }
+    try {
+      writeSync(fd, `${process.pid} ${Date.now()}\n`);
+      closeSync(fd);
+      return fn();
+    } finally { rmSync(lock, { force: true }); }
+  }
+}
+
+// Reads config.json under the lock, lets `change` edit it, and writes it
+// whole or not at all unless `change` answers false. A missing file is no
+// config: nothing is written and false is answered. Returns what `change`
+// returns.
+export function updateConfig(change) {
+  return withConfigLock(() => {
+    const file = configFile();
+    let cfg;
+    try { cfg = JSON.parse(readFileSync(file, "utf8")); }
+    catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+    cfg.projects ??= {};
+    const result = change(cfg);
+    if (result === false) return false;
+    const part = `${file}.${process.pid}.part`;
+    writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+    try { renameSync(part, file); } catch (error) { rmSync(part, { force: true }); throw error; }
+    return result;
+  });
+}
+
 
 // `pending` stands for the entry of a project this Mac does not register
 // yet (a first init), used only while the config holds none.
@@ -260,6 +313,21 @@ export function privateGuardFor(project, { root, discover = false, pending = nul
 // different folders are refused, changing nothing, since which one keeps
 // the files cannot be guessed. Returns { moved, merged, dropped } (the
 // source's other settings, which a merge does not keep) or { error }.
+// Moves the entry in config.json on disk, under the config lock, and then
+// the same in `projects` held in memory, so a command that saves the whole
+// config later keeps the move. Returns what moveProjectEntry returns.
+export function moveProjectEntryOnDisk(projects, from, to) {
+  let moved = { moved: false };
+  const written = updateConfig((cfg) => {
+    moved = moveProjectEntry(cfg.projects, from, to);
+    return moved.error || !moved.moved ? false : true;
+  });
+  if (moved.error) return moved;
+  if (written === false && !moved.moved) moved = moveProjectEntry(projects, from, to);
+  else if (projects?.[from]) moveProjectEntry(projects, from, to);
+  return moved;
+}
+
 // Why moving `from` to `to` would be refused, or null: checked before
 // anything is renamed anywhere (projects rename asks this before the server).
 export function moveConflict(projects, from, to) {
