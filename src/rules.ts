@@ -2388,7 +2388,12 @@ export function privatePath(input: string): { path: string } | { error: string }
   const raw = String(input ?? "");
   const shown = JSON.stringify(raw);
   if (!raw.trim()) return { error: "a private path is empty" };
-  if (/[\0\n\r]/.test(raw)) return { error: `${shown} holds a control character` };
+  // Every name accepted here must come back the same from the list in
+  // iCloud (parsePrivateList): one name per line, # opening a comment, so no
+  // control character, no space or tab at either end, no leading #.
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return { error: `${shown} holds a control character` };
+  if (raw !== raw.trim()) return { error: `${shown} begins or ends with a space` };
+  if (raw.startsWith("#")) return { error: `${shown} begins with #, which the list of private files reads as a comment` };
   if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw)) return { error: `${shown} is absolute; name it relative to the checkout` };
   const path = raw.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
   const parts = path.split("/");

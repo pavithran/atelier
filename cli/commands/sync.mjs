@@ -2,8 +2,8 @@
 import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
-import { guardedPaths, privateRefusal } from "../private.mjs";
-import { OWNER, P, call, cfg, die, git, landingGit, landingHome, project, refreshControlPlane, short } from "../atelier.mjs";
+import { guardedPush, privateGuard } from "../private.mjs";
+import { OWNER, P, call, cfg, die, git, landingGit, landingHome, project, refreshControlPlane, saveConfig, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
 // follow the checkout by itself: commits made in the checkout outside
@@ -38,15 +38,18 @@ export default async function syncCommand() {
     const head = git(["rev-parse", "HEAD"], { cwd });
     if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
     if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
-    // No commit carried may hold a private file (t645).
-    const held = privateRefusal(cwd, guardedPaths(name, p), head, [paired], `Carrying ${p.branch} to ${name}'s baseline`);
-    if (held) die(`${held} Nothing was pushed.`);
-    let built;
-    try { built = syncHistory(git, cwd, baselineHead, paired, head); } catch (error) { die(error.message); }
-    // The pairs are saved before the push: a push that lands just before a
-    // crash is still paired, and the rebuild gives the same commits again.
-    savePairs(gitDir, name, { ...pairs, ...built.pairs });
-    git(["push", "--quiet", "--recurse-submodules=no", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd, token: base.token });
+    // No commit carried may hold a private file (t645): the checkout's own
+    // commits are read, which the rebuilt ones copy tree for tree.
+    const guard = privateGuard(name, p, { save: () => saveConfig(cfg) });
+    const built = guardedPush({ guard, cwd, tip: head, base: [paired], what: `Carrying ${p.branch} to ${name}'s baseline`, fail: die }, () => {
+      let built;
+      try { built = syncHistory(git, cwd, baselineHead, paired, head); } catch (error) { die(error.message); }
+      // The pairs are saved before the push: a push that lands just before a
+      // crash is still paired, and the rebuild gives the same commits again.
+      savePairs(gitDir, name, { ...pairs, ...built.pairs });
+      git(["push", "--quiet", "--recurse-submodules=no", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd, token: base.token });
+      return built;
+    });
     const n = Object.keys(built.pairs).length;
     console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
   } finally { unlock(); }

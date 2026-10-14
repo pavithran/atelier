@@ -458,3 +458,29 @@ test("a step that fails when the baseline cannot be read says what it could not 
     },
   );
 });
+
+// t645, both reviews of t645: init pushed the checkout's history to the
+// baseline with no check for the project's private files, whole, in steps
+// or rebuilt by --history-since.
+function leakPrivate(f) {
+  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
+  config.projects.demo = { path: f.checkout, branch: "main", private: ["PROJECT.md"] };
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  writeFileSync(join(f.checkout, "PROJECT.md"), "the plan\n");
+  git(["add", "-f", "PROJECT.md"], { cwd: f.checkout });
+  git(["-c", "user.name=T", "-c", "user.email=t@x.test", "commit", "-q", "-m", "by hand"], { cwd: f.checkout });
+  return git(["rev-parse", "HEAD"], { cwd: f.checkout });
+}
+
+test("atelier init pushes no commit holding a private file, whole or rebuilt from part of the history", (t) => {
+  const f = cliFixture(t, { count: 5, limit: 1000 });
+  const leak = leakPrivate(f);
+  const r = f.run();
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, new RegExp(`main's history for demo's baseline would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}\\..*Nothing was pushed\\.`));
+  assert.equal(f.tip(), null, "the baseline holds nothing");
+  const since = f.run(["--history-since", "2025-01-01"]);
+  assert.equal(since.status, 1, since.stdout);
+  assert.match(since.stderr, /The baseline history of demo would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./);
+  assert.equal(f.tip(), null);
+});

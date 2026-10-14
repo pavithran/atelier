@@ -415,4 +415,6 @@ test("a Mac with a fresh config links the files .atelier-private lists with the 
   assert.ok(!existsSync(join(dir, ".atelier-private")), "the list itself is never linked");
   assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
   assert.equal(r.config.projects.demo.private, undefined, "nothing had to be named on this Mac");
+  // A copy of the list is kept, so the guards hold when iCloud cannot give it (Astra's review of t645, finding 4).
+  assert.deepEqual(r.config.projects.demo.privateFromList, ["PROJECT.md", "notes/plan.md"]);
 });

@@ -865,3 +865,27 @@ test("publish and wrap --push never push a commit holding a private file, commit
   assert.equal(f.git("--git-dir", origin, "for-each-ref", "refs/heads"), "", "the checkout remote got nothing");
   assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head, "nor did the baseline");
 });
+
+// Astra's review of t645, finding 4: with the private folder gone and no
+// copy of its list kept, publish guarded nothing; it now refuses.
+test("publish refuses when the list of private files cannot be read and this Mac keeps no copy", (t) => {
+  const f = fixture(t);
+  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
+  const gone = join(tmpdir(), `atelier-private-gone-${process.pid}-${Date.now()}`);
+  Object.assign(config.projects.demo, { privateHome: gone });
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  f.clean();
+  writeFileSync(join(f.checkout, "new.txt"), "x\n");
+  f.git("add", "new.txt");
+  f.git("commit", "-q", "-m", "work");
+  const r = f.run("publish");
+  assert.notEqual(r.status, 0, r.stdout);
+  assert.match(r.stderr, new RegExp(`${gone}, the folder that keeps demo's private files and their list, is not on this Mac.*Nothing was pushed\\.`));
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head);
+  // With a copy of the list kept, the same publish goes.
+  Object.assign(config.projects.demo, { privateFromList: [] });
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  const ok = f.run("publish");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+});

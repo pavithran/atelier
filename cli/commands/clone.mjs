@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { FRESH_TRAILER, savePairs } from "../fresh.mjs";
 import { installMergeConfig } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { linkPrivate } from "../private.mjs";
+import { linkPrivate, privateGuard } from "../private.mjs";
 import { OWNER, P, apiToken, args, call, cfg, die, landingGit, saveConfig, server, short } from "../atelier.mjs";
 
 // The developer, on a Mac that has no checkout of the project yet (t643):
@@ -98,6 +98,9 @@ export default async function cloneCommand() {
   // folder that keeps them and ignored by Git here (t645).
   let linked = null;
   try { linked = linkPrivate(dir, cfg.projects[name], { name }); } catch (error) { linked = { said: [`Private files not linked: ${error.message}`] }; }
+  // This Mac keeps a copy of the list it read, so the guards hold even when
+  // iCloud cannot give it later.
+  privateGuard(name, cfg.projects[name], { save: () => saveConfig(cfg) });
 
   const head = git(["rev-parse", "HEAD"], { cwd: dir });
   console.log(`${name}: cloned ${branch} @ ${short(head)}, ${commits.length} commit${commits.length === 1 ? "" : "s"}${fresh ? " (the baseline holds part of the project's history)" : ""}, into ${dir}, now this Mac's checkout of ${name}.`);

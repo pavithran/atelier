@@ -3,7 +3,7 @@ import { COMMAND_USAGE } from "../help.mjs";
 import { I, OWNER, P, actingHeaders, actor, args, call, cfg, die, fastTakeWorkspace, git, itemArg, project, wsConfig } from "../atelier.mjs";
 import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs, postPending, readPending, readySources } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
-import { guardedPaths } from "../private.mjs";
+import { privateGuard } from "../private.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
 
 export default async function fastCommand() {
@@ -52,7 +52,7 @@ export default async function fastCommand() {
     // this run would have (Astra's audit of 2026-10-13, finding 9).
     note: { project: name, ...(args.reviewer ? { reviewer: args.reviewer } : {}) },
     // The project's private files (t645), refused in what the batch lands.
-    privatePaths: guardedPaths(name, cfg.projects?.[name]),
+    guard: privateGuard(name, cfg.projects?.[name]),
     log: (line) => console.log(line),
     record: recorder(name, args.reviewer),
   });
