@@ -1212,7 +1212,12 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!repo || !tokenId || tokenId.startsWith("runner:")) return;
+  if (!tokenId || tokenId.startsWith("runner:")) return;
+  // A write token is recorded only once its fork exists (the claim route
+  // sets the fork, then mints and records the token), so a token with no
+  // repository means the caller read the fork before a claim made both. It
+  // is refused, never passed over, or the token would stay live off the record (t653).
+  if (!repo) throw new RuleError("workspace_changed", "the task was claimed while this was asked, so its new workspace token was not revoked and nothing was changed; try again", 409);
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -2145,7 +2150,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // made for it (the reviews of t641).
           if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
           const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
-          await L.setFork(id, name, head, actor, !!c.token);
+          await L.setFork(id, name, head, actor, !!c.token, generation);
         } catch (err) {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
@@ -3040,6 +3045,38 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
       const postMerge = await L.postMergeRun(id);
       return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
+    }
+    // A merge made outside Atelier, recorded after the fact (t653): the
+    // baseline is read here, where Git is, for the merge commit's parents and
+    // whether main holds it (main reaches the baseline through atelier sync);
+    // the Ledger refuses the record unless main holds it and its second
+    // parent is the commit named as the task's head (head, or the task's
+    // recorded head).
+    case "record-merge": {
+      requireOwner(env, actor);
+      const p = await L.project();
+      const before = await L.item(id);
+      // A fork's head starts at its base; only a head pushed since is the task's own.
+      const pushed = before.head && before.head !== before.base ? before.head : null;
+      const commit = body.head === undefined || body.head === null ? pushed : body.head;
+      const merge = typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null;
+      let parents: string[] | null = null, holds: boolean | null = false;
+      if (merge) {
+        using baseline = await env.ARTIFACTS.get(p.repo);
+        const found = await baseline.readCommit(merge);
+        parents = found ? found.parents : null;
+        const top = found ? await headOf(env, p.repo) : null;
+        holds = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
+      }
+      // As abandon and release do: check, revoke the workspace token, then
+      // record. The fork and token are read together after the baseline
+      // reads, so a claim made meanwhile is the one revoked, and the record
+      // is refused if either changes after that read. A revocation that
+      // fails changes nothing, and the retry revokes again.
+      await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
+      const workspace = await L.workspaceOf(id);
+      await revoke(env, workspace.fork, workspace.token);
+      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, workspace));
     }
     case "landing": {
       requireOwner(env, actor);
