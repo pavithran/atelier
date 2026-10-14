@@ -802,3 +802,28 @@ it("a tier review asked again after the head moves or the criteria change is off
   expect(afterCriteria.length).toBeGreaterThan(before);
   expect(afterCriteria[0]?.data).toMatchObject({ head: B, reviewer: "claude-code/sonnet-5.5" });
 });
+
+// gemini-4-argon's and gpt-6-astra's eighteenth reviews of t622, finding 1:
+// requestReview found the chosen reviewer's destination by sameActor, which
+// strips the profile, so an assignment choosing codex/gpt-6-astra:b (in the
+// cloud) was dispatched home, where :a runs. A reviewer a selector chose is
+// its exact entry; a named one is its exact entry before main's sameActor.
+it("a review asked of the reviewer a selector chose goes where that exact entry runs, profile included", async () => {
+  const name = "roles-review-where";
+  const a = { ...entry("codex", "gpt-6-astra:a"), where: "home" as const }, b = { ...entry("codex", "gpt-6-astra:b"), where: "cloud" as const };
+  const pool = [{ ...entry("claude-code", "opus-5.5") }, a, b];
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT }, "owner");
+  await L.assignmentsChanged({ version: 980, assignments: [assignment("a980", "review", "codex/gpt-6-astra:b")] });
+  const H = "f".repeat(40);
+  const id = (await L.newItem("Tidy a helper", ["src/g.ts"], "owner", { accept: ["Works"] })).id;
+  await L.claim(id, "claude-code/opus-5.5");
+  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "claude-code/opus-5.5");
+  await L.recordPush(id, "claude-code/opus-5.5", H, H);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/g.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(id, "claude-code/opus-5.5");
+  const asked = await L.requestReview(id, "owner", null, pool, false, false, { sources: [], runs: [], project: name });
+  expect(asked).toMatchObject({ requested: true, reviewer: "codex/gpt-6-astra:b" });
+  const waiting = (await L.reviewWaiting()).find((i) => i.id === id);
+  expect(waiting?.dispatch).toMatchObject({ to: "cloud", agent: "codex", model: "gpt-6-astra:b" });
+});

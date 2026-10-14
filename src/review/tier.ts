@@ -17,7 +17,7 @@ import type { PoolNames } from "../models/judgement.ts";
 import { exactEntry, storedActor } from "../models/identity.ts";
 import { actorStanding, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { paidPerToken } from "../plans/route.ts";
-import { offering, type SeenOffer } from "../dispatch/rules.ts";
+import { claimants, type SeenOffer } from "../dispatch/rules.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
 import { actorFamily, contributed, sameActor, type ProjectPolicy } from "../rules.ts";
 import { independenceRefusal } from "./independence.ts";
@@ -119,8 +119,8 @@ export function tierEligible(pool: readonly ModelEntry[], offers: readonly SeenO
   if (entry.status?.state === "refused") return `status refused, reported by ${entry.status.by} at ${entry.status.at}${entry.status.detail ? `: ${entry.status.detail}` : ""}`;
   if (paidPerToken(entry)) return `paid per token (${entry.provider}); paid models are not allowed for this review`;
   const id = `${entry.harness}/${entry.id}`;
-  const offered = offers ? offering({ to: entry.where, job: "review" }, offers) : null;
-  if (offered && !offered.actors.has(id.toLowerCase())) return `no live runner offers ${id} for the review job ${entry.where === "home" ? "at home" : "in the cloud"}`;
+  const offered = offers ? claimants({ to: entry.where, job: "review", agent: entry.harness, model: entry.id }, offers) : null;
+  if (offered && !offered.length) return `no live runner offers ${id} for the review job ${entry.where === "home" ? "at home" : "in the cloud"}`;
   return true;
 }
 

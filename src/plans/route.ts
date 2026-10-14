@@ -30,7 +30,7 @@
 // warning.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
+import { claimants, liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { exactEntry, storedActor } from "../models/identity.ts";
@@ -348,7 +348,9 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // review or planning, or only in the cloud, could never claim it, so no
   // build assignment promotes it (gpt-6-astra's third review of t622,
   // finding 2). A model no live runner offers at all is excluded above.
-  if (ctx.buildOffered && ctx.offered?.has(actor.toLowerCase()) && !ctx.buildOffered.actors.has(actor.toLowerCase()))
+  // Offered as assign() hands the part's build out, by the entry's own agent
+  // and model (claimants in src/dispatch/rules.ts).
+  if (ctx.buildOffered && ctx.offered?.has(actor.toLowerCase()) && !claimants({ to: "home", agent: entry.harness, model: entry.id }, ctx.input.offers ?? [])?.length)
     build.push(`no live runner offers ${actor} for a build at home: ${ctx.buildOffered.instead.join("; ")}`);
   if (heldBuild) build.push(heldBuild);
   // The reviewer's eligibility as pickReviewer judges it: under a governed
@@ -369,8 +371,8 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // what that runner lacks for the review job.
   let reviewOffer: string | null = null;
   if (ctx.reviewOffered) {
-    const runners = ctx.reviewOffered.actors.get(actor.toLowerCase());
-    if (runners) reviewOffer = `Offered for the review job by ${[...new Set(runners)].join(", ")}`;
+    const runners = claimants({ ...REVIEW_JOB, agent: entry.harness, model: entry.id }, ctx.input.offers ?? []);
+    if (runners?.length) reviewOffer = `Offered for the review job by ${[...new Set(runners)].join(", ")}`;
     else if (ctx.offered?.has(actor.toLowerCase()))
       review.push(`no live runner offers ${actor} for the review job: ${ctx.reviewOffered.instead.join("; ")}`);
   }

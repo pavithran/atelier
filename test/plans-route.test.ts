@@ -359,15 +359,22 @@ test("routing picks builders, alternates and reviewers only from the models live
   assert.equal(gptOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5, so no runner could claim its dispatch), claude-code/sonnet-5.5 (no live runner offers claude-code/sonnet-5.5, so no runner could claim its dispatch)");
 
   // A runner offering the whole pool, the review job among its own, routes
-  // as no offers would; the case of the offered names is not the case of
-  // the pool's, and a reviewer the offers count needs the job offered too.
+  // as no offers would; a reviewer the offers count needs the job offered too.
   const whole = { ...offer("home:studio", [
-    { agent: "Codex", models: ["GPT-6-Astra"] },
-    { agent: "Claude-Code", models: ["opus-5.5", "sonnet-5.5"] },
+    { agent: "codex", models: ["gpt-6-astra"] },
+    { agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] },
   ], now), jobs: ["build", "review"] };
   const routed = one([opus, sonnet, gpt], { offers: [whole] });
   const unconstrained = one([opus, sonnet, gpt]);
   assert.deepEqual([routed.builder!.actor, routed.reviewer!.actor, actors(routed.alternates), routed.unrouted], [unconstrained.builder!.actor, unconstrained.reviewer!.actor, actors(unconstrained.alternates), unconstrained.unrouted]);
+  // An offer counts only as assign() hands the job out: the agent and model
+  // the dispatch names, in their letter case. A runner offering Codex/GPT-6-Astra
+  // could not claim a dispatch for codex/gpt-6-astra, so it builds nothing
+  // here (t622's eighteenth review; main read offers in any letter case).
+  const cased = { ...offer("home:studio", [{ agent: "Codex", models: ["GPT-6-Astra"] }, { agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }], now), jobs: ["build", "review"] };
+  const casedRoute = one([opus, sonnet, gpt], { offers: [cased] });
+  assert.notEqual(casedRoute.builder?.actor, "codex/gpt-6-astra");
+  assert.notEqual(casedRoute.reviewer?.actor, "codex/gpt-6-astra");
 
   // A stale offer is no offer: every ask has gone stale, so no runner is
   // live and routing falls back to the whole pool (routable decides the
