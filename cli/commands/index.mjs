@@ -73,6 +73,7 @@ import command_review_claim from "./review-claim.mjs";
 import command_review_release from "./review-release.mjs";
 import command_review_request from "./review-request.mjs";
 import command_review_unparsable from "./review-unparsable.mjs";
+import command_review_withdraw from "./review-withdraw.mjs";
 import command_run_report from "./run-report.mjs";
 import command_runner from "./runner.mjs";
 import command_served from "./served.mjs";
@@ -168,6 +169,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/review-release.mjs", run: command_review_release },
   { path: "cli/commands/review-request.mjs", run: command_review_request },
   { path: "cli/commands/review-unparsable.mjs", run: command_review_unparsable },
+  { path: "cli/commands/review-withdraw.mjs", run: command_review_withdraw },
   { path: "cli/commands/run-report.mjs", run: command_run_report },
   { path: "cli/commands/runner.mjs", run: command_runner },
   { path: "cli/commands/served.mjs", run: command_served },

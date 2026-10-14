@@ -223,7 +223,7 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       const rv = item !== "t1" && box.reviewOf?.[item] ? box.reviewOf[item] : box.review;
       box.reviewAsks = [...(box.reviewAsks ?? []), { item, head, at: Date.now() }];
       if (!rv.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: rv.reason ?? "the gate counts an independent approval already" };
-      else { rv.reviewer = body.reviewer ?? rv.reviewer; rv.pending = true; rv.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && rv.why ? ` ${rv.why}` : ""}`, at: rv.at, head, reviewer: body.reviewer ?? rv.reviewer, request: rv.request ?? 1 }; }
+      else { rv.reviewer = body.reviewer ?? rv.reviewer; rv.pending = true; rv.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && rv.why ? ` ${rv.why}` : ""}`, at: rv.at, head, reviewer: body.reviewer ?? rv.reviewer, request: rv.request ?? 1, ...(rv.withdrew ? { withdrew: rv.withdrew } : {}) }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
