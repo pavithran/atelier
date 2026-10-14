@@ -146,9 +146,10 @@ test("clone defaults to ~/ai-projects/PROJECT and takes an empty folder", async 
   assert.equal(r.code, 0, r.output);
   assert.equal(f.git(dir, "rev-parse", "HEAD"), f.head);
   assert.equal(r.config.projects.demo.path, dir);
-  // Not ~/src/PROJECT, the layout before the portfolio moved to ~/ai-projects
-  // (the post-move portfolio audit, 2026-10-14).
-  assert.ok(!existsSync(join(f.home, "src")), "clone made a folder under ~/src");
+  // Nothing in the src folder under home, the layout before the portfolio
+  // moved to ~/ai-projects (the post-move portfolio audit, 2026-10-14).
+  const oldDefault = join(f.home, "src");
+  assert.ok(!existsSync(oldDefault), `clone made ${oldDefault}, the layout before the portfolio move`);
   // An empty folder already there is fine.
   const g = setup(t), empty = join(g.root, "empty");
   mkdirSync(empty);
