@@ -27,13 +27,13 @@ import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
-import { ACTING_HEADER, buildJudgement, canonicalModel, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
+import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { buildPairwise, type PairwiseRecord } from "./models/pairwise.ts";
-import { compareModel, type ModelComparison } from "./models/compare.ts";
+import { canonicalName, compareModel, type ModelComparison } from "./models/compare.ts";
 import type { CardView } from "./models/cards.ts";
 import type { PrecisionRecord } from "./models/precision.ts";
 import type { JudgementRecord } from "./models/judgement.ts";
@@ -3259,7 +3259,7 @@ async function modelReaders(env: Env): Promise<ModelReaders> {
   const standing = roles.assignments.filter((a) => a.status === "current");
   return {
     entries, track, precision, judgement, pairwise,
-    keyOf: (named) => canonicalModel(named, entries),
+    keyOf: (named) => canonicalName(named, entries),
     compare: (named, cards) => compareModel({ named, pool: entries, cards, reliability: track.reliability, precision, speed: track.speed, judgement, pairwise, assignments: standing, projectNames: roles.names }),
   };
 }

@@ -293,11 +293,11 @@ function replay(
   const measuredPaths = new Map<string, { head: string; paths: string[] }>();
   const observedChecks = new Map<string, Map<string, boolean>>();   // item: "head claim" -> observed passed
   const reportedChecks = new Map<string, Map<string, { passed: boolean; actor: string }>>();
-  // Review events by sequence, and the newest at each item and head, so a
+  // Review events by sequence, and those at each item and head, so a
   // verdict on a finding counts under the model that served the review it
   // judged (reviewerOf, t621), as the precision reader places it.
   const reviewEvents = new Map<number, LedgerEvent>();
-  const newestReview = new Map<string, LedgerEvent>();
+  const reviewsAt = new Map<string, LedgerEvent[]>();
   // Work the owner did is not a model's: a builder that is not an agent is
   // treated as no builder, so it opens no row and earns no credit or blame.
   const agentOnly = (a: string | undefined) => (a !== undefined && isAgent(a, owner) ? a : undefined);
@@ -392,7 +392,7 @@ function replay(
       }
     } else if (kind === "review.approved" || kind === "review.rejected") {
       reviewEvents.set(event.seq, event);
-      newestReview.set(`${item} ${head}`, event);
+      reviewsAt.set(`${item} ${head}`, [...(reviewsAt.get(`${item} ${head}`) ?? []), event]);
       const approve = kind === "review.approved";
       const builder = builderOf(item, head);
       const credited = creditedOf(item, head);
@@ -489,7 +489,10 @@ function replay(
       // The owner's verdict on one of a review's findings, counted under the
       // reviewer that wrote the finding, or the model an annotation says
       // served that review; never under the verdict event's own actor.
-      const by = reviewerOf(str(data.by), typeof data.review === "number" ? reviewEvents.get(data.review) : newestReview.get(`${item} ${head}`), served);
+      // A verdict from before t486 is placed on its own reviewer's newest
+      // review at the head (gemini-4-argon's review of t621).
+      const named = str(data.by);
+      const by = reviewerOf(named, typeof data.review === "number" ? reviewEvents.get(data.review) : (reviewsAt.get(`${item} ${head}`) ?? []).filter((r) => sameActor(r.actor, named)).at(-1), served);
       if (!isAgent(by, owner)) continue;
       const verdict = str(data.verdict) as FindingVerdict;
       if (!FINDING_VERDICTS.includes(verdict)) continue;

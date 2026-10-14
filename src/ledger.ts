@@ -6553,8 +6553,11 @@ export class Ledger extends DurableObject<Env> {
   // verdicts; the Models page reads every project's.
   private reviewPrecision(at: string): PrecisionRecord {
     const window = precisionWindow(new Date(at));
-    // The review events too, so a legacy verdict is placed on its review.
-    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected') ORDER BY seq`).toArray().map(eventOf);
+    // The review events too, so a legacy verdict is placed on its review,
+    // and the served annotations, so a finding counts under the model that
+    // served its review here as on the Models page (t621; gpt-6-astra's and
+    // gemini-4-argon's reviews: routing read the declared model).
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected', 'event.served') ORDER BY seq`).toArray().map(eventOf);
     return buildPrecision([{ project: "this", events }], window, this.owner);
   }
 

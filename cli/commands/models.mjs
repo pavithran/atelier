@@ -108,7 +108,9 @@ export default async function modelsCommand() {
     // says so and which key it shows.
     const aliasOf = (view) => pool.filter((e) => (e.aliases ?? []).some((a) => modelKey(a) === modelKey(id)) && !view.pool.includes(entryName(e)));
     let others = aliasOf(cards);
-    if (!cards.cards.length && !cards.pool.length && others.length === 1) {
+    // Entries that are one model under two harnesses are followed as one
+    // (gemini-4-argon's review of t621: such an alias showed nothing).
+    if (!cards.cards.length && !cards.pool.length && others.length && new Set(others.map((e) => modelKey(entryName(e)))).size === 1) {
       const [e] = others;
       shownAs = entryName(e);
       cards = await viewOf(shownAs);

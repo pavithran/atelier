@@ -275,3 +275,22 @@ test("models show prints the server's comparison after the cards, asked under th
   assert.match(said.output, /Vendor claims beside Atelier's record: this server does not have models\.compare\.v1 yet; deploy it to show them\./);
   assert.ok(!old.requests.some((q) => q.path.endsWith("/compare")));
 });
+
+// gemini-4-argon's review of t621, finding 2: a bare alias two harnesses'
+// entries of one model share stopped at "is a pool alias of A and B" and
+// showed neither the cards nor the comparison.
+test("models show by an alias one model's entries share under two harnesses follows it and prints the comparison", async (t) => {
+  const pool = ["zcode", "opencode"].map((harness) => ({ ...POOL[0], id: "glm-5.3", harness, aliases: ["glm-fast"] }));
+  const comparison = { model: "glm-5.3", names: ["glm-5.3", "glm-fast"], entries: ["opencode/glm-5.3", "zcode/glm-5.3"], vendor: { claims: [], limitations: [], ended: 0, disagreements: [], priors: [] }, roles: [], leftOut: [] };
+  const answer = (method, path) => ({
+    data: path.endsWith("/compare") ? comparison
+      : path.endsWith("/cards") ? VIEW([], path.includes("glm-fast") ? { model: "glm-fast", pool: [] } : { model: "glm-5.3", pool: ["opencode/glm-5.3", "zcode/glm-5.3"] })
+      : pool,
+  });
+  const f = await stub(t, answer, SERVER_CAPABILITIES);
+  const r = await f.run(["models", "show", "glm-fast"]);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /^glm-fast is a pool alias of zcode\/glm-5\.3; cards are kept under a model's own name, so these are the cards kept under glm-5\.3\./);
+  assert.match(r.output, /Vendor claims beside Atelier's record for glm-5\.3 \(opencode\/glm-5\.3, zcode\/glm-5\.3\):/);
+  assert.deepEqual(f.requests.map((q) => q.path), ["/api/models/glm-fast/cards", "/api/models", "/api/models/zcode%2Fglm-5.3/cards", "/api/models/zcode%2Fglm-5.3/compare"]);
+});

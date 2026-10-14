@@ -26,9 +26,13 @@
 //   caught     a blocking finding held up
 //   clean      none did, and every blocking finding was judged
 //   pending    a blocking finding has no verdict yet, and none held up
-//   ambiguous  a verdict from before t486 names no review, and more or
-//              fewer than one review by its reviewer precede it at the head,
-//              so it cannot be placed (and none placed held up)
+//   ambiguous  a verdict from before t486 names no review, and more than
+//              one review by its reviewer with a blocking finding at that
+//              position precedes it at the head, so it cannot be placed;
+//              none placed held up, and not every blocking finding of the
+//              review was judged again, explicitly, after it. A later
+//              explicit verdict on each of them settles the review, so the
+//              ambiguity no longer stands (gpt-6-astra's review of t621)
 // Only caught and clean pairs are eligible: the denominator is what is known.
 // Pending and ambiguous pairs are counted beside it, never in it.
 //
@@ -105,7 +109,7 @@ export function buildPairwise(projects: readonly ProjectEvents[], window: Precis
     // The latest verdict on each blocking finding, by review and index.
     const latest = new Map<string, { seq: number; upheld: boolean }>();
     // Verdicts that name no review and cannot be placed, by item, head and reviewer's recorded name.
-    const unplaced: { item: string; head: string; by: string; upheld: boolean; seq: number }[] = [];
+    const unplaced: { seq: number; candidates: Set<number> }[] = [];
     for (const ev of sorted) {
       const item = ev.itemId!;
       const d = ev.data;
@@ -141,10 +145,11 @@ export function buildPairwise(projects: readonly ProjectEvents[], window: Precis
       if (typeof d.review === "number") review = reviews.get(d.review);
       else {
         // A verdict from before t486: placed only on the one review its
-        // reviewer, as recorded, made at the head before it.
-        const theirs = (atHead.get(`${item} ${head}`) ?? []).filter((r) => r.seq < ev.seq && sameActor(r.recorded, by));
+        // reviewer, as recorded, made at the head before it with a blocking
+        // finding at that position; with none it judged nothing counted here.
+        const theirs = (atHead.get(`${item} ${head}`) ?? []).filter((r) => r.seq < ev.seq && sameActor(r.recorded, by) && r.blocking.has(Number(d.index)));
         if (theirs.length === 1) review = theirs[0];
-        else { unplaced.push({ item, head, by, upheld, seq: ev.seq }); continue; }
+        else { if (theirs.length) unplaced.push({ seq: ev.seq, candidates: new Set(theirs.map((r) => r.seq)) }); continue; }
       }
       if (!review || !review.blocking.has(Number(d.index))) continue;
       const key = `${review.seq} ${String(d.index)}`;
@@ -156,8 +161,10 @@ export function buildPairwise(projects: readonly ProjectEvents[], window: Precis
     const outcomeOf = (r: Review): PairOutcome => {
       const verdicts = [...r.blocking].map((i) => latest.get(`${r.seq} ${i}`));
       if (verdicts.some((v) => v?.upheld)) return "caught";
-      const [, item, head] = JSON.parse(r.unit) as string[];
-      if (unplaced.some((u) => u.item === item && u.head === head && u.seq > r.seq && sameActor(u.by, r.recorded))) return "ambiguous";
+      // An unplaced verdict that may be this review's stands unless every
+      // blocking finding of the review has an explicit verdict after it.
+      const settledAfter = (seq: number) => [...r.blocking].every((i) => (latest.get(`${r.seq} ${i}`)?.seq ?? -1) > seq);
+      if (unplaced.some((u) => u.candidates.has(r.seq) && !settledAfter(u.seq))) return "ambiguous";
       return verdicts.some((v) => v === undefined) ? "pending" : "clean";
     };
     const rank: Record<PairOutcome, number> = { caught: 3, ambiguous: 2, pending: 1, clean: 0 };
