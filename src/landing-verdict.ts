@@ -9,6 +9,7 @@
 // share this judgment, so both count the same verdicts the same way.
 
 import { offering, type SeenOffer } from "./dispatch/rules.ts";
+import { DEFAULT_OWNER, gateApprovals, sameActor, type Evidence, type Item, type ProjectPolicy, type Review } from "./rules.ts";
 
 export interface LandingReview {
   by: string;
@@ -37,6 +38,42 @@ export function landingVerdict(reviews: LandingReview[], head: string, since: st
   const counted = fresh.filter((v) => !(v.tier && v.approve));
   const verdict = counted.find((v) => !v.approve) ?? counted.at(-1) ?? null;
   return { verdict, tierApprovals };
+}
+
+// Whether the owner may accept the task as it stands: submitted, with the
+// gate ready. It is `atelier show`'s "accept" recommendation (src/brief.ts),
+// and the landing reads the same before it asks for a review (t628), so the
+// two never disagree about a review already recorded.
+export function readyToAccept(d: { item: { state: string }; gate?: { ready: boolean } | null }): boolean {
+  return d.item.state === "submitted" && d.gate?.ready === true;
+}
+
+// The approval a landing counts without asking for a review (t628): the task
+// is ready to accept at the head it landed, and the gate counts an approval
+// there as the change's independent review (gateApprovals, the gate's own
+// selection, never a copy of it), the named reviewer's where the landing
+// names one. micahapp t6 and t7 each held such an approval, recorded by hand
+// against a claimed review request (atelier review --request N), while
+// `atelier show` recommended accept; the landing asked for a new review
+// instead, counted only verdicts given after that ask, and waited its 60
+// minutes for one that never came. An approval the gate sets aside (one the
+// developer token recorded answering no claimed request, a same-family or a
+// contributor's) is never taken, even where another reviewer's approval, an
+// unprotected change or an override makes the gate ready. Null when nothing
+// recorded settles it, so the landing asks as before.
+export interface RecordedDetail {
+  item: Item;
+  policy: ProjectPolicy;
+  evidence?: Evidence[] | null;
+  reviews?: Review[] | null;
+  gate?: { ready: boolean } | null;
+  ownerActor?: string | null;
+}
+
+export function recordedApproval(d: RecordedDetail, head: string, reviewer: string | null): Review | null {
+  if (d.item.head !== head || !readyToAccept(d)) return null;
+  const counted = gateApprovals(d.item, d.policy, d.evidence ?? [], d.reviews ?? [], d.ownerActor ?? DEFAULT_OWNER);
+  return counted.filter((v) => reviewer === null || sameActor(v.by, reviewer)).at(-1) ?? null;
 }
 
 // Whether a review request will ever be claimed, by which runners have
