@@ -305,3 +305,29 @@ test('notes go to a notes remote the policy declares a public mirror only under 
  assert.match(landed.output,/agent@example\.invalid/);
  assert.equal(execFileSync('git',['--git-dir',pub,'for-each-ref','refs/notes/atelier'],{encoding:'utf8'}).trim(),'');
 });
+
+// Private files (t645): a landing puts no private file on the baseline,
+// whether the task's commits carry one or the checkout's own commits do.
+function namePrivate(p,paths){const file=join(p,'config','config.json');const config=JSON.parse(readFileSync(file,'utf8'));config.projects.proj.private=paths;writeFileSync(file,JSON.stringify(config));}
+test('a merge refuses a task whose accepted revision touches a private file, before anything is merged',async t=>{
+ const {p,checkout,baseline,box,run}=await mergeFixture(t);
+ box.state='accepted';namePrivate(p,['work.txt']);
+ const before=git(checkout,'rev-parse','HEAD'),baselineBefore=git(checkout,'ls-remote',baseline,'refs/heads/main');
+ const r=await run(checkout,'merge','t1');
+ assert.notEqual(r.status,0,r.output);
+ assert.match(r.output,/t1's accepted revision would carry private files: work\.txt in [0-9a-f]{12}\..*Nothing was merged\./s);
+ assert.equal(git(checkout,'rev-parse','HEAD'),before);
+ assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
+ assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
+});
+test('a merge refuses to push the checkout\'s own commit holding a private file with the landing',async t=>{
+ const {p,checkout,baseline,box,run}=await mergeFixture(t);
+ box.state='accepted';namePrivate(p,['PROJECT.md']);
+ writeFileSync(join(checkout,'PROJECT.md'),'the plan\n');git(checkout,'add','-f','PROJECT.md');git(checkout,'commit','-m','by hand');
+ const baselineBefore=git(checkout,'ls-remote',baseline,'refs/heads/main');
+ const r=await run(checkout,'merge','t1');
+ assert.notEqual(r.status,0,r.output);
+ assert.match(r.output,/The landing would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./s);
+ assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
+ assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
+});

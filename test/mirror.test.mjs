@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { commitPatch, globMatcher, headerPath, lfsObject, lfsPointer, PRIVATE_ADDRESS, publishMirror } from "../cli/mirror.mjs";
+import { commitPatch, globMatcher, headerPath, lfsObject, lfsPointer, PRIVATE_ADDRESS, publishCheckoutRemote, publishMirror } from "../cli/mirror.mjs";
 
 // atelier publish REMOTE (t433), against a real checkout and a bare mirror on
 // disk. The keys below are assembled at run time so this file holds none.
@@ -769,4 +769,28 @@ test("diff.ignoreSubmodules and submodule.*.ignore cannot hide a gitlink", (t) =
     assert.ok(r.text.includes(`cannot scan ${c} vendor/lib: a submodule, whose content is in another repository`), `${how}: ${r.text}`);
     assert.deepEqual(f.refs(), [], how);
   }
+});
+
+// t645: a private file of the project goes to no mirror and no checkout
+// remote, whatever the publication policy allows.
+test("a commit holding a private file is published to no mirror and pushed to no plain remote", (t) => {
+  const f = fixture(t);
+  f.put("PROJECT.md", "the plan\n");
+  const leak = f.commit("by hand");
+  const r = f.publish({ privatePaths: ["PROJECT.md"] });
+  assert.equal(r.ok, false);
+  assert.match(r.text, new RegExp(`Not published: github's main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
+  assert.deepEqual(f.refs(), []);
+  // A remote that is no public mirror, under a policy that declares none.
+  const plain = join(f.dir, "plain.git");
+  f.git(f.dir, "init", "-q", "--bare", "-b", "main", plain);
+  f.git(f.checkout, "remote", "add", "plain", plain);
+  const said = [];
+  const pushed = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: (l) => said.push(l), identity: {}, privatePaths: ["PROJECT.md"] });
+  assert.equal(pushed.ok, false);
+  assert.match(said.join("\n"), /Not pushed to plain: main would carry private files: PROJECT\.md/);
+  assert.equal(f.git(plain, "for-each-ref"), "");
+  // Without the name, both go.
+  assert.equal(publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: () => {}, identity: {} }).ok, true);
+  assert.equal(f.publish().ok, true);
 });

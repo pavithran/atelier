@@ -2376,3 +2376,48 @@ export function parseLedgerRestart(raw: unknown): LedgerRestart | null {
     return { at: v.at, from: str(v.from), for: str(v.for) };
   } catch { return null; }
 }
+
+// Private files (t645): files a project keeps on the developer's Macs and
+// never pushes, such as PROJECT.md. Each is named by its path in the
+// checkout, kept in the project's iCloud folder and linked into the checkout.
+
+// A private path as the developer typed it, made plain: relative to the
+// checkout, no "." or ".." part, no empty part, nothing in .git. A trailing
+// slash names a folder and is dropped.
+export function privatePath(input: string): { path: string } | { error: string } {
+  const raw = String(input ?? "");
+  const shown = JSON.stringify(raw);
+  if (!raw.trim()) return { error: "a private path is empty" };
+  if (/[\0\n\r]/.test(raw)) return { error: `${shown} holds a control character` };
+  if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw)) return { error: `${shown} is absolute; name it relative to the checkout` };
+  const path = raw.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  const parts = path.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return { error: `${shown} has an empty, "." or ".." part; name the file as it sits in the checkout` };
+  if (foldPath(parts[0]) === ".git") return { error: `${shown} is inside .git` };
+  return { path };
+}
+
+// The paths among `paths` that are private or inside a private folder,
+// compared as a Mac compares names: letter case and Unicode form aside.
+export function privatePathsAmong(paths: string[], privates: string[]): string[] {
+  const folded = privates.map(foldPath);
+  return paths.filter((path) => {
+    const f = foldPath(path);
+    return folded.some((p) => f === p || f.startsWith(`${p}/`));
+  });
+}
+
+// Whether an iCloud folder is a project's: its name, with letter case,
+// spaces, hyphens and underscores set aside, is the project's ("ikon weblog"
+// for ikon-weblog, "AssetsApp" for assetsapp).
+export function privateFolderMatches(project: string, folder: string): boolean {
+  const plain = (s: string) => foldPath(s).replace(/[\s_-]+/g, "");
+  return !!plain(project) && plain(project) === plain(folder);
+}
+
+// The line of .git/info/exclude that ignores one private path: anchored at
+// the checkout's root, so a leading # or ! is plain, with the characters a
+// pattern reads specially escaped, trailing spaces included.
+export function privateExcludeLine(path: string): string {
+  return `/${path.replace(/[\\*?[\]]/g, "\\$&").replace(/ +$/, (spaces) => "\\ ".repeat(spaces.length))}`;
+}

@@ -37,6 +37,7 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { settleCommitIdentity, sameEmail } from "../src/commit-identity.ts";
 import { scanLine } from "../src/secret-scan.ts";
+import { privateRefusal } from "./private.mjs";
 
 const SCAN_BYTES = 8 * 1024 * 1024;
 const LFS_POINTER_BYTES = 1024; // the spec's upper bound on a pointer file
@@ -112,21 +113,39 @@ const firstLine = (text) => (text || "").trim().split("\n")[0];
 // get the public check before anything is pushed, failing closed. Each push
 // URL is fetched, scanned for what it lacks and pushed by that URL itself,
 // so pushurl fanout and a remote re-pointed mid-check are covered alike.
-export function publishCheckoutRemote({ git, dir, branch, remote, say, identity }) {
+export function publishCheckoutRemote({ git, dir, branch, remote, say, identity, privatePaths = [] }) {
   if (!identity?.publicMirrors?.length) {
+    const held = privateOutgoing({ git, dir, branch, remote, privatePaths });
+    if (held) { say(held); return { ok: false }; }
     const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true });
     return { ok: result.status === 0 };
   }
   const policy = readPolicy(identity);
   if (!policy.ok) { say(`Not published: ${policy.why}.`); return { ok: false }; }
-  if (policy.mirrors[remote]) return publishMirror({ git, dir, branch, remote, say, identity });
+  if (policy.mirrors[remote]) return publishMirror({ git, dir, branch, remote, say, identity, privatePaths });
   const urls = git(["remote", "get-url", "--push", "--all", remote], { cwd: dir, allowFail: true });
   const destinations = urls.status === 0 ? urls.stdout.split("\n").filter(Boolean) : [];
   if (!destinations.length) { say(`Not published: cannot read push destinations for ${remote}.`); return { ok: false }; }
   for (const destination of destinations) {
-    if (!checkAndPush({ git, dir, branch, remote, say, policy, destination }).ok) return { ok: false };
+    if (!checkAndPush({ git, dir, branch, remote, say, policy, destination, privatePaths }).ok) return { ok: false };
   }
   return { ok: true };
+}
+
+// A remote that is no public mirror gets no private file either (t645): the
+// commits it lacks of the branch are read for one before the push, failing
+// closed when the remote cannot be read. Null when the push may go.
+function privateOutgoing({ git, dir, branch, remote, privatePaths }) {
+  if (!privatePaths?.length) return null;
+  const ref = `refs/heads/${branch}`, what = `Not pushed to ${remote}: ${branch}`;
+  const listed = git(["ls-remote", "--refs", remote, ref], { cwd: dir, allowFail: true, ownerRemote: true });
+  if (listed.status !== 0) return `${what} could not be checked for private files: ${remote} cannot be read (${firstLine(listed.stderr) || "git ls-remote failed"}).`;
+  const head = listed.stdout.trim().split("\n").map((l) => l.split(/\s+/)).find(([, name]) => name === ref)?.[0] ?? null;
+  if (head && git(["cat-file", "-e", `${head}^{commit}`], { cwd: dir, allowFail: true }).status !== 0) {
+    const fetched = git(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", remote, ref], { cwd: dir, allowFail: true, ownerRemote: true });
+    if (fetched.status !== 0) return `${what} could not be checked for private files: ${remote}'s ${branch} could not be fetched (${firstLine(fetched.stderr)}).`;
+  }
+  return privateRefusal(dir, privatePaths, ref, head ? [head] : [], what);
 }
 
 // The paths one commit changes, with each one's new mode, blob and size (null
@@ -345,7 +364,7 @@ export function lfsObject(storage, { oid, size }) {
 
 // Publishes. `git(args, opts)` is atelier's runner; `say` prints. It returns
 // { ok } and never exits itself, so the caller chooses the status.
-export function publishMirror({ git, dir, branch, remote, say, identity }) {
+export function publishMirror({ git, dir, branch, remote, say, identity, privatePaths = [] }) {
   const refuse = (...lines) => { for (const l of lines) say(l); return { ok: false }; };
   const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts });
   const out = (args) => { const r = raw(args); return r.status === 0 ? r.stdout.trim() : null; };
@@ -360,14 +379,14 @@ export function publishMirror({ git, dir, branch, remote, say, identity }) {
   if (!url) return refuse(`Not published: ${dir} has no remote called ${remote}.`);
   if (!sameUrl(url, mirror.destination)) return refuse(`Not published: remote ${remote} points at a different place than the policy's destination for it; it was not pushed to. Point the remote at the declared destination, or change the policy.`);
 
-  return checkAndPush({ git, dir, branch, remote, say, policy, destination: mirror.destination, urlNow, url });
+  return checkAndPush({ git, dir, branch, remote, say, policy, destination: mirror.destination, urlNow, url, privatePaths });
 }
 
 // Steps 2 to 5 for one destination: fetch what it holds of the branch, refuse
 // divergence, check every commit it lacks, and push the scanned tip there.
 // `urlNow` and `url` let a declared mirror refuse a remote re-pointed during
 // the check; a destination given as a URL is pushed to by that URL.
-function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlNow, url }) {
+function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlNow, url, privatePaths = [] }) {
   const refuse = (...lines) => { for (const l of lines) say(l); return { ok: false }; };
   const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts, env: { ...opts.env, ...SCAN_ENV } });
   const out = (args) => { const r = raw(args); return r.status === 0 ? r.stdout.trim() : null; };
@@ -399,6 +418,10 @@ function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlN
     const ahead = raw(["merge-base", "--is-ancestor", tip, head]).status === 0;
     return refuse(`Not published: the mirror's ${branch} (${head.slice(0, 8)}) ${ahead ? "is ahead of" : "has diverged from"} ${branch} (${tip.slice(0, 8)}). It is never force-pushed; reconcile the two by hand.`);
   }
+
+  // Private files (t645) go to no mirror, whatever its rules allow.
+  const held = privateRefusal(dir, privatePaths, tip, head ? [head] : [], `Not published: ${remote}'s ${branch}`);
+  if (held) return refuse(held);
 
   // 4. Every newly reachable commit, merged ancestry included: all history
   // when the mirror is empty.
