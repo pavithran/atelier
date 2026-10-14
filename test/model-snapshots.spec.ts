@@ -278,4 +278,13 @@ it("a run-report read that cannot finish leaves the day partial, and a later rea
   const second = await takeModelSnapshots(flaky, at + 3_600_000);
   expect(second.find((x) => x.day === day)).toMatchObject({ stored: true, complete: true, rev: 2 });
   expect((await index().modelSnapshot(day, 1))!.take.complete).toBe(false);
+  // Finding (gpt-6-astra, t623): a partial revision recorded its upper cutoff
+  // but not where the read stopped, so a replay after recovery read every
+  // report below the cutoff and gave other figures. Revision 1 replays, once
+  // the pages can be read, to exactly the figures it stored.
+  expect((await index().modelSnapshot(day, 1))!.take.cutoffs.runsFrom).toBeGreaterThan(0);
+  const replay = (await replayModelSnapshot(testEnv, day, 1))!;
+  expect(replay.differences).toEqual([]);
+  expect(replay.replayed).toEqual(partial.rows);
+  expect(stallFigure(partial.rows, "opus-5.5").numerator).toBeLessThan(stallFigure((await index().modelSnapshot(day, 2))!.rows, "opus-5.5").numerator ?? 0);
 });
