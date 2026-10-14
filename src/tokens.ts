@@ -35,8 +35,8 @@ export function tokenOptions(input: Record<string, unknown>, owner: string, now:
   if (input.runner !== undefined && typeof input.runner !== "string") throw new RuleError("bad_runner", "runner must be a name", 400);
   const runner = input.runner === undefined ? null : parseRunner(String(input.runner).includes(":") ? String(input.runner) : `home:${input.runner}`);
   const actor = runner ? `runner/${runner.runner.split(":")[1]}` : input.actor;
-  if (runner && (input.actor !== undefined || !Array.isArray(input.projects) || input.projects.length !== 1)) {
-    throw new RuleError("bad_runner_token", "a runner token needs exactly one project and no actor", 400);
+  if (runner && (input.actor !== undefined || !Array.isArray(input.projects) || !input.projects.length)) {
+    throw new RuleError("bad_runner_token", "a runner token needs at least one project and no actor", 400);
   }
   if (typeof actor !== "string" || !validActor(actor) || !/^[^/]+\/[^/]+$/.test(actor) || actor === owner) {
     throw new RuleError("bad_actor", "an agent token needs harness/model and cannot name the developer", 400);

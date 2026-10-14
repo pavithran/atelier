@@ -60,13 +60,21 @@ it("refuses runner tokens on board and area routes", async () => {
   }
 });
 
-it("issues normalized runner/project credentials, requires owner and one existing project", async () => {
+it("issues normalized runner/project credentials, requires owner and one or more existing projects", async () => {
   const t = await setup();
+  const second = await setup();
   expect(t.token.runner).toBe("home:studio");
   expect(t.token.projects).toEqual([t.name]);
-  for (const input of [{ runner: "x" }, { runner: "x", projects: [] }, { runner: "x", projects: [t.name, "other"] }, { runner: "x", projects: ["missing"] }, { runner: "x", actor: ACTOR, projects: [t.name] }]) {
+  for (const input of [{ runner: "x" }, { runner: "x", projects: [] }, { runner: "x", projects: [t.name, "missing"] }, { runner: "x", projects: ["missing"] }, { runner: "x", actor: ACTOR, projects: [t.name] }]) {
     expect((await t.request("POST", "/tokens", OWNER, "owner", input)).status).toBe(400);
   }
+  const multiRes = await t.request("POST", "/tokens", OWNER, "owner", { runner: "HOME:Studio", projects: [t.name, second.name] });
+  expect(multiRes.status).toBe(201);
+  const multi = await multiRes.json();
+  expect(multi.projects).toEqual([t.name, second.name]);
+  const multiOffered = await (await t.request("POST", "/queue", multi.token, ACTOR, t.offer)).json();
+  expect(multiOffered.map((q) => q.project).sort()).toEqual([t.name, second.name].sort());
+  expect((await t.request("POST", `/projects/${second.name}/items/t1/claim`, multi.token, ACTOR, {})).status).toBe(200);
   expect(await (await t.api("GET", `/projects/${t.name}`)).json()).toMatchObject({ items: [], events: [] });
   const config = await t.api("GET", "/config");
   expect(await config.json()).toMatchObject({ runner: "home:studio", tokenId: t.token.id });

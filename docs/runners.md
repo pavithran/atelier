@@ -87,7 +87,7 @@ atelier token issue --runner home:studio --project demo --days 30
 
 `Studio` also means `home:studio`; names are normalized to lower case.
 `atelier token issue --help` and `atelier token store --help` describe these
-subcommands. Exactly one existing project is required. Renaming that project preserves
+subcommands. One or more existing projects are required. Renaming a project preserves
 access through both its old and new names. The token cannot act as the
 developer or choose an actor independently of the current dispatched job.
 

@@ -78,6 +78,7 @@ export interface RunnerOffer {
   kind: RunnerKind;
   agents: { agent: string; models: string[] }[];
   jobs?: string[];
+  projects?: string[];
   // When the runner's process started, as it says: what it passes by after
   // failures or a refused claim it forgets on a restart, so the reasons
   // that name it count only from then (skippedBy, refusedBy).
@@ -456,7 +457,7 @@ export function skippedBy(runs: readonly RunSeen[], project: string, item: strin
 // skippedBy never sees them. Kept on the task, it outlasts the index's
 // window of recent run reports. It counts under the dispatch it was
 // reported for, and only from a live runner since its process started.
-export type RunSkipKind = "failures" | "infrastructure";
+export type RunSkipKind = "failures" | "infrastructure" | "skipped";
 
 export interface RunSkip {
   runner: string;
@@ -465,13 +466,17 @@ export interface RunSkip {
   failures: number;
   note: string;         // the last failure's reason, as the runner said it
   dispatchAt: string;
+  head?: string | null;
+  updatedAt?: string;
   at: string;
 }
 
 export function reportedSkips(skips: readonly RunSkip[], item: Item, offers?: readonly SeenOffer[] | null, now = new Date()): RunSkip[] {
   const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
   const started = startedOf(offers);
-  return skips.filter((s) => s.dispatchAt === item.dispatch?.at && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
+  return skips.filter((s) => s.dispatchAt === item.dispatch?.at
+    && (s.kind !== "skipped" || !s.updatedAt || sameRevision({ dispatchAt: s.dispatchAt, head: s.head ?? null, updatedAt: s.updatedAt }, item))
+    && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
     .sort((a, b) => a.runner.localeCompare(b.runner));
 }
 
@@ -515,7 +520,7 @@ export function sameRevision(r: Pick<ClaimRefusal, "dispatchAt" | "head" | "upda
 // `why`), a dispatch no other reason holds that this runner is not offered
 // says so: it is for another runner. A task may carry several; `atelier
 // status`, `atelier show` and an idle runner print one line each.
-export type UnclaimedKind = "held" | "overlap" | "refused" | "skipped" | "unoffered" | "elsewhere";
+export type UnclaimedKind = "held" | "overlap" | "refused" | "skipped" | "unoffered" | "busy" | "elsewhere";
 
 export interface UnclaimedReason {
   kind: UnclaimedKind;
@@ -533,6 +538,7 @@ export function unclaimed(
     runs?: readonly RunSeen[] | null;
     project?: string;
     offer?: RunnerOffer | null;
+    busy?: ReadonlyMap<string, string> | null;
     now?: Date;
   },
 ): UnclaimedReason[] {
@@ -549,10 +555,17 @@ export function unclaimed(
     ...counted.filter((s) => !reported.some((r) => r.runner === s.runner)).map((s) => ({ runner: s.runner, line: skippedReasonLine(s, item) }))];
   for (const s of skips.sort((a, b) => a.runner.localeCompare(b.runner))) out.push({ kind: "skipped", line: s.line });
   if (item.dispatch && input.offers) {
-    const dead = unoffered(item.dispatch, input.offers, input.now);
+    const dead = unoffered(item.dispatch, input.offers, input.now, input.project);
     if (dead) out.push({ kind: "unoffered", line: unofferedReasonLine(dead, item) });
+    else if (!out.length && input.busy?.size) {
+      const idleRunner = input.offer?.runner.toLowerCase();
+      const matching = liveOffers(input.offers, input.now).filter((o) => assign(item.dispatch!, o, input.project) !== null);
+      if (matching.length && matching.every((o) => o.runner.toLowerCase() !== idleRunner && input.busy!.has(o.runner.toLowerCase()))) {
+        out.push({ kind: "busy", line: `Offered, busy: ${matching.map((o) => `${o.runner} is working on ${input.busy!.get(o.runner.toLowerCase())}`).join("; ")}.` });
+      }
+    }
   }
-  if (item.dispatch && input.offer && !out.length && !assign(item.dispatch, input.offer)) {
+  if (item.dispatch && input.offer && !out.length && !assign(item.dispatch, input.offer, input.project)) {
     out.push({ kind: "elsewhere", line: `Not for ${input.offer.runner}: it is dispatched to ${describe(item.dispatch)}${item.dispatch.job ? ` (a ${item.dispatch.job} job)` : ""}, which this runner does not offer, and a live runner that does will take it.` });
   }
   return out;
@@ -586,6 +599,9 @@ function skippedReasonLine(s: SkippedBy, item: Item): string {
 }
 
 function reportedSkipLine(s: RunSkip, item: Item): string {
+  if (s.kind === "skipped") {
+    return `Skipped by ${s.runner}${s.note ? ` (${s.note})` : ""}; that runner passes it by until it changes or the runner restarts: fix the cause, then ${redispatch(item)}.`;
+  }
   const why = s.note ? ` (the last: ${s.note})` : "";
   return s.kind === "infrastructure"
     ? `Skipped by ${s.runner} after ${s.failures} infrastructure failures in a row under this dispatch${why}; that runner passes it by until it is dispatched again or the runner restarts: fix the runner's workspace, git or harness, then ${redispatch(item)}.`
@@ -593,6 +609,7 @@ function reportedSkipLine(s: RunSkip, item: Item): string {
 }
 
 function unofferedReasonLine(dead: string, item: Item): string {
+  if (dead.includes(" serves only ")) return `${dead[0].toUpperCase()}${dead.slice(1)}.`;
   return `${dead[0].toUpperCase()}${dead.slice(1)}. Dispatch it to a model a live runner offers (atelier dispatch ${item.id} --agent H --model M), or start a runner that offers it.`;
 }
 
@@ -654,7 +671,8 @@ function missingJob(d: Pick<Dispatch, "job" | "planHead" | "task">, offer: Runne
 }
 
 // The agent and model a runner should use for a dispatch, or null if it cannot.
-export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
+export function assign(d: Dispatch, offer: RunnerOffer, project?: string): Assignment | null {
+  if (project && offer.projects && !offer.projects.includes(project)) return null;
   // The integrate and refresh jobs always run as the reserved integrator,
   // which the queue returns to a runner that offers the job.
   if (d.job === "integrate" || d.job === "refresh" || d.job === "task-refresh") {
@@ -758,7 +776,8 @@ export function offeredActors(offers: readonly SeenOffer[]): Map<string, string[
 // no such job. The names are the claimable agent/model pairs assign() could
 // hand the job to under this offer, whatever harness was asked — the useful
 // fact is what could take the job instead, not which harness is missing.
-function offeredNames(d: OfferAsk, offer: RunnerOffer): string[] | null {
+function offeredNames(d: OfferAsk, offer: RunnerOffer, project?: string): string[] | null {
+  if (project && offer.projects && !offer.projects.includes(project)) return null;
   if (d.to !== "any" && d.to !== offer.kind) return null;
   if (missingJob(d, offer)) return null;
   const names: string[] = [];
@@ -770,10 +789,11 @@ function offeredNames(d: OfferAsk, offer: RunnerOffer): string[] | null {
 
 // One line per live runner naming what it offers for a dispatch's job
 // instead of taking it, in the order the server lists the runners.
-function insteadLines(d: OfferAsk, live: readonly SeenOffer[]): string[] {
+function insteadLines(d: OfferAsk, live: readonly SeenOffer[], project?: string): string[] {
   return live.map((offer) => {
-    const names = offeredNames(d, offer);
+    const names = offeredNames(d, offer, project);
     if (names === null) {
+      if (project && offer.projects && !offer.projects.includes(project)) return `${offer.runner} serves only ${offer.projects.join(", ") || "no projects"}, not ${project}`;
       if (d.to !== "any" && d.to !== offer.kind) return `${offer.runner} is a ${offer.kind} runner, not a ${d.to} one`;
       return `${offer.runner} offers no ${missingJob(d, offer)} job`;
     }
@@ -787,16 +807,16 @@ function insteadLines(d: OfferAsk, live: readonly SeenOffer[]): string[] {
 // config lists — or a dispatch for a job none offers — sits unclaimed however
 // long it waits, and this says so: each live runner is named with what it
 // offers instead, or that no runner is live at all.
-export function unoffered(d: Dispatch, offers: readonly SeenOffer[], now = new Date()): string | null {
+export function unoffered(d: Dispatch, offers: readonly SeenOffer[], now = new Date(), project?: string): string | null {
   const live = liveOffers(offers, now);
-  if (live.some((offer) => assign(d, offer) !== null)) return null;
+  if (live.some((offer) => assign(d, offer, project) !== null)) return null;
   if (!live.length) {
     const last = offers.map((o) => o.at).sort().at(-1);
     return last
       ? `no runner is live; the last to ask for work did so at ${last.slice(0, 16).replace("T", " ")} UTC`
       : "no runner has asked the server for work";
   }
-  return `no live runner can take it: ${insteadLines(d, live).join("; ")}`;
+  return `no live runner can take it: ${insteadLines(d, live, project).join("; ")}`;
 }
 
 // What the live runners offer for a dispatch's job: every claimable actor a
