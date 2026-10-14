@@ -382,6 +382,10 @@ export function touchedExecutables(changed, executables) {
   });
 }
 
+// The executable paths a change reaches, as a refusal names them: each path
+// and the setting that runs it, or the changed paths that reach it.
+export const describeTouched = (runs) => runs.map((r) => r.changed.length === 1 && r.changed[0] === r.path ? `${r.path}, ${r.setting}` : `${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ');
+
 // The paths a landing reads or writes in the ControlPlane folder: its policy
 // files, read at every merge and sync; the receipt template; the receipts
 // folder and the receipt written into it.

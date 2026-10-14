@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { acceptancePolicy, mergeContext, mergePolicyDecision } from "../../src/control-plane.ts";
 import { pathCollisions } from "../../src/rules.ts";
-import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
+import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
 import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
@@ -256,7 +256,7 @@ export default async function mergeCommand() {
         let runs;
         try{runs=touchedExecutables(git(['diff','--name-only','--no-renames','-z',local,tree],{cwd,raw:true}).split('\0').filter(Boolean),executablePaths(cwd,gitEnv()));}
         catch(error){journal.clear();die(error.message);}
-        if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's holder submit a revision that leaves them alone`);}
+        if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${describeTouched(runs)}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's holder submit a revision that leaves them alone`);}
         // The merge onto the baseline goes through the merge pipeline
         // (cli/merge-pipeline.mjs) and runs no generator here: outputs the
         // baseline would hold that neither the accepted revision nor the

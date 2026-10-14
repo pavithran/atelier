@@ -1,10 +1,11 @@
 // atelier pull. Its forms, flags and help are declared in src/usage/commands/pull.ts.
 import { existsSync } from "node:fs";
-import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
+import { adoptOldLanding, describeTouched, executablePaths, landingJournalFile, landingLock, touchedExecutables, treeEntries } from "../landing.mjs";
+import { pathCollisions } from "../../src/rules.ts";
 import { carryBaseline, loadPairs, savePairs, useRealHistory } from "../fresh.mjs";
 import { historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { OWNER, P, args, call, cfg, die, landingGit, landingHome, project, short } from "../atelier.mjs";
+import { OWNER, P, args, call, cfg, die, gitEnv, landingGit, landingHome, project, short } from "../atelier.mjs";
 
 // The developer, on one of the Macs that share a project's baseline (t644):
 // another Mac has carried commits to the baseline (atelier sync, merge or
@@ -88,7 +89,23 @@ export default async function pullCommand() {
     const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
     const brought = count(`${head}..${target}`), local = count(`${target}..${head}`);
     const subjects = git(["log", "--format=  %h %s", "-n", "20", `${head}..${target}`], { cwd });
+    // The tree main would hold is checked before the work tree changes, as
+    // atelier merge checks a landing's (Astra's third review of t644), with
+    // the same checks: paths a Mac stores as one file, which Git would write
+    // one over the other, and files this checkout's Git configuration runs
+    // (hooks, filter and merge driver commands, included configuration
+    // files), which the checkout would run, during it or at the next Git
+    // command, as the baseline changed them.
+    const unchanged = `Nothing was pulled: ${p.branch} is still at ${short(head)}, and the work tree is as it was.`;
+    const checkTree = (tree) => {
+      const clashes = pathCollisions(treeEntries(git(["ls-tree", "-r", "-z", "--full-tree", tree], { cwd, raw: true })).map((e) => e.path));
+      if (clashes.length) die(`${p.branch} with the baseline's ${p.branch} would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map((g) => g.join(" and ")).join("; ")}. Git would write one over the other in this checkout. ${unchanged} Rename or remove all but one of each, on the baseline or here, then run atelier pull --project ${name} again.`);
+      let runs;
+      try { runs = touchedExecutables(git(["diff", "--name-only", "--no-renames", "-z", head, tree], { cwd, raw: true }).split("\0").filter(Boolean), executablePaths(cwd, gitEnv())); } catch (error) { die(error.message); }
+      if (runs.length) die(`the baseline's ${p.branch} changes files that this checkout's Git configuration runs: ${describeTouched(runs)}. Pulling it would run them, during the checkout or at your next Git command. ${unchanged} Review those files in ${target}, the baseline's ${p.branch} as fetched, and bring it in by hand (git merge ${target}) once you trust them.`);
+    };
     if (local === 0) {
+      checkTree(target);
       git(["merge", "--ff-only", "--quiet", target], { cwd });
       pair();
       console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch}; ${p.branch} moved from ${short(head)} to ${short(target)}.`);
@@ -106,6 +123,7 @@ export default async function pullCommand() {
     }
     if (merged.status !== 0) die(`git merge-tree could not merge the baseline's ${p.branch} (${short(target)}) into ${p.branch}; nothing was merged:\n${(merged.stderr || merged.stdout).trim()}`);
     const tree = merged.stdout.split("\n")[0];
+    checkTree(tree);
     const parents = fresh ? [target, head] : [head, target];
     const commit = git(["commit-tree", tree, "-p", parents[0], "-p", parents[1], "-m", `Merge the baseline's ${p.branch} into ${p.branch} (atelier pull)`], { cwd });
     git(["merge", "--ff-only", "--quiet", commit], { cwd });

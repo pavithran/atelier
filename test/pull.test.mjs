@@ -334,10 +334,15 @@ test("pull runs no hook the baseline carries, in a fast-forward or a merge, even
     writeFileSync(join(f.other, ".githooks", hook), `#!/bin/sh\necho "${hook} $GIT_CONFIG_VALUE_0" >> "${marker}"\n`, { mode: 0o755 });
   }
   const hooks = { globalConfig: "[core]\n\thooksPath = .githooks\n" };
+  // The hooks reach the checkout while this Mac runs no hooks from it.
+  commitElsewhere(f, "hooks.txt", "hooks\n");
+  assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
+  assert.ok(existsSync(join(dir, ".githooks", "post-merge")), "the hooks are in the checkout now");
+  // Under core.hooksPath = .githooks they are what Git would run, and pulls
+  // that leave them alone run none of them.
   commitElsewhere(f, "theirs.txt", "theirs\n");
   const ff = await run(t, f, a, ["pull", "--project", "demo"], hooks);
   assert.equal(ff.code, 0, ff.output);
-  assert.ok(existsSync(join(dir, ".githooks", "post-merge")), "the hooks are in the checkout now");
   commitIn(f, dir, "mine.txt", "mine\n");
   commitElsewhere(f, "more.txt", "more\n");
   const merge = await run(t, f, a, ["pull", "--project", "demo"], hooks);
@@ -502,4 +507,72 @@ test("a graft file GIT_GRAFT_FILE names does not make main hold the baseline, fo
   assert.equal(pull.code, 0, pull.output);
   assert.match(pull.output, /brought 1 commit from the baseline's main and merged them with 1 local commit/);
   assert.deepEqual(f.git(dir, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [local, theirs]);
+});
+
+// Astra's third review of t644: a pull that changed a file this checkout's
+// Git configuration runs (a hook, a filter or merge driver command, an
+// included configuration file) would write it, and Git would run it, during
+// the checkout or at the next command. pull refuses it as atelier merge does
+// (touchedExecutables in cli/landing.mjs), with nothing changed.
+test("pull refuses a baseline change to a file this checkout's Git configuration runs, and changes nothing", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const marker = join(f.root, "filter-ran");
+  f.git(f.other, "pull", "-q", "--no-rebase", "origin", "main");
+  mkdirSync(join(f.other, "tools"));
+  commitElsewhere(f, "tools/clean.sh", "#!/bin/sh\ncat\n");
+  assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
+  f.git(dir, "config", "--local", "filter.demo.clean", "sh tools/clean.sh");
+  f.git(dir, "config", "--local", "core.hooksPath", ".githooks");
+  const head = f.git(dir, "rev-parse", "HEAD");
+  // A filter command and a hooks folder, each changed on the baseline.
+  const theirs = commitElsewhere(f, "tools/clean.sh", `#!/bin/sh\necho ran >> "${marker}"\ncat\n`);
+  const filter = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(filter.code, 0);
+  assert.match(filter.output, new RegExp(`the baseline's main changes files that this checkout's Git configuration runs: tools/clean\\.sh, named by filter\\.demo\\.clean\\. Pulling it would run them, during the checkout or at your next Git command\\. Nothing was pulled: main is still at ${head.slice(0, 8)}, and the work tree is as it was\\. Review those files in ${theirs}`));
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
+  assert.equal(readFileSync(join(dir, "tools", "clean.sh"), "utf8"), "#!/bin/sh\ncat\n");
+  assert.equal(f.git(dir, "status", "--porcelain"), "");
+  f.git(dir, "config", "--local", "--unset", "filter.demo.clean");
+  f.git(f.other, "rm", "-q", "tools/clean.sh");
+  f.git(f.other, "commit", "-q", "-m", "drop the script");
+  f.git(f.other, "push", "-q", "origin", "main");
+  mkdirSync(join(f.other, ".githooks"));
+  commitElsewhere(f, ".githooks/post-merge", "#!/bin/sh\necho hook\n");
+  commitIn(f, dir, "mine.txt", "mine\n");
+  const hook = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(hook.code, 0);
+  assert.match(hook.output, /changes files that this checkout's Git configuration runs: \.githooks\/post-merge, which reach \.githooks, the hooks folder named by core\.hooksPath/);
+  assert.ok(!existsSync(join(dir, ".githooks")));
+  assert.ok(!existsSync(marker));
+});
+
+// Astra's third review of t644: two paths a Mac stores as one file, one from
+// each side, would be written one over the other. pull checks the merged
+// tree as atelier merge does (pathCollisions in src/rules.ts).
+test("pull refuses a merge whose tree holds paths that differ only by letter case or Unicode form", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const local = commitIn(f, dir, "report.txt", "mine\n");
+  commitElsewhere(f, "Report.txt", "theirs\n");
+  const r = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.output, new RegExp(`would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: (Report\\.txt and report\\.txt|report\\.txt and Report\\.txt)\\. Git would write one over the other in this checkout\\. Nothing was pulled: main is still at ${local.slice(0, 8)}`));
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
+  assert.equal(readFileSync(join(dir, "report.txt"), "utf8"), "mine\n");
+  assert.equal(f.git(dir, "status", "--porcelain"), "");
+  // A name in its composed and decomposed Unicode forms, the same way.
+  const g = setup(t), b = mac(g, "b");
+  const dirB = await cloneOn(t, g, b);
+  commitIn(g, dirB, "caf\u00e9.txt", "composed\n");
+  // Written with plumbing and precomposition off, so the decomposed name is kept as it is.
+  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: g.other, env: g.env, input: "decomposed\n", encoding: "utf8" }).trim();
+  g.git(g.other, "-c", "core.precomposeunicode=false", "update-index", "--add", "--cacheinfo", `100644,${blob},cafe\u0301.txt`);
+  g.git(g.other, "commit", "-q", "-m", "decomposed name");
+  g.git(g.other, "push", "-q", "origin", "main");
+  const u = await run(t, g, b, ["pull", "--project", "demo"]);
+  assert.notEqual(u.code, 0);
+  assert.match(u.output, /differ only by letter case or Unicode form/);
 });
