@@ -2386,3 +2386,246 @@ test('conflicted preparation goes to the resolving harness, even with an old val
   assert.match(f.calls.find((c) => c.brief).brief, /Resolve input then run npm ci && npm run types/);
   assert.match(f.calls.find((c) => c.brief).brief, /host slot wrapper:.*load\.mjs/);
 });
+
+test('a runner whose token covers atelier and micahapp claims micahapp t6 at the head of the queue in one poll, where a one-project token leaves it unclaimed', async (t) => {
+  const { createServer } = await import('node:http');
+  const { inScope, tokenOptions } = await import('../src/tokens.ts');
+  const { assign } = await import('../src/dispatch/rules.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'atelier-t626-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cfgPath = join(dir, 'runner.json');
+  const paviConfig = {
+    agents: [{ agent: 'opencode', models: ['glm-5.3'], command: ['opencode', 'run', '--model', '{model}', '--file', '{brief_file}', '{workspace}'] }],
+  };
+  writeFileSync(cfgPath, JSON.stringify(paviConfig));
+
+  const registered = new Set(['atelier', 'micahapp']);
+  const tokens = new Map();
+  const queueItems = [
+    {
+      project: 'micahapp',
+      item: {
+        id: 't6',
+        title: 'Micah six',
+        state: 'open',
+        owner: null,
+        scope: ['**'],
+        head: 'head-t6',
+        updatedAt: '2026-10-10T12:00:00.000Z',
+        dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:00:00.000Z' },
+      },
+    },
+    {
+      project: 'micahapp',
+      item: {
+        id: 't7',
+        title: 'Micah seven',
+        state: 'open',
+        owner: null,
+        scope: ['**'],
+        head: 'head-t7',
+        updatedAt: '2026-10-10T12:01:00.000Z',
+        dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:01:00.000Z' },
+      },
+    },
+  ];
+
+  const http = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      const auth = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+      if (req.url === '/api/version') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES }));
+        return;
+      }
+      if (req.url === '/api/tokens' && req.method === 'POST') {
+        try {
+          const opts = tokenOptions(body, 'owner', Date.now());
+          for (const p of opts.projects ?? []) {
+            if (!registered.has(p)) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'no_project', detail: 'runner tokens require an existing project' }));
+              return;
+            }
+          }
+          const secret = `atl_${opts.projects.join('_')}`;
+          const record = { ...opts, id: `id-${tokens.size + 1}`, token: secret };
+          tokens.set(secret, record);
+          res.writeHead(201, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(record));
+        } catch (err) {
+          res.writeHead(err.status ?? 400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: err.code ?? 'bad_request', detail: err.message }));
+        }
+        return;
+      }
+      if (req.url === '/api/queue' && req.method === 'POST') {
+        const token = tokens.get(auth);
+        if (!token || token.runner !== body.runner) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'runner_forbidden' }));
+          return;
+        }
+        const offered = queueItems
+          .filter((q) => q.item.state === 'open' && inScope(token, [q.project]))
+          .flatMap((q) => {
+            const a = assign(q.item.dispatch, body);
+            return a ? [{ project: q.project, item: q.item, ...a }] : [];
+          });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(offered));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    });
+  });
+  t.after(() => http.close());
+  await new Promise((done) => http.listen(0, '127.0.0.1', done));
+  const serverUrl = `http://127.0.0.1:${http.address().port}`;
+
+  const issueToken = (projects) => new Promise((done) => {
+    const argv = [join(process.cwd(), 'cli/atelier.mjs'), 'token', 'issue', '--runner', 'home:paviMBP', ...projects.flatMap((p) => ['--project', p])];
+    const child = spawn(process.execPath, argv, {
+      cwd: dir,
+      env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: 'file', ATELIER_TOKEN: 'owner-secret', ATELIER_OWNER: 'owner', ATELIER_SERVER: serverUrl },
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (s) => (stdout += s));
+    child.stderr.on('data', (s) => (stderr += s));
+    child.on('close', (status) => done({ status, stdout, stderr }));
+  });
+
+  // 1. With a single-project token scoped only to ["atelier"], micahapp t6 and t7 are never offered.
+  const singleIssued = await issueToken(['atelier']);
+  assert.equal(singleIssued.status, 0, singleIssued.stderr);
+  const singleToken = singleIssued.stdout.trim().split('\n').at(-1);
+  const claimedSingle = [];
+  const { io: ioSingle } = fixture();
+  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath, once: true }, {
+    workspacePath: ioSingle.workspacePath,
+    taskIO: ioSingle,
+    queue: async (offer) => {
+      const res = await fetch(`${serverUrl}/api/queue`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${singleToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(offer),
+      });
+      return res.json();
+    },
+  });
+  assert.deepEqual(claimedSingle, []);
+
+  // 2. Issue a multi-project runner token covering ["atelier", "micahapp"] and poll once:
+  // micahapp t6 at the head of the queue is offered and claimed in one poll!
+  const multiIssued = await issueToken(['atelier', 'micahapp']);
+  assert.equal(multiIssued.status, 0, multiIssued.stderr);
+  const multiToken = multiIssued.stdout.trim().split('\n').at(-1);
+
+  const claimedMulti = [];
+  const { io } = fixture();
+  io.workspacePath = (p, id) => `/ws/${p}/${id}`;
+  const heads = new Map();
+  io.head = async (ws) => {
+    const n = (heads.get(ws) ?? 0) + 1;
+    heads.set(ws, n);
+    return n === 1 ? 'head-before' : 'head-after';
+  };
+  const origCli = io.cli;
+  io.cli = async (argv, cwd) => {
+    if (argv[0] === 'claim') {
+      const proj = argv[argv.indexOf('--project') + 1];
+      const id = argv[1];
+      claimedMulti.push(`${proj}:${id}`);
+      const found = queueItems.find((q) => q.project === proj && q.item.id === id);
+      if (found) found.item.state = 'claimed';
+    }
+    return origCli(argv, cwd);
+  };
+
+  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath, once: true }, {
+    workspacePath: io.workspacePath,
+    taskIO: io,
+    queue: async (offer) => {
+      const res = await fetch(`${serverUrl}/api/queue`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${multiToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(offer),
+      });
+      return res.json();
+    },
+  });
+
+  assert.deepEqual(claimedMulti, ['micahapp:t6']);
+
+  // 3. A skipped job does not stay skipped once updatedAt changes (fixing the cause and updating the task lets the runner try it again).
+  const skippedTask = queueItems[1];
+  const refused = new Set([refusedKey(skippedTask)]);
+  assert.match(passedBy(skippedTask, ['build'], { refused, failures: new Map(), infrastructureFailures: new Map() }), /^Passed by:/);
+  const editedTask = { ...skippedTask, item: { ...skippedTask.item, updatedAt: '2026-10-10T12:05:00.000Z' } };
+  assert.equal(passedBy(editedTask, ['build'], { refused, failures: new Map(), infrastructureFailures: new Map() }), null);
+});
+
+test('atelier queue prints why a queued job is unclaimed (no runner offers it, offered but busy, or refused and the reason)', async (t) => {
+  const { createServer } = await import('node:http');
+  const http = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(req.url === '/api/queue' ? [
+      {
+        project: 'micahapp',
+        item: {
+          id: 't6',
+          title: 'Unclaimed model',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'unoffered', line: 'No live runner can take it: home:paviMBP serves only atelier, not micahapp.' }],
+        },
+      },
+      {
+        project: 'micahapp',
+        item: {
+          id: 't7',
+          title: 'Busy runner',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'busy', line: 'Offered, busy: home:paviMBP is working on atelier/t1.' }],
+        },
+      },
+      {
+        project: 'micahapp',
+        item: {
+          id: 't8',
+          title: 'Refused job',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'refused', line: 'Refused by home:paviMBP at 2026-10-10 12:00 UTC (check_failed: tests red); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch t8 --to home --agent opencode --model glm-5.3.' }],
+        },
+      },
+    ] : { actor: 'owner' }));
+  });
+  t.after(() => http.close());
+  await new Promise((done) => http.listen(0, '127.0.0.1', done));
+  const root = mkdtempSync(join(tmpdir(), 'atelier-queue-why-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const out = await new Promise((done) => {
+    const child = spawn(process.execPath, [join(process.cwd(), 'cli/atelier.mjs'), 'queue'], {
+      cwd: root,
+      env: { ...process.env, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, 'cache'), ATELIER_TOKEN: 'atl_' + 'a'.repeat(64), ATELIER_SERVER: `http://127.0.0.1:${http.address().port}` },
+    });
+    let output = '';
+    child.stdout.on('data', (s) => (output += s));
+    child.stderr.on('data', (s) => (output += s));
+    child.on('close', (status) => done({ status, output }));
+  });
+  assert.equal(out.status, 0, out.output);
+  assert.deepEqual(out.output.trim().split('\n'), [
+    'micahapp/t6  for home opencode/glm-5.3  Unclaimed model',
+    '  No live runner can take it: home:paviMBP serves only atelier, not micahapp.',
+    'micahapp/t7  for home opencode/glm-5.3  Busy runner',
+    '  Offered, busy: home:paviMBP is working on atelier/t1.',
+    'micahapp/t8  for home opencode/glm-5.3  Refused job',
+    '  Refused by home:paviMBP at 2026-10-10 12:00 UTC (check_failed: tests red); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch t8 --to home --agent opencode --model glm-5.3.',
+  ]);
+});
+
+

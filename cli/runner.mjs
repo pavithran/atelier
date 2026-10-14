@@ -3519,10 +3519,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // A task the server closed (t476) was not given up. A criteria
           // review (t438) records its own failure, criteria-review-failed,
           // as the code review has its skip, so neither goes to run-skip.
-          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : null;
+          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : state.skipped ? "skipped" : null;
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
-            await reportSkip(`run-skip:${key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : infrastructureCount, note: state.reason ?? "" }, 0, "run");
+            await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, note: state.reason ?? "" }, 0, "run");
           }
           // Closure survives changes to the head or updatedAt in later polls
           // (t476). Remember its exact state for this process, by the task

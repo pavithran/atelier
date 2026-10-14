@@ -16,7 +16,7 @@ export default async function tokenCommand() {
     return;
   }
   if (action === "issue") {
-    if (args.runner && args.as) die("a runner token takes --runner and exactly one --project, not --as");
+    if (args.runner && (args.as || !args.multi.project?.length)) die("a runner token takes --runner and --project, not --as");
     if (!args.runner && typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
     if (args.days !== undefined && (!Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
     const result = await call("POST", "/tokens", {

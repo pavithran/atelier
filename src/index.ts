@@ -1232,8 +1232,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 1 && m === "POST") {
       const options = tokenOptions(body, ownerActor(env), Date.now());
       if (options.runner) {
-        const ref = await resolveProject(env, options.projects![0]);
-        if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+        for (const name of options.projects!) {
+          const ref = await resolveProject(env, name);
+          if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+        }
       }
       const token = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
       const hash = await sha256(token);
@@ -1447,7 +1449,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // out) and why alone, and only its own refusals and skips among the
   // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
-    const offer = m === "POST" ? runnerOffer(body) : null;
+    const parsedOffer = m === "POST" ? runnerOffer(body) : null;
+    const offer = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
     if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
@@ -1474,6 +1477,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     const indexed = Date.now();
     const unreadable: string[] = [];
+    const busy = new Map<string, string>();
     // One call per project reads both its waiting tasks and its open review requests.
     const lists = await Promise.all(projects.map(async (p) => {
       try {
@@ -1486,10 +1490,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // answered from them in the same call. The claim check reads the
         // same record of the polls, kept current by every poll and
         // heartbeat, so it judges an orphaned claim as the queue does (t540).
-        const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls) : null;
+        const idleRunner = offer && body.why === true ? offer.runner : undefined;
+        const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls, idleRunner) : null;
         // The task refresh's jobs (t462) are offered to a runner that names them.
         const refreshing = !!offer && (offer.jobs ?? []).some((j) => j === "task-refresh" || j === "task-resolve");
-        const [held, { waiting, reviews }, refreshes] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls), refreshing ? L.refreshJobs(offer) : Promise.resolve([])]);
+        const [held, { waiting, reviews, busy: projectBusy = [] }, refreshes] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls, idleRunner), refreshing ? L.refreshJobs(offer) : Promise.resolve([])]);
+        for (const b of projectBusy) busy.set(b.runner.toLowerCase(), `${p.name}/${b.id}`);
         // While the project is in fast mode (t589) a plain build is marked
         // fast, and the runner takes it without a fork (fast-take); every
         // other job, and every build in full mode, is claimed as before.
@@ -1512,7 +1518,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // as another's claim (claim guards the runner name; assign the actor).
           return a && (!c.token?.runner || !["integrate", "refresh", "task-refresh", "task-resolve"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a, ...mark }] : [];
         })
-      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null);
+      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null, busy);
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
@@ -2532,7 +2538,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a run skip names its runner in X-Atelier-Runner", 400);
       const kind = body.kind;
-      if (kind !== "failures" && kind !== "infrastructure") throw new RuleError("bad_kind", "a run skip's kind is failures or infrastructure", 400);
+      if (kind !== "failures" && kind !== "infrastructure" && kind !== "skipped") throw new RuleError("bad_kind", "a run skip's kind is failures, infrastructure or skipped", 400);
       const failures = body.failures;
       if (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1 || failures > 1000) throw new RuleError("bad_failures", "a run skip names how many failures it gave up after", 400);
       // Under a runner token the job's actor is the caller, checked at the gateway.
@@ -3392,7 +3398,7 @@ const listedApart = (item: Item): boolean => LISTED_APART.has(item.dispatch?.job
 // src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
 // meant for another. A review or pre-review request, and a task refresh's
 // job, is listed apart, so it carries none.
-async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
+async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null, busy: ReadonlyMap<string, string> | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
   // Each waiting dispatch's build runs since it was dispatched, read task by
   // task, so the newest reports of other tasks never push its failures out.
   const asks = queued.flatMap(({ project, item }) => item.dispatch && !listedApart(item) ? [{ project, item: item.id, since: item.dispatch.at }] : []);
@@ -3405,7 +3411,7 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
     if (listedApart(item)) return { project, item: runner ? runnerWhyItem(item, undefined) : item };
-    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer });
+    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer, busy });
     if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this
     // listing from an older server's, which carries `held` alone.

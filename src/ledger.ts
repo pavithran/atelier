@@ -5,7 +5,7 @@ import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finis
 import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
-import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
+import { inScope, runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
@@ -34,7 +34,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -1625,14 +1625,18 @@ export class Ledger extends DurableObject<Env> {
   // once a minute rather than on every poll, and the projects are returned
   // for the queue to read. `at` stays within OFFER_REFRESH_MS of the last ask.
   askQueue(offer: RunnerOffer | null, at: string): ProjectRecord[] {
+    const projects = this.projects();
     if (offer) {
-      const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, offer.runner).toArray()[0];
+      const scoped = offer.projects
+        ? { ...offer, projects: [...new Set([...offer.projects, ...projects.filter((p) => inScope({ projects: offer.projects }, [p.name, ...(p.formerly ?? [])])).map((p) => p.name)])] }
+        : offer;
+      const row = this.sql.exec(`SELECT json FROM runner_offers WHERE runner = ?`, scoped.runner).toArray()[0];
       const seen = row ? (JSON.parse(row.json as string) as SeenOffer) : null;
-      const same = !!seen && row!.json === JSON.stringify({ ...offer, at: seen.at });
+      const same = !!seen && row!.json === JSON.stringify({ ...scoped, at: seen.at });
       const fresh = !!seen && Date.parse(at) - Date.parse(seen.at) < OFFER_REFRESH_MS && Date.parse(at) >= Date.parse(seen.at);
-      if (!same || !fresh) this.putRunnerOffer(offer, at);
+      if (!same || !fresh) this.putRunnerOffer(scoped, at);
     }
-    return this.projects();
+    return projects;
   }
 
   runnerOffers(): SeenOffer[] {
@@ -2132,7 +2136,7 @@ export class Ledger extends DurableObject<Env> {
   // (recordRunnerPolls), which the offer, the claim check, atelier queue and
   // atelier stuck all read, so each judges an orphaned claim from the polls
   // as they stand when it asks (t540).
-  runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
+  runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[], idleRunner?: string): { waiting: Waiting[]; reviews: (Item & { request: number })[]; busy: { runner: string; id: string }[] } {
     if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
     if (polls) this.recordRunnerPolls(polls);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
@@ -2142,7 +2146,7 @@ export class Ledger extends DurableObject<Env> {
     // A report may follow a failed claim or a review run authenticated with
     // its model token. Remember only jobs this poll actually authorizes,
     // separately from the grants that authorize build/plan operations.
-    const queue = this.queued(), { waiting, reviews } = queue;
+    const queue = this.queued(undefined, idleRunner), { waiting, reviews } = queue;
     for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
       if (!item.dispatch || "held" in item && item.held) continue;
       const assignment = assign(item.dispatch, offer);
@@ -2302,6 +2306,7 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     this.dropRunnerJobs(id);
+    if (runner) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-idle:${runner.runner.toLowerCase()}`);
     if (runnerToken) {
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
     }
@@ -2571,7 +2576,7 @@ export class Ledger extends DurableObject<Env> {
       : null;
     return held.map((i) => {
       const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
-      const skips = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at);
+      const skips = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at && (r.kind !== "skipped" || !r.updatedAt || sameRevision({ dispatchAt: r.dispatchAt, head: r.head ?? null, updatedAt: r.updatedAt }, i)));
       const overlap = live ? overlapRefusal(i, live) : null;
       return refusals.length || skips.length || overlap
         ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(overlap ? { overlap } : {}) }
@@ -2617,9 +2622,17 @@ export class Ledger extends DurableObject<Env> {
   // The open criteria reviews (t438) are offered with the code reviews:
   // each carries its own dispatch, whose job names criteria-review, and
   // its request is the criteria review's own number.
-  queued(polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
+  queued(polls?: readonly { runner: string; at: string }[], idleRunner?: string): { waiting: Waiting[]; reviews: (Item & { request: number })[]; busy: { runner: string; id: string }[] } {
     if (polls) this.recordRunnerPolls(polls);
-    return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting(), ...this.prereviewWaiting()] };
+    if (idleRunner) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-idle:${idleRunner.toLowerCase()}`, JSON.stringify(new Date().toISOString()));
+    const skipped = this.runnerNotes<RunSkip>("run-skip");
+    const runners = this.runnerPolls(), now = Date.now();
+    const busy = this.items().filter((i) => i.state === "claimed" && i.owner && i.runner && i.dispatch
+      && !orphanedBy(i, runners, now)
+      && !this.runnerMeta(`runner-idle:${i.runner.toLowerCase()}`)
+      && !(skipped.get(i.id) ?? []).some((s) => s.dispatchAt === i.dispatch!.at && s.runner.toLowerCase() === i.runner!.toLowerCase()))
+      .map((i) => ({ runner: i.runner!, id: i.id }));
+    return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting(), ...this.prereviewWaiting()], busy };
   }
 
   // The runners' last polls as the queue route last read them from the
@@ -2671,8 +2684,9 @@ export class Ledger extends DurableObject<Env> {
   recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, note: string): boolean {
     const item = this.item(id);
     const d = item.dispatch;
-    if (item.state !== "open" || item.owner || !d || d.job === "review") return false;
-    const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, at: new Date().toISOString() };
+    const heldByRunner = item.state === "claimed" && (item.runner ?? "").toLowerCase() === runner.toLowerCase();
+    if ((item.state !== "open" || item.owner) && !heldByRunner || !d || d.job === "review") return false;
+    const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("run-skip", id, runner, d.at, skip);
     return true;
   }

@@ -36,10 +36,10 @@ const spec: CommandSpec = {
       // runner the server reads from it.
       capabilities: ["runners.scoped-token.v1"],
       usage: `usage: atelier token issue --as H/M [--project P]... [--days N] [--label TEXT]
-       atelier token issue --runner NAME --project P [--days N] [--label TEXT]
+       atelier token issue --runner NAME --project P... [--days N] [--label TEXT]
 
 Only the developer issues tokens. A runner token binds one normalized runner and
-one existing project. NAME defaults to home:NAME. --as and --runner cannot
+one or more existing projects. NAME defaults to home:NAME. --as and --runner cannot
 be combined. Expiry defaults to 30 days; --days accepts 1 through 365.
 The token is shown once. See docs/runners.md for owner-free build and plan runners.`,
     },
