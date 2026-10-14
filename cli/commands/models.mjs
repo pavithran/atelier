@@ -5,13 +5,15 @@ import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, args, at, call, die, project, serverVersion } from "../atelier.mjs";
 import { cleanCard, cleanCardModel, cleanWithdrawal, conditionText } from "../../src/models/cards.ts";
 import { modelKey } from "../../src/rules.ts";
+import { comparisonLines } from "../../src/models/compare.ts";
 import { assignCommand, rolesCommand } from "../model-roles.mjs";
 
 // The model pool. With no subcommand, lists it. `models add ID --harness H
 // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
 // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
 // removes one; `models note ID 'text' [--item tN]` keeps a dated note under
-// it, and `models show ID` prints it with its notes and its vendor cards;
+// it, and `models show ID` prints it with its notes, its vendor cards and
+// its vendor claims beside Atelier's record of it, role by role (t621);
 // `models card [ID] [--file FILE]` records vendor cards, read as JSON from the
 // file or standard input (t625). Keys stay in the Keychain; only the entry's
 // name is sent.
@@ -85,7 +87,9 @@ export default async function modelsCommand() {
     if (!id) die("atelier models show ID");
     // A model the pool does not have may still have vendor cards.
     const viewOf = (name) => call("GET", `/models/${encodeURIComponent(name)}/cards`, undefined, OWNER);
-    let cards = (await serverVersion())?.capabilities?.includes("models.card.v1") ? await viewOf(id) : null;
+    const capabilities = (await serverVersion())?.capabilities ?? [];
+    let cards = capabilities.includes("models.card.v1") ? await viewOf(id) : null;
+    let shownAs = id;
     const pool = await call("GET", "/models", undefined, OWNER);
     const entryName = (e) => `${e.harness}/${e.id}`;
     if (!cards) {
@@ -104,9 +108,12 @@ export default async function modelsCommand() {
     // says so and which key it shows.
     const aliasOf = (view) => pool.filter((e) => (e.aliases ?? []).some((a) => modelKey(a) === modelKey(id)) && !view.pool.includes(entryName(e)));
     let others = aliasOf(cards);
-    if (!cards.cards.length && !cards.pool.length && others.length === 1) {
+    // Entries that are one model under two harnesses are followed as one
+    // (gemini-4-argon's review of t621: such an alias showed nothing).
+    if (!cards.cards.length && !cards.pool.length && others.length && new Set(others.map((e) => modelKey(entryName(e)))).size === 1) {
       const [e] = others;
-      cards = await viewOf(entryName(e));
+      shownAs = entryName(e);
+      cards = await viewOf(shownAs);
       console.log(`${id} is a pool alias of ${entryName(e)}; cards are kept under a model's own name, so these are the cards kept under ${cards.model}.`);
       others = [];
     }
@@ -119,6 +126,10 @@ export default async function modelsCommand() {
     if (!entries.length) console.log(`${id} is not in the pool; its vendor cards are kept under ${cards.model}.`);
     for (const line of cardLines(cards)) console.log(line);
     for (const e of others) console.log(`  ${id} is also a pool alias of ${entryName(e)}, whose cards are kept under its own name: atelier models show ${entryName(e)}`);
+    // The comparison is the server's projection (src/models/compare.ts), the
+    // one the Models page renders; nothing is computed here.
+    if (!capabilities.includes("models.compare.v1")) return console.log("  Vendor claims beside Atelier's record: this server does not have models.compare.v1 yet; deploy it to show them.");
+    for (const line of comparisonLines(await call("GET", `/models/${encodeURIComponent(shownAs)}/compare`, undefined, OWNER))) console.log(line);
     return;
   }
   if (sub) die(`${COMMAND_USAGE.models}

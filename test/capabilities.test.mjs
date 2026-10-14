@@ -699,3 +699,13 @@ test("--quote asks for the developer's direction by name, and a server without i
     assert.deepEqual(f.requests, [{ method: "GET", path: "/api/version" }], argv.join(" "));
   }
 });
+
+// t621: the comparison route is published by name without raising the route
+// level, and `models show` requires no more than before: it prints the
+// comparison when the server publishes models.compare.v1 and says so when not.
+test("models.compare.v1 is a named capability that models show reads without requiring (t621)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "models.compare.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("models.compare.v1"));
+  assert.equal(ROUTE_LEVEL, 28);
+  assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
+});

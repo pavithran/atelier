@@ -1254,6 +1254,13 @@ export class Ledger extends DurableObject<Env> {
     return modelCardView(this.cardRecords(), this.models(), named);
   }
 
+  // Several models' cards at once, read from one copy of the table, for the
+  // Models page's comparisons (t621): one view per name, in the order given.
+  modelCardViews(names: readonly string[]): CardView[] {
+    const all = this.cardRecords(), pool = this.models();
+    return names.map((named) => modelCardView(all, pool, named));
+  }
+
   // A card or a withdrawal, stored once: the same record sent again (a
   // retry) is answered with the one stored, and nothing is added.
   addModelCard(named: string, input: CardInput | WithdrawalInput, by: string, at: string): { record: CardRecord; retried: boolean; view: CardView } {
@@ -6584,8 +6591,11 @@ export class Ledger extends DurableObject<Env> {
   // verdicts; the Models page reads every project's.
   private reviewPrecision(at: string): PrecisionRecord {
     const window = precisionWindow(new Date(at));
-    // The review events too, so a legacy verdict is placed on its review.
-    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected') ORDER BY seq`).toArray().map(eventOf);
+    // The review events too, so a legacy verdict is placed on its review,
+    // and the served annotations, so a finding counts under the model that
+    // served its review here as on the Models page (t621; gpt-6-astra's and
+    // gemini-4-argon's reviews: routing read the declared model).
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected', 'event.served') ORDER BY seq`).toArray().map(eventOf);
     return buildPrecision([{ project: "this", events }], window, this.owner);
   }
 

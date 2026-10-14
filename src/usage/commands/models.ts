@@ -36,7 +36,7 @@ const spec: CommandSpec = {
     {
       group: "Models", line: 1, slot: 30,
       form: "models show ID",
-      about: "Shows a pool entry with its notes, oldest first, then the vendor cards recorded for the model under any of its names or harnesses, the claims that conflict and the registry's priors. A model the pool does not have is shown by its cards.",
+      about: "Shows a pool entry with its notes, oldest first, then the vendor cards recorded for the model under any of its names or harnesses, the claims that conflict and the registry's priors, then the vendor's claims beside Atelier's record of the model role by role: the developer's assignments of it, and each figure with its window, what it is over and its threshold. A model the pool does not have is shown by its cards.",
     },
     {
       group: "Models", line: 1, slot: 45,
@@ -75,7 +75,8 @@ const spec: CommandSpec = {
   // standing (t389), which `set` posts, needs models.standing.v1, as does
   // `add` when it gives --state, --roles or --tier (requiredForCommand).
   // Vendor cards (t625), which `card` posts, need models.card.v1; `show`
-  // prints them when the server has it and says so when it does not.
+  // prints them when the server has it and says so when it does not, and
+  // the comparison (t621) likewise with models.compare.v1.
   subcommands: {
     admit: { capabilities: ["reviews.admission.v1"] },
     withdraw: { capabilities: ["reviews.admission.v1"] },
