@@ -98,6 +98,18 @@ export interface FastLanding {
 // owner's batch: the commit atelier fast land takes as tN=SHA.
 export type FastReadyEntry = FastReady & { item: string; title: string; at: string; by: string };
 
+// A developer branch's last push (t641): its name under wip/, the commit
+// the branches repository held for it after the push, that commit's first
+// line and time, and the Mac it was pushed from.
+export interface DeveloperBranch {
+  name: string;
+  commit: string;
+  subject: string;
+  committedAt: string | null;
+  host: string;
+  pushedAt: string;
+}
+
 export interface LedgerEvent {
   seq: number;
   proved?: true;
@@ -798,6 +810,8 @@ export class Ledger extends DurableObject<Env> {
     // refresh under its key (src/refresh/queue.ts).
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_targets (item TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_results (key TEXT PRIMARY KEY, item TEXT NOT NULL, json TEXT NOT NULL)`);
+    // The developer's branches (t641), one row each by name.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS developer_branches (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
@@ -1660,6 +1674,24 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`UPDATE items SET area = NULL, updated_at = ? WHERE area = ?`, at, id);
       this.sql.exec(`DELETE FROM areas WHERE id = ?`, id);
       this.log(null, actor, "area.removed", { id }, at);
+    });
+  }
+
+  // The developer's branches (t641, developerBranch in src/rules.ts): each
+  // one's last commit as the branches repository holds it, read there by
+  // the Worker after the push, and the Mac it was pushed from.
+  developerBranches(): DeveloperBranch[] {
+    return this.sql.exec(`SELECT json FROM developer_branches`).toArray().map((r) => JSON.parse(r.json as string) as DeveloperBranch)
+      .sort((a, b) => b.pushedAt.localeCompare(a.pushedAt) || a.name.localeCompare(b.name));
+  }
+
+  recordDeveloperBranch(actor: string, branch: Omit<DeveloperBranch, "pushedAt">): DeveloperBranch {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branch", 403);
+    const record: DeveloperBranch = { ...branch, pushedAt: new Date().toISOString() };
+    return this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT OR REPLACE INTO developer_branches (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
+      this.log(null, actor, "branch.pushed", { name: record.name, commit: record.commit, host: record.host }, record.pushedAt);
+      return record;
     });
   }
 

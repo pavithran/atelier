@@ -13,7 +13,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, BRANCHES_REPO_SUFFIX, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -816,6 +816,37 @@ async function mint(env: Env, repo: string, scope: "read" | "write", branch: str
 }
 const NOT_FOUND = /NOT_FOUND|not found/i;
 
+// Whether a repository exists; one still being forked counts.
+async function repoExists(env: Env, repo: string): Promise<boolean> {
+  return artifactsStep(`look up ${repo}`, async () => {
+    try {
+      using r = await env.ARTIFACTS.get(repo);
+      await r.info();
+      return true;
+    } catch (err) {
+      if (NOT_FOUND.test(codeOf(err))) return false;
+      if (IN_PROGRESS.test(codeOf(err))) return true;
+      throw err;
+    }
+  });
+}
+
+// The developer's branches repository (t641), made on the first push as a
+// fork of the baseline's branch, so a branch push sends only what main does
+// not already hold. A fork an earlier attempt made is taken as it stands,
+// and one still being made is waited for (headOf).
+async function developerBranchesRepo(env: Env, baseline: string, repo: string, project: string): Promise<void> {
+  if (!await repoExists(env, repo)) {
+    await artifactsStep(`fork ${baseline} as ${repo}`, async () => {
+      using base = await env.ARTIFACTS.get(baseline);
+      await base.fork(repo, { description: `${project}: the developer's branches`, defaultBranchOnly: true });
+    }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+      if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+    });
+  }
+  await artifactsStep(`read the head of ${repo}`, () => headOf(env, repo));
+}
+
 // The repository an item forks from and is measured against (docs/orchestrator.md,
 // section 5): a part's is its plan's fork, the integration branch, and any
 // other item's is the baseline.
@@ -1590,6 +1621,49 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (scope === "write") requireOwner(env, actor);
     const p = await L.project();
     return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
+  }
+  // The developer's branches (t641, developerBranch in src/rules.ts): work
+  // in progress carried between the developer's Macs, in a repository of
+  // the project's own beside the baseline. Every route is the developer's:
+  // agentRoute and runnerRoute give an agent or runner token none of them,
+  // and requireOwner refuses any other actor the developer's token names.
+  // POST branches/token { scope } mints a token for that repository alone,
+  // never for the baseline, making the repository on the first write from
+  // the baseline's branch; POST branches { name, commit, host } records a
+  // push, once the repository holds that commit on that branch; GET lists
+  // the recorded branches, newest push first.
+  if (parts[2] === "branches") {
+    requireOwner(env, actor);
+    const p = await L.project();
+    const repo = repoName(ref.key, BRANCHES_REPO_SUFFIX);
+    if (parts.length === 3 && m === "GET") return json({ repo, prefix: DEVELOPER_BRANCH_PREFIX, branches: await L.developerBranches() });
+    if (parts.length === 4 && parts[3] === "token" && m === "POST") {
+      const scope = body.scope === "write" ? "write" : "read";
+      if (scope === "write") await developerBranchesRepo(env, p.repo, repo, p.name);
+      else if (!await repoExists(env, repo)) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
+      const minted = await mint(env, repo, scope, await projectBranch(env, p));
+      return json({ ...minted, repo, prefix: DEVELOPER_BRANCH_PREFIX });
+    }
+    if (parts.length === 3 && m === "POST") {
+      const branch = await projectBranch(env, p);
+      const name = developerBranch(body.name, branch);
+      if (name !== body.name) throw new RuleError("bad_branch", `name the branch in full, as ${name}`, 400);
+      const host = branchHost(body.host);
+      const commit = String(body.commit ?? "");
+      if (!/^[0-9a-f]{40}$/.test(commit)) throw new RuleError("bad_commit", "commit must be a 40-character commit id", 400);
+      const top = await artifactsStep(`read ${name} in ${repo}`, async () => {
+        using r = await env.ARTIFACTS.get(repo);
+        return (await r.log({ ref: name, limit: 1 }))[0] ?? null;
+      }, (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+        if (NOT_FOUND.test(codeOf(err))) return null;
+        throw err;
+      });
+      if (!top || top.hash !== commit) throw new RuleError("branch_not_pushed", `${repo} holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409);
+      const subject = top.message.split("\n")[0].slice(0, 200);
+      const committedAt = Number.isFinite(top.committedAt) ? new Date(top.committedAt * 1000).toISOString() : null;
+      return json(await L.recordDeveloperBranch(actor, { name, commit, subject, committedAt, host }), 201);
+    }
+    throw new RuleError("not_found", "no such route", 404);
   }
   // The owner records which model served events recorded under another;
   // without apply: true it only answers what matches.

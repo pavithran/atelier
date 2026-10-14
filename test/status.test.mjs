@@ -338,7 +338,8 @@ test("the same facts are in --json, and no local section at all when no task has
   const empty = await runLocal(t, () => ({}), ["status", "--project", "demo", "--json"]);
   assert.equal(empty.code, 0, empty.output);
   assert.equal("local" in JSON.parse(empty.output), false, "no local field when no task has a workspace here");
-  assert.deepEqual(empty.seen, ["GET /api/projects/demo/standing"], "nothing else is read when there is nothing local");
+  // The developer's branches (t641) are the server's, read whatever is local.
+  assert.deepEqual(empty.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/branches"], "nothing else is read when there is nothing local");
 });
 
 // The kernel lock queue.sh holds while it lands: flock on Linux, lockf on macOS.
