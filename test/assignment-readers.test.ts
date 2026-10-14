@@ -834,3 +834,24 @@ test("a selector refused before judging any candidate still names the assignment
   const [r] = routeParts(plan(part("a")), { pool: [], events: [], policy, allowPaid: false, assignments: [{ ...assigned("build", ["claude-code/opus-5.5"]), id: "a78" }] });
   assert.match(r.unrouted!, /no models in the pool.*Role assignment a78 skipped/);
 });
+
+// suggestBuilder's offer check asks for the job the dispatch will carry: a
+// model a runner offers only for builds is not suggested for a job that
+// runner does not offer, and the assignment preferring it says why.
+test("suggestBuilder: a non-build job is suggested only to a model a runner offers that job for", () => {
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
+  const home = (e: ModelEntry): ModelEntry => ({ ...e, where: "home" });
+  const pool = [home(astra), home(opus)];
+  const now = new Date().toISOString();
+  const offers = [
+    { runner: "home:astra", kind: "home" as const, jobs: ["build"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: now },
+    { runner: "home:opus", kind: "home" as const, jobs: ["merge-main"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: now },
+  ];
+  const a1 = { ...assigned("build", ["codex/gpt-6-astra"]), id: "a1" };
+  const base = { item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner", assignments: [a1], offers };
+  assert.equal(suggestBuilder(base).actor, "codex/gpt-6-astra", "a build");
+  assert.equal(suggestBuilder(base, { job: "build" }).actor, "codex/gpt-6-astra", "build, named");
+  const merging = suggestBuilder(base, { job: "merge-main" });
+  assert.equal(merging.actor, "claude-code/opus-5.5");
+  said(merging.reasons, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
+});
