@@ -494,3 +494,54 @@ test("routeParts: a preferred builder's reasons name each build assignment skipp
   const [fallback] = routeParts(plan(part("a", { prefer: { actor: "codex/gpt-6-astra", reason: "knows the code" } })), { pool: [{ ...astra, state: "paused" as const, stateAt: AT }, argon, { ...glm, roles: ["review" as const] }, opus, sonnet], events: [], policy, allowPaid: false, assignments: [none] });
   said(fallback.builder?.reasons, new RegExp(`Role assignment ${none.id} skipped: no choice is eligible here`));
 });
+
+// ── The two rules, each with every site it binds ─────────────────────────
+//
+// gpt-6-astra's seventh review of t622 asked for one test per pattern that
+// lists every site. Rule 1: a recorded identity (a saved pool entry, an
+// assignment's choice, the previous round's reviewer, the plan's routing, a
+// contributor) is its own exact entry or none (recordedEntry), so an entry
+// removed since never passes what was recorded of it to an entry that lists
+// its id as an alias; a name the developer writes (a plan's prefer, a tier,
+// --reviewer, --as) is read by poolEntryFor, an exact id before an alias.
+// Rule 2 is the next test, and its ledger sites are in
+// test/model-roles.spec.ts.
+test("rule 1: every site that matches a recorded identity matches only its own exact entry", () => {
+  const trapAstra = { ...astra, aliases: ["gpt-6-luna"] };
+  const luna = entry("codex", "gpt-6-luna");
+  const LUNA = "codex/gpt-6-luna";
+  const pausedLuna = { ...luna, state: "paused" as const, stateAt: AT };
+  const lunaChoice = { ...assigned("review", [LUNA]), choices: [{ actor: LUNA, model: "gpt-6-luna" }] };
+  // withStanding: a plan's saved Luna, paused, keeps its standing once Luna leaves the pool.
+  const [, saved] = withStanding([trapAstra, pausedLuna], [trapAstra, argon]);
+  assert.equal(saved.state, "paused", "withStanding");
+  assert.notEqual(pickReviewer({ item: built, pool: withStanding([trapAstra, pausedLuna, argon], [trapAstra, argon]), policy, allowPaid: false, assigned: [lunaChoice] }).reviewer?.actor, LUNA, "withStanding then pickReviewer");
+  // choiceMatches and orderByAssignment: Luna's assignment stops applying.
+  assert.equal(pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, assigned: [lunaChoice] }).assignment?.applied, null, "orderByAssignment");
+  // The previous round's reviewer and the plan's routing: Luna gone is not Astra.
+  const previous = pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, previous: LUNA });
+  said(previous.reviewer?.reasons, /The previous round's reviewer was codex\/gpt-6-luna; it is not in the pool/);
+  const routed = pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, route: { reviewer: { actor: LUNA, reasons: [] }, alternates: [{ actor: LUNA, reasons: [] }] } });
+  said(routed.reviewer?.reasons, /The plan routed codex\/gpt-6-luna to review this part; it is not in the pool/);
+  assert.ok(!routed.reviewer!.reasons.some((r) => /plan's routed reviewer|Alternate 1/.test(r)), "routed");
+  // A contributor that is another entry exactly is not this entry, whatever its aliases.
+  const openai = { ...policy, familyMode: { single: "openai" as const } };
+  const own = pickReviewer({ item: { owner: LUNA, pushActors: [] }, pool: [trapAstra, luna], policy: openai, allowPaid: false });
+  assert.equal(own.reviewer?.actor, "codex/gpt-6-astra", "contributors");
+  // A name the developer writes reads an exact id before an alias: the plan's prefer.
+  const [preferred] = routeParts(plan(part("a", { prefer: { actor: LUNA, reason: "named" } })), { pool: [trapAstra, luna, argon, opus], events: [], policy, allowPaid: false });
+  assert.equal(preferred.builder?.actor, LUNA, "prefer");
+});
+
+test("rule 2: every selector names each assignment skipped for an explicit choice", () => {
+  const review = assigned("review", ["codex/gpt-6-astra"]);
+  const build = assigned("build", ["claude-code/opus-5.5"]);
+  const skippedFor = (reasons: readonly string[] | undefined, a: { id: string }, ahead: RegExp) => {
+    said(reasons, new RegExp(`Role assignment ${a.id} skipped: ${ahead.source} comes before role assignments`));
+  };
+  skippedFor(pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, previous: "zcode/glm-5.3", assigned: [review] }).reviewer?.reasons, review, /the previous round's reviewer/);
+  skippedFor(pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, route: { reviewer: { actor: "zcode/glm-5.3", reasons: [] }, alternates: [] }, assigned: [review] }).reviewer?.reasons, review, /the plan's routing/);
+  skippedFor(routeParts(plan(part("a", { prefer: { actor: "codex/gpt-6-astra", reason: "named" } })), { pool: POOL, events: [], policy, allowPaid: false, assignments: [build] })[0].builder?.reasons, build, /the plan's preference/);
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
+  skippedFor(suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [build] }, { model: "glm-5.3" }).reasons, build, /the developer's --model/);
+});

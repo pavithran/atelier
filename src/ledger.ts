@@ -65,7 +65,7 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
-import { ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ResolvedAssignment } from "./models/assignments.ts";
+import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ResolvedAssignment } from "./models/assignments.ts";
 import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -2291,7 +2291,9 @@ export class Ledger extends DurableObject<Env> {
   // With overlapOk, a task already dispatched keeps its offer: omitted fields
   // stay as they were (overrideDispatch in src/dispatch/rules.ts), and the
   // answer names the core-file hold the override released, if one held it.
-  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
+  // `why`: what chose the builder, the role assignments applied or skipped
+  // included, set by the dispatch route and kept on item.dispatched.
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
     const item = this.checkDispatch(id, actor);
     const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, item.dispatch);
     // Under single-family mode a dispatch names only the company's models:
@@ -2315,7 +2317,7 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the developer" }, d.at);
     }
     this.setDispatch(id, d, d.at);
-    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}) }, d.at);
+    this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
     return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}) };
   }
 
@@ -5115,7 +5117,7 @@ export class Ledger extends DurableObject<Env> {
     if (planner !== null) {
       chosen = namedActor(planner, policy, "planner", this.owner);
       this.assertStanding(chosen, "plan", pool);
-      reasons = ["Named by the developer"];
+      reasons = ["Named by the developer", ...aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["plan"]), "the developer's named planner").lines];
     } else {
       const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers(), this.heldAssignments());
       if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model`, 409);
@@ -5337,9 +5339,10 @@ export class Ledger extends DurableObject<Env> {
       const { record } = this.planningPlan(id, actor, "reroute");
       const planner = namedActor(to, policy, "planner", this.owner);
       const d = this.planDispatch(planner, actor, at);
-      this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner }, at);
+      const planAhead = aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["plan"]), "the developer's named planner");
+      this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner, ...(planAhead.lines.length ? { reason: planAhead.lines.join(" "), assignment: planAhead } : {}) }, at);
       record.planner = planner;
-      record.plannerReasons = ["Rerouted by the developer"];
+      record.plannerReasons = ["Rerouted by the developer", ...planAhead.lines];
       this.askPlanner(id, record, d);
       return this.item(id);
     }
@@ -5355,7 +5358,8 @@ export class Ledger extends DurableObject<Env> {
     record.reroutes[key] = builder;
     this.savePlanRecord(item.plan!, record);
     this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
-    this.log(id, actor, "plan.rerouted", { to: builder, from }, at);
+    const buildAhead = aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["build"]), "the developer's named builder");
+    this.log(id, actor, "plan.rerouted", { to: builder, from, ...(buildAhead.lines.length ? { reason: buildAhead.lines.join(" "), assignment: buildAhead } : {}) }, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -5394,7 +5398,8 @@ export class Ledger extends DurableObject<Env> {
     }
     (record.reviewers ??= {})[key] = { actor: reviewer, from, reason: "named by the developer", at, by: actor };
     this.savePlanRecord(plan.id, record);
-    this.log(item.id, actor, "plan.reviewer_changed", { from, to: reviewer, reason: "named by the developer" }, at);
+    const reviewAhead = aheadOfAssignments(this.reviewAssigned(item), "the developer's named reviewer");
+    this.log(item.id, actor, "plan.reviewer_changed", { from, to: reviewer, reason: "named by the developer", ...(reviewAhead.lines.length ? { assignment: reviewAhead } : {}) }, at);
     if (item.state === "blocked" && item.blocked?.by === ORCHESTRATOR) {
       this.update(item.id, { state: "submitted", blocked: null }, at);
       this.log(item.id, actor, "item.unblocked", { reason: item.blocked.reason, to: "submitted" }, at);
@@ -6016,8 +6021,10 @@ export class Ledger extends DurableObject<Env> {
       // Why this reviewer, the assignment applied or skipped included, kept
       // on the request as a standalone review keeps it (gpt-6-astra's third
       // review of t622, finding 5).
-      const reason = named ? "Named by the developer for this part" : pick!.reviewer!.reasons.join(" ");
-      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, reason, ...(pick?.assignment ? { assignment: pick.assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
+      const namedOutcome = named ? aheadOfAssignments(this.reviewAssigned(p, part, need.changedPaths), "the developer's named reviewer") : null;
+      const reason = namedOutcome ? ["Named by the developer for this part", ...namedOutcome.lines].join(" ") : pick!.reviewer!.reasons.join(" ");
+      const assignment = namedOutcome ?? pick?.assignment;
+      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, reason, ...(assignment ? { assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
       // The tier is the project's, judged against the developer's pool as it is
       // now (the default), with the offers the tick read.
       this.askTierReview(p, need, reviewer, ORCHESTRATOR, at, false, undefined, tickOffers);
@@ -6501,6 +6508,10 @@ export class Ledger extends DurableObject<Env> {
     const destination = (e: ModelEntry): "home" | "cloud" => (records || reviewerAdmission(`${e.harness}/${e.id}`, policy)?.active ? e.where : "home");
     if (reviewer !== null) {
       chosen = reviewer;
+      // The developer's named reviewer comes first; each review assignment
+      // bearing on the change is named as skipped for it (gpt-6-astra's
+      // seventh review of t622, finding 2).
+      choiceReason = ["Named by the developer", ...aheadOfAssignments(this.reviewAssigned(item, null, need.changedPaths), "the developer's named reviewer").lines].join(" ");
     } else if (records) {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.

@@ -31,8 +31,8 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
-import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
-import { actorStanding, familyOf, paidPerToken, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { aheadOfAssignments, applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
+import { actorStanding, familyOf, paidPerToken, poolEntryFor, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -445,10 +445,11 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   let builder: Verdict | undefined;
   if (part.prefer) {
     const { actor, reason } = part.prefer;
-    const wanted = verdicts.find((v) => {
-      const entry = ctx.entries.get(v.actor)!;
-      return [entry.id, ...entry.aliases].some((id) => `${entry.harness}/${id}`.toLowerCase() === actor.toLowerCase());
-    });
+    // A name the plan writes, read as the entry it names (poolEntryFor): an
+    // exact id before another entry's alias (gemini-4-argon's fifth review
+    // of t622, follow-up 4).
+    const named = poolEntryFor(actor, ctx.input.pool);
+    const wanted = named ? verdicts.find((v) => ctx.entries.get(v.actor) === named) : undefined;
     if (!wanted) lead.push(`The plan preferred ${actor} (${reason}); it is not in the pool`);
     else if (wanted.build.length) lead.push(`The plan preferred ${wanted.actor} (${reason}); not chosen: ${wanted.build.join("; ")}`);
     else {
@@ -469,7 +470,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   // and the fallback.
   const bearing = applicableAssignments(assignments, null, ["build"]);
   if (builder && bearing.length) {
-    lead.push("The plan's preference comes before role assignments", ...bearing.map((a) => `Role assignment ${a.id} skipped: the plan's preference comes before role assignments`));
+    lead.push(...aheadOfAssignments(bearing, "the plan's preference").lines);
   } else if (!builder && buildOrder?.outcome.applied) {
     builder = buildOrder.order[0];
     lead.push(...buildOrder.reasons(builder));

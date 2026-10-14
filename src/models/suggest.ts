@@ -4,7 +4,7 @@ import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } fro
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
-import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
+import { aheadOfAssignments, applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
 import { offering, type SeenOffer } from "../dispatch/rules.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
@@ -106,12 +106,15 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     .map((row) => ({ ...row, refusal: refusalOf(row.entry) }));
   const assigned = applicableAssignments(input.assignments ?? [], input.project, ["build"]);
   const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), assigned, (r) => r.refusal || null, FALLBACK.build, input.pool);
+  // A model the developer names with --model comes before every build
+  // assignment, which is named as skipped for it.
+  const said = (row: (typeof rows)[number]) => (constraints.model ? aheadOfAssignments(assigned, "the developer's --model").lines : byAssignment.reasons(row));
   for (const row of byAssignment.order) {
     const { entry, score, reason, refusal } = row;
     const actor = actorOf(entry);
     if (refusal) { excluded.push(`${actor}: ${refusal}`); continue; }
     const note = latestNote(entry, input.project, input.item.id);
-    return { actor, where: entry.where, reasons: [why, ...byAssignment.reasons(row), `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
+    return { actor, where: entry.where, reasons: [why, ...said(row), `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
   }
   throw new RuleError("no_builder", `${why} No eligible builder in the pool. ${excluded.join("; ")}`, 409);
 }
