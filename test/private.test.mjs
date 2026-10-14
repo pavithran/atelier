@@ -1025,3 +1025,39 @@ test("private remove leaves a link the developer made, and still drops the name"
   assert.ok(!f.read().projects.demo.private.includes("PROJECT.md"));
   assert.deepEqual(parsePrivateList(readFileSync(join(f.keep, ".atelier-private"), "utf8")).paths, []);
 });
+
+// Argon's seventeenth review of t645, finding 1: private remove kept only
+// the names it held, so with the list naming another (added on another
+// Mac), removing the last local one left the project not opted in here.
+test("private remove keeps every name the list still holds in the copy, so the project stays guarded", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\nnotes/plan.md\n");
+  f.write({ demo: { path: f.checkout, branch: "main", protect: [], private: ["PROJECT.md"], privateFromList: ["PROJECT.md"] } });
+  const r = f.run("private", "remove", "PROJECT.md");
+  assert.equal(r.code, 0, r.output);
+  const entry = f.read().projects.demo;
+  assert.deepEqual(entry.privateFromList, ["notes/plan.md"]);
+  assert.ok(privateGuard("demo", entry, { root: f.icloud }).paths.includes("notes/plan.md"));
+});
+
+// Argon's seventeenth review of t645, finding 2: a list that is there but
+// cannot be read was neither said nor guarded.
+test("a list that is there but cannot be read opts the project in, refuses pushes, and is said by private add and ls", (t) => {
+  const f = setup(t);
+  const file = join(f.keep, ".atelier-private");
+  writeFileSync(file, "PROJECT.md\n");
+  chmodSync(file, 0o000);
+  let ls, add, entry, guard, pending = {};
+  try {
+    ls = f.run("private", "ls");
+    add = f.run("private", "add", "--home", f.keep);
+    entry = f.read().projects.demo;
+    guard = privateGuard("demo", entry, { root: f.icloud });
+    discoverPrivate("demo", pending, { root: f.icloud });
+  } finally { chmodSync(file, 0o644); }
+  assert.match(ls.output, /Warning: .*\.atelier-private cannot be read \(EACCES\)/);
+  assert.match(add.output, /\.atelier-private cannot be read \(EACCES\)/);
+  assert.equal(entry.privateHome, f.keep, "the project is opted in");
+  assert.match(guard.refusal ?? "", /cannot be read.*Nothing was pushed\./);
+  assert.equal(pending.privateHome, f.keep, "a first init's pending entry is opted in too");
+});

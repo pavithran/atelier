@@ -184,6 +184,13 @@ export function privateConfigured(entry) {
 // project in on this Mac. Returns what privateList returns.
 export function discoverPrivate(name, entry, { root, save } = {}) {
   const list = privateList(name, entry, root);
+  // A list that is there but cannot be read opts the project in too, by
+  // naming its folder, so the guard refuses rather than guards nothing
+  // (Argon's seventeenth review of t645).
+  if (entry && list.listed && list.unreadable && list.home && !entry.privateHome) {
+    entry.privateHome = list.home;
+    save?.();
+  }
   if (entry && list.fromList) {
     const kept = plainPaths(entry.privateFromList);
     const joined = [...new Set([...kept, ...list.fromList])];
@@ -738,6 +745,9 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
   // A line of the list that is no plain path in the checkout is named and
   // skipped; the others are linked.
   for (const r of list.refused) say(`${PRIVATE_LIST}${r.line ? ` line ${r.line}` : ""}: ${r.error}; skipped.`);
+  // A list or folder that is there but cannot be read is said, whatever
+  // else is named (Argon's seventeenth review of t645).
+  if (list.unreadable && !list.homeMissing && (list.listed || list.home)) say(`Warning: ${list.unreadable}; the private files it names cannot be known here, and Atelier refuses to push until it can be read.`);
   if (!paths.length && !list.listed) return result;
   excludePrivate(checkout, [...paths, PRIVATE_LIST]);
   if (!paths.length) return result;
