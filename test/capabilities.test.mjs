@@ -709,3 +709,13 @@ test("models.compare.v1 is a named capability that models show reads without req
   assert.equal(ROUTE_LEVEL, 28);
   assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
 });
+
+// t623: the trend route is published by name without raising the route
+// level, and `models show` requires no more than before: --trend asks for
+// models.trend.v1 itself and refuses a server without it.
+test("models.trend.v1 is a named capability that models show --trend reads without requiring (t623)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "models.trend.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("models.trend.v1"));
+  assert.equal(ROUTE_LEVEL, 28);
+  assert.deepEqual(requiredForCommand("models", "show", { trend: true }), ["models.note.v1"]);
+});

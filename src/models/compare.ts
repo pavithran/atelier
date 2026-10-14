@@ -36,15 +36,16 @@
 // models) is left out and named, never split by guess. A median is never
 // combined across rows: with samples under two names, it is unknown.
 
+import type { LedgerEvent } from "../ledger.ts";
 import { modelKey } from "../rules.ts";
 import { ASSIGNMENT_ROLES, type Assignment, type AssignmentRole } from "./assignments.ts";
 import type { CardClaim, CardDisagreement, CardView } from "./cards.ts";
-import { canonicalModel, type JudgementRecord, type PoolNames } from "./judgement.ts";
-import type { PairRef, PairwiseRecord, PairSide } from "./pairwise.ts";
-import { PRECISION_MIN_JUDGED, precisionOf, type PrecisionRecord } from "./precision.ts";
+import { buildJudgement, canonicalModel, judgementWindow, type JudgementRecord, type PoolNames } from "./judgement.ts";
+import { buildPairwise, type PairRef, type PairwiseRecord, type PairSide } from "./pairwise.ts";
+import { buildPrecision, PRECISION_MIN_JUDGED, precisionOf, precisionWindow, type PrecisionRecord } from "./precision.ts";
 import type { ModelEvidence } from "./registry.ts";
-import { runTotal, type Reliability } from "./reliability.ts";
-import { pace, SPEED_MIN_SAMPLES, type Measure, type SpeedRecord } from "./speed.ts";
+import { buildReliability, runTotal, type ProjectEvents, type Reliability, type RunReport } from "./reliability.ts";
+import { buildSpeed, pace, SPEED_MIN_SAMPLES, type Measure, type SpeedRecord } from "./speed.ts";
 
 // Thresholds for the shares no reader gave one: below them the counts are
 // shown and no share. Five, as review precision ranks from five judged.
@@ -143,6 +144,30 @@ export interface CompareInput {
   assignments: readonly Assignment[];          // the ones standing now
   projectNames?: Readonly<Record<string, string>>; // a project's key: its name now
   coverage: Coverage;
+}
+
+// The five readers a comparison reads, built from one set of events as of
+// `now`: the Models page and GET /api/models/ID/compare build them as of the
+// request, and a daily snapshot (src/models/snapshot.ts, t623) as of the end
+// of its UTC day from the events its cutoffs admit. One function, so a
+// snapshot's figures and the page's are the same measure read the same way.
+export interface MeasureInput {
+  sources: readonly ProjectEvents[];
+  runs: readonly RunReport[];
+  assignmentEvents: readonly LedgerEvent[];   // the index's, for the acting models' judgements (t622)
+  pool: PoolNames;
+  owner: string;
+}
+export interface MeasureRecords { reliability: Reliability; speed: SpeedRecord; precision: PrecisionRecord; judgement: JudgementRecord; pairwise: PairwiseRecord }
+export function measureRecords(input: MeasureInput, now: Date): MeasureRecords {
+  const { sources, runs, owner, pool } = input;
+  return {
+    reliability: buildReliability(sources, runs, owner),
+    speed: buildSpeed(sources, runs, owner, now.getTime()),
+    precision: buildPrecision(sources, precisionWindow(now), owner),
+    judgement: buildJudgement([...sources, { project: "(model roles)", events: input.assignmentEvents }], judgementWindow(now), owner, pool),
+    pairwise: buildPairwise(sources, precisionWindow(now), owner, pool),
+  };
 }
 
 const ALL_HISTORY: FigureWindow = { from: null, to: null, days: null };

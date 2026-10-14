@@ -6,6 +6,7 @@ import { OWNER, args, at, call, die, project, serverVersion } from "../atelier.m
 import { cleanCard, cleanCardModel, cleanWithdrawal, conditionText } from "../../src/models/cards.ts";
 import { modelKey } from "../../src/rules.ts";
 import { comparisonLines } from "../../src/models/compare.ts";
+import { trendLines } from "../../src/models/snapshot.ts";
 import { assignCommand, rolesCommand } from "../model-roles.mjs";
 
 // The model pool. With no subcommand, lists it. `models add ID --harness H
@@ -13,7 +14,8 @@ import { assignCommand, rolesCommand } from "../model-roles.mjs";
 // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
 // removes one; `models note ID 'text' [--item tN]` keeps a dated note under
 // it, and `models show ID` prints it with its notes, its vendor cards and
-// its vendor claims beside Atelier's record of it, role by role (t621);
+// its vendor claims beside Atelier's record of it, role by role (t621), or
+// with --trend that record over the last days, from daily snapshots (t623);
 // `models card [ID] [--file FILE]` records vendor cards, read as JSON from the
 // file or standard input (t625). Keys stay in the Keychain; only the entry's
 // name is sent.
@@ -84,10 +86,17 @@ export default async function modelsCommand() {
   }
   if (sub === "card") return cardCommand(id);
   if (sub === "show") {
-    if (!id) die("atelier models show ID");
+    if (!id) die("atelier models show ID [--trend]");
+    const capabilities = (await serverVersion())?.capabilities ?? [];
+    // The model's figures over time (t623): the server's projection, the one
+    // the Models page renders, printed as it comes; nothing is computed here.
+    if (args.trend) {
+      if (!capabilities.includes("models.trend.v1")) die("atelier models show --trend needs a server with models.trend.v1; deploy it to keep and show daily snapshots.");
+      for (const line of trendLines(await call("GET", `/models/${encodeURIComponent(id)}/trend`, undefined, OWNER))) console.log(line);
+      return;
+    }
     // A model the pool does not have may still have vendor cards.
     const viewOf = (name) => call("GET", `/models/${encodeURIComponent(name)}/cards`, undefined, OWNER);
-    const capabilities = (await serverVersion())?.capabilities ?? [];
     let cards = capabilities.includes("models.card.v1") ? await viewOf(id) : null;
     let shownAs = id;
     const pool = await call("GET", "/models", undefined, OWNER);

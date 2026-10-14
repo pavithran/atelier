@@ -310,3 +310,27 @@ test("models show says the record is partial, and which projects it leaves out, 
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /\n    Partial record: Atelier's figures read 12 events of 1 project; hush-app could not be read just now, so its work is in no figure below and the record is partial\.\n/);
 });
+
+// t623: `models show ID --trend` prints the server's trend, the projection
+// the Models page renders, line for line as trendLines gives it, and asks
+// for nothing else; a server without models.trend.v1 is refused by name.
+test("models show --trend prints the server's trend as the page has it, and refuses a server without models.trend.v1", async (t) => {
+  const { trendLines } = await import("../src/models/snapshot.ts");
+  const point = { day: "2026-10-13", rev: 1, origin: "original", takenAt: "2026-10-14T00:07:00.000Z", value: null, recorded: 1, numerator: 5, denominator: 5, n: 5, minSamples: 5, window: { from: "2026-09-14T00:00:00.000Z", to: "2026-10-14T00:00:00.000Z", days: 30 }, version: 1, state: "measured", gap: "partial record: hush-app could not be read", breaks: null, earlier: [] };
+  const trend = {
+    model: "example-5", from: "2026-10-12", to: "2026-10-13", days: 2, snapshots: 1,
+    measures: [{ role: "review", measure: "review-precision", label: "Held up", source: "precision", kind: "share", overlap: "Each point covers the 30 days to the end of its day, so consecutive points share 29 days and are not independent.",
+      points: [{ ...point, day: "2026-10-12", rev: null, origin: null, takenAt: null, recorded: null, numerator: null, denominator: null, n: null, minSamples: null, window: null, version: null, state: null, gap: "no snapshot was taken" }, point] }],
+  };
+  const f = await stub(t, (method, path) => ({ data: path.endsWith("/trend") ? trend : POOL }), SERVER_CAPABILITIES);
+  const r = await f.run(["models", "show", "example-5", "--trend"]);
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(r.output.trimEnd().split("\n"), trendLines(trend));
+  assert.match(r.output, /\n {8}2026-10-12: gap, no snapshot was taken\n {8}2026-10-13: gap, partial record: hush-app could not be read \(recorded: 100% \(5 of 5\)\); 2026-09-14 to 2026-10-14 \(30 days\); measure version 1; taken 2026-10-14T00:07Z\n?$/);
+  assert.deepEqual(f.requests.map((q) => q.path), ["/api/models/example-5/trend"]);
+  const old = await stub(t, () => ({ data: POOL }), SERVER_CAPABILITIES.filter((c) => c !== "models.trend.v1"));
+  const said = await old.run(["models", "show", "example-5", "--trend"]);
+  assert.notEqual(said.status, 0);
+  assert.match(said.output, /models\.trend\.v1/);
+  assert.deepEqual(old.requests, []);
+});
