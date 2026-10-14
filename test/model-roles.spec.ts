@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { Assignment, AssignmentView } from "../src/models/assignments.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { signIn } from "./signin.ts";
 
 // Role assignments (t622) through the Worker's routes and the Ledgers'
 // storage: the developer records one with checked evidence, the index keeps
@@ -518,4 +519,118 @@ it("a builder and a review tier typed under an alias are stored as the entry's e
   } finally {
     await index().removeModel("qwen-3");
   }
+});
+
+// The ninth review of t622: names arriving at entry points that did not
+// convert them passed the exact-only standing check under an alias. Every
+// API entry point that takes a harness/model now converts it at one
+// boundary (canonicalNames in src/index.ts), and the standing check holds
+// an alias as its entry is held. Each entry point is driven here with an
+// alias of a paused model, and is refused or stores the exact id.
+it("every entry point that takes a model name refuses, or stores as its exact id, an alias of a paused model", async () => {
+  const held = { ...entry("opencode", "glm-9"), aliases: ["glm-alias"], state: "paused" as const, stateAt: AT, note: "spent" };
+  const ALIAS = "opencode/glm-alias", EXACT = "opencode/glm-9";
+  await index().putModel(held);
+  try {
+    const name = "roles-boundary", P = `/projects/${name}`;
+    const L = await project(name);
+    await L.poolChanged(await index().models());
+    const refused = async (what: string, r: Response) => {
+      const text = await r.text();
+      expect(r.status, `${what}: ${text}`).toBeGreaterThanOrEqual(400);
+      expect(text, what).toMatch(/opencode\/glm-(9|alias) is paused since/);
+    };
+    const open = async (title: string) => (await L.newItem(title, [`src/${title}.ts`], "owner", { accept: ["Works"] })).id;
+    // dispatch --agent --model, a bare --model, and --overlap-ok's retain.
+    await refused("dispatch", await call("POST", `${P}/items/${await open("d1")}/dispatch`, { to: "home", agent: "opencode", model: "glm-alias" }));
+    await refused("dispatch --model", await call("POST", `${P}/items/${await open("d2")}/dispatch`, { to: "home", model: "glm-alias" }));
+    const d3 = await open("d3");
+    expect((await call("POST", `${P}/items/${d3}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
+    await refused("dispatch --overlap-ok", await call("POST", `${P}/items/${d3}/dispatch`, { retain: true, overlapOk: true, agent: "opencode", model: "glm-alias" }));
+    // claim, as the actor an owner token declares.
+    await refused("claim", await call("POST", `${P}/items/${await open("c1")}/claim`, {}, ALIAS));
+    // handoff --to.
+    await refused("handoff", await call("POST", `${P}/items/t1/handoff`, { to: ALIAS, note: "over to you" }, "claude-code/opus-5.5"));
+    // land --reviewer and review-claim, on a submitted task.
+    const H = "c".repeat(40);
+    await L.setFork("t1", `${name}--t1`, "0".repeat(40), "claude-code/opus-5.5");
+    await L.recordPush("t1", "claude-code/opus-5.5", H, H);
+    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
+    await L.submit("t1", "claude-code/opus-5.5");
+    await refused("review-request --reviewer", await call("POST", `${P}/items/t1/review-request`, { reviewer: ALIAS, wanted: true }));
+    // review-claim: a request asked of glm-9 while it was available names
+    // its exact id, so the alias, reaching the ledger unconverted, cannot
+    // claim it; the route converts an owner or runner token's declared actor
+    // (as for claim, above). Once glm-9 is paused the request is withdrawn.
+    await index().putModel({ ...held, state: undefined, stateAt: undefined });
+    await L.poolChanged(await index().models());
+    const asked = await call("POST", `${P}/items/t1/review-request`, { reviewer: EXACT, wanted: true });
+    expect(asked.status, await asked.clone().text()).toBe(200);
+    await expect(L.claimReview("t1", ALIAS, { runner: "home:studio", kind: "home" })).rejects.toThrow(/asks for glm-9|wrong_model/);
+    await index().putModel(held);
+    await L.poolChanged(await index().models());
+    expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("withdrawn");
+    // criteria-review --reviewer.
+    await refused("criteria-review-request --reviewer", await call("POST", `${P}/items/${await open("k1")}/criteria-review-request`, { reviewer: ALIAS }));
+    // plan --planner.
+    await refused("plan --planner", await call("POST", `${P}/items`, { kind: "plan", goal: "Ship it", scope: ["src/**"], planner: ALIAS }));
+    // plan reroute --to, on a plan named to another planner.
+    const plan = await (await call("POST", `${P}/items`, { kind: "plan", goal: "Ship it", scope: ["src/**"], planner: "codex/gpt-6-astra" })).json() as { item: { id: string } };
+    await refused("plan reroute --to", await call("POST", `${P}/items/${plan.item.id}/plan/reroute`, { to: ALIAS }));
+    // A plan document's prefer: stored as the exact id.
+    await L.claim(plan.item.id, "codex/gpt-6-astra", { runner: "home:studio", kind: "home" });
+    const doc = { schema: "atelier.plan.v1", goal: "Ship it", parts: [{ key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S", prefer: { actor: ALIAS, reason: "knows it" } }] };
+    const posted = await call("POST", `${P}/items/${plan.item.id}/plan`, doc, "codex/gpt-6-astra");
+    expect(posted.status, await posted.clone().text()).toBe(200);
+    expect(JSON.stringify(await L.planView(plan.item.id))).toContain(`"actor":"${EXACT}"`);
+    // plan refresh --resolve --to, at the ledger, which a missed boundary reaches unconverted.
+    await expect(L.planResolve(plan.item.id, "owner", "0".repeat(40), false, ALIAS)).rejects.toThrow(/paused since|plan|approved/);
+    // init --review-tier and --triage: stored as the exact id, marked so.
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/roles-boundary-init`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    expect((await ledger("roles-boundary-init").project()).policy).toMatchObject({ reviewTier: [EXACT], triage: EXACT, exactNames: ["reviewTier", "triage"] });
+    // --as: recorded as the exact id, with the declaration kept.
+    await index().putModel({ ...held, state: undefined, stateAt: undefined });
+    const as = await call("POST", `${P}/decisions`, { text: "Ship small", quote: "small" }, "owner", ALIAS);
+    expect(as.status, await as.clone().text()).toBe(201);
+    const recorded = (await L.events() as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "decision.recorded");
+    expect(recorded?.data).toMatchObject({ acting: EXACT, actingExact: true });
+    await index().putModel(held);
+    // The page's dispatch form.
+    const cookie = await signIn(TOKEN, testEnv);
+    const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/${await open("u1")}/dispatch`, {
+      method: "POST", headers: { cookie, origin: "https://atelier.test" }, body: new URLSearchParams({ to: "home", agent: "opencode", model: "glm-alias", note: "" }), redirect: "manual",
+    }), testEnv);
+    await refused("the page's dispatch form", form);
+  } finally {
+    await index().removeModel("glm-9");
+  }
+});
+
+// gpt-6-astra's ninth review of t622, finding 2: the retry compared the --as
+// it was sent with the exact id the first request recorded, so a request
+// whose --as was an alias failed its own retry, and a withdrawal's retry fell
+// through to the pool as it is now.
+it("an assignment and a withdrawal sent with --as under an alias are retried by the declaration they sent", async () => {
+  const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
+  await index().putModel(qwen);
+  await project("roles-as-alias");
+  const first = body({ evidence: ["roles-as-alias/t1"], scope: "roles-as-alias", request: "roles-as-alias-request" });
+  const made = await call("POST", "/model-roles", first, "owner", "opencode/qwen-alias");
+  expect(made.status, await made.clone().text()).toBe(201);
+  const a = await made.json() as Assignment;
+  expect(a).toMatchObject({ acting: "opencode/qwen-3", actingDeclared: "opencode/qwen-alias" });
+  const again = await call("POST", "/model-roles", first, "owner", "opencode/qwen-alias");
+  expect(again.status, await again.clone().text()).toBe(200);
+  expect(await again.json()).toMatchObject({ id: a.id, retried: true });
+  // The exact id is another declaration, so another request.
+  expect((await call("POST", "/model-roles", first, "owner", "opencode/qwen-3")).status).toBe(409);
+  const note = { note: "Qwen stood in." };
+  expect((await call("POST", `/model-roles/${a.id}/withdraw`, note, "owner", "opencode/qwen-alias")).status).toBe(200);
+  await index().removeModel("qwen-3");
+  const retried = await call("POST", `/model-roles/${a.id}/withdraw`, note, "owner", "opencode/qwen-alias");
+  expect(retried.status, await retried.clone().text()).toBe(200);
+  expect(await retried.json()).toMatchObject({ withdraws: a.id, retried: true, actingDeclared: "opencode/qwen-alias" });
 });

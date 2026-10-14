@@ -91,10 +91,10 @@ export function registeredActing(acting: string, pool: PoolNames): string {
   throw new RuleError("unregistered_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which is not a model in the pool; add it on the Models page, or name the harness/model you are`, 400);
 }
 
-// The model an acting name counts as, by modelKey of the exact entry it is.
-// Acting names are recorded as exact ids since they are converted where
-// typed; one on an event from before may hold an alias, converted once here
-// by storedActor. The declared name is kept in the row's actors; only
+// The model a legacy acting name counts as: one recorded before names were
+// converted where typed may hold an alias, read through storedActor. An
+// event recorded since is marked actingExact and is read by modelKey alone
+// (buildJudgement), never through the aliases. The declared name is kept in the row's actors; only
 // counting and agreement use this.
 export type PoolNames = readonly Pick<ModelEntry, "id" | "harness" | "aliases">[];
 
@@ -208,9 +208,14 @@ const blank = (model: string | null): ActingJudgement => ({ model, actors: [], v
 export function buildJudgement(projects: readonly { project: string; events: readonly LedgerEvent[] }[], window: JudgementWindow, owner: string, pool: PoolNames = []): JudgementRecord {
   const models = new Map<string, ActingJudgement>();
   const unknown = blank(null);
-  const of = (acting: string | null): ActingJudgement => {
+  // An acting name marked exact (actingExact, recorded since names are
+  // converted where typed) is read as it is; only an unmarked one, from
+  // before, goes through the aliases (canonicalModel).
+  const keyOf = (e: Pick<LedgerEvent, "data">, acting: string) => (e.data.actingExact === true ? modelKey(acting) : canonicalModel(acting, pool));
+  const of = (e: Pick<LedgerEvent, "data">): ActingJudgement => {
+    const acting = actingOf(e, owner);
     if (acting === null) return unknown;
-    const key = canonicalModel(acting, pool);
+    const key = keyOf(e, acting);
     let r = models.get(key);
     if (!r) models.set(key, (r = blank(key)));
     if (!r.actors.some((a) => a.toLowerCase() === acting.toLowerCase())) r.actors.push(acting);
@@ -246,7 +251,7 @@ export function buildJudgement(projects: readonly { project: string; events: rea
       list.forEach((v, i) => {
         if (!inWindow(v.at)) return;
         const acting = actingOf(v, owner);
-        const r = of(acting);
+        const r = of(v);
         r.verdicts++;
         const later = list.slice(i + 1).filter((w) => sameReview(v, w));
         const correction = later.find((w) => verdictSide(w) !== verdictSide(v));
@@ -265,7 +270,7 @@ export function buildJudgement(projects: readonly { project: string; events: rea
         // upholds nothing, and an unknown verdict is upheld by no one.
         const other = (w: LedgerEvent) => {
           const a = actingOf(w, owner);
-          return acting !== null && a !== null && canonicalModel(a, pool) !== canonicalModel(acting, pool);
+          return acting !== null && a !== null && keyOf(w, a) !== keyOf(v, acting);
         };
         if (later.some((w) => verdictSide(w) === verdictSide(v) && other(w))) r.upheld++;
         else r.unresolved++;
@@ -276,9 +281,9 @@ export function buildJudgement(projects: readonly { project: string; events: rea
       // A role assignment (src/models/assignments.ts) is a decision with
       // structure, logged on the index ledger, which the caller adds as one
       // more source.
-      if (e.kind === "decision.recorded" || e.kind === "assignment.recorded") of(actingOf(e, owner)).decisionsRecorded++;
-      else if (e.kind === "decision.withdrawn" || e.kind === "assignment.withdrawn") of(actingOf(e, owner)).decisionsWithdrawn++;
-      else if (e.kind === "review.overridden") of(actingOf(e, owner)).overrides++;
+      if (e.kind === "decision.recorded" || e.kind === "assignment.recorded") of(e).decisionsRecorded++;
+      else if (e.kind === "decision.withdrawn" || e.kind === "assignment.withdrawn") of(e).decisionsWithdrawn++;
+      else if (e.kind === "review.overridden") of(e).overrides++;
     }
   }
   for (const r of [...models.values(), unknown]) {

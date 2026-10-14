@@ -328,7 +328,7 @@ test("an assignment naming one of two entries that share a model in a harness pr
   const [big] = resolveChoices(["opencode/qwen-3:72b"], profiles, "build");
   const b: Assignment = { ...a, choices: [big] };
   assert.deepEqual(orderByAssignment(["opencode/qwen-3:32b", "opencode/qwen-3:72b"], (c) => c, [b], () => null, FALLBACK.build).order, ["opencode/qwen-3:72b", "opencode/qwen-3:32b"]);
-  // An alias of the named entry is still that entry.
+  // The named entry's own id, in another letter case, is still that entry.
   assert.equal(choiceMatches(chosen, "claude-code/Claude-Opus-5-5"), true);
 });
 

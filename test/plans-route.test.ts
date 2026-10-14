@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
-import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { familyOf, typedActor, type ModelEntry } from "../src/models/pool.ts";
 import { paidPerToken, routeParts, SIZE_M_CONTEXT, type PartRoute, type RouteInput } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
@@ -144,9 +144,14 @@ test("a preference is honoured when the actor passes every rule, and refused wit
   // Not in the pool, by alias, and by a differently cased name.
   const missing = one([opus, gpt], {}, part("a", { prefer: { actor: "codex/gpt-7", reason: "newer" } }));
   assert.equal(missing.builder!.reasons[0], "The plan preferred codex/gpt-7 (newer); it is not in the pool");
-  const alias = one([{ ...opus, aliases: ["claude-opus-5-5"] }, gpt], {}, part("a", { prefer: { actor: "Claude-Code/Claude-Opus-5-5", reason: "alias" } }));
+  // An alias is converted where the plan is posted (canonicalNames in
+  // src/index.ts; t622's eighth and ninth reviews), and routing matches the
+  // exact id it became; an alias reaching routing unconverted is no entry.
+  const aliased = [{ ...opus, aliases: ["claude-opus-5-5"] }, gpt];
+  const alias = one(aliased, {}, part("a", { prefer: { actor: typedActor(aliased, "Claude-Code/Claude-Opus-5-5"), reason: "alias" } }));
   assert.equal(alias.builder!.actor, "claude-code/opus-5.5");
   assert.equal(alias.builder!.reasons[0], "Preferred by the plan (alias); passes every rule");
+  assert.match(one(aliased, {}, part("a", { prefer: { actor: "claude-code/claude-opus-5-5", reason: "alias" } })).builder!.reasons[0], /it is not in the pool/);
 });
 
 test("a size M part goes only to a model with a 64K context window or an unknown one", () => {

@@ -6,7 +6,7 @@ import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, exactEntry, modelState, OBSERVED_UNDER, typedActor, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
+import { actorStanding, entryRuns, exactEntry, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
@@ -65,7 +65,7 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
-import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ResolvedAssignment } from "./models/assignments.ts";
+import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
 import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -77,7 +77,7 @@ import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick }
 import { offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
-import { linkVerdict, type Contradicts } from "./models/judgement.ts";
+import { ACTING_EVENTS, linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
 import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
 import { parseReport } from "./refresh/mechanical.ts";
@@ -277,6 +277,9 @@ export interface ProjectInit {
   triage?: string | null;
   // The top review tier; an empty list clears it (see ProjectPolicy.reviewTier).
   reviewTier?: string[];
+  // Set by the API when it converted the init's model names to exact pool
+  // ids (src/index.ts); ProjectPolicy.exactNames records which fields.
+  namesExact?: boolean;
   // The resolver set for refreshes' mechanical conflicts; an empty list
   // clears it (see ProjectPolicy.resolvers).
   resolvers?: string[];
@@ -611,6 +614,10 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   // names none keeps the recorded one, and reset drops it with the rest.
   const familyMode: FamilyMode | undefined = i.familyMode ? { single: i.familyMode.single, by: i.familyMode.by, at } : p?.familyMode;
   const commitIdentity = settleCommitIdentity(i.commitIdentity ?? {}, p?.commitIdentity);
+  // An init's model names were converted to exact ids where they were typed
+  // (the API's boundary, src/index.ts); a field this init sets is marked so,
+  // and one it leaves keeps the mark it had.
+  const exactNames = (["reviewTier", "triage", "resolvers"] as const).filter((f) => i[f] !== undefined ? !!i.namesExact : p?.exactNames?.includes(f));
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -644,6 +651,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(approval ? { approval } : {}),
       ...(familyMode ? { familyMode } : {}),
       ...(commitIdentity ? { commitIdentity } : {}),
+      ...(exactNames.length ? { exactNames } : {}),
     },
     createdAt: current?.createdAt ?? at,
   };
@@ -1209,7 +1217,7 @@ export class Ledger extends DurableObject<Env> {
     };
   }
 
-  assignRole(actor: string, input: ResolvedAssignment, acting: string | null = null): Assignment & { retried?: true } {
+  assignRole(actor: string, input: ResolvedAssignment, acting: ActingDeclaration = null): Assignment & { retried?: true } {
     return recordAssignment(this.assignmentStore, actor, input, new Date().toISOString(), acting);
   }
 
@@ -1224,7 +1232,7 @@ export class Ledger extends DurableObject<Env> {
     return this.assignmentStore.records().find((r): r is AssignmentWithdrawal => r.kind === "withdrawn" && r.withdraws === id) ?? null;
   }
 
-  withdrawRoleAssignment(id: string, actor: string, note: unknown, acting: string | null = null) {
+  withdrawRoleAssignment(id: string, actor: string, note: unknown, acting: ActingDeclaration = null) {
     return withdrawAssignment(this.assignmentStore, actor, id, note, new Date().toISOString(), acting);
   }
 
@@ -1335,6 +1343,13 @@ export class Ledger extends DurableObject<Env> {
     // (overrideDispatch, t491); the builder it leaves is checked as any other.
     const d = overrideDispatch(input, previous, by, at);
     if (d.agent && d.model) this.assertStanding(`${d.agent}/${d.model}`, role, pool);
+    // A bare model, any harness: refused when the standing holds any pool
+    // entry running it, since the runner that claims picks the harness
+    // (gemini-4-argon's ninth review of t622, finding 1).
+    else if (d.model) {
+      const entries = (pool ?? this.poolStanding()).filter((e) => entryRuns(e, d.model!) || e.aliases.some((a) => a.toLowerCase() === d.model!.toLowerCase()));
+      for (const e of entries) this.assertStanding(`${e.harness}/${e.id}`, role, pool);
+    }
     return d;
   }
 
@@ -3390,7 +3405,7 @@ export class Ledger extends DurableObject<Env> {
     const pick = pickReviewer({
       item, pool, policy, allowPaid: false, owner: this.owner,
       precision: this.reviewPrecision(new Date().toISOString()),
-      tier: kind === "protected" ? tierIds(policy.reviewTier, pool) : undefined,
+      tier: kind === "protected" ? tierIds(policy, pool) : undefined,
       assigned: this.reviewAssigned(item, null, changedPaths ?? []),
     });
     return pick.reviewer?.actor ?? null;
@@ -5105,8 +5120,6 @@ export class Ledger extends DurableObject<Env> {
   // a plan job only when it says it runs one (assign, src/dispatch/rules.ts).
   // The default planner is one a live runner offers, read from the index.
   async newPlan(goal: unknown, scope: string[], actor: string, planner: string | null, pool: ModelEntry[]): Promise<{ item: Item; planner: string; reasons: string[] }> {
-    // The planner the developer names is converted where it enters (src/models/pool.ts, identity).
-    if (typeof planner === "string") planner = typedActor(pool, planner.trim());
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer starts a plan", 403);
     const text = cleanGoal(goal);
     const policy = this.project().policy;
@@ -5333,8 +5346,6 @@ export class Ledger extends DurableObject<Env> {
   }
 
   reroutePlan(id: string, actor: string, to: unknown): Item {
-    // The model the developer names is converted where it enters (src/models/pool.ts, identity).
-    if (typeof to === "string") to = typedActor(this.poolStanding(), to.trim());
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer reroutes a plan's work", 403);
     const item = this.item(id);
     const policy = this.project().policy;
@@ -5988,7 +5999,7 @@ export class Ledger extends DurableObject<Env> {
         previous: need.previousReviewer,
         // A protected part's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
-        tier: need.changeClass === "protected" ? tierIds(policy.reviewTier, pool) : undefined,
+        tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
@@ -6373,11 +6384,6 @@ export class Ledger extends DurableObject<Env> {
   // anew (renewSkippedRequest), so the runners serve the new request.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     this.keepOffers(offers);
-    // The reviewer the developer names (--reviewer) is converted here, where
-    // it enters, to the exact pool entry it names (src/models/pool.ts,
-    // identity); a name the pool lacks is kept, as a reviewer admitted from
-    // outside the pool may be named.
-    if (reviewer !== null) reviewer = typedActor(pool, reviewer.trim());
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
     const item = this.reviewItem(id);
     this.keepPool(pool);
@@ -6525,7 +6531,7 @@ export class Ledger extends DurableObject<Env> {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
       const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, tier: need.changeClass === "protected" ? tierIds(policy.reviewTier, pool) : undefined, assignments: this.heldAssignments(), offers, destination },
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined, assignments: this.heldAssignments(), offers, destination },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");
@@ -6535,7 +6541,7 @@ export class Ledger extends DurableObject<Env> {
         previous: need.previousReviewer,
         // A protected change's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
-        tier: need.changeClass === "protected" ? tierIds(policy.reviewTier, pool) : undefined,
+        tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
         avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
@@ -6591,7 +6597,7 @@ export class Ledger extends DurableObject<Env> {
   // src/review/tier.ts), so no separate tier request is needed.
   private gateIsTier(item: Item, need: ReviewRequired, reviewer: string, pool: readonly ModelEntry[] = this.poolStanding()): boolean {
     const policy = this.project().policy;
-    return need.changeClass === "protected" && gateServesTier(tierIds(policy.reviewTier, pool), reviewer, contributorsOf(item), singleFamily(policy));
+    return need.changeClass === "protected" && gateServesTier(tierIds(policy, pool), reviewer, contributorsOf(item), singleFamily(policy));
   }
 
   // Asks the project's top review tier (src/review/tier.ts) for a separate
@@ -6632,7 +6638,7 @@ export class Ledger extends DurableObject<Env> {
     // names the entry a runner offers (gpt-6-astra's and gemini-4-argon's
     // fourth reviews of t622).
     const mayReview = (a: string): true | string => mayAssess(a, policy, this.owner) ? tierEligible(pool, offers, a) : "may not review under the project's policy";
-    const pick = tierReviewerPick(tierIds(policy.reviewTier, pool), contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
+    const pick = tierReviewerPick(tierIds(policy, pool), contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
     if (!pick.actor) return;
     const target = reviewTarget(pool, pick.actor);
     const reviewer = target.actor;
@@ -7576,7 +7582,7 @@ export class Ledger extends DurableObject<Env> {
     const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [], acceptance: spec.acceptance, author: ORCHESTRATOR },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });
     record.added = [...(record.added ?? []), { id: partId, part: spec, route, mainHead, by, at, reason }];
-    if (to && route.builder?.actor !== to) record.reroutes[key] = to;
+    if (to && route.builder?.actor.toLowerCase() !== to.toLowerCase()) record.reroutes[key] = to;
     this.savePlanRecord(id, record);
     this.log(id, by, "plan.part_added", { part: partId, key, mainHead, reason, builder: to ?? route.builder?.actor ?? null, reviewer: route.reviewer?.actor ?? null }, at);
     return partId;
@@ -7610,6 +7616,9 @@ export class Ledger extends DurableObject<Env> {
     if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new RuleError("bad_head", "main's head must be a full commit hash", 400);
     if (holds) throw new RuleError("up_to_date", `${id}'s branch already holds main's head ${mainHead.slice(0, 8)}; there is nothing to resolve`, 409);
     const builder = to === undefined || to === null ? null : namedActor(to, this.project().policy, "executor", this.owner);
+    // The named builder is held by the developer's standing as a reroute's
+    // is, an alias included (gemini-4-argon's ninth review of t622, finding 3).
+    if (builder) this.assertStanding(builder, "build");
     const parts = this.planParts(id);
     const key = mergeMainKey(mainHead);
     const existing = parts.find((p) => p.partKey === key);
@@ -8171,6 +8180,11 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private log(itemId: string | null, actor: string, kind: string, data: Record<string, unknown>, at: string, proved = false): void {
+    // An acting model recorded since names are converted where typed is an
+    // exact pool id, marked so: the judgement record reads it as it is and
+    // only an unmarked one, from before, through the aliases (canonicalModel;
+    // gpt-6-astra's ninth review of t622, finding 3).
+    if (typeof data.acting === "string" && (ACTING_EVENTS as readonly string[]).includes(kind)) data = { ...data, actingExact: true };
     this.sql.exec(
       `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?)`,
       itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null,
