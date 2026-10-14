@@ -140,14 +140,22 @@ export function privateList(name, entry, root) {
 // shrinks this silently. Each list read is kept in the entry (`save` writes
 // the config); a list that cannot be read, with no copy kept, is a refusal
 // naming where it should be, so the caller pushes nothing.
-export function privateGuard(name, entry, { root, save } = {}) {
+export function privateGuard(name, entry, { root, save, homes = [] } = {}) {
   // Private files are opt-in (third reviews of t645): a project with none
   // configured here is not guarded and its iCloud folder is never read.
   if (!privateConfigured(entry)) return { paths: [], refusal: null };
   const list = discoverPrivate(name, entry, { root, save });
   const kept = Array.isArray(entry?.privateFromList);
   const copy = plainPaths(entry?.privateFromList);
-  const paths = [...new Set([...list.paths, ...copy])];
+  // Every folder known for the project is read, not only the current one
+  // (Astra's fifteenth review of t645): one an older config named, the one
+  // this process held, the one found by name. Their lists only add names.
+  const others = new Set([...homes, entry?.privateHome ? folderFor(name, root ?? privateRoot()).home : null].filter((h) => h && h !== list.home));
+  const more = [];
+  for (const home of others) {
+    try { if (lstat(home)) more.push(...readPrivateList(home).paths); } catch { /* an older folder that cannot be read adds nothing */ }
+  }
+  const paths = [...new Set([...list.paths, ...copy, ...more])];
   const refusal = list.unreadable && !kept
     ? `${list.unreadable}, and this Mac keeps no copy of its list of private files, so what may not leave cannot be known. Make the folder available on this Mac (or name another with atelier private add --home DIR --project ${name}) and try again. Nothing was pushed.`
     : null;
@@ -483,11 +491,12 @@ export function saveWholeConfig(memory, snapshot) {
 // yet (a first init), used only while the config holds none.
 export function privateGuardFor(project, { root, discover = false, pending = null } = {}) {
   if (typeof project !== "string" || !project) throw new Error("the private-file guard needs the project's name");
+  const homes = [];
   const run = (entry) => {
     let save = entry ? () => savePrivateFields(project, entry) : null;
     if (!entry && pending) { entry = pending; save = null; }
     if (discover) discoverPrivate(project, entry, { root, save });
-    return privateGuard(project, entry, { root, save });
+    return privateGuard(project, entry, { root, save, homes });
   };
   const file = configFile();
   let cfg;
@@ -503,6 +512,13 @@ export function privateGuardFor(project, { root, discover = false, pending = nul
     if (memKey) entryFor(shared.cfg.projects, project);
     if (onDisk) {
       const entry = shared.cfg.projects[memKey] ??= { ...onDisk };
+      // The folder on disk is the current one (another command may have
+      // named a new one since this process started); the one held before
+      // is still read.
+      if (entry.privateHome && onDisk.privateHome && entry.privateHome !== onDisk.privateHome) {
+        homes.push(entry.privateHome);
+        entry.privateHome = onDisk.privateHome;
+      }
       joinPrivate(entry, onDisk);
     }
     return run(memKey ? shared.cfg.projects[memKey] : undefined);
@@ -748,10 +764,11 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
     if (stat?.isSymbolicLink()) {
       const points = readlinkSync(link);
       if (points === target) { result.kept.push(path); continue; }
-      // Only a link Atelier made is replaced (Astra's fourteenth review of
-      // t645): one into the project's folder, or one this checkout's record
-      // says Atelier made there. A developer's own link is left as it is.
-      if (!points.startsWith(`${home}/`) && linkedBefore(checkout).get(path) !== points) {
+      // Only a link Atelier made is replaced: the one this checkout's record
+      // says Atelier made at this path, to this target (Astra's fourteenth
+      // and fifteenth reviews of t645). A developer's own link is left as it
+      // is, wherever it points, the project's folder included.
+      if (linkedBefore(checkout).get(path) !== points) {
         result.refused.push(path);
         say(`${path}: a link Atelier did not make is already in the checkout (to ${points}); it was left as it is, not linked. Remove it, then run atelier private add ${path} --project ${name} to link it.`);
         continue;
