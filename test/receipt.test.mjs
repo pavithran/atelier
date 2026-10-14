@@ -78,6 +78,19 @@ test("a review line names its recorder: the reviewer itself under its own token,
   assert.match(lines[3], /approved by antigravity\/gemini-3\.1-pro at bbbbbbbb \(recorded by the developer with the developer token\): Named by the owner\.$/);
 });
 
+// t671: a review recorded after the merge is marked postMerge on its event
+// (addReview in src/ledger.ts), but its line read like the gate's own
+// review. It says it judged the landing, as the task page does; a tier
+// review keeps its mark beside the new one.
+test("a post-merge review's line says it was recorded after the merge", () => {
+  const line = (data) => receiptText("atelier", "t1", { item: detail().item, events: [ev(1, "2026-10-13T22:05:00.000Z", "opencode/glm-5.3", "review.approved", data)] }).split("\n").at(-1);
+  const stamp = "2026-10-13 22:05 UTC  ";
+  assert.equal(line({ note: "Holds.", head: M, postMerge: true, findings: [] }), `${stamp}post-merge review approved by opencode/glm-5.3 at 5af22431: Holds.`);
+  assert.equal(line({ note: "Holds.", head: M, postMerge: true, tier: true, findings: [] }), `${stamp}post-merge tier review approved by opencode/glm-5.3 at 5af22431: Holds.`);
+  // A review of the task before any merge says nothing of one.
+  assert.equal(line({ note: "Holds.", head: B, findings: [] }), `${stamp}approved by opencode/glm-5.3 at bbbbbbbb: Holds.`);
+});
+
 test("the landing's own steps and the queue's plumbing are not lines of the story", () => {
   const text = receiptText("atelier", "t1", { item: detail().item, events: [
     ev(3, "2026-10-07T21:28:44.552Z", "pavi", "land.merged", { ms: 9405, mergeCommit: M }),
@@ -192,15 +205,19 @@ test("a fast landing's merge never says accepted or on the baseline, and says wh
 });
 
 // A gated landing prints exactly as before t660: the accepted head, the
-// merge commit, on the baseline. So does an older merge event recorded
-// before observedOnBaseline was, and a plan's part merged through its plan.
-test("a gated landing's merge line is unchanged by the fast-landing wording", () => {
+// merge commit, on the baseline. t671: a merge event that recorded no
+// baseline observation never says the observation, so a plan's part, marked
+// merged through its plan when the plan lands (its item.merged carries via
+// and no observedOnBaseline, Ledger.merged), and an older event from before
+// the field was, do not print "on the baseline".
+test("a gated landing's merge line is unchanged; a merge with no recorded baseline observation does not say on the baseline", () => {
   const line = (data) => receiptText("atelier", "t1", { item: detail().item, events: [ev(1, "2026-10-07T21:28:44.552Z", "pavi", "item.merged", data)] }).split("\n").at(-1);
   const gated = "2026-10-07 21:28 UTC  merged by pavi: bbbbbbbb accepted, merge commit 5af22431 on the baseline";
   assert.equal(line({ mergeCommit: M, head: B, observedOnBaseline: true }), gated);
-  assert.equal(line({ mergeCommit: M, head: B }), gated);
-  assert.equal(line({ mergeCommit: M, head: B, via: "t0" }), gated);
   assert.equal(receiptText("atelier", "t1", detail()).split("\n").at(-1), gated);
+  for (const data of [{ mergeCommit: M, head: B, via: "t0" }, { mergeCommit: M, head: B }]) {
+    assert.equal(line(data), "2026-10-07 21:28 UTC  merged by pavi: bbbbbbbb accepted, merge commit 5af22431");
+  }
 });
 
 test("the receipt as JSON carries the item's events in the ledger's order, whole", () => {
