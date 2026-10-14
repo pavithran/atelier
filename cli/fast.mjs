@@ -546,13 +546,6 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   // restored, the answer says so, with main's head and the fix.
   const restore = () => {
     runGit(cwd, ["merge", "--abort"]);
-    // A project command can leave this checkout itself mid-rebase or
-    // mid-bisect; checkout -f and reset --hard succeed but keep that state
-    // (t672), so each is ended first. Its state lives in the checkout's own
-    // git directory.
-    const gitDir = runGit(cwd, ["rev-parse", "--absolute-git-dir"]).stdout.trim();
-    if (["rebase-merge", "rebase-apply"].some((p) => existsSync(join(gitDir, p)))) runGit(cwd, ["rebase", "--abort"]);
-    if (existsSync(join(gitDir, "BISECT_START"))) runGit(cwd, ["bisect", "reset"]);
     const main = () => runGit(cwd, ["rev-parse", "--verify", "-q", "refs/heads/main"]).stdout.trim();
     const failed = (r) => (r.stderr || r.stdout || "").trim().split("\n").at(-1);
     const onMain = runGit(cwd, ["symbolic-ref", "-q", "HEAD"]).stdout.trim() === "refs/heads/main";
@@ -582,6 +575,22 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         if (r.status !== 0) problem = `git checkout main failed (${failed(checkout)}) and so did git update-ref (${failed(r)})`;
         else fix = `git checkout -f main`;
       }
+    }
+    // A project command can leave this checkout itself mid-rebase or
+    // mid-bisect; checkout -f and reset --hard succeed but keep that state
+    // (t672). It is ended after main is forced, with forms that need no clean
+    // tree: `rebase --abort` and `bisect reset` both check out files and fail
+    // on a dirty or untracked one (reviews of t672), and `rebase --abort`
+    // would also move HEAD back onto a main another worktree holds. The state
+    // lives in the checkout's own git directory and is checked afterwards.
+    const gitDir = runGit(cwd, ["rev-parse", "--absolute-git-dir"]).stdout.trim();
+    const leftover = () => ["rebase-merge", "rebase-apply", "BISECT_START"].filter((p) => existsSync(join(gitDir, p)));
+    if (leftover().some((p) => p.startsWith("rebase"))) runGit(cwd, ["rebase", "--quit"]);
+    if (leftover().includes("BISECT_START")) runGit(cwd, ["bisect", "reset", "HEAD"]);
+    const left = leftover();
+    if (left.length && !problem) {
+      problem = `the checkout is still mid-${left.some((p) => p.startsWith("rebase")) ? "rebase" : "bisect"} (${left.join(", ")} in ${gitDir})`;
+      fix = `git rebase --quit; git bisect reset HEAD; ${fix}`;
     }
     const now = main();
     if (now === start && !problem) return { restored: true, head: now };
