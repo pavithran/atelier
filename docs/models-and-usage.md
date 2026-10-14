@@ -144,6 +144,31 @@ its tick picks a reviewer the routing no longer gives. Each project's ledger
 holds a copy of the assignments that bear on it, sent when one changes and
 with the pool. `src/models/assignments.ts` holds the rules.
 
+## Vendor claims beside Atelier's record
+
+The Models page and `atelier models show ID` (GET /api/models/ID/compare,
+capability `models.compare.v1`) show one projection per model
+(`src/models/compare.ts`): the claims of its cards in force, with their
+sources and conditions, and then each role (build, review, security review,
+claims review, plan, and acting for the developer) with the developer's
+standing assignments of the model to it and Atelier's figures. Each figure
+names its reader, its window, its numerator and denominator or its samples,
+and the threshold under which no share or median is given: the readers' own
+(five judged findings for precision, three samples for a median) and five
+for the shares that had none. A vendor's score is never placed in a figure.
+Claims are not sorted into roles, since a card names the kind of task a
+claim is about and not a role; security review, claims review and planning
+have no figure of their own yet, and say why.
+
+Pairwise catches (`src/models/pairwise.ts`) count, over review precision's
+window, the revisions one model approved in which another model, reviewing
+the same task, head, criteria and scope, raised a blocking finding whose
+latest verdict is confirmed or fixed. A pair with an unjudged finding is
+pending, and one resting on a verdict from before t486 that cannot be placed
+on one review is ambiguous; neither is in the denominator. The comparison,
+the cards and the evidence it shows are the developer's alone, as the cards
+and the role assignments are.
+
 ## Each model's reliability
 
 The Models page and the Usage page show each model's record across every
