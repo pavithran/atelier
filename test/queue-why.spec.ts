@@ -238,7 +238,7 @@ it("explains when an offering runner's token is scoped to another project, when 
   const fullPoll = await (await request("POST", "/queue", OWNER, "opencode/glm-5.3", offer)).json() as Entry[];
   expect(fullPoll.filter((q) => q.project === micah).map((q) => q.item.id)).toEqual([t6.id, t7.id]);
 
-  // 3. When home:pavimbp is busy holding a claimed job in `other`, GET /queue says `busy` for micahapp t6 and t7.
+  // 3. When home:pavimbp is busy holding an active dispatched claim in `other` and no other runner offers it, GET /queue says `busy`.
   const active = await Lother.newItem("Busy task", [], "owner");
   await Lother.dispatch(active.id, "owner", { to: "home", agent: "opencode", model: "glm-5.3" });
   await Lother.claim(active.id, "opencode/glm-5.3", { runner: "home:pavimbp", kind: "home" });
@@ -246,9 +246,35 @@ it("explains when an offering runner's token is scoped to another project, when 
   expect((qBusy.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([
     { kind: "busy", line: `Offered, busy: home:pavimbp is working on ${other}/${active.id}.` },
   ]);
-  await Lother.release(active.id, "owner", "");
 
-  // 4. When home:pavimbp reports a local skip (kind: "skipped"), GET /queue says why with the skip note.
+  // 3b. When another runner with a free slot also offers the job, or when therunner's own slot is free
+  // (e.g. a second slot of home:pavimbp polls idle, or the claim in `other` has no active dispatch),
+  // "Offered, busy" must not be claimed.
+  const freeOffer = { runner: "home:second", kind: "home", agents: [{ agent: "opencode", models: ["glm-5.3"] }], started: new Date(Date.now() - 60_000).toISOString() };
+  await request("POST", "/queue", OWNER, "opencode/glm-5.3", freeOffer);
+  const qFreeRunner = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect((qFreeRunner.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([]);
+  await runInDurableObject(index(), async (_instance, state) => {
+    state.storage.sql.exec(`DELETE FROM runner_offers WHERE runner = 'home:second'`);
+  });
+
+  // When home:pavimbp itself polls with why: true (an idle slot asking why it found nothing), or after a non-dispatched claim:
+  const whySelf = await (await request("POST", "/queue", OWNER, "opencode/glm-5.3", { ...offer, why: true })).json() as Entry[];
+  expect((whySelf.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([]);
+  // And after that idle poll by home:pavimbp, GET /queue also knows home:pavimbp has a free slot!
+  const qAfterIdlePoll = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect((qAfterIdlePoll.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([]);
+
+  // A claimed item whose dispatch is cleared (such as a fast-ready build) does not occupy a runner slot either.
+  await Lother.release(active.id, "owner", "");
+  const undispatchedClaim = await Lother.newItem("Manual claim", [], "owner");
+  await Lother.claim(undispatchedClaim.id, "opencode/glm-5.3", { runner: "home:pavimbp", kind: "home" });
+  const qUndispatched = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect((qUndispatched.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([]);
+  await Lother.release(undispatchedClaim.id, "owner", "");
+
+  // 4. When home:pavimbp reports a local skip (kind: "skipped"), GET /queue says "Skipped by ..." (never "Refused by ..."),
+  // and editing the task clears the skip so the runner will try it again.
   const skipRes = await request("POST", `/projects/${micah}/items/${t6.id}/run-skip`, OWNER, "owner", {
     actor: "opencode/glm-5.3", kind: "skipped", failures: 1, note: "validation_blocked: broken lockfile",
   }, { "x-atelier-runner": "home:paviMBP" });
@@ -257,8 +283,11 @@ it("explains when an offering runner's token is scoped to another project, when 
   expect((qSkipped.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([
     {
       kind: "skipped",
-      line: `Refused by home:pavimbp (validation_blocked: broken lockfile); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch ${t6.id} --to home --agent opencode --model glm-5.3.`,
+      line: `Skipped by home:pavimbp (validation_blocked: broken lockfile); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch ${t6.id} --to home --agent opencode --model glm-5.3.`,
     },
   ]);
+  await Lmicah.editItem(t6.id, "owner", { title: "Micah job six (fixed)" });
+  const qEdited = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect((qEdited.find((q) => q.project === micah && q.item.id === t6.id)?.item.why ?? [])).toEqual([]);
 });
 

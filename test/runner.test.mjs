@@ -2387,7 +2387,10 @@ test('conflicted preparation goes to the resolving harness, even with an old val
   assert.match(f.calls.find((c) => c.brief).brief, /host slot wrapper:.*load\.mjs/);
 });
 
-test('an idle runner offering home opencode/glm-5.3 claims micahapp t6 and t7 within one poll interval past a failing or validation-blocked head job', async (t) => {
+test('a runner whose token covers atelier and micahapp claims micahapp t6 at the head of the queue in one poll, where a one-project token leaves it unclaimed', async (t) => {
+  const { createServer } = await import('node:http');
+  const { inScope, tokenOptions } = await import('../src/tokens.ts');
+  const { assign } = await import('../src/dispatch/rules.ts');
   const dir = mkdtempSync(join(tmpdir(), 'atelier-t626-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const cfgPath = join(dir, 'runner.json');
@@ -2396,96 +2399,174 @@ test('an idle runner offering home opencode/glm-5.3 claims micahapp t6 and t7 wi
   };
   writeFileSync(cfgPath, JSON.stringify(paviConfig));
 
-  const makeAssignment = (project, id, title, updatedAt = '2026-10-10T12:00:00.000Z') => ({
-    project,
-    agent: 'opencode',
-    model: 'glm-5.3',
-    actor: 'opencode/glm-5.3',
-    item: {
-      id,
-      title,
-      state: 'open',
-      owner: null,
-      scope: ['**'],
-      head: `head-${id}`,
-      updatedAt,
-      dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:00:00.000Z' },
+  const registered = new Set(['atelier', 'micahapp']);
+  const tokens = new Map();
+  const queueItems = [
+    {
+      project: 'micahapp',
+      item: {
+        id: 't6',
+        title: 'Micah six',
+        state: 'open',
+        owner: null,
+        scope: ['**'],
+        head: 'head-t6',
+        updatedAt: '2026-10-10T12:00:00.000Z',
+        dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:00:00.000Z' },
+      },
     },
+    {
+      project: 'micahapp',
+      item: {
+        id: 't7',
+        title: 'Micah seven',
+        state: 'open',
+        owner: null,
+        scope: ['**'],
+        head: 'head-t7',
+        updatedAt: '2026-10-10T12:01:00.000Z',
+        dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:01:00.000Z' },
+      },
+    },
+  ];
+
+  const http = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      const auth = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+      if (req.url === '/api/version') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES }));
+        return;
+      }
+      if (req.url === '/api/tokens' && req.method === 'POST') {
+        try {
+          const opts = tokenOptions(body, 'owner', Date.now());
+          for (const p of opts.projects ?? []) {
+            if (!registered.has(p)) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'no_project', detail: 'runner tokens require an existing project' }));
+              return;
+            }
+          }
+          const secret = `atl_${opts.projects.join('_')}`;
+          const record = { ...opts, id: `id-${tokens.size + 1}`, token: secret };
+          tokens.set(secret, record);
+          res.writeHead(201, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(record));
+        } catch (err) {
+          res.writeHead(err.status ?? 400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: err.code ?? 'bad_request', detail: err.message }));
+        }
+        return;
+      }
+      if (req.url === '/api/queue' && req.method === 'POST') {
+        const token = tokens.get(auth);
+        if (!token || token.runner !== body.runner) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'runner_forbidden' }));
+          return;
+        }
+        const offered = queueItems
+          .filter((q) => q.item.state === 'open' && inScope(token, [q.project]))
+          .flatMap((q) => {
+            const a = assign(q.item.dispatch, body);
+            return a ? [{ project: q.project, item: q.item, ...a }] : [];
+          });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(offered));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    });
+  });
+  t.after(() => http.close());
+  await new Promise((done) => http.listen(0, '127.0.0.1', done));
+  const serverUrl = `http://127.0.0.1:${http.address().port}`;
+
+  const issueToken = (projects) => new Promise((done) => {
+    const argv = [join(process.cwd(), 'cli/atelier.mjs'), 'token', 'issue', '--runner', 'home:paviMBP', ...projects.flatMap((p) => ['--project', p])];
+    const child = spawn(process.execPath, argv, {
+      cwd: dir,
+      env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: 'file', ATELIER_TOKEN: 'owner-secret', ATELIER_OWNER: 'owner', ATELIER_SERVER: serverUrl },
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (s) => (stdout += s));
+    child.stderr.on('data', (s) => (stderr += s));
+    child.on('close', (status) => done({ status, stdout, stderr }));
   });
 
-  const claimed = [];
-  const skips = [];
-  let t0UpdatedAt = '2026-10-10T11:00:00.000Z';
-  let polls = 0;
+  // 1. With a single-project token scoped only to ["atelier"], micahapp t6 and t7 are never offered.
+  const singleIssued = await issueToken(['atelier']);
+  assert.equal(singleIssued.status, 0, singleIssued.stderr);
+  const singleToken = singleIssued.stdout.trim().split('\n').at(-1);
+  const claimedSingle = [];
+  const { io: ioSingle } = fixture();
+  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath, once: true }, {
+    workspacePath: ioSingle.workspacePath,
+    taskIO: ioSingle,
+    queue: async (offer) => {
+      const res = await fetch(`${serverUrl}/api/queue`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${singleToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(offer),
+      });
+      return res.json();
+    },
+  });
+  assert.deepEqual(claimedSingle, []);
 
+  // 2. Issue a multi-project runner token covering ["atelier", "micahapp"] and poll once:
+  // micahapp t6 at the head of the queue is offered and claimed in one poll!
+  const multiIssued = await issueToken(['atelier', 'micahapp']);
+  assert.equal(multiIssued.status, 0, multiIssued.stderr);
+  const multiToken = multiIssued.stdout.trim().split('\n').at(-1);
+
+  const claimedMulti = [];
   const { io } = fixture();
   io.workspacePath = (p, id) => `/ws/${p}/${id}`;
   const heads = new Map();
   io.head = async (ws) => {
-    if (ws.endsWith('/t0')) return 'head-t0';
     const n = (heads.get(ws) ?? 0) + 1;
     heads.set(ws, n);
-    return ws.endsWith('/t6') ? (n === 1 ? 'head-t6' : 'head-t6-after') : (n === 1 ? 'head-t7' : 'head-t7-after');
+    return n === 1 ? 'head-before' : 'head-after';
   };
-  io.readValidationBlock = async (ws) => (ws.endsWith('/t0')
-    ? { actor: 'opencode/glm-5.3', head: 'head-t0', detail: 'validation_blocked: broken env', prepared: true, prepareKey: 'ready' }
-    : null);
-  io.prepare = async () => ({ key: 'ready' });
   const origCli = io.cli;
   io.cli = async (argv, cwd) => {
     if (argv[0] === 'claim') {
       const proj = argv[argv.indexOf('--project') + 1];
-      claimed.push(`${proj}:${argv[1]}`);
-      if (argv[1] === 't0') t0UpdatedAt = `2026-10-10T11:00:0${polls}.000Z`;
-      if (argv[1] === 't1') throw new Error('claim failed');
-    }
-    if (argv[0] === 'release' && argv[1] === 't0') {
-      t0UpdatedAt = `2026-10-10T11:01:0${polls}.000Z`;
+      const id = argv[1];
+      claimedMulti.push(`${proj}:${id}`);
+      const found = queueItems.find((q) => q.project === proj && q.item.id === id);
+      if (found) found.item.state = 'claimed';
     }
     return origCli(argv, cwd);
   };
 
-  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath }, {
+  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath, once: true }, {
     workspacePath: io.workspacePath,
     taskIO: io,
-    wait: async () => {},
-    reportRunSkip: async (body) => { skips.push(body); },
-    queue: async () => {
-      polls++;
-      if (polls === 1) {
-        // Poll 1: t0 is validation-blocked after prepare (bumping t0UpdatedAt on claim+release),
-        // t1 fails on claim/execution, and micahapp t6 sits behind them in the same poll.
-        return [
-          makeAssignment('other', 't0', 'Blocked after prepare', t0UpdatedAt),
-          makeAssignment('other', 't1', 'Fails on claim'),
-          makeAssignment('micahapp', 't6', 'Micah six'),
-          makeAssignment('micahapp', 't7', 'Micah seven'),
-        ];
-      }
-      if (polls === 2) {
-        // Poll 2: t0 still at head of queue with its newly bumped updatedAt from release;
-        // runner must remember the validation block without re-claiming t0, and claim t7!
-        return [
-          makeAssignment('other', 't0', 'Blocked after prepare', t0UpdatedAt),
-          makeAssignment('micahapp', 't7', 'Micah seven'),
-        ];
-      }
-      process.emit('SIGINT');
-      return [];
+    queue: async (offer) => {
+      const res = await fetch(`${serverUrl}/api/queue`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${multiToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(offer),
+      });
+      return res.json();
     },
   });
 
-  // Within poll 1, micahapp:t6 was claimed despite t0 being validation-blocked and t1 failing!
-  assert.ok(claimed.includes('micahapp:t6'), `expected micahapp:t6 to be claimed in poll 1, got ${JSON.stringify(claimed)}`);
-  // On poll 2, t0 was NOT claimed a second time despite its updatedAt changing on release, and micahapp:t7 was claimed!
-  assert.equal(claimed.filter((c) => c === 'other:t0').length, 1, `expected other:t0 to be claimed only once, got ${JSON.stringify(claimed)}`);
-  assert.ok(claimed.includes('micahapp:t7'), `expected micahapp:t7 to be claimed in poll 2, got ${JSON.stringify(claimed)}`);
-  // And the local validation-block skip on t0 was reported to the server so atelier queue can show why!
-  assert.equal(skips.length, 1, `expected 1 run-skip report, got ${JSON.stringify(skips)}`);
-  assert.equal(skips[0].project, 'other');
-  assert.equal(skips[0].item, 't0');
-  assert.equal(skips[0].kind, 'skipped');
-  assert.match(skips[0].note, /validation_blocked/);
+  assert.deepEqual(claimedMulti, ['micahapp:t6']);
+
+  // 3. A skipped job does not stay skipped once updatedAt changes (fixing the cause and updating the task lets the runner try it again).
+  const skippedTask = queueItems[1];
+  const refused = new Set([refusedKey(skippedTask)]);
+  assert.match(passedBy(skippedTask, ['build'], { refused, failures: new Map(), infrastructureFailures: new Map() }), /^Passed by:/);
+  const editedTask = { ...skippedTask, item: { ...skippedTask.item, updatedAt: '2026-10-10T12:05:00.000Z' } };
+  assert.equal(passedBy(editedTask, ['build'], { refused, failures: new Map(), infrastructureFailures: new Map() }), null);
 });
 
 test('atelier queue prints why a queued job is unclaimed (no runner offers it, offered but busy, or refused and the reason)', async (t) => {

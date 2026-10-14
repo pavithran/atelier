@@ -466,13 +466,17 @@ export interface RunSkip {
   failures: number;
   note: string;         // the last failure's reason, as the runner said it
   dispatchAt: string;
+  head?: string | null;
+  updatedAt?: string;
   at: string;
 }
 
 export function reportedSkips(skips: readonly RunSkip[], item: Item, offers?: readonly SeenOffer[] | null, now = new Date()): RunSkip[] {
   const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
   const started = startedOf(offers);
-  return skips.filter((s) => s.dispatchAt === item.dispatch?.at && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
+  return skips.filter((s) => s.dispatchAt === item.dispatch?.at
+    && (s.kind !== "skipped" || !s.updatedAt || sameRevision({ dispatchAt: s.dispatchAt, head: s.head ?? null, updatedAt: s.updatedAt }, item))
+    && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
     .sort((a, b) => a.runner.localeCompare(b.runner));
 }
 
@@ -554,8 +558,9 @@ export function unclaimed(
     const dead = unoffered(item.dispatch, input.offers, input.now, input.project);
     if (dead) out.push({ kind: "unoffered", line: unofferedReasonLine(dead, item) });
     else if (!out.length && input.busy?.size) {
+      const idleRunner = input.offer?.runner.toLowerCase();
       const matching = liveOffers(input.offers, input.now).filter((o) => assign(item.dispatch!, o, input.project) !== null);
-      if (matching.length && matching.every((o) => input.busy!.has(o.runner.toLowerCase()))) {
+      if (matching.length && matching.every((o) => o.runner.toLowerCase() !== idleRunner && input.busy!.has(o.runner.toLowerCase()))) {
         out.push({ kind: "busy", line: `Offered, busy: ${matching.map((o) => `${o.runner} is working on ${input.busy!.get(o.runner.toLowerCase())}`).join("; ")}.` });
       }
     }
@@ -595,7 +600,7 @@ function skippedReasonLine(s: SkippedBy, item: Item): string {
 
 function reportedSkipLine(s: RunSkip, item: Item): string {
   if (s.kind === "skipped") {
-    return `Refused by ${s.runner}${s.note ? ` (${s.note})` : ""}; that runner passes it by until it changes or the runner restarts: fix the cause, then ${redispatch(item)}.`;
+    return `Skipped by ${s.runner}${s.note ? ` (${s.note})` : ""}; that runner passes it by until it changes or the runner restarts: fix the cause, then ${redispatch(item)}.`;
   }
   const why = s.note ? ` (the last: ${s.note})` : "";
   return s.kind === "infrastructure"

@@ -442,10 +442,6 @@ export function refusedKey(task) {
   return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt, task.item.request, task.item.criteriaReviews ?? null]);
 }
 
-export function skippedKey(task) {
-  return JSON.stringify([task.project, task.item.id, task.item.head, task.item.dispatch?.at ?? null, task.item.request, task.item.criteriaReviews ?? null]);
-}
-
 export function writeBrief(workspace, text) {
   const file = join(dirname(workspace), `.atelier-brief-${randomUUID()}.txt`);
   writeFileSync(file, text, { mode: 0o600, flag: "wx" });
@@ -2503,7 +2499,7 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   // (t476) is not taken again by this process, whatever later polls say.
   const terminal = terminalTasks.get(taskKey(task));
   if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
-  if (refused.has(refusedKey(task)) || refused.has(skippedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
+  if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
   const failed = failures.get(failureKey(task)) ?? 0;
   if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
   const broken = infrastructureFailures.get(failureKey(task)) ?? 0;
@@ -3314,17 +3310,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : state.skipped ? "skipped" : null;
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
-            await reportSkip(`run-skip:${key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, note: state.reason ?? "" }, 0, "run");
+            await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, note: state.reason ?? "" }, 0, "run");
           }
           // Closure survives changes to the head or updatedAt in later polls
           // (t476). Remember its exact state for this process, by the task
           // itself, independently of the revision-specific refusals that a
           // new dispatch can supersede and of a review's per-request failures.
           if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
-          else if (state.claimRefused && !lostToHold(state) || state.skipped) {
-            refused.add(refusedKey(task));
-            if (state.skipped) refused.add(skippedKey(task));
-          }
+          else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
