@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { branchesRepoName, repoName } from "../src/rules.ts";
@@ -19,7 +20,7 @@ import { branchesRepoName, repoName } from "../src/rules.ts";
 const OWNER = "branches-owner", AGENT = "codex/gpt-6-astra", HEAD = "a".repeat(40), WIP = "b".repeat(40);
 let serial = 0;
 
-type World = { onLog?: () => Promise<void>; repos: Set<string>; refs: Record<string, Record<string, string>>; descriptions: Record<string, string | null>; minted: Array<{ repo: string; scope: string }>; forks: Array<{ from: string; to: string; defaultBranchOnly: unknown }> };
+type World = { onLog?: () => Promise<void>; failLog?: boolean; repos: Set<string>; refs: Record<string, Record<string, string>>; descriptions: Record<string, string | null>; minted: Array<{ repo: string; scope: string }>; forks: Array<{ from: string; to: string; defaultBranchOnly: unknown }> };
 const newWorld = (): World => ({ repos: new Set(), refs: {}, descriptions: {}, minted: [], forks: [] });
 
 // A project registered under `name` with its baseline in `world`, a fake
@@ -51,6 +52,7 @@ async function setup(name = `branches-${++serial}`, world = newWorld()) {
           forks.push({ from: r, to, defaultBranchOnly: opts?.defaultBranchOnly }); repos.add(to); descriptions[to] = opts?.description ?? null; refs[to] = { main: refs[r].main };
         },
         log: async (opts: { ref?: string } = {}) => {
+          if (world.failLog) throw Object.assign(new Error("repository service unavailable"), { code: "INTERNAL_ERROR" });
           const hash = refs[r][opts.ref ?? "main"];
           // A one-shot pause after the tip is read and before it is
           // answered, in which another request can run.
@@ -102,10 +104,21 @@ it("a read token before any push is refused, naming the push to make", async () 
 
 it("an agent token, a runner token and the developer's token naming an agent are refused every branch route, and nothing is minted", async () => {
   const t = await setup();
-  await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" });
+  // The repository exists and the developer is given its token, so each
+  // refusal below is the caller's, not a missing repository's (Astra's
+  // fourth review of t641).
+  const made = await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" });
+  expect(made.status, await made.clone().text()).toBe(200);
+  expect(t.repos.has(t.branches)).toBe(true);
+  expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
+  expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "read" })).status).toBe(200);
   t.minted.length = 0;
-  const agent = await (await t.owner("POST", "/tokens", { actor: AGENT, projects: [t.name] })).json() as { token: string };
-  const runner = await (await t.owner("POST", "/tokens", { runner: "home:studio", projects: [t.name] })).json() as { token: string };
+  const issuedAgent = await t.owner("POST", "/tokens", { actor: AGENT, projects: [t.name] });
+  expect(issuedAgent.status).toBe(201);
+  const agent = await issuedAgent.json() as { token: string };
+  const issuedRunner = await t.owner("POST", "/tokens", { runner: "home:studio", projects: [t.name] });
+  expect(issuedRunner.status).toBe(201);
+  const runner = await issuedRunner.json() as { token: string };
   const callers: Array<[string, string, string | null]> = [["agent token", agent.token, AGENT], ["runner token", runner.token, "codex/gpt-6-astra"], ["developer token as an agent", OWNER, AGENT]];
   for (const [who, token, actor] of callers) {
     for (const scope of ["write", "read"]) {
@@ -310,4 +323,34 @@ it("a push recorded after another Mac pushed and recorded since is answered stal
   expect(body.detail).toContain("atelier branch ls");
   const list = await (await t.owner("GET", `/projects/${t.name}/branches`)).json() as { branches: Array<{ name: string; commit: string; host: string }> };
   expect(list.branches.map((b) => [b.name, b.commit, b.host])).toEqual([["wip/idea", B, "Mac-B"]]);
+});
+
+// Astra's fourth review of t641: a read of the tip that fails is the
+// Worker's, never the Ledger's, so it answers an error, records nothing
+// and leaves the Ledger serving the next request.
+it("a tip read that fails after another Mac recorded answers an error, records nothing, and the Ledger keeps serving", async () => {
+  const t = await setup();
+  expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
+  const A = "1".repeat(40), B = "2".repeat(40);
+  t.refs[t.branches]["wip/idea"] = A;
+  t.world.onLog = async () => {
+    t.refs[t.branches]["wip/idea"] = B;
+    expect((await t.owner("POST", `/projects/${t.name}/branches`, { name: "wip/idea", commit: B, host: "Mac-B" })).status).toBe(201);
+    // A's second read of the tip fails, on every retry.
+    t.world.failLog = true;
+  };
+  // The Ledger's instance is marked, so a reset, which a failure inside
+  // blockConcurrencyWhile causes, shows as a new instance without the mark.
+  const stub = env.LEDGER.get(env.LEDGER.idFromName(`project:${t.name}`));
+  await runInDurableObject(stub, async (instance: object) => { (instance as { probe?: string }).probe = "before"; });
+  const a = await t.owner("POST", `/projects/${t.name}/branches`, { name: "wip/idea", commit: A, host: "Mac-A" });
+  expect(a.status, await a.clone().text()).toBe(503);
+  expect(await runInDurableObject(stub, async (instance: object) => (instance as { probe?: string }).probe)).toBe("before");
+  expect(await a.text()).toContain("artifacts_unavailable");
+  t.world.failLog = false;
+  const list = await t.owner("GET", `/projects/${t.name}/branches`);
+  expect(list.status).toBe(200);
+  expect(((await list.json()) as { branches: Array<{ commit: string; host: string }> }).branches.map((b) => [b.commit, b.host])).toEqual([[B, "Mac-B"]]);
+  t.refs[t.branches]["wip/other"] = A;
+  expect((await t.owner("POST", `/projects/${t.name}/branches`, { name: "wip/other", commit: A, host: "Mac-A" })).status).toBe(201);
 });

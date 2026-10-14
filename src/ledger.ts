@@ -1706,28 +1706,29 @@ export class Ledger extends DurableObject<Env> {
     return repo;
   }
 
-  // A push is recorded only while the commit it names is the branch's tip
-  // in the branches repository (Astra's third review of t641, finding 1).
-  // `tip` reads that tip from the Worker that called, through Artifacts; it
-  // is read and the record written while this Ledger takes no other call
-  // (blockConcurrencyWhile), so no other record of the branch can land
-  // between the read and the write. A push from another Mac that recorded
-  // in between leaves the tip at its commit, and this record is answered
-  // stale and written nowhere: a record whose commit is the tip is never
-  // replaced by an older one.
-  async recordDeveloperBranch(actor: string, branch: Omit<DeveloperBranch, "pushedAt">, tip: () => Promise<string | null>): Promise<{ recorded: DeveloperBranch } | { stale: true; tip: string | null; current: DeveloperBranch | null }> {
+  // A branch's record as stored, or null: the version a record is written
+  // against (recordDeveloperBranch).
+  developerBranch(name: string): DeveloperBranch | null {
+    const row = this.sql.exec(`SELECT json FROM developer_branches WHERE name = ?`, name).toArray()[0];
+    return row ? JSON.parse(row.json as string) as DeveloperBranch : null;
+  }
+
+  // A push is recorded only when the branch's record is still the one the
+  // caller read before it read the branch's tip (Astra's third review of
+  // t641, finding 1): a compare-and-set in one synchronous transaction, so
+  // a record another Mac wrote since is never replaced by an older push.
+  // The caller then reads again. Nothing here waits on anything outside
+  // the Ledger: a read of the tip that fails fails in the Worker, never
+  // inside the Ledger (Astra's fourth review of t641), so it cannot reset
+  // the Ledger, and nothing is recorded.
+  recordDeveloperBranch(actor: string, branch: Omit<DeveloperBranch, "pushedAt">, expected: DeveloperBranch | null): { recorded: DeveloperBranch } | { moved: DeveloperBranch | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branch", 403);
-    return this.ctx.blockConcurrencyWhile(async () => {
-      const now = await tip();
-      if (now !== branch.commit) {
-        const row = this.sql.exec(`SELECT json FROM developer_branches WHERE name = ?`, branch.name).toArray()[0];
-        return { stale: true as const, tip: now, current: row ? JSON.parse(row.json as string) as DeveloperBranch : null };
-      }
+    return this.ctx.storage.transactionSync(() => {
+      const current = this.developerBranch(branch.name);
+      if (JSON.stringify(current) !== JSON.stringify(expected)) return { moved: current };
       const record: DeveloperBranch = { ...branch, pushedAt: new Date().toISOString() };
-      this.ctx.storage.transactionSync(() => {
-        this.sql.exec(`INSERT OR REPLACE INTO developer_branches (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
-        this.log(null, actor, "branch.pushed", { name: record.name, commit: record.commit, host: record.host }, record.pushedAt);
-      });
+      this.sql.exec(`INSERT OR REPLACE INTO developer_branches (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
+      this.log(null, actor, "branch.pushed", { name: record.name, commit: record.commit, host: record.host }, record.pushedAt);
       return { recorded: record };
     });
   }
