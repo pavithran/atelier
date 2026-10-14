@@ -496,3 +496,26 @@ it("rule 2: a dispatch to a builder the developer names records each build assig
   const dispatched = (await L.events(task.id) as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "item.dispatched");
   expect(String(dispatched?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id} skipped: the developer's named builder comes before role assignments`));
 });
+
+// The eighth review of t622's rule: a name a person types under an alias is
+// converted where it enters, so what is stored is the exact pool id. Here at
+// the dispatch route's --agent/--model and the init's review tier.
+it("a builder and a review tier typed under an alias are stored as the entry's exact id", async () => {
+  const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
+  await index().putModel(qwen);
+  try {
+    const L = await project("roles-typed");
+    const task = await L.newItem("A typed task", ["src/d.ts"], "owner", { accept: ["Works"] });
+    const sent = await call("POST", `/projects/roles-typed/items/${task.id}/dispatch`, { to: "home", agent: "opencode", model: "qwen-alias" });
+    expect(sent.status, await sent.clone().text()).toBe(200);
+    expect((await L.item(task.id)).dispatch).toMatchObject({ agent: "opencode", model: "qwen-3" });
+    const name = "roles-typed-tier";
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/qwen-alias", "codex/gpt-6-astra"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    expect((await ledger(name).project()).policy.reviewTier).toEqual(["opencode/qwen-3", "codex/gpt-6-astra"]);
+  } finally {
+    await index().removeModel("qwen-3");
+  }
+});

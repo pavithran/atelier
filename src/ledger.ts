@@ -6,7 +6,7 @@ import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, modelState, OBSERVED_UNDER, poolEntryFor, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
+import { actorStanding, exactEntry, modelState, OBSERVED_UNDER, typedActor, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
@@ -73,7 +73,7 @@ import {
   attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, lapsedClaim,
   pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
-import { gateServesTier, reviewTarget, tierEligible, tierReviewerPick } from "./review/tier.ts";
+import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick } from "./review/tier.ts";
 import { offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
@@ -3390,7 +3390,7 @@ export class Ledger extends DurableObject<Env> {
     const pick = pickReviewer({
       item, pool, policy, allowPaid: false, owner: this.owner,
       precision: this.reviewPrecision(new Date().toISOString()),
-      tier: kind === "protected" ? policy.reviewTier : undefined,
+      tier: kind === "protected" ? tierIds(policy.reviewTier, pool) : undefined,
       assigned: this.reviewAssigned(item, null, changedPaths ?? []),
     });
     return pick.reviewer?.actor ?? null;
@@ -3932,7 +3932,7 @@ export class Ledger extends DurableObject<Env> {
     });
     if (!offered.length) return { entry: null, why: `no model in the pool is offered for the ${PREREVIEW_JOB} job by a live runner`, reasons: [] };
     const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item) });
-    const entry = pick.reviewer ? poolEntryFor(pick.reviewer.actor, offered) ?? null : null;
+    const entry = pick.reviewer ? exactEntry(offered, pick.reviewer.actor) ?? null : null;
     return entry ? { entry, why: "", reasons: pick.reviewer!.reasons } : { entry: null, why: pick.unpicked ?? "no model qualifies", reasons: [] };
   }
 
@@ -5105,6 +5105,8 @@ export class Ledger extends DurableObject<Env> {
   // a plan job only when it says it runs one (assign, src/dispatch/rules.ts).
   // The default planner is one a live runner offers, read from the index.
   async newPlan(goal: unknown, scope: string[], actor: string, planner: string | null, pool: ModelEntry[]): Promise<{ item: Item; planner: string; reasons: string[] }> {
+    // The planner the developer names is converted where it enters (src/models/pool.ts, identity).
+    if (typeof planner === "string") planner = typedActor(pool, planner.trim());
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer starts a plan", 403);
     const text = cleanGoal(goal);
     const policy = this.project().policy;
@@ -5331,6 +5333,8 @@ export class Ledger extends DurableObject<Env> {
   }
 
   reroutePlan(id: string, actor: string, to: unknown): Item {
+    // The model the developer names is converted where it enters (src/models/pool.ts, identity).
+    if (typeof to === "string") to = typedActor(this.poolStanding(), to.trim());
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer reroutes a plan's work", 403);
     const item = this.item(id);
     const policy = this.project().policy;
@@ -5984,7 +5988,7 @@ export class Ledger extends DurableObject<Env> {
         previous: need.previousReviewer,
         // A protected part's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
-        tier: need.changeClass === "protected" ? policy.reviewTier : undefined,
+        tier: need.changeClass === "protected" ? tierIds(policy.reviewTier, pool) : undefined,
         avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
@@ -6369,6 +6373,11 @@ export class Ledger extends DurableObject<Env> {
   // anew (renewSkippedRequest), so the runners serve the new request.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     this.keepOffers(offers);
+    // The reviewer the developer names (--reviewer) is converted here, where
+    // it enters, to the exact pool entry it names (src/models/pool.ts,
+    // identity); a name the pool lacks is kept, as a reviewer admitted from
+    // outside the pool may be named.
+    if (reviewer !== null) reviewer = typedActor(pool, reviewer.trim());
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
     const item = this.reviewItem(id);
     this.keepPool(pool);
@@ -6516,7 +6525,7 @@ export class Ledger extends DurableObject<Env> {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
       const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined, assignments: this.heldAssignments(), offers, destination },
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? tierIds(policy.reviewTier, pool) : undefined, assignments: this.heldAssignments(), offers, destination },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");
@@ -6526,7 +6535,7 @@ export class Ledger extends DurableObject<Env> {
         previous: need.previousReviewer,
         // A protected change's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
-        tier: need.changeClass === "protected" ? policy.reviewTier : undefined,
+        tier: need.changeClass === "protected" ? tierIds(policy.reviewTier, pool) : undefined,
         avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
@@ -6582,7 +6591,7 @@ export class Ledger extends DurableObject<Env> {
   // src/review/tier.ts), so no separate tier request is needed.
   private gateIsTier(item: Item, need: ReviewRequired, reviewer: string, pool: readonly ModelEntry[] = this.poolStanding()): boolean {
     const policy = this.project().policy;
-    return need.changeClass === "protected" && gateServesTier(policy.reviewTier, reviewer, contributorsOf(item), singleFamily(policy), pool);
+    return need.changeClass === "protected" && gateServesTier(tierIds(policy.reviewTier, pool), reviewer, contributorsOf(item), singleFamily(policy));
   }
 
   // Asks the project's top review tier (src/review/tier.ts) for a separate
@@ -6623,7 +6632,7 @@ export class Ledger extends DurableObject<Env> {
     // names the entry a runner offers (gpt-6-astra's and gemini-4-argon's
     // fourth reviews of t622).
     const mayReview = (a: string): true | string => mayAssess(a, policy, this.owner) ? tierEligible(pool, offers, a) : "may not review under the project's policy";
-    const pick = tierReviewerPick(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
+    const pick = tierReviewerPick(tierIds(policy.reviewTier, pool), contributorsOf(item), [gateReviewer, ...asked], mayReview, this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), pool);
     if (!pick.actor) return;
     const target = reviewTarget(pool, pick.actor);
     const reviewer = target.actor;

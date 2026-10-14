@@ -14,7 +14,7 @@
 
 import { FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
 import type { PoolNames } from "../models/judgement.ts";
-import { poolEligibility, poolEntryFor, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { exactEntry, poolEligibility, storedActor, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { offering, type SeenOffer } from "../dispatch/rules.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
 import { actorFamily, contributed, sameActor } from "../rules.ts";
@@ -23,25 +23,21 @@ import { independenceRefusal } from "./independence.ts";
 // Whether the gate's reviewer gives the tier review too: it is a tier model
 // and could give the gate's independent review, of another family than every
 // contributor (under single-family mode, `single`, a different model of the
-// company). Then no separate tier request is asked.
-// Every name is first read as the pool entry it names (resolvedActor), so a
-// tier, gate or contributor name written as an alias is the model it is.
-export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[], single: PoolFamily | null = null, pool: PoolNames | null = null): boolean {
-  const as = (a: string) => resolvedActor(pool, a);
-  const who = as(reviewer);
-  return !!tier?.some((a) => sameActor(as(a), who)) && independenceRefusal(who, contributors.map(as), single) === null;
+// company). Then no separate tier request is asked. The tier holds exact
+// harness/ids (converted where the developer wrote it, or once when read,
+// tierIds), and the gate's reviewer and contributors are recorded ones, so
+// no name is read through a pool alias (gpt-6-astra's eighth review of
+// t622, finding 2).
+export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): boolean {
+  return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors, single) === null;
 }
 
-// The one identity of a name: the pool entry it names (poolEntryFor), by
-// its own harness/id, or the name itself when the pool lacks it or none is
-// given. Each tier name is read this way once, before any check, so its
-// independence, the gate's requests, single-family mode, precision, the
-// project's policy, its eligibility and its dispatch all judge the model
-// that would review (gpt-6-astra's and gemini-4-argon's fifth reviews of
-// t622).
-export function resolvedActor(pool: PoolNames | null, actor: string): string {
-  const entry = pool ? poolEntryFor(actor, pool) : undefined;
-  return entry ? `${entry.harness}/${entry.id}` : actor;
+// The project's review tier as exact harness/ids: the policy text the
+// developer wrote, each name converted once by storedActor (a policy written
+// before names were converted where typed may hold an alias), and one model
+// listed twice asked once.
+export function tierIds(tier: readonly string[] | undefined, pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[]): string[] {
+  return [...new Set((tier ?? []).map((a) => storedActor(pool, a)))];
 }
 
 // The tier model asked for a change's separate tier review: the first, in
@@ -66,13 +62,10 @@ const reviewable = (may: boolean | string): string | null => (may === true ? nul
 // records on the tier request (gpt-6-astra's review of t622, finding 7).
 // `pool` reads a tier model named by an alias as the pool entry it is.
 // `mayReview` answers true, false, or why the model may not review.
-export function tierReviewerPick(rawTier: readonly string[], rawContributors: readonly string[], rawGate: readonly string[], mayReview: (actor: string) => boolean | string, precision: PrecisionRecord | null = null, single: PoolFamily | null = null, assigned: readonly Assignment[] = [], pool: PoolNames | null = null): { actor: string | null; reasons: string[] } {
-  // Every name as the model it is, once, before any check; a tier listing
-  // one model twice (by its id and an alias) asks it once.
-  const as = (a: string) => resolvedActor(pool, a);
-  const tier = [...new Set(rawTier.map(as))];
-  const contributors = rawContributors.map(as), gate = rawGate.map(as);
-  const names = (a: string) => { const e = pool ? poolEntryFor(a, pool) : undefined; return e ? [e.id, ...e.aliases].map((id) => `${e.harness}/${id}`) : [a]; };
+export function tierReviewerPick(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean | string, precision: PrecisionRecord | null = null, single: PoolFamily | null = null, assigned: readonly Assignment[] = [], pool: PoolNames | null = null): { actor: string | null; reasons: string[] } {
+  // The tier is exact harness/ids (tierIds); its history may be recorded
+  // under an entry's other names, read for precision only.
+  const names = (a: string) => { const e = pool ? exactEntry(pool, a) : undefined; return e ? [e.id, ...e.aliases].map((id) => `${e.harness}/${id}`) : [a]; };
   const refusal = (a: string) => contributed(a, contributors) ? "contributed to this change, and nobody reviews their own work"
     : gate.some((g) => sameActor(g, a)) ? "already asked for the gate's review"
       : single && actorFamily(a) !== single ? `not one of ${single}'s models (single-family mode)`
@@ -84,9 +77,9 @@ export function tierReviewerPick(rawTier: readonly string[], rawContributors: re
   // after its last model was removed moves nothing; only a pool not given
   // at all (null) leaves membership unknown (gpt-6-astra's fourth review of
   // t622, finding 2).
-  const inPool = (a: string) => pool === null || poolEntryFor(a, pool) !== undefined;
+  const inPool = (a: string) => pool === null || exactEntry(pool, a) !== undefined;
   const promotable = (a: string) => refusal(a) ?? (inPool(a) ? null : "not in the pool, so no assignment moves it");
-  const ordered = orderByAssignment(byPrecision(tier, names, precision), (a) => a, assigned, promotable, FALLBACK.review, pool ?? []);
+  const ordered = orderByAssignment(byPrecision(tier, names, precision), (a) => a, assigned, promotable, FALLBACK.review);
   const actor = ordered.order.find((a) => refusal(a) === null) ?? null;
   return { actor, reasons: actor ? ordered.reasons(actor) : ordered.outcome.lines };
 }
@@ -108,11 +101,11 @@ export function tierEligible(pool: readonly ModelEntry[], offers: readonly SeenO
 }
 
 // Where a review asked of an actor goes and under which name: the pool
-// entry it names (poolEntryFor), by its own harness/id and destination, so
+// exact entry it is (exactEntry), by its own harness/id and destination, so
 // the dispatch is the one a runner offering that entry can claim; an actor
 // outside the pool goes home as named.
 export function reviewTarget(pool: readonly ModelEntry[], actor: string): { agent: string; model: string; where: "home" | "cloud"; actor: string } {
-  const entry = poolEntryFor(actor, pool);
+  const entry = exactEntry(pool, actor);
   if (entry) return { agent: entry.harness, model: entry.id, where: entry.where, actor: `${entry.harness}/${entry.id}` };
   const slash = actor.indexOf("/");
   return { agent: actor.slice(0, slash), model: actor.slice(slash + 1), where: "home", actor };

@@ -5,7 +5,7 @@
 // machine reads the key when it needs it. Families are recognised by the
 // model's name, so a new release is coloured correctly the day it appears.
 
-import { modelKey, RuleError, sameActor } from "../rules.ts";
+import { modelKey, RuleError } from "../rules.ts";
 
 export type PoolFamily = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "moonshot" | "xai" | "xiaomi" | "bytedance" | "cohere" | "other";
 export const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"] as const;
@@ -90,15 +90,14 @@ export function hasModelRole(entry: Pick<ModelEntry, "roles">, role: ModelRole):
 // Entries saved earlier (a plan's pool, fixed at its approval) with the
 // owner's standing as the pool has it now laid over each: a model paused,
 // reserved or given other roles since is skipped as the pool would skip it.
-// An entry the pool no longer has keeps its saved standing.
-//
-// A saved entry is matched only to its own entry now, by its exact
-// harness/id (recordedEntry): one removed since keeps its saved standing and
-// never takes the standing of an entry that lists its id as an alias or runs
-// the same model (gpt-6-astra's seventh review of t622, finding 1).
+// An entry the pool no longer has, and no entry of its model either, keeps
+// its saved standing. Each saved entry's standing now is read by
+// standingEntry, the one lookup actorStanding also reads, so a plan's tick
+// never picks a reviewer the dispatch's standing check then refuses
+// (gemini-4-argon's eighth review of t622, finding 1).
 export function withStanding(saved: readonly ModelEntry[], current: readonly ModelEntry[]): ModelEntry[] {
   return saved.map((entry) => {
-    const now = recordedEntry(`${entry.harness}/${entry.id}`, current);
+    const now = standingEntry(current, `${entry.harness}/${entry.id}`, "review");
     if (!now) return entry;
     const { state: _state, stateAt: _stateAt, roles: _roles, ...rest } = entry;
     return {
@@ -122,54 +121,78 @@ export function standingRefusal(entry: ModelEntry, role: ModelRole): string | nu
   return null;
 }
 
-// The same check for an actor (harness/model, the model by its id or an
-// alias), prefixed with its name. An actor outside the pool is not held.
+// The same check for an actor (harness/model), prefixed with its name. An
+// actor no entry runs is not held.
 export function actorStanding(pool: readonly ModelEntry[], actor: string, role: ModelRole): string | null {
   const entry = standingEntry(pool, actor, role);
   const refusal = entry ? standingRefusal(entry, role) : null;
   return refusal ? `${actor} is ${refusal}` : null;
 }
 
-// Whether a pool entry runs the model an actor or a bare model name names,
-// by modelKey: letter case, a ":profile" suffix and the harness do not make
-// another model, so "codex/gpt-6-astra:high" runs the entry gpt-6-astra.
-export function entryRuns(entry: Pick<ModelEntry, "id" | "aliases">, name: string): boolean {
-  const key = modelKey(name);
-  return [entry.id, ...entry.aliases].some((id) => modelKey(id) === key);
+// Whether a pool entry runs the model an actor or a bare model name names:
+// its id by modelKey, the canonical model (src/rules.ts), so letter case, a
+// ":profile" suffix and the harness make no other model. An entry's pool
+// aliases are not read: they are names a person may type, converted to the
+// entry's id where they are typed (entryNamed).
+export function entryRuns(entry: Pick<ModelEntry, "id">, name: string): boolean {
+  return modelKey(entry.id) === modelKey(name);
 }
 
-// The pool entry a harness/model name is, in the name's harness, or
-// undefined: the entry whose id is the name exactly, then one with the name
-// exactly as an alias, then one whose id, then whose alias, is the same
-// model by sameActor. An entry's own id comes before any entry's alias, so
-// an alias naming another entry's id never takes that entry's identity
-// (gpt-6-astra's second review of t622, finding 1), and an exact name comes
-// before a model-key match, so two entries in one harness that share a
-// model (claude-code/opus-5.5 and claude-code/claude-opus-5-5, or two
-// profiles of one model) stay two entries (gemini-4-argon's third review of
-// t622, finding 2). Identity is still the canonical model (canonicalModel);
-// this says which pool entry, so which harness, profile and standing.
-export function poolEntryFor<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(actor: string, pool: readonly E[]): E | undefined {
-  const lower = actor.toLowerCase();
-  const full = (m: E, id: string) => `${m.harness}/${id}`;
-  return pool.find((m) => full(m, m.id).toLowerCase() === lower)
-    ?? pool.find((m) => m.aliases.some((id) => full(m, id).toLowerCase() === lower))
-    ?? pool.find((m) => sameActor(actor, full(m, m.id)))
-    ?? pool.find((m) => m.aliases.some((id) => sameActor(actor, full(m, id))));
-}
+// ── identity ─────────────────────────────────────────────────────────────
+//
+// One rule (gpt-6-astra's and gemini-4-argon's reviews of t622, rounds two
+// to eight). A pool alias is a name a person types: on a CLI flag, in the
+// project's policy text (its review tier), as --as. It is converted once,
+// where it enters, to the exact pool entry it names (entryNamed), refusing
+// an ambiguous name. Everything stored holds that exact harness/id, and
+// every reader finds an entry by it with exactEntry: plain equality, in any
+// letter case, never through an alias. Stored data from before this rule
+// that may hold an alias is converted once when read, by storedActor. The
+// owner's standing (standingEntry) binds a model by its canonical key too,
+// so a profile or another harness of a held model is held.
 
-// The entry a recorded identity is: the pool entry whose harness/id it is
-// exactly, in any letter case, or undefined. Recorded identities (a saved
-// pool entry, an assignment's choice, a routed builder or reviewer, the
-// previous round's reviewer) are matched this way only, so when an entry
-// leaves the pool what was recorded of it stops applying, and never passes
-// to whatever now lists its id as an alias or runs the same model. Names the
-// developer writes (a tier, --reviewer, --as, a plan's prefer) are read by
-// poolEntryFor, which also reads aliases (gpt-6-astra's fifth and seventh
-// reviews of t622).
-export function recordedEntry<E extends Pick<ModelEntry, "id" | "harness">>(actor: string, pool: readonly E[]): E | undefined {
+// The entry an exact harness/id is, or undefined.
+export function exactEntry<E extends Pick<ModelEntry, "id" | "harness">>(pool: readonly E[], actor: string): E | undefined {
   const lower = actor.toLowerCase();
   return pool.find((m) => `${m.harness}/${m.id}`.toLowerCase() === lower);
+}
+
+// Where a person types a harness/model: the entry whose id it is, else the
+// one entry in its harness that lists it as an alias; undefined when none
+// does, and refused when two do.
+export function entryNamed<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(pool: readonly E[], name: string): E | undefined {
+  const exact = exactEntry(pool, name);
+  if (exact) return exact;
+  const lower = name.toLowerCase();
+  const by = pool.filter((m) => m.aliases.some((alias) => `${m.harness}/${alias}`.toLowerCase() === lower));
+  if (by.length > 1) throw new RuleError("ambiguous_model", `${name} is an alias of ${by.map((m) => `${m.harness}/${m.id}`).join(" and ")}; name one by its id`, 400);
+  return by[0];
+}
+
+// The exact harness/id a typed name stands for, or the name as typed when
+// no pool entry is it (a model outside the pool, which some places allow).
+export function typedActor(pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[], name: string): string {
+  const entry = entryNamed(pool, name);
+  return entry ? `${entry.harness}/${entry.id}` : name;
+}
+
+// A bare model a person types (dispatch --model without --agent): the id
+// itself when an entry has it, else the id of the one entry listing it as
+// an alias; refused when aliases of two different ids.
+export function typedModel(pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[], model: string): string {
+  const lower = model.toLowerCase();
+  if (pool.some((m) => m.id.toLowerCase() === lower)) return model;
+  const ids = [...new Set(pool.filter((m) => m.aliases.some((a) => a.toLowerCase() === lower)).map((m) => m.id))];
+  if (ids.length > 1) throw new RuleError("ambiguous_model", `${model} is an alias of ${ids.join(" and ")}; name one by its id`, 400);
+  return ids[0] ?? model;
+}
+
+// Stored data from before identities were converted where typed (a review
+// tier, a plan's prefer, an acting name on an old event) may hold an alias:
+// it is converted once when read, here, as a typed name is, except that an
+// ambiguous one is left as stored rather than refused.
+export function storedActor(pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[], name: string): string {
+  try { return typedActor(pool, name); } catch { return name; }
 }
 
 // Whether an entry is paid per token: a provider billed by the token, or an
@@ -181,20 +204,17 @@ export function paidPerToken(entry: Pick<ModelEntry, "provider" | "where">): boo
 }
 
 // The one eligibility check every reader of role assignments makes of an
-// actor before it orders, promotes or dispatches it (gpt-6-astra's and
-// gemini-4-argon's fourth reviews of t622): the pool entry the actor is,
-// found by poolEntryFor (an exact id before another entry's alias, and two
-// entries that share a model kept apart), and the rules that entry's own
-// fields decide: the developer's standing (paused, reserved, without the
-// role), a refused status and, unless allowed, a cost per token. A pool
-// that is given and lacks the actor, an empty one included, refuses it:
-// only a pool that was not given at all (null) knows nothing and refuses
-// nothing. The readers' other rules (project policy, independence, offers,
-// availability, size) are their own and come after this one.
+// actor before it orders, promotes or dispatches it: its exact entry, and
+// the rules that entry's own fields decide: the developer's standing
+// (paused, reserved, without the role), a refused status and, unless
+// allowed, a cost per token. A pool that is given and lacks the actor, an
+// empty one included, refuses it: only a pool not given at all (null)
+// refuses nothing. The readers' other rules (project policy, independence,
+// offers, availability, size) are their own and come after this one.
 export interface PoolEligibility { entry: ModelEntry | null; actor: string; refusals: string[] }
 export function poolEligibility(pool: readonly ModelEntry[] | null, actor: string, role: ModelRole, opts: { allowPaid?: boolean } = {}): PoolEligibility {
   if (pool === null) return { entry: null, actor, refusals: [] };
-  const entry = poolEntryFor(actor, pool) ?? null;
+  const entry = exactEntry(pool, actor) ?? null;
   if (!entry) return { entry: null, actor, refusals: ["not in the pool"] };
   const refusals: string[] = [];
   const held = standingRefusal(entry, role);
@@ -204,15 +224,15 @@ export function poolEligibility(pool: readonly ModelEntry[] | null, actor: strin
   return { entry, actor: `${entry.harness}/${entry.id}`, refusals };
 }
 
-// The entry whose standing holds for an actor: the pool entry it names
-// (poolEntryFor), so an alias another entry lists, or another entry of the
-// same model in its harness, never lends its standing (gemini-4-argon's
-// fourth review of t622, finding 1); else, of the entries running its model
-// under other harnesses, for a role the first that refuses it, else the
-// first.
+// The one lookup of the entry whose standing holds for an actor, read by
+// actorStanding and withStanding alike: its exact entry; else, of the
+// entries whose id runs its model (entryRuns), the one in its harness, else
+// for a role the first that refuses it, else the first. No pool alias is
+// read, so an entry removed never takes the standing of another that lists
+// its id as an alias.
 function standingEntry(pool: readonly ModelEntry[], actor: string, role?: ModelRole): ModelEntry | undefined {
-  const named = poolEntryFor(actor, pool);
-  if (named) return named;
+  const exact = exactEntry(pool, actor);
+  if (exact) return exact;
   const runs = pool.filter((e) => entryRuns(e, actor));
   const slash = actor.indexOf("/");
   const harness = slash === -1 ? null : actor.slice(0, slash).toLowerCase();

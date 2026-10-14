@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ALL_PROJECTS, applicableAssignments, reviewRoles, type Assignment, type AssignmentRole } from "../src/models/assignments.ts";
-import { actorStanding, familyOf, withStanding, type ModelEntry } from "../src/models/pool.ts";
+import { actorStanding, familyOf, standingRefusal, storedActor, typedModel, withStanding, type ModelEntry } from "../src/models/pool.ts";
 import { suggestBuilder } from "../src/models/suggest.ts";
 import { routeParts } from "../src/plans/route.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { pickPlanner } from "../src/plans/state.ts";
 import { pickReviewer } from "../src/review/reviewer.ts";
 import { suggestReviewer } from "../src/review/suggest.ts";
-import { gateServesTier, pickTierReviewer, reviewTarget, tierEligible, tierReviewerPick } from "../src/review/tier.ts";
+import { gateServesTier, pickTierReviewer, reviewTarget, tierEligible, tierIds, tierReviewerPick } from "../src/review/tier.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
 
 // Every reader of role assignments (t622, src/models/assignments.ts): the
@@ -121,9 +121,11 @@ test("pickTierReviewer: an assignment orders the tier's eligible models and adds
 test("tierReviewerPick: says which assignment chose the tier reviewer, or why none did, and reads aliases through the pool", () => {
   const a = assigned("security-review", ["codex/gpt-6-astra"]);
   const pool = [{ ...astra, aliases: ["astra-alias"] }, argon];
-  const tier = ["antigravity/gemini-4-argon", "codex/astra-alias"];
-  // The tier name is read as the entry it names, so the pick is that entry
-  // by its own id (gpt-6-astra's and gemini-4-argon's fifth reviews).
+  // The tier is policy text: its names are converted once, to the entries
+  // they name (tierIds), so the pick is that entry by its own id
+  // (gpt-6-astra's and gemini-4-argon's fifth and eighth reviews).
+  const tier = tierIds(["antigravity/gemini-4-argon", "codex/astra-alias"], pool);
+  assert.deepEqual(tier, ["antigravity/gemini-4-argon", "codex/gpt-6-astra"]);
   const pick = tierReviewerPick(tier, ["claude-code/opus-5.5"], [], () => true, null, null, [a], pool);
   assert.equal(pick.actor, "codex/gpt-6-astra");
   said(pick.reasons, new RegExp(`Role assignment ${a.id} \\(security-review, every project, 2026-10-13\\): choice 1 of 1`));
@@ -422,8 +424,10 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
   assert.ok(actorStanding([opus, { ...twins[1], state: "paused", stateAt: AT }], "claude-code/claude-opus-5-5", "review"));
   // A tier name written as an alias is offered and dispatched as the entry it names.
   const offers = [{ runner: "home:studio", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
-  assert.equal(tierEligible([{ ...astra, aliases: ["astra-alias"], where: "home" }], offers, "codex/astra-alias"), true);
-  assert.equal(reviewTarget([{ ...astra, aliases: ["astra-alias"] }], "codex/astra-alias").model, "gpt-6-astra");
+  const aliased = [{ ...astra, aliases: ["astra-alias"], where: "home" as const }];
+  const [astraTier] = tierIds(["codex/astra-alias"], aliased);
+  assert.equal(tierEligible(aliased, offers, astraTier), true);
+  assert.equal(reviewTarget(aliased, astraTier).model, "gpt-6-astra");
 });
 
 // gpt-6-astra's fourth review of t622, finding 2: an empty pool read as "no
@@ -464,13 +468,14 @@ test("an assignment whose chosen entry left the pool stops applying, whatever no
 test("tierReviewerPick and gateServesTier read every tier, gate and contributor name as the entry it names", () => {
   const sonnetAliased = { ...sonnet, aliases: ["sonnet-alias"] };
   const pool = [sonnetAliased, argon, astra];
-  const tier = ["claude-code/sonnet-alias", "antigravity/gemini-4-argon"];
+  // The tier text holds an alias: converted once where read (tierIds).
+  const tier = tierIds(["claude-code/sonnet-alias", "antigravity/gemini-4-argon"], pool);
   const promote = [assigned("review", ["claude-code/sonnet-5.5"])];
   // Sonnet built it: its alias is not asked to review it.
   assert.equal(tierReviewerPick(tier, ["claude-code/sonnet-5.5"], [], () => true, null, null, promote, pool).actor, "antigravity/gemini-4-argon");
   // Sonnet is the gate's reviewer: it is not asked again, and it serves the tier.
   assert.equal(tierReviewerPick(tier, ["codex/gpt-6-astra"], ["claude-code/sonnet-5.5"], () => true, null, null, promote, pool).actor, "antigravity/gemini-4-argon");
-  assert.equal(gateServesTier(tier, "claude-code/sonnet-5.5", ["codex/gpt-6-astra"], null, pool), true);
+  assert.equal(gateServesTier(tier, "claude-code/sonnet-5.5", ["codex/gpt-6-astra"]), true);
   // The project's policy and eligibility are asked of the entry, not the alias.
   const asked: string[] = [];
   tierReviewerPick(tier, ["codex/gpt-6-astra"], [], (a) => { asked.push(a); return true; }, null, null, promote, pool);
@@ -544,4 +549,74 @@ test("rule 2: every selector names each assignment skipped for an explicit choic
   skippedFor(routeParts(plan(part("a", { prefer: { actor: "codex/gpt-6-astra", reason: "named" } })), { pool: POOL, events: [], policy, allowPaid: false, assignments: [build] })[0].builder?.reasons, build, /the plan's preference/);
   const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
   skippedFor(suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [build] }, { model: "glm-5.3" }).reasons, build, /the developer's --model/);
+});
+
+// ── the eighth review of t622: aliases converted where typed, nowhere else ─
+
+// gpt-6-astra's finding 1 and gemini-4-argon's finding 2: with --model,
+// suggestBuilder still let an assignment reorder the candidates while saying
+// every assignment was skipped, and matched another entry's alias before an
+// exact id.
+test("suggestBuilder: --model bypasses assignment ordering in the same call that names each skipped, and matches ids alone", () => {
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
+  const base = { item, project: "atelier", policy, sources: [], runs: [], owner: "owner" };
+  // Two entries run opus-5.5; the ranking puts antigravity's first, the assignment claude-code's.
+  const agOpus = entry("antigravity", "claude-opus-5.5");
+  const promote = assigned("build", ["claude-code/opus-5.5"]);
+  const pool = [astra, argon, opus, agOpus];
+  assert.equal(suggestBuilder({ ...base, pool, assignments: [promote] }).actor, "claude-code/opus-5.5", "without --model the assignment orders");
+  const named = suggestBuilder({ ...base, pool, assignments: [promote] }, { model: "opus-5.5" });
+  assert.equal(named.actor, "antigravity/claude-opus-5.5", "--model: the ranking, not the assignment");
+  said(named.reasons, new RegExp(`Role assignment ${promote.id} skipped: the developer's --model comes before role assignments`));
+  // Astra lists Argon's id as an alias: --model gemini-4-argon is Argon, converted where typed.
+  const trap = [{ ...astra, aliases: ["gemini-4-argon", "gpt-6-luna"] }, argon, entry("codex", "gpt-6-luna")];
+  assert.equal(typedModel(trap, "gemini-4-argon"), "gemini-4-argon");
+  assert.equal(suggestBuilder({ ...base, pool: trap, assignments: [assigned("build", ["codex/gpt-6-astra"])] }, { model: typedModel(trap, "gemini-4-argon") }).actor, "antigravity/gemini-4-argon");
+  assert.equal(suggestBuilder({ ...base, pool: trap }, { model: typedModel(trap, "gpt-6-luna") }).actor, "codex/gpt-6-luna");
+  // An alias of one entry is converted to its id; of two, refused.
+  assert.equal(typedModel([{ ...astra, aliases: ["astra"] }], "astra"), "gpt-6-astra");
+  assert.throws(() => typedModel([{ ...astra, aliases: ["x"] }, { ...argon, aliases: ["x"] }], "x"), /ambiguous|alias of/);
+});
+
+// gpt-6-astra's finding 2: the tier readers read recorded gate reviewers and
+// contributors through the current aliases, so a removed Luna was Astra.
+test("gateServesTier and tierReviewerPick read recorded gate reviewers and contributors as recorded", () => {
+  const OPUS = "claude-code/opus-5.5";
+  assert.equal(gateServesTier(["codex/gpt-6-astra"], "codex/gpt-6-luna", [OPUS]), false);
+  assert.equal(tierReviewerPick(["codex/gpt-6-astra"], [OPUS], ["codex/gpt-6-luna"], () => true, null, null, [], [{ ...astra, aliases: ["gpt-6-luna"] }]).actor, "codex/gpt-6-astra");
+  assert.equal(tierReviewerPick(["codex/gpt-6-astra"], ["codex/gpt-6-luna"], [], () => true, null, null, [], [{ ...astra, aliases: ["gpt-6-luna"] }]).actor, "codex/gpt-6-astra");
+});
+
+// gemini-4-argon's finding 1: withStanding and actorStanding read removed
+// entries differently, so a plan's tick picked a reviewer its own dispatch
+// check then refused. They are one lookup now: for every saved entry, held
+// by withStanding exactly when actorStanding holds it.
+test("withStanding and actorStanding agree on every saved entry, removed or not", () => {
+  const paused = { state: "paused" as const, stateAt: AT };
+  const luna = entry("codex", "gpt-6-luna");
+  const cases: [string, ModelEntry[], ModelEntry[]][] = [
+    ["removed, another entry lists its id as an alias", [luna], [{ ...astra, aliases: ["gpt-6-luna"], ...paused }]],
+    ["removed, another profile of its model in its harness", [entry("opencode", "qwen-3:72b")], [{ ...entry("opencode", "qwen-3:32b"), ...paused }]],
+    ["removed, its model under another harness", [opus], [{ ...entry("antigravity", "opus-5.5"), ...paused }]],
+    ["present and paused", [luna], [{ ...luna, ...paused }]],
+    ["present and build-only", [luna], [{ ...luna, roles: ["build" as const] }]],
+    ["removed, nothing runs it", [luna], [argon]],
+  ];
+  for (const [name, saved, current] of cases) {
+    const [now] = withStanding(saved, current);
+    const actor = `${saved[0].harness}/${saved[0].id}`;
+    assert.equal(standingRefusal(now, "review") !== null, actorStanding(current, actor, "review") !== null, name);
+  }
+});
+
+// Stored data from before names were converted where typed (a review tier,
+// a plan's prefer, an acting name on an old event) is converted once when
+// read, by storedActor; an ambiguous one is left as stored.
+test("storedActor converts a stored alias once, leaves an exact id, an unknown name or an ambiguous alias as stored", () => {
+  const pool = [{ ...astra, aliases: ["astra", "shared"] }, { ...argon, aliases: ["shared"] }];
+  assert.equal(storedActor(pool, "codex/astra"), "codex/gpt-6-astra");
+  assert.equal(storedActor(pool, "codex/gpt-6-astra"), "codex/gpt-6-astra");
+  assert.equal(storedActor(pool, "codex/gpt-9"), "codex/gpt-9");
+  assert.equal(storedActor([{ ...astra, aliases: ["shared"] }, { ...entry("codex", "gpt-6-luna"), aliases: ["shared"] }], "codex/shared"), "codex/shared");
+  assert.deepEqual(tierIds(["codex/astra", "codex/gpt-6-astra"], pool), ["codex/gpt-6-astra"]);
 });
