@@ -503,7 +503,11 @@ test("routeParts: a preferred builder's reasons name each build assignment skipp
 // --reviewer, --as) is read by poolEntryFor, an exact id before an alias.
 // Rule 2 is the next test, and its ledger sites are in
 // test/model-roles.spec.ts.
-test("rule 1: every site that matches a recorded identity matches only its own exact entry", () => {
+// Recorded assignment choices and tier picks are exact ids. Declared
+// identities (contributors, the previous round's reviewer, the plan's
+// routing, lapsed reviewers) are matched as main matches them, through
+// aliases: see the twelfth review's tests below.
+test("rule 1: an assignment's choice matches only its own exact entry; a prefer reads an exact id before an alias", () => {
   const trapAstra = { ...astra, aliases: ["gpt-6-luna"] };
   const luna = entry("codex", "gpt-6-luna");
   const LUNA = "codex/gpt-6-luna";
@@ -511,16 +515,6 @@ test("rule 1: every site that matches a recorded identity matches only its own e
   const lunaChoice = { ...assigned("review", [LUNA]), choices: [{ actor: LUNA, model: "gpt-6-luna" }] };
   // choiceMatches and orderByAssignment: Luna's assignment stops applying.
   assert.equal(pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, assigned: [lunaChoice] }).assignment?.applied, null, "orderByAssignment");
-  // The previous round's reviewer and the plan's routing: Luna gone is not Astra.
-  const previous = pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, previous: LUNA });
-  said(previous.reviewer?.reasons, /The previous round's reviewer was codex\/gpt-6-luna; it is not in the pool/);
-  const routed = pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, route: { reviewer: { actor: LUNA, reasons: [] }, alternates: [{ actor: LUNA, reasons: [] }] } });
-  said(routed.reviewer?.reasons, /The plan routed codex\/gpt-6-luna to review this part; it is not in the pool/);
-  assert.ok(!routed.reviewer!.reasons.some((r) => /plan's routed reviewer|Alternate 1/.test(r)), "routed");
-  // A contributor that is another entry exactly is not this entry, whatever its aliases.
-  const openai = { ...policy, familyMode: { single: "openai" as const } };
-  const own = pickReviewer({ item: { owner: LUNA, pushActors: [] }, pool: [trapAstra, luna], policy: openai, allowPaid: false });
-  assert.equal(own.reviewer?.actor, "codex/gpt-6-astra", "contributors");
   // A name the developer writes reads an exact id before an alias: the plan's prefer.
   const [preferred] = routeParts(plan(part("a", { prefer: { actor: LUNA, reason: "named" } })), { pool: [trapAstra, luna, argon, opus], events: [], policy, allowPaid: false });
   assert.equal(preferred.builder?.actor, LUNA, "prefer");
@@ -568,17 +562,16 @@ test("suggestBuilder: --model bypasses assignment ordering in the same call that
 
 // gpt-6-astra's finding 2: the tier readers read recorded gate reviewers and
 // contributors through the current aliases, so a removed Luna was Astra.
-test("gateServesTier and tierReviewerPick read recorded gate reviewers and contributors as recorded", () => {
+test("gateServesTier reads a recorded gate reviewer as recorded", () => {
   const OPUS = "claude-code/opus-5.5";
   assert.equal(gateServesTier(["codex/gpt-6-astra"], "codex/gpt-6-luna", [OPUS]), false);
-  assert.equal(tierReviewerPick(["codex/gpt-6-astra"], [OPUS], ["codex/gpt-6-luna"], () => true, null, null, [], [{ ...astra, aliases: ["gpt-6-luna"] }]).actor, "codex/gpt-6-astra");
-  assert.equal(tierReviewerPick(["codex/gpt-6-astra"], ["codex/gpt-6-luna"], [], () => true, null, null, [], [{ ...astra, aliases: ["gpt-6-luna"] }]).actor, "codex/gpt-6-astra");
 });
 
-// gemini-4-argon's finding 1: withStanding and actorStanding read removed
-// entries differently, so a plan's tick picked a reviewer its own dispatch
-// check then refused. They are one lookup now: for every saved entry, held
-// by withStanding exactly when actorStanding holds it.
+// A characterization of main's standing functions, which t622 does not
+// change (src/models/pool.ts): for each of these saved entries, held by
+// withStanding exactly when actorStanding holds it. It passes without t622
+// too; it guards that the plan tick's reviewer and its dispatch check agree
+// on these cases (gemini-4-argon's eighth review of t622, finding 1).
 test("withStanding and actorStanding agree on every saved entry, removed or not", () => {
   const paused = { state: "paused" as const, stateAt: AT };
   const luna = entry("codex", "gpt-6-luna");
@@ -619,4 +612,41 @@ test("tierIds reads a marked tier as it is and only an unmarked one through the 
   assert.deepEqual(tierIds({ reviewTier: ["codex/gpt-6-luna"], exactNames: ["reviewTier"] }, afterRemoval), ["codex/gpt-6-luna"]);
   assert.equal(tierReviewerPick(tierIds({ reviewTier: ["codex/gpt-6-luna"], exactNames: ["reviewTier"] }, afterRemoval), ["claude-code/opus-5.5"], [], () => true, null, null, [], afterRemoval).actor, "codex/gpt-6-luna");
   assert.deepEqual(tierIds({ reviewTier: ["codex/gpt-6-luna"] }, afterRemoval), ["codex/gpt-6-astra"], "legacy text is read through the aliases");
+});
+
+// gpt-6-astra's twelfth review of t622, finding 1: contributors, lapsed
+// reviewers and the gate's reviewers stay as declared, and the selectors had
+// stopped reading them through aliases, so Astra reviewed work its alias
+// built, and a lapsed reviewer recorded under an alias was asked again.
+test("a contributor, a lapsed reviewer or a gate reviewer declared under an alias is that model", () => {
+  const LOCAL = "codex/gpt-6-astra-local";
+  const astraLocal = { ...astra, aliases: ["gpt-6-astra-local"] };
+  const luna = entry("codex", "gpt-6-luna");
+  const toAstra = assigned("review", ["codex/gpt-6-astra"]);
+  const openai = { ...policy, familyMode: { single: "openai" as const, by: "owner", at: AT } };
+  const own = pickReviewer({ item: { owner: LOCAL, pushActors: [] }, pool: [astraLocal, luna], policy: openai, allowPaid: false, assigned: [toAstra] });
+  assert.equal(own.reviewer?.actor, "codex/gpt-6-luna");
+  assert.match(own.passedOver.find((c) => c.actor === "codex/gpt-6-astra")!.reasons.join(" "), /contributed to this item/);
+  const lapsed = pickReviewer({ item: built, pool: [astraLocal, argon], policy, allowPaid: false, assigned: [toAstra], avoid: [{ actor: LOCAL, reason: "its claim on a review of this head lapsed" }] });
+  assert.equal(lapsed.reviewer?.actor, "antigravity/gemini-4-argon");
+  assert.equal(lapsed.assignment?.applied, null);
+  said(lapsed.assignment?.lines, /codex\/gpt-6-astra: .*lapsed/);
+  // The tier: the builder or the gate's reviewer under an alias is not asked again.
+  assert.equal(tierReviewerPick(["codex/gpt-6-astra", "antigravity/gemini-4-argon"], [LOCAL], [], () => true, null, null, [toAstra], [astraLocal, argon]).actor, "antigravity/gemini-4-argon");
+  assert.equal(tierReviewerPick(["codex/gpt-6-astra", "antigravity/gemini-4-argon"], ["claude-code/opus-5.5"], [LOCAL], () => true, null, null, [toAstra], [astraLocal, argon]).actor, "antigravity/gemini-4-argon");
+});
+
+// gpt-6-astra's twelfth review of t622, finding 2: every stored prefer was
+// read as an exact id, so a proposal posted before names were converted,
+// naming an alias, lost its preference. A marked proposal (namesExact) is
+// read as it is; an unmarked one goes through the aliases once.
+test("routeParts: an unmarked prefer under an alias is honoured; a marked one is read as written", () => {
+  const astraLocal = { ...astra, aliases: ["gpt-6-astra-local"] };
+  const pool = [astraLocal, argon, glm, opus];
+  const doc = plan(part("a", { prefer: { actor: "codex/gpt-6-astra-local", reason: "knows it" } }));
+  const [legacy] = routeParts(doc, { pool, events: [], policy, allowPaid: false, assignments: [assigned("build", ["claude-code/opus-5.5"])] });
+  assert.equal(legacy.builder?.actor, "codex/gpt-6-astra");
+  said(legacy.builder?.reasons, /Preferred by the plan \(knows it\)/);
+  const [marked] = routeParts(doc, { pool, events: [], policy, allowPaid: false, namesExact: true });
+  said(marked.builder?.reasons, /The plan preferred codex\/gpt-6-astra-local \(knows it\); it is not in the pool/);
 });

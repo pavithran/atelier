@@ -33,7 +33,7 @@ import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
-import { exactEntry } from "../models/identity.ts";
+import { exactEntry, storedActor } from "../models/identity.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -54,6 +54,11 @@ export type Availability =
 
 export interface RouteInput {
   pool: readonly ModelEntry[];
+  // The plan document's names (a part's prefer) were converted to exact pool
+  // ids where it was posted (Ledger.postPlan's mark): read as they are.
+  // Unmarked, a prefer from before is read through the aliases once
+  // (storedActor in src/models/identity.ts).
+  namesExact?: boolean;
   events: readonly LedgerEvent[];         // the project's ledger; buildRecord() makes the track record
   policy: ProjectPolicy;                  // governed when it names agents
   allowPaid: boolean;                     // the owner's approval of paid-per-token models
@@ -450,11 +455,11 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   if (part.prefer) {
     const { actor, reason } = part.prefer;
     // The prefer is converted to an exact id where the plan document is
-    // posted (canonicalNames in src/index.ts) and matched exactly here. A
-    // plan posted before that, naming an alias, finds no entry: its
-    // preference is set aside with the reason below, and routing goes on as
-    // without one (src/models/pool.ts, identity).
-    const named = exactEntry(ctx.input.pool, actor);
+    // posted (canonicalNames in src/index.ts) and the proposal marked so,
+    // and is then matched exactly. One posted before (unmarked) may name an
+    // alias, read once through storedActor, as main honoured it
+    // (gpt-6-astra's twelfth review of t622, finding 2).
+    const named = exactEntry(ctx.input.pool, ctx.input.namesExact ? actor : storedActor(ctx.input.pool, actor));
     const wanted = named ? verdicts.find((v) => ctx.entries.get(v.actor) === named) : undefined;
     if (!wanted) lead.push(`The plan preferred ${actor} (${reason}); it is not in the pool`);
     else if (wanted.build.length) lead.push(`The plan preferred ${wanted.actor} (${reason}); not chosen: ${wanted.build.join("; ")}`);

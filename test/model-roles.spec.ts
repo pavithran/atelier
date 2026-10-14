@@ -570,7 +570,7 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     await L.poolChanged(await index().models());
     const asked = await call("POST", `${P}/items/t1/review-request`, { reviewer: EXACT, wanted: true });
     expect(asked.status, await asked.clone().text()).toBe(200);
-    await expect(L.claimReview("t1", ALIAS, { runner: "home:studio", kind: "home" })).rejects.toThrow(/asks for glm-9|wrong_model/);
+    expect(String(await (L.claimReview("t1", ALIAS, { runner: "home:studio", kind: "home" }) as unknown as Promise<unknown>).then(() => null, (e: unknown) => e))).toMatch(/asks for glm-9|wrong_model/);
     await index().putModel(held);
     await L.poolChanged(await index().models());
     expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("withdrawn");
@@ -592,7 +592,7 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     // tenth review of t622, follow-up 3).
     const resolving = await planned("roles-boundary-resolve");
     await resolving.L.poolChanged(await index().models());
-    await expect(resolving.L.planResolve(resolving.id, "owner", "1".repeat(40), false, ALIAS)).rejects.toThrow(/model_held\|opencode\/glm-alias is paused since/);
+    expect(String(await (resolving.L.planResolve(resolving.id, "owner", "1".repeat(40), false, ALIAS)).then(() => null, (e: unknown) => e))).toMatch(/model_held\|opencode\/glm-alias is paused since/);
     // init --review-tier and --triage: stored as the exact id, marked so.
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/roles-boundary-init`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),
@@ -647,7 +647,9 @@ it("an assignment and a withdrawal sent with --as under an alias are retried by 
 // request declares, so a runner offering a model under its alias claimed as
 // the entry's id, which its offer and the dispatch did not name, and a task
 // held under an alias was no longer its holder's. Identities are kept as
-// declared now; only fields that choose a model are converted.
+// declared now; only fields that choose a model are converted. This is
+// main's behaviour, which this test characterizes: it fails only against the
+// round of t622 that converted identities (268d00cb's parent, 06171004).
 it("a runner working under an alias claims, submits and releases as the alias it declares", async () => {
   const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
   await index().putModel(qwen);
@@ -687,4 +689,34 @@ it("a runner working under an alias claims, submits and releases as the alias it
   } finally {
     await index().removeModel("qwen-3");
   }
+});
+
+// gpt-6-astra's twelfth review of t622, finding 3: a bare --model dispatch,
+// the page's dispatch form and a held dispatch's --overlap-ok recorded no
+// skipped assignment. Every dispatch path asks one call for it now.
+it("every dispatch path that names a builder records each build assignment skipped for it", async () => {
+  const name = "roles-explicit-paths", P = `/projects/${name}`;
+  const L = await project(name);
+  const a = await (await call("POST", "/model-roles", body({ role: "build", choices: ["claude-code/opus-5.5"], evidence: [`${name}/t1`], scope: name }))).json() as Assignment;
+  const reasonOf = async (id: string) => String((await L.events(id) as unknown as { kind: string; data: Record<string, unknown> }[]).filter((e) => e.kind === "item.dispatched").at(-1)?.data.reason);
+  const skipped = (ahead: string) => new RegExp(`Role assignment ${a.id} skipped: the developer's ${ahead} comes before role assignments`);
+  const open = async (title: string) => (await L.newItem(title, [`src/${title}.ts`], "owner", { accept: ["Works"] })).id;
+  // A bare --model.
+  const bare = await open("bare");
+  expect((await call("POST", `${P}/items/${bare}/dispatch`, { to: "home", model: "gpt-6-astra" })).status).toBe(200);
+  expect(await reasonOf(bare)).toMatch(skipped("--model"));
+  // --overlap-ok on a waiting dispatch, naming another builder.
+  const held = await open("held");
+  expect((await call("POST", `${P}/items/${held}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
+  const retained = await call("POST", `${P}/items/${held}/dispatch`, { retain: true, overlapOk: true, agent: "antigravity", model: "gemini-4-argon" });
+  expect(retained.status, await retained.clone().text()).toBe(200);
+  expect(await reasonOf(held)).toMatch(skipped("named builder"));
+  // The page's dispatch form.
+  const page = await open("page");
+  const cookie = await signIn(TOKEN, testEnv);
+  const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/${page}/dispatch`, {
+    method: "POST", headers: { cookie, origin: "https://atelier.test" }, body: new URLSearchParams({ to: "home", agent: "codex", model: "gpt-6-astra", note: "" }), redirect: "manual",
+  }), testEnv);
+  expect(form.status, await form.clone().text()).toBeLessThan(400);
+  expect(await reasonOf(page)).toMatch(skipped("named builder"));
 });

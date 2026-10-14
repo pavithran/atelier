@@ -82,12 +82,14 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // find its precision (src/models/precision.ts): events from before names
 // were converted where typed may name it by an alias.
 const namesOf = (entry: ModelEntry) => [entry.id, ...entry.aliases].map((id) => `${entry.harness}/${id}`.toLowerCase());
-// An actor's entry: its exact harness/id (exactEntry). Every actor here is
-// one: the tier is converted where the developer wrote it, and the previous
-// round's reviewer and the plan's routing were recorded as exact ids, so an
-// entry removed since is outside the pool, never another that lists its id
-// as an alias (src/models/pool.ts, identity).
+// A candidate's entry: its exact harness/id (exactEntry). The tier is
+// converted where the developer wrote it, and the pool's own entries are
+// exact.
 const findEntry = (pool: readonly ModelEntry[], actor: string) => exactEntry(pool, actor);
+// A declared identity (the previous round's reviewer, the plan's routed
+// reviewer and alternates, recorded as written) is found as main finds it,
+// by any name of an entry, its aliases included.
+const declaredEntry = (pool: readonly ModelEntry[], actor: string) => pool.find((entry) => namesOf(entry).some((name) => sameActor(name, actor)));
 
 export function pickReviewer(input: PickInput): ReviewerPick {
   const contributors = contributorsOf(input.item);
@@ -156,7 +158,7 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   const passedOver: Choice[] = [];
   const lead: string[] = [];
   for (const { actor, source } of wanted) {
-    const entry = findEntry(input.pool, actor);
+    const entry = source.kind === "tier" || source.kind === "pool" ? findEntry(input.pool, actor) : declaredEntry(input.pool, actor);
     // The tier is a preference: a tier model the pool lacks is not a
     // candidate passed over, and the routing is asked next.
     if (source.kind === "tier" && !entry) continue;
@@ -207,13 +209,10 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   // this entry's model, in the same harness, is this entry.
   // The same model under another harness fails the family rule below, which
   // names it as the contributor's model.
-  // A recorded actor that is an entry exactly is that entry; one the pool
-  // lacks is this entry when it is this entry's model in its harness
-  // (sameActor: a profile, letter case). No pool alias is read, so a
-  // contributor that is another entry is never this one (gemini-4-argon's
-  // fifth review of t622, follow-up 3).
-  const isThis = (name: string) => { const own = exactEntry(input.pool, name); return own ? own === entry : sameActor(actor, name); };
-  if (contributors.some(isThis)) failed.push("contributed to this item, and nobody reviews their own work");
+  // Contributors and lapsed reviewers are identities kept as declared, so an
+  // alias registered on this entry is this entry, as on main
+  // (gpt-6-astra's twelfth review of t622, finding 1).
+  if (contributors.some((c) => names.some((name) => sameActor(name, c)))) failed.push("contributed to this item, and nobody reviews their own work");
   else {
     const single = singleFamily(policy);
     const family = familyRefusal(actor, contributors, single);
@@ -222,7 +221,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
     else passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
   }
 
-  const avoided = input.avoid?.find((a) => isThis(a.actor));
+  const avoided = input.avoid?.find((a) => names.some((name) => sameActor(name, a.actor)));
   if (avoided) failed.push(avoided.reason);
 
   // Under a governed policy the gate counts only an assessor's review. Without
