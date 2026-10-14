@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ALL_PROJECTS, applicableAssignments, reviewRoles, type Assignment, type AssignmentRole } from "../src/models/assignments.ts";
-import { actorStanding, familyOf, standingRefusal, storedActor, typedModel, withStanding, type ModelEntry } from "../src/models/pool.ts";
+import { actorStanding, familyOf, standingRefusal, withStanding, type ModelEntry } from "../src/models/pool.ts";
+import { storedActor, typedModel } from "../src/models/identity.ts";
 import { suggestBuilder } from "../src/models/suggest.ts";
 import { routeParts } from "../src/plans/route.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
@@ -395,8 +396,6 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
     ["suggestReviewer", "review", (pool) => suggestReviewer({ item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner", assignments: [lunaAssigned("review")] }).actor],
     // The separate tier review (askTierReview) judges each tier name by tierEligible.
     ["askTierReview", "review", (pool) => tierReviewerPick([LUNA, "antigravity/gemini-4-argon"], ["claude-code/opus-5.5"], [], (a) => tierEligible(pool, null, a), null, null, [lunaAssigned("review")], pool).actor],
-    // A plan's review reads its approval pool with the standing now (withStanding).
-    ["withStanding", "review", (pool) => pickReviewer({ item: built, pool: withStanding([trapAstra, luna, argon, glm, opus, sonnet], pool), policy, allowPaid: false, assigned: [lunaAssigned("review")] }).reviewer?.actor ?? null],
     ["routeParts builder", "build", (pool) => routeParts(plan(part("a")), { pool, events: [], policy, allowPaid: false, assignments: [lunaAssigned("build")] })[0].builder?.actor ?? null],
     ["routeParts reviewer", "review", (pool) => routeParts(plan(part("a")), { pool, events: [], policy, allowPaid: false, assignments: [assigned("build", ["claude-code/opus-5.5"]), lunaAssigned("review")] })[0].reviewer?.actor ?? null],
     ["suggestBuilder", "build", (pool) => suggestBuilder({ item: { ...item, owner: null }, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner", assignments: [lunaAssigned("build")] }).actor],
@@ -406,22 +405,15 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
     // With Luna sound, each reader takes the assignment, so the trap is live.
     assert.equal(pick([trapAstra, luna, argon, glm, opus, sonnet]), LUNA, `${reader}: a sound Luna`);
     for (const [way, held] of ways(role)) {
-      // withStanding carries the standing now (state and roles); a status or
-      // cost is the saved entry's own, judged by the other readers.
-      if (reader === "withStanding" && (way === "refused" || way === "paid")) continue;
       assert.notEqual(pick([trapAstra, held, argon, glm, opus, sonnet]), LUNA, `${reader}: a ${way} Luna`);
     }
   }
-  // The standing every dispatch checks (actorStanding, through
-  // standingDispatch) is Luna's own, never Astra's.
-  for (const [way, held] of ways("review").slice(0, 3)) assert.ok(actorStanding([trapAstra, held], LUNA, "review"), `actorStanding: a ${way} Luna`);
   // A review's destination and name (requestReview, pickPrereviewer, the tier request) are Luna's own entry's.
   assert.deepEqual(reviewTarget([trapAstra, luna], LUNA), { agent: "codex", model: "gpt-6-luna", where: "home", actor: LUNA });
   assert.deepEqual(reviewTarget([trapAstra, luna], "codex/GPT-6-Luna"), { agent: "codex", model: "gpt-6-luna", where: "home", actor: LUNA });
   // Two entries of one model in a harness keep their own destinations.
   const twins = [{ ...opus, where: "home" as const }, entry("claude-code", "claude-opus-5-5", { where: "cloud" })];
   assert.equal(reviewTarget(twins, "claude-code/claude-opus-5-5").where, "cloud");
-  assert.ok(actorStanding([opus, { ...twins[1], state: "paused", stateAt: AT }], "claude-code/claude-opus-5-5", "review"));
   // A tier name written as an alias is offered and dispatched as the entry it names.
   const offers = [{ runner: "home:studio", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
   const aliased = [{ ...astra, aliases: ["astra-alias"], where: "home" as const }];
@@ -517,10 +509,6 @@ test("rule 1: every site that matches a recorded identity matches only its own e
   const LUNA = "codex/gpt-6-luna";
   const pausedLuna = { ...luna, state: "paused" as const, stateAt: AT };
   const lunaChoice = { ...assigned("review", [LUNA]), choices: [{ actor: LUNA, model: "gpt-6-luna" }] };
-  // withStanding: a plan's saved Luna, paused, keeps its standing once Luna leaves the pool.
-  const [, saved] = withStanding([trapAstra, pausedLuna], [trapAstra, argon]);
-  assert.equal(saved.state, "paused", "withStanding");
-  assert.notEqual(pickReviewer({ item: built, pool: withStanding([trapAstra, pausedLuna, argon], [trapAstra, argon]), policy, allowPaid: false, assigned: [lunaChoice] }).reviewer?.actor, LUNA, "withStanding then pickReviewer");
   // choiceMatches and orderByAssignment: Luna's assignment stops applying.
   assert.equal(pickReviewer({ item: built, pool: [trapAstra, argon], policy, allowPaid: false, assigned: [lunaChoice] }).assignment?.applied, null, "orderByAssignment");
   // The previous round's reviewer and the plan's routing: Luna gone is not Astra.

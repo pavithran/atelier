@@ -22,7 +22,7 @@
 
 import { aheadOfAssignments, FALLBACK, orderByAssignment, type Assignment, type AssignmentOutcome } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
-import { exactEntry } from "../models/pool.ts";
+import { exactEntry } from "../models/identity.ts";
 import { offering, type SeenOffer } from "../dispatch/rules.ts";
 import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";

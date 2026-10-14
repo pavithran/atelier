@@ -6,7 +6,7 @@ import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, entryRuns, exactEntry, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
+import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
@@ -77,6 +77,7 @@ import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick }
 import { offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
+import { exactEntry } from "./models/identity.ts";
 import { ACTING_EVENTS, linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
 import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
@@ -1343,13 +1344,6 @@ export class Ledger extends DurableObject<Env> {
     // (overrideDispatch, t491); the builder it leaves is checked as any other.
     const d = overrideDispatch(input, previous, by, at);
     if (d.agent && d.model) this.assertStanding(`${d.agent}/${d.model}`, role, pool);
-    // A bare model, any harness: refused when the standing holds any pool
-    // entry running it, since the runner that claims picks the harness
-    // (gemini-4-argon's ninth review of t622, finding 1).
-    else if (d.model) {
-      const entries = (pool ?? this.poolStanding()).filter((e) => entryRuns(e, d.model!) || e.aliases.some((a) => a.toLowerCase() === d.model!.toLowerCase()));
-      for (const e of entries) this.assertStanding(`${e.harness}/${e.id}`, role, pool);
-    }
     return d;
   }
 

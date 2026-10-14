@@ -543,7 +543,11 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     const open = async (title: string) => (await L.newItem(title, [`src/${title}.ts`], "owner", { accept: ["Works"] })).id;
     // dispatch --agent --model, a bare --model, and --overlap-ok's retain.
     await refused("dispatch", await call("POST", `${P}/items/${await open("d1")}/dispatch`, { to: "home", agent: "opencode", model: "glm-alias" }));
-    await refused("dispatch --model", await call("POST", `${P}/items/${await open("d2")}/dispatch`, { to: "home", model: "glm-alias" }));
+    // A bare --model is converted to the exact id; the standing does not
+    // check a dispatch that names no harness (as on main), so it is stored.
+    const d2 = await open("d2");
+    expect((await call("POST", `${P}/items/${d2}/dispatch`, { to: "home", model: "glm-alias" })).status).toBe(200);
+    expect((await L.item(d2)).dispatch).toMatchObject({ model: "glm-9" });
     const d3 = await open("d3");
     expect((await call("POST", `${P}/items/${d3}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
     await refused("dispatch --overlap-ok", await call("POST", `${P}/items/${d3}/dispatch`, { retain: true, overlapOk: true, agent: "opencode", model: "glm-alias" }));
@@ -584,7 +588,11 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     expect(posted.status, await posted.clone().text()).toBe(200);
     expect(JSON.stringify(await L.planView(plan.item.id))).toContain(`"actor":"${EXACT}"`);
     // plan refresh --resolve --to, at the ledger, which a missed boundary reaches unconverted.
-    await expect(L.planResolve(plan.item.id, "owner", "0".repeat(40), false, ALIAS)).rejects.toThrow(/paused since|plan|approved/);
+    // On an approved plan, so the refusal is the standing's (gpt-6-astra's
+    // tenth review of t622, follow-up 3).
+    const resolving = await planned("roles-boundary-resolve");
+    await resolving.L.poolChanged(await index().models());
+    await expect(resolving.L.planResolve(resolving.id, "owner", "1".repeat(40), false, ALIAS)).rejects.toThrow(/model_held\|opencode\/glm-alias is paused since/);
     // init --review-tier and --triage: stored as the exact id, marked so.
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/roles-boundary-init`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),

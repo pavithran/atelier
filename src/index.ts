@@ -20,13 +20,14 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_M
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, typedActor, typedModel, type ModelEntry, type PoolFamily } from "./models/pool";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
+import { typedActor, typedModel } from "./models/identity.ts";
 import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";

@@ -16,7 +16,9 @@
 // (src/criteria.ts), so a result is used only while all three are the same.
 
 import { criteriaOf, validBinding } from "../criteria.ts";
-import { exactEntry, paidPerToken, storedActor, type ModelEntry } from "../models/pool.ts";
+import { exactEntry, storedActor } from "../models/identity.ts";
+import type { ModelEntry } from "../models/pool.ts";
+import { paidPerToken } from "../plans/route.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 
 export type TriageStatus = "met" | "not-met" | "unsure";

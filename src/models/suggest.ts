@@ -1,6 +1,6 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
-import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
+import { latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
@@ -106,7 +106,7 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   // t622). Without it, a build assignment puts its eligible choices ahead of
   // the outcome ranking (src/models/assignments.ts, precedence).
   const rows = ranked(input)
-    .filter(({ entry }) => !(constraints.model && !entryRuns(entry, String(constraints.model))))
+    .filter(({ entry }) => !(constraints.model && modelKey(entry.id) !== modelKey(String(constraints.model))))
     .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
     .map((row) => ({ ...row, refusal: refusalOf(row.entry) }));
   const assigned = applicableAssignments(input.assignments ?? [], input.project, ["build"]);
