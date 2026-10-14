@@ -564,7 +564,9 @@ function invocations(root) {
 }
 
 test("a server missing one capability a command needs refuses it before its first request, naming the capability", async (t) => {
-  for (const { argv, required } of invocations(mkdtempSync(join(tmpdir(), "atelier-capabilities-argv-")))) {
+  const argvDir = mkdtempSync(join(tmpdir(), "atelier-capabilities-argv-"));
+  t.after(() => rmSync(argvDir, { recursive: true, force: true }));
+  for (const { argv, required } of invocations(argvDir)) {
     for (const missing of required) {
       const f = await stub(t, { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES.filter((n) => n !== missing) });
       const r = await f.run(argv);
