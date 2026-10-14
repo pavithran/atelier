@@ -4974,12 +4974,29 @@ export class Ledger extends DurableObject<Env> {
     return { item, record, repeat: null };
   }
 
-  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, token?: string | null): { item: Item; record: RecordedMerge } {
+  // The task's workspace and its write token, read together, so the token
+  // revoked is revoked in the repository it was made for (t653, gpt-6-astra:
+  // a claim made while the baseline was read gave a token whose fork a
+  // snapshot taken earlier did not name).
+  workspaceOf(id: string): { fork: string | null; token: string | null } {
+    const row = this.sql.exec(`SELECT fork, token_id FROM items WHERE id = ?`, id).toArray()[0];
+    if (!row) throw new RuleError("not_found", `no item ${id}`, 404);
+    return { fork: (row.fork as string | null) ?? null, token: (row.token_id as string | null) ?? null };
+  }
+
+  // `workspace` is what workspaceOf answered before the route revoked its
+  // token: the record is refused if the fork or the token has changed since,
+  // so no token the route did not revoke is taken off the record.
+  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, workspace: { fork: string | null; token: string | null }): { item: Item; record: RecordedMerge } {
     const at = new Date().toISOString();
     const { item, record, repeat } = this.recordMergeAllowed(id, actor, body, baseline, at);
     if (repeat) return { item, record: repeat };
+    const now = this.workspaceOf(id);
+    if (now.fork !== workspace.fork || now.token !== workspace.token) {
+      throw new RuleError("workspace_changed", `${id} was claimed again while the merge was checked, and its workspace or token changed; record it again`, 409);
+    }
     this.ctx.storage.transactionSync(() => {
-      this.dropToken(id, token);
+      this.dropToken(id, workspace.token);
       this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
       this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
       this.log(id, actor, "item.merge_recorded", { ...record, ...(item.head && item.head !== item.base && item.head !== record.commit ? { recordedHead: item.head } : {}) }, at);
