@@ -342,7 +342,8 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
   const why = pool.length
     ? `no model in the pool may plan: ${passedOver.map((c) => `${c.actor} (${c.reasons.join("; ")})`).join(", ")}`
     : "the model pool is empty";
-  return { actor: null, reasons: [why], passedOver };
+  // What became of the plan assignments, beside why no model may plan.
+  return { actor: null, reasons: [why, ...byAssignment.outcome.lines], passedOver };
 }
 
 // How many times the planner has let the plan go with a proposal the server

@@ -710,3 +710,50 @@ test("a tier naming a model with a profile is that model's entry: it keeps its p
   // Two entries that are the same model in a harness: the profile-less name is refused as ambiguous.
   assert.throws(() => typedActor([entry("opencode", "qwen-3:32b"), entry("opencode", "qwen-3:72b")], "opencode/qwen-3"), /names more than one model in the pool; use its exact harness\/id/);
 });
+
+// ── the sixteenth review of t622 (regression tests) ──────────────────────
+
+// Finding 1: the naming rule took the first case-insensitive exact match, so
+// with gpt-6-astra and GPT-6-ASTRA both in the pool the result depended on
+// the pool's order.
+test("ids that differ only in letter case: the one written exactly is it, otherwise the name is refused, in either pool order", () => {
+  const lower = entry("codex", "gpt-6-astra"), upper = entry("codex", "GPT-6-ASTRA");
+  for (const pool of [[lower, upper], [upper, lower]]) {
+    assert.equal(typedActor(pool, "codex/gpt-6-astra"), "codex/gpt-6-astra");
+    assert.equal(typedActor(pool, "codex/GPT-6-ASTRA"), "codex/GPT-6-ASTRA");
+    assert.throws(() => typedActor(pool, "codex/Gpt-6-Astra"), /names more than one model in the pool/);
+    assert.equal(typedModel(pool, "GPT-6-ASTRA"), "GPT-6-ASTRA");
+    assert.throws(() => typedModel(pool, "Gpt-6-Astra"), /names more than one model in the pool/);
+    assert.equal(tierIds({ reviewTier: ["codex/gpt-6-astra"] }, pool)[0], "codex/gpt-6-astra");
+  }
+  // One entry: any letter case names it.
+  assert.equal(typedActor([lower], "codex/GPT-6-Astra"), "codex/gpt-6-astra");
+});
+
+// Finding 2: a selector that found no model dropped the assignment
+// explanation. Assignment a42 names the only model, which is paused: every
+// selector's failure names a42 and why it was skipped.
+test("a selector that finds no model still says which assignment was skipped and why", () => {
+  const paused = { state: "paused" as const, stateAt: AT, note: "spent" };
+  const a42 = (role: AssignmentRole, actor: string) => ({ ...assigned(role, [actor]), id: "a42" });
+  const skipped = /Role assignment a42 skipped: no choice is eligible here \([^)]*paused since 2026-10-13/;
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
+  // The builder, suggested and routed.
+  assert.throws(() => suggestBuilder({ item, project: "atelier", pool: [{ ...opus, ...paused }], policy, sources: [], runs: [], owner: "owner", assignments: [a42("build", "claude-code/opus-5.5")] }), skipped);
+  const [r] = routeParts(plan(part("a")), { pool: [{ ...opus, ...paused }], events: [], policy, allowPaid: false, assignments: [a42("build", "claude-code/opus-5.5")] });
+  assert.equal(r.builder, null);
+  assert.match(r.unrouted!, skipped);
+  // The planner.
+  const planner = pickPlanner([{ ...astra, ...paused }], [], policy, undefined, undefined, [a42("plan", "codex/gpt-6-astra")]);
+  assert.equal(planner.actor, null);
+  said(planner.reasons, skipped);
+  // The reviewer, picked and suggested.
+  const reviewer = pickReviewer({ item: built, pool: [{ ...astra, ...paused }], policy, allowPaid: false, assigned: [a42("review", "codex/gpt-6-astra")] });
+  assert.equal(reviewer.reviewer, null);
+  assert.match(reviewer.unpicked!, skipped);
+  assert.throws(() => suggestReviewer({ item: { ...item, owner: "claude-code/opus-5.5" }, project: "atelier", pool: [{ ...astra, ...paused }], policy, sources: [], runs: [], owner: "owner", assignments: [a42("review", "codex/gpt-6-astra")] }), skipped);
+  // The plan's reviewer.
+  const [rr] = routeParts(plan(part("a")), { pool: [opus, { ...astra, ...paused }], events: [], policy, allowPaid: false, assignments: [a42("review", "codex/gpt-6-astra")] });
+  assert.equal(rr.reviewer, null);
+  assert.match(rr.unrouted!, skipped);
+});

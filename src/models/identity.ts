@@ -17,9 +17,25 @@ import { modelKey, RuleError, sameActor } from "../rules.ts";
 import type { ModelEntry } from "./pool.ts";
 
 // The entry an exact harness/id is, or undefined.
+//
+// The pool may hold two ids that differ only in letter case (gpt-6-astra and
+// GPT-6-ASTRA are two entries). The entry whose harness/id is the name
+// case-sensitively is it; else the one entry matching in any letter case;
+// two such and none exact is no entry here (entryNamed refuses it as
+// ambiguous), whatever the pool's order (gpt-6-astra's sixteenth review of
+// t622, finding 1).
 export function exactEntry<E extends Pick<ModelEntry, "id" | "harness">>(pool: readonly E[], actor: string): E | undefined {
+  const found = exactEntries(pool, actor);
+  return found.length === 1 ? found[0] : undefined;
+}
+
+// The entries a harness/id names exactly: the case-sensitive one alone when
+// there is one, else every case-insensitive match.
+function exactEntries<E extends Pick<ModelEntry, "id" | "harness">>(pool: readonly E[], actor: string): E[] {
+  const same = pool.filter((m) => `${m.harness}/${m.id}` === actor);
+  if (same.length) return same;
   const lower = actor.toLowerCase();
-  return pool.find((m) => `${m.harness}/${m.id}`.toLowerCase() === lower);
+  return pool.filter((m) => `${m.harness}/${m.id}`.toLowerCase() === lower);
 }
 
 // The rule for a name a person types (gpt-6-astra's fourteenth review of
@@ -44,8 +60,8 @@ export function entryNamed<E extends Pick<ModelEntry, "id" | "harness" | "aliase
 // The entries answering a typed name at the first step of the rule above
 // that any answers: one, several (ambiguous), or none.
 export function namedCandidates<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(pool: readonly E[], name: string): { found: E[]; how: string } {
-  const exact = exactEntry(pool, name);
-  if (exact) return { found: [exact], how: "is" };
+  const exact = exactEntries(pool, name);
+  if (exact.length) return { found: exact, how: "is" };
   const slash = name.indexOf("/");
   const harness = slash === -1 ? null : name.slice(0, slash).toLowerCase();
   const inHarness = pool.filter((m) => harness === null || m.harness.toLowerCase() === harness);
@@ -69,13 +85,16 @@ export function typedActor(pool: readonly Pick<ModelEntry, "id" | "harness" | "a
 // when none answers; two distinct ids at a step are refused.
 export function typedModel(pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[], model: string): string {
   const lower = model.toLowerCase();
-  const exact = pool.find((m) => m.id.toLowerCase() === lower);
-  if (exact) return exact.id;
   const one = (ids: string[], how: string): string | undefined => {
     const distinct = [...new Set(ids)];
     if (distinct.length > 1) throw new RuleError("ambiguous_model", `${model} names more than one model in the pool; use its exact id`, 400);
     return distinct[0];
   };
+  // (a): the id written exactly, else the one id equal in any letter case;
+  // two ids differing only in case, neither written exactly, are refused.
+  if (pool.some((m) => m.id === model)) return model;
+  const exact = one(pool.filter((m) => m.id.toLowerCase() === lower).map((m) => m.id), "is");
+  if (exact) return exact;
   return one(pool.filter((m) => modelKey(m.id) === modelKey(model)).map((m) => m.id), "is the same model as")
     ?? one(pool.filter((m) => m.aliases.some((a) => a.toLowerCase() === lower || modelKey(a) === modelKey(model))).map((m) => m.id), "is an alias of")
     ?? model;
