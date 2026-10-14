@@ -19,7 +19,7 @@ import { branchesRepoName, repoName } from "../src/rules.ts";
 const OWNER = "branches-owner", AGENT = "codex/gpt-6-astra", HEAD = "a".repeat(40), WIP = "b".repeat(40);
 let serial = 0;
 
-type World = { repos: Set<string>; refs: Record<string, Record<string, string>>; descriptions: Record<string, string | null>; minted: Array<{ repo: string; scope: string }>; forks: Array<{ from: string; to: string; defaultBranchOnly: unknown }> };
+type World = { onLog?: () => Promise<void>; repos: Set<string>; refs: Record<string, Record<string, string>>; descriptions: Record<string, string | null>; minted: Array<{ repo: string; scope: string }>; forks: Array<{ from: string; to: string; defaultBranchOnly: unknown }> };
 const newWorld = (): World => ({ repos: new Set(), refs: {}, descriptions: {}, minted: [], forks: [] });
 
 // A project registered under `name` with its baseline in `world`, a fake
@@ -52,6 +52,10 @@ async function setup(name = `branches-${++serial}`, world = newWorld()) {
         },
         log: async (opts: { ref?: string } = {}) => {
           const hash = refs[r][opts.ref ?? "main"];
+          // A one-shot pause after the tip is read and before it is
+          // answered, in which another request can run.
+          const hook = world.onLog;
+          if (hook) { world.onLog = undefined; await hook(); }
           return hash ? [{ hash, treeHash: "c".repeat(40), parents: [], message: "Draft the idea\n\nMore", author: { name: "Dev" }, committedAt: 1_800_000_000 }] : [];
         },
         readTree: async () => [],
@@ -187,16 +191,31 @@ it("Astra's order: a branches repository made first, then a claim whose fork wou
   expect((await legacy.L.item("t1")).fork ?? null).toBe(null);
 });
 
-it("a claim takes a fork an earlier attempt of its own made", async () => {
-  const t = await setup();
-  await t.L.newItem("Build", [], "owner");
-  const fork = repoName(t.name, "t1");
-  t.repos.add(fork); t.refs[fork] = { main: HEAD }; t.descriptions[fork] = `Atelier: the task fork ${fork}`;
-  const agent = await (await t.owner("POST", "/tokens", { actor: AGENT, projects: [t.name] })).json() as { token: string };
-  const claim = await t.request("POST", `/projects/${t.name}/items/t1/claim`, agent.token, AGENT, {});
-  expect(claim.status, await claim.clone().text()).toBe(200);
-  expect((await t.L.item("t1")).fork).toBe(fork);
-});
+// A fork under the claim's name is taken by what its description says it
+// was made for, never because it is there: each description below is
+// first refused and then, for the claim's own, taken. Without the check,
+// the first claim would take a fork made for another project or task.
+for (const [form, own] of [["now", (t: { name: string }, fork: string) => `Atelier: the task fork ${fork}`], ["before t641", (t: { name: string }) => `${t.name} t1: A title edited since`]] as const) {
+  it(`a claim takes a fork an earlier attempt of its own made, described as Atelier describes one ${form}, and refuses one described for another project or task`, async () => {
+    const t = await setup();
+    await t.L.newItem("Build", [], "owner");
+    const fork = repoName(t.name, "t1");
+    t.repos.add(fork); t.refs[fork] = { main: HEAD };
+    const agent = await (await t.owner("POST", "/tokens", { actor: AGENT, projects: [t.name] })).json() as { token: string };
+    const claim = () => t.request("POST", `/projects/${t.name}/items/t1/claim`, agent.token, AGENT, {});
+    for (const foreign of [`other-project t1: ${t.name}`, `${t.name} t2: Build`, `${t.name}-x t1: Build`, `Atelier: the task fork other--t1`, null]) {
+      t.descriptions[fork] = foreign;
+      const refused = await claim();
+      expect(refused.status, String(foreign)).toBe(409);
+      expect(await refused.text()).toContain("repo_foreign");
+    }
+    expect(t.minted).toEqual([]);
+    t.descriptions[fork] = own(t, fork);
+    const taken = await claim();
+    expect(taken.status, await taken.clone().text()).toBe(200);
+    expect((await t.L.item("t1")).fork).toBe(fork);
+  });
+}
 
 it("Argon's case: project branches's fork of t1 and project t1's branches repository are different repositories", async () => {
   const world = newWorld();
@@ -245,8 +264,12 @@ it("a branches repository made for this project whose record was lost is taken b
   const t = await setup();
   t.artifacts.add(t.branches);
   t.refs[t.branches] = { main: HEAD };
-  t.descriptions[t.branches] = `Atelier: the developer's branches of the project stored under ${t.name}`;
   expect(await t.L.branchesRepo()).toBe(null);
+  // Described for another project's branches, it is refused first.
+  t.descriptions[t.branches] = `Atelier: the developer's branches of the project stored under ${t.name}-other`;
+  expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(409);
+  expect(t.minted).toEqual([]);
+  t.descriptions[t.branches] = `Atelier: the developer's branches of the project stored under ${t.name}`;
   expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
   expect(await t.L.branchesRepo()).toBe(t.branches);
   expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
@@ -260,4 +283,31 @@ it("init refuses to take as a new project's baseline a repository Atelier made f
   const res = await t.owner("PUT", `/projects/${name}`, {});
   expect(res.status, await res.clone().text()).toBe(409);
   expect(await res.text()).toContain("repo_foreign");
+});
+
+// Astra's third review of t641, finding 1: Mac A's push is checked, then
+// Mac B pushes and records over it, then A's record arrives. A's record is
+// answered stale and B's stands, so status shows the commit Git holds.
+it("a push recorded after another Mac pushed and recorded since is answered stale, and the newer record stands", async () => {
+  const t = await setup();
+  expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
+  const A = "1".repeat(40), B = "2".repeat(40);
+  t.refs[t.branches]["wip/idea"] = A;
+  let recordedB = 0;
+  // A's request has read its commit as the tip; B pushes and records now.
+  t.world.onLog = async () => {
+    t.refs[t.branches]["wip/idea"] = B;
+    recordedB = (await t.owner("POST", `/projects/${t.name}/branches`, { name: "wip/idea", commit: B, host: "Mac-B" })).status;
+  };
+  const a = await t.owner("POST", `/projects/${t.name}/branches`, { name: "wip/idea", commit: A, host: "Mac-A" });
+  expect(recordedB).toBe(201);
+  expect(a.status, await a.clone().text()).toBe(409);
+  const body = await a.json() as { error: string; detail: string; tip: string };
+  expect(body.error).toBe("branch_moved");
+  expect(body.tip).toBe(B);
+  expect(body.detail).toContain("another Mac pushed wip/idea since");
+  expect(body.detail).toContain("from Mac-B");
+  expect(body.detail).toContain("atelier branch ls");
+  const list = await (await t.owner("GET", `/projects/${t.name}/branches`)).json() as { branches: Array<{ name: string; commit: string; host: string }> };
+  expect(list.branches.map((b) => [b.name, b.commit, b.host])).toEqual([["wip/idea", B, "Mac-B"]]);
 });
