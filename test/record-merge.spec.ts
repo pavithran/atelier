@@ -281,3 +281,57 @@ it("a fork recorded after the task was merged or claimed again is refused, and t
   const wrong = await L.setFork(other.id, "record-merge-late-fork--t3", BASE, BUILDER, false, first.generation + 1).then(() => null, (e: unknown) => e as Error);
   expect(wrong?.message).toMatch(/claim_superseded/);
 });
+
+// antigravity/gemini-4-argon's review of t653 (round 4): claimInFlight
+// inferred a claim from the fork, the token and the last claim event, so a
+// handed-off task (its token dropped, no claim in flight) was refused, and a
+// claim reserved without an item.claimed event (a re-claim by the holder, or
+// a claim after a fast take) was missed. A claim is in flight now exactly
+// when its reserved generation (claim_pending) has not completed.
+it("a handed-off task is recorded: no claim is in flight after a handoff", async () => {
+  const { L, call } = await setup("record-merge-handoff");
+  const item = await L.newItem("Handed off, then merged by hand", [], "owner");
+  const { generation } = await L.claim(item.id, BUILDER);
+  await L.setFork(item.id, "record-merge-handoff--t1", BASE, BUILDER, false, generation);
+  await L.recordToken(item.id, BUILDER, generation, null, "tok-h");
+  await L.handoff(item.id, "owner", ASTRA, "the freeze moved it", false, "tok-h");
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: ASTRA });
+  expect(await L.tokenId(item.id)).toBeNull();
+  const r = await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews });
+  expect(r.status, await r.clone().text()).toBe(200);
+  expect((await L.item(item.id)).state).toBe("merged");
+});
+
+it("refuses the record while the holder's re-claim is in flight, and records it once the re-claim completes", async () => {
+  const { L, call } = await setup("record-merge-reclaim");
+  const item = await L.newItem("Re-claimed by its holder", [], "owner");
+  const first = await L.claim(item.id, BUILDER);
+  await L.setFork(item.id, "record-merge-reclaim--t1", BASE, BUILDER, false, first.generation);
+  await L.recordToken(item.id, BUILDER, first.generation, null, "tok-1");
+  // The holder claims again: a new generation, the fork and old token still recorded.
+  const again = await L.claim(item.id, BUILDER);
+  expect(again.generation).toBeGreaterThan(first.generation);
+  await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews }), 409, "claim_in_flight");
+  expect(await L.recordToken(item.id, BUILDER, again.generation, "tok-1", "tok-2")).toBe(true);
+  expect((await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+});
+
+it("records a fast take, and refuses a claim in flight after it", async () => {
+  const { L, call } = await setup("record-merge-fast");
+  const item = await L.newItem("Taken fast", [], "owner");
+  await L.dispatch(item.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "Artifacts fails every new fork");
+  const runner = { runner: "home:studio", kind: "home" } as const;
+  await L.takeFast(item.id, ASTRA, runner);
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: ASTRA, fork: null });
+  // The holder's claim after the take reserves a generation with no item.claimed event.
+  await L.claim(item.id, ASTRA, runner);
+  await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews }), 409, "claim_in_flight");
+  // A fast take alone is complete: no claim is in flight.
+  const other = await L.newItem("Taken fast, merged by hand", [], "owner");
+  await L.dispatch(other.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  await L.takeFast(other.id, ASTRA, runner);
+  const r = await call(other.id, { mergeCommit: MERGE, head: HEAD, reviews });
+  expect(r.status, await r.clone().text()).toBe(200);
+});
