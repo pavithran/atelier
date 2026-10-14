@@ -243,6 +243,19 @@ it("a dispatch naming a model without a harness is refused, and withdrawn by a p
   }
 });
 
+// gemini-4-argon's review of t649: a bare model read no entry as its own,
+// so a held entry listing the model as an alias held its free entry.
+it("a dispatch naming a free model without a harness is not held by another entry listing it as an alias", async () => {
+  const luna = entry("gpt-6-luna", "codex");
+  const astra = { ...entry("gpt-6-astra", "codex"), aliases: ["gpt-6-luna"], state: "paused" as const, stateAt: AT, note: "AI Studio down" };
+  for (const [order, pool] of [["entry first", [luna, astra]], ["alias owner first", [astra, luna]]] as const) {
+    const L = await project(`bare-own-${order.replaceAll(" ", "-")}`);
+    await L.poolChanged([...pool]);
+    const { id } = await L.newItem("Small task", ["src/**"], "owner");
+    expect((await L.dispatch(id, "owner", { to: "home", model: "gpt-6-luna" })).dispatch, order).toMatchObject({ agent: null, model: "gpt-6-luna" });
+  }
+});
+
 it("a held model cannot claim a task by hand, and a model still free to build can", async () => {
   const L = await project("build-held-hand");
   await L.poolChanged(holding({ roles: ["review"] }));
