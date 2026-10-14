@@ -289,7 +289,7 @@ test("init --rename-local keeps the old name, so a workspace still named it stay
   assert.equal(projectKey(projects, "weblog"), "ikon");
 }));
 
-test("projects rename into an existing entry keeps every private setting of both", () => fixture(({ command, initial, config }) => {
+test("projects rename into an existing entry keeps every private setting of both", () => fixture(({ command, initial, config, calls }) => {
   const prepared = command(["init", "--name", "ikon", "--rename-local"]);
   assert.equal(prepared.status, 0, prepared.stderr);
   const file = join(initial.projects.weblog.path, "config.json");
@@ -309,8 +309,11 @@ test("projects rename into an existing entry keeps every private setting of both
   // Two different folders are not guessed between: refused, nothing changed.
   const clash = { ...config(), projects: { ikon: { ...ikon, privateHome: "/keep/ikon" }, weblog: { path: "/elsewhere", branch: "old", privateHome: "/keep/weblog" } } };
   writeFileSync(file, JSON.stringify(clash));
+  const asked = calls().length;
   const refused = command(["projects", "rename", "weblog", "ikon"]);
   assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /name different folders for their private files \(\/keep\/weblog and \/keep\/ikon\); nothing in the local config was changed/);
+  assert.match(refused.stderr, /weblog was not renamed: .*name different folders for their private files \(\/keep\/weblog and \/keep\/ikon\); nothing was renamed and nothing in the local config was changed/);
   assert.deepEqual(config(), clash);
+  // Checked before the server was asked (Astra's eighth review of t645).
+  assert.equal(calls().length, asked, "nothing was renamed on the server");
 }));

@@ -2,13 +2,18 @@
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
-import { moveProjectEntry } from "../private.mjs";
+import { moveConflict, moveProjectEntry } from "../private.mjs";
 
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {
   const [, sub, name, to] = args._;
   if (sub === "rename") {
     if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
+    // The local move is checked first: a rename the local config would then
+    // refuse is not made on the server either (Astra's eighth review of
+    // t645), so nothing is left half done.
+    const conflict = moveConflict(cfg.projects, name, to);
+    if (conflict) die(`${name} was not renamed: ${conflict}`);
     const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
     // The server answers the new name for both when the request named it
     // to finish a rename: no entry moves, and the one under it stays.
