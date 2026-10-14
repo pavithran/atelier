@@ -1190,7 +1190,12 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!repo || !tokenId || tokenId.startsWith("runner:")) return;
+  if (!tokenId || tokenId.startsWith("runner:")) return;
+  // A write token is recorded only once its fork exists (the claim route
+  // sets the fork, then mints and records the token), so a token with no
+  // repository means the caller read the fork before a claim made both. It
+  // is refused, never passed over, or the token would stay live off the record (t653).
+  if (!repo) throw new RuleError("workspace_changed", "the task was claimed while this was asked, so its new workspace token was not revoked and nothing was changed; try again", 409);
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -3018,12 +3023,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         holds = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
       }
       // As abandon and release do: check, revoke the workspace token, then
-      // record, dropping the token only if it is still the one revoked. A
-      // revocation that fails changes nothing, and the retry revokes again.
-      const oldToken = await L.tokenId(id);
+      // record. The fork and token are read together after the baseline
+      // reads, so a claim made meanwhile is the one revoked, and the record
+      // is refused if either changes after that read. A revocation that
+      // fails changes nothing, and the retry revokes again.
       await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
-      await revoke(env, before.fork, oldToken);
-      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, oldToken));
+      const workspace = await L.workspaceOf(id);
+      await revoke(env, workspace.fork, workspace.token);
+      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, workspace));
     }
     case "landing": {
       requireOwner(env, actor);
