@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, excludesPrivate, mergeConfigForSave, moveProjectEntry, moveProjectEntryOnDisk, saveWholeConfig, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, excludesPrivate, lockKey, mergeConfigForSave, moveProjectEntry, moveProjectEntryOnDisk, saveWholeConfig, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
@@ -1060,4 +1060,51 @@ test("a list that is there but cannot be read opts the project in, refuses pushe
   assert.equal(entry.privateHome, f.keep, "the project is opted in");
   assert.match(guard.refusal ?? "", /cannot be read.*Nothing was pushed\./);
   assert.equal(pending.privateHome, f.keep, "a first init's pending entry is opted in too");
+});
+
+// Astra's eighteenth review of t645: a lock keyed by the path as written
+// let two spellings of one folder take two locks.
+test("two spellings of one folder share one lock key", (t) => {
+  const f = setup(t);
+  const alias = join(f.root, "alias");
+  symlinkSync(f.keep, alias);
+  assert.equal(lockKey(join(alias, ".atelier-private")), lockKey(join(f.keep, ".atelier-private")), "through a symbolic link");
+  const upper = f.keep.replace(/demo$/i, "DEMO").replace(/Demo$/, "DEMO");
+  if (existsSync(upper) && upper !== f.keep) assert.equal(lockKey(join(upper, ".atelier-private")), lockKey(join(f.keep, ".atelier-private")), "in another letter case");
+  assert.notEqual(lockKey(join(f.root, "elsewhere", ".atelier-private")), lockKey(join(f.keep, ".atelier-private")));
+});
+
+// Argon's eighteenth review of t645, finding 2: two private add commands at
+// once raced to make the same link, and the second failed with EEXIST.
+for (const lock of [true, false]) {
+  test(`two commands linking the same file at once both succeed ${lock ? "(the second waits)" : "(without the lock, the link the other made is taken as made)"}`, async (t) => {
+    const f = setup(t);
+    const entry = JSON.stringify({ path: f.checkout, private: ["PROJECT.md"], privateHome: f.keep });
+    const link = `const { linkPrivate } = await import(${moduleUrl}); const r = linkPrivate(${JSON.stringify(f.checkout)}, ${entry}, { name: "demo" }); if (r.refused.length) process.exit(3);`;
+    await overlap(t, { stage: "link", first: link, second: link, env: { ATELIER_CONFIG_DIR: join(f.root, "config") }, lock });
+    assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "PROJECT.md"));
+  });
+}
+
+// Argon's eighteenth review of t645, finding 3: names read from another
+// folder were kept as a copy while the current folder's list could not be
+// read, and the next push then passed as though that list had a copy.
+test("names from other folders do not stand in for an unreadable current list", (t) => {
+  const f = setup(t);
+  const old = join(f.root, "old-folder");
+  mkdirSync(old);
+  writeFileSync(join(old, ".atelier-private"), "a.md\n");
+  const file = join(f.keep, ".atelier-private");
+  writeFileSync(file, "PROJECT.md\n");
+  chmodSync(file, 0o000);
+  const entry = { path: f.checkout, private: ["mine.md"], privateHome: f.keep };
+  let first, second;
+  try {
+    first = privateGuard("demo", entry, { root: f.icloud, homes: [old], save: () => {} });
+    second = privateGuard("demo", entry, { root: f.icloud, save: () => {} });
+  } finally { chmodSync(file, 0o644); }
+  assert.ok(first.paths.includes("a.md"), "the other folder's names are guarded");
+  assert.match(first.refusal ?? "", /cannot be read/);
+  assert.equal(entry.privateFromList, undefined, "they are not kept as a copy of the current list");
+  assert.match(second.refusal ?? "", /cannot be read/, "the next push still refuses");
 });

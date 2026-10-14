@@ -19,8 +19,8 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { PRIVATE_LIST, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
+import { basename, dirname, join, resolve } from "node:path";
+import { PRIVATE_LIST, foldPath, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
 
 // The iCloud folder that holds a folder per project.
 // ATELIER_PRIVATE_ROOT names another, so tests never read this Mac's own.
@@ -158,7 +158,11 @@ export function privateGuard(name, entry, { root, save, homes = [] } = {}) {
   // Names read from an older folder are kept in the copy too (Astra's
   // sixteenth review of t645), so they stay guarded once that folder is no
   // longer known; the copy only grows.
-  if (entry && more.some((p) => !copy.includes(p))) {
+  // While the current folder's list cannot be read and no copy of it is
+  // kept, names from other folders are guarded but not kept as a copy, so
+  // the refusal stands until that list is read (Argon's eighteenth review
+  // of t645).
+  if (entry && more.some((p) => !copy.includes(p)) && (kept || !list.unreadable)) {
     entry.privateFromList = [...new Set([...copy, ...plainPaths(more)])];
     save?.();
   }
@@ -379,8 +383,25 @@ export function withConfigLock(fn) {
 // copy of the other.
 export function withListLock(home, fn) {
   const file = join(home, PRIVATE_LIST);
-  const key = createHash("sha256").update(resolve(file)).digest("hex").slice(0, 16);
-  return withLock(join(dirname(configFile()), `private-list-${key}.lock`), file, fn);
+  return withLock(join(dirname(configFile()), `private-list-${lockKey(file)}.lock`), file, fn);
+}
+
+// The key of a lock guarding a file: the file's path as the volume knows it
+// (Astra's eighteenth review of t645), so two spellings of one folder (a
+// symbolic link to it, another letter case on a volume that ignores case)
+// share one lock. The folder is resolved through its links when it exists,
+// else as written; on a volume that ignores case the path is folded.
+export function lockKey(file) {
+  let dir = resolve(dirname(file));
+  try { dir = realpathSync(dir); } catch { /* not made yet: as written */ }
+  let path = join(dir, basename(file));
+  if (ignoresCase(dir)) path = foldPath(path);
+  return createHash("sha256").update(path).digest("hex").slice(0, 16);
+}
+function ignoresCase(dir) {
+  const other = dir.replace(/[A-Za-z]/g, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+  if (other === dir) return false;
+  try { const a = statSync(dir), b = statSync(other); return a.ino === b.ino && a.dev === b.dev; } catch { return false; }
 }
 
 const readConfigFile = (file) => {
@@ -663,9 +684,19 @@ function excludeFile(checkout) {
 // commands at once never drop each other's (Astra's thirteenth review of
 // t645).
 export function excludePrivate(checkout, paths) {
+  return withCheckoutLock(checkout, () => excludeHeld(checkout, paths));
+}
+
+// The lock for one checkout's private-file changes: its ignore lines and its
+// links (Argon's eighteenth review of t645), keyed by its exclude file.
+export function withCheckoutLock(checkout, fn) {
   const file = excludeFile(checkout);
-  const key = createHash("sha256").update(resolve(file)).digest("hex").slice(0, 16);
-  return withLock(join(dirname(configFile()), `exclude-${key}.lock`), file, () => {
+  return withLock(join(dirname(configFile()), `exclude-${lockKey(file)}.lock`), file, fn);
+}
+
+function excludeHeld(checkout, paths) {
+  const file = excludeFile(checkout);
+  {
     const text = existsSync(file) ? readFileSync(file, "utf8") : "";
     testHold("exclude");
     const have = new Set(text.split("\n"));
@@ -675,7 +706,7 @@ export function excludePrivate(checkout, paths) {
     const head = have.has(EXCLUDE_HEADER) ? [] : [EXCLUDE_HEADER];
     appendFileSync(file, `${text && !text.endsWith("\n") ? "\n" : ""}${[...head, ...lines].join("\n")}\n`);
     return lines;
-  });
+  }
 }
 
 // Whether Git, with every ignore rule the checkout has, ignores a private
@@ -738,6 +769,10 @@ function stateOf(checkout, home, path) {
 // elsewhere (a home that moved) is replaced. Returns what it did, with the
 // lines to print in `said`.
 export function linkPrivate(checkout, entry, { name, root } = {}) {
+  return withCheckoutLock(checkout, () => linkHeld(checkout, entry, { name, root }));
+}
+
+function linkHeld(checkout, entry, { name, root } = {}) {
   const list = privateList(name, entry, root);
   const paths = list.paths;
   const result = { linked: [], kept: [], missing: [], refused: [], invalid: list.refused, said: [] };
@@ -749,7 +784,7 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
   // else is named (Argon's seventeenth review of t645).
   if (list.unreadable && !list.homeMissing && (list.listed || list.home)) say(`Warning: ${list.unreadable}; the private files it names cannot be known here, and Atelier refuses to push until it can be read.`);
   if (!paths.length && !list.listed) return result;
-  excludePrivate(checkout, [...paths, PRIVATE_LIST]);
+  excludeHeld(checkout, [...paths, PRIVATE_LIST]);
   if (!paths.length) return result;
   if (list.homeError) { say(`Private files not linked: ${list.homeError}. Git ignores ${paths.join(", ")} in ${checkout}.`); result.home = null; return result; }
   const home = result.home = list.home;
@@ -797,7 +832,16 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
       continue;
     }
     mkdirSync(dirname(link), { recursive: true });
-    symlinkSync(target, link);
+    testHold("link");
+    try { symlinkSync(target, link); }
+    catch (error) {
+      // Another command made the same link meanwhile (Argon's eighteenth
+      // review of t645): it points where this one would, and is Atelier's.
+      let points = null;
+      try { points = readlinkSync(link); } catch { /* not a link */ }
+      if (error?.code === "EEXIST" && points === target) { recordLink(checkout, path, target); result.kept.push(path); continue; }
+      throw error;
+    }
     recordLink(checkout, path, target);
     result.linked.push(path);
   }
