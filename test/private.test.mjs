@@ -576,3 +576,50 @@ test("private add and remove refuse a list they cannot read, and change nothing"
   assert.equal(readFileSync(file, "utf8"), "PROJECT.md\nother.md\n", "the list is as it was");
   assert.deepEqual(f.read(), before, "the config is as it was");
 });
+
+// Astra's sixth review of t645, finding 2: the guard saved by writing the
+// whole config the process held in memory, which, in a process started
+// earlier (the integrator), erased what another process wrote since.
+test("the guard writes only its own project's private settings, against the config as it is on disk", (t) => {
+  const f = setup(t);
+  const otherKeep = join(f.root, "other-keep");
+  mkdirSync(otherKeep);
+  writeFileSync(join(otherKeep, ".atelier-private"), "x.md\n");
+  f.write({ demo: { path: f.checkout, branch: "main", protect: [] }, other: { path: f.root, branch: "main", privateHome: otherKeep } });
+  // The integrator starts, holding the config as it is now.
+  const memory = JSON.parse(readFileSync(join(f.root, "config", "config.json"), "utf8"));
+  useConfig(memory);
+  const previous = { dir: process.env.ATELIER_CONFIG_DIR, root: process.env.ATELIER_PRIVATE_ROOT };
+  process.env.ATELIER_CONFIG_DIR = join(f.root, "config");
+  process.env.ATELIER_PRIVATE_ROOT = f.icloud;
+  t.after(() => {
+    useConfig(null);
+    for (const [key, value] of [["ATELIER_CONFIG_DIR", previous.dir], ["ATELIER_PRIVATE_ROOT", previous.root]]) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  });
+  // Another process makes a file of demo private.
+  writeFileSync(join(f.keep, "secret.md"), "s\n");
+  assert.equal(f.run("private", "add", "secret.md").code, 0);
+  // The integrator's guard for other reads other's list and keeps its copy.
+  assert.ok(privateGuardFor("other").paths.includes("x.md"));
+  const disk = f.read();
+  assert.deepEqual(disk.projects.other.privateFromList, ["x.md"], "other's copy is written");
+  assert.deepEqual(disk.projects.demo.private, ["secret.md"], "demo's settings, written by the other process, survive");
+});
+
+// Astra's sixth review of t645, finding 1: after projects rename the config
+// entry has the new name, while a workspace made before still names the old
+// one, and the guard looked only under the name it was given.
+test("a project renamed since is guarded under its former name", (t) => {
+  const f = setup(t);
+  f.write({ renamed: { path: f.checkout, branch: "main", private: ["secret.md"], formerNames: ["demo"] } });
+  const c = f.checkout;
+  writeFileSync(join(c, "secret.md"), "x\n");
+  f.git(c, "add", "-f", "secret.md");
+  f.git(c, "commit", "-q", "-m", "task");
+  const previous = process.env.ATELIER_CONFIG_DIR;
+  process.env.ATELIER_CONFIG_DIR = join(f.root, "config");
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_CONFIG_DIR; else process.env.ATELIER_CONFIG_DIR = previous; });
+  let pushed = false;
+  assert.throws(() => guardedPush({ project: "demo", cwd: c, tip: "HEAD", base: ["HEAD~1"], what: "t1's push to its fork" }, () => { pushed = true; }), /would carry private files: secret\.md/);
+  assert.equal(pushed, false);
+});

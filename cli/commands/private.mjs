@@ -5,7 +5,7 @@ import { privatePath } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { args, cfg, die, project, saveConfig } from "../atelier.mjs";
 import { PRIVATE_LIST } from "../../src/rules.ts";
-import { excludesPrivate, linkPrivate, privateGuardFor, privateList, privateState, readPrivateList, trackedPrivate, writePrivateList } from "../private.mjs";
+import { excludesPrivate, linkPrivate, privateGuardFor, savePrivateFields, privateList, privateState, readPrivateList, trackedPrivate, writePrivateList } from "../private.mjs";
 
 // The developer names the project's private files (t645). The names go to
 // the list beside the files in the project's iCloud folder, which follows the
@@ -54,7 +54,9 @@ function add(words) {
   const added = paths.filter((path) => !named.includes(path));
   entry.private = [...named, ...added];
   if (home) entry.privateHome = home;
-  saveConfig(cfg);
+  // Only this project's private settings are written, against the file as
+  // it is now (Astra's sixth review of t645).
+  savePrivateFields(name, entry, { home: typeof args.home === "string" ? home : null });
   console.log(added.length ? `${name}: ${added.join(", ")} ${added.length === 1 ? "is" : "are"} now private on this Mac.` : `${name}: no new private file; ${entry.private.length ? `it names ${entry.private.join(", ")}` : "it names none yet"}.`);
   if (typeof args.home === "string") console.log(`${name}'s private files are kept in ${home}.`);
   // The list in the folder, so every Mac's clone links them.
@@ -100,7 +102,7 @@ function remove(words) {
   }
   if (entry.private) entry.private = keep(entry.private);
   if (entry.privateFromList) entry.privateFromList = keep(entry.privateFromList);
-  saveConfig(cfg);
+  savePrivateFields(name, entry, { drop: gone });
   for (const path of gone) {
     const link = join(entry.path, path);
     try { if (lstatSync(link).isSymbolicLink() && list.home && readlinkSync(link) === join(list.home, path)) unlinkSync(link); } catch { /* not linked here */ }
