@@ -13,7 +13,7 @@
 // that may hold an alias, and is not marked exact (a policy's exactNames, an
 // event's actingExact), is converted when read by storedActor.
 
-import { RuleError } from "../rules.ts";
+import { modelKey, RuleError, sameActor } from "../rules.ts";
 import type { ModelEntry } from "./pool.ts";
 
 // The entry an exact harness/id is, or undefined.
@@ -22,16 +22,35 @@ export function exactEntry<E extends Pick<ModelEntry, "id" | "harness">>(pool: r
   return pool.find((m) => `${m.harness}/${m.id}`.toLowerCase() === lower);
 }
 
-// Where a person types a harness/model: the entry whose id it is, else the
-// one entry in its harness that lists it as an alias; undefined when none
-// does, and refused when two do.
+// The rule for a name a person types (gpt-6-astra's fourteenth review of
+// t622), in one place. A harness/model resolves, within its harness, to:
+//   (a) the entry whose id is the name exactly (any letter case); else
+//   (b) the one entry whose id is the same model by modelKey, as main's
+//       sameActor reads it: a ":profile" suffix stripped, letter case, the
+//       static registry's names (codex/gpt-6-astra:high is gpt-6-astra);
+//   (c) else the one entry listing the name as an alias, exactly or as the
+//       same model by sameActor.
+// Two entries answering at a step are ambiguous and refused; a step answers
+// only when the earlier ones did not. Undefined when none answers: a model
+// outside the pool. storedActor reads legacy stored names by the same rule.
 export function entryNamed<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(pool: readonly E[], name: string): E | undefined {
+  const { found, how } = namedCandidates(pool, name);
+  if (found.length > 1) throw new RuleError("ambiguous_model", `${name} ${how} ${found.map((m) => `${m.harness}/${m.id}`).join(" and ")}; name one by its id`, 400);
+  return found[0];
+}
+
+// The entries answering a typed name at the first step of the rule above
+// that any answers: one, several (ambiguous), or none.
+export function namedCandidates<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(pool: readonly E[], name: string): { found: E[]; how: string } {
   const exact = exactEntry(pool, name);
-  if (exact) return exact;
+  if (exact) return { found: [exact], how: "is" };
+  const slash = name.indexOf("/");
+  const harness = slash === -1 ? null : name.slice(0, slash).toLowerCase();
+  const inHarness = pool.filter((m) => harness === null || m.harness.toLowerCase() === harness);
+  const same = inHarness.filter((m) => sameActor(`${m.harness}/${m.id}`, name));
+  if (same.length) return { found: same, how: "is the same model as" };
   const lower = name.toLowerCase();
-  const by = pool.filter((m) => m.aliases.some((alias) => `${m.harness}/${alias}`.toLowerCase() === lower));
-  if (by.length > 1) throw new RuleError("ambiguous_model", `${name} is an alias of ${by.map((m) => `${m.harness}/${m.id}`).join(" and ")}; name one by its id`, 400);
-  return by[0];
+  return { found: inHarness.filter((m) => m.aliases.some((alias) => `${m.harness}/${alias}`.toLowerCase() === lower || sameActor(`${m.harness}/${alias}`, name))), how: "is an alias of" };
 }
 
 // The exact harness/id a typed name stands for, or the name as typed when
@@ -41,15 +60,23 @@ export function typedActor(pool: readonly Pick<ModelEntry, "id" | "harness" | "a
   return entry ? `${entry.harness}/${entry.id}` : name;
 }
 
-// A bare model a person types (dispatch --model without --agent): the id
-// itself when an entry has it, else the id of the one entry listing it as
-// an alias; refused when aliases of two different ids.
+// A bare model a person types (dispatch --suggest --model, no harness): by
+// the same rule, over every harness: (a) an entry's id exactly, else (b)
+// the one id that is the same model by modelKey, else (c) the one id listing
+// it as an alias. The result is a pool entry's id, or the model as typed
+// when none answers; two distinct ids at a step are refused.
 export function typedModel(pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[], model: string): string {
   const lower = model.toLowerCase();
-  if (pool.some((m) => m.id.toLowerCase() === lower)) return model;
-  const ids = [...new Set(pool.filter((m) => m.aliases.some((a) => a.toLowerCase() === lower)).map((m) => m.id))];
-  if (ids.length > 1) throw new RuleError("ambiguous_model", `${model} is an alias of ${ids.join(" and ")}; name one by its id`, 400);
-  return ids[0] ?? model;
+  const exact = pool.find((m) => m.id.toLowerCase() === lower);
+  if (exact) return exact.id;
+  const one = (ids: string[], how: string): string | undefined => {
+    const distinct = [...new Set(ids)];
+    if (distinct.length > 1) throw new RuleError("ambiguous_model", `${model} ${how} ${distinct.join(" and ")}; name one by its id`, 400);
+    return distinct[0];
+  };
+  return one(pool.filter((m) => modelKey(m.id) === modelKey(model)).map((m) => m.id), "is the same model as")
+    ?? one(pool.filter((m) => m.aliases.some((a) => a.toLowerCase() === lower || modelKey(a) === modelKey(model))).map((m) => m.id), "is an alias of")
+    ?? model;
 }
 
 // Stored data from before identities were converted where typed may hold
