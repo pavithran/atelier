@@ -82,7 +82,8 @@
 
 import { DECISION_NOTE_MAX, DECISION_QUOTE_MAX, DECISION_TEXT_MAX, line } from "../decisions.ts";
 import { RuleError, sameActor } from "../rules.ts";
-import { canonicalModel, poolEntryFor, type PoolNames } from "./judgement.ts";
+import { canonicalModel, type PoolNames } from "./judgement.ts";
+import { poolEntryFor, recordedEntry } from "./pool.ts";
 import { entryRuns, standingRefusal, type ModelEntry, type ModelRole } from "./pool.ts";
 
 export const ASSIGNMENT_ROLES = ["build", "review", "security-review", "claims-review", "plan"] as const;
@@ -499,7 +500,7 @@ export function applicableAssignments(current: readonly Assignment[], project: s
 // same harness and the same model match.
 export function choiceMatches(choice: AssignmentChoice, actor: string, pool: PoolNames = []): boolean {
   if (pool.length) {
-    const chosen = pool.find((e) => `${e.harness}/${e.id}`.toLowerCase() === choice.actor.toLowerCase());
+    const chosen = recordedEntry(choice.actor, pool);
     return chosen !== undefined && poolEntryFor(actor, pool) === chosen;
   }
   if (choice.actor.toLowerCase() === actor.toLowerCase()) return true;
@@ -564,6 +565,18 @@ export function orderByAssignment<T>(candidates: readonly T[], actorOf: (c: T) =
   }
   lines.push(...skippedLines(skipped), ...(assigned.length ? [`No role assignment applies, so ${fallback}`] : []));
   return { order: [...candidates], outcome: { applied: null, skipped, fallback: assigned.length ? fallback : null, lines }, promoted: () => null, reasons: () => lines };
+}
+
+// The outcome when an explicit choice for this one job comes first (the
+// developer's named reviewer, builder or planner, a plan's preference, the
+// previous round's reviewer, the plan's routing): no assignment applies,
+// and each bearing on the job is named as skipped for it, with why. Every
+// place that chooses or records a builder, reviewer, planner or
+// pre-reviewer explains the assignments this way or by orderByAssignment
+// (gpt-6-astra's seventh review of t622, finding 2).
+export function aheadOfAssignments(assigned: readonly Assignment[], ahead: string): AssignmentOutcome {
+  const skipped = assigned.map((a) => ({ id: a.id, why: `${ahead} comes before role assignments` }));
+  return { applied: null, skipped, fallback: null, lines: skipped.length ? [`${ahead[0].toUpperCase()}${ahead.slice(1)} comes before role assignments`, ...skippedLines(skipped)] : [] };
 }
 
 const skippedLines = (skipped: readonly { id: string; why: string }[]) => skipped.map((s) => `Role assignment ${s.id} skipped: ${s.why}`);

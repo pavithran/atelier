@@ -20,9 +20,9 @@
 // builder's blind spots, so a different model alone is a weaker second
 // opinion.
 
-import { FALLBACK, orderByAssignment, type Assignment, type AssignmentOutcome } from "../models/assignments.ts";
+import { aheadOfAssignments, FALLBACK, orderByAssignment, type Assignment, type AssignmentOutcome } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
-import { poolEntryFor } from "../models/judgement.ts";
+import { poolEntryFor, recordedEntry } from "../models/pool.ts";
 import { offering, type SeenOffer } from "../dispatch/rules.ts";
 import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
@@ -146,17 +146,17 @@ export function pickReviewer(input: PickInput): ReviewerPick {
       const entry = findEntry(input.pool, actor)!;
       return { outcome: poolBy!.outcome, lines: poolBy!.reasons(entry) };
     }
-    const ahead = source.kind === "previous" ? "the previous round's reviewer" : "the plan's routing";
-    const skipped = assigned.map((a) => ({ id: a.id, why: `${ahead} comes before role assignments` }));
-    const fallback = source.kind === "previous" ? "a re-review goes to the previous round's reviewer first" : "the plan's routing, fixed at its approval, names the reviewer";
-    return { outcome: { applied: null, skipped, fallback, lines: [`${ahead[0].toUpperCase()}${ahead.slice(1)} comes before role assignments`, ...skipped.map((s) => `Role assignment ${s.id} skipped: ${s.why}`)] }, lines: [] };
+    return { outcome: aheadOfAssignments(assigned, source.kind === "previous" ? "the previous round's reviewer" : "the plan's routing"), lines: [] };
   };
 
   const seen = new Set<string>();
   const passedOver: Choice[] = [];
   const lead: string[] = [];
   for (const { actor, source } of wanted) {
-    const entry = findEntry(input.pool, actor);
+    // The previous round's reviewer and the plan's routing are recorded
+    // identities: each is its own exact entry or none, so one removed since
+    // never resolves to an entry that lists its id as an alias.
+    const entry = source.kind === "tier" ? findEntry(input.pool, actor) : recordedEntry(actor, input.pool);
     // The tier is a preference: a tier model the pool lacks is not a
     // candidate passed over, and the routing is asked next.
     if (source.kind === "tier" && !entry) continue;
@@ -207,7 +207,11 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   // this entry's model, in the same harness, is this entry.
   // The same model under another harness fails the family rule below, which
   // names it as the contributor's model.
-  if (contributors.some((c) => names.some((name) => sameActor(name, c)))) failed.push("contributed to this item, and nobody reviews their own work");
+  // A recorded actor that is another entry exactly is that entry, not this
+  // one, whatever this one's aliases list (gemini-4-argon's fifth review of
+  // t622, follow-up 3); one the pool lacks is matched by this entry's names.
+  const isThis = (name: string) => { const own = recordedEntry(name, input.pool); return own ? own === entry : names.some((n) => sameActor(n, name)); };
+  if (contributors.some(isThis)) failed.push("contributed to this item, and nobody reviews their own work");
   else {
     const single = singleFamily(policy);
     const family = familyRefusal(actor, contributors, single);
@@ -216,7 +220,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
     else passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
   }
 
-  const avoided = input.avoid?.find((a) => names.some((name) => sameActor(name, a.actor)));
+  const avoided = input.avoid?.find((a) => isThis(a.actor));
   if (avoided) failed.push(avoided.reason);
 
   // Under a governed policy the gate counts only an assessor's review. Without

@@ -27,7 +27,7 @@ import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
-import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
+import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -1211,7 +1211,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const choices = resolveChoices(input.choices, await I.models(), input.role);
       const record = await I.assignRole(actor, { ...input, fingerprint, scope, choices, evidence }, acting);
       const unreached = await sendAssignments(env);
-      return json({ ...record, unreached }, record.retried ? 200 : 201);
+      // A retry that reached the write (two requests past the lookup above)
+      // is answered with its record's status now, as the early retry is
+      // (gpt-6-astra's seventh review of t622, follow-up 3).
+      if (record.retried) return json({ ...(await I.assignmentForRequest(input.request) ?? record), retried: true, unreached }, 200);
+      return json({ ...record, unreached }, 201);
     }
     if (parts.length === 3 && parts[2] === "withdraw" && m === "POST") {
       // A retried withdrawal, too, is judged against its record before the
@@ -2155,7 +2159,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (body.agent && body.model) await L.poolChanged(await index(env).models());
       const before = await L.checkDispatch(id, actor, body);
       if (before.owner) await revoke(env, before.fork, oldToken);
-      return json({ ...await L.dispatch(id, actor, body, oldToken), ...(suggestion ? { suggestion } : {}) });
+      // What chose the builder is kept on the dispatch: the suggestion's
+      // reasons, or, for a builder the developer named, each build
+      // assignment bearing on the task skipped for it (gpt-6-astra's seventh
+      // review of t622, finding 2).
+      let why = suggestion ? suggestion.reasons.join(" ") : undefined;
+      if (!suggestion && body.agent && body.model && actor === ownerActor(env) && body.job === undefined) {
+        const bearing = applicableAssignments(await index(env).currentRoleAssignments(), ref.key, ["build"]);
+        why = aheadOfAssignments(bearing, "the developer's named builder").lines.join(" ") || undefined;
+      }
+      return json({ ...await L.dispatch(id, actor, body, oldToken, why), ...(suggestion ? { suggestion } : {}) });
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));

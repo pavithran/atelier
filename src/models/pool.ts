@@ -91,9 +91,14 @@ export function hasModelRole(entry: Pick<ModelEntry, "roles">, role: ModelRole):
 // owner's standing as the pool has it now laid over each: a model paused,
 // reserved or given other roles since is skipped as the pool would skip it.
 // An entry the pool no longer has keeps its saved standing.
+//
+// A saved entry is matched only to its own entry now, by its exact
+// harness/id (recordedEntry): one removed since keeps its saved standing and
+// never takes the standing of an entry that lists its id as an alias or runs
+// the same model (gpt-6-astra's seventh review of t622, finding 1).
 export function withStanding(saved: readonly ModelEntry[], current: readonly ModelEntry[]): ModelEntry[] {
   return saved.map((entry) => {
-    const now = standingEntry(current, `${entry.harness}/${entry.id}`);
+    const now = recordedEntry(`${entry.harness}/${entry.id}`, current);
     if (!now) return entry;
     const { state: _state, stateAt: _stateAt, roles: _roles, ...rest } = entry;
     return {
@@ -151,6 +156,20 @@ export function poolEntryFor<E extends Pick<ModelEntry, "id" | "harness" | "alia
     ?? pool.find((m) => m.aliases.some((id) => full(m, id).toLowerCase() === lower))
     ?? pool.find((m) => sameActor(actor, full(m, m.id)))
     ?? pool.find((m) => m.aliases.some((id) => sameActor(actor, full(m, id))));
+}
+
+// The entry a recorded identity is: the pool entry whose harness/id it is
+// exactly, in any letter case, or undefined. Recorded identities (a saved
+// pool entry, an assignment's choice, a routed builder or reviewer, the
+// previous round's reviewer) are matched this way only, so when an entry
+// leaves the pool what was recorded of it stops applying, and never passes
+// to whatever now lists its id as an alias or runs the same model. Names the
+// developer writes (a tier, --reviewer, --as, a plan's prefer) are read by
+// poolEntryFor, which also reads aliases (gpt-6-astra's fifth and seventh
+// reviews of t622).
+export function recordedEntry<E extends Pick<ModelEntry, "id" | "harness">>(actor: string, pool: readonly E[]): E | undefined {
+  const lower = actor.toLowerCase();
+  return pool.find((m) => `${m.harness}/${m.id}`.toLowerCase() === lower);
 }
 
 // Whether an entry is paid per token: a provider billed by the token, or an

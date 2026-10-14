@@ -433,3 +433,66 @@ it("a separate tier review judges and dispatches the pool entry each tier name i
   expect(waiting).not.toContain("claude-code/fable-5.1");
   expect(waiting).not.toContain("claude-code/sonnet-alias");
 });
+
+// Rule 2 of t622, at every ledger site that records an explicit choice
+// (gpt-6-astra's seventh review, finding 2): the developer's named planner
+// (newPlan, reroutePlan), named builder (reroutePlan, dispatch), named
+// reviewer (requestReview, rerouteReviewer, and the plan tick that asks it)
+// each name every assignment bearing on the job as skipped for it.
+it("rule 2: every ledger site that records an explicit choice names each assignment skipped for it", async () => {
+  type Ev = { kind: string; data: Record<string, any> };
+  const name = "roles-explicit";
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
+  await L.assignmentsChanged({ version: 960, assignments: [assignment("a960", "plan", "codex/gpt-6-astra"), assignment("a961", "build", "codex/gpt-6-astra"), assignment("a962", "review", "codex/gpt-6-astra")] });
+  const skipped = (text: unknown, id: string, ahead: string) => expect(String(text)).toMatch(new RegExp(`Role assignment ${id} skipped: the developer's named ${ahead} comes before role assignments`));
+  const runner = { runner: "home:studio", kind: "home" } as const;
+  // newPlan with a named planner.
+  const made = await L.newPlan("Ship the feature", ["src/**"], "owner", "claude-code/opus-5.5", []);
+  skipped(made.reasons.join(" "), "a960", "planner");
+  // reroutePlan of the planner.
+  await L.reroutePlan(made.item.id, "owner", "antigravity/gemini-4-argon");
+  skipped((await L.events(made.item.id) as unknown as Ev[]).find((e) => e.kind === "plan.rerouted")?.data.reason, "a960", "planner");
+  await L.claim(made.item.id, "antigravity/gemini-4-argon", runner);
+  const part = { key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" };
+  const post = await L.postPlan(made.item.id, "antigravity/gemini-4-argon", { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
+  await L.release(made.item.id, "antigravity/gemini-4-argon", "proposed");
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  const { parts } = await L.approvePlan(made.item.id, "owner", post.hash, false, POOL);
+  const partId = parts[0].id;
+  // reroutePlan of the builder.
+  await L.reroutePlan(partId, "owner", "claude-code/opus-5.5");
+  skipped((await L.events(partId) as unknown as Ev[]).find((e) => e.kind === "plan.rerouted")?.data.reason, "a961", "builder");
+  await submitted(L, partId, "claude-code/opus-5.5", runner);
+  // rerouteReviewer, and the tick's request of the named reviewer: one the
+  // routing did not choose, so the tick asks anew.
+  const routedReviewer = (await L.planView(made.item.id)).parts[0].route!.reviewer!.actor;
+  const named = ["zcode/glm-5.3", "antigravity/gemini-4-argon"].find((a) => a !== routedReviewer)!;
+  await L.reroutePlan(partId, "owner", named);
+  const events = await L.events(partId) as unknown as Ev[];
+  expect(events.find((e) => e.kind === "plan.reviewer_changed")?.data.assignment).toMatchObject({ applied: null, skipped: [{ id: "a962" }] });
+  const asked = events.find((e) => e.kind === "review.requested" && e.data.reviewer === named);
+  skipped(asked?.data.reason, "a962", "reviewer");
+  // requestReview with a named reviewer, outside a plan.
+  const H = "b".repeat(40);
+  const task = await L.newItem("Tidy a helper", ["src/b.ts"], "owner", { accept: ["Works"] });
+  await L.claim(task.id, "claude-code/opus-5.5");
+  await L.setFork(task.id, `${name}--${task.id}`, "0".repeat(40), "claude-code/opus-5.5");
+  await L.recordPush(task.id, "claude-code/opus-5.5", H, H);
+  await L.addEvidence({ itemId: task.id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/b.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(task.id, "claude-code/opus-5.5");
+  expect((await L.requestReview(task.id, "owner", "antigravity/gemini-4-argon", POOL, true)).requested).toBe(true);
+  skipped((await L.events(task.id) as unknown as Ev[]).find((e) => e.kind === "review.requested")?.data.reason, "a962", "reviewer");
+});
+
+// The dispatch route, the one site above that reads the index's
+// assignments, with a builder the developer names.
+it("rule 2: a dispatch to a builder the developer names records each build assignment skipped for it", async () => {
+  const L = await project("roles-explicit-dispatch");
+  const a = await (await call("POST", "/model-roles", body({ role: "build", choices: ["claude-code/opus-5.5"], evidence: ["roles-explicit-dispatch/t1"], scope: "roles-explicit-dispatch" }))).json() as Assignment;
+  const task = await L.newItem("Another task", ["src/c.ts"], "owner", { accept: ["Works"] });
+  const sent = await call("POST", `/projects/roles-explicit-dispatch/items/${task.id}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" });
+  expect(sent.status, await sent.clone().text()).toBe(200);
+  const dispatched = (await L.events(task.id) as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "item.dispatched");
+  expect(String(dispatched?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id} skipped: the developer's named builder comes before role assignments`));
+});
