@@ -51,7 +51,7 @@ function workspaceReason(dir, name, id, item, cwd, main) {
   if (!directory(dir) || !directory(join(dir, ".git"))) return "not a standalone directory clone";
   if (contains(dir, cwd)) return "contains the current directory";
   try {
-    if (["index.lock", "HEAD.lock", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"].some((p) => existsSync(join(dir, ".git", p)))) return "Git operation in progress";
+    if (["index.lock", "HEAD.lock", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer", "BISECT_START"].some((p) => existsSync(join(dir, ".git", p)))) return "Git operation in progress";
     if (existsSync(join(dir, ".git", "modules"))) return "has initialized submodules";
     if (git(dir, ["config", "--local", "atelier.project"]) !== name ||
         git(dir, ["config", "--local", "atelier.item"]) !== id ||

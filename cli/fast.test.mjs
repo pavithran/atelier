@@ -571,6 +571,38 @@ for (const [state, enter] of Object.entries(midway)) {
   });
 }
 
+// t672: a project command can leave the checkout itself mid-rebase or
+// mid-bisect. Rollback ran only `git merge --abort`, so checkout -f main and
+// reset --hard succeeded and left the state behind: main was restored but
+// the checkout stayed mid-rebase or mid-bisect.
+const inCheckout = {
+  rebase: { dir: "rebase-merge", enter: (id) => `git ${id} rebase -q --exec false HEAD^ >/dev/null 2>&1; test -d .git/rebase-merge`,
+    // paused before the late commit is replayed, so late.bin is absent
+    enterBefore: (id) => `git ${id} rebase -q --exec false HEAD~2 >/dev/null 2>&1; test -d .git/rebase-merge` },
+  bisect: { dir: "BISECT_START", enter: () => `git bisect start HEAD HEAD~2 >/dev/null 2>&1 && test -f .git/BISECT_START` },
+};
+// The second variant leaves an untracked file that returning to the original
+// commit would overwrite, so `rebase --abort` and `bisect reset` fail: both
+// reviews of t672 found the rollback still reported success, mid-operation.
+for (const [state, { dir: marker, enter }] of Object.entries(inCheckout).flatMap((e) => [[e[0], e[1], ""], [e[0] + " with a conflicting untracked file", { ...e[1], enter: e[1].enterBefore ?? e[1].enter }, " && printf x > late.bin"]]).map(([n, v, tail]) => [n, { ...v, enter: (id) => v.enter(id) + tail }])) {
+  test(`a rollback ends a ${state} the project command left in the checkout itself (t672)`, async () => {
+    const { dir, one } = repo();
+    try {
+      const start = git(dir, "rev-parse", "HEAD");
+      const id = "-c user.name=t -c user.email=t@example.com";
+      const hijack = `printf 'k\\0AKIA' > late.bin && git ${id} add late.bin && git ${id} commit -q -m late && ${enter(id)} && false`;
+      const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: hijack, record: () => assert.fail("recorded") });
+      assert.equal(r.ok, false);
+      assert.equal(r.restored, true, r.restoreProblem);
+      assert.equal(git(dir, "rev-parse", "refs/heads/main"), start, "main is back at the start");
+      assert.equal(git(dir, "symbolic-ref", "HEAD"), "refs/heads/main", "the checkout is on main");
+      assert.ok(!existsSync(join(dir, ".git", marker)), `the ${state} state is gone`);
+      assert.ok(!existsSync(join(dir, "late.bin")), "the start commit has no late.bin");
+      assert.ok(!existsSync(join(dir, ".git", "rebase-merge")) && !existsSync(join(dir, ".git", "BISECT_START")), "no rebase or bisect state remains");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
 // t656: the main worktree keeps its rebase and bisect state in the common
 // Git directory, and Git lists it as detached while it is mid-rebase.
 test("worktreeHolding finds the main worktree mid-rebase on main from a linked worktree (t656)", () => {
