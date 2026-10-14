@@ -15,6 +15,7 @@ import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalTe
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
+import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
@@ -862,6 +863,22 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's prose standard (src/prose-standard.ts) as init sends it: the
+// path of the document the project's prose follows, which every build, plan
+// and review brief names. One line with no backticks, so the brief's code
+// span holds it whole; null or "" clears it, and no brief names one.
+function proseStandardArg(value: unknown): string | null {
+  if (value !== null && typeof value !== "string") {
+    throw new RuleError("bad_prose_standard", "the prose standard is the path of the document the project's prose follows, or \"\" to clear it", 400);
+  }
+  const text = (value ?? "").trim();
+  if (text.replace(TEXT_CONTROLS, "") !== text || text.includes("`")) {
+    throw new RuleError("bad_prose_standard", "the prose standard is one path on one line, with no control characters or backticks", 400);
+  }
+  assertLength(text, PROSE_STANDARD_MAX, "the prose standard");
+  return text || null;
+}
+
 // The project's triage model (src/review/triage.ts) as init sends it:
 // harness/model under a harness Atelier ships an adapter for; null or ""
 // clears it, and a landing then triages only when it names a model.
@@ -1661,6 +1678,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The path of the project's prose standard, named in every build, plan
+      // and review brief: a path, or null or "" to clear it.
+      ...(has("proseStandard") ? { proseStandard: proseStandardArg(body.proseStandard) } : {}),
       // The model that triages a landing before its review (t475):
       // harness/model, or null or "" to clear it.
       ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
@@ -2014,7 +2034,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);
-    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)) });
+    // It names the project's prose standard as any brief does (t675).
+    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)), proseStandard: (await L.project()).policy.proseStandard ?? null });
     const detail = await L.detail(id) as Detail;
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
@@ -2863,6 +2884,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
         regenerate: p.policy.regenerate ?? null, checks: p.policy.checks, commitIdentity: p.policy.commitIdentity ?? null,
+        // Named in a resolver's brief (t675), which commits.
+        proseStandard: p.policy.proseStandard ?? null,
       });
     }
     case "refresh-pushing": {

@@ -21,6 +21,7 @@ import { basename, join, resolve } from "node:path";
 import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
 
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
+import { proseStandardLine } from "../src/prose-standard.ts";
 
 import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
 import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
@@ -1573,9 +1574,11 @@ export function criteriaNotice(id, change) {
   ].join("\n");
 }
 
-// The task an agent starts: its short title, then its whole brief.
-export function formatTask(item) {
+// The task an agent starts: its short title, then its whole brief, and the
+// project's prose standard (t675) when its policy records one.
+export function formatTask(item, policy = null) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
+    proseStandardLine(policy?.proseStandard),
     // The note is carried whole, with its line breaks (t480); only terminal control codes go.
     item.dispatch?.note ? `Note (the developer's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
@@ -1588,6 +1591,9 @@ export function formatBrief(project, id, brief, origin) {
     ...(brief.criteriaReview ? [`Criteria review: ${flat(brief.criteriaReview)}`] : []),
     ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
+    // The project's prose standard (t675): an agent that reads this brief
+    // before it builds or reviews is told where the standard is.
+    ...(proseStandardLine(brief.proseStandard) ? [proseStandardLine(brief.proseStandard)] : []),
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 

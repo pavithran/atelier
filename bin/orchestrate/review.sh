@@ -9,6 +9,9 @@
 # answer, in the reply format of src/review/verdict.ts (VERDICT, SUMMARY and
 # FINDING lines).
 # REVIEW_BAR overrides what may block; unset, the bar is Atelier's default.
+# PROSE_STANDARD overrides the path of the project's prose standard; unset,
+# it is the one the project's policy records (atelier init --prose-standard),
+# read with atelier show, and a project with none gets no line.
 set -eu
 source "${0:A:h}/lib.sh"
 ws=${1:A} out=${2:A} ctx=${3:A} model=${4:-gemini-3.1-pro-high}
@@ -20,6 +23,31 @@ main=${MAIN_REPO:-$(checkout_of "$project")}
 # the same parser.
 bar=${REVIEW_BAR:-$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { DEFAULT_REVIEW_BAR } from "./src/review/verdict.ts"; process.stdout.write(DEFAULT_REVIEW_BAR)')}
 format=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { REPLY_FORMAT } from "./src/review/verdict.ts"; process.stdout.write(REPLY_FORMAT)')
+# The prose standard's line is Atelier's own (src/prose-standard.ts), the one
+# every brief Atelier composes carries, so it is worded in one place.
+# A failed lookup is not "no standard": it is said on standard error and in the
+# prompt, so a reviewer is never briefed as if the project had none (t675).
+# PROSE_STANDARD, set (empty means none), skips the lookup.
+prose_path= prose_failed=
+if [ -n "${PROSE_STANDARD+x}" ]; then
+  prose_path=$PROSE_STANDARD
+else
+  item=$(git -C "$ws" config --local atelier.item || true)
+  if [ -z "$item" ]; then
+    prose_failed="the workspace records no task (atelier.item)"
+  elif ! shown=$(atelier show "$item" --project "$project" --json 2>&1); then
+    prose_failed="atelier show $item failed: ${shown%%$'\n'*}"
+  elif ! prose_path=$(printf '%s' "$shown" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("proseStandard") or "")' 2>&1); then
+    prose_failed="atelier show $item did not answer with JSON"
+    prose_path=
+  fi
+fi
+prose=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { proseStandardLine } from "./src/prose-standard.ts"; process.stdout.write(proseStandardLine(process.argv[1]) ?? "")' "$prose_path")
+if [ -n "$prose_failed" ]; then
+  echo "review.sh: could not read $project's prose standard ($prose_failed); the review prompt says so" >&2
+  # The reason stays on standard error: it can hold text from a server.
+  prose="Prose standard: the project's prose standard could not be read when this prompt was composed, so it is not named here. If the project has one, say in your report that you could not check the prose against it, rather than guessing what it says."
+fi
 case $model in
   gemini*) who="gemini-3.1-pro" ;;
   gpt-oss*) who="gpt-oss-120b" ;;
@@ -46,6 +74,9 @@ You are in a throwaway clone of the change (the current folder), at its head; th
 Before you call anything blocking, verify it: find the code that shows it, or a test or a small script that demonstrates it. A finding you could not verify is non-blocking and says so. Do not reject on code you have not read.
 
 The review bar: $bar
+${prose:+
+$prose
+}
 
 Give at most 12 findings. In each, say what is wrong, how you verified it, and what would be right. Blocking findings are the defects the review bar names; every other finding is a follow-up.
 

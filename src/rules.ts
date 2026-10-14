@@ -507,6 +507,10 @@ export interface ProjectPolicy {
   // What may block a review, as every review brief states it; absent, the
   // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
   reviewBar?: string;
+  // The path of the document the project's prose follows (`atelier init
+  // --prose-standard`), which every build, plan and review brief names
+  // (src/prose-standard.ts); absent, no brief names one.
+  proseStandard?: string;
   // The model, harness/model, that triages a landing's diff against the
   // task's criteria before its review is asked for (`atelier init
   // --triage`, src/review/triage.ts); `atelier land --triage` names another
