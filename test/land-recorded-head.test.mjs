@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { prepareRecordedWorkspace } from '../cli/landing.mjs';
 import { recordedHeadStillStands } from '../cli/land.mjs';
 
 function fixture(t) {
-  mkdirSync('.scratch', { recursive: true });
-  const root = mkdtempSync(resolve('.scratch/recorded-'));
+  const root = mkdtempSync(join(tmpdir(), 'atelier-recorded-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const git = (args, opts = {}) => {
     const r = spawnSync('git', args, { cwd: opts.cwd ?? root, encoding: 'utf8' });

@@ -1,7 +1,8 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { serveRunner } from "./helpers/runner-server.mjs";
 
@@ -14,8 +15,9 @@ import { serveRunner } from "./helpers/runner-server.mjs";
 // is claimed with a request number, its clone fails, and the runner must
 // release the claim through the lease path and exit normally.
 
-const root = resolve(".cache/runner-lease-process-tests");
-mkdirSync(root, { recursive: true });
+// Scratch lives under the system temp folder and goes with the run (t640).
+const root = mkdtempSync(join(tmpdir(), "atelier-runner-lease-process-tests-"));
+after(() => rmSync(root, { recursive: true, force: true }));
 const model = "glm-5.3", actor = `opencode/${model}`;
 const H0 = "0".repeat(40), H1 = "a".repeat(40);
 

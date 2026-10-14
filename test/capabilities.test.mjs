@@ -79,7 +79,7 @@ test("a legacy server is refused for a requirement no level guarantees", () => {
 });
 
 test("new declarations, including queued legacy metadata, require published names", async (t) => {
-  const dir = mkdtempSync(resolve(".capabilities-new-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-new-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const declarations = [...CAPABILITIES,
     { name: "future.named.v1", summary: "a new route" },
@@ -417,7 +417,7 @@ test("the review job requires the skip routes, and a legacy server from before t
 // which routes the file to the records driver (t463) through this
 // repository's manifest, installed as Atelier installs it in every clone.
 test("independent capability additions merge cleanly, including the same and new families; a name both sides add stops as a conflict", async (t) => {
-  const dir = mkdtempSync(resolve(".capabilities-merge-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-merge-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
   git("init", "-q");
