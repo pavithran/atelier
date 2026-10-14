@@ -25,6 +25,9 @@ proven, reviewed and recorded.
 `docs/orchestrating.md` is the companion for a session that runs Atelier on
 the developer's behalf; the How it works page (`/how`) holds every rule and
 command.
+[Working from several Macs](multi-mac.md) says where a project's code,
+private files, data and secrets live on each Mac, and how work moves between
+them.
 
 ## Start with what waits for you
 
