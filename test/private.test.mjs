@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, excludesPrivate, mergeConfigForSave, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, excludesPrivate, mergeConfigForSave, moveProjectEntry, moveProjectEntryOnDisk, saveWholeConfig, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
@@ -747,4 +747,48 @@ test("a whole-config save keeps what another command wrote since, and every priv
   // An entry this process changed keeps every private name the disk has too.
   memory.projects.b.branch = "other";
   assert.deepEqual(mergeConfigForSave(disk, memory, snapshot).projects.b.private, ["x.md", "y.md"]);
+});
+
+// Astra's eleventh review of t645, finding 1: a process that loaded the
+// config before another renamed old to new, then changed old and saved,
+// made old again; the guard then preferred it and missed names added since.
+test("a stale save changes the renamed entry and never makes the old name again; the guard for the old name sees the new entry's names", (t) => {
+  const f = setup(t);
+  f.write({ old: { path: f.checkout, branch: "main", private: ["a.md"] } });
+  const dir = join(f.root, "config"), previous = process.env.ATELIER_CONFIG_DIR;
+  process.env.ATELIER_CONFIG_DIR = dir;
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_CONFIG_DIR; else process.env.ATELIER_CONFIG_DIR = previous; });
+  // The first process loads the config.
+  const snapshot = f.read(), memory = structuredClone(snapshot);
+  // Another adds a name and renames old to new.
+  savePrivateFields("old", { private: ["b.md"] });
+  moveProjectEntryOnDisk({}, "old", "new");
+  // The first changes old and saves.
+  memory.projects.old.notesRemote = "origin";
+  saveWholeConfig(memory, snapshot);
+  const projects = f.read().projects;
+  assert.deepEqual(Object.keys(projects), ["new"], "old is not made again");
+  assert.equal(projects.new.notesRemote, "origin", "the change went to the renamed entry");
+  assert.deepEqual(projects.new.private.sort(), ["a.md", "b.md"]);
+  assert.ok(privateGuardFor("old").paths.includes("b.md"), "a workspace named old is guarded with the name added since");
+  // And where a stale entry under the old name exists beside the renamed one, the renamed one wins, with both entries' names.
+  f.write({ old: { path: f.checkout, private: ["stale.md"] }, new: { path: f.checkout, private: ["fresh.md"], formerNames: ["old"] } });
+  assert.deepEqual(privateGuardFor("old").paths.sort(), [".atelier-private", "fresh.md", "stale.md"]);
+});
+
+// Astra's eleventh review of t645, finding 2: a rename lost the folder that
+// discovery found by the old name.
+test("a rename keeps the folder found by the old name, and discovery tries former names", (t) => {
+  const f = setup(t, { folder: "Old" });
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
+  const previous = process.env.ATELIER_PRIVATE_ROOT;
+  process.env.ATELIER_PRIVATE_ROOT = f.icloud;
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_PRIVATE_ROOT; else process.env.ATELIER_PRIVATE_ROOT = previous; });
+  const projects = { old: { path: f.checkout, privateFromList: ["PROJECT.md"] } };
+  assert.equal(moveProjectEntry(projects, "old", "new").moved, true);
+  assert.equal(projects.new.privateHome, f.keep, "the folder found by the old name is recorded");
+  // An entry renamed without it still finds the folder by its former name.
+  const entry = { path: f.checkout, privateFromList: ["PROJECT.md"], formerNames: ["old"] };
+  assert.equal(privateHome("new", entry, f.icloud).home, f.keep);
+  assert.deepEqual(privateGuard("new", entry, { root: f.icloud }).refusal, null);
 });
