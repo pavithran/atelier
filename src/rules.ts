@@ -488,11 +488,11 @@ export interface ProjectPolicy {
   // may resolve a refresh's mechanical conflicts (`atelier init --resolver`,
   // src/refresh/resolver.ts). Absent or empty, such a conflict waits.
   resolvers?: string[];
-  // The fields above whose names were written since names are converted
-  // where typed (t622): each holds exact pool ids, read as they are. One not
-  // listed was written before and may hold an alias, read once through the
-  // aliases (storedActor in src/models/pool.ts).
-  exactNames?: ("reviewTier" | "triage" | "resolvers")[];
+  // The review tier, when written since its names are converted where typed
+  // (t622): it holds exact pool ids, read as they are. Unlisted, it was
+  // written before and may hold an alias, read once through the aliases
+  // (storedActor in src/models/identity.ts).
+  exactNames?: "reviewTier"[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item

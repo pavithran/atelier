@@ -618,7 +618,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   // An init's model names were converted to exact ids where they were typed
   // (the API's boundary, src/index.ts); a field this init sets is marked so,
   // and one it leaves keeps the mark it had.
-  const exactNames = (["reviewTier", "triage", "resolvers"] as const).filter((f) => i[f] !== undefined ? !!i.namesExact : p?.exactNames?.includes(f));
+  const exactNames = (["reviewTier"] as const).filter((f) => i[f] !== undefined ? !!i.namesExact : p?.exactNames?.includes(f));
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -6600,7 +6600,7 @@ export class Ledger extends DurableObject<Env> {
   // src/review/tier.ts), so no separate tier request is needed.
   private gateIsTier(item: Item, need: ReviewRequired, reviewer: string, pool: readonly ModelEntry[] = this.poolStanding()): boolean {
     const policy = this.project().policy;
-    return need.changeClass === "protected" && gateServesTier(tierIds(policy, pool), reviewer, contributorsOf(item), singleFamily(policy));
+    return need.changeClass === "protected" && gateServesTier(tierIds(policy, pool), reviewer, contributorsOf(item), singleFamily(policy), pool);
   }
 
   // Asks the project's top review tier (src/review/tier.ts) for a separate

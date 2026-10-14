@@ -9,6 +9,7 @@ import type { PlanPart } from "../src/plans/schema.ts";
 import { pickPlanner } from "../src/plans/state.ts";
 import { pickReviewer } from "../src/review/reviewer.ts";
 import { suggestReviewer } from "../src/review/suggest.ts";
+import { triageModelRefusal } from "../src/review/triage.ts";
 import { gateServesTier, pickTierReviewer, reviewTarget, tierEligible, tierIds, tierReviewerPick } from "../src/review/tier.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
 
@@ -649,4 +650,23 @@ test("routeParts: an unmarked prefer under an alias is honoured; a marked one is
   said(legacy.builder?.reasons, /Preferred by the plan \(knows it\)/);
   const [marked] = routeParts(doc, { pool, events: [], policy, allowPaid: false, namesExact: true });
   said(marked.builder?.reasons, /The plan preferred codex\/gpt-6-astra-local \(knows it\); it is not in the pool/);
+});
+
+// gpt-6-astra's thirteenth review of t622, finding 1: the boundary converted
+// the project's triage model, so `codex/luna-paid` (paid Luna's alias) was
+// stored as codex/gpt-6-luna, which the triage reader matched to Astra (who
+// lists gpt-6-luna as an alias) and found free. The triage model is kept as
+// declared now, as on main, and the reader refuses it as paid.
+test("a triage model declared under an alias is read as declared and still refused as paid", () => {
+  const pool = [{ ...astra, aliases: ["gpt-6-luna"] }, entry("codex", "gpt-6-luna", { provider: "openai", aliases: ["luna-paid"] })];
+  assert.match(triageModelRefusal("codex/luna-paid", pool) ?? "", /paid per token \(openai\)/);
+});
+
+// gpt-6-astra's thirteenth review of t622, finding 2: the tier holds exact
+// ids, and a gate reviewer declared under an alias (a plan's named reviewer)
+// no longer served its own tier entry.
+test("gateServesTier: a gate reviewer declared under an alias serves its entry's place in the tier", () => {
+  const astraLocal = { ...astra, aliases: ["gpt-6-astra-local"] };
+  assert.equal(gateServesTier(["codex/gpt-6-astra"], "codex/gpt-6-astra-local", ["claude-code/opus-5.5"], null, [astraLocal]), true);
+  assert.equal(gateServesTier(["codex/gpt-6-astra"], "codex/gpt-6-luna", ["claude-code/opus-5.5"], null, [astraLocal]), false);
 });

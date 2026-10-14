@@ -501,7 +501,10 @@ it("rule 2: a dispatch to a builder the developer names records each build assig
 // The eighth review of t622's rule: a name a person types under an alias is
 // converted where it enters, so what is stored is the exact pool id. Here at
 // the dispatch route's --agent/--model and the init's review tier.
-it("a builder and a review tier typed under an alias are stored as the entry's exact id", async () => {
+// Since the thirteenth review, an explicit dispatch's builder stays as
+// declared, as on main (a runner's offer must name it); the review tier is
+// stored as the exact id.
+it("a builder typed under an alias is dispatched as declared; a review tier typed under an alias is stored as the entry's exact id", async () => {
   const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
   await index().putModel(qwen);
   try {
@@ -509,7 +512,7 @@ it("a builder and a review tier typed under an alias are stored as the entry's e
     const task = await L.newItem("A typed task", ["src/d.ts"], "owner", { accept: ["Works"] });
     const sent = await call("POST", `/projects/roles-typed/items/${task.id}/dispatch`, { to: "home", agent: "opencode", model: "qwen-alias" });
     expect(sent.status, await sent.clone().text()).toBe(200);
-    expect((await L.item(task.id)).dispatch).toMatchObject({ agent: "opencode", model: "qwen-3" });
+    expect((await L.item(task.id)).dispatch).toMatchObject({ agent: "opencode", model: "qwen-alias" });
     const name = "roles-typed-tier";
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/qwen-alias", "codex/gpt-6-astra"] }),
@@ -543,11 +546,11 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     const open = async (title: string) => (await L.newItem(title, [`src/${title}.ts`], "owner", { accept: ["Works"] })).id;
     // dispatch --agent --model, a bare --model, and --overlap-ok's retain.
     await refused("dispatch", await call("POST", `${P}/items/${await open("d1")}/dispatch`, { to: "home", agent: "opencode", model: "glm-alias" }));
-    // A bare --model is converted to the exact id; the standing does not
-    // check a dispatch that names no harness (as on main), so it is stored.
+    // A bare --model is kept as declared; the standing does not check a
+    // dispatch that names no harness (as on main), so it is stored.
     const d2 = await open("d2");
     expect((await call("POST", `${P}/items/${d2}/dispatch`, { to: "home", model: "glm-alias" })).status).toBe(200);
-    expect((await L.item(d2)).dispatch).toMatchObject({ model: "glm-9" });
+    expect((await L.item(d2)).dispatch).toMatchObject({ model: "glm-alias" });
     const d3 = await open("d3");
     expect((await call("POST", `${P}/items/${d3}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
     await refused("dispatch --overlap-ok", await call("POST", `${P}/items/${d3}/dispatch`, { retain: true, overlapOk: true, agent: "opencode", model: "glm-alias" }));
@@ -593,12 +596,14 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     const resolving = await planned("roles-boundary-resolve");
     await resolving.L.poolChanged(await index().models());
     expect(String(await (resolving.L.planResolve(resolving.id, "owner", "1".repeat(40), false, ALIAS)).then(() => null, (e: unknown) => e))).toMatch(/model_held\|opencode\/glm-alias is paused since/);
-    // init --review-tier and --triage: stored as the exact id, marked so.
+    // init --review-tier: stored as the exact id, marked so.
     const made = await worker.fetch(new Request(`https://atelier.test/api/projects/roles-boundary-init`, {
       method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),
     }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
     expect(made.status, await made.text().catch(() => "")).toBe(200);
-    expect((await ledger("roles-boundary-init").project()).policy).toMatchObject({ reviewTier: [EXACT], triage: EXACT, exactNames: ["reviewTier", "triage"] });
+    // The tier is converted and marked; the triage model stays as declared,
+    // run by the CLI under that name (the thirteenth review).
+    expect((await ledger("roles-boundary-init").project()).policy).toMatchObject({ reviewTier: [EXACT], triage: ALIAS, exactNames: ["reviewTier"] });
     // --as: recorded as the exact id, with the declaration kept.
     await index().putModel({ ...held, state: undefined, stateAt: undefined });
     const as = await call("POST", `${P}/decisions`, { text: "Ship small", quote: "small" }, "owner", ALIAS);
