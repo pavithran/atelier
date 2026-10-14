@@ -169,9 +169,22 @@ const evidenceText = (ref: string, names: Readonly<Record<string, string>>) => {
   return m ? `${names[m[1]] ?? m[1]}/${m[2]}` : ref;
 };
 
+// The canonical key a name gives. A harness/model goes through the pool's
+// rule (canonicalModel). A bare name, which that rule matches only within
+// a harness, is the model of every pool entry whose id or alias it is, by
+// modelKey, when those entries are one model; otherwise, none or several,
+// it is its own key (gemini-4-argon's review of t621: a bare alias such as
+// glm-fast read as a model of its own, with none of its entry's rows).
+export function canonicalName(named: string, pool: PoolNames): string {
+  if (named.includes("/")) return canonicalModel(named, pool);
+  const key = modelKey(named);
+  const models = new Set(pool.filter((e) => [e.id, ...e.aliases].some((a) => modelKey(a) === key)).map((e) => canonicalModel(`${e.harness}/${e.id}`, pool)));
+  return models.size === 1 ? [...models][0] : canonicalModel(named, pool);
+}
+
 export function compareModel(input: CompareInput): ModelComparison {
   const pool = input.pool as unknown as PoolNames;
-  const model = canonicalModel(input.named, pool);
+  const model = canonicalName(input.named, pool);
   const isThis = (actor: string) => canonicalModel(actor, pool) === model;
   const entries = input.pool.filter((e) => isThis(`${e.harness}/${e.id}`));
   // Every name the model's rows may be under: the key itself, and each pool
@@ -197,8 +210,13 @@ export function compareModel(input: CompareInput): ModelComparison {
   const prec = rows("review precision", (k) => input.precision.models.get(k));
   const p = precisionOf({ window: input.precision.window, models: new Map(prec.map((x) => [x.row.model, x.row])) }, prec.map((x) => x.row.model));
   const spd = rows("speed", (k) => input.speed.models.find((m) => m.model === k));
-  const jud = rows("the acting judgements", (k) => input.judgement.models.find((m) => m.model === k));
-  const pair = rows("pairwise catches", (k) => input.pairwise.models.get(k));
+  // The judgement and pairwise records already key each row by the
+  // canonical model through the pool, so only the model's own key is read
+  // there; an alias's key holds another model's work if anything
+  // (gemini-4-argon's review of t621, its follow-up).
+  const own = <T extends { actors: string[] }>(row: T | undefined) => (row ? [{ name: model, row }] : []);
+  const jud = own(input.judgement.models.find((m) => m.model === model));
+  const pair = own(input.pairwise.models.get(model));
   const catches = sumSides(pair.map((x) => x.row.catches)), misses = sumSides(pair.map((x) => x.row.misses));
   const jsum = (f: "verdicts" | "upheld" | "contradicted" | "unresolved" | "decisionsRecorded" | "overrides") => jud.reduce((t, x) => t + x.row[f], 0);
 

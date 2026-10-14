@@ -284,3 +284,45 @@ test("projection: vendor claims keep their source and conditions and never enter
   assert.match(lines, /Assigned a3 \(atelier\), choice 2 of 2, 2026-10-10 by claude-code\/opus-5\.5: It caught the race\.; evidence atelier\/t592#40/);
   assert.match(lines, /Revisions another model approved in which it found a blocking problem that held up, of the eligible pairs: 100% \(5 of 5\)/);
 });
+
+// ── the reviews of 1a76e141 ────────────────────────────────────────────────
+
+// gpt-6-astra's review of t621, finding 2: an ambiguous legacy verdict kept a
+// pair out of the denominator after explicit verdicts had settled every finding.
+test("pairwise: explicit verdicts on every finding after an ambiguous legacy verdict settle the pair", () => {
+  const r1 = review("t1", GPT, false, { findings: [blocking()] }), r2 = review("t1", GPT, false, { findings: [blocking()] });
+  const base = [created("t1"), r1, r2, review("t1", GEMINI, true), verdict(r2, 1, "confirmed", { legacy: true })];
+  const settled = pairs([...base, verdict(r1, 1, "refuted"), verdict(r2, 1, "refuted")]);
+  assert.deepEqual(side(settled, "gpt-6-astra", "catches"), { eligible: 1, caught: 0, pending: 0, ambiguous: 0 });
+  assert.deepEqual(side(settled, "gemini-4-argon", "misses"), { eligible: 1, caught: 0, pending: 0, ambiguous: 0 });
+  // One review settled and the other not: still ambiguous.
+  const half = pairs([...base, verdict(r1, 1, "refuted")]);
+  assert.deepEqual(side(half, "gpt-6-astra", "catches"), { eligible: 0, caught: 0, pending: 0, ambiguous: 1 });
+  // A legacy verdict can only be on a review with a blocking finding at its position: with one such review it is placed.
+  const plain = review("t2", GPT, true), withFinding = review("t2", GPT, false, { findings: [blocking()] });
+  const placed = pairs([created("t2"), plain, withFinding, review("t2", GEMINI, true), verdict(withFinding, 1, "fixed", { legacy: true })]);
+  assert.deepEqual(side(placed, "gpt-6-astra", "catches"), { eligible: 1, caught: 1, pending: 0, ambiguous: 0 });
+});
+
+// gemini-4-argon's review of t621, finding 3: a legacy verdict was placed on
+// another reviewer's newer review at the head, which dropped the served annotation.
+test("precision and reliability place a legacy verdict on its own reviewer's review, so its served annotation applies", () => {
+  const rej = review("t1", ZGLM, false, { findings: [blocking()] });
+  const events = [created("t1"), rej, review("t1", GEMINI, true), verdict(rej, 1, "confirmed", { legacy: true }), ev("t1", OWNER, SERVED, { seq: rej.seq, served: "deepseek-flash" })];
+  assert.deepEqual([...buildPrecision([{ project: "atelier", events }], WINDOW, OWNER).models.keys()], ["deepseek-flash"]);
+  assert.equal(buildReliability([{ project: "atelier", events }], [], OWNER).get("deepseek-flash")?.findingsConfirmed, 1);
+});
+
+// gemini-4-argon's review of t621, finding 2 and its follow-up: a bare pool
+// alias read as a model of its own, and an alias key's pairwise row was
+// reported as holding another model's work.
+test("projection: a bare pool alias is its entry's model, and the canonical readers are read under the model's own key", () => {
+  const rej = review("t1", "zcode/glm-fast", false, { findings: [blocking()] });
+  const other = review("t2", "opencode/glm-fast", false, { findings: [blocking()] });
+  const events = [created("t1"), rej, review("t1", GEMINI, true), verdict(rej, 1, "confirmed"), created("t2"), other, review("t2", GEMINI, true), verdict(other, 1, "confirmed")];
+  const v = project(events, {}, "glm-fast");
+  assert.equal(v.model, "glm-5.3");
+  assert.deepEqual(v.entries, ["zcode/glm-5.3"]);
+  assert.deepEqual([fig(v, "review", "pairwise-catches").numerator, fig(v, "review", "pairwise-catches").denominator], [1, 1]);
+  assert.ok(!v.leftOut.some((l) => l.startsWith("pairwise")), v.leftOut.join("\n"));
+});
