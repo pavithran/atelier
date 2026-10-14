@@ -6,6 +6,7 @@ import { checkFiles, preparationPaths } from "../../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
+import { discoverPrivate, guardedPush, moveProjectEntryOnDisk, privateGuardFor, remoteBases } from "../private.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
@@ -26,9 +27,11 @@ export default async function initCommand() {
   try { ({ name, existing } = initName(cfg.projects, top, args.name, args["rename-local"] === true)); }
   catch (err) { die(err.message); }
   if (args["rename-local"] === true) {
-    cfg.projects[name] = cfg.projects[existing];
-    if (name !== existing) delete cfg.projects[existing];
-    saveConfig(cfg);
+    // The old name stays with the entry as a former name, so a task
+    // workspace still named it stays guarded (t645).
+    // Made in config.json under its lock, and followed in memory.
+    const moved = moveProjectEntryOnDisk(cfg.projects, existing, name);
+    if (moved.error) die(moved.error);
     console.log(`Local registration changed from ${existing} to ${name}. No server project or repository was changed.`);
     return;
   }
@@ -211,6 +214,17 @@ export default async function initCommand() {
   const since = typeof args["history-since"] === "string" ? args["history-since"] : null;
   if (args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
   let pushed = "HEAD";
+  // No commit the baseline lacks may carry a private file (t645), whether
+  // the history goes whole, in steps or rebuilt. A list in iCloud opts a
+  // registered project in first.
+  if (cfg.projects?.[name]) privateGuardFor(name, { discover: true });
+  // A first init, of a project this Mac does not register yet, finds its
+  // iCloud folder as clone does and reads its list before the first push,
+  // so that push is guarded like later ones; the copy is kept once the
+  // project is registered below.
+  const pending = cfg.projects?.[name] ? null : {};
+  if (pending) discoverPrivate(name, pending);
+  const baselineBases = () => remoteBases({ git, cwd: top, remote: r.baseline.remote, ref: `refs/heads/${branch}`, opts: { token: r.baseline.token, ownerRemote: false } });
   if (fresh) {
     if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
   } else if (since) {
@@ -233,17 +247,23 @@ export default async function initCommand() {
       const held = listed.status === 0 ? /^([0-9a-f]{40,64})\s/.exec(listed.stdout)?.[1] ?? null : null;
       if (held && holds(held, head, top)) lease.push(`--force-with-lease=${branch}:${held}`);
     }
-    git(["push", "--quiet", "--recurse-submodules=no", ...lease, r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token });
+    guardedPush({ project: name, pending, cwd: top, tip: built.head, bases: baselineBases, what: `The baseline history of ${name}`, fail: die },
+      () => git(["push", "--quiet", "--recurse-submodules=no", ...lease, r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token }));
     savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
     pushed = built.head;
     console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
   } else {
-    try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log }); }
-    catch (err) { die(err.message); }
+    guardedPush({ project: name, pending, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s baseline`, fail: die }, (sha) => {
+      try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log, head: sha }); }
+      catch (err) { die(err.message); }
+    });
   }
   cfg.projects ??= {};
-  cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
+  cfg.projects[name] = { ...pending, ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
   saveConfig(cfg);
+  // Now that the project is registered here, the copy of its list of
+  // private files is kept with it (Argon's second review of t645).
+  privateGuardFor(name);
   const pol = r.project.policy;
   if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
   if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; developer approval recorded`);

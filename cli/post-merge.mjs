@@ -5,10 +5,11 @@ import { currentStep, hash, redactedOutput } from "../src/post-merge.ts";
 import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
+import { guardedPush } from "./private.mjs";
 
 // No shell quoting is involved in publication: the owner approves a URL,
 // one ref and a privacy policy, not a shell program that could bypass it.
-export async function publishPinned({ git, run, step, cwd }) {
+export async function publishPinned({ git, run, step, cwd, project }) {
   const g = async args => git(["-c", "core.hooksPath=/dev/null", "-c", "push.followTags=false", ...args], { cwd, raw: true });
   if (!hash(run.after) || (await g(["rev-parse", "--is-shallow-repository"])).trim() !== "false") throw new Error("publication requires complete history");
   const tip = async () => {
@@ -57,7 +58,9 @@ export async function publishPinned({ git, run, step, cwd }) {
     if ((await g(["rev-parse", "HEAD"])).trim() !== run.after) throw new Error("publication source moved");
     // The lease checks the remote tip atomically at receive time. Even an
     // update after the second ls-remote cannot publish an unscanned range.
-    await g(["push", "--no-verify", "--recurse-submodules=no", `--force-with-lease=${step.ref}:${remote ?? ""}`, step.destination, `${run.after}:${step.ref}`]);
+    // The project's private files go to no publication either (t645).
+    await guardedPush({ project, cwd, tip: run.after, base: remote ? [remote] : [], what: `The publication to ${step.destination}`, fail: (message) => { throw Object.assign(new Error(message), { privacy: true }); } },
+      () => g(["push", "--no-verify", "--recurse-submodules=no", `--force-with-lease=${step.ref}:${remote ?? ""}`, step.destination, `${run.after}:${step.ref}`]));
     return { source: run.after, remote, commits: commits.length };
   }
   throw new Error("publication destination kept moving; retry to rescan");
@@ -98,7 +101,7 @@ export async function executePostMerge({ request, name, id, env = process.env, p
         output += result.stdout + result.stderr;
         if (result.status !== 0 || result.error) throw new Error("post-merge command failed or timed out");
       };
-      if (step.class === "publish") publication = await publishPinned({ git, run, step, cwd: dir });
+      if (step.class === "publish") publication = await publishPinned({ git, run, step, cwd: dir, project: name });
       else {
         // Lockfile installation is deterministic; lifecycle scripts are part
         // of the owner's approved protected source. No install on the host.

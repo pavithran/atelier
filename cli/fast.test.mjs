@@ -13,6 +13,9 @@ import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { fastLand, parsePairs, recordPending, scanBatch, worktreeHolding } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
+import { privateConfig } from "../test/fixtures/private-config.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
 
@@ -68,6 +71,20 @@ test("a batch with a credential in its added lines stops at the secret scan, mai
     assert.equal(r.failure?.step, "secret scan");
     assert.match(r.failure.detail, /k\.txt:1/);
     assert.doesNotMatch(r.failure.detail, /AKIA/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// t645: what fast land lands, the next publish pushes, so a batch that adds
+// a private file of the project stops before anything is recorded.
+test("a batch whose commits add a private file of the project stops, main untouched", async (t) => {
+  const { dir, one } = repo();
+  privateConfig(t, { demo: { private: ["ONE.TXT"] } });
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "true", project: "demo", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "private files");
+    assert.match(r.failure.detail, /The batch would carry private files: one\.txt in [0-9a-f]{12}/);
     assert.equal(git(dir, "rev-parse", "HEAD"), start);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

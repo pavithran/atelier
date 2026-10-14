@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
-import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, UPDATING_DETAIL } from "../src/rules.ts";
+import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
@@ -1336,4 +1336,45 @@ test("a branches repository is named devbr- and 32 hex digits of the key's hash,
   assert.notEqual(repoName("branches", "t1"), await branchesRepoName("t1"));
   assert.throws(() => assertBaselineName(demo), (e: unknown) => e instanceof RuleError && e.code === "repo_reserved");
   for (const repo of ["demo", "demo--branches", "branches", "branches--t1", "devbr-", "devbr-xyz", `${demo}x`]) assert.doesNotThrow(() => assertBaselineName(repo), repo);
+});
+
+// Private files (t645).
+test("a private path is made plain, and one outside the checkout or in .git is refused", () => {
+  assert.deepEqual(privatePath("PROJECT.md"), { path: "PROJECT.md" });
+  assert.deepEqual(privatePath("./notes/plan.md"), { path: "notes/plan.md" });
+  assert.deepEqual(privatePath("notes/"), { path: "notes" });
+  for (const bad of ["", "  ", "/etc/passwd", "../outside.md", "notes/../x", "a//b", "./", ".git/config", ".GIT/hooks/x", "a\nb"]) {
+    assert.ok("error" in privatePath(bad), JSON.stringify(bad));
+  }
+});
+
+test("private paths match themselves and what lies under a private folder, as a Mac compares names", () => {
+  const paths = ["PROJECT.md", "project.md", "notes/plan.md", "notes", "notesy.md", "src/PROJECT.md", "Notes/a.md"];
+  assert.deepEqual(privatePathsAmong(paths, ["PROJECT.md", "notes"]), ["PROJECT.md", "project.md", "notes/plan.md", "notes", "Notes/a.md"]);
+  assert.deepEqual(privatePathsAmong(paths, []), []);
+});
+
+test("a project's iCloud folder is the one named for it, case, spaces, hyphens and underscores aside", () => {
+  assert.ok(privateFolderMatches("ikon-weblog", "ikon weblog"));
+  assert.ok(privateFolderMatches("assetsapp", "AssetsApp"));
+  assert.ok(privateFolderMatches("hqpe-control", "HQPe-Control"));
+  assert.ok(!privateFolderMatches("atelier", "atelier-ops"));
+  assert.ok(!privateFolderMatches("", ""));
+});
+
+test("each private path is excluded by an anchored line with its special characters escaped", () => {
+  assert.equal(privateExcludeLine("PROJECT.md"), "/PROJECT.md");
+  assert.equal(privateExcludeLine("notes/a*b?[c].md"), "/notes/a\\*b\\?\\[c\\].md");
+  assert.equal(privateExcludeLine("#plan!"), "/#plan!");
+  assert.equal(privateExcludeLine("trail  "), "/trail\\ \\ ");
+});
+
+test("the iCloud list of private files is read line by line as data, and written sorted with each path once", () => {
+  assert.ok("error" in privatePath(".atelier-private"), "the list itself is never a private file");
+  const r = parsePrivateList("# comment\nPROJECT.md\r\n\n  # indented comment\n../x\nnotes/\nPROJECT.md\n/abs\n.atelier-private\n");
+  assert.deepEqual(r.paths, ["PROJECT.md", "notes"]);
+  assert.deepEqual(r.refused.map((x) => [x.line, x.text]), [[5, "../x"], [8, "/abs"], [9, ".atelier-private"]]);
+  const text = privateListText(["notes", "PROJECT.md", "notes"]);
+  assert.deepEqual(text.split("\n").filter((l) => l && !l.startsWith("#")), ["PROJECT.md", "notes"]);
+  assert.deepEqual(parsePrivateList(text), { paths: ["PROJECT.md", "notes"], refused: [] });
 });

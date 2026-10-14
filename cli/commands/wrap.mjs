@@ -3,8 +3,9 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
-import { OWNER, P, actor, args, at, call, cfg, die, git, project, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
+import { OWNER, P, actor, args, at, call, cfg, die, git, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
 import { publishCheckoutRemote } from "../mirror.mjs";
+import { privateChanges, privateGuardFor } from "../private.mjs";
 import { publishBaseline } from "./publish.mjs";
 import syncCommand from "./sync.mjs";
 
@@ -107,6 +108,15 @@ export default async function wrapCommand() {
   if (marked.length) {
     die(`wrap will not commit conflict markers: ${marked.map((p) => sessionText(p, 200)).join(", ")}; resolve them first. Nothing was staged.`);
   }
+  // A private file (t645) is never staged: Git ignores each one through
+  // info/exclude, and one staged by hand or no longer excluded stops wrap
+  // here, before anything is staged. A symbolic link is refused as the file.
+  const guard = privateGuardFor(name);
+  if (guard.refusal) die(`wrap stopped before staging anything: ${guard.refusal}`);
+  const privates = guard.paths;
+  let held;
+  try { held = privateChanges(cwd, privates); } catch (error) { die(`${error.message}; nothing was staged`); }
+  if (held.length) die(`wrap will not commit private files: ${held.map((p) => sessionText(p, 200)).join(", ")}. They stay in this Mac's iCloud folder and Atelier never pushes them (atelier private ls). Unstage them with git rm --cached PATH, and run atelier private add PATH to have Git ignore them again. Nothing was staged.`);
   git(["add", "-A"], { cwd });
   // Whitespace is checked on what the commit will hold, after staging: the
   // index against HEAD takes in staged changes and new files, which a diff of
@@ -125,7 +135,7 @@ export default async function wrapCommand() {
   data.pushes = [];
   for (const remote of remotes) {
     const identity = record.policy.commitIdentity;
-    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log });
+    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log, project: name });
     data.pushes.push({ remote, passed: result.ok });
     console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
   }

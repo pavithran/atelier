@@ -7,11 +7,12 @@ import { pathCollisions } from "../../src/rules.ts";
 import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
 import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
+import { guardedPush, privateGuardFor, privateRefusal } from "../private.mjs";
 import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, saveConfig, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
@@ -188,6 +189,11 @@ export default async function mergeCommand() {
     const identity=d.policy?.commitIdentity ?? die(`${NO_IDENTITY(name)}. Nothing was merged.`);
     const taskRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,item.acceptedHead);
     if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's holder rewrites those commits under an allowed identity and submits a new revision, or the developer allows the address with atelier init --agent-email EMAIL.`);
+    // The project's private files (t645) reach the baseline through no task.
+    const guard=privateGuardFor(name);
+    if (guard.refusal) die(`${id} was not merged: ${guard.refusal}`);
+    const taskPrivate=privateRefusal(cwd,guard.paths,item.acceptedHead,[baselineHead],`${id}'s accepted revision`);
+    if (taskPrivate) die(`${taskPrivate} Nothing was merged.`);
     if (refreshed?.policy) {
       if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
       // The accepted revision's own changes: those since the newest baseline
@@ -329,7 +335,9 @@ export default async function mergeCommand() {
     const notesRefusals=identity?notesRangeRefusals(remoteNotes.split(/\s/)[0]||null):[];
     if(notesRefusals.length)die(`the landing would push provenance notes whose identity the project's policy refuses:\n  ${notesRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, fix refs/notes/atelier, then merge again.`);
     const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
-    git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token});
+    // Nor through the checkout's own commits the push carries with it (t645).
+    guardedPush({project:name,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>die(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`)},
+      ()=>git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token}));
     journal.save({phase:'published'});
     const recorded = await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
     journal.clear();
