@@ -482,12 +482,12 @@ export async function ship(ctx) {
       let r;
       if (mirrored) {
         const said = [];
-        const published = publishCheckoutRemote({ git, dir: cwd, branch, remote: target.remote, identity: ctx.identity, guard: ctx.guard, say: (line) => { said.push(line); print(`push: ${line}`); } });
+        const published = publishCheckoutRemote({ git, dir: cwd, branch, remote: target.remote, identity: ctx.identity, project: name, say: (line) => { said.push(line); print(`push: ${line}`); } });
         r = { status: published.ok ? 0 : 1, stdout: said.map((line) => `${line}\n`).join(""), stderr: "" };
       } else {
         // Checked for private files against every push URL of the remote (t645).
         const ref = `refs/heads/${target.branch}`;
-        r = guardedPush({ guard: ctx.guard, cwd, tip: `refs/heads/${branch}`, bases: () => remoteBases({ git, cwd, remote: target.remote, ref }), what: `Not pushed to ${target.remote}: ${branch}`, fail: (message) => ({ status: 1, stdout: "", stderr: message }) },
+        r = guardedPush({ project: name, cwd, tip: `refs/heads/${branch}`, bases: () => remoteBases({ git, cwd, remote: target.remote, ref }), what: `Not pushed to ${target.remote}: ${branch}`, fail: (message) => ({ status: 1, stdout: "", stderr: message }) },
           () => git(["-c", `remote.${target.remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", target.remote, `refs/heads/${branch}:${ref}`], { cwd, allowFail: true, ownerRemote: true }));
       }
       const now = git(["rev-parse", "HEAD"], { cwd });

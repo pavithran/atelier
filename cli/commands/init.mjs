@@ -6,7 +6,7 @@ import { checkFiles, preparationPaths } from "../../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
-import { guardedPush, privateGuard, remoteBases } from "../private.mjs";
+import { guardedPush, privateGuardFor, remoteBases } from "../private.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
@@ -214,7 +214,6 @@ export default async function initCommand() {
   let pushed = "HEAD";
   // No commit the baseline lacks may carry a private file (t645), whether
   // the history goes whole, in steps or rebuilt.
-  const guard = privateGuard(name, cfg.projects?.[name], { save: () => saveConfig(cfg) });
   const baselineBases = () => remoteBases({ git, cwd: top, remote: r.baseline.remote, ref: `refs/heads/${branch}`, opts: { token: r.baseline.token, ownerRemote: false } });
   if (fresh) {
     if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
@@ -238,13 +237,13 @@ export default async function initCommand() {
       const held = listed.status === 0 ? /^([0-9a-f]{40,64})\s/.exec(listed.stdout)?.[1] ?? null : null;
       if (held && holds(held, head, top)) lease.push(`--force-with-lease=${branch}:${held}`);
     }
-    guardedPush({ guard, cwd: top, tip: built.head, bases: baselineBases, what: `The baseline history of ${name}`, fail: die },
+    guardedPush({ project: name, cwd: top, tip: built.head, bases: baselineBases, what: `The baseline history of ${name}`, fail: die },
       () => git(["push", "--quiet", "--recurse-submodules=no", ...lease, r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token }));
     savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
     pushed = built.head;
     console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
   } else {
-    guardedPush({ guard, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s baseline`, fail: die }, () => {
+    guardedPush({ project: name, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s baseline`, fail: die }, () => {
       try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log }); }
       catch (err) { die(err.message); }
     });
@@ -252,6 +251,9 @@ export default async function initCommand() {
   cfg.projects ??= {};
   cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
   saveConfig(cfg);
+  // Now that the project is registered here, the copy of its list of
+  // private files is kept with it (Argon's second review of t645).
+  privateGuardFor(name);
   const pol = r.project.policy;
   if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
   if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; developer approval recorded`);

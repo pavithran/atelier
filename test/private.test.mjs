@@ -5,10 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
+import { privateConfig } from "./fixtures/private-config.mjs";
 import { guardedPush, linkPrivate, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 
 const cli = resolve("cli/atelier.mjs");
@@ -177,8 +178,9 @@ test("privateCommits finds a private file a commit adds, changes, links or a mer
   const found = privateCommits(c, ["project.md"], "HEAD", [base]);
   assert.deepEqual(found.map((x) => x.commit).sort(), [leak, merge].sort());
   assert.ok(found.every((x) => x.path === "PROJECT.md"));
-  // Already on the base: nothing to refuse.
-  assert.deepEqual(privateCommits(c, ["PROJECT.md"], "HEAD", [merge]), []);
+  // Already on the base, the history adds nothing; but the tree pushed
+  // still holds it, which is refused (Argon's second review of t645).
+  assert.deepEqual(privateCommits(c, ["PROJECT.md"], "HEAD", [merge]), [{ commit: merge, path: "PROJECT.md", tree: true }]);
   // A deletion carries no content.
   git("rm", "-q", "PROJECT.md");
   git("commit", "-q", "-m", "drop");
@@ -247,7 +249,10 @@ test("the guard keeps a copy of each list it reads and fails closed when the lis
   assert.match(none.refusal, new RegExp(`${f.keep.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, the folder that keeps demo's private files and their list, is not on this Mac.*Nothing was pushed\\.`));
   assert.ok(none.paths.includes("mine.md"), "what is known is still guarded");
   let pushed = false;
-  assert.throws(() => guardedPush({ guard: none, cwd: f.checkout, tip: "HEAD", what: "The push" }, () => { pushed = true; }), /The push: .*is not on this Mac/);
+  privateConfig(t, { demo: { path: f.checkout, privateHome: f.keep, private: ["mine.md"], privateFromList: undefined } });
+  assert.throws(() => guardedPush({ project: "demo", cwd: f.checkout, tip: "HEAD", what: "The push" }, () => { pushed = true; }), /The push: .*is not on this Mac/);
+  assert.equal(pushed, false);
+  assert.throws(() => guardedPush({ cwd: f.checkout, tip: "HEAD", what: "The push" }, () => { pushed = true; }), /needs the project's name/, "no push goes unnamed");
   assert.equal(pushed, false);
   // An unreadable list, with no copy, is refused the same way.
   const g = setup(t);
@@ -343,4 +348,89 @@ test("every name privatePath accepts comes back unchanged from the list in iClou
   const names = ["PROJECT.md", "notes/a b.md", "!bang", "a#b", "[x].md", "Café.md", "dir/#inner"].map((n) => privatePath(n).path);
   assert.ok(names.every(Boolean));
   assert.deepEqual(parsePrivateList(privateListText(names)).paths.sort(), [...names].sort());
+});
+
+// Second reviews of t645 (Astra 1, Argon 3): a missing list emptied the copy
+// kept, and an ai-projects folder that could not be read guarded nothing.
+test("a missing list never shrinks the copy kept, and an unreadable iCloud folder refuses unless a copy is kept", (t) => {
+  const f = setup(t);
+  const entry = { path: f.checkout, privateFromList: ["PROJECT.md"] };
+  let saved = 0;
+  // The folder is there, its list is not (not synced yet, or evicted).
+  const g = privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
+  assert.deepEqual(entry.privateFromList, ["PROJECT.md"], "the copy is kept as it was");
+  assert.equal(saved, 0);
+  assert.deepEqual(g, { paths: ["PROJECT.md", ".atelier-private"], refusal: null });
+  // Only a list that is there and read replaces it.
+  writeFileSync(join(f.keep, ".atelier-private"), "notes\n");
+  privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
+  assert.deepEqual(entry.privateFromList, ["notes"]);
+  // An ai-projects folder this Mac cannot read: refused with no copy, guarded by the copy otherwise.
+  const blocked = join(f.root, "blocked");
+  mkdirSync(blocked);
+  chmodSync(blocked, 0o000);
+  let none, kept;
+  try {
+    none = privateGuard("demo", { path: f.checkout }, { root: blocked });
+    kept = privateGuard("demo", { path: f.checkout, privateFromList: ["PROJECT.md"] }, { root: blocked });
+  } finally { chmodSync(blocked, 0o755); }
+  assert.match(none.refusal ?? "", /cannot be read .*Nothing was pushed\./);
+  assert.deepEqual(kept, { paths: ["PROJECT.md", ".atelier-private"], refusal: null });
+  // No ai-projects folder on this Mac at all is no folder for the project.
+  assert.deepEqual(privateGuard("demo", { path: f.checkout }, { root: join(f.root, "absent") }), { paths: [], refusal: null });
+});
+
+// Second reviews of t645 (Astra 2 and 3, Argon 2): post-merge recovery and
+// the task refresh dropped the project's configuration. The guard now reads
+// it by the project's name, so a name kept only in config, with its own
+// folder, is guarded on every path.
+test("guardedPush reads the project's own configuration by name: config-only names and its own folder", (t) => {
+  const f = setup(t);
+  const c = f.checkout;
+  writeFileSync(join(c, "secret.md"), "x\n");
+  f.git(c, "add", "-f", "secret.md");
+  f.git(c, "commit", "-q", "-m", "by hand");
+  privateConfig(t, { demo: { path: c, private: ["secret.md"], privateHome: f.keep } });
+  let pushed = false;
+  assert.throws(() => guardedPush({ project: "demo", cwd: c, tip: "HEAD", what: "The refresh" }, () => { pushed = true; }), /The refresh would carry private files: secret\.md/);
+  assert.equal(pushed, false);
+  guardedPush({ project: "elsewhere", cwd: c, tip: "HEAD", what: "The refresh" }, () => { pushed = true; });
+  assert.equal(pushed, true, "another project's names are not this one's");
+});
+
+// Argon's second review of t645, finding 1: a merge whose first parent still
+// held a removed private file showed nothing against that parent.
+test("a merge is compared with every parent, so one whose first parent keeps a removed private file is refused", (t) => {
+  const f = setup(t);
+  const c = f.checkout, g = (...a) => f.git(c, ...a);
+  writeFileSync(join(c, "PROJECT.md"), "the plan\n");
+  g("add", "-f", "PROJECT.md");
+  g("commit", "-q", "-m", "A");
+  const a = g("rev-parse", "HEAD");
+  g("rm", "-q", "--cached", "PROJECT.md");
+  g("commit", "-q", "-m", "B");
+  const b = g("rev-parse", "HEAD");
+  rmSync(join(c, "PROJECT.md"));
+  g("checkout", "-q", a);
+  g("merge", "-q", "-s", "ours", "--no-edit", b);
+  const m = g("rev-parse", "HEAD");
+  g("rm", "-q", "PROJECT.md");
+  g("commit", "-q", "-m", "N");
+  // The tree pushed holds no PROJECT.md; only the merge brings it back over B.
+  assert.deepEqual(privateCommits(c, ["PROJECT.md"], "HEAD", [b]), [{ commit: m, path: "PROJECT.md" }]);
+});
+
+test("a path is checked as it will be kept, so no accepted spelling fails to read back from the list", () => {
+  for (const bad of ["./#plan", "./ PROJECT.md", "PROJECT.md /", "./PROJECT.md /", "notes/ "]) assert.ok("error" in privatePath(bad), JSON.stringify(bad));
+  // Every accepted spelling of many generated names reads back as kept.
+  const pieces = ["", ".", "./", "/", " ", "#", "a", "B", "é", "\t", "-", "!", "[", "*", "..", ".git", "x y"];
+  let accepted = 0;
+  for (const p1 of pieces) for (const p2 of pieces) for (const p3 of pieces) {
+    const r = privatePath(p1 + p2 + p3);
+    if (!("path" in r)) continue;
+    accepted++;
+    assert.deepEqual(parsePrivateList(privateListText([r.path])).paths, [r.path], JSON.stringify(p1 + p2 + p3));
+    assert.deepEqual(privatePath(r.path), r, "a kept name is accepted as it is");
+  }
+  assert.ok(accepted > 100);
 });

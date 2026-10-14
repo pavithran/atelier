@@ -8,7 +8,6 @@ import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
 import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
-import { privateGuard } from "../private.mjs";
 
 // The project owner runs the project's ship order in its registered
 // checkout (cli/ship.mjs): each protected step only with an approval at the
@@ -46,7 +45,5 @@ export default async function shipCommand() {
     dryRun: args["dry-run"] === true,
     push: args.push === true,
     identity,
-    // The push carries none of the project's private files (t645).
-    guard: args.push === true ? privateGuard(name, p, { save: () => saveConfig(cfg) }) : null,
   });
 }

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { commitPatch, globMatcher, headerPath, lfsObject, lfsPointer, PRIVATE_ADDRESS, publishCheckoutRemote, publishMirror } from "../cli/mirror.mjs";
+import { privateConfig } from "./fixtures/private-config.mjs";
 
 // atelier publish REMOTE (t433), against a real checkout and a bare mirror on
 // disk. The keys below are assembled at run time so this file holds none.
@@ -48,7 +49,7 @@ function fixture(t, { policy = POLICY, emptyMirror = true } = {}) {
   const lines = [];
   const publish = (over = {}) => {
     lines.length = 0;
-    const r = publishMirror({ git: runner, dir: checkout, branch: "main", remote: "github", say: (l) => lines.push(l), identity: policy, ...over });
+    const r = publishMirror({ git: runner, dir: checkout, branch: "main", remote: "github", say: (l) => lines.push(l), identity: policy, project: "mirror-fixture", ...over });
     return { ...r, text: lines.join("\n") };
   };
   const refs = () => git(mirror, "for-each-ref", "--format=%(refname)").split("\n").filter(Boolean);
@@ -777,7 +778,8 @@ test("a commit holding a private file is published to no mirror and pushed to no
   const f = fixture(t);
   f.put("PROJECT.md", "the plan\n");
   const leak = f.commit("by hand");
-  const r = f.publish({ guard: { paths: ["PROJECT.md"], refusal: null } });
+  privateConfig(t, { demo: { private: ["PROJECT.md"] } });
+  const r = f.publish({ project: "demo" });
   assert.equal(r.ok, false);
   assert.match(r.text, new RegExp(`Not published: github's main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
   assert.deepEqual(f.refs(), []);
@@ -786,12 +788,12 @@ test("a commit holding a private file is published to no mirror and pushed to no
   f.git(f.dir, "init", "-q", "--bare", "-b", "main", plain);
   f.git(f.checkout, "remote", "add", "plain", plain);
   const said = [];
-  const pushed = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: (l) => said.push(l), identity: {}, guard: { paths: ["PROJECT.md"], refusal: null } });
+  const pushed = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: (l) => said.push(l), identity: {}, project: "demo" });
   assert.equal(pushed.ok, false);
   assert.match(said.join("\n"), /Not pushed to plain: main would carry private files: PROJECT\.md/);
   assert.equal(f.git(plain, "for-each-ref"), "");
   // Without the name, both go.
-  assert.equal(publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: () => {}, identity: {} }).ok, true);
+  assert.equal(publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: () => {}, identity: {}, project: "other" }).ok, true);
   assert.equal(f.publish().ok, true);
 });
 
@@ -802,6 +804,9 @@ test("a plain remote is checked at every push URL it has, not at its fetch URL",
   const f = fixture(t);
   f.put("PROJECT.md", "the plan\n");
   const leak = f.commit("by hand");
+  // Taken out again, so only the history holds it, not the tree pushed.
+  f.git(f.checkout, "rm", "-q", "PROJECT.md");
+  f.commit("taken out");
   const fetchFrom = join(f.dir, "fetch.git"), pushTo = join(f.dir, "push.git"), alsoPushTo = join(f.dir, "also.git");
   for (const bare of [fetchFrom, pushTo, alsoPushTo]) f.git(f.dir, "init", "-q", "--bare", "-b", "main", bare);
   f.git(f.checkout, "push", "-q", fetchFrom, "main");
@@ -810,7 +815,8 @@ test("a plain remote is checked at every push URL it has, not at its fetch URL",
   f.git(f.checkout, "remote", "set-url", "--push", "both", alsoPushTo);
   f.git(f.checkout, "remote", "set-url", "--add", "--push", "both", pushTo);
   const said = [];
-  const r = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "both", say: (l) => said.push(l), identity: {}, guard: { paths: ["PROJECT.md"], refusal: null } });
+  privateConfig(t, { demo: { private: ["PROJECT.md"] } });
+  const r = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "both", say: (l) => said.push(l), identity: {}, project: "demo" });
   assert.equal(r.ok, false);
   assert.match(said.join("\n"), new RegExp(`Not pushed to both: main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
   assert.equal(f.git(pushTo, "for-each-ref"), "", "the push URL that lacked the commit got nothing");
