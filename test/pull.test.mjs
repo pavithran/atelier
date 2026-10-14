@@ -93,6 +93,9 @@ async function serve(t, f) {
         ? { remote: `${f.url}/git/baseline.git`, token: f.http.mint(), tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" }
         : { remote: f.bare, token: TOKEN, tokenId: "tok1", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" };
       else if (req.method === "GET" && req.url === "/api/projects/demo/mode") body = { mode: "fast", line: "demo is in fast mode", reason: "a test", ready: [], landed: [] };
+      else if (req.method === "PUT" && req.url === "/api/projects/demo") body = { ok: true };
+      else if (req.method === "GET" && req.url === "/api/projects/demo/items/t2") body = { item: { id: "t2", title: "Two", state: "accepted", head: f.accepted, acceptedHead: f.accepted, owner: "codex/test" }, policy: { commitIdentity: IDENTITY, checks: [], protected: [] }, events: [], evidence: [], reviews: [], gate: {} };
+      else if (req.method === "POST" && req.url === "/api/projects/demo/items/t2/read-token") body = { remote: f.bare, token: TOKEN };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t1") body = { item: { id: "t1", title: "One", state: "merged" } };
       else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
       res.writeHead(status, { "content-type": "application/json" });
@@ -134,7 +137,7 @@ async function cloneOn(t, f, m) {
   return dir;
 }
 
-const refusal = (sha, command) => new RegExp(`main does not hold the baseline's main \\(${sha.slice(0, 8)}\\): another checkout has carried commits to the baseline since this one last matched it\\. Nothing was (pushed|merged)\\. Run atelier pull --project demo to bring them into this checkout, then ${command} again\\.`);
+const refusal = (sha, command) => new RegExp(`main does not hold the baseline's main \\(${sha.slice(0, 8)}\\): another checkout has carried commits to the baseline since this one last matched it\\. Nothing was (?:pushed|merged|sent: neither the ControlPlane policy nor any commit)\\. Run atelier pull --project demo to bring them into this checkout, then ${command} again\\.`);
 
 test("two checkouts of one baseline take turns: A syncs, B is refused and pulls, B syncs, A pulls", async (t) => {
   const f = setup(t, { fresh: true, http: true });
@@ -355,6 +358,12 @@ test("a conflicting pull of a fresh baseline says how to merge by hand so that s
   assert.notEqual(r.code, 0);
   assert.ok(r.output.includes(`Merge it by hand: git checkout -B main ${target}, then git merge ${local}, resolve the conflicts and commit (the baseline's side comes first, as atelier sync needs); then run atelier pull --project demo again.`), r.output);
   assert.equal(f.git(dirB, "rev-parse", "HEAD"), local);
+  // Main does not hold the baseline's head, so it stays unpaired, and sync
+  // still names pull (review of t644, finding 3).
+  assert.equal(loadPairs(f.git(dirB, "rev-parse", "--absolute-git-dir"), "demo")[target], undefined);
+  const syncRefused = await run(t, f, b, ["sync", "--project", "demo"]);
+  assert.notEqual(syncRefused.code, 0);
+  assert.match(syncRefused.output, refusal(target, "atelier sync --project demo"));
   // Following it, then pulling and syncing, carries the resolution.
   f.git(dirB, "checkout", "-q", "-B", "main", target);
   try { f.git(dirB, "merge", "-q", local); } catch { /* the conflict */ }
@@ -366,4 +375,97 @@ test("a conflicting pull of a fresh baseline says how to merge by hand so that s
   const sync = await run(t, f, b, ["sync", "--project", "demo"]);
   assert.equal(sync.code, 0, sync.output);
   assert.equal(f.git(f.bare, "show", "main:file.txt"), "version A and B");
+});
+
+// Review of t644, finding 1: a tag named main is not the branch. With one at
+// the baseline's head, rev-parse main read the tag, and fast land merged
+// into a branch behind the baseline.
+test("fast land reads main as refs/heads/main, never a tag named main", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
+  f.git(dir, "fetch", "-q", f.bare, "main");
+  f.git(dir, "tag", "main", theirs);
+  const sha = f.git(dir, "rev-parse", "refs/heads/main").slice(0, 7);
+  const refused = await run(t, f, a, ["fast", "land", `t1=${sha}`, "--project", "demo"], { cwd: dir });
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.output, refusal(theirs, `atelier fast land t1=${sha} --project demo`));
+  assert.ok(!refused.seen.some((s) => s.route.includes("/items/")));
+});
+
+// Review of t644, finding 2: a full-history project's sync returned before it
+// read the baseline, so a checkout another Mac had moved past put its older
+// ControlPlane policy back on the server.
+test("sync of a full-history project is refused before its policy is sent while main is behind the baseline", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  mkdirSync(join(dir, "docs", "control-plane"), { recursive: true });
+  writeFileSync(join(dir, "docs", "control-plane", "execution-policy.v1.json"), JSON.stringify({ protected_path_patterns: ["src/**"] }));
+  commitIn(f, dir, "docs/control-plane/execution-policy.v1.json", JSON.stringify({ protected_path_patterns: ["src/**"] }));
+  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
+  const refused = await run(t, f, a, ["sync", "--project", "demo"]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.output, refusal(theirs, "atelier sync --project demo"));
+  assert.deepEqual(refused.seen.map((s) => s.route), ["POST /api/projects/demo/baseline-token"], "nothing but the read token is asked for");
+  assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
+  const ok = await run(t, f, a, ["sync", "--project", "demo"]);
+  assert.equal(ok.code, 0, ok.output);
+  assert.ok(ok.seen.some((s) => s.route === "PUT /api/projects/demo"), "the policy is sent once main holds the baseline");
+});
+
+// Review of t644, finding 4: a replacement ref can give a commit a parent it
+// does not have. Pull and the guards read the objects themselves.
+test("pull and publish read the real history: a replacement ref does not make main hold the baseline", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const local = commitIn(f, dir, "mine.txt", "mine\n");
+  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
+  f.git(dir, "fetch", "-q", f.bare, "main");
+  // The local commit claims the baseline's head as its parent.
+  f.git(dir, "replace", "--graft", local, theirs);
+  assert.equal(f.git(dir, "merge-base", "--is-ancestor", theirs, "HEAD"), "", "Git, with the replacement, says main holds it");
+  const publish = await run(t, f, a, ["publish", "--project", "demo"]);
+  assert.notEqual(publish.code, 0);
+  assert.match(publish.output, refusal(theirs, "atelier publish --project demo"));
+  const pull = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.equal(pull.code, 0, pull.output);
+  assert.match(pull.output, /brought 1 commit from the baseline's main and merged them with 1 local commit/);
+  assert.deepEqual(f.git(dir, "--no-replace-objects", "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [local, theirs]);
+});
+
+test("pull refuses a checkout with a grafts file or a shallow history, and changes nothing", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const head = f.git(dir, "rev-parse", "HEAD");
+  commitElsewhere(f, "theirs.txt", "theirs\n");
+  const gitDir = f.git(dir, "rev-parse", "--absolute-git-dir");
+  mkdirSync(join(gitDir, "info"), { recursive: true });
+  writeFileSync(join(gitDir, "info", "grafts"), `${head}\n`);
+  const grafts = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(grafts.code, 0);
+  assert.match(grafts.output, /the checkout has a grafts file \(info\/grafts\), which change the history Git shows.*Nothing was pulled\./);
+  rmSync(join(gitDir, "info", "grafts"));
+  writeFileSync(join(gitDir, "shallow"), `${f.git(dir, "rev-parse", "HEAD~1")}\n`);
+  const shallow = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(shallow.code, 0);
+  assert.match(shallow.output, /the checkout has a shallow history.*git fetch --unshallow.*Nothing was pulled\./);
+  for (const r of [grafts, shallow]) assert.ok(!r.seen.some((s) => s.route.endsWith("/baseline-token")), "no token is asked for");
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
+});
+
+test("merge names atelier pull while main does not hold the baseline's main", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const head = f.git(dir, "rev-parse", "HEAD");
+  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
+  f.accepted = theirs;
+  const r = await run(t, f, a, ["merge", "t2", "--project", "demo"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.output, new RegExp(`main does not hold the baseline's main \\(${theirs.slice(0, 8)}\\): another checkout has carried commits to the baseline since this one last matched it\\. Nothing was merged\\. Run atelier pull --project demo to bring them into this checkout, then atelier merge t2 again\\.`));
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
 });
