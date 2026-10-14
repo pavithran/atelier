@@ -1028,17 +1028,22 @@ it("a reply with no readable verdict ends the review wait at once, and another r
   expect(detail).toMatch(/^opencode\/glm-5\.3 replied to the review of t\d+ at aaaaaaaa with no verdict the server could read \(no VERDICT line\)/);
   expect(detail).toMatch(/atelier land t\d+ --workflow --reviewer H\/M/);
   expect((await kinds(L, id))).toContain("land.review");
-  // The runner claims the re-asked request again; naming another reviewer
-  // replaces it, claimed as it is, instead of being refused.
-  const again = await L.claimReview(id, glm, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
-  expect(again.request).toBeGreaterThan(claim.request);
+  // While the re-asked request is open, naming another reviewer replaces it.
   const pool = await index.models();
+  const reasked = (await L.reviewWaiting())[0];
   const asked = await L.requestReview(id, "owner", gpt, pool, true, false, undefined, await index.runnerOffers());
-  expect(asked).toMatchObject({ needed: true, reviewer: gpt });
-  const withdrawn = ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "review.withdrawn").at(-1);
-  expect(withdrawn).toMatchObject({ data: { reviewer: glm, request: again.request } });
-  // The run holding the withdrawn claim cannot record a verdict under it.
-  expect(await refused(L.renewReview(id, glm, again.request))).toMatch(/stale_request/);
+  expect(asked).toMatchObject({ needed: true, requested: true, reviewer: gpt, withdrew: [{ request: reasked.request, reviewer: glm }] });
+  // Once a runner claims a request it is being served (gpt-6-astra's review
+  // of t627, finding 1): glm replies with no verdict again, claims the
+  // re-asked request, and naming another reviewer is refused, whatever the
+  // unreadable replies; the claim stands and its run can still renew it.
+  const gptClaim = await L.claimReview(id, gpt, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  expect(await L.unparsableReview(id, gpt, H1, "no VERDICT line", "Looks fine.", true, gptClaim.request)).toEqual({ released: true });
+  const again = await L.claimReview(id, gpt, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  expect(again.request).toBeGreaterThan(gptClaim.request);
+  expect(await refused(L.requestReview(id, "owner", glm, pool, true, false, undefined, await index.runnerOffers()))).toMatch(/^409\|review_claimed\|.*already requested from codex\/gpt-6-astra, and a runner has claimed it/);
+  expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ state: "claimed", claimedBy: gpt });
+  expect(await refused(L.renewReview(id, gpt, again.request))).toBe("resolved");
 });
 
 it("a review request withdrawn with no verdict ends the wait at once, naming the command that asks the same reviewer again (t574)", async () => {
