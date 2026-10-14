@@ -28,7 +28,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
@@ -72,6 +72,13 @@ function runGit(cwd, args, { encoding = "utf8", env, input } = {}) {
   return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, input, env: { ...gitEnv(), GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
 }
 
+// A string quoted for a POSIX shell: single quotes, each ' written as '\''.
+// Every path in a command fast land prints for the developer to run goes
+// through it (codex/gpt-6-astra's second review of t646): JSON.stringify's
+// double quotes left $ and backticks to the shell, so a repository at
+// /tmp/project-$batch had $batch expanded and the fix aimed elsewhere.
+export const shellQuote = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
+
 // What can make Git show history other than the history that lands:
 // replacement refs (ignored by runGit, and refused anyway, since they mean
 // something rewrote what Git shows), a grafts file, and a shallow boundary
@@ -88,23 +95,46 @@ function shallowOf(cwd) {
 // tree (atelier's own, which keeps .git off iCloud) is listed by Git under
 // its repository's path, not its own, so comparing that with cwd's
 // --show-toplevel took cwd's own checkout for another worktree holding main.
-// The first entry is the main worktree, whose Git directory is the common
-// one; a linked worktree's is what rev-parse answers inside it.
+//
+// Both come from Git's own registry, never from running Git inside a
+// candidate folder (t646): a project command can add a linked worktree
+// inside the checkout and delete its .git file, and rev-parse inside that
+// folder then answers with the checkout's Git directory, so the real holder
+// was skipped and main moved past its unreset index. The main worktree is
+// the porcelain list's first entry, whose Git directory is the common one;
+// each linked worktree is $GIT_COMMON_DIR/worktrees/<name>, holding what its
+// HEAD names, at the folder its gitdir file names.
+//
+// It answers { path, gitDir, workTree }: the folder Git lists, the holder's
+// own Git directory, and its working tree when the registry names one (null
+// for a main worktree Git lists under its Git directory, t639's layout).
+// Advice to the developer acts on gitDir and workTree, never on a command
+// run in `path` (codex/gpt-6-astra's review of t646): with the holder's .git
+// file deleted, Git run there finds the enclosing checkout's repository.
 export function worktreeHolding(cwd, ref) {
   const real = (path) => { try { return realpathSync(path); } catch { return path; } };
-  const gitDirOf = (dir, ...flags) => {
-    const r = runGit(dir, ["rev-parse", ...flags]);
+  const read = (path) => { try { return readFileSync(path, "utf8").trim(); } catch { return null; } };
+  const gitDirOf = (...flags) => {
+    const r = runGit(cwd, ["rev-parse", ...flags]);
     return r.status === 0 && r.stdout.trim() ? real(r.stdout.trim()) : null;
   };
-  const here = gitDirOf(cwd, "--absolute-git-dir");
-  const common = gitDirOf(cwd, "--path-format=absolute", "--git-common-dir");
-  const blocks = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n");
-  for (const [i, block] of blocks.entries()) {
-    const path = /^worktree (.+)$/m.exec(block)?.[1];
-    if (!path || !new RegExp(`^branch ${ref}$`, "m").test(block)) continue;
-    const gitDir = i === 0 ? common : existsSync(path) ? gitDirOf(path, "--absolute-git-dir") : null;
-    if (here && gitDir === here) continue;
-    return path;
+  const here = gitDirOf("--absolute-git-dir");
+  const common = gitDirOf("--path-format=absolute", "--git-common-dir");
+  const first = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n")[0];
+  const mainPath = /^worktree (.+)$/m.exec(first)?.[1];
+  if (mainPath && new RegExp(`^branch ${ref}$`, "m").test(first) && !(here && common === here)) {
+    return { path: mainPath, gitDir: common, workTree: common && real(mainPath) !== common ? mainPath : null };
+  }
+  if (!common) return null;
+  let names = [];
+  try { names = readdirSync(join(common, "worktrees")).sort(); } catch { return null; }
+  for (const name of names) {
+    const admin = join(common, "worktrees", name);
+    if (read(join(admin, "HEAD")) !== `ref: ${ref}`) continue;
+    if (here && real(admin) === here) continue;
+    const gitFile = read(join(admin, "gitdir"));
+    const workTree = gitFile ? dirname(resolve(admin, gitFile)) : null;
+    return { path: workTree ?? admin, gitDir: admin, workTree };
   }
   return null;
 }
@@ -486,8 +516,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       // read, and touches no branch checked out here.
       const holder = worktreeHolding(cwd, "refs/heads/main");
       if (holder) {
-        problem = `main is checked out in the worktree ${holder}, so fast land could not move it`;
-        fix = `git -C ${JSON.stringify(holder)} reset --hard ${start}`;
+        problem = `main is checked out in the worktree ${holder.path}, so fast land could not move it`;
+        fix = holder.gitDir && holder.workTree
+          ? `git --git-dir=${shellQuote(holder.gitDir)} --work-tree=${shellQuote(holder.workTree)} reset --hard ${start}`
+          : `git reset --hard ${start} in the checkout whose .git names ${shellQuote(holder.gitDir ?? holder.path)}`;
       } else {
         const r = runGit(cwd, ["update-ref", "refs/heads/main", start, main()]);
         if (r.status !== 0) problem = `git checkout main failed (${failed(checkout)}) and so did git update-ref (${failed(r)})`;
