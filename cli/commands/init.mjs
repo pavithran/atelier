@@ -253,8 +253,8 @@ export default async function initCommand() {
     pushed = built.head;
     console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
   } else {
-    guardedPush({ project: name, pending, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s baseline`, fail: die }, () => {
-      try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log }); }
+    guardedPush({ project: name, pending, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s baseline`, fail: die }, (sha) => {
+      try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log, head: sha }); }
       catch (err) { die(err.message); }
     });
   }

@@ -488,7 +488,7 @@ export async function ship(ctx) {
         // Checked for private files against every push URL of the remote (t645).
         const ref = `refs/heads/${target.branch}`;
         r = guardedPush({ project: name, cwd, tip: `refs/heads/${branch}`, bases: () => remoteBases({ git, cwd, remote: target.remote, ref, opts: { ownerRemote: true } }), what: `Not pushed to ${target.remote}: ${branch}`, fail: (message) => ({ status: 1, stdout: "", stderr: message }) },
-          () => git(["-c", `remote.${target.remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", target.remote, `refs/heads/${branch}:${ref}`], { cwd, allowFail: true, ownerRemote: true }));
+          (sha) => git(["-c", `remote.${target.remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", target.remote, `${sha}:${ref}`], { cwd, allowFail: true, ownerRemote: true }));
       }
       const now = git(["rev-parse", "HEAD"], { cwd });
       const listed = r.status === 0 ? git(["ls-remote", target.remote, `refs/heads/${target.branch}`], { cwd, allowFail: true, ownerRemote: true }) : null;

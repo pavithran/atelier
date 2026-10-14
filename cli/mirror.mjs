@@ -120,7 +120,7 @@ export function publishCheckoutRemote({ git, dir, branch, remote, say, identity,
     const ref = `refs/heads/${branch}`;
     let refused = null;
     const result = guardedPush({ project, cwd: dir, tip: ref, bases: () => remoteBases({ git, cwd: dir, remote, ref }), what: `Not pushed to ${remote}: ${branch}`, fail: (message) => { refused = message; return null; } },
-      () => git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true }));
+      (sha) => git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `${sha}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true }));
     if (refused) { say(refused); return { ok: false }; }
     return { ok: result.status === 0 };
   }

@@ -99,8 +99,10 @@ export default async function pushCommand() {
     const fork = remoteBases({ git, cwd: undefined, remote: forkUrl, ref: `refs/heads/${branch}`, opts });
     return fork.error ? fork : { bases: [...read.bases, ...fork.bases] };
   };
-  let r = guardedPush({ project: name, cwd: undefined, tip: "HEAD", bases: forkBases, what: `${id}'s push to its fork`, fail: die },
-    () => git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv }));
+  // Pinned to the head read above: that commit is scanned and pushed by its
+  // id, and recorded, whatever HEAD does meanwhile.
+  let r = guardedPush({ project: name, cwd: undefined, tip: head, bases: forkBases, what: `${id}'s push to its fork`, fail: die },
+    (sha) => git([...pushArgs.slice(0, -1), `${sha}:refs/heads/${branch}`], { allowFail: true, token: credential?.token, env: credentialEnv }));
   // A pack too large for one request answers 413 (t577: t544's ~96
   // regenerated PNGs through the runner route stranded its build for seven
   // hours). The unpushed first-parent commits then go one at a time, oldest
@@ -117,7 +119,7 @@ export default async function pushCommand() {
     const { item } = await call("GET", I(name, id), undefined, as);
     const ownerHint = `The developer can push it from a workspace on the fork itself: atelier claim ${id} --as ${item.owner ?? "HOLDER"} --runner ${item.runner ?? "home:NAME"}, then atelier push.`;
     try {
-      pushCommitsInTurn(git, undefined, { remote, branch, opts: { token: credential?.token, env: credentialEnv }, say: (line) => console.log(line), fallback: fork, ownerHint, refusal: (r.stderr || r.stdout || "").trim() });
+      pushCommitsInTurn(git, undefined, { remote, branch, head, opts: { token: credential?.token, env: credentialEnv }, say: (line) => console.log(line), fallback: fork, ownerHint, refusal: (r.stderr || r.stdout || "").trim() });
       r = { status: 0 };
     } catch (error) { die(`${id}: ${error.message}`); }
   }

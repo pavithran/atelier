@@ -878,3 +878,30 @@ test("a rename into an entry whose folder is found by name compares that folder,
   assert.equal(moveProjectEntry(projects, "source", "target").merged, true);
   assert.equal(projects.target.privateHome, f.keep);
 });
+
+// Astra's thirteenth review of t645, finding 2: info/exclude was rewritten
+// without a lock, so two commands at once could drop each other's lines.
+for (const lock of [true, false]) {
+  test(`two commands adding ignore lines at once ${lock ? "keep every line once" : "repeat the header without the lock"}`, async (t) => {
+    const f = setup(t);
+    const add = (path) => `const { excludePrivate } = await import(${moduleUrl}); excludePrivate(${JSON.stringify(f.checkout)}, [${JSON.stringify(path)}]);`;
+    const exclude = join(f.checkout, ".git", "info", "exclude");
+    writeFileSync(exclude, "# someone's own\nbuild/\n");
+    await overlap(t, { stage: "exclude", first: add("one.md"), second: add("two.md"), env: { ATELIER_CONFIG_DIR: join(f.root, "config") }, lock });
+    const lines = readFileSync(exclude, "utf8").split("\n");
+    assert.ok(lines.includes("/one.md") && lines.includes("/two.md"), "both lines are there");
+    assert.ok(lines.includes("build/"), "the lines already there are kept");
+    const headers = lines.filter((l) => l.startsWith("# Private files Atelier links")).length;
+    if (lock) assert.equal(headers, 1); else assert.equal(headers, 2, "without the lock both read before either wrote");
+  });
+}
+
+test("guardedPush hands the push the commit it scanned, whatever the branch names by then", (t) => {
+  const f = setup(t);
+  const c = f.checkout;
+  const scanned = f.git(c, "rev-parse", "HEAD");
+  let given = null;
+  guardedPush({ project: "nothing-private", cwd: c, tip: "refs/heads/main", what: "The push" }, (sha) => { given = sha; });
+  assert.equal(given, scanned);
+  assert.throws(() => guardedPush({ project: "nothing-private", cwd: c, tip: "refs/heads/none", what: "The push" }, () => {}), /does not name a commit here/);
+});

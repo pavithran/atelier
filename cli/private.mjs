@@ -16,7 +16,7 @@
 // one (privateCommits). Git commits a symbolic link as a link, never the
 // file it points at, and the refusal covers the link too.
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -596,16 +596,25 @@ function excludeFile(checkout) {
 
 // Adds a line to the checkout's info/exclude for each private path it does
 // not ignore yet. Returns the lines added.
+// Under a lock of its own (in this Mac's config folder, keyed by the
+// exclude file's path), and only by appending what is missing: the lines
+// already there, Atelier's or anyone's, are never rewritten, and two
+// commands at once never drop each other's (Astra's thirteenth review of
+// t645).
 export function excludePrivate(checkout, paths) {
   const file = excludeFile(checkout);
-  const text = existsSync(file) ? readFileSync(file, "utf8") : "";
-  const have = new Set(text.split("\n"));
-  const lines = [...new Set(paths.map(privateExcludeLine))].filter((line) => !have.has(line));
-  if (!lines.length) return [];
-  mkdirSync(dirname(file), { recursive: true });
-  const head = have.has(EXCLUDE_HEADER) ? [] : [EXCLUDE_HEADER];
-  writeFileSync(file, `${text}${text && !text.endsWith("\n") ? "\n" : ""}${[...head, ...lines].join("\n")}\n`);
-  return lines;
+  const key = createHash("sha256").update(resolve(file)).digest("hex").slice(0, 16);
+  return withLock(join(dirname(configFile()), `exclude-${key}.lock`), file, () => {
+    const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+    testHold("exclude");
+    const have = new Set(text.split("\n"));
+    const lines = [...new Set(paths.map(privateExcludeLine))].filter((line) => !have.has(line));
+    if (!lines.length) return [];
+    mkdirSync(dirname(file), { recursive: true });
+    const head = have.has(EXCLUDE_HEADER) ? [] : [EXCLUDE_HEADER];
+    appendFileSync(file, `${text && !text.endsWith("\n") ? "\n" : ""}${[...head, ...lines].join("\n")}\n`);
+    return lines;
+  });
 }
 
 // Whether Git, with every ignore rule the checkout has, ignores a private
@@ -819,18 +828,27 @@ export function privateRefusal(cwd, privates, tip, base, what) {
 // called only when there is something to check, returning the entries or
 // { error } (a destination that cannot be read stops the push). `fail` takes
 // the refusal (by default it is thrown). Returns what `push` returns.
+// The push is pinned to what was read (Astra's thirteenth review of t645):
+// `tip` is resolved to its commit once, that commit is what is scanned, and
+// `push` is given it to push by its id (SHA:refs/heads/BRANCH), so a commit
+// made on the branch between the scan and the push is never sent.
 export function guardedPush({ project, cwd, tip, base = [], bases = [base], what, fail = (message) => { throw new Error(message); }, root, pending = null }, push) {
   const guard = privateGuardFor(project, { root, pending });
   if (guard.refusal) return fail(`${what}: ${guard.refusal}`);
+  const resolved = typeof tip === "string" && tip && !tip.startsWith("-")
+    ? gitRead(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${tip}^{commit}`], { env: SCRUBBED }) : null;
+  const sha = resolved?.status === 0 ? resolved.stdout.trim() : null;
+  if (!sha) return fail(`${what}: ${tip} does not name a commit here. Nothing was pushed.`);
   if (guard.paths.length) {
     const read = typeof bases === "function" ? bases() : { bases };
     if (read.error) return fail(`${what}: ${read.error}. Nothing was pushed.`);
     for (const held of read.bases) {
-      const refusal = privateRefusal(cwd, guard.paths, tip, held, what);
+      const refusal = privateRefusal(cwd, guard.paths, sha, held, what);
       if (refusal) return fail(`${refusal} Nothing was pushed.`);
     }
   }
-  return push();
+  testHold("push");
+  return push(sha);
 }
 
 // What each place a push to `remote` actually goes holds of `ref`: every

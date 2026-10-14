@@ -908,3 +908,28 @@ test("wrap refuses a private file a .gitignore un-ignores, and stages nothing", 
   assert.equal(f.git("rev-parse", "HEAD"), head);
   assert.equal(f.git("diff", "--cached", "--name-only"), "");
 });
+
+// Astra's thirteenth review of t645: a push read the branch, then pushed it
+// by name, so a commit made between the scan and the push went unread.
+test("publish pushes the commit it scanned, not one made on the branch while it pushed", async (t) => {
+  const f = fixture(t);
+  privateFiles(t, f);
+  f.clean();
+  writeFileSync(join(f.checkout, "work.txt"), "w\n");
+  f.git("add", "work.txt");
+  f.git("commit", "-qm", "work");
+  const scanned = f.git("rev-parse", "HEAD");
+  const hold = join(mkdtempSync(join(tmpdir(), "atelier-pin-")), "hold");
+  t.after(() => rmSync(dirname(hold), { recursive: true, force: true }));
+  const proc = f.spawnWith({ ATELIER_TEST_HOLD: hold, ATELIER_TEST_HOLD_STAGE: "push" }, "publish");
+  const closed = new Promise((ok) => proc.on("close", ok));
+  const end = Date.now() + 15_000;
+  while (!existsSync(`${hold}.read`)) { if (Date.now() > end) throw new Error("publish never reached its push"); await new Promise((r) => setTimeout(r, 10)); }
+  // Between the scan and the push, a commit holding the private file.
+  f.git("add", "-f", "PROJECT.md");
+  f.git("commit", "-qm", "by hand, after the scan");
+  writeFileSync(`${hold}.go`, "");
+  assert.equal(await closed, 0);
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), scanned, "the baseline holds the commit that was scanned");
+  assert.doesNotMatch(f.git("--git-dir", f.baseline, "log", "--all", "--name-only", "--format="), /PROJECT\.md/);
+});
