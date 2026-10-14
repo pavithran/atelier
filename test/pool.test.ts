@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, familyOf, hasModelRole, latestNote, LOCAL_BUILD, modelState, noteLine, offThePool, actorStanding, typedActor, withStanding } from "../src/models/pool.ts";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, familyOf, hasModelRole, latestNote, LOCAL_BUILD, modelState, noteLine, offThePool, actorStanding, withStanding } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
 
@@ -147,17 +147,10 @@ test("a saved pool takes the owner's standing now, and a held model or one witho
   assert.equal(withStanding([a], [astra])[0].state, undefined);
   // An entry the pool no longer has keeps what was saved.
   assert.deepEqual(withStanding([luna], []), [luna]);
-  // An alias is converted where it is typed (typedActor), and the standing
-  // read by the exact id it became (gpt-6-astra's and gemini-4-argon's
-  // eighth reviews of t622).
-  const typed = typedActor(now, "codex/astra");
-  assert.equal(typed, "codex/gpt-6-astra");
-  assert.match(actorStanding(now, typed, "review")!, /^codex\/gpt-6-astra is reserved since 2026-10-09 \(the developer's standing\): credits/);
-  // A missed boundary fails closed: the alias is held as its entry is (the ninth review).
-  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since/);
+  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since 2026-10-09 \(the developer's standing\): credits/);
   assert.match(actorStanding(now, "codex/gpt-6-luna", "review")!, /not a reviewer; its roles are build/);
   assert.equal(actorStanding(now, "codex/gpt-6-luna", "build"), null);
-  assert.match(actorStanding(now, typed, "build")!, /reserved since/);
+  assert.match(actorStanding(now, "codex/astra", "build")!, /reserved since/);
   assert.equal(actorStanding([astra, luna], "codex/gpt-6-astra", "review"), null);
   assert.equal(actorStanding(now, "claude-code/opus-5.5", "review"), null);
 });

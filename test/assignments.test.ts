@@ -5,7 +5,8 @@ import {
   assignmentSnapshot, choiceMatches, FALLBACK, isRetryOf, isWithdrawalRetry, orderByAssignment, seedProject, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
   type Assignment, type AssignmentRecord, type AssignmentStore, type ResolvedAssignment,
 } from "../src/models/assignments.ts";
-import { typedActor, type ModelEntry } from "../src/models/pool.ts";
+import type { ModelEntry } from "../src/models/pool.ts";
+import { typedActor } from "../src/models/identity.ts";
 
 // Role assignments (t622, src/models/assignments.ts): the developer's dated
 // judgements of which model does what, with evidence, kept as immutable

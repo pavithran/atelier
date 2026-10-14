@@ -45,7 +45,8 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { modelKey, RuleError, sameActor, validActor } from "../rules.ts";
-import { entryNamed, storedActor, type ModelEntry } from "./pool.ts";
+import { entryNamed, storedActor } from "./identity.ts";
+import type { ModelEntry } from "./pool.ts";
 import { SERVED } from "./served.ts";
 
 export const ACTING_HEADER = "x-atelier-acting";

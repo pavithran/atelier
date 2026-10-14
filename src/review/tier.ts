@@ -14,7 +14,9 @@
 
 import { FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
 import type { PoolNames } from "../models/judgement.ts";
-import { exactEntry, poolEligibility, storedActor, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { exactEntry, storedActor } from "../models/identity.ts";
+import { actorStanding, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { paidPerToken } from "../plans/route.ts";
 import { offering, type SeenOffer } from "../dispatch/rules.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
 import { actorFamily, contributed, sameActor, type ProjectPolicy } from "../rules.ts";
@@ -86,19 +88,28 @@ export function tierReviewerPick(tier: readonly string[], contributors: readonly
   return { actor, reasons: actor ? ordered.reasons(actor) : ordered.outcome.lines };
 }
 
-// Whether a tier model may be asked for a separate tier review, by the one
-// eligibility check (poolEligibility): the pool entry it names, exactly, its
-// standing, status and cost, then whether a live runner offers that entry,
-// by its own harness/id, for the review job where it runs. A tier model
-// outside the pool is the project's explicit choice: it may be asked, and
+// Whether a tier model may be asked for a separate tier review: the exact
+// pool entry it is, the owner's standing for the review job as
+// src/models/pool.ts judges it (actorStanding, unchanged), a refused status,
+// a cost per token, then whether a live runner offers that entry, by its own
+// harness/id, for the review job where it runs. A tier model outside the
+// pool is the project's explicit choice: it may be asked, and
 // tierReviewerPick never moves it ahead (gpt-6-astra's and gemini-4-argon's
 // fourth reviews of t622, findings 1 and 2).
 export function tierEligible(pool: readonly ModelEntry[], offers: readonly SeenOffer[] | null | undefined, actor: string): true | string {
-  const e = poolEligibility(pool, actor, "review");
-  if (!e.entry) return true;
-  if (e.refusals.length) return e.refusals.join("; ");
-  const offered = offers ? offering({ to: e.entry.where, job: "review" }, offers) : null;
-  if (offered && !offered.actors.has(e.actor.toLowerCase())) return `no live runner offers ${e.actor} for the review job ${e.entry.where === "home" ? "at home" : "in the cloud"}`;
+  const entry = exactEntry(pool, actor);
+  if (!entry) return true;
+  // The entry's own standing and the owner's standing for the name, both as
+  // src/models/pool.ts decides them (standingRefusal, actorStanding).
+  const own = standingRefusal(entry, "review");
+  if (own) return own;
+  const held = actorStanding(pool, actor, "review");
+  if (held) return held;
+  if (entry.status?.state === "refused") return `status refused, reported by ${entry.status.by} at ${entry.status.at}${entry.status.detail ? `: ${entry.status.detail}` : ""}`;
+  if (paidPerToken(entry)) return `paid per token (${entry.provider}); paid models are not allowed for this review`;
+  const id = `${entry.harness}/${entry.id}`;
+  const offered = offers ? offering({ to: entry.where, job: "review" }, offers) : null;
+  if (offered && !offered.actors.has(id.toLowerCase())) return `no live runner offers ${id} for the review job ${entry.where === "home" ? "at home" : "in the cloud"}`;
   return true;
 }
 

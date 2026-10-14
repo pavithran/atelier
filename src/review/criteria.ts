@@ -35,7 +35,8 @@
 // format lets its CRITERION line say deferred (replyFormat in
 // src/review/verdict.ts), and nobody rejects the task for it.
 
-import { exactEntry, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { exactEntry } from "../models/identity.ts";
+import { standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import type { Choice } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
 import { actorFamily, assertEligible, companyRefusal, DEFAULT_OWNER, familyRefusal, hasRole, modelKey, parseRuleError, sameActor, singleFamily, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
