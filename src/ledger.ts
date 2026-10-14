@@ -7614,7 +7614,10 @@ export class Ledger extends DurableObject<Env> {
     if (addedPart(record, key) || this.planParts(id).some((p) => p.partKey === key)) return null;
     const spec = mergeMainPart(mainHead, scope);
     const routed = to ? { ...spec, prefer: { actor: to, reason: "named by the developer with plan refresh --resolve" } } : spec;
+    // The part is dispatched with the merge-main job (dispatchPart), so its
+    // builder is routed only to a model a runner offers that job for.
     const [route] = routeParts({ schema: "atelier.plan.v1", goal: record.goal, parts: [routed] }, {
+      buildJob: "merge-main",
       pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers: offers !== null ? offers : await this.routingOffers(),
       precision: this.reviewPrecision(at), assignments: this.heldAssignments(),
     });

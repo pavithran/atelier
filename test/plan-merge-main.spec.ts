@@ -339,3 +339,25 @@ it("plan refresh --resolve --to names an entry whose id differs from the routed 
   const [m] = await mergePart(L, id);
   expect(m.route?.builder?.actor).toBe("zcode/GLM-5.3");
 });
+
+// gpt-6-astra's twenty-first review of t622: the merge-main part was routed
+// with a plain build's offer check, though it is dispatched with the
+// merge-main job; a build assignment preferring Astra, offered only for build
+// and review, routed it to Astra, whom no runner would claim it as.
+it("the merge-main part is routed to a model a runner offers the merge-main job for, whatever a build assignment prefers", async () => {
+  const L = await setup("mm-resolve-job");
+  const { id } = await behindPlan(L);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
+  await L.release(id, INTEGRATOR, "refresh failed");
+  await L.assignmentsChanged({ version: 999, assignments: [{ id: "a1", kind: "assigned", scope: "*", role: "build", choices: [{ actor: "codex/gpt-6-astra", model: "gpt-6-astra" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  const now = new Date().toISOString();
+  const offers = [
+    { runner: "home:astra", kind: "home" as const, jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: now },
+    { runner: "home:opus", kind: "home" as const, jobs: ["merge-main", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: now },
+  ];
+  await L.planResolve(id, "owner", M1, false, undefined, offers);
+  const [m] = await mergePart(L, id);
+  expect(m.route?.builder?.actor).toBe("claude-code/opus-5.5");
+  expect(m.route?.builder?.reasons.join(" ")).toMatch(/Role assignment a1 skipped: no choice is eligible here \(codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
+});
