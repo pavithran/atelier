@@ -118,10 +118,13 @@ export function requiredForCommand(command: string, word?: string, flags: Readon
 // and the developer's permission on the pages is the way until it is
 // deployed. The refusal says so (capabilityFallback).
 export const DIRECTION = "projects.developer-direction.v1";
+// The developer's branches (t641): a server without them keeps no branches
+// repository, and the refusal says nothing was pushed or fetched.
+export const BRANCHES = "projects.developer-branches.v1";
 export function capabilityFallback(missing: readonly string[]): string {
-  return missing.includes(DIRECTION)
-    ? "Until then, the developer gives the permission on the project's Settings page (Allow fast mode from the command line) or the task's page (Allow an override from the command line), and the command runs again without --quote"
-    : "";
+  if (missing.includes(DIRECTION)) return "Until then, the developer gives the permission on the project's Settings page (Allow fast mode from the command line) or the task's page (Allow an override from the command line), and the command runs again without --quote";
+  if (missing.includes(BRANCHES)) return "This server predates the developer's branches, so nothing was pushed, fetched or listed, and every branch stays where it is until the server is deployed with them";
+  return "";
 }
 
 // What each runner job needs. A job absent here runs without asking. Every

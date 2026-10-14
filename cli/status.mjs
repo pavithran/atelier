@@ -83,6 +83,8 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       inbox: v.inbox ? mine : null,
       items: v.items ? v.items.map(itemJson) : null,
       ...(v.mismatches?.length ? { mismatches: v.mismatches } : {}),
+      // The developer's branches (t641), when they were read.
+      ...(Array.isArray(v.branches) ? { branches: v.branches } : {}),
       overlaps: a.overlaps,
       attention: { owner: a.owner.map((t) => ({ ...t, url: absolute(server, t.href) })), pipeline: a.pipeline, unknown: a.unknown },
       // The merges that went in on the owner's override, each with the link
@@ -452,4 +454,30 @@ export function inboxJson(views, waiting = {}) {
 }
 export function inboxNotRead(views, waiting = {}) {
   return views.flatMap((v) => attentionFor(v.name, v.items, v.inbox, waiting.offers ?? null, waiting.now ?? new Date()).unknown.map((x) => `${v.name}: ${x}`));
+}
+
+// The developer's branches (t641): each one's name, its last commit as the
+// branches repository held it after the push, and the Mac it was pushed
+// from, newest push first. `branches` is the list GET branches answers, or
+// null when it was not read (a server without them, or one that could not
+// answer), which is said rather than shown as none.
+const branchTime = (iso) => (typeof iso === "string" && iso.length >= 16 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : "an unrecorded time");
+export function branchLine(b) {
+  const subject = flatText(b.subject ?? "");
+  return `${b.name}  ${String(b.commit).slice(0, 8)}${subject ? `  ${subject.length > 60 ? `${subject.slice(0, 59)}…` : subject}` : ""}  (from ${flatText(b.host)}, ${branchTime(b.pushedAt)})`;
+}
+export function formatDeveloperBranches(branches, indent = "  ") {
+  if (branches === null || branches === undefined) return `${indent}Developer branches: not read (the server keeps none, or could not answer)`;
+  if (!branches.length) return `${indent}Developer branches: none (atelier branch push NAME carries one to your other Macs)`;
+  return [`${indent}Developer branches`, ...branches.map((b) => `${indent}  ${branchLine(b)}`)].join("\n");
+}
+// Every project's branches, for `atelier status`: a section when some
+// project has one or some project's could not be read, each line led by its
+// project, and the projects not read named on one line, so a branch that
+// could not be read is never shown as none (Astra's review of t641).
+export function formatAllDeveloperBranches(views) {
+  const lines = views.flatMap((v) => (Array.isArray(v.branches) ? v.branches.map((b) => `  ${v.name}  ${branchLine(b)}`) : []));
+  const unread = views.filter((v) => !Array.isArray(v.branches)).map((v) => v.name);
+  if (unread.length) lines.push(`  not read for ${unread.join(", ")} (the server keeps none, or could not answer)`);
+  return lines.length ? ["Developer branches", ...lines].join("\n") : "";
 }
