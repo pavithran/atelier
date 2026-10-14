@@ -17,6 +17,7 @@
 // file it points at, and the refusal covers the link too.
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PRIVATE_LIST, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
@@ -223,9 +224,28 @@ export function savePrivateFields(project, entry, { drop = [], home = null } = {
 // writers from losing each other's change.
 const LOCK_WAIT_MS = 5000, LOCK_STALE_MS = 30_000;
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-export function withConfigLock(fn) {
-  const file = configFile(), lock = `${file}.lock`;
-  mkdirSync(dirname(file), { recursive: true });
+
+// A test's pause between a read and its write, to make two writers overlap
+// for certain: with ATELIER_TEST_HOLD naming a path and
+// ATELIER_TEST_HOLD_STAGE naming this stage, the process writes PATH.read
+// once it has read and waits (up to ten seconds) for PATH.go before it
+// writes. ATELIER_TEST_NO_LOCK runs without the lock, so a test can show
+// the lock is what keeps both changes. Neither is set outside the tests.
+export function testHold(stage) {
+  const at = process.env.ATELIER_TEST_HOLD;
+  if (!at || process.env.ATELIER_TEST_HOLD_STAGE !== stage) return;
+  writeFileSync(`${at}.read`, String(process.pid));
+  const until = Date.now() + 10_000;
+  while (!existsSync(`${at}.go`) && Date.now() < until) sleep(10);
+}
+
+// Holds `lock`, a file made with O_EXCL holding the owner's pid and when it
+// was taken, while `fn` runs. Another holder is waited for, with a short
+// backoff, for up to LOCK_WAIT_MS; a lock whose owner is gone, or older than
+// LOCK_STALE_MS, is taken over. `what` names what it guards in the refusal.
+export function withLock(lock, what, fn) {
+  if (process.env.ATELIER_TEST_NO_LOCK) return fn();
+  mkdirSync(dirname(lock), { recursive: true });
   const started = Date.now();
   for (let delay = 10; ; delay = Math.min(delay * 2, 200)) {
     let fd;
@@ -238,7 +258,7 @@ export function withConfigLock(fn) {
       if (pid > 0) { try { process.kill(pid, 0); alive = true; } catch (e) { alive = e?.code === "EPERM"; } }
       const old = at > 0 && Date.now() - at > LOCK_STALE_MS;
       if ((pid > 0 && !alive) || old) { try { unlinkSync(lock); } catch { /* another took it over */ } continue; }
-      if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`${file} is locked by another Atelier command (pid ${pid || "unknown"}, ${lock}); try again once it has finished`);
+      if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`${what} is locked by another Atelier command (pid ${pid || "unknown"}, ${lock}); try again once it has finished`);
       sleep(delay);
       continue;
     }
@@ -250,6 +270,35 @@ export function withConfigLock(fn) {
   }
 }
 
+// Every read-modify-write of config.json holds this lock (Astra's ninth
+// review of t645): the atomic rename keeps a reader from half a file, the
+// lock keeps two writers from losing each other's change.
+export function withConfigLock(fn) {
+  const file = configFile();
+  return withLock(`${file}.lock`, file, fn);
+}
+
+// The lock for one project's list in iCloud, kept in this Mac's config
+// folder (never in iCloud), keyed by the list's path: two commands on this
+// Mac never lose each other's names. Two Macs writing the list at once
+// through iCloud are not covered; iCloud keeps one and makes a conflicted
+// copy of the other.
+export function withListLock(home, fn) {
+  const file = join(home, PRIVATE_LIST);
+  const key = createHash("sha256").update(resolve(file)).digest("hex").slice(0, 16);
+  return withLock(join(dirname(configFile()), `private-list-${key}.lock`), file, fn);
+}
+
+const readConfigFile = (file) => {
+  try { return JSON.parse(readFileSync(file, "utf8")); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+};
+const writeConfigFile = (file, cfg) => {
+  const part = `${file}.${process.pid}.part`;
+  writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  try { renameSync(part, file); } catch (error) { rmSync(part, { force: true }); throw error; }
+};
+
 // Reads config.json under the lock, lets `change` edit it, and writes it
 // whole or not at all unless `change` answers false. A missing file is no
 // config: nothing is written and false is answered. Returns what `change`
@@ -257,19 +306,76 @@ export function withConfigLock(fn) {
 export function updateConfig(change) {
   return withConfigLock(() => {
     const file = configFile();
-    let cfg;
-    try { cfg = JSON.parse(readFileSync(file, "utf8")); }
-    catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+    const cfg = readConfigFile(file);
+    if (!cfg) return false;
+    testHold("update");
     cfg.projects ??= {};
     const result = change(cfg);
     if (result === false) return false;
-    const part = `${file}.${process.pid}.part`;
-    writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
-    try { renameSync(part, file); } catch (error) { rmSync(part, { force: true }); throw error; }
+    writeConfigFile(file, cfg);
     return result;
   });
 }
 
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const PRIVATE_FIELDS = ["private", "privateFromList", "formerNames"];
+
+// The config a whole-config save writes (Astra's tenth review of t645):
+// `memory` is what this process holds, `snapshot` what it read when it
+// started (or last saved), `disk` the file as it is now. A top-level setting
+// or a project entry this process changed (it differs from the snapshot,
+// or is gone from memory) is written as memory holds it; one it did not
+// change is left as the disk has it, so another command's change since is
+// kept, a removal or move included. Every entry's private names, copy of the list and former names are
+// joined across memory and disk, so no save ever drops one; a folder named
+// on disk is kept unless this process changed the entry. Only private
+// remove (updateConfig) removes a private name.
+export function mergeConfigForSave(disk, memory, snapshot) {
+  // No file yet: nothing else wrote, so what this process holds stands.
+  disk ??= memory; snapshot ??= {};
+  const out = {};
+  for (const key of new Set([...Object.keys(disk), ...Object.keys(memory), ...Object.keys(snapshot)])) {
+    if (key === "projects") continue;
+    const changed = !same(memory[key], snapshot[key]);
+    const value = changed ? memory[key] : disk[key];
+    if (value !== undefined) out[key] = value;
+  }
+  const dp = disk.projects ?? {}, mp = memory.projects ?? {}, sp = snapshot.projects ?? {};
+  out.projects = {};
+  for (const name of new Set([...Object.keys(dp), ...Object.keys(mp), ...Object.keys(sp)])) {
+    const changed = !same(mp[name], sp[name]);
+    if (changed && !mp[name]) continue; // removed or moved by this process
+    // Unchanged here: the disk's entry stands, and one another command
+    // removed or moved since stays gone.
+    const base = changed ? mp[name] : dp[name];
+    if (!base) continue;
+    const entry = { ...base };
+    const other = changed ? dp[name] : mp[name];
+    for (const field of PRIVATE_FIELDS) {
+      const joined = [...new Set([...(Array.isArray(entry[field]) ? entry[field] : []), ...(Array.isArray(other?.[field]) ? other[field] : [])])];
+      if (Array.isArray(entry[field]) || Array.isArray(other?.[field])) entry[field] = field === "formerNames" ? joined : plainPaths(joined);
+    }
+    if (!entry.privateHome && other?.privateHome) entry.privateHome = other.privateHome;
+    out.projects[name] = entry;
+  }
+  return out;
+}
+
+// A whole-config save, as the CLI's saveConfig makes it: under the lock, the
+// file is read again and merged with what this process holds
+// (mergeConfigForSave), then written whole or not at all. Returns the
+// config written.
+export function saveWholeConfig(memory, snapshot) {
+  return withConfigLock(() => {
+    const file = configFile();
+    const disk = readConfigFile(file);
+    testHold("save");
+    const merged = mergeConfigForSave(disk, memory, snapshot);
+    mkdirSync(dirname(file), { recursive: true });
+    writeConfigFile(file, merged);
+    return merged;
+  });
+}
 
 // `pending` stands for the entry of a project this Mac does not register
 // yet (a first init), used only while the config holds none.

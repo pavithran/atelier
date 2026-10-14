@@ -5,7 +5,7 @@ import { privatePath } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { args, cfg, die, project, saveConfig } from "../atelier.mjs";
 import { PRIVATE_LIST } from "../../src/rules.ts";
-import { excludesPrivate, linkPrivate, privateGuardFor, savePrivateFields, privateList, privateState, readPrivateList, trackedPrivate, writePrivateList } from "../private.mjs";
+import { excludesPrivate, linkPrivate, privateGuardFor, savePrivateFields, privateList, privateState, readPrivateList, testHold, trackedPrivate, withListLock, writePrivateList } from "../private.mjs";
 
 // The developer names the project's private files (t645). The names go to
 // the list beside the files in the project's iCloud folder, which follows the
@@ -62,12 +62,22 @@ function add(words) {
   // The list in the folder, so every Mac's clone links them.
   const list = privateList(name, entry);
   if (list.home && existsSync(list.home)) {
-    const before = readPrivateList(list.home);
     // Every name known goes to the list: the list's own, this Mac's config,
     // the copy of the list this Mac keeps, and the new ones. A list that has
     // gone missing is never rewritten smaller (Astra's fourth review of
-    // t645); only private remove drops a name.
-    try { writePrivateList(list.home, [...before.paths, ...entry.private, ...(entry.privateFromList ?? [])]); } catch (error) { die(`${error.message}; ${name}'s private files are named on this Mac only`); }
+    // t645); only private remove drops a name. The list is read and written
+    // under its lock, so two commands on this Mac never lose each other's
+    // names (Astra's tenth review of t645).
+    let before;
+    try {
+      before = withListLock(list.home, () => {
+        const read = readPrivateList(list.home);
+        if (read.unreadable) throw new Error(`${read.unreadable}; the list was not rewritten`);
+        testHold("list");
+        writePrivateList(list.home, [...read.paths, ...entry.private, ...(entry.privateFromList ?? [])]);
+        return read;
+      });
+    } catch (error) { die(`${error.message}; ${name}'s private files are named on this Mac only`); }
     for (const r of before.refused) console.log(`${PRIVATE_LIST} line ${r.line} was dropped: ${r.error}.`);
     console.log(`${join(list.home, PRIVATE_LIST)} lists them, so atelier clone links them on every Mac.`);
   } else console.log(`${name}'s private files are named on this Mac only: ${list.homeError ?? `${list.home} is not on this Mac`}.`);
@@ -94,12 +104,17 @@ function remove(words) {
   const list = privateList(name, entry);
   if (list.unreadable || (list.home && !existsSync(list.home))) die(`${list.unreadable ?? `${list.home} is not on this Mac`}, so its list cannot be rewritten without these names; nothing was changed`);
   const keep = (names) => (names ?? []).filter((p) => !paths.includes(p));
-  const known = [...new Set([...(entry.private ?? []), ...(entry.privateFromList ?? []), ...(list.listed ? readPrivateList(list.home).paths : [])])];
-  const gone = paths.filter((p) => known.includes(p));
-  if (!gone.length) die(`${paths.join(", ")} ${paths.length === 1 ? "is" : "are"} not among ${name}'s private files; nothing was changed`);
-  if (list.home && existsSync(list.home)) {
-    try { writePrivateList(list.home, keep(known)); } catch (error) { die(`${error.message}; nothing was changed`); }
-  }
+  // The list is read and rewritten under its lock (Astra's tenth review of t645).
+  let gone = [];
+  const rewrite = () => {
+    const read = list.home && existsSync(list.home) ? readPrivateList(list.home) : { paths: [] };
+    if (read.unreadable) throw new Error(read.unreadable);
+    const known = [...new Set([...(entry.private ?? []), ...(entry.privateFromList ?? []), ...read.paths])];
+    gone = paths.filter((p) => known.includes(p));
+    if (!gone.length) throw new Error(`${paths.join(", ")} ${paths.length === 1 ? "is" : "are"} not among ${name}'s private files`);
+    if (list.home && existsSync(list.home)) writePrivateList(list.home, keep(known));
+  };
+  try { if (list.home) withListLock(list.home, rewrite); else rewrite(); } catch (error) { die(`${error.message}; nothing was changed`); }
   if (entry.private) entry.private = keep(entry.private);
   if (entry.privateFromList) entry.privateFromList = keep(entry.privateFromList);
   savePrivateFields(name, entry, { drop: gone });
