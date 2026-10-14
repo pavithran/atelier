@@ -1152,6 +1152,66 @@ test("a missing merge published between the fetch and the head read is claimed a
   assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
 });
 
+// t657 (t638's follow-up): recheckMissing's own catch of a baseline head
+// read had no test. Finding: removing it, or making it rethrow, left the
+// suite green, since the poll's outer catch takes the error as a failed
+// poll and the next check reads the head as before. Here the miss is kept
+// at B1 on poll 1; the head read at the first check (poll 6) fails, which
+// is logged through the runner's log and changes nothing: the review is
+// neither claimed nor taken as moved, and the miss keeps B1. The next
+// read (poll 11) is B1 again, still no move; the one after (poll 16) is
+// B2, and the review is claimed again.
+test("a baseline head read that fails at a later check is logged, keeps the missing merge as it was, and the next read recovers", async (t) => {
+  const { MISSING_RECHECK_MS } = await import("../cli/runner.mjs");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, logs, task } = missingMergeFixture();
+  const B1 = "1".repeat(40), B2 = "2".repeat(40);
+  const every = MISSING_RECHECK_MS / 60_000;
+  const claimPolls = [], heads = [], idlePolls = [];
+  let polls = 0, clock = 0;
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => { if (argv[0] === "review-claim") claimPolls.push(polls); return cli(argv, cwd, options); };
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    async reportReviewSkip(body) { skips.push(body); },
+    // Called at the end of each poll that claimed nothing.
+    async idleWhy() { idlePolls.push(polls); return []; },
+    async baselineHead(project, actor) {
+      heads.push(polls);
+      assert.deepEqual([project, actor], [task(50).project, task(50).actor]);
+      if (polls === 1 + every) throw new Error("baseline-head: 503 Service Unavailable");
+      return polls < 1 + 3 * every ? B1 : B2;
+    },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls > 1 + 3 * every + 2) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  // Read at each check: the failed one, B1 (no move), then B2.
+  assert.deepEqual(heads, [1 + every, 1 + 2 * every, 1 + 3 * every]);
+  // Claimed on the miss and again only once the head moved: the failed
+  // read claimed nothing and moved nothing.
+  assert.deepEqual(claimPolls, [1, 1 + 3 * every], JSON.stringify(claimPolls));
+  // The failed read ends nothing: the poll it came in passes the review by
+  // and ends as an idle poll does, not as a failed one.
+  assert.ok(idlePolls.includes(1 + every), `idle on polls ${idlePolls.join(", ")}`);
+  // The failure is logged once, through the runner's log, naming the
+  // project, the task and the error; never as a failed poll.
+  const read = logs.filter((l) => /baseline head/.test(l));
+  assert.deepEqual(read, [`could not read ${task(50).project}'s baseline head for ${task(50).item.id}'s review: baseline-head: 503 Service Unavailable`]);
+  // Only B2 is taken as a move, from the B1 the miss kept.
+  const moved = logs.filter((l) => /baseline moved to/.test(l));
+  assert.deepEqual(moved, [`${task(50).project}'s baseline moved to ${B2.slice(0, 8)}; ${task(50).item.id}'s post-merge review of ${merge.slice(0, 8)} is tried again`]);
+  // One review skip per claim that missed (polls 1 and 16), none for the
+  // failed read.
+  assert.equal(skips.length, claimPolls.length);
+});
+
 // t591 (after the third review): a baseline that cannot be fetched at all
 // fails the job as an ordinary failure, but each failure releases the
 // review under a new request number, so a count by request never reaches
