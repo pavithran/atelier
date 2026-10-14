@@ -9,6 +9,7 @@
 // share this judgment, so both count the same verdicts the same way.
 
 import { offering, type SeenOffer } from "./dispatch/rules.ts";
+import { sameActor } from "./rules.ts";
 
 export interface LandingReview {
   by: string;
@@ -37,6 +38,32 @@ export function landingVerdict(reviews: LandingReview[], head: string, since: st
   const counted = fresh.filter((v) => !(v.tier && v.approve));
   const verdict = counted.find((v) => !v.approve) ?? counted.at(-1) ?? null;
   return { verdict, tierApprovals };
+}
+
+// Whether the owner may accept the task as it stands: submitted, with the
+// gate ready. It is `atelier show`'s "accept" recommendation (src/brief.ts),
+// and the landing reads the same before it asks for a review (t628), so the
+// two never disagree about a review already recorded.
+export function readyToAccept(d: { item: { state: string }; gate?: { ready: boolean } | null }): boolean {
+  return d.item.state === "submitted" && d.gate?.ready === true;
+}
+
+// The approval a landing counts without asking for a review (t628): the task
+// is ready to accept at the head it landed, and a reviewer other than the
+// owner, not withdrawn and not as a tier's second opinion, approved that
+// head, the named reviewer where the landing names one. micahapp t6 and t7
+// each held such an approval, recorded by hand against a claimed review
+// request (atelier review --request N), while `atelier show` recommended
+// accept; the landing asked for a new review instead, counted only verdicts
+// given after that ask, and waited its 60 minutes for one that never came.
+// Null when nothing recorded settles it, so the landing asks as before.
+export function recordedApproval(
+  d: { item: { state: string; head?: string | null }; gate?: { ready: boolean } | null; reviews?: readonly LandingReview[] | null },
+  head: string, reviewer: string | null, owner: string | null,
+): LandingReview | null {
+  if (d.item.head !== head || !readyToAccept(d)) return null;
+  return (d.reviews ?? []).filter((v) => v && v.head === head && v.approve && !v.withdrawn && !v.tier
+    && (owner === null || !sameActor(v.by, owner)) && (reviewer === null || sameActor(v.by, reviewer))).at(-1) ?? null;
 }
 
 // Whether a review request will ever be claimed, by which runners have

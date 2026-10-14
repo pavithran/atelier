@@ -550,3 +550,51 @@ test("another landing's post-merge work holds the lease back: the landing waits 
   assert.equal(grantedTo(f).length, 1);
   assert.equal(f.box.states.t1, "merged");
 });
+
+test("an approval already recorded at the head, which the gate counts, lands without a new review request or wait (t628)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  // micahapp t6 and t7 held approvals recorded by hand against claimed
+  // review requests, and atelier show recommended accept; the landing asked
+  // for a new review, counted only verdicts after that ask, and waited its
+  // hour. With no reviewer named and with the one who approved named alike,
+  // the recorded approval settles the review.
+  for (const extra of [[], ["--reviewer", "codex/gpt-6-astra"]]) {
+    const f = await landFixture(t);
+    f.box.regen = null;
+    f.box.review.approveAfter = null;   // no runner would ever answer a new request
+    f.env = { ATELIER_LAND_POLL_MS: "30", ATELIER_LAND_REVIEW_TIMEOUT: "150" };
+    f.box.reviews.t1.push({ by: "codex/gpt-6-astra", approve: true, head: f.forkHead("t1"), request: 1, note: "Approved by hand against claimed request 1.", at: "2026-10-13T10:00:00.000Z" });
+    const r = await f.run(f.checkout, "land", "t1", ...extra);
+    assert.equal(r.status, 0, r.output);
+    assert.match(r.output, /codex\/gpt-6-astra already approved t1 at \w{8}, and the gate counts it: no review request was needed\./);
+    assert.equal(f.posts("/review-request").length, 0);
+    const review = f.posts("/land").find((x) => x.body.step === "review").body;
+    assert.equal(review.verdict, "approve");
+    assert.equal(review.reviewer, "codex/gpt-6-astra");
+    assert.equal(f.box.states.t1, "merged");
+  }
+});
+
+test("a recorded approval counts only where it settles the gate: another reviewer named, a withdrawn or tier approval, or a gate not ready still asks (t628)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const cases = [
+    { extra: ["--reviewer", "antigravity/gemini-3.1-pro"], review: { by: "codex/gpt-6-astra" } },
+    { extra: [], review: { by: "codex/gpt-6-astra", withdrawn: { at: "2026-10-13T11:00:00.000Z" } } },
+    { extra: [], review: { by: "claude-code/sonnet-5.5", tier: true } },
+    { extra: [], review: { by: "codex/gpt-6-astra" }, gate: { ready: false, needsAssessor: true, outOfScope: [], blockers: ["needs an independent approval"] } },
+  ];
+  for (const c of cases) {
+    const f = await landFixture(t);
+    f.box.regen = null;
+    f.box.review.approveAfter = null;
+    if (c.gate) f.box.gate = c.gate;
+    f.env = { ATELIER_LAND_POLL_MS: "30", ATELIER_LAND_REVIEW_TIMEOUT: "150" };
+    f.box.reviews.t1.push({ approve: true, head: f.forkHead("t1"), note: "Recorded earlier.", at: "2026-10-13T10:00:00.000Z", ...c.review });
+    const r = await f.run(f.checkout, "land", "t1", ...c.extra);
+    assert.notEqual(r.status, 0, r.output);
+    assert.equal(f.posts("/review-request").length, 1, JSON.stringify(c));
+    assert.doesNotMatch(r.output, /already approved/);
+    assert.match(r.output, /no verdict( from [^ ]+)? within 0 minutes/);
+    assert.notEqual(f.box.states.t1, "merged");
+  }
+});

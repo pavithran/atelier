@@ -14,7 +14,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { fenceText, prereviewClause } from "../src/dispatch/prereview.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
-import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
+import { landingVerdict, allSkipped, recordedApproval } from "../src/landing-verdict.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
@@ -912,6 +912,17 @@ async function gateStands(io, { id, itemPath, head }) {
 async function reviewStep(io, { id, name, itemPath, reviewer, head: pushed, record }) {
   const { request, print } = io;
   const t0 = Date.now();
+  // A qualifying approval already recorded at the pushed head, which the
+  // gate holds ready to accept (what `atelier show` recommends accept on),
+  // settles the review before any request (t628): a new request would count
+  // only verdicts given after it, and wait its hour for one.
+  const now = await request("GET", itemPath);
+  const held = recordedApproval(now, pushed, reviewer ?? null, now.ownerActor ?? null);
+  if (held) {
+    print(`${held.by} already approved ${id} at ${short(pushed)}, and the gate counts it: no review request was needed.`);
+    await record("review", Date.now() - t0, { verdict: "approve", reviewer: held.by, resolvedBy: held.by, reason: "approval recorded at the head before the landing asked for a review" });
+    return;
+  }
   const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
   if (!ask.needed && reviewer) throw new StepError(`the server made no review request for ${reviewer} (${ask.reason}); ${id} stays submitted`);
   if (!ask.needed) {

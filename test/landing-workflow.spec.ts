@@ -1063,3 +1063,44 @@ it("a review request withdrawn with no verdict ends the wait at once, naming the
   await wf.waitForStatus("errored");
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/^no review request of t\d+ at aaaaaaaa is open or claimed and no verdict was given, so none will come; t\d+ stays submitted\. Run atelier land t\d+ --workflow --reviewer codex\/gpt-6-astra to ask again/);
 });
+
+it("counts an approval already recorded by hand against a claimed request at the head, asking for no new review and waiting for none (t628)", async () => {
+  // micahapp t6 and t7 held such approvals, and atelier show recommended
+  // accept, yet the landing named the reviewer, asked anew and waited its hour.
+  const project = "wf-recorded-review", instance = "wf-recorded-review-1";
+  const L = ledger(project);
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: [], protected: ["README.md"] }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject(record);
+  const id = (await L.newItem("Protected, approved by hand", [], "owner")).id;
+  await L.claim(id, OPUS);
+  await L.setFork(id, `${project}--${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await observed(L, id, H1);
+  await L.submit(id, OPUS);
+  const gpt = "codex/gpt-6-astra";
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  expect(await L.requestReview(id, "owner", gpt, await index.models(), true, false, undefined, await index.runnerOffers())).toMatchObject({ needed: true, requested: true, reviewer: gpt });
+  const claim = await L.claimReview(id, gpt, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  // The verdict, recorded by hand against the claimed request.
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: gpt, head: H1, approve: true, note: "Approved by hand.", at: new Date().toISOString() });
+  await L.setLandingWorkflow(id, instance, "owner");
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: H2 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  // A short review wait: only a recorded approval can end the landing well.
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer: gpt, pollMs: 10, reviewTimeoutMs: 50 } });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: false });
+  await wf.waitForStatus("complete");
+  expect((await L.item(id)).state).toBe("accepted");
+  const events = (await L.events(id)) as unknown as LedgerEvent[];
+  expect(events.filter((e) => e.kind === "review.requested")).toHaveLength(1);
+  expect(events.find((e) => e.kind === "land.review")).toMatchObject({ data: { verdict: "approve", reviewer: gpt } });
+  expect(await L.reviewWaiting()).toEqual([]);
+});

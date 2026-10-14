@@ -82,7 +82,7 @@ import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, allSkipped, reviewStall, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
+import { landingVerdict, allSkipped, recordedApproval, reviewStall, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
 import { fenceText, type PrereviewFence } from "./dispatch/prereview.ts";
@@ -700,6 +700,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // The triage is asked again whether it stands: criteria changed since
       // the submission stop the landing before any review is asked for.
       await this.triageStands(L, p, report, `so no review was asked for: ${p.item} is submitted at ${short(head)} and stays with its holder`);
+      // A qualifying approval already recorded at this head, which the gate
+      // holds ready to accept (`atelier show`'s accept), settles the review
+      // before any request (t628), as the CLI's landing reads it.
+      const now = (await L.detail(p.item)) as unknown as Parameters<typeof recordedApproval>[0];
+      const held = recordedApproval(now, head, p.reviewer, p.actor);
+      if (held) return { needed: false, held: held.by, reason: `${held.by} already approved ${short(head)}, and the gate counts it`, at: "", asked: "", reviewer: null, request: null };
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
       const records = p.reviewer === null ? { ...await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))), project: (await index.resolveProject(p.project)).key } : undefined;
@@ -718,11 +724,16 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         // readable verdict given since then ends its wait, not one an earlier
         // landing already stopped on.
         const asked = new Date().toISOString();
-        return { needed: r.needed, reason: r.reason, at: r.at ?? asked, asked, reviewer: r.reviewer ?? null, request: r.request ?? null };
+        return { needed: r.needed, held: null as string | null, reason: r.reason, at: r.at ?? asked, asked, reviewer: r.reviewer ?? null, request: r.request ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));
       }
     });
+    if (ask.held) {
+      const by = ask.held;
+      await step.do(`record the review already approved${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: by, resolvedBy: by, reason: "approval recorded at the head before the landing asked for a review" }); return {}; });
+      return;
+    }
     if (!ask.needed && p.reviewer) throw new NonRetryableError(`the server made no review request for ${p.reviewer} (${ask.reason}); ${p.item} stays submitted`);
     if (!ask.needed) {
       await step.do(`record the review none needed${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) }); return {}; });
