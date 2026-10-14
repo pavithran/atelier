@@ -29,7 +29,7 @@ export default async function cloneCommand() {
   const git = landingGit;
   const name = args._[1] ?? die(COMMAND_USAGE.clone);
   if (args._.length > 3) die(COMMAND_USAGE.clone);
-  const dir = args._[2] !== undefined ? resolve(String(args._[2])) : join(homedir(), "src", name);
+  const dir = args._[2] !== undefined ? resolve(String(args._[2])) : join(homedir(), "ai-projects", name);
 
   // Everything that can be refused here is refused before the server is
   // asked for anything and before a folder is made.
