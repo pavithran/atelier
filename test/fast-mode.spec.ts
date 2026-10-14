@@ -258,3 +258,42 @@ it("the developer token switches to fast mode on the developer's quoted words an
   expect(await (await post({ mode: "fast", reason: "forks fail", quote: QUOTE }, { "x-atelier-acting": OPUS })).json()).toMatchObject({ error: "fast_mode_forbidden" });
   await refusal(L.setMode("owner", "fast", "forks fail", OPUS, QUOTE), "fast_mode_forbidden", /fast mode is refused/);
 });
+
+// t637: the task page's fast-landing summary said the reason fast mode was
+// switched on, but not the developer's words nor the model that relayed them,
+// which t629 records on the receipt and the text receipt prints (f654d0ae).
+// It now says them as the text receipt does, escaped; a landing with no
+// direction reads as before; the page stays behind the developer's sign-in.
+it("the task page's fast-landing summary names the developer's words and the acting model, escaped", async () => {
+  const name = "fast-direction-page";
+  const L = await project(name);
+  const QUOTE = `land <b>it</b> & "go" 'now'`;
+  await L.setMode("owner", "fast", "forks fail", OPUS, QUOTE);
+  const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
+  await L.landedFast(item.id, "owner", receipt(C1, M1));
+  const html = renderItem(await L.project(), await L.detail(item.id));
+  expect(html).toContain(`Reason: forks fail; on the developer&#39;s words: “land &lt;b&gt;it&lt;/b&gt; &amp; &quot;go&quot; &#39;now&#39;”, relayed by ${OPUS}.</p>`);
+  expect(html).not.toContain("<b>it</b>");
+
+  // Through the route: an agent token and a visitor not signed in never see the page.
+  const page = `https://atelier.test/p/${name}/${item.id}`;
+  const agent = (await (await api("POST", "/tokens", "owner", { actor: GPT, projects: [name] })).json() as { token: string }).token;
+  const asAgent = await worker.fetch(new Request(page, { headers: { authorization: `Bearer ${agent}` } }), testEnv);
+  expect(asAgent.status).toBe(403);
+  expect(await asAgent.text()).not.toContain("relayed by");
+  const anonymous = await worker.fetch(new Request(page, { redirect: "manual" }), testEnv);
+  expect(anonymous.status).toBe(303);
+  expect(anonymous.headers.get("location")).toBe("https://atelier.test/login");
+});
+
+it("a fast landing with no recorded direction reads as before on the task page", async () => {
+  const L = await project("fast-paged-page");
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
+  await L.landedFast(item.id, "owner", receipt(C1, M1));
+  const html = renderItem(await L.project(), await L.detail(item.id));
+  expect(html).toContain(`built by ${OPUS}. Reason: forks fail.</p>`);
+  expect(html).not.toContain("words: “");
+  expect(html).not.toContain("relayed by");
+});

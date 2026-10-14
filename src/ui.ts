@@ -2322,7 +2322,11 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   const requested = after.some((x) => x.kind === "review.requested");
   const reviewLine = reviewed ? "It skipped the gate; its post-merge review is recorded." : requested ? "It skipped the gate; a post-merge review was requested and is not recorded yet." : "It skipped the gate, and no post-merge review was requested.";
   const fixes = d.events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
-  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}.</p>
+  // Fast mode switched on the developer's direction (t629) holds their words
+  // and the acting model on the receipt; they read as the text receipt
+  // (cli/receipt.mjs) and the override block say them, through directionText.
+  const words = typeof r.quote === "string" && r.quote ? `; on ${e(directionText({ quote: r.quote, acting: typeof r.acting === "string" ? r.acting : undefined }))}` : "";
+  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}${words}.</p>
   <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. ${reviewLine}</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
 }
 
