@@ -355,6 +355,14 @@ export function executablePaths(cwd, env = process.env) {
     const origin = listed[i], newline = listed[i + 1].indexOf('\n');
     const key = newline < 0 ? listed[i + 1] : listed[i + 1].slice(0, newline), value = newline < 0 ? '' : listed[i + 1].slice(newline + 1);
     if (origin.startsWith('file:')) add(origin.slice('file:'.length), 'a Git configuration file this checkout includes');
+    // The file an include.path or includeIf.*.path names, whether or not it
+    // exists yet or its condition holds: a change that adds it there would
+    // define any of the settings below (Astra's fourth review of t644). A
+    // relative path is read from the folder of the file that names it.
+    if (/^include(if\..+)?\.path$/.test(key) && value) {
+      const from = origin.startsWith('file:') ? dirname(resolve(top, origin.slice('file:'.length))) : top;
+      add(value === '~' || value.startsWith('~/') ? join(homedir(), value.slice(1)) : resolve(from, value), 'a Git configuration file this checkout includes');
+    }
     if (key === 'core.hookspath') hooksPathSet = true;
     if (COMMAND_SETTING.test(key)) for (const word of commandWords(value)) add(fromTop(word), `named by ${key}`);
   }
@@ -381,6 +389,10 @@ export function touchedExecutables(changed, executables) {
     return by.length ? [{ path, setting, changed: by }] : [];
   });
 }
+
+// The executable paths a change reaches, as a refusal names them: each path
+// and the setting that runs it, or the changed paths that reach it.
+export const describeTouched = (runs) => runs.map((r) => r.changed.length === 1 && r.changed[0] === r.path ? `${r.path}, ${r.setting}` : `${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ');
 
 // The paths a landing reads or writes in the ControlPlane folder: its policy
 // files, read at every merge and sync; the receipt template; the receipts

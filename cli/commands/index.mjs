@@ -52,6 +52,7 @@ import command_owners from "./owners.mjs";
 import command_plan from "./plan.mjs";
 import command_projects from "./projects.mjs";
 import command_publish from "./publish.mjs";
+import command_pull from "./pull.mjs";
 import command_push from "./push.mjs";
 import command_queue from "./queue.mjs";
 import command_read_token from "./read-token.mjs";
@@ -144,6 +145,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/plan.mjs", run: command_plan },
   { path: "cli/commands/projects.mjs", run: command_projects },
   { path: "cli/commands/publish.mjs", run: command_publish },
+  { path: "cli/commands/pull.mjs", run: command_pull },
   { path: "cli/commands/push.mjs", run: command_push },
   { path: "cli/commands/queue.mjs", run: command_queue },
   { path: "cli/commands/read-token.mjs", run: command_read_token },

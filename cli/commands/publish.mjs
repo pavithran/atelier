@@ -1,7 +1,8 @@
 // atelier publish. Its forms, flags and help are declared in src/usage/commands/publish.ts.
-import { OWNER, P, args, call, cfg, die, git, project, short } from "../atelier.mjs";
+import { OWNER, P, args, call, cfg, die, git, landingGit, project, short } from "../atelier.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { publishMirror } from "../mirror.mjs";
+import { behindRefusal } from "../pull.mjs";
 
 // The project owner: push commits made directly in the checkout so new forks
 // start from them. With a REMOTE, it publishes the registered branch to the
@@ -23,6 +24,15 @@ export async function publishBaseline() {
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
   if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
   const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+  // Another checkout may have moved the baseline on (t644): the push would be
+  // refused as a non-fast-forward, so publish refuses first and names pull.
+  // A baseline without the branch yet takes the first push as it is.
+  const baselineHead = git(["ls-remote", t.remote, `refs/heads/${p.branch}`], { cwd: p.path, token: t.token, hooks: false }).split(/\s/)[0];
+  if (baselineHead) {
+    git(["fetch", "--quiet", "--no-tags", t.remote, p.branch], { cwd: p.path, token: t.token, hooks: false });
+    const behind = behindRefusal(landingGit, p.path, { name, fresh: false, branch: p.branch, baselineHead, nothing: "Nothing was pushed.", command: `atelier publish --project ${name}` });
+    if (behind) die(behind);
+  }
   git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path, token: t.token });
   console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
 }

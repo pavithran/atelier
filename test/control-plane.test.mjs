@@ -286,11 +286,15 @@ globalThis.fetch = async (url, options) => {
   });
 }
 
-test("sync refreshes a full-history project without Git work", () => commandFixture(({ command, calls, gitCalls }) => {
+// A full-history project's sync checks first that main holds the baseline's
+// main (t644), with a read token and Git commands that only read, then
+// refreshes the policy; it changes nothing in the checkout.
+test("sync checks the baseline, then refreshes a full-history project without changing the checkout", () => commandFixture(({ command, calls, gitCalls }) => {
   const result = command(["sync"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(calls().map((c) => c.method), ["GET", "PUT"]);
-  assert.deepEqual(gitCalls(), []);
+  assert.deepEqual(calls().map((c) => [c.method, new URL(c.url).pathname]), [["POST", "/api/projects/example/baseline-token"], ["GET", "/api/projects/example"], ["PUT", "/api/projects/example"]]);
+  assert.deepEqual(JSON.parse(calls()[0].body), { scope: "read" });
+  assert.deepEqual([...new Set(gitCalls().map((args) => args.find((a) => !a.startsWith("-"))))].sort(), ["config", "fetch", "rev-parse"]);
 }));
 
 test("merge refreshes first and refuses before Git merge", () => commandFixture(({ command, calls, gitCalls }) => {
