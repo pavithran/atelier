@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { HEARTBEAT_MS, planFilePath, runRunner, withHeartbeat } from "../cli/runner.mjs";
 import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
@@ -68,9 +69,7 @@ test("a failing heartbeat is said once and never fails the job; no heartbeat run
 // The real runner: a long job sends heartbeats under its offer while it runs,
 // and none once it is done.
 test("the runner sends heartbeats under its offer during a long job", async (t) => {
-  const root = resolve(".cache/runner-heartbeat-tests");
-  mkdirSync(root, { recursive: true });
-  const dir = mkdtempSync(join(root, "test-")), workspace = join(dir, "work");
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-heartbeat-test-")), workspace = join(dir, "work");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(workspace);
   const config = join(dir, "runner.json");

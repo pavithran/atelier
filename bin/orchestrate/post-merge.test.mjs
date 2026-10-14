@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const root = resolve('.');
 const queue = join(root, 'bin/orchestrate/land-queue.sh');
 const zsh = ['/bin/zsh', '/usr/bin/zsh'].find(existsSync);
 const post = join(root, 'bin/orchestrate/post-merge.sh');
 function fixture(t) {
-  const dir = mkdtempSync(join(root, '.scratch-orchestrate-'));
+  const dir = mkdtempSync(join(tmpdir(), 'atelier-orchestrate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, 'bin'); mkdirSync(bin);
   const env = { ...process.env, ATELIER_CACHE: dir, ATELIER_PROJECT: 'fixture',

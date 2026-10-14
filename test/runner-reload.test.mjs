@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { RELOADED_FROM, runnerSupervised, planFilePath, reexecSelf, reloadCheck, runRunner, runnerCheckout } from "../cli/runner.mjs";
 import { fileURLToPath } from "node:url";
@@ -27,9 +28,7 @@ function fakeCheckout(heads, history = { [NEW]: [OLD, NEW], [LATER]: [OLD, NEW, 
 }
 
 function setup(t) {
-  const root = resolve(".cache/runner-reload-tests");
-  mkdirSync(root, { recursive: true });
-  const dir = mkdtempSync(join(root, "test-")), workspace = join(dir, "work");
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-reload-test-")), workspace = join(dir, "work");
   mkdirSync(workspace);
   const previous = Object.fromEntries(["ATELIER_CONFIG_DIR", "ATELIER_SECRET_STORE", RELOADED_FROM].map((key) => [key, process.env[key]]));
   Object.assign(process.env, { ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file" });
@@ -220,9 +219,7 @@ test("an idle runner reloads after a merge of cli/** alone, which moves main but
 });
 
 test("runnerCheckout reads a real checkout's HEAD and which commits it contains", async (t) => {
-  const root = resolve(".cache/runner-reload-tests");
-  mkdirSync(root, { recursive: true });
-  const dir = mkdtempSync(join(root, "git-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-reload-git-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...argv) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...argv], { cwd: dir, encoding: "utf8" }).stdout.trim();
   git("init", "--quiet");

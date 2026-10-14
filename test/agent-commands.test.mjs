@@ -359,7 +359,7 @@ test("show displays both ledger revert links without claiming the undo has merge
     { itemId: "t2", kind: "item.reverts", data: { itemId: "t3", mergeCommit: "invalid" } },
   ];
   // Preloaded fetch exercises the real show command without a listening server.
-  const root = mkdtempSync(join(process.cwd(), ".show-test-"));
+  const root = mkdtempSync(join(tmpdir(), "atelier-show-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const preload = join(root, "server.mjs"), origin = "https://fake.invalid";
   writeFileSync(preload, `
