@@ -38,8 +38,12 @@ export function savePairs(gitDir, project, pairs) {
 
 // A commit object's bytes, read and written without decoding, so a message or
 // name in any encoding passes through unchanged.
+// Git reading a project's own objects as they are: no replacement refs or
+// grafts stand in for a commit (Astra's third review of t645), so what is
+// rebuilt is the real commit, whose objects the private-file scan reads.
+export const REAL_HISTORY_ENV = Object.freeze({ GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null/atelier-no-grafts" });
 function bytes(cwd, args, input) {
-  const r = spawnSync("git", args, { cwd, input, maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", args, { cwd, input, maxBuffer: 256 * 1024 * 1024, env: { ...process.env, ...REAL_HISTORY_ENV } });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${String(r.stderr).trim()}`);
   return r.stdout;
 }

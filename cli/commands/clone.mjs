@@ -100,7 +100,7 @@ export default async function cloneCommand() {
   try { linked = linkPrivate(dir, cfg.projects[name], { name }); } catch (error) { linked = { said: [`Private files not linked: ${error.message}`] }; }
   // This Mac keeps a copy of the list it read, so the guards hold even when
   // iCloud cannot give it later.
-  privateGuardFor(name);
+  privateGuardFor(name, { discover: true });
 
   const head = git(["rev-parse", "HEAD"], { cwd: dir });
   console.log(`${name}: cloned ${branch} @ ${short(head)}, ${commits.length} commit${commits.length === 1 ? "" : "s"}${fresh ? " (the baseline holds part of the project's history)" : ""}, into ${dir}, now this Mac's checkout of ${name}.`);

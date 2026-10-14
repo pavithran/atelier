@@ -88,8 +88,18 @@ export default async function pushCommand() {
   // fork (t645): what the fork lacks of HEAD is read for them first, at
   // every place the push goes, and the 413 fallback below pushes the same
   // HEAD.
+  // The fork's own URL, where the 413 fallback may push a commit, is read
+  // too (Argon's third review of t645).
   const remoteName = credential?.remote ?? "origin";
-  let r = guardedPush({ project: name, cwd: undefined, tip: "HEAD", bases: () => remoteBases({ git, cwd: undefined, remote: remoteName, ref: `refs/heads/${branch}`, opts: { token: credential?.token, env: credentialEnv } }), what: `${id}'s push to its fork`, fail: die },
+  const forkUrl = credential ? null : git(["config", "--get", "atelier.fork-remote"], { allowFail: true }).stdout?.trim() || null;
+  const forkBases = () => {
+    const opts = { token: credential?.token, env: credentialEnv };
+    const read = remoteBases({ git, cwd: undefined, remote: remoteName, ref: `refs/heads/${branch}`, opts });
+    if (read.error || !forkUrl) return read;
+    const fork = remoteBases({ git, cwd: undefined, remote: forkUrl, ref: `refs/heads/${branch}`, opts });
+    return fork.error ? fork : { bases: [...read.bases, ...fork.bases] };
+  };
+  let r = guardedPush({ project: name, cwd: undefined, tip: "HEAD", bases: forkBases, what: `${id}'s push to its fork`, fail: die },
     () => git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv }));
   // A pack too large for one request answers 413 (t577: t544's ~96
   // regenerated PNGs through the runner route stranded its build for seven

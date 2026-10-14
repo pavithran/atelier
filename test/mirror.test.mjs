@@ -8,6 +8,8 @@ import { join, resolve } from "node:path";
 
 import { commitPatch, globMatcher, headerPath, lfsObject, lfsPointer, PRIVATE_ADDRESS, publishCheckoutRemote, publishMirror } from "../cli/mirror.mjs";
 import { privateConfig } from "./fixtures/private-config.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 // atelier publish REMOTE (t433), against a real checkout and a bare mirror on
 // disk. The keys below are assembled at run time so this file holds none.

@@ -40,6 +40,12 @@ import { syncBuiltinESMExports } from "node:module";
 import { after } from "node:test";
 import { Worker } from "node:worker_threads";
 
+// No test reads this Mac's own iCloud ai-projects folder (t645): the
+// private-file guard looks there for an opted-in project with no folder
+// named, and here it finds a folder that does not exist. A test that wants
+// one names its own.
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
+
 const FILE_LIMIT_MS = Number(process.env.ATELIER_TEST_FILE_LIMIT_MS ?? 10 * 60_000);
 const SYNC_TIMEOUT_MS = Number(process.env.ATELIER_TEST_SYNC_TIMEOUT_MS ?? 5 * 60_000);
 const EXIT_GRACE_MS = Number(process.env.ATELIER_TEST_EXIT_GRACE_MS ?? 10_000);

@@ -22,7 +22,8 @@ import { dirname, join, resolve } from "node:path";
 import { PRIVATE_LIST, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
 
 // The iCloud folder that holds a folder per project.
-export const privateRoot = () => join(homedir(), "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects");
+// ATELIER_PRIVATE_ROOT names another, so tests never read this Mac's own.
+export const privateRoot = () => process.env.ATELIER_PRIVATE_ROOT || join(homedir(), "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects");
 
 const EXCLUDE_HEADER = "# Private files Atelier links into this checkout (atelier private ls); never committed";
 
@@ -117,9 +118,32 @@ export function privateList(name, entry, root) {
 // the config); a list that cannot be read, with no copy kept, is a refusal
 // naming where it should be, so the caller pushes nothing.
 export function privateGuard(name, entry, { root, save } = {}) {
+  // Private files are opt-in (third reviews of t645): a project with none
+  // configured here is not guarded and its iCloud folder is never read.
+  if (!privateConfigured(entry)) return { paths: [], refusal: null };
+  const list = discoverPrivate(name, entry, { root, save });
+  const kept = Array.isArray(entry?.privateFromList);
+  const copy = plainPaths(entry?.privateFromList);
+  const paths = [...new Set([...list.paths, ...copy])];
+  const refusal = list.unreadable && !kept
+    ? `${list.unreadable}, and this Mac keeps no copy of its list of private files, so what may not leave cannot be known. Make the folder available on this Mac (or name another with atelier private add --home DIR --project ${name}) and try again. Nothing was pushed.`
+    : null;
+  return { paths: [...paths, PRIVATE_LIST], refusal };
+}
+
+// Whether a project has private files on this Mac: a copy of its list
+// naming one, names in this Mac's config, or a folder named for them.
+export function privateConfigured(entry) {
+  return plainPaths(entry?.privateFromList).length > 0 || plainPaths(entry?.private).length > 0 || !!entry?.privateHome;
+}
+
+// Reads the project's list, finding its iCloud folder by name when none is
+// named, and keeps a copy of it in the entry when the list is there and was
+// read: only such a list replaces the copy; a missing or unreadable one never
+// shrinks it. clone, private add and private ls run this, so a list in iCloud
+// opts the project in on this Mac. Returns what privateList returns.
+export function discoverPrivate(name, entry, { root, save } = {}) {
   const list = privateList(name, entry, root);
-  // Only a list that is there and was read replaces the copy: a list that
-  // is missing (not synced yet, evicted) or cannot be read never shrinks it.
   if (entry && list.fromList) {
     const kept = entry.privateFromList ?? null;
     if (!kept || kept.length !== list.fromList.length || kept.some((p, i) => p !== list.fromList[i])) {
@@ -127,13 +151,7 @@ export function privateGuard(name, entry, { root, save } = {}) {
       save?.();
     }
   }
-  const kept = Array.isArray(entry?.privateFromList);
-  const copy = plainPaths(entry?.privateFromList);
-  const paths = [...new Set([...list.paths, ...copy])];
-  const refusal = list.unreadable && !kept
-    ? `${list.unreadable}, and this Mac keeps no copy of its list of private files, so what may not leave cannot be known. Make the folder available on this Mac (or name another with atelier private add --home DIR --project ${name}) and try again. Nothing was pushed.`
-    : null;
-  return { paths: paths.length || list.listed || kept ? [...paths, PRIVATE_LIST] : [], refusal };
+  return list;
 }
 
 // The one loader every guard uses (t645): the project's entry in this
@@ -143,9 +161,13 @@ export function privateGuard(name, entry, { root, save } = {}) {
 // config file is read, and a copy of the list kept is written back to it.
 let shared = null;
 export function useConfig(cfg, save) { shared = { cfg, save }; }
-export function privateGuardFor(project, { root } = {}) {
+export function privateGuardFor(project, { root, discover = false } = {}) {
   if (typeof project !== "string" || !project) throw new Error("the private-file guard needs the project's name");
-  if (shared) return privateGuard(project, shared.cfg.projects?.[project], { root, save: shared.save });
+  const run = (entry, save) => {
+    if (discover) discoverPrivate(project, entry, { root, save });
+    return privateGuard(project, entry, { root, save });
+  };
+  if (shared) return run(shared.cfg.projects?.[project], shared.save);
   const dir = process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), file = join(dir, "config.json");
   let cfg;
   try { cfg = JSON.parse(readFileSync(file, "utf8")); }
@@ -153,11 +175,11 @@ export function privateGuardFor(project, { root } = {}) {
     if (error?.code !== "ENOENT") return { paths: [PRIVATE_LIST], refusal: `${file} cannot be read (${error?.code ?? error?.message}), so ${project}'s private files cannot be known. Nothing was pushed.` };
     cfg = { projects: {} };
   }
-  return privateGuard(project, cfg.projects?.[project], { root, save: () => {
+  return run(cfg.projects?.[project], () => {
     const part = `${file}.${process.pid}.part`;
     writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
     renameSync(part, file);
-  } });
+  });
 }
 
 // The checkout's info/exclude file, wherever its Git directory keeps it.
@@ -181,10 +203,12 @@ export function excludePrivate(checkout, paths) {
   return lines;
 }
 
-// Whether the checkout's info/exclude holds the line for a private path.
+// Whether Git, with every ignore rule the checkout has, ignores a private
+// path: a tracked .gitignore saying !PROJECT.md outweighs info/exclude
+// (Astra's third review of t645), so the line alone proves nothing.
 export function excludesPrivate(checkout, path) {
-  const file = excludeFile(checkout);
-  return existsSync(file) && readFileSync(file, "utf8").split("\n").includes(privateExcludeLine(path));
+  const r = gitRead(checkout, ["check-ignore", "-q", "--no-index", "--", path], { env: SCRUBBED });
+  return r.status === 0;
 }
 
 // The private paths Git tracks in the checkout, or holds files under,
@@ -273,7 +297,12 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
     result.linked.push(path);
   }
   const done = [...result.linked, ...result.kept];
-  if (done.length) say(`Private files linked from ${home}: ${done.join(", ")}. Git ignores them, and Atelier never pushes them.`);
+  if (done.length) say(`Private files linked from ${home}: ${done.join(", ")}. Atelier never stages or pushes them.`);
+  // Ignore rules are a convenience, not the guard: a tracked .gitignore can
+  // un-ignore a path (Astra's third review of t645), so each is checked.
+  const shown = done.filter((path) => !excludesPrivate(checkout, path));
+  result.notIgnored = shown;
+  if (shown.length) say(`Warning: Git does not ignore ${shown.join(", ")} here: a rule in the checkout (a !-line in a .gitignore) outweighs Atelier's. Atelier still refuses to stage or push ${shown.length === 1 ? "it" : "them"}, but git add would take ${shown.length === 1 ? "it" : "them"}; remove that rule.`);
   return result;
 }
 
@@ -324,11 +353,21 @@ export function privateCommits(cwd, privates, tip, base = []) {
     else throw new Error("the commits to be pushed could not be read for private files (git log's output was not as expected)");
   }
   // And the state, not only the changes: no tree pushed holds a private
-  // file, however the history reached it.
-  for (const rev of tips) {
-    const tree = gitRead(cwd, [...SCAN_CONFIG, "ls-tree", "-r", "-z", "--full-tree", "--name-only", rev], { env: SCRUBBED });
+  // file, however the history reached it (third reviews of t645). Every
+  // commit pushed is one of these: a commit whose parents are all pushed
+  // too holds a path only if a parent does or its diff against a parent
+  // shows it, so reading the tree of each commit with a parent outside the
+  // range (and each tip) covers every commit in it, every step of a stepped
+  // push included.
+  const listed = gitRead(cwd, [...SCAN_CONFIG, "rev-list", "--parents", ...tips, ...(base.length ? ["--not", ...base] : [])], { env: SCRUBBED });
+  if (listed.status !== 0) throw new Error(`the commits to be pushed could not be listed for private files (${(listed.stderr || "").trim().split("\n")[0] || `git rev-list exited ${listed.status}`})`);
+  const rows = listed.stdout.split("\n").filter(Boolean).map((l) => l.split(" "));
+  const pushed = new Set(rows.map(([c]) => c));
+  const tipCommits = tips.map((rev) => gitRead(cwd, ["rev-parse", "--verify", "--end-of-options", `${rev}^{commit}`], { env: SCRUBBED }).stdout?.trim()).filter(Boolean);
+  const edge = new Set([...rows.filter(([, ...parents]) => !parents.length || parents.some((p) => !pushed.has(p))).map(([c]) => c), ...tipCommits.filter((c) => pushed.has(c))]);
+  for (const commit of edge) {
+    const tree = gitRead(cwd, [...SCAN_CONFIG, "ls-tree", "-r", "-z", "--full-tree", "--name-only", commit], { env: SCRUBBED });
     if (tree.status !== 0) throw new Error(`the tree to be pushed could not be read for private files (${(tree.stderr || "").trim().split("\n")[0] || `git ls-tree exited ${tree.status}`})`);
-    const commit = gitRead(cwd, ["rev-parse", "--verify", "--end-of-options", `${rev}^{commit}`], { env: SCRUBBED }).stdout?.trim() || rev;
     for (const path of privatePathsAmong(tree.stdout.split("\0").filter(Boolean), privates)) {
       if (!found.some((f) => f.commit === commit && f.path === path)) found.push({ commit, path, tree: true });
     }

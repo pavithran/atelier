@@ -213,7 +213,9 @@ export default async function initCommand() {
   if (args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
   let pushed = "HEAD";
   // No commit the baseline lacks may carry a private file (t645), whether
-  // the history goes whole, in steps or rebuilt.
+  // the history goes whole, in steps or rebuilt. A list in iCloud opts a
+  // registered project in first.
+  if (cfg.projects?.[name]) privateGuardFor(name, { discover: true });
   const baselineBases = () => remoteBases({ git, cwd: top, remote: r.baseline.remote, ref: `refs/heads/${branch}`, opts: { token: r.baseline.token, ownerRemote: false } });
   if (fresh) {
     if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);

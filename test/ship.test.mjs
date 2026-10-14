@@ -274,7 +274,7 @@ exit \${DEPLOY_EXIT:-0}
   const run = (args, env = {}, cwd = checkout) => new Promise((done) => {
     const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("ATELIER_")));
     const child = spawn(process.execPath, [cli, ...args], {
-      cwd, env: { ...clean, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_SERVER: url, MY_API_TOKEN: SECRET, SHIP_MARKER: marker, ...env },
+      cwd, env: { ...clean, ATELIER_PRIVATE_ROOT: join(dir, "no-icloud"), ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_SERVER: url, MY_API_TOKEN: SECRET, SHIP_MARKER: marker, ...env },
     });
     let stdout = "", stderr = "";
     child.stdout.on("data", (s) => { stdout += s; });

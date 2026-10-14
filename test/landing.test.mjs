@@ -8,6 +8,8 @@ import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {adoptOldLanding,landingDir,landingJournal,landingJournalFile,landingLock,oldLandingJournalFile,oldLandingLockDir} from '../cli/landing.mjs';
 import {SERVER_CAPABILITIES} from '../src/route-level.ts';
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 // merge checks the server's capabilities first (t458); each stand-in answers the version before anything is recorded.
 const versionAnswer=(req,res)=>{if(req.url!=='/api/version')return false;res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({capabilities:SERVER_CAPABILITIES}));return true;};
 const git=(cwd,...args)=>execFileSync('git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();

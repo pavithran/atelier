@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { lfsPointer, publishMirror, publishCheckoutRemote } from "./mirror.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 const email = "123+public@users.noreply.github.com";
 const secret = "AKIA" + "ABCDEFGHIJKLMNOP";

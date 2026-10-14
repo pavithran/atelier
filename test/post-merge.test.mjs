@@ -11,6 +11,8 @@ import { runLand } from "../cli/land.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { publishPinned, executePostMerge } from "../cli/post-merge.mjs";
 import { privateConfig } from "./fixtures/private-config.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 const at = "2026-10-10T12:00:00Z", a = "a".repeat(40), b = "b".repeat(40);
 const step = (name, more = {}) => ({ name, command: "npm test", class: "check", when: "always", protect: ["package.json", "scripts/**"], timeoutMs: 1000, ...more });
 const policy = steps => parsePostMerge({ version: 1, steps, approval: { reason: "owner authorizes these commands" } }, "owner", at);
