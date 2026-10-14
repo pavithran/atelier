@@ -13,7 +13,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, BRANCHES_REPO_SUFFIX, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, branchesRepoName, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -833,16 +833,31 @@ async function repoExists(env: Env, repo: string): Promise<boolean> {
 
 // The developer's branches repository (t641), made on the first push as a
 // fork of the baseline's branch, so a branch push sends only what main does
-// not already hold. A fork an earlier attempt made is taken as it stands,
-// and one still being made is waited for (headOf).
-async function developerBranchesRepo(env: Env, baseline: string, repo: string, project: string): Promise<void> {
-  if (!await repoExists(env, repo)) {
-    await artifactsStep(`fork ${baseline} as ${repo}`, async () => {
-      using base = await env.ARTIFACTS.get(baseline);
-      await base.fork(repo, { description: `${project}: the developer's branches`, defaultBranchOnly: true });
-    }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
-      if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+// not already hold. The repository the Ledger recorded is taken as it
+// stands. Any other repository under that name is taken only when its
+// description is the one this function gives the fork for this project's
+// key, which is a fork an earlier attempt made before the record was
+// written; a repository made otherwise is refused, and no token is minted
+// for it (Astra's review of t641, finding 1). One still being made is
+// waited for (headOf).
+const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
+async function developerBranchesRepo(env: Env, L: ReturnType<typeof ledger>, actor: string, key: string, baseline: string, repo: string, project: string): Promise<void> {
+  if (await L.branchesRepo() !== repo) {
+    if (!await repoExists(env, repo)) {
+      await artifactsStep(`fork ${baseline} as ${repo}`, async () => {
+        using base = await env.ARTIFACTS.get(baseline);
+        await base.fork(repo, { description: branchesMark(key), defaultBranchOnly: true });
+      }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+        if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+      });
+    }
+    await headOf(env, repo);
+    const description = await artifactsStep(`read ${repo}`, async () => {
+      using r = await env.ARTIFACTS.get(repo);
+      return (await r.info()).description;
     });
+    if (description !== branchesMark(key)) throw new RuleError("branches_repo_foreign", `${repo} exists and was not made as ${project}'s branches repository; nothing was minted for it`, 409);
+    await L.recordBranchesRepo(actor, repo);
   }
   await artifactsStep(`read the head of ${repo}`, () => headOf(env, repo));
 }
@@ -1635,12 +1650,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "branches") {
     requireOwner(env, actor);
     const p = await L.project();
-    const repo = repoName(ref.key, BRANCHES_REPO_SUFFIX);
+    const repo = branchesRepoName(ref.key);
+    // A baseline registered under that name before the prefix was reserved
+    // would be shared with it: refused rather than handed out.
+    const clash = (await index(env).projects()).find((q) => q.repo === repo);
+    if (clash) throw new RuleError("repo_taken", `${repo} is the baseline of ${clash.name}, so ${p.name} cannot keep its branches there; nothing was minted`, 409);
+    const made = await L.branchesRepo() === repo;
     if (parts.length === 3 && m === "GET") return json({ repo, prefix: DEVELOPER_BRANCH_PREFIX, branches: await L.developerBranches() });
     if (parts.length === 4 && parts[3] === "token" && m === "POST") {
       const scope = body.scope === "write" ? "write" : "read";
-      if (scope === "write") await developerBranchesRepo(env, p.repo, repo, p.name);
-      else if (!await repoExists(env, repo)) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
+      if (scope === "write") await developerBranchesRepo(env, L, actor, ref.key, p.repo, repo, p.name);
+      else if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
       const minted = await mint(env, repo, scope, await projectBranch(env, p));
       return json({ ...minted, repo, prefix: DEVELOPER_BRANCH_PREFIX });
     }
@@ -1649,6 +1669,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const name = developerBranch(body.name, branch);
       if (name !== body.name) throw new RuleError("bad_branch", `name the branch in full, as ${name}`, 400);
       const host = branchHost(body.host);
+      if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
       const commit = String(body.commit ?? "");
       if (!/^[0-9a-f]{40}$/.test(commit)) throw new RuleError("bad_commit", "commit must be a 40-character commit id", 400);
       const top = await artifactsStep(`read ${name} in ${repo}`, async () => {

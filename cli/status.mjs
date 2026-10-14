@@ -471,9 +471,13 @@ export function formatDeveloperBranches(branches, indent = "  ") {
   if (!branches.length) return `${indent}Developer branches: none (atelier branch push NAME carries one to your other Macs)`;
   return [`${indent}Developer branches`, ...branches.map((b) => `${indent}  ${branchLine(b)}`)].join("\n");
 }
-// Every project's branches, for `atelier status`: a section only when some
-// project has one, each line led by its project.
+// Every project's branches, for `atelier status`: a section when some
+// project has one or some project's could not be read, each line led by its
+// project, and the projects not read named on one line, so a branch that
+// could not be read is never shown as none (Astra's review of t641).
 export function formatAllDeveloperBranches(views) {
   const lines = views.flatMap((v) => (Array.isArray(v.branches) ? v.branches.map((b) => `  ${v.name}  ${branchLine(b)}`) : []));
+  const unread = views.filter((v) => !Array.isArray(v.branches)).map((v) => v.name);
+  if (unread.length) lines.push(`  not read for ${unread.join(", ")} (the server keeps none, or could not answer)`);
   return lines.length ? ["Developer branches", ...lines].join("\n") : "";
 }
