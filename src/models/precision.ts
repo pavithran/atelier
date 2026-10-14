@@ -10,7 +10,10 @@
 // again, and the later verdict replaces the earlier. A finding counts in the
 // window when that newest verdict was recorded inside it. Findings are
 // counted under the reviewer the event names (`by`), keyed by modelKey, as
-// the reliability record counts them.
+// the reliability record counts them; when an annotation says another model
+// served the review the verdict judged, under the served model
+// (reviewerOf, src/models/served.ts), never under the verdict event's own
+// actor, which is the developer's adjudication (t621).
 //
 // Routing reads the figure only to order reviewers that already qualify
 // (src/review/reviewer.ts, src/review/tier.ts, src/plans/route.ts): the term
@@ -20,7 +23,8 @@
 // passed over. It never makes a reviewer qualify.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { modelKey, validActor } from "../rules.ts";
+import { modelKey, sameActor, validActor } from "../rules.ts";
+import { reviewerOf, servedBy } from "./served.ts";
 
 export const PRECISION_WINDOW_DAYS = 30;
 export const PRECISION_MIN_JUDGED = 5;
@@ -62,11 +66,14 @@ export function buildPrecision(projects: readonly { project: string; events: rea
     // The review events at each item and head, where the events given
     // include them, to place a legacy verdict on its review. The events may
     // come in any order (the ledger lists them newest first).
-    const reviews = new Map<string, number[]>();
+    const reviews = new Map<string, LedgerEvent[]>();
+    const reviewEvents = new Map<number, LedgerEvent>();
+    const served = servedBy(events);
     for (const ev of events) {
       if ((ev.kind !== "review.approved" && ev.kind !== "review.rejected") || ev.itemId === null) continue;
       const at = `${ev.itemId} ${str(ev.data.head)}`;
-      reviews.set(at, [...(reviews.get(at) ?? []), ev.seq]);
+      reviews.set(at, [...(reviews.get(at) ?? []), ev]);
+      reviewEvents.set(ev.seq, ev);
     }
     for (const ev of events) {
       if (ev.kind !== "review.finding" || ev.itemId === null) continue;
@@ -82,9 +89,16 @@ export function buildPrecision(projects: readonly { project: string; events: rea
       // review at its head when recorded, as `atelier finding` chose then.
       const position = `${project} ${ev.itemId} ${str(d.head)} ${by.toLowerCase()} ${String(d.index)}`;
       const key = typeof d.review === "number" ? `${position} ${d.review}` : position;
-      const review = typeof d.review === "number" ? undefined : (reviews.get(`${ev.itemId} ${str(d.head)}`) ?? []).reduce<number | undefined>((m, s) => (s < ev.seq && (m === undefined || s > m) ? s : m), undefined);
+      // It is placed on its own reviewer's newest review there: a review by
+      // another reviewer at the head is not the one it judged
+      // (gemini-4-argon's review of t621).
+      const review = typeof d.review === "number" ? undefined : (reviews.get(`${ev.itemId} ${str(d.head)}`) ?? [])
+        .filter((r) => r.seq < ev.seq && sameActor(r.actor, by)).reduce<number | undefined>((m, r) => (m === undefined || r.seq > m ? r.seq : m), undefined);
+      // Counted under the model that served the review it judged.
+      const counted = reviewerOf(by, reviewEvents.get(typeof d.review === "number" ? d.review : review ?? -1), served);
+      if (!isReviewer(counted, owner)) continue;
       const seen = newest.get(key);
-      if (!seen || ev.seq > seen.seq) newest.set(key, { seq: ev.seq, at: ev.at, by, verdict, ...(review === undefined ? {} : { review }) });
+      if (!seen || ev.seq > seen.seq) newest.set(key, { seq: ev.seq, at: ev.at, by: counted, verdict, ...(review === undefined ? {} : { review }) });
       if (typeof d.review === "number") named.push({ legacy: position, seq: ev.seq, review: d.review });
     }
   }
