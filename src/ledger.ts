@@ -1381,10 +1381,26 @@ export class Ledger extends DurableObject<Env> {
   // The paths the submission changed are read with the scope, as the
   // reviewer suggestion reads them (gemini-4-argon's review of t622,
   // follow-up 4), so every caller reads the same roles.
-  private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] = []): Assignment[] {
-    const scope = [...item.scope, ...changed];
-    const docs = part ? part.kind === "docs" || part.taskKind === "docs" : docsOnly(scope);
+  //
+  // A caller that has not measured the changed paths, or the part, leaves
+  // them out and they are read here: the paths the evidence at the item's
+  // head measured, and a part's spec from its approved plan, so every caller
+  // reads the same roles (gpt-6-astra's twentieth review of t622, finding 2).
+  private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): Assignment[] {
+    const measured = changed ?? (item.head ? evidenceAt(this.project().policy, this.evidenceFor(item.id), item.head).changedPaths ?? [] : []);
+    const spec = part ?? this.partSpec(item);
+    const scope = [...item.scope, ...measured];
+    const docs = spec ? spec.kind === "docs" || spec.taskKind === "docs" : docsOnly(scope);
     return applicableAssignments(this.heldAssignments(), null, reviewRoles({ sensitive: sensitive({ ...item, scope }), docs }));
+  }
+
+  // A part's spec from its plan's approved document, or null for a task or a
+  // part whose plan is not approved.
+  private partSpec(item: Item): Pick<PlanPart, "kind" | "taskKind"> | null {
+    if (item.kind !== "part" || !item.plan || !item.partKey) return null;
+    const record = this.planRecord(item.plan);
+    if (!record.approval) return null;
+    return planWithAdded(this.approvedPlan(item.plan, record.approval.hash), record).parts.find((x) => x.key === item.partKey) ?? null;
   }
 
   // A task or event named as evidence for an assignment: what is missing,
@@ -3946,7 +3962,7 @@ export class Ledger extends DurableObject<Env> {
     // The selector runs whether or not any model is offered, so a failure
     // says what became of the review assignments too (gpt-6-astra's
     // nineteenth review of t622, finding 3).
-    const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item) });
+    const pick = pickReviewer({ item, pool: offered, policy: this.project().policy, allowPaid: false, owner: this.owner, avoid, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item, null, null) });
     if (!offered.length) return { entry: null, why: [`no model in the pool is offered for the ${PREREVIEW_JOB} job by a live runner`, ...(pick.assignment?.lines ?? [])].join(" "), reasons: [] };
     const entry = pick.reviewer ? exactEntry(offered, pick.reviewer.actor) ?? null : null;
     return entry ? { entry, why: "", reasons: pick.reviewer!.reasons } : { entry: null, why: pick.unpicked ?? "no model qualifies", reasons: [] };
@@ -5420,7 +5436,7 @@ export class Ledger extends DurableObject<Env> {
     }
     (record.reviewers ??= {})[key] = { actor: reviewer, from, reason: "named by the developer", at, by: actor };
     this.savePlanRecord(plan.id, record);
-    const reviewAhead = aheadOfAssignments(this.reviewAssigned(item), "the developer's named reviewer");
+    const reviewAhead = aheadOfAssignments(this.reviewAssigned(item, null, null), "the developer's named reviewer");
     this.log(item.id, actor, "plan.reviewer_changed", { from, to: reviewer, reason: "named by the developer", ...(reviewAhead.lines.length ? { assignment: reviewAhead } : {}) }, at);
     if (item.state === "blocked" && item.blocked?.by === ORCHESTRATOR) {
       this.update(item.id, { state: "submitted", blocked: null }, at);
@@ -7605,7 +7621,10 @@ export class Ledger extends DurableObject<Env> {
     const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [], acceptance: spec.acceptance, author: ORCHESTRATOR },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });
     record.added = [...(record.added ?? []), { id: partId, part: spec, route, mainHead, by, at, reason }];
-    if (to && route.builder?.actor.toLowerCase() !== to.toLowerCase()) record.reroutes[key] = to;
+    // Exact: the routed builder is a pool id, and --to was converted where
+    // typed; another letter case may be another entry (gpt-6-astra's
+    // twentieth review of t622, finding 1).
+    if (to && route.builder?.actor !== to) record.reroutes[key] = to;
     this.savePlanRecord(id, record);
     this.log(id, by, "plan.part_added", { part: partId, key, mainHead, reason, builder: to ?? route.builder?.actor ?? null, reviewer: route.reviewer?.actor ?? null }, at);
     return partId;
