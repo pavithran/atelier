@@ -58,12 +58,12 @@ function fixture(t, { base = {}, task = {}, main = {} } = {}) {
 // The runner's io for the job, with git run for real and the CLI faked:
 // `answers[verb]` answers a command (a function of its argv), and every
 // call is kept in `calls`.
-function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [], gitFault, renewMs, checking, pushing } = {}) {
+function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [], gitFault, renewMs, checking, pushing, proseStandard } = {}) {
   const calls = [], logs = [], reports = [];
   const lease = { id: "L1", job: job === "task-resolve" ? "resolve" : "refresh", by: actor, mainHead: f.main, expectedHead: f.task, ...(checking ? { checking } : {}), ...(pushing ? { pushing } : {}) };
   const flag = (argv, name) => argv[argv.indexOf(name) + 1];
   const defaults = {
-    "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : argv.includes("--status") ? { head: f.task, lease: true, checking: null } : ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null }),
+    "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : argv.includes("--status") ? { head: f.task, lease: true, checking: null } : ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null, ...(proseStandard ? { proseStandard } : {}) }),
     "refresh-pushing": () => ({ ...lease, pushing: {} }),
     refreshed: (argv) => ({ result: { outcome: argv.includes("--head") ? "refreshed" : "held", reason: checks.length && argv.includes("--head") ? "checks pending" : null } }),
     "refresh-failed": (argv) => {
@@ -163,6 +163,22 @@ test("a resolver's mechanical resolution is verified, committed under its Agent 
   assert.equal(git(f.root, "--git-dir", f.fork, "show", `${head}:index.ts`), resolved.trimEnd());
   const refreshed = h.calls.find((c) => c[0] === "refreshed");
   assert.equal(refreshed[refreshed.indexOf("--transformations") + 1], "import-union");
+});
+
+// t675: the resolver's brief named no prose standard, though the agent it
+// briefs works under the project's commit messages; the lease carries the
+// project's setting and the brief names it.
+test("a resolver's brief names the project's prose standard the lease carries, and none when it carries none", async (t) => {
+  const task = IMPORTS.replace('from "./b.ts";\n', 'from "./b.ts";\nimport { task } from "./task.ts";\n');
+  const files = { base: { "index.ts": IMPORTS }, task: { "index.ts": task }, main: { "index.ts": IMPORTS.replace('from "./b.ts";\n', 'from "./b.ts";\nimport { main } from "./main.ts";\n') } };
+  const resolved = 'import { a } from "./a.ts";\nimport { b } from "./b.ts";\nimport { main } from "./main.ts";\nimport { task } from "./task.ts";\n\nexport const all = [a, b];\n';
+  const resolve = (cwd) => writeFileSync(join(cwd, "index.ts"), resolved);
+  const named = harness(fixture(t, files), { job: "task-resolve", resolve, proseStandard: "../ai-projects-house-style/house-style.md" });
+  await named.run();
+  assert.match(named.calls.find((c) => c[0] === "resolve")[1], /## Prose standard\n\nProse standard: this project's prose follows `\.\.\/ai-projects-house-style\/house-style\.md`/);
+  const none = harness(fixture(t, files), { job: "task-resolve", resolve });
+  await none.run();
+  assert.ok(!none.calls.find((c) => c[0] === "resolve")[1].includes("Prose standard"));
 });
 
 test("a resolution outside the transformations goes back to the builder and nothing is pushed", async (t) => {

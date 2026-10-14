@@ -92,6 +92,19 @@ it("the owner starts a plan through POST items, and the queue offers its plan jo
   expect(all.some((q) => q.project === name && q.item.id === started.item.id)).toBe(true);
 });
 
+// t675: `atelier show` on a plan item printed the plan's brief with no
+// prose standard, though the handbook says show names it.
+it("a plan item's brief names the project's prose standard, and none when the project has none", async () => {
+  const name = "plan-routes-prose";
+  const id = await started(name);
+  const planner = await agentToken("claude-code/opus-5.5");
+  const brief = async () => (await (await call("GET", `/projects/${name}/items/${id}/brief`, null, undefined, planner)).json()) as { proseStandard?: string | null };
+  expect((await brief()).proseStandard).toBeNull();
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], proseStandard: "../ai-projects-house-style/house-style.md" }, createdAt: new Date().toISOString() };
+  await ledger(name).setProject(record, "owner");
+  expect((await brief()).proseStandard).toBe("../ai-projects-house-style/house-style.md");
+});
+
 it("the holder posts its plan through the route, and an invalid one is a 422 that lists every error", async () => {
   const name = "plan-routes-post";
   const id = await started(name);

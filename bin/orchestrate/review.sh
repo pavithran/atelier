@@ -25,9 +25,29 @@ bar=${REVIEW_BAR:-$(cd "${0:A:h}/../.." && node --input-type=module -e 'import {
 format=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { REPLY_FORMAT } from "./src/review/verdict.ts"; process.stdout.write(REPLY_FORMAT)')
 # The prose standard's line is Atelier's own (src/prose-standard.ts), the one
 # every brief Atelier composes carries, so it is worded in one place.
-item=$(git -C "$ws" config --local atelier.item || true)
-prose_path=${PROSE_STANDARD-$( [ -n "$item" ] && atelier show "$item" --project "$project" --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("proseStandard") or "")' 2>/dev/null || true)}
+# A failed lookup is not "no standard": it is said on standard error and in the
+# prompt, so a reviewer is never briefed as if the project had none (t675).
+# PROSE_STANDARD, set (empty means none), skips the lookup.
+prose_path= prose_failed=
+if [ -n "${PROSE_STANDARD+x}" ]; then
+  prose_path=$PROSE_STANDARD
+else
+  item=$(git -C "$ws" config --local atelier.item || true)
+  if [ -z "$item" ]; then
+    prose_failed="the workspace records no task (atelier.item)"
+  elif ! shown=$(atelier show "$item" --project "$project" --json 2>&1); then
+    prose_failed="atelier show $item failed: ${shown%%$'\n'*}"
+  elif ! prose_path=$(printf '%s' "$shown" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("proseStandard") or "")' 2>&1); then
+    prose_failed="atelier show $item did not answer with JSON"
+    prose_path=
+  fi
+fi
 prose=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { proseStandardLine } from "./src/prose-standard.ts"; process.stdout.write(proseStandardLine(process.argv[1]) ?? "")' "$prose_path")
+if [ -n "$prose_failed" ]; then
+  echo "review.sh: could not read $project's prose standard ($prose_failed); the review prompt says so" >&2
+  # The reason stays on standard error: it can hold text from a server.
+  prose="Prose standard: the project's prose standard could not be read when this prompt was composed, so it is not named here. If the project has one, say in your report that you could not check the prose against it, rather than guessing what it says."
+fi
 case $model in
   gemini*) who="gemini-3.1-pro" ;;
   gpt-oss*) who="gpt-oss-120b" ;;
