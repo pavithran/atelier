@@ -2108,7 +2108,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // made for it (the reviews of t641).
           if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
           const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
-          await L.setFork(id, name, head, actor, !!c.token);
+          await L.setFork(id, name, head, actor, !!c.token, generation);
         } catch (err) {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
