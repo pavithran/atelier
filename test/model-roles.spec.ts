@@ -827,3 +827,55 @@ it("a review asked of the reviewer a selector chose goes where that exact entry 
   const waiting = (await L.reviewWaiting()).find((i) => i.id === id);
   expect(waiting?.dispatch).toMatchObject({ to: "cloud", agent: "codex", model: "gpt-6-astra:b" });
 });
+
+// gpt-6-astra's nineteenth review of t622, findings 1 and 2: the init's tier
+// was deduplicated by sameActor after conversion, so two profiles of one
+// model collapsed into one; and a retry's --as was compared in any letter
+// case, so a retry under one of two case-variant entries was accepted as the
+// other's.
+it("two profiles named in a tier stay two; a retry under another letter case of --as is another request", async () => {
+  const a = { ...entry("codex", "gpt-6-nova:a"), aliases: ["primary"] }, b = { ...entry("codex", "gpt-6-nova:b"), aliases: ["backup"] };
+  const lower = entry("codex", "gpt-6-vega"), upper = entry("codex", "GPT-6-VEGA");
+  for (const m of [a, b, lower, upper]) await index().putModel(m);
+  try {
+    const name = "roles-profiles";
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["codex/primary", "codex/backup"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    expect((await ledger(name).project()).policy.reviewTier).toEqual(["codex/gpt-6-nova:a", "codex/gpt-6-nova:b"]);
+    await project("roles-acting-case");
+    const first = body({ evidence: ["roles-acting-case/t1"], scope: "roles-acting-case", request: "roles-acting-case-request" });
+    const recorded = await call("POST", "/model-roles", first, "owner", "codex/GPT-6-VEGA");
+    expect(recorded.status, await recorded.clone().text()).toBe(201);
+    expect(await recorded.json()).toMatchObject({ acting: "codex/GPT-6-VEGA" });
+    const other = await call("POST", "/model-roles", first, "owner", "codex/gpt-6-vega");
+    expect(other.status).toBe(409);
+    expect(JSON.stringify(await other.json())).toMatch(/request_reused/);
+  } finally {
+    for (const m of [a, b, lower, upper]) await index().removeModel(m.id);
+  }
+});
+
+// The audit of t622's nineteenth review: a separate tier review that finds no
+// tier model asked nothing and recorded nothing, so the assignments it read
+// went unexplained. It records what became of them now.
+it("a tier review that finds no tier model records the assignment it skipped", async () => {
+  const name = "roles-tier-unasked";
+  const fable = { ...entry("claude-code", "fable-5.1"), state: "paused" as const, stateAt: AT, note: "spent" };
+  const pool = [...POOL, fable];
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/fable-5.1"], exactNames: ["reviewTier"] }, createdAt: AT }, "owner");
+  await L.poolChanged(pool);
+  await L.assignmentsChanged({ version: 991, assignments: [assignment("a991", "review", "claude-code/fable-5.1")] });
+  const H = "9".repeat(40);
+  const id = (await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] })).id;
+  await L.claim(id, "codex/gpt-6-astra");
+  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush(id, "codex/gpt-6-astra", H, H);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(id, "codex/gpt-6-astra");
+  expect((await L.requestReview(id, "owner", "antigravity/gemini-4-argon", pool)).requested).toBe(true);
+  const unasked = (await L.events(id) as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "review.tier_unasked");
+  expect(String(unasked?.data.reason)).toMatch(/Role assignment a991 skipped: no choice is eligible here \(claude-code\/fable-5.1: paused since/);
+});

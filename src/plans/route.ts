@@ -439,7 +439,9 @@ function spread(ranked: readonly Verdict[], load: Load, role: "builds" | "review
 
 function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): PartRoute {
   const none = (unrouted: string, excluded: Choice[] = []): PartRoute => ({ key: part.key, builder: null, alternates: [], reviewer: null, excluded, unrouted });
-  if (!ctx.profiles.length) return none("no models in the pool");
+  // No candidate at all: the build assignments bearing on the part are named
+  // as skipped too.
+  if (!ctx.profiles.length) return none(["no models in the pool", ...orderByAssignment<string>([], (c) => c, applicableAssignments(ctx.input.assignments ?? [], null, ["build"]), () => null, FALLBACK.build).outcome.lines].join(" "));
   // route() ranks by score, then the reliability tie-breaker, then model id,
   // then actor name, so the order is the same whatever order the pool is given in.
   const ranked = route({ kind: part.taskKind }, ctx.profiles, ctx.record, { localOnly: false, allowedWhere: "any" }, ctx.tiebreaks);

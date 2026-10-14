@@ -805,3 +805,32 @@ test("an offer check agrees with assign(): a runner offering only the lowercase 
   const planner = pickPlanner(pool, [], policy, undefined, [{ ...offers[0], jobs: ["plan"] }], [toUpper("plan")]);
   assert.notEqual(planner.actor, "codex/GPT-6-ASTRA");
 });
+
+// ── the nineteenth review of t622's audit (regression tests) ─────────────
+
+// Exact ids compared exactly: two profiles of one model are two reviewers
+// for the tier, the gate's requests, the previous round and a lapsed claim.
+test("two profiles of one model are told apart wherever an exact id is compared", () => {
+  const a = entry("codex", "gpt-6-astra:a"), b = entry("codex", "gpt-6-astra:b");
+  const pool = [a, b, argon];
+  assert.equal(gateServesTier(["codex/gpt-6-astra:a"], "codex/gpt-6-astra:b", ["claude-code/opus-5.5"], null, pool), false);
+  assert.equal(gateServesTier(["codex/gpt-6-astra:a"], "codex/gpt-6-astra:a", ["claude-code/opus-5.5"], null, pool), true);
+  assert.equal(tierReviewerPick(["codex/gpt-6-astra:a"], ["claude-code/opus-5.5"], ["codex/gpt-6-astra:b"], () => true, null, null, [], pool).actor, "codex/gpt-6-astra:a");
+  const again = pickReviewer({ item: built, pool, policy, allowPaid: false, previous: "codex/gpt-6-astra:b" });
+  assert.equal(again.reviewer?.actor, "codex/gpt-6-astra:b");
+  const lapsed = pickReviewer({ item: built, pool, policy, allowPaid: false, assigned: [{ ...assigned("review", ["codex/gpt-6-astra:a"]), choices: [{ actor: "codex/gpt-6-astra:a", model: "gpt-6-astra" }] }], avoid: [{ actor: "codex/gpt-6-astra:b", reason: "lapsed" }] });
+  assert.equal(lapsed.reviewer?.actor, "codex/gpt-6-astra:a");
+});
+
+// Every failure path carries the assignment outcome: a review refused before
+// any candidate is judged, and a plan part with no model in the pool.
+test("a selector refused before judging any candidate still names the assignments skipped", () => {
+  const a = { ...assigned("review", ["codex/gpt-6-astra"]), id: "a77" };
+  const none = pickReviewer({ item: { owner: null, pushActors: [] }, pool: POOL, policy, allowPaid: false, assigned: [a] });
+  assert.match(none.unpicked!, /no contributor is recorded/);
+  assert.match(none.unpicked!, /Role assignment a77 skipped: no choice is eligible here \(codex\/gpt-6-astra: no contributor is recorded/);
+  const unknown = pickReviewer({ item: { owner: "acme/mystery-1", pushActors: [] }, pool: POOL, policy, allowPaid: false, assigned: [a] });
+  assert.match(unknown.unpicked!, /Role assignment a77 skipped/);
+  const [r] = routeParts(plan(part("a")), { pool: [], events: [], policy, allowPaid: false, assignments: [{ ...assigned("build", ["claude-code/opus-5.5"]), id: "a78" }] });
+  assert.match(r.unrouted!, /no models in the pool.*Role assignment a78 skipped/);
+});
