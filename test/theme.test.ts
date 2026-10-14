@@ -344,38 +344,42 @@ test("theme.css is exactly what bin/sync-theme makes of the portfolio's copy, an
 // t673: .show-stack painted with var(--accent), which no sheet defines (added
 // in e5036b32), so the Cloudflare line silently took its parent's colour.
 // Every var() in layout.css and how.css must name a property theme.css or
-// layout.css defines, or one the markup sets in a style attribute (--c, --d
-// and --l, per element, in src/*.ts). A var() with a fallback passes only when
-// its fallback is literal or every var() inside the fallback is itself defined.
-test("every custom property the page styles use is one the sheets or the markup define", () => {
+// layout.css defines, or one of the per-element properties listed in
+// INLINE_SET below. A fallback never excuses an undefined name:
+// var(--accent, red) fails like var(--accent).
+// The custom properties the markup sets per element in a style attribute,
+// named here rather than inferred, each with where it is set.
+const INLINE_SET: Record<string, string> = {
+  // An agent's or a company's colour, per mark: graph.ts (cards, threads,
+  // beads, edges) and ui.ts (the tally bars, legend keys and holder spans).
+  "--c": "graph.ts, ui.ts",
+  // An animation's delay, per drawn path or bead: graph.ts.
+  "--d": "graph.ts",
+  // A drawn path's animation length: graph.ts.
+  "--l": "graph.ts",
+};
+test("every custom property the page styles use is one the sheets define or the markup sets by name", () => {
   const defined = new Set<string>();
   for (const sheet of [theme, layout]) for (const m of css(sheet).matchAll(/(--[\w-]+)\s*:/g)) defined.add(m[1]);
-  const inline = new Set<string>();
-  for (const f of readdirSync("src").filter((f) => f.endsWith(".ts")))
-    for (const m of readFileSync(`src/${f}`, "utf8").matchAll(/(?:style="|;)(--[a-z][\w-]*):/g)) inline.add(m[1]);
   assert.ok(defined.has("--text-muted") && defined.has("--signal"), "the theme's tokens were not found");
-  for (const name of ["--c", "--d", "--l"]) assert.ok(inline.has(name), `${name} is not set by any markup`);
+  // Each listed property is in fact set in a style attribute in src/*.ts, in
+  // the files named, and the markup sets no property the list leaves out.
+  const setIn = new Map<string, Set<string>>();
+  for (const f of readdirSync("src").filter((f) => f.endsWith(".ts")))
+    for (const m of readFileSync(`src/${f}`, "utf8").matchAll(/(?:style="|;)(--[a-z][\w-]*):/g)) setIn.set(m[1], (setIn.get(m[1]) ?? new Set()).add(f));
+  for (const [name, files] of Object.entries(INLINE_SET))
+    for (const f of files.split(", ")) assert.ok(setIn.get(name)?.has(f), `${name} is listed as set in ${f}, which sets no ${name}`);
+  assert.deepEqual([...setIn.keys()].filter((n) => !(n in INLINE_SET)).sort(), [], "the markup sets a custom property INLINE_SET does not name");
   // Each var( call with its arguments, balancing parentheses so a nested
-  // fallback such as var(--c, var(--text)) is read whole.
-  const calls = (s: string) => {
-    const out: { name: string; fallback: string | null }[] = [];
-    for (let at = s.indexOf("var("); at >= 0; at = s.indexOf("var(", at + 4)) {
-      let depth = 0, end = at + 3;
-      do { if (s[end] === "(") depth++; else if (s[end] === ")") depth--; end++; } while (depth > 0 && end < s.length);
-      const args = s.slice(at + 4, end - 1);
-      const comma = args.indexOf(",");
-      out.push({ name: (comma < 0 ? args : args.slice(0, comma)).trim(), fallback: comma < 0 ? null : args.slice(comma + 1).trim() });
-    }
+  // fallback such as var(--c, var(--text)) is read whole; the names inside a
+  // fallback are checked as uses in their own right.
+  const names = (s: string) => {
+    const out: string[] = [];
+    for (let at = s.indexOf("var("); at >= 0; at = s.indexOf("var(", at + 4)) out.push(s.slice(at + 4).split(/[,)]/)[0].trim());
     return out;
   };
-  const known = (name: string) => defined.has(name) || inline.has(name);
   const undefinedUses: string[] = [];
-  for (const [file, sheet] of [["src/layout.css", layout], ["src/how.css", how]] as const) {
-    for (const { name, fallback } of calls(css(sheet))) {
-      if (known(name)) continue;
-      if (fallback !== null && calls(fallback).every((inner) => known(inner.name))) continue;
-      undefinedUses.push(`${file}: var(${name}${fallback === null ? "" : `, ${fallback}`})`);
-    }
-  }
+  for (const [file, sheet] of [["src/layout.css", layout], ["src/how.css", how]] as const)
+    for (const name of names(css(sheet))) if (!defined.has(name) && !(name in INLINE_SET)) undefinedUses.push(`${file}: var(${name})`);
   assert.deepEqual(undefinedUses, [], "a page style uses a custom property nothing defines");
 });
