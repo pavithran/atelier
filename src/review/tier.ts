@@ -70,8 +70,13 @@ export function tierReviewerPick(tier: readonly string[], contributors: readonly
   // The tier is exact harness/ids (tierIds); its history may be recorded
   // under an entry's other names, read for precision only.
   const names = (a: string) => { const e = pool ? exactEntry(pool, a) : undefined; return e ? [e.id, ...e.aliases].map((id) => `${e.harness}/${id}`) : [a]; };
-  const refusal = (a: string) => contributed(a, contributors) ? "contributed to this change, and nobody reviews their own work"
-    : gate.some((g) => sameActor(g, a)) ? "already asked for the gate's review"
+  // Contributors and the gate's reviewers are identities kept as declared,
+  // so any name of the tier model's entry, its aliases included, is that
+  // model, as main's reviewer selector reads them (gpt-6-astra's twelfth
+  // review of t622, finding 1).
+  const isIt = (a: string, who: string) => names(a).some((n) => sameActor(n, who));
+  const refusal = (a: string) => contributed(a, contributors) || contributors.some((c) => isIt(a, c)) ? "contributed to this change, and nobody reviews their own work"
+    : gate.some((g) => sameActor(g, a) || isIt(a, g)) ? "already asked for the gate's review"
       : single && actorFamily(a) !== single ? `not one of ${single}'s models (single-family mode)`
         : reviewable(mayReview(a));
   // An assignment promotes only a tier model the pool has and that passes

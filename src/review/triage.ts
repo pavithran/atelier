@@ -16,7 +16,6 @@
 // (src/criteria.ts), so a result is used only while all three are the same.
 
 import { criteriaOf, validBinding } from "../criteria.ts";
-import { exactEntry, storedActor } from "../models/identity.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { paidPerToken } from "../plans/route.ts";
 import { TEXT_CONTROLS } from "../text.ts";
@@ -108,12 +107,9 @@ export function triageSettingRefusal(value: unknown): string | null {
 // is not paid per token, since nothing here approved paid models. Its family
 // is not asked: triage is not the independent review, so a model of the
 // builder's own company may triage. Answers why it may not, or null.
-export function triageModelRefusal(actor: string, pool: readonly ModelEntry[], exact = false): string | null {
-  // The triage model is an exact id when written since names are converted
-  // where typed (`exact`: policy.exactNames lists triage, or a landing's
-  // --triage converted at the API); one written before may be an alias, read
-  // through storedActor (src/models/pool.ts, identity).
-  const entry = exactEntry(pool, exact ? actor : storedActor(pool, actor));
+export function triageModelRefusal(actor: string, pool: readonly ModelEntry[]): string | null {
+  const names = (e: ModelEntry) => [e.id, ...e.aliases].map((id) => `${e.harness}/${id}`.toLowerCase());
+  const entry = pool.find((e) => names(e).includes(actor.toLowerCase()));
   if (!entry) return `${actor} is not in the model pool (atelier models add)`;
   if (entry.status?.state === "refused") return `${actor}'s status is refused, reported by ${entry.status.by} at ${entry.status.at}${entry.status.detail ? `: ${entry.status.detail}` : ""}`;
   if (paidPerToken(entry)) return `${actor} is paid per token (${entry.provider}), and paid models are not allowed outside an approved plan`;

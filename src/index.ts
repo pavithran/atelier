@@ -28,7 +28,7 @@ import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
-import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
+import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -541,6 +541,21 @@ async function sendAssignments(env: Env): Promise<string[]> {
   const projects = await I.projects();
   return unreachedOf(projects, async (p) => { await ledgerOf(env, p).assignmentsChanged(await I.assignmentSnapshotFor(p.key ?? p.name)); });
 }
+// What a dispatch the developer names a builder for says of the build
+// assignments bearing on the task: none orders it, and each is named as
+// skipped for the named builder, by orderByAssignment's explicit path, the
+// call every selector orders and explains by. Every dispatch path asks it:
+// the API with --agent and --model or a bare --model, a held dispatch's
+// --overlap-ok, and the page's form (gpt-6-astra's twelfth review of t622,
+// finding 3). Undefined when the dispatch names no builder or no assignment
+// bears.
+async function namedBuilderReasons(env: Env, projectKey: string, body: Record<string, unknown>, actor: string): Promise<string | undefined> {
+  if (actor !== ownerActor(env) || body.job !== undefined || !(body.model || body.agent)) return undefined;
+  const bearing = applicableAssignments(await index(env).currentRoleAssignments(), projectKey, ["build"]);
+  const named = body.agent && body.model ? "the developer's named builder" : body.model ? "the developer's --model" : "the developer's --agent";
+  return orderByAssignment<string>([], (c) => c, bearing, () => null, FALLBACK.build, named).outcome.lines.join(" ") || undefined;
+}
+
 // The one boundary for model names (gpt-6-astra's and gemini-4-argon's
 // eighth to eleventh reviews of t622). A field that chooses a model to use
 // is converted here, once, before its route reads it, to the exact pool
@@ -2194,7 +2209,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A builder given in the dispatch's place is checked against the
           // pool's current standing, as a dispatch's own is below.
           if (body.agent || body.model) await L.poolChanged(await index(env).models());
-          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }));
+          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }, await namedBuilderReasons(env, ref.key, body, actor)));
         }
       }
       let suggestion;
@@ -2231,11 +2246,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reasons, or, for a builder the developer named, each build
       // assignment bearing on the task skipped for it (gpt-6-astra's seventh
       // review of t622, finding 2).
-      let why = suggestion ? suggestion.reasons.join(" ") : undefined;
-      if (!suggestion && body.agent && body.model && actor === ownerActor(env) && body.job === undefined) {
-        const bearing = applicableAssignments(await index(env).currentRoleAssignments(), ref.key, ["build"]);
-        why = aheadOfAssignments(bearing, "the developer's named builder").lines.join(" ") || undefined;
-      }
+      const why = suggestion ? suggestion.reasons.join(" ") : await namedBuilderReasons(env, ref.key, body, actor);
       return json({ ...await L.dispatch(id, actor, body, oldToken, why), ...(suggestion ? { suggestion } : {}) });
     }
     case "undispatch":
@@ -2915,7 +2926,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: string | undefined): Promise<Response> {
   const { env, actor, body } = c;
   if (sub === undefined) {
-    const post = await L.postPlan(id, actor, body, !!c.token);
+    const post = await L.postPlan(id, actor, body, !!c.token, true);
     if (post.valid) return json({ ...post, next: `the developer reads it with atelier plan show ${id} and approves that hash; release the plan item when done` });
     return json({ error: "invalid_plan", detail: `the plan was refused (attempt ${post.attempt} of ${post.attempts}): ${post.errors.join("; ")}`, ...post }, 422);
   }
@@ -3452,7 +3463,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
         const { fork } = await L.item(id);
         await revoke(env, fork, oldToken);
       }
-      if (verb === "dispatch") await L.dispatch(id, owner, { to: formNames.to, agent: formNames.agent, model: formNames.model, note }, oldToken);
+      if (verb === "dispatch") await L.dispatch(id, owner, { to: formNames.to, agent: formNames.agent, model: formNames.model, note }, oldToken, await namedBuilderReasons(env, ref.key, { agent: formNames.agent || undefined, model: formNames.model || undefined }, owner));
       else if (verb === "undispatch") await L.undispatch(id, owner);
       else if (verb === "accept") await L.accept(id, owner, expected, undefined, undefined, undefined, undefined, String(shownCriteria));
       // The page's override form: accept with the owner's override of a missing

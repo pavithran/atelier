@@ -35,7 +35,6 @@
 // format lets its CRITERION line say deferred (replyFormat in
 // src/review/verdict.ts), and nobody rejects the task for it.
 
-import { exactEntry } from "../models/identity.ts";
 import { standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import type { Choice } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
@@ -197,6 +196,7 @@ export interface CriteriaReviewerPick {
 }
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
+const namesOf = (entry: ModelEntry) => [entry.id, ...entry.aliases].map((id) => `${entry.harness}/${id}`.toLowerCase());
 const PAID = new Set(["ai-studio", "openai-compatible", "google", "deepseek", "openrouter", "anthropic", "openai"]);
 
 // The reviewer of an item's criteria: the previous round's reviewer first,
@@ -214,9 +214,7 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
   const pool = [...input.pool].sort((a, b) => a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b)));
   const wanted: { entry: ModelEntry; previous: boolean }[] = [];
   if (input.previous) {
-    // A recorded reviewer: its exact entry, never one listing it as an alias
-    // (src/models/pool.ts, identity).
-    const entry = exactEntry(pool, input.previous);
+    const entry = pool.find((e) => namesOf(e).includes(input.previous!.toLowerCase()));
     if (entry) wanted.push({ entry, previous: true });
   }
   for (const entry of pool) if (!wanted.some((w) => w.entry === entry)) wanted.push({ entry, previous: false });
@@ -231,7 +229,7 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
     else passed.push(input.authors.some((a) => isModelAuthor(a, owner))
       ? `Another family (${actorFamily(actor)}) than every model that wrote the criteria: ${input.authors.filter((a) => isModelAuthor(a, owner)).map((a) => `${a} (${actorFamily(a)})`).join(", ")}`
       : `A recognised family (${actorFamily(actor)}); the criteria were written by ${input.authors.join(", ")}, no model among them, so any recognised family may review them`);
-    const avoided = input.avoid?.find((a) => a.actor.toLowerCase() === actor.toLowerCase());
+    const avoided = input.avoid?.find((a) => namesOf(entry).includes(a.actor.toLowerCase()));
     if (avoided) failed.push(avoided.reason);
     if (input.policy.agents) {
       if (hasRole(actor, input.policy, "assessor")) passed.push("Governed policy: holds the assessor role");

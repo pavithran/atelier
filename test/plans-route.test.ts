@@ -152,7 +152,8 @@ test("a preference is honoured when the actor passes every rule, and refused wit
   const alias = one(aliased, {}, part("a", { prefer: { actor: typedActor(aliased, "Claude-Code/Claude-Opus-5-5"), reason: "alias" } }));
   assert.equal(alias.builder!.actor, "claude-code/opus-5.5");
   assert.equal(alias.builder!.reasons[0], "Preferred by the plan (alias); passes every rule");
-  assert.match(one(aliased, {}, part("a", { prefer: { actor: "claude-code/claude-opus-5-5", reason: "alias" } })).builder!.reasons[0], /it is not in the pool/);
+  // Unconverted, an unmarked (legacy) prefer is read through the aliases once.
+  assert.equal(one(aliased, {}, part("a", { prefer: { actor: "claude-code/claude-opus-5-5", reason: "alias" } })).builder!.actor, "claude-code/opus-5.5");
 });
 
 test("a size M part goes only to a model with a 64K context window or an unknown one", () => {

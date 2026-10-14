@@ -2335,7 +2335,9 @@ export class Ledger extends DurableObject<Env> {
   // a runner has claimed since is refused, never redispatched. As for an
   // override sent as a dispatch (t491), the answer names the core-file hold
   // released, if one held it.
-  releaseHold(id: string, actor: string, input: Record<string, unknown>): Item & { retainedDispatch: true; releasedCoreHold?: CoreHold } {
+  // `why`: what named the builder, the build assignments skipped for it
+  // included, as dispatch keeps it.
+  releaseHold(id: string, actor: string, input: Record<string, unknown>, why?: string): Item & { retainedDispatch: true; releasedCoreHold?: CoreHold } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
@@ -2351,7 +2353,7 @@ export class Ledger extends DurableObject<Env> {
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
       this.setDispatch(id, d, at);
-      this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, overlapOk: true, retained: true, ...(d.job ? { job: d.job, head: d.head } : {}) }, at);
+      this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, overlapOk: true, retained: true, ...(d.job ? { job: d.job, head: d.head } : {}), ...(why ? { reason: why } : {}) }, at);
     }
     return { ...this.item(id), retainedDispatch: true as const, ...(released ? { releasedCoreHold: released } : {}) };
   }
@@ -5148,7 +5150,12 @@ export class Ledger extends DurableObject<Env> {
   // dispatch is cleared, so the release leaves the item out of the queue. A
   // newer proposal makes every older hash unapprovable. After approval
   // nothing is posted.
-  async postPlan(id: string, actor: string, value: unknown, proved = false): Promise<PlanPost> {
+  // `namesExact`: the API converted the document's model names (a part's
+  // prefer) to exact pool ids where it entered (canonicalNames in
+  // src/index.ts); the proposal is marked so, and routing reads its prefer as
+  // it is. An unmarked one, posted before or by a caller that converted
+  // nothing, is read through the aliases once (storedActor).
+  async postPlan(id: string, actor: string, value: unknown, proved = false, namesExact = false): Promise<PlanPost> {
     // The hash is this method's one wait, and nothing is read before it, so
     // the checks and writes after it run with no other request between them.
     const parsed = parsePlan(value);
@@ -5165,6 +5172,7 @@ export class Ledger extends DurableObject<Env> {
       return { valid: false, errors, attempt: plannerAttempts(this.events(id)).failed + 1, attempts: PLANNER_ATTEMPTS };
     }
     this.sql.exec(`INSERT INTO plans (plan_id, hash, json, actor, at) VALUES (?, ?, ?, ?, ?)`, id, hash, JSON.stringify(parsed.plan), actor, at);
+    if (namesExact) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, '1')`, `plan-exact:${id}:${hash}`);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
     this.log(id, actor, "plan.proposed", { hash, parts: parsed.plan.parts.length }, at, proved);
     this.setBlocked(id, record, null);
@@ -5288,7 +5296,7 @@ export class Ledger extends DurableObject<Env> {
     // which is undefined when no runner is live and routing then falls back
     // to the whole pool.
     const routing = offers !== null ? offers : await this.routingOffers();
-    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing, precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments() });
+    const routes = routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid, offers: routing, precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments(), namesExact: newest.namesExact });
     const unrouted = routes.filter((r) => r.unrouted !== null);
     if (unrouted.length) {
       const why = unrouted.map((r) => `part ${r.key} has no ${r.builder ? "reviewer" : "builder"}: ${r.unrouted}`).join("; ");
@@ -5539,7 +5547,7 @@ export class Ledger extends DurableObject<Env> {
       // the Worker read them, so the reviewers are judged against the review
       // job's offer and warned of when none is live; the ledger reads them
       // itself (routingOffers) when the caller read none.
-      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: offers !== null ? offers : await this.routingOffers(), precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments() }) : null,
+      preview: !approval && newest && pool ? routeParts(newest.plan, { pool, events: this.events(undefined, RECORD_EVENTS), policy, allowPaid: false, offers: offers !== null ? offers : await this.routingOffers(), precision: this.reviewPrecision(new Date().toISOString()), assignments: this.heldAssignments(), namesExact: newest.namesExact }) : null,
       // The runner offers this view was read with, for the same judgement.
       ...(offers !== null ? { offers } : {}),
       // The plan branch's integration head (docs/orchestrator.md, section 5).
@@ -5636,11 +5644,12 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The newest valid proposal, and how many there are.
-  private proposal(id: string): { hash: string; plan: Plan; by: string; at: string; count: number } | null {
+  private proposal(id: string): { hash: string; plan: Plan; by: string; at: string; count: number; namesExact: boolean } | null {
     const row = this.sql.exec(`SELECT hash, json, actor, at FROM plans WHERE plan_id = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
     if (!row) return null;
     const count = this.sql.exec(`SELECT COUNT(*) AS n FROM plans WHERE plan_id = ?`, id).one().n as number;
-    return { hash: row.hash as string, plan: JSON.parse(row.json as string), by: row.actor as string, at: row.at as string, count };
+    const namesExact = this.sql.exec(`SELECT 1 FROM meta WHERE key = ?`, `plan-exact:${id}:${row.hash as string}`).toArray().length > 0;
+    return { hash: row.hash as string, plan: JSON.parse(row.json as string), by: row.actor as string, at: row.at as string, count, namesExact };
   }
 
   private approvedPlan(id: string, hash: string): Plan {
