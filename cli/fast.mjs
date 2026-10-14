@@ -28,7 +28,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
@@ -88,23 +88,36 @@ function shallowOf(cwd) {
 // tree (atelier's own, which keeps .git off iCloud) is listed by Git under
 // its repository's path, not its own, so comparing that with cwd's
 // --show-toplevel took cwd's own checkout for another worktree holding main.
-// The first entry is the main worktree, whose Git directory is the common
-// one; a linked worktree's is what rev-parse answers inside it.
+//
+// Both come from Git's own registry, never from running Git inside a
+// candidate folder (t646): a project command can add a linked worktree
+// inside the checkout and delete its .git file, and rev-parse inside that
+// folder then answers with the checkout's Git directory, so the real holder
+// was skipped and main moved past its unreset index. The main worktree is
+// the porcelain list's first entry, whose Git directory is the common one;
+// each linked worktree is $GIT_COMMON_DIR/worktrees/<name>, holding what its
+// HEAD names, at the folder its gitdir file names.
 export function worktreeHolding(cwd, ref) {
   const real = (path) => { try { return realpathSync(path); } catch { return path; } };
-  const gitDirOf = (dir, ...flags) => {
-    const r = runGit(dir, ["rev-parse", ...flags]);
+  const read = (path) => { try { return readFileSync(path, "utf8").trim(); } catch { return null; } };
+  const gitDirOf = (...flags) => {
+    const r = runGit(cwd, ["rev-parse", ...flags]);
     return r.status === 0 && r.stdout.trim() ? real(r.stdout.trim()) : null;
   };
-  const here = gitDirOf(cwd, "--absolute-git-dir");
-  const common = gitDirOf(cwd, "--path-format=absolute", "--git-common-dir");
-  const blocks = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n");
-  for (const [i, block] of blocks.entries()) {
-    const path = /^worktree (.+)$/m.exec(block)?.[1];
-    if (!path || !new RegExp(`^branch ${ref}$`, "m").test(block)) continue;
-    const gitDir = i === 0 ? common : existsSync(path) ? gitDirOf(path, "--absolute-git-dir") : null;
-    if (here && gitDir === here) continue;
-    return path;
+  const here = gitDirOf("--absolute-git-dir");
+  const common = gitDirOf("--path-format=absolute", "--git-common-dir");
+  const first = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n")[0];
+  const mainPath = /^worktree (.+)$/m.exec(first)?.[1];
+  if (mainPath && new RegExp(`^branch ${ref}$`, "m").test(first) && !(here && common === here)) return mainPath;
+  if (!common) return null;
+  let names = [];
+  try { names = readdirSync(join(common, "worktrees")).sort(); } catch { return null; }
+  for (const name of names) {
+    const admin = join(common, "worktrees", name);
+    if (read(join(admin, "HEAD")) !== `ref: ${ref}`) continue;
+    if (here && real(admin) === here) continue;
+    const gitFile = read(join(admin, "gitdir"));
+    return gitFile ? dirname(resolve(admin, gitFile)) : admin;
   }
   return null;
 }
