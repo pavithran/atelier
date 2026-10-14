@@ -1250,6 +1250,13 @@ export class Ledger extends DurableObject<Env> {
     return modelCardView(this.cardRecords(), this.models(), named);
   }
 
+  // Several models' cards at once, read from one copy of the table, for the
+  // Models page's comparisons (t621): one view per name, in the order given.
+  modelCardViews(names: readonly string[]): CardView[] {
+    const all = this.cardRecords(), pool = this.models();
+    return names.map((named) => modelCardView(all, pool, named));
+  }
+
   // A card or a withdrawal, stored once: the same record sent again (a
   // retry) is answered with the one stored, and nothing is added.
   addModelCard(named: string, input: CardInput | WithdrawalInput, by: string, at: string): { record: CardRecord; retried: boolean; view: CardView } {

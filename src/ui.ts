@@ -31,6 +31,7 @@ import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, ty
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
 import { pace, stalledText, type Measure, type RoleSpeed, type SpeedRecord } from "./models/speed.ts";
+import { claimText, figureText, ROLE_LABEL, type ModelComparison } from "./models/compare.ts";
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -1106,7 +1107,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null, comparisons: readonly ModelComparison[] = []): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -1153,6 +1154,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${precision ? precisionSection(precision) : ""}
   ${judgement ? judgementSection(judgement) : ""}
   ${speed ? speedSection(speed) : ""}
+  ${comparisonSection(comparisons)}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
@@ -1219,6 +1221,38 @@ export function judgementSection(j: JudgementRecord): string {
     <tbody>${rows.map(row).join("")}</tbody>
   </table>` : `<p class="empty">Nothing was judged for the developer from ${e(from)} to ${e(to)}.</p>`}
   ${causes.length ? `<ul class="causes">${causes.map((c) => `<li class="meta">${when(c.at)} · ${c.model ? `<code>${e(c.model)}</code>` : "unknown"}'s verdict (event ${c.event}) on <code>${e(c.project)}/${e(c.item)}</code> ${c.by === "defect" ? "contradicted by a defect" : "corrected"}: ${e(c.note)}</li>`).join("")}</ul>` : ""}
+</section>`;
+}
+
+// ── vendor claims beside Atelier's record ─────────────────────────────────
+// Each pool model's comparison (src/models/compare.ts), the projection
+// `atelier models show` prints too: the vendor's claims with their sources
+// and conditions, then each role with the developer's assignments of the
+// model to it and Atelier's figures, each with its window and its numerator
+// and denominator or its samples. Every text is escaped here.
+
+export function comparisonSection(views: readonly ModelComparison[]): string {
+  if (!views.length) return "";
+  const view = (v: ModelComparison) => `<details class="comparison">
+    <summary><code>${e(v.model)}</code>${v.entries.length ? `<span class="meta">${v.entries.map(e).join(", ")}</span>` : ""}</summary>
+    <h3>The vendor's claims</h3>
+    ${v.vendor.claims.length ? `<ul class="causes">${v.vendor.claims.map((c) => `<li class="meta">${e(claimText(c))}</li>`).join("")}</ul>` : `<p class="empty">No vendor card in force. Record one with <code>atelier models card</code>.</p>`}
+    ${v.vendor.limitations.map((l) => `<p class="meta">Vendor limitation, card ${e(l.card)}: ${e(l.text)}</p>`).join("")}
+    ${v.vendor.ended ? `<p class="meta">${plural(v.vendor.ended, "card")} corrected, superseded or withdrawn, not shown as claims.</p>` : ""}
+    ${v.vendor.disagreements.map((d) => `<p class="meta">${d.kind === "conflict" ? "Conflicting claims" : "Claims under different conditions"}: ${e(d.benchmark)}${d.version ? ` ${e(d.version)}` : ""}, cards ${[...new Set(d.claims.map((c) => c.card))].map(e).join(", ")}</p>`).join("")}
+    ${v.vendor.priors.map((p) => `<p class="meta">Prior, the registry's and not a card: ${e(p.claim)}; ${e(p.source)}</p>`).join("")}
+    ${v.roles.map((r) => `<h3>${e(ROLE_LABEL[r.role])}</h3>
+    <ul class="causes">
+      ${r.assignments.map((a) => `<li class="meta">Assigned ${e(a.id)} (${e(a.scope)}), choice ${a.position} of ${a.of}, ${e(a.at.slice(0, 10))} by ${e(a.acting ?? a.by)}: ${e(a.reason)}${a.evidence.length ? `; evidence ${a.evidence.map((x) => `<code>${e(x)}</code>`).join(", ")}` : ""}</li>`).join("")}
+      ${r.unmeasured ? `<li class="meta">Atelier's record: unknown. ${e(r.unmeasured)}</li>` : ""}
+      ${r.figures.map((f) => `<li class="meta">${e(figureText(f))}${f.refs?.length ? `<br>${f.refs.map((x) => `<code>${e(x)}</code>`).join(", ")}` : ""}</li>`).join("")}
+    </ul>`).join("")}
+    ${v.leftOut.map((l) => `<p class="meta">Left out: ${e(l)}</p>`).join("")}
+  </details>`;
+  return `<section class="comparison" aria-label="Vendor claims beside Atelier's record">
+  <h2 class="section-title">Vendor claims beside Atelier's record</h2>
+  <p class="meta">For each model in the pool: what its vendor claims, from the cards the developer recorded, and what Atelier measured of it in each role, beside the developer's standing assignments of it to that role. The vendor's figures are its own benchmarks under its own conditions; Atelier's are shares and medians of its own events, each with its window and what it is over. Neither is a measure of the other, and no share is given under its threshold.</p>
+  ${views.map(view).join("")}
 </section>`;
 }
 

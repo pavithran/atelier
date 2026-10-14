@@ -27,11 +27,16 @@ import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
-import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
+import { ACTING_HEADER, buildJudgement, canonicalModel, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
+import { buildPairwise, type PairwiseRecord } from "./models/pairwise.ts";
+import { compareModel, type ModelComparison } from "./models/compare.ts";
+import type { CardView } from "./models/cards.ts";
+import type { PrecisionRecord } from "./models/precision.ts";
+import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
@@ -1317,6 +1322,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const input = "withdraws" in body ? cleanWithdrawal(body) : cleanCard(body, at.slice(0, 10));
       const added = await I.addModelCard(named, input, actor, at);
       return json(added, added.retried ? 200 : 201);
+    }
+    // A model's vendor claims beside Atelier's record of it, role by role
+    // (t621, src/models/compare.ts): the developer's alone, as the cards and
+    // the role assignments it shows are. The name is checked as a card's is.
+    if (parts.length === 3 && parts[2] === "compare" && m === "GET") {
+      requireOwner(env, actor);
+      const named = cleanCardModel(id);
+      const readers = await modelReaders(env);
+      const [cards] = await I.modelCardViews([readers.keyOf(named)]);
+      const res = json(readers.compare(named, cards));
+      if (readers.track.unread.length) res.headers.set("x-atelier-incomplete", readers.track.unread.map((p) => p.name).sort().join(","));
+      return res;
     }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
@@ -3197,7 +3214,8 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, track, gateway] = await Promise.all([I.models(), trackRecords(env), readGateway(env)]);
+  const [readers, gateway] = await Promise.all([modelReaders(env), readGateway(env)]);
+  const { entries, track, precision, judgement } = readers;
   const record = new Map<string, ActorRecord>();
   for (const { events } of track.sources) {
     for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
@@ -3206,14 +3224,44 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
-  // each model's speed comes with the track record (trackRecords).
-  const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
-  // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
-  // harness/model that acted for the owner (src/models/judgement.ts).
-  // Role assignments are recorded on the index, one more source (t622).
-  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: await I.assignmentEvents() }], judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
+  // One comparison per model in the pool, under its first entry's name, from
+  // the readers above (t621).
+  const named = [...new Map(entries.map((e) => [readers.keyOf(`${e.harness}/${e.id}`), `${e.harness}/${e.id}`])).values()];
+  const cards = await I.modelCardViews(named);
+  const comparisons = named.map((n, i) => readers.compare(n, cards[i]));
+  return html(renderModels(entries, record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement, comparisons), error ? 400 : 200);
+}
+
+// What the Models page and GET /api/models/ID/compare read, built once per
+// request: the pool, every project's events with the reliability and speed
+// records (trackRecords), review precision over the last
+// PRECISION_WINDOW_DAYS, the acting models' judgements over the last
+// JUDGEMENT_WINDOW_DAYS (role assignments are recorded on the index, one more
+// source, t622), pairwise catches over precision's window, and the standing
+// role assignments; and a model's comparison from them (t621).
+interface ModelReaders {
+  entries: ModelEntry[];
+  track: Awaited<ReturnType<typeof trackRecords>>;
+  precision: PrecisionRecord;
+  judgement: JudgementRecord;
+  pairwise: PairwiseRecord;
+  keyOf(named: string): string;
+  compare(named: string, cards: CardView | null): ModelComparison;
+}
+async function modelReaders(env: Env): Promise<ModelReaders> {
+  const I = index(env);
+  const [pool, track, assignmentEvents, roles] = await Promise.all([I.models(), trackRecords(env), I.assignmentEvents(), I.roleAssignments()]);
+  const entries = pool as unknown as ModelEntry[];
+  const owner = ownerActor(env), now = new Date();
+  const precision = buildPrecision(track.sources, precisionWindow(now), owner);
+  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: assignmentEvents }], judgementWindow(now), owner, entries);
+  const pairwise = buildPairwise(track.sources, precisionWindow(now), owner, entries);
+  const standing = roles.assignments.filter((a) => a.status === "current");
+  return {
+    entries, track, precision, judgement, pairwise,
+    keyOf: (named) => canonicalModel(named, entries),
+    compare: (named, cards) => compareModel({ named, pool: entries, cards, reliability: track.reliability, precision, speed: track.speed, judgement, pairwise, assignments: standing, projectNames: roles.names }),
+  };
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
