@@ -141,3 +141,25 @@ export function carryTask(git, cwd, baselineHead, taskHead, pairs) {
   }
   return made[taskHead] ?? pairs[taskHead] ?? null;
 }
+
+// The baseline's commits this checkout has no pair for, carried the other
+// way (atelier pull, t644): each is rebuilt onto the project commits paired
+// with its parents, with the same tree, authors, dates and message, and
+// paired with its twin. A commit whose parents are all paired with
+// themselves, as in a checkout atelier clone made, is its own twin. The
+// walk stops at every commit already paired. Returns the project-side twin
+// of `baselineHead` and the new pairs.
+export function carryBaseline(git, cwd, baselineHead, pairs) {
+  if (pairs[baselineHead]) return { head: pairs[baselineHead], pairs: {} };
+  const known = Object.keys(pairs);
+  const lines = git(["rev-list", "--reverse", "--topo-order", "--parents", "--ignore-missing", "--stdin"], { cwd, input: [baselineHead, ...(known.length ? ["--not", ...known] : [])].map((l) => `${l}\n`).join("") }).split("\n").filter(Boolean);
+  const made = {};
+  for (const line of lines) {
+    const [commit, ...parents] = line.split(" ");
+    const mapped = parents.map((p) => made[p] ?? pairs[p] ?? null);
+    const missing = parents.find((_, i) => !mapped[i]);
+    if (missing) throw new Error(`the baseline's history reaches ${missing.slice(0, 8)}, a commit this checkout has no pair for, so it cannot be carried into this checkout`);
+    made[commit] = mapped.every((p, i) => p === parents[i]) ? commit : rebuild(git, cwd, commit, mapped);
+  }
+  return { head: made[baselineHead], pairs: made };
+}

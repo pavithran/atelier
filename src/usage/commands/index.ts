@@ -53,6 +53,7 @@ import command_owners from "./owners.ts";
 import command_plan from "./plan.ts";
 import command_projects from "./projects.ts";
 import command_publish from "./publish.ts";
+import command_pull from "./pull.ts";
 import command_push from "./push.ts";
 import command_queue from "./queue.ts";
 import command_read_token from "./read-token.ts";
@@ -145,6 +146,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/plan.ts", spec: command_plan },
   { path: "src/usage/commands/projects.ts", spec: command_projects },
   { path: "src/usage/commands/publish.ts", spec: command_publish },
+  { path: "src/usage/commands/pull.ts", spec: command_pull },
   { path: "src/usage/commands/push.ts", spec: command_push },
   { path: "src/usage/commands/queue.ts", spec: command_queue },
   { path: "src/usage/commands/read-token.ts", spec: command_read_token },
