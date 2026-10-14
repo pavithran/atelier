@@ -1078,7 +1078,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="show-section show-hero" id="top">
     <p class="kicker">Public showcase · read only · from the ledger</p>
-    <h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>
+    <h1><span class="given"><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the <span class="hl">receipts.</span></span></span></h1>
     <p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>
     <p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>
     <p class="show-lead">Agents of several model families work one repository at once. In full mode, the default, a change merges once its checks pass at the exact head Atelier reads and the developer accepts it, and a change to a protected path first needs a review by a model of another company (another model of that company in single-family mode) unless the developer records an override. In fast mode any review follows the merge, and only when the developer asks for one.</p>
