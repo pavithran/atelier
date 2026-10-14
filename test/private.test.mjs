@@ -136,7 +136,12 @@ test("a folder named for the project is found case-, space- and hyphen-insensiti
 
 test("linkPrivate replaces a stale link of its own and leaves a link under a linked folder alone", (t) => {
   const f = setup(t);
-  symlinkSync("/nowhere/PROJECT.md", join(f.checkout, "PROJECT.md"));
+  // Atelier linked it from a folder that has since moved.
+  const moved = join(f.root, "moved");
+  mkdirSync(moved);
+  writeFileSync(join(moved, "PROJECT.md"), "old\n");
+  assert.deepEqual(linkPrivate(f.checkout, { private: ["PROJECT.md"], privateHome: moved }, { name: "demo" }).linked, ["PROJECT.md"]);
+  rmSync(moved, { recursive: true });
   const r = linkPrivate(f.checkout, { private: ["PROJECT.md"], privateHome: f.keep }, { name: "demo" });
   assert.deepEqual(r.linked, ["PROJECT.md"]);
   assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "PROJECT.md"));
@@ -904,4 +909,37 @@ test("guardedPush hands the push the commit it scanned, whatever the branch name
   guardedPush({ project: "nothing-private", cwd: c, tip: "refs/heads/main", what: "The push" }, (sha) => { given = sha; });
   assert.equal(given, scanned);
   assert.throws(() => guardedPush({ project: "nothing-private", cwd: c, tip: "refs/heads/none", what: "The push" }, () => {}), /does not name a commit here/);
+});
+
+// Astra's fourteenth review of t645, finding 2: a link the developer made
+// was replaced whenever it pointed elsewhere.
+test("a link the developer made is left as it is and reported", (t) => {
+  const f = setup(t);
+  const notes = join(f.root, "my-notes");
+  mkdirSync(notes);
+  writeFileSync(join(notes, "PROJECT.md"), "mine\n");
+  symlinkSync(join(notes, "PROJECT.md"), join(f.checkout, "PROJECT.md"));
+  const r = f.run("private", "add", "PROJECT.md");
+  assert.equal(r.code, 1, r.output);
+  assert.match(r.output, /PROJECT\.md: a link Atelier did not make is already in the checkout \(to .*my-notes\/PROJECT\.md\); it was left as it is/);
+  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(notes, "PROJECT.md"));
+});
+
+// Astra's fourteenth review of t645, finding 1: a save that changed one
+// field of an entry wrote back the rest of it as the process had read it.
+test("a whole-config save writes only the fields this process changed", () => {
+  const snapshot = { projects: { demo: { path: "/d", privateHome: "/old", notesRemote: "github" } } };
+  const memory = structuredClone(snapshot);
+  memory.projects.demo.notesRemote = "origin";
+  const disk = structuredClone(snapshot);
+  disk.projects.demo.privateHome = "/new";
+  const merged = mergeConfigForSave(disk, memory, snapshot).projects.demo;
+  assert.equal(merged.privateHome, "/new", "another command's change to a field this one did not touch is kept");
+  assert.equal(merged.notesRemote, "origin", "this process's change is written");
+  // A field this process removed is removed; one it did not touch stays.
+  delete memory.projects.demo.notesRemote;
+  disk.projects.demo.branch = "next";
+  const again = mergeConfigForSave(disk, memory, snapshot).projects.demo;
+  assert.equal(again.notesRemote, undefined);
+  assert.equal(again.branch, "next");
 });
