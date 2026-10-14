@@ -287,7 +287,7 @@ test("an empty window totals zero", () => {
 test("registeredActing refuses a name two pool entries answer to, and accepts an exact id", () => {
   const e = (harness: string, id: string, aliases: string[] = []) => ({ harness, id, aliases }) as never;
   const pool = [e("codex", "gpt-6-astra", ["shared"]), e("codex", "gpt-6-luna", ["shared", "gpt-6-astra"])];
-  assert.throws(() => registeredActing("codex/shared", pool), (err: Error & { code?: string }) => err.code === "ambiguous_acting" && /codex\/gpt-6-astra and codex\/gpt-6-luna/.test(err.message));
+  assert.throws(() => registeredActing("codex/shared", pool), (err: Error & { code?: string }) => err.code === "ambiguous_acting" && /names more than one model in the pool/.test(err.message));
   assert.equal(registeredActing("codex/gpt-6-astra", pool), "codex/gpt-6-astra");
   assert.equal(registeredActing("codex/GPT-6-Luna", pool), "codex/gpt-6-luna");
   assert.throws(() => registeredActing("codex/gpt-7", pool), /not a model in the pool/);

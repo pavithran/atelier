@@ -725,3 +725,40 @@ it("every dispatch path that names a builder records each build assignment skipp
   expect(form.status, await form.clone().text()).toBeLessThan(400);
   expect(await reasonOf(page)).toMatch(skipped("named builder"));
 });
+
+// gpt-6-astra's fifteenth review of t622, finding 2: name conversion ran
+// before the token's route and scope checks, so a request an agent or runner
+// token may not make, naming an ambiguous tier, was answered with the pool's
+// entries. Conversion runs only for a request that would otherwise be
+// allowed, and an ambiguity names no entry.
+it("an agent or runner token's init with an ambiguous tier is refused without naming any pool entry", async () => {
+  const one = { ...entry("opencode", "qwen-3:32b"), aliases: ["shared"] }, two = { ...entry("opencode", "qwen-3:72b"), aliases: ["shared"] };
+  await index().putModel(one);
+  await index().putModel(two);
+  try {
+    const name = "roles-scope";
+    await project(name);
+    const issue = async (body: unknown) => (await (await call("POST", "/tokens", body)).json() as { token: string }).token;
+    const agent = await issue({ actor: "codex/gpt-6-astra", projects: [name], label: "agent" });
+    const runner = await issue({ runner: "home:scope", projects: [name] });
+    for (const [who, token, actor] of [["agent", agent, "codex/gpt-6-astra"], ["runner", runner, "codex/gpt-6-astra"]] as const) {
+      const r = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+        method: "PUT", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/shared"] }),
+      }), testEnv);
+      const text = await r.text();
+      expect(r.status, `${who}: ${text}`).toBeGreaterThanOrEqual(400);
+      expect(text, who).not.toMatch(/qwen-3:32b|qwen-3:72b/);
+    }
+    // The owner is told it is ambiguous, still without the entries.
+    const owner = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/shared"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    const said = await owner.text();
+    expect(owner.status).toBe(400);
+    expect(said).toMatch(/opencode\/shared names more than one model in the pool/);
+    expect(said).not.toMatch(/qwen-3:32b|qwen-3:72b/);
+  } finally {
+    await index().removeModel("qwen-3:32b");
+    await index().removeModel("qwen-3:72b");
+  }
+});

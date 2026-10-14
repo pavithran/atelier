@@ -556,9 +556,16 @@ test("suggestBuilder: --model bypasses assignment ordering in the same call that
   assert.equal(typedModel(trap, "gemini-4-argon"), "gemini-4-argon");
   assert.equal(suggestBuilder({ ...base, pool: trap, assignments: [assigned("build", ["codex/gpt-6-astra"])] }, { model: typedModel(trap, "gemini-4-argon") }).actor, "antigravity/gemini-4-argon");
   assert.equal(suggestBuilder({ ...base, pool: trap }, { model: typedModel(trap, "gpt-6-luna") }).actor, "codex/gpt-6-luna");
+  // gpt-6-astra's fifteenth review of t622, finding 1: the selector re-resolved
+  // the converted id against a pool read later; Luna removed in between, with
+  // Astra listing gpt-6-luna as an alias, it picked Astra. The converted id is
+  // compared as it is: with Luna gone, nothing is suggested.
+  const converted = typedModel(trap, "gpt-6-luna");
+  const later = [{ ...astra, aliases: ["gpt-6-luna"] }, argon];
+  assert.throws(() => suggestBuilder({ ...base, pool: later }, { model: converted }), /No eligible builder/);
   // An alias of one entry is converted to its id; of two, refused.
   assert.equal(typedModel([{ ...astra, aliases: ["astra"] }], "astra"), "gpt-6-astra");
-  assert.throws(() => typedModel([{ ...astra, aliases: ["x"] }, { ...argon, aliases: ["x"] }], "x"), /ambiguous|alias of/);
+  assert.throws(() => typedModel([{ ...astra, aliases: ["x"] }, { ...argon, aliases: ["x"] }], "x"), /names more than one model/);
 });
 
 // gpt-6-astra's finding 2: the tier readers read recorded gate reviewers and
@@ -685,9 +692,8 @@ test("suggestBuilder: an explicit --model selects exactly the entry the naming r
   const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
   const base = { item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner" };
   assert.equal(suggestBuilder(base, { model: typedModel(pool, "large") }).actor, "opencode/qwen-3:72b");
-  assert.equal(suggestBuilder(base, { model: "large" }).actor, "opencode/qwen-3:72b");
   // Naming the model without a profile is two entries: refused, not guessed.
-  assert.throws(() => typedModel(pool, "qwen-3"), /qwen-3 is the same model as qwen-3:32b and qwen-3:72b/);
+  assert.throws(() => typedModel(pool, "qwen-3"), /qwen-3 names more than one model in the pool; use its exact id/);
 });
 
 // Finding 2: a tier naming codex/gpt-6-astra:high, where the pool holds
@@ -702,5 +708,5 @@ test("a tier naming a model with a profile is that model's entry: it keeps its p
   const paid = [{ ...astra, provider: "openai" as const }, argon];
   assert.match(String(tierEligible(paid, null, tierIds({ reviewTier: ["codex/gpt-6-astra:high"] }, paid)[0])), /paid per token/);
   // Two entries that are the same model in a harness: the profile-less name is refused as ambiguous.
-  assert.throws(() => typedActor([entry("opencode", "qwen-3:32b"), entry("opencode", "qwen-3:72b")], "opencode/qwen-3"), /same model as opencode\/qwen-3:32b and opencode\/qwen-3:72b/);
+  assert.throws(() => typedActor([entry("opencode", "qwen-3:32b"), entry("opencode", "qwen-3:72b")], "opencode/qwen-3"), /names more than one model in the pool; use its exact harness\/id/);
 });

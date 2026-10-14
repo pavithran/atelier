@@ -87,7 +87,7 @@ export function registeredActing(acting: string, pool: PoolNames): string {
   }
   if (named) return `${named.harness}/${named.id}`;
   const found = pool.filter((m) => sameActor(acting, `${m.harness}/${m.id}`));
-  if (found.length > 1) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which the pool has under ${found.map((m) => `${m.harness}/${m.id}`).join(" and ")}; name one by its id`, 400);
+  if (found.length > 1) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which names more than one model in the pool; use its exact harness/id`, 400);
   if (found.length === 1) return `${found[0].harness}/${found[0].id}`;
   throw new RuleError("unregistered_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which is not a model in the pool; add it on the Models page, or name the harness/model you are`, 400);
 }
