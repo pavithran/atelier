@@ -341,10 +341,10 @@ test("a missing list never shrinks the copy kept, and an unreadable iCloud folde
   assert.deepEqual(entry.privateFromList, ["PROJECT.md"], "the copy is kept as it was");
   assert.equal(saved, 0);
   assert.deepEqual(g, { paths: ["PROJECT.md", ".atelier-private"], refusal: null });
-  // Only a list that is there and read replaces it.
+  // A list that is there and read is joined to it; no read removes a name.
   writeFileSync(join(f.keep, ".atelier-private"), "notes\n");
   privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
-  assert.deepEqual(entry.privateFromList, ["notes"]);
+  assert.deepEqual(entry.privateFromList, ["PROJECT.md", "notes"]);
   // An ai-projects folder this Mac cannot read: refused with no copy, guarded by the copy otherwise.
   const blocked = join(f.root, "blocked");
   mkdirSync(blocked);
@@ -622,4 +622,18 @@ test("a project renamed since is guarded under its former name", (t) => {
   let pushed = false;
   assert.throws(() => guardedPush({ project: "demo", cwd: c, tip: "HEAD", base: ["HEAD~1"], what: "t1's push to its fork" }, () => { pushed = true; }), /would carry private files: secret\.md/);
   assert.equal(pushed, false);
+});
+
+// Astra's eighth review of t645: after a merge joined two entries' copies of
+// the list, the next read of the surviving folder's list replaced the copy,
+// and the other entry's names stopped being guarded.
+test("no read removes a name from the copy: a merged copy keeps guarding both entries' names", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
+  const entry = { path: f.checkout, privateHome: f.keep, privateFromList: ["PROJECT.md", "other-notes.md"] };
+  for (let i = 0; i < 2; i++) {
+    const guard = privateGuard("demo", entry, { root: f.icloud, save: () => {} });
+    assert.deepEqual(guard.paths.sort(), [".atelier-private", "PROJECT.md", "other-notes.md"].sort(), `guard call ${i + 1}`);
+  }
+  assert.deepEqual(entry.privateFromList, ["PROJECT.md", "other-notes.md"]);
 });

@@ -147,15 +147,18 @@ export function privateConfigured(entry) {
 
 // Reads the project's list, finding its iCloud folder by name when none is
 // named, and keeps a copy of it in the entry when the list is there and was
-// read: only such a list replaces the copy; a missing or unreadable one never
-// shrinks it. clone, private add and private ls run this, so a list in iCloud
-// opts the project in on this Mac. Returns what privateList returns.
+// read. No read ever removes a name from the copy: what is read is joined to
+// it, so a name an older list, a merged entry or another Mac put there stays
+// guarded (Astra's eighth review of t645); only private remove removes one.
+// clone, private add and private ls run this, so a list in iCloud opts the
+// project in on this Mac. Returns what privateList returns.
 export function discoverPrivate(name, entry, { root, save } = {}) {
   const list = privateList(name, entry, root);
   if (entry && list.fromList) {
-    const kept = entry.privateFromList ?? null;
-    if (!kept || kept.length !== list.fromList.length || kept.some((p, i) => p !== list.fromList[i])) {
-      entry.privateFromList = [...list.fromList];
+    const kept = plainPaths(entry.privateFromList);
+    const joined = [...new Set([...kept, ...list.fromList])];
+    if (!Array.isArray(entry.privateFromList) || joined.length !== kept.length) {
+      entry.privateFromList = joined;
       save?.();
     }
   }
@@ -206,7 +209,7 @@ export function savePrivateFields(project, entry, { drop = [], home = null } = {
   const target = cfg.projects[key];
   const names = [...new Set([...plainPaths(target.private), ...plainPaths(entry.private)])].filter((p) => !drop.includes(p));
   if (Array.isArray(target.private) || Array.isArray(entry.private)) target.private = names;
-  if (Array.isArray(entry.privateFromList)) target.privateFromList = plainPaths(entry.privateFromList).filter((p) => !drop.includes(p));
+  if (Array.isArray(entry.privateFromList) || Array.isArray(target.privateFromList)) target.privateFromList = [...new Set([...plainPaths(target.privateFromList), ...plainPaths(entry.privateFromList)])].filter((p) => !drop.includes(p));
   if (home) target.privateHome = home;
   else if (entry.privateHome && !target.privateHome) target.privateHome = entry.privateHome;
   const part = `${file}.${process.pid}.part`;
@@ -257,6 +260,17 @@ export function privateGuardFor(project, { root, discover = false, pending = nul
 // different folders are refused, changing nothing, since which one keeps
 // the files cannot be guessed. Returns { moved, merged, dropped } (the
 // source's other settings, which a merge does not keep) or { error }.
+// Why moving `from` to `to` would be refused, or null: checked before
+// anything is renamed anywhere (projects rename asks this before the server).
+export function moveConflict(projects, from, to) {
+  const source = projects?.[from], target = projects?.[to];
+  if (!source || !target || from === to) return null;
+  if (source.privateHome && target.privateHome && source.privateHome !== target.privateHome) {
+    return `the local entries ${from} and ${to} name different folders for their private files (${source.privateHome} and ${target.privateHome}); nothing was renamed and nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again`;
+  }
+  return null;
+}
+
 export function moveProjectEntry(projects, from, to) {
   if (!projects?.[from] || from === to) return { moved: false };
   const source = projects[from], target = projects[to];
@@ -266,9 +280,8 @@ export function moveProjectEntry(projects, from, to) {
     delete projects[from];
     return { moved: true };
   }
-  if (source.privateHome && target.privateHome && source.privateHome !== target.privateHome) {
-    return { error: `the local entries ${from} and ${to} name different folders for their private files (${source.privateHome} and ${target.privateHome}); nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again` };
-  }
+  const conflict = moveConflict(projects, from, to);
+  if (conflict) return { error: conflict };
   joinPrivate(target, source);
   target.formerNames = former(target.formerNames, source.formerNames, [from]);
   const kept = new Set(["private", "privateFromList", "privateHome", "formerNames"]);
