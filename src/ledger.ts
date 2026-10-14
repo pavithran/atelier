@@ -854,6 +854,13 @@ export class Ledger extends DurableObject<Env> {
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
+    // The claim generation a claim reserved and has not completed (t653):
+    // set where a claim reserves its generation (assignOwner), cleared when
+    // the claim records its token (recordToken, recordRunnerGit), when a fast
+    // take completes it with no workspace (takeFast), and by any change of
+    // owner, which supersedes it (update: release, handoff, unclaim, abandon,
+    // merge). A ledger from before holds none: no claim is taken as in flight.
+    if (!columns.includes("claim_pending")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_pending INTEGER`);
     // Database guards cover direct SQL as well as update records assembled by
     // future callers. Only assignOwner opens this gate, inside a synchronous
     // transaction; no permission survives a return, exception or restart.
@@ -2358,7 +2365,7 @@ export class Ledger extends DurableObject<Env> {
         // Renewal alone keeps the owner/runner and advances just one generation.
         if (item.owner !== actor || Object.keys(fields).length) this.update(id, { ...fields, owner: actor }, at);
         const row = reserveClaim
-          ? this.sql.exec(`UPDATE items SET claim_gen = claim_gen + 1 WHERE id = ? RETURNING claim_gen, token_id`, id).one()
+          ? this.sql.exec(`UPDATE items SET claim_gen = claim_gen + 1, claim_pending = claim_gen + 1 WHERE id = ? RETURNING claim_gen, token_id`, id).one()
           : this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
         return { generation: row.claim_gen as number, replaces: (row.token_id as string | null) ?? null };
       } finally {
@@ -2401,7 +2408,8 @@ export class Ledger extends DurableObject<Env> {
   recordToken(id: string, actor: string, generation: number, replaces: string | null, tokenId: string | null): boolean {
     const row = this.sql.exec(`SELECT owner, claim_gen, token_id FROM items WHERE id = ?`, id).toArray()[0];
     if (!row || row.owner !== actor || row.claim_gen !== generation || ((row.token_id as string | null) ?? null) !== replaces) return false;
-    this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
+    // The token is the claim's last step: the claim is complete.
+    this.sql.exec(`UPDATE items SET token_id = ?, claim_pending = NULL WHERE id = ?`, tokenId, id);
     return true;
   }
 
@@ -4972,23 +4980,19 @@ export class Ledger extends DurableObject<Env> {
     this.recordMergeAllowed(id, actor, body, baseline, new Date().toISOString());
   }
 
-  // A claim still in flight (t653): the task is held but its workspace is
-  // not complete, a fork and a token, because the claim route is still
-  // making them in Artifacts. A fast take (t589) holds no fork by design and
-  // is complete. Recording the merge then would race the claim's later
+  // A claim still in flight (t653): a claim generation reserved and not yet
+  // completed, read from claim_pending, which the claim machinery keeps (see
+  // the column). Recording the merge then would race the claim's later
   // writes, so it is refused until the claim finishes or is released.
   private claimInFlight(item: Item): boolean {
-    if (!item.owner) return false;
-    const { fork, token } = this.workspaceOf(item.id);
-    if (fork && token) return false;
-    const last = this.sql.exec(`SELECT kind FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.fast_taken') ORDER BY seq DESC LIMIT 1`, item.id).toArray()[0];
-    return last?.kind !== "item.fast_taken";
+    const row = this.sql.exec(`SELECT claim_gen, claim_pending FROM items WHERE id = ?`, item.id).one();
+    return row.claim_pending !== null && row.claim_pending === row.claim_gen;
   }
 
   private assertNoClaimInFlight(id: string): void {
     const item = this.item(id);
     if (this.claimInFlight(item)) {
-      throw new RuleError("claim_in_flight", `${id} is being claimed by ${item.owner}, and its workspace is not made yet; wait for the claim to finish, or release it, and record the merge again`, 409);
+      throw new RuleError("claim_in_flight", `${id} is being claimed by ${item.owner}, and the claim has not finished; wait for it to finish, or release it, and record the merge again`, 409);
     }
   }
 
@@ -5058,6 +5062,8 @@ export class Ledger extends DurableObject<Env> {
     assertNotTerminal(item);
     assertFastBuild(this.mode(), item);
     const { item: taken, generation, replaces } = this.claim(id, actor, runner, proved, runnerToken);
+    // A fast take makes no fork and records no token: it is complete here.
+    this.sql.exec(`UPDATE items SET claim_pending = NULL WHERE id = ? AND claim_pending = ?`, id, generation);
     this.log(id, actor, "item.fast_taken", { ...(runner ? { runner: runner.runner } : {}), mode: "fast" }, new Date().toISOString(), proved);
     return { item: taken, generation, replaces };
   }
@@ -8530,7 +8536,9 @@ export class Ledger extends DurableObject<Env> {
     const generation = fields.owner === null
       ? "claim_gen = claim_gen + CASE WHEN owner IS NULL THEN 0 ELSE 1 END"
       : "claim_gen = claim_gen + 1";
-    const set = [...keys.map((k) => `${k} = ?`), ...(owning ? [generation] : [])].join(", ");
+    // A change of owner supersedes any claim in flight (claim_pending); a
+    // claim reserving its generation sets it afterwards (assignOwner).
+    const set = [...keys.map((k) => `${k} = ?`), ...(owning ? [generation, "claim_pending = NULL"] : [])].join(", ");
     // Every change of an item's head is written here (a push, a push seen on
     // the fork, a landing's merge of main pushed, a fork made or moved), so
     // the review requests at the head it leaves are closed here, once, for
