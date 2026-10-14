@@ -2995,6 +2995,33 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const postMerge = await L.postMergeRun(id);
       return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
     }
+    // A merge made outside Atelier, recorded after the fact (t653): the
+    // baseline is read here, where Git is, for the merge commit's parents and
+    // whether main holds it (main reaches the baseline through atelier sync);
+    // the Ledger refuses the record unless main holds it and its second
+    // parent is the commit named as the task's head (head, or the task's
+    // recorded head).
+    case "record-merge": {
+      requireOwner(env, actor);
+      const p = await L.project();
+      const before = await L.item(id);
+      // A fork's head starts at its base; only a head pushed since is the task's own.
+      const pushed = before.head && before.head !== before.base ? before.head : null;
+      const commit = body.head === undefined || body.head === null ? pushed : body.head;
+      const merge = typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null;
+      let parents: string[] | null = null, holds: boolean | null = false;
+      if (merge) {
+        using baseline = await env.ARTIFACTS.get(p.repo);
+        const found = await baseline.readCommit(merge);
+        parents = found ? found.parents : null;
+        const top = found ? await headOf(env, p.repo) : null;
+        holds = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
+      }
+      const oldToken = await L.tokenId(id);
+      const recorded = await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, oldToken);
+      await revoke(env, before.fork, oldToken);
+      return json(recorded);
+    }
     case "landing": {
       requireOwner(env, actor);
       if (body.cancel === true) {
