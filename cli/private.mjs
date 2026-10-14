@@ -161,9 +161,12 @@ export function discoverPrivate(name, entry, { root, save } = {}) {
 // config file is read, and a copy of the list kept is written back to it.
 let shared = null;
 export function useConfig(cfg, save) { shared = { cfg, save }; }
-export function privateGuardFor(project, { root, discover = false } = {}) {
+// `pending` stands for the entry of a project this Mac does not register
+// yet (a first init), used only while the config holds none.
+export function privateGuardFor(project, { root, discover = false, pending = null } = {}) {
   if (typeof project !== "string" || !project) throw new Error("the private-file guard needs the project's name");
   const run = (entry, save) => {
+    if (!entry && pending) { entry = pending; save = null; }
     if (discover) discoverPrivate(project, entry, { root, save });
     return privateGuard(project, entry, { root, save });
   };
@@ -398,8 +401,8 @@ export function privateRefusal(cwd, privates, tip, base, what) {
 // called only when there is something to check, returning the entries or
 // { error } (a destination that cannot be read stops the push). `fail` takes
 // the refusal (by default it is thrown). Returns what `push` returns.
-export function guardedPush({ project, cwd, tip, base = [], bases = [base], what, fail = (message) => { throw new Error(message); }, root }, push) {
-  const guard = privateGuardFor(project, { root });
+export function guardedPush({ project, cwd, tip, base = [], bases = [base], what, fail = (message) => { throw new Error(message); }, root, pending = null }, push) {
+  const guard = privateGuardFor(project, { root, pending });
   if (guard.refusal) return fail(`${what}: ${guard.refusal}`);
   if (guard.paths.length) {
     const read = typeof bases === "function" ? bases() : { bases };

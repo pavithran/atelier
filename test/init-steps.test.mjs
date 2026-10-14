@@ -307,9 +307,9 @@ globalThis.fetch = async (url, options = {}) => {
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
 };
 `);
-  const run = (args = []) => spawnSync(process.execPath, ["--import", preload, cli, "init", ...args], {
+  const run = (args = [], extra = {}) => spawnSync(process.execPath, ["--import", preload, cli, "init", ...args], {
     cwd: s.checkout, encoding: "utf8",
-    env: { ...GIT_ENV, ATELIER_CONFIG_DIR: s.dir, ATELIER_CACHE: join(s.dir, "cache"), ATELIER_TOKEN: "fake-owner-token", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner" },
+    env: { ...GIT_ENV, ...extra, ATELIER_CONFIG_DIR: s.dir, ATELIER_CACHE: join(s.dir, "cache"), ATELIER_TOKEN: "fake-owner-token", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner" },
   });
   const registered = () => JSON.parse(readFileSync(join(s.dir, "config.json"), "utf8")).projects.demo;
   return { ...s, run, hookRuns, registered };
@@ -485,4 +485,26 @@ test("atelier init pushes no commit holding a private file, whole or rebuilt fro
   assert.equal(since.status, 1, since.stdout);
   assert.match(since.stderr, /The baseline history of demo would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./);
   assert.equal(f.tip(), null);
+});
+
+// The first init of a project this Mac does not register yet reads the
+// list in its iCloud folder before the first push, as clone does.
+test("a first atelier init finds the project's list in iCloud and pushes no commit holding a file it names", (t) => {
+  const f = cliFixture(t, { count: 5, limit: 1000 });
+  const root = join(f.dir, "icloud");
+  mkdirSync(join(root, "Demo"), { recursive: true });
+  writeFileSync(join(root, "Demo", ".atelier-private"), "PROJECT.md\n");
+  writeFileSync(join(f.checkout, "PROJECT.md"), "the plan\n");
+  git(["add", "-f", "PROJECT.md"], { cwd: f.checkout });
+  git(["-c", "user.name=T", "-c", "user.email=t@x.test", "commit", "-q", "-m", "by hand"], { cwd: f.checkout });
+  const r = f.run([], { ATELIER_PRIVATE_ROOT: root });
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /main's history for demo's baseline would carry private files: PROJECT\.md in [0-9a-f]{12}.*Nothing was pushed\./);
+  assert.equal(f.tip(), null, "the baseline holds nothing");
+  assert.equal(f.registered(), undefined, "nothing was registered");
+  // Without the file, the first init goes, and keeps the list's copy.
+  git(["reset", "-q", "--hard", "HEAD~1"], { cwd: f.checkout });
+  const ok = f.run([], { ATELIER_PRIVATE_ROOT: root });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(f.registered().privateFromList, ["PROJECT.md"]);
 });
