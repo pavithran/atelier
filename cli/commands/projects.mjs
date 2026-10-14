@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
-import { moveConflict, moveProjectEntry } from "../private.mjs";
+import { moveConflict, moveProjectEntryOnDisk } from "../private.mjs";
 
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {
@@ -30,9 +30,9 @@ export default async function projectsCommand() {
     const held = cfg.projects?.[r.from];
     if (held) {
       const into = !!cfg.projects[r.to];
-      const moved = moveProjectEntry(cfg.projects, r.from, r.to);
+      // Made in config.json under its lock, and followed in memory.
+      const moved = moveProjectEntryOnDisk(cfg.projects, r.from, r.to);
       if (moved.error) die(`${r.from} is now ${r.to} on ${server()}, but ${moved.error}`);
-      saveConfig(cfg);
       const settings = Object.entries(moved.dropped ?? {}).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
       local = into
         ? `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped${settings.length ? ` (it held: ${settings.join(", ")})` : ""}, its private files joined to ${r.to}'s.`
