@@ -129,8 +129,8 @@ atelier branch push --project PROJECT
 branches repository beside the baseline, with a token only the developer is
 given, and records its last commit and the Mac's name. Only names under
 `wip/` are taken: main, the project's branch and a task's id are refused
-before a token is minted, and the baseline's main is never reached. On the
-other Mac:
+before a token is minted, and the baseline's main is never reached. The push
+goes through the private-file guard (see Private files). On the other Mac:
 
 ```bash
 atelier branch ls --project PROJECT
@@ -155,14 +155,27 @@ and a publish carry it.
 **A merge that conflicts.** `atelier pull` makes its merge with
 `git merge-tree`, which writes no file. When the two sides conflict, main, the
 index and the work tree are left as they were, the paths are named, and the
-message gives the commands to merge by hand and the commit it fetched.
+message gives the commands to merge by hand and the commit it fetched. By then
+the pull has already fetched the baseline's objects and merged its receipts
+into `refs/notes/atelier`; those stay.
 
-**What `atelier pull` refuses.** It changes nothing and says why when:
+**What `atelier pull` refuses.** A refused pull says why and leaves main, the
+index and the work tree as they were. How far it got before the refusal
+decides what else it has done. It refuses before fetching anything when:
 
 - the checkout has uncommitted changes, or main is not checked out;
 - the checkout has a grafts file or a shallow history, which change the
   history Git shows;
-- a merge is in progress;
+- a merge is in progress.
+
+It refuses after fetching the baseline's main and receipts, with the fetched
+objects kept in the checkout's object store but the receipts not yet merged,
+when a merge commit is needed and the project's policy names no commit
+identity.
+
+It refuses after fetching and after merging the baseline's receipts into
+`refs/notes/atelier`, which keeps them, when:
+
 - the result would hold two paths that differ only by letter case or Unicode
   form, which a Mac stores as one file;
 - the baseline changes a file the checkout's Git configuration runs (a hook,
@@ -170,8 +183,9 @@ message gives the commands to merge by hand and the commit it fetched.
   message names the files and the commit to review before merging by hand;
 - the baseline adds a file the checkout holds untracked or ignored, such as a
   private file, which the pull would write over; the file is named, to be
-  moved aside;
-- a merge commit is needed and the project's policy names no commit identity.
+  moved aside.
+
+A pull that is refused, or that stops at a conflict, links no private files.
 
 **Branches.** A `branch push` that would not fast-forward the branch in the
 branches repository is refused by Git; `--force` replaces the other side's.
@@ -196,21 +210,37 @@ would be pushed. A file already in the checkout is never overwritten, and a
 file Git tracks is refused until it is untracked.
 
 Because the list is in iCloud, `atelier clone` on any Mac links every file it
-names. A name added on another Mac after this Mac's clone is shown by
-`atelier private ls` as not linked yet; `atelier private add PATH` links it.
-`atelier pull` does not link private files.
+names. A name added on another Mac after this Mac's clone is linked by the
+next `atelier pull` that succeeds, whether it brought commits or found main
+already up to date; pull says what it linked, left alone or could not link,
+and brings this Mac's copy of the list up to date. Pull does this only for a
+project this Mac already knows has private files: one whose list named a file
+when this Mac last read it, or whose names or folder this Mac's configuration
+holds. `atelier private ls` reads the list and opts the project in, and
+`atelier private add PATH` links a file at any time.
 
 `atelier private remove PATH` is the only way a name stops being private. It
 drops the name from this Mac's configuration, its copy of the list and the
 list in iCloud, and removes the link Atelier made; the file in iCloud is left
 as it is.
 
-Atelier never pushes a private file. `wrap` refuses to stage one, and `sync`,
-`publish`, `merge`, `wrap --push`, `publish REMOTE`, `fast land` and a task's
-`push` refuse a commit that adds, changes or retypes one, the link included.
-`atelier branch push` does not make this check: a private file stays off a
-`wip/` branch because Git ignores it, so `git add -f` on one would put it
-there.
+Git's ignore rules are not what keeps a private file out of a push. Atelier's
+line in `.git/info/exclude` can be outweighed: a tracked `.gitignore` with a
+line such as `!PROJECT.md` re-includes the file, and an ordinary `git add`
+then stages it, as `git add -f` would. `atelier private ls` warns of each
+private file Git does not ignore.
+
+What keeps it out is the push guard, which every Atelier push goes through:
+`sync`, `publish`, `merge`, `wrap --push`, `publish REMOTE`, `fast land`, a
+task's `push` and `branch push`. Before pushing, the guard reads every commit
+the destination does not already hold, and refuses, with nothing pushed, when
+one of those commits adds, changes or retypes a private path, or when a
+private path is in the tree of the commit pushed or of any commit pushed whose
+parent the destination already holds. A symbolic link
+counts as the path, since Git commits a link as a link. The guard also
+refuses when the list of private files cannot be read and this Mac keeps no
+copy of it. The commit it read is the one pushed, so a commit made on the
+branch in between is not sent. `wrap` also refuses to stage a private file.
 
 ## Data, dependencies and secrets
 
