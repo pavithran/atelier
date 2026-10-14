@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { unportedEdits } from './runner.mjs';
 
 const IDENTITY = ['-c', 'user.name=Test', '-c', 'user.email=test@example.com'];
@@ -30,7 +31,7 @@ const LIB_ON_MAIN = 'a\nd\ne\nh\n', MOVED_ON_MAIN = 'b\nc\nd\ne\nf\ng\n';
 // that commits a head on the task branch holding main merged (ours, so the
 // merge's tree is exactly the files given) and checks the port there.
 function repo(t, taskFiles) {
-  const dir = mkdtempSync(join(process.cwd(), '.runner-port-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'atelier-runner-port-test-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   run(dir, 'init', '-qb', 'main');
   const commit = (files, message) => {

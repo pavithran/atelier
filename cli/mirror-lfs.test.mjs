@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { lfsPointer, publishMirror, publishCheckoutRemote } from "./mirror.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
@@ -22,8 +23,7 @@ test("LFS extension values are validated after repeated keys have been replaced"
 });
 
 test("a replaced LFS extension cannot publish an intermediate secret or a missing object", (t) => {
-  mkdirSync(resolve(".cache"), { recursive: true });
-  const root = mkdtempSync(resolve(".cache/mirror-lfs-"));
+  const root = mkdtempSync(join(tmpdir(), "atelier-mirror-lfs-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const content of ["safe\n", `key = ${secret}\n`, null]) {
     const dir = mkdtempSync(join(root, "case-"));
@@ -72,8 +72,7 @@ test("a replaced LFS extension cannot publish an intermediate secret or a missin
 });
 
 function repository(t) {
-  mkdirSync(resolve(".cache"), { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/mirror-regression-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-mirror-regression-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const mirror = join(dir, "mirror.git"), checkout = join(dir, "checkout");
   mkdirSync(checkout);

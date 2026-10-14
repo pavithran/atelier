@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { judge, waitFor } from "../cli/wait.mjs";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "../cli/procs.mjs";
 
@@ -176,7 +177,7 @@ test("a runner whose script path holds spaces is still a runner", () => {
 // `atelier wait` end to end against a stand-in server.
 const cli = resolve("cli/atelier.mjs");
 async function runWait(t, details, argv, { command = "wait", handle, setup = () => ({}), boundMs } = {}) {
-  const dir = mkdtempSync(resolve(".test-wait-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-test-wait-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const queue = [...details];
   const server = createServer((req, res) => {
