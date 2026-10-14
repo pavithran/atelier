@@ -31,7 +31,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { claimants, liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
-import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, reviewRolesFor, type Assignment } from "../models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { exactEntry, storedActor } from "../models/identity.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
@@ -523,7 +523,9 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   // A security, concurrency or gate part reads security-review first, as a
   // task's review does (gpt-6-astra's review of t622, finding 4). Every other
   // model is a candidate with the rule it failed as its refusal.
-  const roles = reviewRoles({ sensitive: sensitiveText([part.title, part.brief, ...part.scope]), docs: part.kind === "docs" || part.taskKind === "docs" });
+  // The roles as the ledger decides them for the part's review
+  // (reviewRolesFor), the part's paths standing for the change to come.
+  const roles = reviewRolesFor(part, [], part);
   const reviewRefusal = (v: Verdict) => (v.review.length ? v.review.join("; ")
     : independent(v) ? null : single ? "the same model as the builder" : `same family as the builder (${v.family})`);
   const reviewOrder = assignments.length ? orderByAssignment([...reviewers, ...others.filter((v) => !reviewers.includes(v))], (v) => v.actor, applicableAssignments(assignments, null, roles), reviewRefusal, FALLBACK.review) : null;

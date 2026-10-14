@@ -86,6 +86,9 @@ export interface PlanRecord {
   blocked: string | null;              // why the plan is blocked; null when it is not
   approval: PlanApproval | null;
   reroutes: Record<string, string>;    // part key to the actor the owner rerouted it to
+  // Part key to what the reroute said of the build assignments: each skipped
+  // for the developer's explicit choice (t622). Absent in records made before.
+  rerouteReasons?: Record<string, string[]>;
   // Part key to the reviewer the plan tick picked in place of the routed one,
   // because the routed reviewer had become a contributor or was not of
   // another family than every contributor, or the reviewer the owner named;

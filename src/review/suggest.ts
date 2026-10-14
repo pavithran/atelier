@@ -6,12 +6,17 @@ import { latestNote, noteLine } from "../models/pool.ts";
 import { frontier, ranked, sensitive, type SuggestionInput } from "../models/suggest.ts";
 import type { Choice } from "../plans/route.ts";
 import { pickReviewer } from "./reviewer.ts";
-import { applicableAssignments, docsOnly, reviewRoles } from "../models/assignments.ts";
+import type { Assignment } from "../models/assignments.ts";
 
 const actorOf = (m: SuggestionInput["pool"][number]) => `${m.harness}/${m.id}`;
 
 export interface ReviewerSuggestionInput extends SuggestionInput {
   previous?: string | null;          // the reviewer of the last rejected round, asked first
+  // The review assignments bearing on this review, as the ledger decided
+  // them (reviewAssigned, by reviewRolesFor): the suggestion orders by them
+  // and decides no roles itself (gpt-6-astra's twenty-second review of
+  // t622). `assignments` (the build roles') is not read here.
+  assigned?: readonly Assignment[];
   tier?: readonly string[];          // the project's review tier, asked next for a protected change
   destination?: (entry: SuggestionInput["pool"][number]) => "home" | "cloud";  // where the ledger sends the review
 }
@@ -22,10 +27,8 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
   const precision = buildPrecision(input.sources, precisionWindow(now), input.owner);
   const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
     allowPaid: false, owner: input.owner, avoid, precision, previous: input.previous ?? null, tier: input.tier,
-    // Security, concurrency or gate work reads security-review, docs alone
-    // claims-review, and both then review (src/models/assignments.ts).
     offers: input.offers, destination: input.destination,
-    assigned: applicableAssignments(input.assignments ?? [], input.project, reviewRoles({ sensitive: sensitive(input.item), docs: docsOnly(input.item.scope) })),
+    assigned: input.assigned ?? [],
     // Preserve outcome order between equal precision terms.
     recordOrder: ordered.map(({ entry }) => actorOf(entry)),
   });

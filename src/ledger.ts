@@ -65,7 +65,7 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
-import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
+import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
 import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -523,11 +523,13 @@ function routable(recorded: readonly SeenOffer[]): readonly SeenOffer[] | undefi
 // alternates stay behind it. A reviewer the plan tick picked in place of the
 // routed one (reviewTick), or the owner named, reviews it from now on, with
 // the reason shown.
-function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "reviewers">): PartRoute {
+// The reroute's reasons say what became of the build assignments too,
+// appended to its own (gpt-6-astra's twenty-second review of t622).
+function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "reviewers" | "rerouteReasons">): PartRoute {
   const actor = record.reroutes[route.key];
   const change = record.reviewers?.[route.key];
   let out = route;
-  if (actor) out = { ...out, builder: { actor, reasons: ["Rerouted by the developer"] }, alternates: out.alternates.filter((a) => a.actor !== actor) };
+  if (actor) out = { ...out, builder: { actor, reasons: ["Rerouted by the developer", ...(record.rerouteReasons?.[route.key] ?? [])] }, alternates: out.alternates.filter((a) => a.actor !== actor) };
   if (change) {
     out = {
       ...out,
@@ -1389,9 +1391,7 @@ export class Ledger extends DurableObject<Env> {
   private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): Assignment[] {
     const measured = changed ?? (item.head ? evidenceAt(this.project().policy, this.evidenceFor(item.id), item.head).changedPaths ?? [] : []);
     const spec = part ?? this.partSpec(item);
-    const scope = [...item.scope, ...measured];
-    const docs = spec ? spec.kind === "docs" || spec.taskKind === "docs" : docsOnly(scope);
-    return applicableAssignments(this.heldAssignments(), null, reviewRoles({ sensitive: sensitive({ ...item, scope }), docs }));
+    return applicableAssignments(this.heldAssignments(), null, reviewRolesFor(item, measured, spec));
   }
 
   // A part's spec from its plan's approved document, or null for a task or a
@@ -5393,10 +5393,11 @@ export class Ledger extends DurableObject<Env> {
     this.standingDispatch({ to: "home", agent: builder.slice(0, slash), model: builder.slice(slash + 1) }, "build", ORCHESTRATOR, at);
     const route = routesOf(record).find((r) => r.key === key)!;
     const from = rerouted(route, record).builder?.actor ?? null;
+    const buildAhead = aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["build"]), "the developer's named builder");
     record.reroutes[key] = builder;
+    (record.rerouteReasons ??= {})[key] = buildAhead.lines;
     this.savePlanRecord(item.plan!, record);
     this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, id);
-    const buildAhead = aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["build"]), "the developer's named builder");
     this.log(id, actor, "plan.rerouted", { to: builder, from, ...(buildAhead.lines.length ? { reason: buildAhead.lines.join(" "), assignment: buildAhead } : {}) }, at);
     this.afterPlanChange(id);
     return this.item(id);
@@ -6556,7 +6557,7 @@ export class Ledger extends DurableObject<Env> {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
       const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined, assignments: this.heldAssignments(), offers, destination },
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined, assigned: this.reviewAssigned(item, null, need.changedPaths), offers, destination },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");
@@ -7627,9 +7628,16 @@ export class Ledger extends DurableObject<Env> {
     // Exact: the routed builder is a pool id, and --to was converted where
     // typed; another letter case may be another entry (gpt-6-astra's
     // twentieth review of t622, finding 1).
-    if (to && route.builder?.actor !== to) record.reroutes[key] = to;
+    // An explicit --to overriding the routing names each build assignment
+    // skipped for it, on the reroute and on the event (gpt-6-astra's
+    // twenty-second review of t622, finding 2).
+    const toAhead = to && route.builder?.actor !== to ? aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["build"]), "the developer's --to") : null;
+    if (to && toAhead) {
+      record.reroutes[key] = to;
+      (record.rerouteReasons ??= {})[key] = toAhead.lines;
+    }
     this.savePlanRecord(id, record);
-    this.log(id, by, "plan.part_added", { part: partId, key, mainHead, reason, builder: to ?? route.builder?.actor ?? null, reviewer: route.reviewer?.actor ?? null }, at);
+    this.log(id, by, "plan.part_added", { part: partId, key, mainHead, reason, builder: to ?? route.builder?.actor ?? null, reviewer: route.reviewer?.actor ?? null, ...(toAhead?.lines.length ? { assignment: toAhead } : {}) }, at);
     return partId;
   }
 

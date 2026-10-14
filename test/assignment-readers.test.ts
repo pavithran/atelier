@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALL_PROJECTS, applicableAssignments, resolveChoices, reviewRoles, type Assignment, type AssignmentRole } from "../src/models/assignments.ts";
+import { ALL_PROJECTS, applicableAssignments, resolveChoices, reviewRoles, reviewRolesFor, type Assignment, type AssignmentRole } from "../src/models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, withStanding, type ModelEntry } from "../src/models/pool.ts";
 import { storedActor, typedActor, typedModel } from "../src/models/identity.ts";
 import { suggestBuilder } from "../src/models/suggest.ts";
@@ -38,6 +38,9 @@ const assigned = (role: AssignmentRole, choices: string[], scope = ALL_PROJECTS)
   choices: choices.map((actor) => ({ actor, model: actor.slice(actor.indexOf("/") + 1) })),
 });
 const said = (reasons: readonly string[] | undefined, re: RegExp) => assert.match((reasons ?? []).join("\n"), re);
+// The review assignments bearing on a task, decided as the ledger decides
+// them (reviewRolesFor), for the suggestion that takes them.
+const rolesOf = (item: { title?: string; brief?: string; scope: string[] }, current: Assignment[]) => applicableAssignments(current, "atelier", reviewRolesFor(item));
 
 // ── the gate's reviewer (pickReviewer) ───────────────────────────────────
 
@@ -100,7 +103,7 @@ test("pickReviewer: the project's assignment outranks every project's, and the r
 test("suggestReviewer passes the assignment through to the gate's selector", () => {
   const item = { id: "t1", title: "Fix the lease race", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] };
   const a = assigned("security-review", ["codex/gpt-6-astra"]);
-  const pick = suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a] });
+  const pick = suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assigned: rolesOf(item, [a]) });
   assert.equal(pick.actor, "codex/gpt-6-astra");
   said(pick.reasons, new RegExp(`Role assignment ${a.id} \\(security-review`));
 });
@@ -298,7 +301,7 @@ test("pickReviewer and suggestReviewer: an assigned reviewer no live runner offe
   assert.equal(pick.reviewer?.actor, "antigravity/gemini-4-argon");
   said(pick.assignment?.lines, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the review job/);
   const item = { id: "t1", title: "Rename a helper", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] };
-  assert.equal(suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers }).actor, "antigravity/gemini-4-argon");
+  assert.equal(suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assigned: rolesOf(item, [a]), offers }).actor, "antigravity/gemini-4-argon");
 });
 
 // gpt-6-astra's third review of t622, finding 1: pickReviewer found a pool
@@ -394,7 +397,7 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
   const item = { id: "t1", title: "Rename a helper", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] as string[] };
   const readers: [string, "build" | "review" | "plan", (pool: ModelEntry[]) => string | null][] = [
     ["pickReviewer", "review", (pool) => pickReviewer({ item: built, pool, policy, allowPaid: false, assigned: [lunaAssigned("review")] }).reviewer?.actor ?? null],
-    ["suggestReviewer", "review", (pool) => suggestReviewer({ item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner", assignments: [lunaAssigned("review")] }).actor],
+    ["suggestReviewer", "review", (pool) => suggestReviewer({ item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner", assigned: rolesOf(item, [lunaAssigned("review")]) }).actor],
     // The separate tier review (askTierReview) judges each tier name by tierEligible.
     ["askTierReview", "review", (pool) => tierReviewerPick([LUNA, "antigravity/gemini-4-argon"], ["claude-code/opus-5.5"], [], (a) => tierEligible(pool, null, a), null, null, [lunaAssigned("review")], pool).actor],
     ["routeParts builder", "build", (pool) => routeParts(plan(part("a")), { pool, events: [], policy, allowPaid: false, assignments: [lunaAssigned("build")] })[0].builder?.actor ?? null],
@@ -752,7 +755,7 @@ test("a selector that finds no model still says which assignment was skipped and
   const reviewer = pickReviewer({ item: built, pool: [{ ...astra, ...paused }], policy, allowPaid: false, assigned: [a42("review", "codex/gpt-6-astra")] });
   assert.equal(reviewer.reviewer, null);
   assert.match(reviewer.unpicked!, skipped);
-  assert.throws(() => suggestReviewer({ item: { ...item, owner: "claude-code/opus-5.5" }, project: "atelier", pool: [{ ...astra, ...paused }], policy, sources: [], runs: [], owner: "owner", assignments: [a42("review", "codex/gpt-6-astra")] }), skipped);
+  assert.throws(() => suggestReviewer({ item: { ...item, owner: "claude-code/opus-5.5" }, project: "atelier", pool: [{ ...astra, ...paused }], policy, sources: [], runs: [], owner: "owner", assigned: rolesOf({ ...item, owner: "claude-code/opus-5.5" }, [a42("review", "codex/gpt-6-astra")]) }), skipped);
   // The plan's reviewer.
   const [rr] = routeParts(plan(part("a")), { pool: [opus, { ...astra, ...paused }], events: [], policy, allowPaid: false, assignments: [a42("review", "codex/gpt-6-astra")] });
   assert.equal(rr.reviewer, null);
