@@ -197,7 +197,9 @@ cleanup recover through lease expiry. Only developer credentials can omit
 A request no runner has claimed can be withdrawn by the developer (t627):
 `atelier review-withdraw ID --reason TEXT` records the reason on a
 `review.withdrawn` event, and the gate then asks no one until the developer
-asks again, of any reviewer, at the same head. `atelier land ID --reviewer
+asks again, of any reviewer, at the same head; a plan's tick asks a part's
+review of another reviewer its routing allows, never the withdrawn one at
+that head, or waits for the developer. `atelier land ID --reviewer
 H/M` naming a different reviewer does the same in one step: it withdraws the
 unclaimed request, asks the new reviewer and prints which request it
 withdrew. A claimed request is refused both ways, since a runner is serving

@@ -936,6 +936,10 @@ export class Ledger extends DurableObject<Env> {
     // head, not one the owner or a plan asked for; requestReview lets the
     // owner name another reviewer in its place while it is unclaimed.
     if (!requestColumns.includes("carried")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN carried INTEGER`);
+    // When the developer withdrew the request (atelier review-withdraw, t627):
+    // a plan's tick asks no review of that reviewer at that head again, so
+    // the withdrawal sticks until the developer names it once more.
+    if (!requestColumns.includes("developerWithdrawnAt")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN developerWithdrawnAt TEXT`);
     // The criteria binding (src/criteria.ts) the request asked about when it
     // was made, and the one its claim captured for the reviewer's brief.
     if (!requestColumns.includes("criteria")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN criteria TEXT`);
@@ -6132,12 +6136,22 @@ export class Ledger extends DurableObject<Env> {
         now, owner: this.owner,
       });
       if (!need.needed) continue;
+      // A reviewer whose request at this head the developer withdrew
+      // (review-withdraw, t627) is not asked again here: the tick asks
+      // another the routing allows, or waits for the developer. Without this
+      // the next tick, which a runner's stale claim also runs, asked the
+      // withdrawn reviewer again at once (gpt-6-astra's review of t627).
+      const withdrawnHere = this.sql.exec(`SELECT dispatch, developerWithdrawnAt FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND developerWithdrawnAt IS NOT NULL`, p.id, need.head).toArray()
+        .map((r) => { const d = JSON.parse(r.dispatch as string) as Dispatch; return { actor: d.agent && d.model ? `${d.agent}/${d.model}` : "", at: r.developerWithdrawnAt as string }; })
+        .filter((w) => w.actor);
       // The reviewer the owner named is asked first, in or out of the pool,
       // while it is independent of every contributor, may review under the
-      // policy.
+      // policy, and was not withdrawn by the developer at this head since it
+      // was named.
       const change = record.reviewers?.[p.partKey!];
       const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors, single)
-        && mayAssess(change.actor, policy, this.owner) && !actorStanding(standing, change.actor, "review") ? change.actor : null;
+        && mayAssess(change.actor, policy, this.owner) && !actorStanding(standing, change.actor, "review")
+        && !withdrawnHere.some((w) => sameActor(w.actor, change.actor) && (change.at ?? "") <= w.at) ? change.actor : null;
       // pickReviewer passes over every contributor and every model of a
       // contributor's family, the routed reviewer included, and asks the
       // alternates and then the pool.
@@ -6150,11 +6164,17 @@ export class Ledger extends DurableObject<Env> {
         // A protected part's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
         tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
-        avoid: need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
+        avoid: [
+          ...need.lapsed.map((actor) => ({ actor, reason: `its claim on a review of this head lapsed` })),
+          ...withdrawnHere.map((w) => ({ actor: w.actor, reason: `the developer withdrew its review request at ${need.head.slice(0, 8)}` })),
+        ],
         owner: this.owner,
         precision: this.reviewPrecision(at),
         assigned: this.reviewAssigned(p, part, need.changedPaths),
       });
+      // With no other reviewer than the ones the developer withdrew, the
+      // part waits for the developer to name one rather than being blocked.
+      if (pick && !pick.reviewer && withdrawnHere.length) continue;
       if (pick && !pick.reviewer) {
         this.blockPart(p, id, `no eligible reviewer remains for part ${p.partKey}. A plan picks reviewers from the pool fixed at its approval; name ${single ? independentReviewerText(single) : "one of another family than every contributor"}, in the pool or not, with atelier plan reroute ${p.id} --to H/M. ${pick.unpicked}`, at);
         continue;
@@ -7006,8 +7026,11 @@ export class Ledger extends DurableObject<Env> {
     if (live.state === "claimed") throw new RuleError("review_claimed", `the review of ${itemId} at ${head.slice(0, 8)} (request ${live.id}) is claimed by ${live.claimedBy ?? reviewer}, so it is being served and is not withdrawn; wait for its verdict, or let its claim lapse`, 409);
     if (live.state !== "open") throw new RuleError("no_request", `review request ${live.id} of ${itemId} is ${live.state}, so there is nothing to withdraw`, 409);
     const at = new Date().toISOString();
-    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'open'`, live.id);
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn', developerWithdrawnAt = ? WHERE id = ? AND state = 'open'`, at, live.id);
     this.log(itemId, actor, "review.withdrawn", { head, reviewer, request: live.id as number, reason: why }, at, proved);
+    // A plan part's tick runs now: it asks another reviewer the routing
+    // allows, never the withdrawn one at this head, or waits for the developer.
+    this.afterPlanChange(itemId);
     return { request: live.id as number, head, reviewer, reason: why };
   }
 
