@@ -287,3 +287,19 @@ test("no module that routes work imports the snapshots", () => {
   const callers = [...worker.matchAll(/I\.(modelSnapshot\w*|putModelSnapshot)\(/g)].map((m) => /\n(?:export )?(?:async )?function (\w+)[^\n]*\n(?![\s\S]*\n(?:export )?(?:async )?function )/.exec(worker.slice(0, m.index))?.[1]);
   assert.deepEqual([...new Set(callers)].sort(), ["modelTrends", "replayModelSnapshot", "takeModelSnapshots"]);
 });
+
+// Finding (gpt-6-astra, t623): the first version read the newest 1,000 run
+// reports and called the history whole. A run history that could not be read
+// completely makes the day partial, whatever the project Ledgers gave.
+test("a snapshot whose run reports could not all be read is partial, and says so; one that read them all is complete", () => {
+  const events = work(5);
+  const whole = computeSnapshot(input(events, { runs: { through: 3, reports: [], complete: true } }));
+  assert.equal(whole.take.complete, true);
+  assert.equal(whole.take.runsRead, true);
+  const short = computeSnapshot(input(events, { runs: { through: 3, reports: [], complete: false } }));
+  assert.equal(short.take.complete, false);
+  assert.equal(short.take.runsRead, false);
+  // The partial one is not the same as the complete one, so a later complete take revises it.
+  assert.equal(sameSnapshot(short, whole), false);
+  assert.equal(sameSnapshot(whole, whole), true);
+});

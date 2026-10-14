@@ -217,3 +217,65 @@ it("an unreadable Ledger leaves the day partial; a later run revises it and keep
   // Complete now: a further run takes nothing.
   expect(await takeModelSnapshots(testEnv, at + 10_800_000)).toEqual([]);
 });
+
+// Finding (gpt-6-astra, t623): snapshots read only the newest 1,000 run
+// reports, so a model whose reports were older than the newest 1,000 showed
+// none, a false trend. The day here has 1,100 stalled build runs by OPUS and
+// then 1,100 by GEMINI; its figure must count all of OPUS's, and a read that
+// cannot finish must leave the day partial.
+const stalled = (actor: string, at: string) => ({ actor, role: "build" as const, outcome: "stalled" as const, project: null, item: null, detail: "", runner: "home:studio", at });
+const stallFigure = (rows: { model: string; role: string; figures: { measure: string; numerator: number | null; denominator: number | null }[] }[], model: string) =>
+  rows.find((r) => r.model === model && r.role === "build")!.figures.find((f) => f.measure === "build-stalled")!;
+async function seedManyRuns(day: string) {
+  await seed();
+  const at = `${day}T12:00:00.000Z`;
+  for (const actor of [OPUS, GEMINI]) for (let i = 0; i < 1100; i++) await index().putRun(stalled(actor, at));
+}
+
+it("run reports beyond the newest 1,000 are all read: the figures equal those computed from every report", async () => {
+  const day = addDays(TODAY, 40);
+  await seedManyRuns(day);
+  const all: { actor: string; outcome: string; at: string }[] = [];
+  for (let after: number | null = null; ;) {
+    const page: { runs: typeof all; next: number | null } = await index().runsPage(null, `${addDays(day, 1)}T00:00:00.000Z`, after, 300);
+    all.push(...page.runs);
+    if (page.next === null) break;
+    after = page.next;
+  }
+  expect(all.length).toBeGreaterThanOrEqual(2200);
+  const taken = await takeModelSnapshots(testEnv, Date.parse(`${addDays(day, 1)}T00:07:00.000Z`));
+  expect(taken.find((x) => x.day === day)).toMatchObject({ stored: true, complete: true });
+  const stored = (await index().modelSnapshot(day))!;
+  expect(stored.take.runsRead).toBe(true);
+  const countOf = (actor: string) => all.filter((r) => r.actor === actor && r.outcome === "stalled" && r.at.startsWith(day)).length;
+  expect(countOf(OPUS)).toBeGreaterThanOrEqual(1100);
+  expect(stallFigure(stored.rows, "opus-5.5")).toMatchObject({ numerator: countOf(OPUS), denominator: countOf(OPUS) });
+  expect(stallFigure(stored.rows, "gemini-4-argon")).toMatchObject({ numerator: countOf(GEMINI), denominator: countOf(GEMINI) });
+  // And a replay from the recorded cutoffs gives the same.
+  expect((await replayModelSnapshot(testEnv, day))!.differences).toEqual([]);
+});
+
+it("a run-report read that cannot finish leaves the day partial, and a later read revises it", async () => {
+  const day = addDays(TODAY, 41);
+  await seedManyRuns(day);
+  let down = true;
+  const ledgers = {
+    idFromName: (n: string) => env.LEDGER.idFromName(n),
+    get: (id: DurableObjectId) => {
+      const stub = env.LEDGER.get(id) as unknown as Record<string, unknown>;
+      // The second page of run reports fails while `down` holds.
+      return new Proxy(stub, { get: (t, k) => (k === "runsPage" && down ? (c: number | null, b: string, after: number | null, l?: number) => (after === null ? (t.runsPage as (...a: unknown[]) => unknown)(c, b, after, l ?? 500) : Promise.reject(new Error("the page cannot be read"))) : t[k as string]) });
+    },
+  };
+  const flaky = { ...testEnv, LEDGER: ledgers } as unknown as typeof env;
+  const at = Date.parse(`${addDays(day, 1)}T00:07:00.000Z`);
+  const first = await takeModelSnapshots(flaky, at);
+  expect(first.find((x) => x.day === day)).toMatchObject({ stored: true, complete: false, rev: 1 });
+  const partial = (await index().modelSnapshot(day))!;
+  expect(partial.take.complete).toBe(false);
+  expect(partial.take.runsRead).toBe(false);
+  down = false;
+  const second = await takeModelSnapshots(flaky, at + 3_600_000);
+  expect(second.find((x) => x.day === day)).toMatchObject({ stored: true, complete: true, rev: 2 });
+  expect((await index().modelSnapshot(day, 1))!.take.complete).toBe(false);
+});

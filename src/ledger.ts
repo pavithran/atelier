@@ -1636,15 +1636,20 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
   }
 
-  // The run reports a model snapshot reads (t623): those kept at or before
-  // row `through` (the last row now, when null) that the server received
-  // before `before`, the newest RUN_REPORTS of them, with the cutoff used,
-  // so a replay from the same cutoff reads the same reports however many
-  // arrive later.
-  runsThrough(through: number | null, before: string, limit = RUN_REPORTS): { through: number; runs: RunReport[] } {
+  // One page of the run reports a model snapshot reads (t623): those kept at
+  // or before row `through` (the last row now, when null) that the server
+  // received before `before`, newest first, `limit` of them from below row
+  // `after` (from the top, when null). `next` is the cursor for the page
+  // after, null on the last. A caller that follows `next` to null has read
+  // every report up to the cutoff, however many there are; the cutoff used
+  // comes back so a replay from it reads the same reports however many
+  // arrive later. Not RUN_REPORTS-capped: reading only the newest 1,000 and
+  // calling the history whole was t623's first version's defect.
+  runsPage(through: number | null, before: string, after: number | null, limit = RUN_REPORTS): { through: number; runs: RunReport[]; next: number | null } {
     const cut = through ?? ((this.sql.exec(`SELECT MAX(id) AS id FROM runs`).one().id as number | null) ?? 0);
-    const runs = this.sql.exec(`SELECT json FROM runs WHERE id <= ? AND json_extract(json, '$.at') < ? ORDER BY id DESC LIMIT ?`, cut, before, limit).toArray().map((r) => JSON.parse(r.json as string) as RunReport);
-    return { through: cut, runs };
+    const rows = this.sql.exec(`SELECT id, json FROM runs WHERE id <= ? AND id < ? AND json_extract(json, '$.at') < ? ORDER BY id DESC LIMIT ?`, cut, after ?? Number.MAX_SAFE_INTEGER, before, limit + 1).toArray();
+    const page = rows.slice(0, limit);
+    return { through: cut, runs: page.map((r) => JSON.parse(r.json as string) as RunReport), next: rows.length > limit ? (page[page.length - 1].id as number) : null };
   }
 
   // ── model snapshots (src/models/snapshot.ts, t623) ─────────────────────
