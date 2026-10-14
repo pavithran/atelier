@@ -69,14 +69,14 @@ const mergePart = async (L: L, id: string) => (await L.planView(id)).parts.filte
 // A plan forked at H0 with parts a and b, b depending on a; a is submitted
 // at PART_A, approved by another family, and integrated as MA with main
 // noted at M1, so the tick has dispatched a refresh for M1 before b.
-async function behindPlan(L: L) {
+async function behindPlan(L: L, pool: ModelEntry[] = POOL) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
   await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
   const [a, b] = [parts[0].id, parts[1].id];
   await submitApproved(L, a, PART_A, "src/a/x.ts");
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
@@ -320,4 +320,22 @@ it("POST integrated records main as taken only when the merge commit holds the p
   const ok = await call(other, `${plan.id}/integrated`, INTEGRATOR, { part: KEY, mergeCommit: MM }, missing);
   expect(ok.status).toBe(200);
   expect((await O.planView(plan.id)).refresh?.taken).toBe(H0);
+});
+
+// gpt-6-astra's twentieth review of t622, finding 1: plan refresh --resolve
+// compared the routed builder with --to in any letter case, so --to
+// zcode/GLM-5.3 (an entry of its own) was taken for the routed
+// zcode/glm-5.3 and no reroute was recorded.
+it("plan refresh --resolve --to names an entry whose id differs from the routed builder's only in letter case, and it builds", async () => {
+  const L = await setup("mm-resolve-case");
+  const reviewOnly = (e: ModelEntry): ModelEntry => ({ ...e, roles: ["review"] });
+  const pool = [reviewOnly(entry("opus-5.5", "claude-code")), reviewOnly(entry("gpt-6-astra", "codex")), entry("glm-5.3", "zcode"), reviewOnly(entry("GLM-5.3", "zcode"))];
+  await L.poolChanged(pool);
+  const { id } = await behindPlan(L, pool);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
+  await L.release(id, INTEGRATOR, "refresh failed");
+  await L.planResolve(id, "owner", M1, false, "zcode/GLM-5.3");
+  const [m] = await mergePart(L, id);
+  expect(m.route?.builder?.actor).toBe("zcode/GLM-5.3");
 });
