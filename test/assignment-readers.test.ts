@@ -8,6 +8,7 @@ import { routeParts } from "../src/plans/route.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { pickPlanner } from "../src/plans/state.ts";
 import { pickReviewer } from "../src/review/reviewer.ts";
+import { offersFor } from "../src/dispatch/rules.ts";
 import { suggestReviewer } from "../src/review/suggest.ts";
 import { triageModelRefusal } from "../src/review/triage.ts";
 import { gateServesTier, pickTierReviewer, reviewTarget, tierEligible, tierIds, tierReviewerPick } from "../src/review/tier.ts";
@@ -280,6 +281,22 @@ test("suggestBuilder: a model offered only for review, or on another destination
   said(pick.reasons, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for a build in the cloud/);
   const home = [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build"], at: new Date().toISOString() }, ...live([{ agent: "antigravity", models: ["gemini-4-argon"] }], ["build"])];
   assert.equal(suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers: home }).actor, "antigravity/gemini-4-argon");
+});
+
+// t652, finding 3 of the review of t626: the dispatch suggestion read every
+// runner's offer, so a model offered only by a runner whose token serves
+// another project was suggested here. Read for this project (offersFor, as
+// the dispatch route reads them), that runner offers it nothing.
+test("suggestBuilder: a model only a runner scoped to another project offers is passed over", () => {
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] };
+  const a = assigned("build", ["claude-code/opus-5.5", "codex/gpt-6-astra"]);
+  const offers = [{ ...live([{ agent: "claude-code", models: ["opus-5.5"] }])[0], runner: "cloud:elsewhere", projects: ["micahapp"] },
+    ...live([{ agent: "codex", models: ["gpt-6-astra"] }])];
+  const pick = suggestBuilder({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers: offersFor(offers, "atelier") });
+  assert.equal(pick.actor, "codex/gpt-6-astra");
+  said(pick.reasons, /claude-code\/opus-5.5: no live runner offers claude-code\/opus-5.5/);
+  // Read for the project it serves, the scoped runner's model is suggested.
+  assert.equal(suggestBuilder({ item, project: "micahapp", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers: offersFor(offers, "micahapp") }).actor, "claude-code/opus-5.5");
 });
 
 test("pickReviewer: a review is offered only where the ledger will send it", () => {
