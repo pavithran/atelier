@@ -8,7 +8,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { linkPrivate, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { guardedPaths, linkPrivate, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 
@@ -66,8 +66,13 @@ test("private add names the files, links them from the project's iCloud folder a
   const ls = f.run("private", "ls");
   assert.equal(ls.code, 0, ls.output);
   assert.match(ls.output, new RegExp(`kept in ${f.keep} \\(found by demo's name\\)`));
-  assert.match(ls.output, /PROJECT\.md: linked; ignored by Git/);
-  assert.match(ls.output, /notes\/plan\.md: linked; ignored by Git/);
+  assert.match(ls.output, /PROJECT\.md \(listed in iCloud and on this Mac\): linked; ignored by Git/);
+  assert.match(ls.output, /notes\/plan\.md \(listed in iCloud and on this Mac\): linked; ignored by Git/);
+  // The list beside the files follows the developer to every Mac: sorted,
+  // each path once, and never linked into the checkout.
+  assert.equal(readFileSync(join(f.keep, ".atelier-private"), "utf8").split("\n").filter((l) => l && !l.startsWith("#")).join(","), "PROJECT.md,notes/plan.md");
+  assert.ok(!existsSync(join(f.checkout, ".atelier-private")));
+  assert.equal(f.run("private", "add", ".atelier-private").code, 1, "the list itself is never private-linked");
 });
 
 test("private add never overwrites a file in the checkout, refuses a tracked file and skips one missing from the folder", (t) => {
@@ -107,6 +112,12 @@ test("--home names the folder; a checkout that is that folder keeps its files in
   const inPlace = g.run("private", "add", "PROJECT.md");
   assert.equal(inPlace.code, 0, inPlace.output);
   assert.match(inPlace.output, /Private files stay where they are/);
+  // There the list sits in the checkout itself, and Git ignores it too.
+  assert.ok(existsSync(join(g.keep, ".atelier-private")));
+  assert.equal(g.git(g.keep, "check-ignore", ".atelier-private"), ".atelier-private");
+  g.git(g.keep, "commit", "-q", "--allow-empty", "-m", "first");
+  g.git(g.keep, "add", "-f", ".atelier-private");
+  assert.deepEqual(privateChanges(g.keep, guardedPaths("demo", g.read().projects.demo, g.icloud)), [".atelier-private"], "the list is never staged either");
   assert.ok(lstatSync(join(g.keep, "PROJECT.md")).isFile());
   assert.equal(g.git(g.keep, "status", "--porcelain", "--untracked-files=all").split("\n").filter((l) => l.includes("PROJECT.md")).length, 0);
 });
@@ -189,4 +200,26 @@ test("privateChanges names private files wrap would stage: forced into the index
   assert.deepEqual(privateChanges(f.checkout, ["PROJECT.md", "notes"]), ["PROJECT.md"]);
   writeFileSync(join(f.checkout, ".git", "info", "exclude"), "");
   assert.deepEqual(privateChanges(f.checkout, ["PROJECT.md", "notes"]).sort(), ["PROJECT.md", "notes"]);
+});
+
+test("the list in iCloud is read as data: config-only names still work, each source is said, and a bad or tracked line is refused alone", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, ".atelier-private"), ["# private", "PROJECT.md", "../../etc/passwd", "/abs.md", ".git/config", "file.txt", ".atelier-private", "", "notes"].join("\n"));
+  f.write({ demo: { path: f.checkout, branch: "main", protect: [], private: ["mine.md"] } });
+  writeFileSync(join(f.keep, "mine.md"), "this Mac only\n");
+  const r = linkPrivate(f.checkout, f.read().projects.demo, { name: "demo", root: f.icloud });
+  assert.deepEqual(r.invalid.map((x) => x.line), [3, 4, 5, 7]);
+  assert.deepEqual(r.refused, ["file.txt"], "a tracked file the list names is not linked");
+  assert.deepEqual(r.linked.sort(), ["PROJECT.md", "mine.md", "notes"]);
+  const said = r.said.join("\n");
+  for (const n of [3, 4, 5, 7]) assert.match(said, new RegExp(`\\.atelier-private line ${n}: .*; skipped\\.`));
+  assert.ok(!existsSync(join(f.root, "etc")));
+  assert.equal(f.git(f.checkout, "status", "--porcelain", "--untracked-files=all"), "");
+  const ls = f.run("private", "ls");
+  assert.match(ls.output, /PROJECT\.md \(listed in iCloud\): linked/);
+  assert.match(ls.output, /mine\.md \(listed on this Mac\): linked/);
+  assert.match(ls.output, /file\.txt \(listed in iCloud\): Git tracks it in the checkout/);
+  assert.match(ls.output, /\.atelier-private line 3: .*skipped/);
+  // Every command's guard reads the list too, and holds the list itself.
+  assert.deepEqual(guardedPaths("demo", f.read().projects.demo, f.icloud).sort(), [".atelier-private", "PROJECT.md", "file.txt", "mine.md", "notes"].sort());
 });

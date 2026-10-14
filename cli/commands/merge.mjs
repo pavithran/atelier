@@ -7,7 +7,7 @@ import { pathCollisions } from "../../src/rules.ts";
 import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
 import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
-import { privateRefusal } from "../private.mjs";
+import { guardedPaths, privateRefusal } from "../private.mjs";
 import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
@@ -190,7 +190,8 @@ export default async function mergeCommand() {
     const taskRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,item.acceptedHead);
     if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's holder rewrites those commits under an allowed identity and submits a new revision, or the developer allows the address with atelier init --agent-email EMAIL.`);
     // The project's private files (t645) reach the baseline through no task.
-    const taskPrivate=privateRefusal(cwd,p.private??[],item.acceptedHead,[baselineHead],`${id}'s accepted revision`);
+    const guarded=guardedPaths(name,p);
+    const taskPrivate=privateRefusal(cwd,guarded,item.acceptedHead,[baselineHead],`${id}'s accepted revision`);
     if (taskPrivate) die(`${taskPrivate} Nothing was merged.`);
     if (refreshed?.policy) {
       if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
@@ -322,7 +323,7 @@ export default async function mergeCommand() {
     const landingRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,published);
     if(landingRefusals.length)die(`the landing would put commits on the baseline whose identity the project's policy refuses:\n  ${landingRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);
     // Nor through the checkout's own commits the push carries with it (t645).
-    const landingPrivate=privateRefusal(cwd,p.private??[],published,[baselineHead],'The landing');
+    const landingPrivate=privateRefusal(cwd,guarded,published,[baselineHead],'The landing');
     if(landingPrivate)die(`${landingPrivate} Nothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);
     for(const c of new Set([mergeCommit,published])){
       const priorNote=git(['notes','--ref=atelier','show',c],{cwd,allowFail:true});

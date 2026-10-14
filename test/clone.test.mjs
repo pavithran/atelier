@@ -398,3 +398,21 @@ test("sync never carries a private file to the baseline, even one committed by h
   assert.equal(ok.code, 0, ok.output);
   assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt");
 });
+
+// The list of private files lives beside them in iCloud, so a second Mac,
+// whose config names nothing yet, links them with the clone alone.
+test("a Mac with a fresh config links the files .atelier-private lists with the clone alone, and a bad line is named and skipped", async (t) => {
+  const f = setup(t);
+  const keep = icloudFolder(f);
+  writeFileSync(join(keep, ".atelier-private"), "# private\nPROJECT.md\n../outside.md\nnotes/plan.md\n");
+  const dir = join(f.home, "src", "demo");
+  const r = await run(t, f, ["clone", "demo"]);
+  assert.equal(r.code, 0, r.output);
+  assert.equal(readlinkSync(join(dir, "PROJECT.md")), join(keep, "PROJECT.md"));
+  assert.equal(readlinkSync(join(dir, "notes", "plan.md")), join(keep, "notes", "plan.md"));
+  assert.match(r.output, /\.atelier-private line 3: "\.\.\/outside\.md" has an empty, "\." or "\.\." part.*; skipped\./);
+  assert.ok(!existsSync(join(f.home, "src", "outside.md")));
+  assert.ok(!existsSync(join(dir, ".atelier-private")), "the list itself is never linked");
+  assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
+  assert.equal(r.config.projects.demo.private, undefined, "nothing had to be named on this Mac");
+});

@@ -5,7 +5,7 @@ import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefus
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { OWNER, P, actor, args, at, call, cfg, die, git, project, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
 import { publishCheckoutRemote } from "../mirror.mjs";
-import { privateChanges } from "../private.mjs";
+import { guardedPaths, privateChanges } from "../private.mjs";
 import { publishBaseline } from "./publish.mjs";
 import syncCommand from "./sync.mjs";
 
@@ -111,7 +111,7 @@ export default async function wrapCommand() {
   // A private file (t645) is never staged: Git ignores each one through
   // info/exclude, and one staged by hand or no longer excluded stops wrap
   // here, before anything is staged. A symbolic link is refused as the file.
-  const privates = cfg.projects[name]?.private ?? [];
+  const privates = guardedPaths(name, cfg.projects[name]);
   let held;
   try { held = privateChanges(cwd, privates); } catch (error) { die(`${error.message}; nothing was staged`); }
   if (held.length) die(`wrap will not commit private files: ${held.map((p) => sessionText(p, 200)).join(", ")}. They stay in this Mac's iCloud folder and Atelier never pushes them (atelier private ls). Unstage them with git rm --cached PATH, and run atelier private add PATH to have Git ignore them again. Nothing was staged.`);

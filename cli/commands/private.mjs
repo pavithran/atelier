@@ -1,14 +1,16 @@
 // atelier private. Its forms, flags and help are declared in src/usage/commands/private.ts.
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { privatePath } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { args, cfg, die, project, saveConfig } from "../atelier.mjs";
-import { excludesPrivate, linkPrivate, privateHome, privateState, trackedPrivate } from "../private.mjs";
+import { PRIVATE_LIST } from "../../src/rules.ts";
+import { excludesPrivate, linkPrivate, privateList, privateState, readPrivateList, trackedPrivate, writePrivateList } from "../private.mjs";
 
-// The developer names the project's private files on this Mac (t645). The
-// names live beside the checkout's path in this Mac's config.json, never on
-// the server; the files live in the project's iCloud folder.
+// The developer names the project's private files (t645). The names go to
+// the list beside the files in the project's iCloud folder, which follows the
+// developer to every Mac, and to this Mac's config.json; never to the
+// server.
 export default async function privateCommand() {
   const [, sub, ...rest] = args._;
   if (sub === "add" && (rest.length || typeof args.home === "string")) return add(rest);
@@ -48,6 +50,14 @@ function add(words) {
   saveConfig(cfg);
   console.log(added.length ? `${name}: ${added.join(", ")} ${added.length === 1 ? "is" : "are"} now private on this Mac.` : `${name}: no new private file; ${entry.private.length ? `it names ${entry.private.join(", ")}` : "it names none yet"}.`);
   if (typeof args.home === "string") console.log(`${name}'s private files are kept in ${home}.`);
+  // The list in the folder, so every Mac's clone links them.
+  const list = privateList(name, entry);
+  if (list.home && existsSync(list.home)) {
+    const before = readPrivateList(list.home);
+    try { writePrivateList(list.home, [...before.paths, ...entry.private]); } catch (error) { die(`${error.message}; ${name}'s private files are named on this Mac only`); }
+    for (const r of before.refused) console.log(`${PRIVATE_LIST} line ${r.line} was dropped: ${r.error}.`);
+    console.log(`${join(list.home, PRIVATE_LIST)} lists them, so atelier clone links them on every Mac.`);
+  } else console.log(`${name}'s private files are named on this Mac only: ${list.homeError ?? `${list.home} is not on this Mac`}.`);
   if (!existsSync(entry.path)) return console.log(`${entry.path}, ${name}'s checkout, is not on this Mac; atelier clone links them when it makes one.`);
   let r;
   try { r = linkPrivate(entry.path, entry, { name }); } catch (error) { die(error.message); }
@@ -57,24 +67,28 @@ function add(words) {
 
 function ls() {
   const name = project(), entry = entryOf(name);
-  const paths = entry.private ?? [];
-  const found = privateHome(name, entry);
-  const where = found.error ? `no folder: ${found.error}` : `${found.home}${found.named ? "" : ` (found by ${name}'s name)`}${existsSync(found.home) ? "" : ", not on this Mac"}`;
+  const list = privateList(name, entry);
+  const where = list.homeError ? `no folder: ${list.homeError}` : `${list.home}${list.named ? "" : ` (found by ${name}'s name)`}${existsSync(list.home) ? "" : ", not on this Mac"}`;
   console.log(`${name}: private files are kept in ${where}.`);
-  if (!paths.length) return console.log(`${name} names no private files on this Mac. Name one with atelier private add PATH --project ${name}.`);
+  for (const r of list.refused) console.log(`  ${PRIVATE_LIST}${r.line ? ` line ${r.line}` : ""}: ${r.error}; skipped.`);
+  const paths = list.paths;
+  if (!paths.length) return console.log(`${name} names no private files. Name one with atelier private add PATH --project ${name}.`);
   const there = existsSync(entry.path);
-  const sameFolder = there && !found.error && existsSync(found.home) && realpathSync(found.home) === realpathSync(entry.path);
+  const sameFolder = there && list.home && existsSync(list.home) && realpathSync(list.home) === realpathSync(entry.path);
   const STATES = {
-    linked: "linked", missing: `not in ${found.home ?? "the folder"}`, file: "a file Atelier did not link is in the checkout",
+    linked: "linked", missing: `not in ${list.home ?? "the folder"}`, file: "a file Atelier did not link is in the checkout",
     "other-link": "a link to somewhere else", absent: "not linked yet: run atelier private add again",
   };
+  let tracked = new Set();
+  try { if (there) tracked = new Set(trackedPrivate(entry.path, paths)); } catch { /* reported per path below as not linked */ }
   for (const path of paths) {
     let state;
     if (!there) state = "the checkout is not on this Mac";
+    else if (tracked.has(path)) state = "Git tracks it in the checkout, so it is not private there";
     else if (sameFolder) state = "kept in place: the checkout is that folder";
-    else if (found.error) state = "not linked";
-    else state = STATES[privateState(entry.path, found.home, path)];
+    else if (!list.home) state = "not linked";
+    else state = STATES[privateState(entry.path, list.home, path)];
     const ignored = there ? (excludesPrivate(entry.path, path) ? "ignored by Git" : "NOT ignored by Git: run atelier private add again") : "";
-    console.log(`  ${path}: ${state}${ignored ? `; ${ignored}` : ""}`);
+    console.log(`  ${path} (listed ${list.sources[path] === "iCloud" ? "in iCloud" : list.sources[path] === "this Mac" ? "on this Mac" : "in iCloud and on this Mac"}): ${state}${ignored ? `; ${ignored}` : ""}`);
   }
 }

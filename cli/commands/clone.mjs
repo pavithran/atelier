@@ -104,6 +104,6 @@ export default async function cloneCommand() {
   if (elsewhere) console.log(`This replaces ${elsewhere} as ${name}'s checkout on this Mac; that folder is left as it is.`);
   console.log(`origin is the baseline; ${notes ? "its receipts are on refs/notes/atelier" : "it holds no receipts yet"}. The checkout keeps no token: Atelier's commands that reach the baseline mint their own.`);
   for (const line of linked.said) console.log(line);
-  if (privateHome && !cfg.projects[name].private?.length) console.log(`${name}'s private files are to be kept in ${privateHome}; name them with atelier private add PATH --project ${name}.`);
+  if (privateHome && !linked.said?.length) console.log(`${name}'s private files are to be kept in ${privateHome}; name them with atelier private add PATH --project ${name}.`);
   console.log(identity?.email ? `Commits here are authored as ${identity.name} <${identity.email}>, as the project's policy names.` : `Warning: ${name}'s policy names no commit identity, so commits here use this Mac's global Git identity; set one with atelier init --commit-name NAME --commit-email EMAIL.`);
 }
