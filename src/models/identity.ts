@@ -18,15 +18,13 @@ import type { ModelEntry } from "./pool.ts";
 
 // The entry an exact harness/id is, or undefined.
 //
-// The pool may hold two ids that differ only in letter case (gpt-6-astra and
-// GPT-6-ASTRA are two entries). The entry whose harness/id is the name
-// case-sensitively is it; else the one entry matching in any letter case;
-// two such and none exact is no entry here (entryNamed refuses it as
-// ambiguous), whatever the pool's order (gpt-6-astra's sixteenth review of
-// t622, finding 1).
+// Case-sensitive: what a reader compares is an exact id, stored or
+// converted, and two pool ids may differ only in letter case (gpt-6-astra
+// and GPT-6-ASTRA are two entries). Only the naming rule below, resolving
+// a typed name, reads letter case loosely (gpt-6-astra's sixteenth and
+// seventeenth reviews of t622).
 export function exactEntry<E extends Pick<ModelEntry, "id" | "harness">>(pool: readonly E[], actor: string): E | undefined {
-  const found = exactEntries(pool, actor);
-  return found.length === 1 ? found[0] : undefined;
+  return pool.find((m) => `${m.harness}/${m.id}` === actor);
 }
 
 // The entries a harness/id names exactly: the case-sensitive one alone when

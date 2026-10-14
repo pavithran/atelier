@@ -109,9 +109,9 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   // canonicalNames in src/index.ts), compared as it is, profile included,
   // and never resolved again against this pool, which may have changed
   // since (gpt-6-astra's fourteenth and fifteenth reviews of t622).
-  const chosen = constraints.model ? String(constraints.model).toLowerCase() : null;
+  const chosen = constraints.model ? String(constraints.model) : null;
   const rows = ranked(input)
-    .filter(({ entry }) => chosen === null || entry.id.toLowerCase() === chosen)
+    .filter(({ entry }) => chosen === null || entry.id === chosen)
     .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
     .map((row) => ({ ...row, refusal: refusalOf(row.entry) }));
   const assigned = applicableAssignments(input.assignments ?? [], input.project, ["build"]);

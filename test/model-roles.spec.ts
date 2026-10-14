@@ -762,3 +762,43 @@ it("an agent or runner token's init with an ambiguous tier is refused without na
     await index().removeModel("qwen-3:72b");
   }
 });
+
+// gpt-6-astra's seventeenth review of t622, finding 2: the tier requests a
+// head move or a criteria change asks again were judged with no offers, so
+// an assignment promoted a tier model no runner offers. Both transitions use
+// the live offers the ledger holds.
+it("a tier review asked again after the head moves or the criteria change is offered, whatever an assignment prefers", async () => {
+  const name = "roles-tier-reask";
+  const sonnet = entry("claude-code", "sonnet-5.5"), fable = entry("claude-code", "fable-5.1");
+  const pool = [...POOL, sonnet, fable];
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/sonnet-5.5", "claude-code/fable-5.1"], exactNames: ["reviewTier"] }, createdAt: AT }, "owner");
+  await L.poolChanged(pool);
+  await L.assignmentsChanged({ version: 970, assignments: [assignment("a970", "review", "claude-code/fable-5.1")] });
+  const offers = [{ runner: "home:tier", kind: "home" as const, jobs: ["review"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }, { agent: "antigravity", models: ["gemini-4-argon"] }], at: new Date().toISOString() }];
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const id = (await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] })).id;
+  await L.claim(id, "codex/gpt-6-astra");
+  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
+  const pushed = async (head: string) => {
+    await L.recordPush(id, "codex/gpt-6-astra", head, head);
+    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+    await L.submit(id, "codex/gpt-6-astra");
+  };
+  await pushed(A);
+  expect((await L.requestReview(id, "owner", "antigravity/gemini-4-argon", pool, true, false, undefined, offers)).requested).toBe(true);
+  // Newest first, as events lists them.
+  const tierAsks = async () => (await L.events(id) as unknown as { kind: string; data: Record<string, any> }[]).filter((e) => e.kind === "review.requested" && e.data.tier === true);
+  expect((await tierAsks()).map((e) => e.data.reviewer)).toEqual(["claude-code/sonnet-5.5"]);
+  // The head moves: the tier is asked again at B, of the offered model.
+  await pushed(B);
+  const afterMove = await tierAsks();
+  expect(afterMove[0]?.data).toMatchObject({ head: B, reviewer: "claude-code/sonnet-5.5" });
+  expect(String(afterMove[0]?.data.reason)).toMatch(/Role assignment a970 skipped: no choice is eligible here \(claude-code\/fable-5.1: no live runner offers/);
+  // The criteria change: asked again at B, of the offered model.
+  const before = (await tierAsks()).length;
+  await L.editItem(id, "owner", { accept: ["Works", "And says so"] });
+  const afterCriteria = await tierAsks();
+  expect(afterCriteria.length).toBeGreaterThan(before);
+  expect(afterCriteria[0]?.data).toMatchObject({ head: B, reviewer: "claude-code/sonnet-5.5" });
+});

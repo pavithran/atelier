@@ -329,8 +329,10 @@ test("an assignment naming one of two entries that share a model in a harness pr
   const [big] = resolveChoices(["opencode/qwen-3:72b"], profiles, "build");
   const b: Assignment = { ...a, choices: [big] };
   assert.deepEqual(orderByAssignment(["opencode/qwen-3:32b", "opencode/qwen-3:72b"], (c) => c, [b], () => null, FALLBACK.build).order, ["opencode/qwen-3:72b", "opencode/qwen-3:32b"]);
-  // The named entry's own id, in another letter case, is still that entry.
-  assert.equal(choiceMatches(chosen, "claude-code/Claude-Opus-5-5"), true);
+  // A reader compares exact ids case-sensitively; another letter case is
+  // converted where it is typed (gpt-6-astra's seventeenth review of t622).
+  assert.equal(choiceMatches(chosen, "claude-code/claude-opus-5-5"), true);
+  assert.equal(choiceMatches(chosen, "claude-code/Claude-Opus-5-5"), false);
 });
 
 // gpt-6-astra's third review of t622, finding 4: a retry was validated

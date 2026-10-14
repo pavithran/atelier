@@ -511,7 +511,9 @@ export function applicableAssignments(current: readonly Assignment[], project: s
 // lists its id as an alias (gpt-6-astra's and gemini-4-argon's reviews of
 // t622, rounds three to eight).
 export function choiceMatches(choice: AssignmentChoice, actor: string): boolean {
-  return choice.actor.toLowerCase() === actor.toLowerCase();
+  // Case-sensitive: two pool ids may differ only in letter case (gpt-6-astra's
+  // seventeenth review of t622, finding 1).
+  return choice.actor === actor;
 }
 
 export interface AssignmentOutcome {

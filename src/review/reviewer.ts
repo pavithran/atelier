@@ -162,7 +162,9 @@ export function pickReviewer(input: PickInput): ReviewerPick {
     // The tier is a preference: a tier model the pool lacks is not a
     // candidate passed over, and the routing is asked next.
     if (source.kind === "tier" && !entry) continue;
-    const key = entry ? actorOf(entry).toLowerCase() : actor.toLowerCase();
+    // Two pool entries whose ids differ only in letter case are two
+    // candidates: an entry is keyed by its exact id.
+    const key = entry ? actorOf(entry) : actor.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     const judged = entry ? judge(entry, contributors, input) : { failed: ["not in the pool"], passed: [] };
