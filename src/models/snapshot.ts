@@ -115,7 +115,8 @@ export interface SnapshotTake {
   revises: number | null;
   takenAt: string;
   origin: SnapshotOrigin;
-  complete: boolean;      // every registered project was read
+  complete: boolean;      // every registered project and every run report up to the cutoff was read
+  runsRead?: boolean;     // false: the run reports could not all be read, so the run measures are short (absent in a take stored before this field)
   owner: string;
   cutoffs: Cutoffs;
   pool: PoolState[];
@@ -134,7 +135,7 @@ export interface SnapshotInput {
   owner: string;
   pool: readonly PoolState[];
   ledgers: readonly { key: string; name: string; through: number; events: readonly LedgerEvent[] | null }[];
-  runs: { through: number; reports: readonly RunReport[] };
+  runs: { through: number; reports: readonly RunReport[]; complete?: boolean };
   index: { through: number; events: readonly LedgerEvent[] };
 }
 
@@ -150,6 +151,7 @@ export function computeSnapshot(input: SnapshotInput): ComputedSnapshot {
   const assignmentEvents = input.index.events.filter((e) => e.seq <= input.index.through && inDay(e.at));
   const pool = input.pool.map((e) => ({ id: e.id, harness: e.harness, aliases: [...e.aliases] }));
   const records = measureRecords({ sources, runs, assignmentEvents, pool: pool as unknown as PoolNames, owner: input.owner }, new Date(end));
+  const runsRead = input.runs.complete !== false;
   const unread = input.ledgers.filter((l) => l.events === null).map((l) => ({ key: l.key, name: l.name }));
   const coverage: Coverage = { projects: read.length, events: sources.reduce((n, s) => n + s.events.length, 0), unread: unread.map((u) => u.name).sort() };
   // One comparison per pool model, under its first entry's name, as the
@@ -167,7 +169,7 @@ export function computeSnapshot(input: SnapshotInput): ComputedSnapshot {
   }).sort((a, b) => a.model.localeCompare(b.model) || a.role.localeCompare(b.role));
   return {
     take: {
-      schema: SNAPSHOT_SCHEMA, day: input.day, takenAt: input.takenAt, origin: originOf(input.day, input.takenAt), complete: unread.length === 0, owner: input.owner,
+      schema: SNAPSHOT_SCHEMA, day: input.day, takenAt: input.takenAt, origin: originOf(input.day, input.takenAt), complete: unread.length === 0 && runsRead, runsRead, owner: input.owner,
       cutoffs: { asOf, ledgers: read.map((l) => ({ key: l.key, name: l.name, seq: l.through })).sort((a, b) => a.key.localeCompare(b.key)), unread: unread.sort((a, b) => a.key.localeCompare(b.key)), index: input.index.through, runs: input.runs.through },
       pool, coverage,
     },
@@ -178,8 +180,8 @@ export function computeSnapshot(input: SnapshotInput): ComputedSnapshot {
 // Whether two snapshots of a day say the same: the same figures for the same
 // models and roles, and the same projects left unread. A scheduler retry that
 // finds nothing new stores nothing.
-export function sameSnapshot(a: { take: Pick<SnapshotTake, "complete" | "coverage">; rows: readonly SnapshotRow[] }, b: { take: Pick<SnapshotTake, "complete" | "coverage">; rows: readonly SnapshotRow[] }): boolean {
-  return a.take.complete === b.take.complete && JSON.stringify(a.take.coverage.unread) === JSON.stringify(b.take.coverage.unread) && JSON.stringify(a.rows) === JSON.stringify(b.rows);
+export function sameSnapshot(a: { take: Pick<SnapshotTake, "complete" | "coverage" | "runsRead">; rows: readonly SnapshotRow[] }, b: { take: Pick<SnapshotTake, "complete" | "coverage" | "runsRead">; rows: readonly SnapshotRow[] }): boolean {
+  return a.take.complete === b.take.complete && (a.take.runsRead !== false) === (b.take.runsRead !== false) && JSON.stringify(a.take.coverage.unread) === JSON.stringify(b.take.coverage.unread) && JSON.stringify(a.rows) === JSON.stringify(b.rows);
 }
 
 // What differs between a stored snapshot and its replay, figure by figure.

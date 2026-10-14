@@ -3323,6 +3323,27 @@ async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: 
 // gives, and stored on the index once (putModelSnapshot). A project whose
 // Ledger cannot be read leaves the snapshot partial, and a later run takes
 // the day again. Exported for the tests, which run it at chosen instants.
+// Every run report received before `before`, up to row `through` (the last
+// now, when null), read page by page until the Ledger says there are no more.
+// `complete` is false, with the pages read so far, when a page could not be
+// read: the snapshot is then partial, never computed as if it held the lot.
+async function readRunsThrough(I: ReturnType<typeof index>, through: number | null, before: string): Promise<{ through: number; reports: RunReport[]; complete: boolean }> {
+  const reports: RunReport[] = [];
+  let cut = through, after: number | null = null;
+  try {
+    for (;;) {
+      const page: { through: number; runs: RunReport[]; next: number | null } = await I.runsPage(cut, before, after);
+      cut = page.through;
+      reports.push(...page.runs);
+      if (page.next === null) return { through: cut, reports, complete: true };
+      after = page.next;
+    }
+  } catch (err) {
+    console.error(errorLine("model snapshot: run reports", err));
+    return { through: cut ?? 0, reports, complete: false };
+  }
+}
+
 export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ day: string; rev: number; stored: boolean; complete: boolean }[]> {
   const I = index(env);
   const last = addDays(utcDay(now), -1);
@@ -3346,9 +3367,9 @@ export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ 
   const out = [];
   let runsCut: number | null = null;
   for (const day of due) {
-    const runs = await I.runsThrough(runsCut, dayEnd(day));
-    runsCut = runs.through;
-    const snapshot = computeSnapshot({ day, takenAt, owner: ownerActor(env), pool: (pool as unknown as ModelEntry[]).map((e) => ({ id: e.id, harness: e.harness, aliases: e.aliases })), ledgers, runs: { through: runs.through, reports: runs.runs }, index: index_ });
+    const runs = await readRunsThrough(I, runsCut, dayEnd(day));
+    runsCut = runs.through || null;
+    const snapshot = computeSnapshot({ day, takenAt, owner: ownerActor(env), pool: (pool as unknown as ModelEntry[]).map((e) => ({ id: e.id, harness: e.harness, aliases: e.aliases })), ledgers, runs: { through: runs.through, reports: runs.reports, complete: runs.complete }, index: index_ });
     out.push({ ...(await I.putModelSnapshot(snapshot)), complete: snapshot.take.complete });
   }
   return out;
@@ -3369,8 +3390,9 @@ export async function replayModelSnapshot(env: Env, day: string, rev?: number): 
     ...await Promise.all(take.cutoffs.ledgers.map(async (c) => ({ key: c.key, name: c.name, through: c.seq, events: c.seq ? await allEvents(ledger(env, c.key), c.seq) : [] }))),
     ...take.cutoffs.unread.map((u) => ({ key: u.key, name: u.name, through: 0, events: null })),
   ];
-  const runs = await I.runsThrough(take.cutoffs.runs, take.cutoffs.asOf);
-  const replayed = computeSnapshot({ day, takenAt: take.takenAt, owner: take.owner, pool: take.pool, ledgers, runs: { through: runs.through, reports: runs.runs }, index: { through: take.cutoffs.index, events: (await I.assignmentEvents()) as unknown as LedgerEvent[] } });
+  const runs = await readRunsThrough(I, take.cutoffs.runs, take.cutoffs.asOf);
+  if (!runs.complete) throw new Error("the run reports could not all be read, so the day cannot be replayed");
+  const replayed = computeSnapshot({ day, takenAt: take.takenAt, owner: take.owner, pool: take.pool, ledgers, runs: { through: runs.through, reports: runs.reports, complete: true }, index: { through: take.cutoffs.index, events: (await I.assignmentEvents()) as unknown as LedgerEvent[] } });
   return { stored, replayed: replayed.rows, differences: replayDifferences(stored.rows, replayed.rows) };
 }
 
