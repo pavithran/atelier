@@ -122,6 +122,21 @@ test("active config changes affect ownership; duplicate and excluded paths stop 
   assert.deepEqual(rejections(await plan(dir)), []);
 });
 
+// t658: plan() resolved its root with path.resolve only, so a root reached
+// through a symlink (macOS's /var -> /private/var, where os.tmpdir() lives)
+// matched none of Vitest's globs, which Vitest checks against the real path,
+// and every spec file came back unassigned.
+test("plan() assigns Vitest's files when its root is reached through a symlink", async (t) => {
+  const dir = tree(t, ["test/a.spec.ts", "b.test.mjs"]);
+  const links = mkdtempSync(join(tmpdir(), "atelier-suites-link-"));
+  t.after(() => rmSync(links, { recursive: true, force: true }));
+  const link = join(links, "root");
+  symlinkSync(dir, link, "dir");
+  const result = await plan(link);
+  assert.deepEqual(rejections(result), []);
+  assert.deepEqual(result.byRunner, { node: ["b.test.mjs"], vitest: ["test/a.spec.ts"] });
+});
+
 test("assignments equal actual configured Vitest collection and Node executes its assigned files", async (t) => {
   // Compare to Vitest's independent glob collection, not the ownership matcher.
   const result = await plan();
