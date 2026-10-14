@@ -1612,3 +1612,51 @@ it("an expired post-merge claim can be claimed again with a fresh generation", a
   await L.addReview({ itemId: id, by: GPT, head: merge, criteria: next.criteria, request: next.request, approve: true, note: "Fresh audit", at: AT });
   expect(await L.item(id)).toMatchObject({ state: "merged" });
 });
+
+// gpt-6-astra's review of t627: withdrawing a part's request only marked it
+// withdrawn, and the next tick (which a runner's stale claim also runs) saw
+// no live request and asked the same reviewer again at the same head. The
+// withdrawal now sticks: the tick asks another reviewer the routing allows,
+// or waits for the developer, without blocking the part.
+it("a part's review request the developer withdraws is not asked of that reviewer again at the head; another is asked (t627)", async () => {
+  const L = await setup("review-withdraw-part");
+  const { id, partId, builder } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+  const gone = await L.withdrawReviewRequest(partId, "owner", "No runner serves gpt-6-astra");
+  expect(gone).toMatchObject({ head, reviewer: GPT });
+  // The tick asked another reviewer, of another family than the builder.
+  const [next] = await reviewWaiting(L);
+  const other = `${next.agent}/${next.model}`;
+  expect(other).not.toBe(GPT);
+  expect(familyOf(next.model!)).not.toBe(familyOf(builder.split("/")[1]));
+  // A stale claim by the withdrawn reviewer is refused and asks it nothing.
+  await refusal(L.claimReview(partId, GPT, RUNNER), "wrong_agent", new RegExp(`asks for ${next.agent}`));
+  const asked = (await events(L, partId)).filter((e) => e.kind === "review.requested" && e.data.head === head).sort((a, b) => a.seq - b.seq).map((e) => e.data.reviewer);
+  expect(asked).toEqual([GPT, other]);
+  expect(await reviewWaiting(L)).toEqual([next]);
+  expect((await L.planView(id)).blocked).toBeNull();
+});
+
+it("with no other reviewer than the one withdrawn, the part waits for the developer and is not blocked (t627)", async () => {
+  const L = await setup("review-withdraw-only");
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+  await L.claim(item.id, PLANNER, RUNNER);
+  const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [POOL[0], POOL[1]]);
+  const partId = parts[0].id;
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const [first] = await reviewWaiting(L);
+  const reviewer = `${first.agent}/${first.model}`;
+  await L.withdrawReviewRequest(partId, "owner", "Wait for me");
+  // Ticks run again, by a stale claim and an evidence write: nothing is asked.
+  await refusal(L.claimReview(partId, reviewer, RUNNER), "no_review", /no open review request/);
+  await L.addEvidence(observed(partId, head));
+  expect(await reviewWaiting(L)).toEqual([]);
+  expect((await events(L, partId)).filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer)).toEqual([reviewer]);
+  expect((await L.planView(item.id)).blocked).toBeNull();
+});
