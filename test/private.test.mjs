@@ -943,3 +943,43 @@ test("a whole-config save writes only the fields this process changed", () => {
   assert.equal(again.notesRemote, undefined);
   assert.equal(again.branch, "next");
 });
+
+// Astra's fifteenth review of t645, finding 1: a process started while the
+// project's folder was A kept reading A after another command named B.
+test("a process started on an older folder reads the folder named since, and the old one too", (t) => {
+  const f = setup(t);
+  const a = join(f.root, "folder-a"), b = join(f.root, "folder-b");
+  mkdirSync(a); mkdirSync(b);
+  writeFileSync(join(a, ".atelier-private"), "a.md\n");
+  writeFileSync(join(b, ".atelier-private"), "b.md\n");
+  f.write({ demo: { path: f.checkout, branch: "main", privateHome: a } });
+  const memory = JSON.parse(readFileSync(join(f.root, "config", "config.json"), "utf8"));
+  useConfig(memory);
+  const previous = { dir: process.env.ATELIER_CONFIG_DIR, root: process.env.ATELIER_PRIVATE_ROOT };
+  process.env.ATELIER_CONFIG_DIR = join(f.root, "config");
+  process.env.ATELIER_PRIVATE_ROOT = f.icloud;
+  t.after(() => {
+    useConfig(null);
+    for (const [key, value] of [["ATELIER_CONFIG_DIR", previous.dir], ["ATELIER_PRIVATE_ROOT", previous.root]]) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  });
+  // Another command names folder B.
+  const disk = f.read();
+  disk.projects.demo.privateHome = b;
+  writeFileSync(join(f.root, "config", "config.json"), JSON.stringify(disk));
+  const paths = privateGuardFor("demo").paths;
+  assert.ok(paths.includes("b.md"), "the folder named since is read");
+  assert.ok(paths.includes("a.md"), "the older folder still adds its names");
+  assert.equal(memory.projects.demo.privateHome, b, "the folder on disk is the current one");
+});
+
+// Astra's fifteenth review of t645, finding 2: a developer's link into the
+// project's own folder was taken for Atelier's and replaced.
+test("a developer's link into the project's folder is left as it is", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, "draft.md"), "draft\n");
+  symlinkSync(join(f.keep, "draft.md"), join(f.checkout, "PROJECT.md"));
+  const r = f.run("private", "add", "PROJECT.md");
+  assert.equal(r.code, 1, r.output);
+  assert.match(r.output, /PROJECT\.md: a link Atelier did not make is already in the checkout/);
+  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "draft.md"));
+});
