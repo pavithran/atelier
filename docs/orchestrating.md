@@ -228,6 +228,13 @@ misread:
   `atelier init --require-criteria` refuses one for the project.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the developer's checkout.
+- Point the agent to the project's prose standard, the path `atelier init
+  --prose-standard` records (Atelier's is
+  `../ai-projects-house-style/house-style.md`), and have it load the standard
+  before it writes commit messages, comments, docs or its report. Every
+  brief Atelier composes for a build, a plan or a review names it, and so do
+  `atelier show` and `bin/orchestrate/review.sh`; a brief written by hand
+  names it the same way.
 - Before sending one brief to many projects, pilot it on the project whose
   documents carry the most rules, and have the pilot reviewed. A fault in a
   brief is copied into every project it reaches.

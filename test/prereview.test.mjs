@@ -247,6 +247,15 @@ test("a pre-review merges main into a scratch clone of the recorded head, briefs
   assert.ok(calls.filter((c) => c.argv).every((c) => c.token === FAKE_TOKEN), "the reviewer's own token on every call");
 });
 
+// t675: the prose assessment of 2026-10-14 found no review brief named the
+// project's prose standard; the pre-review claim carries it as the gate's does.
+test("the pre-review brief names the project's prose standard the claim carries", async (t) => {
+  const r = repos(t);
+  const { io, calls } = fixture(r, { claim: prereviewClaim(r, { proseStandard: "../ai-projects-house-style/house-style.md" }) });
+  await runPrereview(assignment(r.head), config, "home:studio", io);
+  assert.match(calls.find((c) => c.brief).brief, /## Prose standard\n\nProse standard: this project's prose follows `\.\.\/ai-projects-house-style\/house-style\.md`/);
+});
+
 // Gate review of t524 at 247d6987: the pre-review brief dropped the owner's
 // standing decisions the claim carries, which the gate's brief renders.
 test("the pre-review brief carries the owner's standing decisions from the claim, and says so when there are none", async (t) => {

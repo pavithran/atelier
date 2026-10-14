@@ -41,6 +41,7 @@ import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type De
 import { ownerVerdicts, refutedRejection, verdictOn, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
 import { DEFAULT_REVIEW_BAR, replyFormat } from "./verdict.ts";
 import { criteriaFindingsSection, deferredCriteria, type CriteriaResolution, type CriteriaReview } from "./criteria.ts";
+import { proseStandardLine } from "../prose-standard.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
 // the brief fits a 32K window with room for the reply. A longer diff is not
@@ -83,6 +84,10 @@ export interface BriefInput {
   diffLimit?: number;
   owner?: string;
   bar?: string | null;                     // the project's review bar; absent or null, DEFAULT_REVIEW_BAR
+  // The project's prose standard (src/prose-standard.ts, t675), which the
+  // brief names for the reviewer's own findings and summary; absent or null,
+  // the project has none and the brief names none.
+  proseStandard?: string | null;
   // The company the project runs on alone (ProjectPolicy.familyMode, t394),
   // when it does: the brief then says the reviewer is a different model of
   // that company, not a model of another company, so nobody mistakes the
@@ -358,6 +363,9 @@ export function reviewBrief(input: BriefInput): string {
       ? decisionLines(decisions).map(inline)
       : [NO_DECISIONS]),
   );
+
+  const prose = proseStandardLine(input.proseStandard);
+  if (prose) section("## Prose standard", "", prose);
 
   const bar = input.bar?.trim() ? input.bar : DEFAULT_REVIEW_BAR;
   section(
