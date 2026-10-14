@@ -777,7 +777,7 @@ test("a commit holding a private file is published to no mirror and pushed to no
   const f = fixture(t);
   f.put("PROJECT.md", "the plan\n");
   const leak = f.commit("by hand");
-  const r = f.publish({ privatePaths: ["PROJECT.md"] });
+  const r = f.publish({ guard: { paths: ["PROJECT.md"], refusal: null } });
   assert.equal(r.ok, false);
   assert.match(r.text, new RegExp(`Not published: github's main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
   assert.deepEqual(f.refs(), []);
@@ -786,11 +786,32 @@ test("a commit holding a private file is published to no mirror and pushed to no
   f.git(f.dir, "init", "-q", "--bare", "-b", "main", plain);
   f.git(f.checkout, "remote", "add", "plain", plain);
   const said = [];
-  const pushed = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: (l) => said.push(l), identity: {}, privatePaths: ["PROJECT.md"] });
+  const pushed = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: (l) => said.push(l), identity: {}, guard: { paths: ["PROJECT.md"], refusal: null } });
   assert.equal(pushed.ok, false);
   assert.match(said.join("\n"), /Not pushed to plain: main would carry private files: PROJECT\.md/);
   assert.equal(f.git(plain, "for-each-ref"), "");
   // Without the name, both go.
   assert.equal(publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "plain", say: () => {}, identity: {} }).ok, true);
   assert.equal(f.publish().ok, true);
+});
+
+// Astra's review of t645, finding 3: a plain remote was checked at its fetch
+// URL but pushed to its push URLs, so a commit the fetch repository already
+// held went unchecked to a push destination that lacked it.
+test("a plain remote is checked at every push URL it has, not at its fetch URL", (t) => {
+  const f = fixture(t);
+  f.put("PROJECT.md", "the plan\n");
+  const leak = f.commit("by hand");
+  const fetchFrom = join(f.dir, "fetch.git"), pushTo = join(f.dir, "push.git"), alsoPushTo = join(f.dir, "also.git");
+  for (const bare of [fetchFrom, pushTo, alsoPushTo]) f.git(f.dir, "init", "-q", "--bare", "-b", "main", bare);
+  f.git(f.checkout, "push", "-q", fetchFrom, "main");
+  f.git(f.checkout, "push", "-q", alsoPushTo, "main");
+  f.git(f.checkout, "remote", "add", "both", fetchFrom);
+  f.git(f.checkout, "remote", "set-url", "--push", "both", alsoPushTo);
+  f.git(f.checkout, "remote", "set-url", "--add", "--push", "both", pushTo);
+  const said = [];
+  const r = publishCheckoutRemote({ git: runner, dir: f.checkout, branch: "main", remote: "both", say: (l) => said.push(l), identity: {}, guard: { paths: ["PROJECT.md"], refusal: null } });
+  assert.equal(r.ok, false);
+  assert.match(said.join("\n"), new RegExp(`Not pushed to both: main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
+  assert.equal(f.git(pushTo, "for-each-ref"), "", "the push URL that lacked the commit got nothing");
 });

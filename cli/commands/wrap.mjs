@@ -3,9 +3,9 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
-import { OWNER, P, actor, args, at, call, cfg, die, git, project, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
+import { OWNER, P, actor, args, at, call, cfg, die, git, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
 import { publishCheckoutRemote } from "../mirror.mjs";
-import { guardedPaths, privateChanges } from "../private.mjs";
+import { privateChanges, privateGuard } from "../private.mjs";
 import { publishBaseline } from "./publish.mjs";
 import syncCommand from "./sync.mjs";
 
@@ -111,7 +111,9 @@ export default async function wrapCommand() {
   // A private file (t645) is never staged: Git ignores each one through
   // info/exclude, and one staged by hand or no longer excluded stops wrap
   // here, before anything is staged. A symbolic link is refused as the file.
-  const privates = guardedPaths(name, cfg.projects[name]);
+  const guard = privateGuard(name, cfg.projects[name], { save: () => saveConfig(cfg) });
+  if (guard.refusal) die(`wrap stopped before staging anything: ${guard.refusal}`);
+  const privates = guard.paths;
   let held;
   try { held = privateChanges(cwd, privates); } catch (error) { die(`${error.message}; nothing was staged`); }
   if (held.length) die(`wrap will not commit private files: ${held.map((p) => sessionText(p, 200)).join(", ")}. They stay in this Mac's iCloud folder and Atelier never pushes them (atelier private ls). Unstage them with git rm --cached PATH, and run atelier private add PATH to have Git ignore them again. Nothing was staged.`);
@@ -133,7 +135,7 @@ export default async function wrapCommand() {
   data.pushes = [];
   for (const remote of remotes) {
     const identity = record.policy.commitIdentity;
-    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log, privatePaths: privates });
+    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log, guard });
     data.pushes.push({ remote, passed: result.ok });
     console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
   }

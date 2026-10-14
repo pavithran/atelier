@@ -331,3 +331,15 @@ test('a merge refuses to push the checkout\'s own commit holding a private file 
  assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
  assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
 });
+// Both reviews of t645: a task's push to its fork was not checked, so a
+// private file committed in a workspace reached Artifacts before any merge.
+test('a task\'s push carries no private file of the project to its fork',async t=>{
+ const {p,workspace,run}=await mergeFixture(t);
+ namePrivate(p,['PROJECT.md']);
+ const fork=join(p,'fork.git'),before=git(p,'--git-dir',fork,'rev-parse','main');
+ writeFileSync(join(workspace,'PROJECT.md'),'the plan\n');git(workspace,'add','-f','PROJECT.md');git(workspace,'commit','-m','by hand\n\nAgent: codex/test');
+ const r=await run(workspace,'push','t1','--as','codex/test');
+ assert.notEqual(r.status,0,r.output);
+ assert.match(r.output,/t1's push to its fork would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./s);
+ assert.equal(git(p,'--git-dir',fork,'rev-parse','main'),before);
+});

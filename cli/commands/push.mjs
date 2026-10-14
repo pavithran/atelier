@@ -1,5 +1,6 @@
 // atelier push. Its forms, flags and help are declared in src/usage/commands/push.ts.
-import { I, OWNER, actor, args, call, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, short, serverVersion, wsConfig } from "../atelier.mjs";
+import { I, OWNER, actor, args, call, cfg, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, saveConfig, short, serverVersion, wsConfig } from "../atelier.mjs";
+import { guardedPush, privateGuard, remoteBases } from "../private.mjs";
 
 import { checkCapabilities, COMMAND_CAPABILITIES } from "../../src/route-level.ts";
 import { pushCommitsInTurn, refused413 } from "../push-steps.mjs";
@@ -83,7 +84,14 @@ export default async function pushCommand() {
       [`GIT_CONFIG_KEY_${n + 1}`]: `http.${credential.remote}.extraHeader`, [`GIT_CONFIG_VALUE_${n + 1}`]: `Authorization: Bearer ${credential.token}` };
   }
   const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, credential?.remote ?? "origin", `HEAD:${branch}`];
-  let r = git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv });
+  // A task's history carries none of the project's private files to its
+  // fork (t645): what the fork lacks of HEAD is read for them first, at
+  // every place the push goes, and the 413 fallback below pushes the same
+  // HEAD.
+  const guard = privateGuard(name, cfg.projects?.[name], { save: () => saveConfig(cfg) });
+  const remoteName = credential?.remote ?? "origin";
+  let r = guardedPush({ guard, cwd: undefined, tip: "HEAD", bases: () => remoteBases({ git, cwd: undefined, remote: remoteName, ref: `refs/heads/${branch}`, opts: { token: credential?.token, env: credentialEnv } }), what: `${id}'s push to its fork`, fail: die },
+    () => git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv }));
   // A pack too large for one request answers 413 (t577: t544's ~96
   // regenerated PNGs through the runner route stranded its build for seven
   // hours). The unpushed first-parent commits then go one at a time, oldest

@@ -78,7 +78,7 @@ test("a batch whose commits add a private file of the project stops, main untouc
   const { dir, one } = repo();
   try {
     const start = git(dir, "rev-parse", "HEAD");
-    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "true", privatePaths: ["ONE.TXT"], record: () => assert.fail("recorded") });
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: "true", guard: { paths: ["ONE.TXT"], refusal: null }, record: () => assert.fail("recorded") });
     assert.equal(r.failure?.step, "private files");
     assert.match(r.failure.detail, /The batch would carry private files: one\.txt in [0-9a-f]{12}/);
     assert.equal(git(dir, "rev-parse", "HEAD"), start);

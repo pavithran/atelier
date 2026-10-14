@@ -278,3 +278,15 @@ test("CLI post-merge recovery refuses a server without land.post-merge.v1 before
   await assert.rejects(runLand(io), /lacks capabilities land\.post-merge\.v1.*then run atelier land t1 --post-merge status again/);
   assert.deepEqual(calls, ["/version"]);
 });
+
+// t645: a publication step carries none of the project's private files,
+// whatever its own privacy rules allow.
+test("a publication refuses a commit holding a private file of the project and pushes nothing", async t => {
+  const r = repo(t);
+  writeFileSync(join(r.dir, "PROJECT.md"), "the plan\n"); r.g(["add", "PROJECT.md"]); r.g(["commit", "-qm", "plan"]);
+  const head = r.g(["rev-parse", "HEAD"]).trim();
+  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir, guard: { paths: ["project.md"], refusal: null } }), /The publication to https:\/\/example\.test\/repo\.git would carry private files: PROJECT\.md/);
+  assert.equal(r.pushes(), 0);
+  await publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir });
+  assert.equal(r.pushes(), 1, "without a private file named, the same publication goes");
+});

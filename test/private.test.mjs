@@ -8,7 +8,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { guardedPaths, linkPrivate, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
+import { guardedPush, linkPrivate, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 
@@ -117,7 +118,7 @@ test("--home names the folder; a checkout that is that folder keeps its files in
   assert.equal(g.git(g.keep, "check-ignore", ".atelier-private"), ".atelier-private");
   g.git(g.keep, "commit", "-q", "--allow-empty", "-m", "first");
   g.git(g.keep, "add", "-f", ".atelier-private");
-  assert.deepEqual(privateChanges(g.keep, guardedPaths("demo", g.read().projects.demo, g.icloud)), [".atelier-private"], "the list is never staged either");
+  assert.deepEqual(privateChanges(g.keep, privateGuard("demo", g.read().projects.demo, { root: g.icloud }).paths), [".atelier-private"], "the list is never staged either");
   assert.ok(lstatSync(join(g.keep, "PROJECT.md")).isFile());
   assert.equal(g.git(g.keep, "status", "--porcelain", "--untracked-files=all").split("\n").filter((l) => l.includes("PROJECT.md")).length, 0);
 });
@@ -149,7 +150,7 @@ test("linkPrivate replaces a stale link of its own and leaves a link under a lin
 
 test("special characters in a private path are ignored by Git as that path alone", (t) => {
   const f = setup(t);
-  const names = ["a*b.md", "[x].md", "#plan", "!bang", "q?.md"];
+  const names = ["a*b.md", "[x].md", "!bang", "q?.md"];
   for (const n of names) writeFileSync(join(f.keep, n), "p\n");
   for (const n of ["ab.md", "aXb.md", "x.md", "qz.md"]) writeFileSync(join(f.checkout, n), "public\n");
   linkPrivate(f.checkout, { private: names, privateHome: f.keep }, { name: "demo" });
@@ -221,5 +222,125 @@ test("the list in iCloud is read as data: config-only names still work, each sou
   assert.match(ls.output, /file\.txt \(listed in iCloud\): Git tracks it in the checkout/);
   assert.match(ls.output, /\.atelier-private line 3: .*skipped/);
   // Every command's guard reads the list too, and holds the list itself.
-  assert.deepEqual(guardedPaths("demo", f.read().projects.demo, f.icloud).sort(), [".atelier-private", "PROJECT.md", "file.txt", "mine.md", "notes"].sort());
+  assert.deepEqual(privateGuard("demo", f.read().projects.demo, { root: f.icloud }).paths.sort(), [".atelier-private", "PROJECT.md", "file.txt", "mine.md", "notes"].sort());
+});
+
+// Astra's review of t645, finding 4: a list that could not be read shrank
+// what was guarded to nothing. Each list read is kept in this Mac's config,
+// and a list that cannot be read with no copy kept refuses the push.
+test("the guard keeps a copy of each list it reads and fails closed when the list cannot be read and no copy is kept", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
+  const entry = { path: f.checkout, branch: "main" };
+  let saved = 0;
+  const read = privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
+  assert.deepEqual(read, { paths: ["PROJECT.md", ".atelier-private"], refusal: null });
+  assert.deepEqual(entry.privateFromList, ["PROJECT.md"]);
+  assert.equal(saved, 1);
+  privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
+  assert.equal(saved, 1, "an unchanged list is not saved again");
+  // The folder gone from this Mac: the copy still guards.
+  rmSync(f.keep, { recursive: true });
+  assert.deepEqual(privateGuard("demo", { ...entry, privateHome: f.keep }, { root: f.icloud }).paths, ["PROJECT.md", ".atelier-private"]);
+  // No copy: refused, naming where the list should be.
+  const none = privateGuard("demo", { path: f.checkout, privateHome: f.keep, private: ["mine.md"] }, { root: f.icloud });
+  assert.match(none.refusal, new RegExp(`${f.keep.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, the folder that keeps demo's private files and their list, is not on this Mac.*Nothing was pushed\\.`));
+  assert.ok(none.paths.includes("mine.md"), "what is known is still guarded");
+  let pushed = false;
+  assert.throws(() => guardedPush({ guard: none, cwd: f.checkout, tip: "HEAD", what: "The push" }, () => { pushed = true; }), /The push: .*is not on this Mac/);
+  assert.equal(pushed, false);
+  // An unreadable list, with no copy, is refused the same way.
+  const g = setup(t);
+  mkdirSync(join(g.keep, ".atelier-private"));
+  assert.match(privateGuard("demo", { path: g.checkout }, { root: g.icloud }).refusal, /\.atelier-private cannot be read/);
+  // A project with no folder and nothing named guards nothing and refuses nothing.
+  assert.deepEqual(privateGuard("other", { path: g.checkout }, { root: g.icloud }), { paths: [], refusal: null });
+});
+
+// Astra's review of t645, findings 5 and 7, and Argon's finding 1.
+test("the commit scan sees root commits whatever log.showRoot says, reads paths NUL-framed and matches names as a Mac does", (t) => {
+  const f = setup(t);
+  const repo = join(f.root, "fresh");
+  mkdirSync(repo);
+  const g = (...a) => f.git(repo, ...a);
+  g("init", "-q", "-b", "main");
+  writeFileSync(join(f.root, "gitconfig"), "[log]\n\tshowRoot = false\n[diff]\n\tnoprefix = true\n\trenames = copies\n\trelative = true\n[core]\n\tquotePath = true\n");
+  writeFileSync(join(repo, "PROJECT.md"), "the plan\n");
+  writeFileSync(join(repo, "odd\u0001name C" + "a".repeat(40)), "x\n");
+  writeFileSync(join(repo, ":x"), "x\n");
+  g("add", "-A");
+  g("commit", "-q", "-m", "root");
+  const root = g("rev-parse", "HEAD");
+  const previous = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = join(f.root, "gitconfig");
+  try {
+    assert.deepEqual(privateCommits(repo, ["PROJECT.md"], "HEAD"), [{ commit: root, path: "PROJECT.md" }]);
+    assert.deepEqual(privateCommits(repo, ["odd\u0001name C" + "a".repeat(40)], "HEAD").map((x) => x.path), ["odd\u0001name C" + "a".repeat(40)]);
+    assert.deepEqual(privateCommits(repo, [":x"], "HEAD").map((x) => x.path), [":x"]);
+    // A name committed decomposed and in another case is the same file on a Mac.
+    const nfd = "Café.md";
+    writeFileSync(join(repo, "x.txt"), "x\n");
+    g("add", "x.txt");
+    g("commit", "-q", "-m", "x");
+    g("update-index", "--add", "--cacheinfo", `100644,${g("hash-object", "-w", "x.txt")},${nfd}`);
+    g("commit", "-q", "-m", "decomposed");
+    assert.deepEqual(privateCommits(repo, ["CAFÉ.md"], "HEAD", [root]).map((x) => x.path.normalize("NFC")), ["Café.md"]);
+  } finally {
+    if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = previous;
+  }
+});
+
+test("a file Git tracks under another case is refused as tracked, and never replaced by a link", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.checkout, "project.md"), "tracked\n");
+  f.git(f.checkout, "add", "project.md");
+  f.git(f.checkout, "commit", "-q", "-m", "tracked");
+  const r = f.run("private", "add", "PROJECT.md");
+  assert.equal(r.code, 1, r.output);
+  assert.match(r.output, /Git tracks PROJECT\.md/);
+  // Named through the list instead, it is still not linked over the tracked file.
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
+  const linked = linkPrivate(f.checkout, { path: f.checkout }, { name: "demo", root: f.icloud });
+  assert.deepEqual(linked.refused, ["PROJECT.md"]);
+  assert.equal(readFileSync(join(f.checkout, "project.md"), "utf8"), "tracked\n");
+  assert.ok(!lstatSync(join(f.checkout, "project.md")).isSymbolicLink());
+});
+
+test("private ls takes no --home", (t) => {
+  const f = setup(t);
+  const r = f.run("private", "ls", "--home", f.keep);
+  assert.notEqual(r.code, 0);
+  assert.match(r.output, /usage: atelier private add/);
+});
+
+// Both reviews of t645: pushes were guarded call by call and some were
+// missed. Every git push in the CLI is made inside guardedPush, except the
+// ones listed here with why.
+test("every git push the CLI makes runs inside guardedPush", () => {
+  const exempt = {
+    "cli/push-steps.mjs": "its helpers run only inside guardedPush: init's pushHistory and push's 413 fallback, which pushes the HEAD the guarded push checked",
+    "cli/commands/merge.mjs#notes": "refs/notes/atelier alone, which holds receipts, no project file",
+  };
+  const files = execFileSync("git", ["ls-files", "cli"], { encoding: "utf8" }).split("\n").filter((f) => f.endsWith(".mjs") && !/\.(test|spec)\.mjs$/.test(f));
+  const unguarded = [];
+  for (const file of files) {
+    if (exempt[file]) continue;
+    const lines = readFileSync(file, "utf8").split("\n");
+    lines.forEach((line, i) => {
+      if (!/["']push["']\s*,\s*["']--/.test(line)) return;
+      if (/refs\/notes\/atelier:refs\/notes\/atelier['"]\]/.test(line) && !/refs\/heads/.test(line) && exempt[`${file}#notes`]) return;
+      // The push's own lines and those just around it: guardedPush wraps
+      // the push, or the argument list is built just before it.
+      const around = lines.slice(Math.max(0, i - 12), i + 9).join("\n");
+      if (!around.includes("guardedPush(")) unguarded.push(`${file}:${i + 1}`);
+    });
+  }
+  assert.deepEqual(unguarded, []);
+});
+
+test("every name privatePath accepts comes back unchanged from the list in iCloud", () => {
+  for (const bad of ["#plan", "  PROJECT.md", "PROJECT.md ", "a\tb", "a\u0001b", "x\u007f"]) assert.ok("error" in privatePath(bad), JSON.stringify(bad));
+  const names = ["PROJECT.md", "notes/a b.md", "!bang", "a#b", "[x].md", "Café.md", "dir/#inner"].map((n) => privatePath(n).path);
+  assert.ok(names.every(Boolean));
+  assert.deepEqual(parsePrivateList(privateListText(names)).paths.sort(), [...names].sort());
 });
