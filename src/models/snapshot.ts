@@ -90,6 +90,7 @@ export interface Cutoffs {
   unread: { key: string; name: string }[];   // registered then, but not read: in no figure, and not read on replay
   index: number;                             // the index's last assignment event read
   runs: number;                              // the last run report read, by its row
+  runsFrom?: number;                         // set only when the run-report read failed partway: the lowest row it read, so a replay reads the same rows and no more
 }
 
 // The pool's names as they stood: enough to resolve a name to its model, and
@@ -135,7 +136,7 @@ export interface SnapshotInput {
   owner: string;
   pool: readonly PoolState[];
   ledgers: readonly { key: string; name: string; through: number; events: readonly LedgerEvent[] | null }[];
-  runs: { through: number; reports: readonly RunReport[]; complete?: boolean };
+  runs: { through: number; reports: readonly RunReport[]; complete?: boolean; from?: number };
   index: { through: number; events: readonly LedgerEvent[] };
 }
 
@@ -170,7 +171,7 @@ export function computeSnapshot(input: SnapshotInput): ComputedSnapshot {
   return {
     take: {
       schema: SNAPSHOT_SCHEMA, day: input.day, takenAt: input.takenAt, origin: originOf(input.day, input.takenAt), complete: unread.length === 0 && runsRead, runsRead, owner: input.owner,
-      cutoffs: { asOf, ledgers: read.map((l) => ({ key: l.key, name: l.name, seq: l.through })).sort((a, b) => a.key.localeCompare(b.key)), unread: unread.sort((a, b) => a.key.localeCompare(b.key)), index: input.index.through, runs: input.runs.through },
+      cutoffs: { asOf, ledgers: read.map((l) => ({ key: l.key, name: l.name, seq: l.through })).sort((a, b) => a.key.localeCompare(b.key)), unread: unread.sort((a, b) => a.key.localeCompare(b.key)), index: input.index.through, runs: input.runs.through, ...(runsRead ? {} : { runsFrom: input.runs.from ?? input.runs.through + 1 }) },
       pool, coverage,
     },
     rows,
@@ -306,7 +307,7 @@ export function trendOf(model: string, takes: readonly SnapshotTake[], rows: rea
       }
       const recorded = { numerator: f.numerator, denominator: f.denominator, n: f.n, minSamples: f.minSamples, window: f.window, version: f.version, state: f.state, ...(f.note ? { note: f.note } : {}) };
       const gap = !take.complete
-        ? `partial record: ${take.coverage.unread.join(", ")} could not be read`
+        ? `partial record: ${[...take.coverage.unread, ...(take.runsRead === false ? ["the run reports"] : [])].join(", ")} could not be read`
         : f.state === "measured" ? null : f.state === "none" ? "none yet" : f.state === "too-few" ? `too few: ${valueText(f)}` : "unknown";
       const now = { version: f.version, days: f.window.days, min: f.minSamples, cohort: cohortOf(row) };
       let breaks: string | null = null;

@@ -1643,11 +1643,12 @@ export class Ledger extends DurableObject<Env> {
   // after, null on the last. A caller that follows `next` to null has read
   // every report up to the cutoff, however many there are; the cutoff used
   // comes back so a replay from it reads the same reports however many
-  // arrive later. Not RUN_REPORTS-capped: reading only the newest 1,000 and
+  // arrive later. `from` is the lowest row read, so a partial snapshot's
+  // replay stops where the original read did. Not RUN_REPORTS-capped: reading only the newest 1,000 and
   // calling the history whole was t623's first version's defect.
-  runsPage(through: number | null, before: string, after: number | null, limit = RUN_REPORTS): { through: number; runs: RunReport[]; next: number | null } {
+  runsPage(through: number | null, before: string, after: number | null, limit = RUN_REPORTS, from = 0): { through: number; runs: RunReport[]; next: number | null } {
     const cut = through ?? ((this.sql.exec(`SELECT MAX(id) AS id FROM runs`).one().id as number | null) ?? 0);
-    const rows = this.sql.exec(`SELECT id, json FROM runs WHERE id <= ? AND id < ? AND json_extract(json, '$.at') < ? ORDER BY id DESC LIMIT ?`, cut, after ?? Number.MAX_SAFE_INTEGER, before, limit + 1).toArray();
+    const rows = this.sql.exec(`SELECT id, json FROM runs WHERE id <= ? AND id < ? AND id >= ? AND json_extract(json, '$.at') < ? ORDER BY id DESC LIMIT ?`, cut, after ?? Number.MAX_SAFE_INTEGER, from, before, limit + 1).toArray();
     const page = rows.slice(0, limit);
     return { through: cut, runs: page.map((r) => JSON.parse(r.json as string) as RunReport), next: rows.length > limit ? (page[page.length - 1].id as number) : null };
   }

@@ -3327,12 +3327,15 @@ async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: 
 // now, when null), read page by page until the Ledger says there are no more.
 // `complete` is false, with the pages read so far, when a page could not be
 // read: the snapshot is then partial, never computed as if it held the lot.
-async function readRunsThrough(I: ReturnType<typeof index>, through: number | null, before: string): Promise<{ through: number; reports: RunReport[]; complete: boolean }> {
+// `from` is the lowest row to read (a partial snapshot's replay stops where
+// the original read did); a read that fails partway returns the lowest row
+// it did read, so the snapshot records enough to be reproduced.
+async function readRunsThrough(I: ReturnType<typeof index>, through: number | null, before: string, from = 0): Promise<{ through: number; reports: RunReport[]; complete: boolean; from?: number }> {
   const reports: RunReport[] = [];
   let cut = through, after: number | null = null;
   try {
     for (;;) {
-      const page: { through: number; runs: RunReport[]; next: number | null } = await I.runsPage(cut, before, after);
+      const page: { through: number; runs: RunReport[]; next: number | null } = await I.runsPage(cut, before, after, undefined, from);
       cut = page.through;
       reports.push(...page.runs);
       if (page.next === null) return { through: cut, reports, complete: true };
@@ -3340,7 +3343,7 @@ async function readRunsThrough(I: ReturnType<typeof index>, through: number | nu
     }
   } catch (err) {
     console.error(errorLine("model snapshot: run reports", err));
-    return { through: cut ?? 0, reports, complete: false };
+    return { through: cut ?? 0, reports, complete: false, from: after ?? (cut ?? 0) + 1 };
   }
 }
 
@@ -3369,7 +3372,7 @@ export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ 
   for (const day of due) {
     const runs = await readRunsThrough(I, runsCut, dayEnd(day));
     runsCut = runs.through || null;
-    const snapshot = computeSnapshot({ day, takenAt, owner: ownerActor(env), pool: (pool as unknown as ModelEntry[]).map((e) => ({ id: e.id, harness: e.harness, aliases: e.aliases })), ledgers, runs: { through: runs.through, reports: runs.reports, complete: runs.complete }, index: index_ });
+    const snapshot = computeSnapshot({ day, takenAt, owner: ownerActor(env), pool: (pool as unknown as ModelEntry[]).map((e) => ({ id: e.id, harness: e.harness, aliases: e.aliases })), ledgers, runs: { through: runs.through, reports: runs.reports, complete: runs.complete, from: runs.from }, index: index_ });
     out.push({ ...(await I.putModelSnapshot(snapshot)), complete: snapshot.take.complete });
   }
   return out;
@@ -3390,9 +3393,9 @@ export async function replayModelSnapshot(env: Env, day: string, rev?: number): 
     ...await Promise.all(take.cutoffs.ledgers.map(async (c) => ({ key: c.key, name: c.name, through: c.seq, events: c.seq ? await allEvents(ledger(env, c.key), c.seq) : [] }))),
     ...take.cutoffs.unread.map((u) => ({ key: u.key, name: u.name, through: 0, events: null })),
   ];
-  const runs = await readRunsThrough(I, take.cutoffs.runs, take.cutoffs.asOf);
+  const runs = await readRunsThrough(I, take.cutoffs.runs, take.cutoffs.asOf, take.cutoffs.runsFrom ?? 0);
   if (!runs.complete) throw new Error("the run reports could not all be read, so the day cannot be replayed");
-  const replayed = computeSnapshot({ day, takenAt: take.takenAt, owner: take.owner, pool: take.pool, ledgers, runs: { through: runs.through, reports: runs.reports, complete: true }, index: { through: take.cutoffs.index, events: (await I.assignmentEvents()) as unknown as LedgerEvent[] } });
+  const replayed = computeSnapshot({ day, takenAt: take.takenAt, owner: take.owner, pool: take.pool, ledgers, runs: { through: runs.through, reports: runs.reports, complete: take.runsRead !== false, from: take.cutoffs.runsFrom }, index: { through: take.cutoffs.index, events: (await I.assignmentEvents()) as unknown as LedgerEvent[] } });
   return { stored, replayed: replayed.rows, differences: replayDifferences(stored.rows, replayed.rows) };
 }
 
