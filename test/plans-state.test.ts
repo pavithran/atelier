@@ -77,8 +77,9 @@ test("the default planner is the first model for research work that is not refus
   // ranks first on its observed pass but is not offered, so it is passed over
   // with the reason and the next offered model plans.
   const now = Date.now();
+  // The runner says it runs plan jobs, as the queue asks of a plan job's runner.
   const offered = pickPlanner([opus, gpt, refused, paid], record, policy, undefined,
-    [{ runner: "home:studio", kind: "home" as const, agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now).toISOString() }]);
+    [{ runner: "home:studio", kind: "home" as const, jobs: ["build", "plan"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: new Date(now).toISOString() }]);
   assert.equal(offered.actor, "claude-code/opus-5.5");
   assert.deepEqual(offered.passedOver.map((c) => [c.actor, c.reasons[c.reasons.length - 1]]), [
     ["codex/gpt-6-astra", "no live runner offers codex/gpt-6-astra, so no runner could claim the plan job"],

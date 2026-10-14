@@ -38,7 +38,8 @@ export type DecisionView = Decision & { status: DecisionStatus };
 
 // Text a person typed, kept to one line without control characters, so a
 // decision can never carry a line that poses as part of a brief around it.
-const line = (v: unknown) =>
+// Role assignments (src/models/assignments.ts) clean their text with it too.
+export const line = (v: unknown) =>
   typeof v === "string" ? v.replace(TEXT_CONTROLS, " ").replace(/\s+/g, " ").trim() : "";
 
 // What a decision says, checked before anything is written: the decision and

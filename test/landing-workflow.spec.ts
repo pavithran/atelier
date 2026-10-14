@@ -509,7 +509,9 @@ it("says by runner name when every runner that offers the reviewer has skipped",
   await L.recordPush(id, OPUS, H1, H1);
   await observed(L, id, H1);
   // A reviewer of another family, offered for review by a single runner.
-  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() } satisfies ModelEntry);
+  // At home, where its one runner is: the review is offered only where the
+  // ledger sends it (gpt-6-astra's second review of t622, finding 2).
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() } satisfies ModelEntry);
   await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
   await L.setLandingWorkflow(id, "wf-skip-1", "owner");
   await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-skip-1");

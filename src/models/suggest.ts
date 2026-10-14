@@ -1,9 +1,11 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
-import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
+import { latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, isInfrastructureOutcome, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
+import { claimants, offering, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
@@ -14,11 +16,18 @@ export interface SuggestionInput extends SuggestionRecords {
   policy: ProjectPolicy;
   owner?: string;
   frontierRequired?: boolean;
+  // The role assignments standing now (src/models/assignments.ts); those of
+  // this project (by its key, `project`) and of every project bear here.
+  assignments?: readonly Assignment[];
+  // The runners' offers as the index recorded them. A model no live runner
+  // offers is passed over, since no runner could claim its dispatch; with no
+  // live runner, or none read, nothing is restricted (as plan routing does).
+  offers?: readonly SeenOffer[] | null;
 }
 const actorOf = (m: ModelEntry) => `${m.harness}/${m.id}`;
 const keysOf = (m: ModelEntry) => new Set([m.id, ...m.aliases].map(modelKey));
 export const frontier = (m: ModelEntry) => [m.id, ...m.aliases].some((id) => /(?:^|[-/])(fable|opus)(?:[-.]|$)|^gpt-6-astra(?:[-.:]|$)/i.test(id));
-export const sensitive = (item: Task) => /\b(security|auth(?:entication|orization)?|concurren\w*|race|locking|locks?|leases?|gates?)\b/i.test([item.title, item.brief, ...item.scope].join(" "));
+export const sensitive = (item: Pick<Task, "title" | "brief" | "scope">) => sensitiveText([item.title, item.brief, ...item.scope]);
 
 // A pair of consecutive stalled build outcomes latches the exclusion. A
 // later refusal or timeout cannot clear it; a submitted or merged build can.
@@ -58,7 +67,13 @@ export function ranked(input: SuggestionInput) {
   }).sort((a, b) => b.score - a.score || actorOf(a.entry).localeCompare(actorOf(b.entry)));
 }
 
-export function suggestBuilder(input: SuggestionInput, constraints: { to?: unknown; model?: unknown } = {}): Choice & { where: string } {
+// `constraints.job` is the job the dispatch will carry ("build", the
+// default, for a plain build): the offer check asks runners for that job,
+// as assign() will (claimants), so a suggestion is never a model no runner
+// would claim the job as.
+export function suggestBuilder(input: SuggestionInput, constraints: { to?: unknown; model?: unknown; job?: unknown } = {}): Choice & { where: string } {
+  const job = typeof constraints.job === "string" && constraints.job !== "build" ? constraints.job as Dispatch["job"] : undefined;
+  const jobText = job ? `the ${job} job` : "a build";
   const rejections = input.sources.filter((s) => s.project === input.project).flatMap((s) => s.events)
     .filter((e) => e.itemId === input.item.id && e.kind === "review.rejected").length;
   const strict = sensitive(input.item) || rejections >= 2;
@@ -69,22 +84,53 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   const why = (rejections >= 2 ? "Two rejections require a frontier builder." : strict ? "Security, concurrency or gate work requires a frontier builder." : "Eligible pool models ranked by recorded successful and failed outcomes.")
     + (single ? ` This project runs in single-family mode (${single}), so only ${single}'s models are considered.` : "");
   const excluded: string[] = [];
-  for (const { entry, score, reason } of ranked(input)) {
+  // gpt-6-astra's review of t622, finding 6: without the offers, a standing
+  // assignment could suggest a model nobody can claim over a live one.
+  // Offered for this very dispatch: a build, sent where the entry runs, as
+  // the dispatch route sends it (gpt-6-astra's second review, finding 2).
+  const offeredFor = (entry: ModelEntry) => (input.offers ? offering({ to: entry.where, job }, input.offers) : null);
+  const refusalOf = (entry: ModelEntry): string => {
     const actor = actorOf(entry);
-    if (constraints.model && !entryRuns(entry, String(constraints.model))) continue;
-    if (constraints.to && constraints.to !== "any" && constraints.to !== entry.where) continue;
-    let refusal = "";
     const held = standingRefusal(entry, "build");
-    if (held) refusal = held;
-    else if (single && actorFamily(actor) !== single) refusal = `not one of ${single}'s models (single-family mode)`;
-    else if (strict && !frontier(entry)) refusal = "not frontier";
-    else if (stalledBuilder(entry, input)) refusal = "two consecutive stalled builds; no successful build since";
-    else if (entry.status?.state === "refused") refusal = "provider refused";
-    else if (paidPerToken(entry)) refusal = "per-token spending is not authorized";
-    else { try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; refusal = e.message; } }
+    if (held) return held;
+    const offered = offeredFor(entry);
+    if (offered && !claimants({ to: entry.where, job, agent: entry.harness, model: entry.id }, input.offers ?? [])?.length) return `no live runner offers ${actor} for ${jobText} ${entry.where === "home" ? "at home" : "in the cloud"}, so no runner could claim its dispatch`;
+    if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
+    if (strict && !frontier(entry)) return "not frontier";
+    if (stalledBuilder(entry, input)) return "two consecutive stalled builds; no successful build since";
+    if (entry.status?.state === "refused") return "provider refused";
+    if (paidPerToken(entry)) return "per-token spending is not authorized";
+    try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; return e.message; }
+    return "";
+  };
+  // The developer's explicit --model and --to narrow the candidates first;
+  // --model is the model as typed, converted to a pool id where it entered
+  // (typedModel in the dispatch route), and matched here by its id alone.
+  // With --model the developer has chosen: no build assignment reorders the
+  // candidates, and each is named as skipped for it, by the same call that
+  // keeps the order (gemini-4-argon's and gpt-6-astra's eighth reviews of
+  // t622). Without it, a build assignment puts its eligible choices ahead of
+  // the outcome ranking (src/models/assignments.ts, precedence).
+  // --model is the exact entry id the boundary resolved it to (typedModel,
+  // canonicalNames in src/index.ts), compared as it is, profile included,
+  // and never resolved again against this pool, which may have changed
+  // since (gpt-6-astra's fourteenth and fifteenth reviews of t622).
+  const chosen = constraints.model ? String(constraints.model) : null;
+  const rows = ranked(input)
+    .filter(({ entry }) => chosen === null || entry.id === chosen)
+    .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
+    .map((row) => ({ ...row, refusal: refusalOf(row.entry) }));
+  const assigned = applicableAssignments(input.assignments ?? [], input.project, ["build"]);
+  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), assigned, (r) => r.refusal || null, FALLBACK.build, constraints.model ? "the developer's --model" : null);
+  const said = (row: (typeof rows)[number]) => byAssignment.reasons(row);
+  for (const row of byAssignment.order) {
+    const { entry, score, reason, refusal } = row;
+    const actor = actorOf(entry);
     if (refusal) { excluded.push(`${actor}: ${refusal}`); continue; }
     const note = latestNote(entry, input.project, input.item.id);
-    return { actor, where: entry.where, reasons: [why, `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
+    return { actor, where: entry.where, reasons: [why, ...said(row), `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
   }
-  throw new RuleError("no_builder", `${why} No eligible builder in the pool. ${excluded.join("; ")}`, 409);
+  // A failure says what became of the build assignments too (gpt-6-astra's
+  // sixteenth review of t622, finding 2).
+  throw new RuleError("no_builder", [`${why} No eligible builder in the pool. ${excluded.join("; ")}`, ...byAssignment.outcome.lines].join(" "), 409);
 }

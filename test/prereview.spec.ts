@@ -681,3 +681,43 @@ for (const workflow of [false, true]) for (const outcome of ["passed", "conflict
     expect(await queueIds(L)).toContain(t2);
   });
 }
+
+// gpt-6-astra's nineteenth review of t622, finding 3: with no model offered
+// for the pre-review job, the selection returned before the assignment-aware
+// selector, so the unavailable result named no assignment.
+it("an unavailable pre-review names the review assignment it could not apply", async () => {
+  const L = await setup("pre-assigned");
+  await L.assignmentsChanged({ version: 990, assignments: [{ id: "a990", kind: "assigned", scope: "*", role: "review", choices: [{ actor: GPT, model: "gpt-6-astra" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  // A live runner advertises pre-review, offering no pool model for it.
+  await offer(["build", "review", "prereview"], [{ agent: "opencode", models: ["nothing-here"] }]);
+  const [t1, t2] = [await submitted(L, head(1)), await submitted(L, head(2))];
+  await L.beginProjectLanding(t1, "owner");
+  await L.queueProjectLanding(t2, "owner");
+  const unavailable = (await events(L, t2)).find((e) => e.kind === "prereview.unavailable");
+  expect(String(unavailable?.data.detail)).toMatch(/no model in the pool is offered for the prereview job by a live runner/);
+  expect(String(unavailable?.data.detail)).toMatch(/Role assignment a990 skipped/);
+});
+
+// gpt-6-astra's twentieth review of t622, finding 2: the pre-reviewer read the
+// assignments without the paths the change measured, so a task whose change
+// touches src/auth.ts never read its security-review assignment.
+it("a pre-review reads the security-review assignment when the measured change is security work", async () => {
+  const L = await setup("pre-security");
+  await L.assignmentsChanged({ version: 995, assignments: [{ id: "a995", kind: "assigned", scope: "*", role: "security-review", choices: [{ actor: GPT, model: "gpt-6-astra" }], reason: "Finds auth defects.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  const auth = async (h: string) => {
+    const id = (await L.newItem(`Task ${h.slice(-2)}`, ["src/**"], "owner", { accept: ["It works"] })).id;
+    await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+    await L.claim(id, OPUS, RUNNER);
+    await L.setFork(id, `fork-${id}`, H0, OPUS);
+    await L.recordPush(id, OPUS, h, h);
+    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: h, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/auth.ts"] } satisfies Evidence);
+    await L.submit(id, OPUS);
+    return id;
+  };
+  const [t1, t2] = [await auth(head(1)), await auth(head(2))];
+  await L.beginProjectLanding(t1, "owner");
+  await L.queueProjectLanding(t2, "owner");
+  const requested = (await events(L, t2)).find((e) => e.kind === "prereview.requested");
+  expect(requested?.data.reviewer).toBe(GPT);
+  expect(String(requested?.data.reason)).toMatch(/Role assignment a995 \(security-review/);
+});

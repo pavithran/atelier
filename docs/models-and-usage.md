@@ -88,6 +88,62 @@ printed after them as priors. A card is the vendor's word, not a
 measurement Atelier made: nothing that routes or suggests a model reads it.
 `docs/model-cards/2026-10-13.json` holds the cards read on 2026-10-13.
 
+## Which model does what: role assignments
+
+The developer's judgement of which model is best at a job is kept as a role
+assignment, a dated record on the index beside the pool (t622). Each names a
+role (build, review, security-review, claims-review or plan), its scope
+(every project, or one with `--scope`), the models in order as harness/model,
+the reason, the developer's own words and the evidence it rests on, each a
+task or one of its events as `PROJECT/tN` or `PROJECT/tN#SEQ`. A bare `tN` is
+refused, since task ids repeat across projects, and each reference is checked
+to exist. Only the developer's token records or withdraws one, and `--as`
+names the harness/model that did it for them.
+
+```text
+atelier models assign security-review codex/gpt-6-astra --reason "Every blocking finding judged was real" --quote "astra does security reviews" --evidence atelier/t592 --evidence atelier/t593 --as claude-code/opus-5.5
+atelier models roles
+atelier models roles withdraw a1 --note "why"
+```
+
+Records are never changed. A new assignment for the same role and scope
+supersedes the standing one and must name it with `--replaces aN`, so two
+sessions that both saw it cannot both replace it; the same request sent again
+is answered with its own record. Withdrawing the standing one returns the role
+to its fallback, never to an assignment it had superseded. `atelier models
+roles` lists what stands, the history with its evidence and authors, and each
+role's fallback.
+
+Who decides, strongest first:
+
+1. The rules. A model paused, reserved or without the pool role, refused,
+   not offered by a live runner, paid when paid models are not allowed, outside
+   the project's policy or single-family mode, not admitted as a reviewer, of a
+   contributor's family, or too small for the part is never chosen. An
+   assignment orders only what passes.
+2. An explicit choice for the one job: `atelier dispatch --model` or `--to`,
+   a reviewer the developer names, a plan part's `prefer`, and the previous
+   round's reviewer on a re-review.
+3. The project's review tier (`atelier init --review-tier`). Its models
+   review a protected change before the rest of the pool; an assignment orders
+   the tier's models among themselves and adds none to it. A tier model
+   outside the pool is still asked in the tier's order, but no assignment
+   moves it ahead.
+4. Assignments, most specific first: a role's own (security-review for
+   security, concurrency or gate work, claims-review for docs) before review,
+   and this project's before every project's. The first with an eligible
+   choice is applied; one with none is skipped and the reasons say why.
+5. The fallback: outcomes, review precision, reliability, speed and the
+   spread across a plan, as before.
+
+The pool's roles (build, review, plan) are eligibility; an assignment's roles
+are judgement. The pool's tier (frontier, execution, budget) is informational
+and no selector reads it. A plan keeps the routing it was approved with; an
+assignment applies when a plan is previewed, approved or rerouted, and when
+its tick picks a reviewer the routing no longer gives. Each project's ledger
+holds a copy of the assignments that bear on it, sent when one changes and
+with the pool. `src/models/assignments.ts` holds the rules.
+
 ## Each model's reliability
 
 The Models page and the Usage page show each model's record across every
