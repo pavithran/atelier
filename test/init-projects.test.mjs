@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 
 function fixture(run) {
-  mkdirSync(".cache", { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/init-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-init-test-"));
   const config = join(dir, "config.json"), log = join(dir, "calls.jsonl");
   const initial = { server: "https://atelier.test", owner: "owner", projects: { weblog: { path: dir, branch: "main", notesRemote: "origin" } } };
   writeFileSync(config, JSON.stringify(initial));

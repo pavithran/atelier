@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -56,8 +56,7 @@ const POOL = [
 // evidence at the pushed head asks for it again while the task is submitted
 // (Ledger.reaskReview), which `reasked` counts.
 function landing(t, { submitted = false, args = {}, answers = [allMet()], criteria = CRITERIA, events = [], review = { needed: false, reason: "a direct change needs no review" }, landFails = () => false, pool = POOL, policy = { checks: [] }, project = {}, workflow = false } = {}) {
-  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
-  const dir = mkdtempSync(join(scratch, "triage-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-triage-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
   const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": "claude-code/opus-5.5", "atelier.write-token-expires-at": new Date(Date.now() + 6 * 3600_000).toISOString() };
   const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease", wfPath = `${itemPath}/landing-workflow`;
@@ -414,8 +413,7 @@ test("a pass recorded at the same head, merge base and criteria stands without a
 test("without an injected harness the triage runs through the harness's own adapter, read-only, and its answer is read (t475)", async (t) => {
   // A stand-in for claude, as ATELIER_CLAUDE names one for the adapter: it
   // keeps the prompt it was given and answers every criterion met, or fails.
-  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
-  const bin = mkdtempSync(join(scratch, "triage-claude-")); t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const bin = mkdtempSync(join(tmpdir(), "atelier-triage-claude-")); t.after(() => rmSync(bin, { recursive: true, force: true }));
   const fake = (name, body) => { const file = join(bin, name); writeFileSync(file, `#!/bin/sh\n${body}\n`); chmodSync(file, 0o755); return file; };
   const answering = fake("claude-ok", `cat > "${join(bin, "prompt.txt")}"\nprintf '%s\\n' "$*" > "${join(bin, "argv.txt")}"\nprintf '%s\\n' '${JSON.stringify({ type: "result", is_error: false, result: allMet() })}'`);
   const l = landing(t, { args: { triage: "claude-code/opus-5.5", "no-review": true } });
