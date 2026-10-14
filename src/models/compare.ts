@@ -121,7 +121,15 @@ export interface ModelComparison {
   };
   roles: RoleRow[];
   leftOut: string[];          // reader rows left out, with why
+  coverage: Coverage;
 }
+
+// What the readers were given: the projects whose events were read, the
+// events, and the projects that could not be read just then, whose work no
+// figure holds. It travels inside the projection, so the page and the CLI
+// both say when a record is partial (gpt-6-astra's second review of t621,
+// finding 2: the CLI printed a partial record as a whole one).
+export interface Coverage { projects: number; events: number; unread: string[] }
 
 export interface CompareInput {
   named: string;
@@ -134,6 +142,7 @@ export interface CompareInput {
   pairwise: PairwiseRecord;
   assignments: readonly Assignment[];          // the ones standing now
   projectNames?: Readonly<Record<string, string>>; // a project's key: its name now
+  coverage: Coverage;
 }
 
 const ALL_HISTORY: FigureWindow = { from: null, to: null, days: null };
@@ -285,6 +294,7 @@ export function compareModel(input: CompareInput): ModelComparison {
     },
     roles: COMPARE_ROLES.map((role) => ({ role, assignments: assignmentsFor(role), figures: figures[role] ?? [], ...(unmeasured[role] ? { unmeasured: unmeasured[role] } : {}) })),
     leftOut,
+    coverage: { projects: input.coverage.projects, events: input.coverage.events, unread: [...input.coverage.unread].sort() },
   };
 }
 
@@ -324,9 +334,18 @@ export function claimText(c: VendorClaim): string {
   return `${c.benchmark}${c.version ? ` ${c.version}` : ""} ${scoreText(c)} (${c.taskKind}${under ? `; ${under}` : ""}), the vendor's figure from card ${c.card}, ${c.source}, published ${c.published ?? "(no date given)"}, read ${c.read}`;
 }
 
+// The coverage in one line: complete, or which projects no figure holds.
+export function coverageText(c: Coverage): string {
+  const read = `Atelier's figures read ${c.events} event${c.events === 1 ? "" : "s"} of ${c.projects} project${c.projects === 1 ? "" : "s"}`;
+  return c.unread.length
+    ? `${read}; ${c.unread.join(", ")} could not be read just now, so ${c.unread.length === 1 ? "its" : "their"} work is in no figure below and the record is partial.`
+    : `${read}, every project there is.`;
+}
+
 // The comparison as `atelier models show` prints it.
 export function comparisonLines(v: ModelComparison): string[] {
   const out = [`  Vendor claims beside Atelier's record for ${v.model}${v.entries.length ? ` (${v.entries.join(", ")})` : ""}:`];
+  out.push(`    ${v.coverage.unread.length ? "Partial record: " : ""}${coverageText(v.coverage)}`);
   out.push("    The vendor's figures are its benchmarks under its own conditions; Atelier's are shares of its own events. Neither is a measure of the other.");
   if (!v.vendor.claims.length) out.push("    Vendor claims: none recorded in force. Record one: atelier models card ID --file card.json");
   for (const c of v.vendor.claims) out.push(`    Vendor claim: ${claimText(c)}`);

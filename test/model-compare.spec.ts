@@ -79,6 +79,8 @@ it("the developer reads one model's comparison: vendor claims apart, each figure
   expect(res.headers.get("cache-control")).toBe("no-store");
   const v = await res.json() as ModelComparison;
   expect(v.model).toBe("gpt-6-astra");
+  expect(v.coverage.unread).toEqual([]);
+  expect(v.coverage.projects).toBeGreaterThan(0);
   expect(v.vendor.claims).toEqual([expect.objectContaining({ benchmark: "SWE-bench Pro", score: 73.5, unit: "%", source: PRIVATE.source, read: TODAY, conditions: { harness: "Codex", effort: "xhigh" } })]);
   const review = v.roles.find((r) => r.role === "review")!;
   expect(review.assignments).toEqual([expect.objectContaining({ position: 1, of: 1, reason: PRIVATE.reason, evidence: [PRIVATE.evidence], scope: "every project" })]);
@@ -140,6 +142,7 @@ it("the Models page renders the same projection, escapes every recorded text and
   const page = await res.text();
   const section = page.split('<section class="comparison"')[1]?.split("</section>")[0] ?? "";
   expect(section).toContain("Vendor claims beside Atelier's record</h2>");
+  expect(section).toMatch(/Atelier&#39;s figures read \d+ events of \d+ projects?, every project there is\./);
   expect(section).toContain("SWE-bench Pro 73.5% (repository; Codex; xhigh effort), the vendor&#39;s figure from card");
   expect(section).toContain(`<code>${NAME}/t1@${HEAD.slice(0, 12)} with gemini-4-argon</code>`);
   expect(section).toContain("&lt;img src=x onerror=alert(&quot;card&quot;)&gt; drops context");

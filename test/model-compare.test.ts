@@ -158,7 +158,7 @@ function project(events: LedgerEvent[], over: Partial<CompareInput> = {}, named 
     speed: buildSpeed(sources, [], OWNER, NOW.getTime()),
     judgement: buildJudgement(sources, judgementWindow(NOW), OWNER, POOL as never),
     pairwise: buildPairwise(sources, WINDOW, OWNER, POOL as never),
-    assignments: [], ...over,
+    assignments: [], coverage: { projects: 1, events: events.length, unread: [] }, ...over,
   });
 }
 const fig = (v: ModelComparison, role: string, measure: string): Figure => v.roles.find((r) => r.role === role)!.figures.find((f) => f.measure === measure)!;
@@ -325,4 +325,28 @@ test("projection: a bare pool alias is its entry's model, and the canonical read
   assert.deepEqual(v.entries, ["zcode/glm-5.3"]);
   assert.deepEqual([fig(v, "review", "pairwise-catches").numerator, fig(v, "review", "pairwise-catches").denominator], [1, 1]);
   assert.ok(!v.leftOut.some((l) => l.startsWith("pairwise")), v.leftOut.join("\n"));
+});
+
+// gpt-6-astra's second review of t621, finding 1: a confirmation placed on
+// review A, then a legacy refutation that may be on A or on B, still counted
+// A's confirmation as a catch.
+test("pairwise: an upheld verdict followed by an unplaceable one that may be on the same finding is ambiguous, not a catch", () => {
+  const a = review("t1", GPT, false, { findings: [blocking()] });
+  const placed = verdict(a, 1, "confirmed", { legacy: true });          // only A precedes it: placed on A
+  const b = review("t1", GPT, false, { findings: [blocking()] });
+  const events = [created("t1"), a, placed, b, review("t1", GEMINI, true), verdict(b, 1, "refuted", { legacy: true })];
+  assert.deepEqual(side(pairs(events), "gpt-6-astra", "catches"), { eligible: 0, caught: 0, pending: 0, ambiguous: 1 });
+  // A later explicit verdict on A's finding settles it again.
+  assert.deepEqual(side(pairs([...events, verdict(a, 1, "fixed"), verdict(b, 1, "refuted")]), "gpt-6-astra", "catches"), { eligible: 1, caught: 1, pending: 0, ambiguous: 0 });
+});
+
+// gpt-6-astra's second review of t621, finding 2: the projection carries what
+// was read, so a partial record is said wherever it is shown.
+test("projection: the coverage travels inside it, and a project not read makes the record partial in words", () => {
+  const whole = project([]);
+  assert.deepEqual(whole.coverage, { projects: 1, events: 0, unread: [] });
+  assert.match(comparisonLines(whole)[1], /^    Atelier's figures read 0 events of 1 project, every project there is\.$/);
+  const partial = project([], { coverage: { projects: 2, events: 30, unread: ["zeta", "hush-app"] } });
+  assert.deepEqual(partial.coverage.unread, ["hush-app", "zeta"]);
+  assert.equal(comparisonLines(partial)[1], "    Partial record: Atelier's figures read 30 events of 2 projects; hush-app, zeta could not be read just now, so their work is in no figure below and the record is partial.");
 });

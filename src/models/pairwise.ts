@@ -29,10 +29,11 @@
 //   ambiguous  a verdict from before t486 names no review, and more than
 //              one review by its reviewer with a blocking finding at that
 //              position precedes it at the head, so it cannot be placed;
-//              none placed held up, and not every blocking finding of the
-//              review was judged again, explicitly, after it. A later
-//              explicit verdict on each of them settles the review, so the
-//              ambiguity no longer stands (gpt-6-astra's review of t621)
+//              a finding it may be on has no explicit verdict after it, and
+//              no other finding of the review held up for certain. A later
+//              explicit verdict on the finding settles it (gpt-6-astra's
+//              reviews of t621), and an upheld verdict followed by an
+//              unplaceable one that may be on the same finding is no catch
 // Only caught and clean pairs are eligible: the denominator is what is known.
 // Pending and ambiguous pairs are counted beside it, never in it.
 //
@@ -109,7 +110,7 @@ export function buildPairwise(projects: readonly ProjectEvents[], window: Precis
     // The latest verdict on each blocking finding, by review and index.
     const latest = new Map<string, { seq: number; upheld: boolean }>();
     // Verdicts that name no review and cannot be placed, by item, head and reviewer's recorded name.
-    const unplaced: { seq: number; candidates: Set<number> }[] = [];
+    const unplaced: { seq: number; index: number; candidates: Set<number> }[] = [];
     for (const ev of sorted) {
       const item = ev.itemId!;
       const d = ev.data;
@@ -149,7 +150,7 @@ export function buildPairwise(projects: readonly ProjectEvents[], window: Precis
         // finding at that position; with none it judged nothing counted here.
         const theirs = (atHead.get(`${item} ${head}`) ?? []).filter((r) => r.seq < ev.seq && sameActor(r.recorded, by) && r.blocking.has(Number(d.index)));
         if (theirs.length === 1) review = theirs[0];
-        else { if (theirs.length) unplaced.push({ seq: ev.seq, candidates: new Set(theirs.map((r) => r.seq)) }); continue; }
+        else { if (theirs.length) unplaced.push({ seq: ev.seq, index: Number(d.index), candidates: new Set(theirs.map((r) => r.seq)) }); continue; }
       }
       if (!review || !review.blocking.has(Number(d.index))) continue;
       const key = `${review.seq} ${String(d.index)}`;
@@ -157,15 +158,23 @@ export function buildPairwise(projects: readonly ProjectEvents[], window: Precis
       if (!seen || ev.seq > seen.seq) latest.set(key, { seq: ev.seq, upheld });
     }
 
-    // Each review's outcome as a catcher, from its blocking findings' latest verdicts.
+    // Each review's outcome as a catcher, decided only once every verdict
+    // that could be on its findings is read. A finding's latest verdict is
+    // known when no unplaced verdict that may be on it (one of its review's
+    // candidates, at its position) came after its latest placed verdict;
+    // otherwise its latest verdict is uncertain, and an earlier upheld one
+    // establishes nothing (gpt-6-astra's second review of t621, finding 1:
+    // a later legacy refutation that may be on review A left A's earlier
+    // confirmation counted as a catch).
     const outcomeOf = (r: Review): PairOutcome => {
-      const verdicts = [...r.blocking].map((i) => latest.get(`${r.seq} ${i}`));
-      if (verdicts.some((v) => v?.upheld)) return "caught";
-      // An unplaced verdict that may be this review's stands unless every
-      // blocking finding of the review has an explicit verdict after it.
-      const settledAfter = (seq: number) => [...r.blocking].every((i) => (latest.get(`${r.seq} ${i}`)?.seq ?? -1) > seq);
-      if (unplaced.some((u) => u.candidates.has(r.seq) && !settledAfter(u.seq))) return "ambiguous";
-      return verdicts.some((v) => v === undefined) ? "pending" : "clean";
+      const findings = [...r.blocking].map((i) => {
+        const placed = latest.get(`${r.seq} ${i}`);
+        const unsure = unplaced.some((u) => u.index === i && u.candidates.has(r.seq) && u.seq > (placed?.seq ?? -1));
+        return { placed, unsure };
+      });
+      if (findings.some((f) => !f.unsure && f.placed?.upheld)) return "caught";
+      if (findings.some((f) => f.unsure)) return "ambiguous";
+      return findings.some((f) => f.placed === undefined) ? "pending" : "clean";
     };
     const rank: Record<PairOutcome, number> = { caught: 3, ambiguous: 2, pending: 1, clean: 0 };
 
