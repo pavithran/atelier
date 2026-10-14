@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, utimesSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
@@ -791,4 +791,90 @@ test("a rename keeps the folder found by the old name, and discovery tries forme
   const entry = { path: f.checkout, privateFromList: ["PROJECT.md"], formerNames: ["old"] };
   assert.equal(privateHome("new", entry, f.icloud).home, f.keep);
   assert.deepEqual(privateGuard("new", entry, { root: f.icloud }).refusal, null);
+});
+
+// Astra's twelfth review of t645: a stale lock was removed without checking
+// it was still the one judged stale, a live owner lost its lock after thirty
+// seconds, and release removed whatever lock was there. Each interleaving
+// is forced with testHold.
+const holdPaths = (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-lock-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return (name) => join(dir, name);
+};
+const saver = (project, name) => `const { savePrivateFields } = await import(${moduleUrl}); savePrivateFields(${JSON.stringify(project)}, { private: [${JSON.stringify(name)}] });`;
+
+test("two waiters recovering the same dead lock never both enter", async (t) => {
+  const f = setup(t);
+  f.write({ a: { path: f.root, branch: "main" } });
+  const config = join(f.root, "config"), lock = join(config, "config.json.lock"), at = holdPaths(t);
+  writeFileSync(lock, "999999999 dead-owner\n");
+  const env = { ATELIER_CONFIG_DIR: config };
+  // The first judges the lock stale, and stops before taking it.
+  const first = child(saver("a", "first.md"), { ...env, ATELIER_TEST_HOLD: at("first"), ATELIER_TEST_HOLD_STAGE: "recover" });
+  await until(() => existsSync(`${at("first")}.read`));
+  // The second recovers it, takes the lock and stops inside.
+  const second = child(saver("a", "second.md"), { ...env, ATELIER_TEST_HOLD: at("second"), ATELIER_TEST_HOLD_STAGE: "update" });
+  await until(() => existsSync(`${at("second")}.read`));
+  // The first goes on: the lock it finds is the second's, live, so it waits.
+  writeFileSync(`${at("first")}.go`, "");
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(first.exited(), false, "the first does not enter while the second holds the lock");
+  assert.match(readFileSync(lock, "utf8"), new RegExp(`^${second.proc.pid} `), "the second's lock is in place");
+  writeFileSync(`${at("second")}.go`, "");
+  const [r1, r2] = await Promise.all([first.done, second.done]);
+  assert.equal(r1.code, 0, r1.out);
+  assert.equal(r2.code, 0, r2.out);
+  assert.deepEqual(f.read().projects.a.private.sort(), ["first.md", "second.md"]);
+  assert.ok(!existsSync(lock));
+});
+
+test("a live owner keeps its lock however old it is", async (t) => {
+  const f = setup(t);
+  f.write({ a: { path: f.root, branch: "main" } });
+  const config = join(f.root, "config"), lock = join(config, "config.json.lock");
+  // This test process is the live owner; its lock is an hour old.
+  writeFileSync(lock, `${process.pid} live-owner\n`);
+  utimesSync(lock, new Date(Date.now() - 3600_000), new Date(Date.now() - 3600_000));
+  const r = await child(saver("a", "x.md"), { ATELIER_CONFIG_DIR: config, ATELIER_TEST_LOCK_WAIT_MS: "300" }).done;
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /is locked by another Atelier command/);
+  assert.equal(readFileSync(lock, "utf8"), `${process.pid} live-owner\n`, "its lock is untouched");
+  assert.equal(f.read().projects.a.private, undefined);
+});
+
+test("releasing a lock never removes a successor's", async (t) => {
+  const f = setup(t);
+  f.write({ a: { path: f.root, branch: "main" } });
+  const config = join(f.root, "config"), lock = join(config, "config.json.lock"), at = holdPaths(t);
+  const owner = child(saver("a", "x.md"), { ATELIER_CONFIG_DIR: config, ATELIER_TEST_HOLD: at("owner"), ATELIER_TEST_HOLD_STAGE: "update" });
+  await until(() => existsSync(`${at("owner")}.read`));
+  // Another lock now stands at the path (as after a takeover).
+  writeFileSync(lock, `${process.pid} successor\n`);
+  writeFileSync(`${at("owner")}.go`, "");
+  const r = await owner.done;
+  assert.equal(r.code, 0, r.out);
+  assert.equal(readFileSync(lock, "utf8"), `${process.pid} successor\n`, "the successor's lock stays");
+  rmSync(lock);
+});
+
+// Astra's twelfth review of t645, finding 2: a merge compared the source's
+// folder only with a folder the destination named, not one found by its
+// name, and then gave the destination the source's.
+test("a rename into an entry whose folder is found by name compares that folder, and refuses a different one", (t) => {
+  const f = setup(t, { folder: "Target" });
+  const other = join(f.icloud, "Source");
+  mkdirSync(other);
+  const previous = process.env.ATELIER_PRIVATE_ROOT;
+  process.env.ATELIER_PRIVATE_ROOT = f.icloud;
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_PRIVATE_ROOT; else process.env.ATELIER_PRIVATE_ROOT = previous; });
+  const projects = { source: { path: "/s", private: ["a.md"] }, target: { path: "/t", private: ["b.md"] } };
+  const before = structuredClone(projects);
+  const r = moveProjectEntry(projects, "source", "target");
+  assert.match(r.error ?? "", new RegExp(`different folders for their private files \\(${other}.*and ${f.keep}\\)`));
+  assert.deepEqual(projects, before, "nothing changed");
+  // With no folder for the source, the destination keeps the one found by its name.
+  rmSync(other, { recursive: true });
+  assert.equal(moveProjectEntry(projects, "source", "target").merged, true);
+  assert.equal(projects.target.privateHome, f.keep);
 });
