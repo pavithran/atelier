@@ -6,7 +6,8 @@ import { foldPath, pathCollisions } from "../../src/rules.ts";
 import { carryBaseline, loadPairs, savePairs, useRealHistory } from "../fresh.mjs";
 import { historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { OWNER, P, args, call, cfg, die, gitEnv, landingGit, landingHome, project, short } from "../atelier.mjs";
+import { OWNER, P, args, call, cfg, die, gitEnv, identityEnv, landingGit, landingHome, project, short } from "../atelier.mjs";
+import { NO_IDENTITY } from "../../src/commit-identity.ts";
 
 // The developer, on one of the Macs that share a project's baseline (t644):
 // another Mac has carried commits to the baseline (atelier sync, merge or
@@ -53,6 +54,13 @@ export default async function pullCommand() {
   try {
     try { adoptOldLanding(gitDir, landing); } catch (error) { die(error.message); }
     if (existsSync(landingJournalFile(landing))) die("a merge is in progress; finish it or cancel it first");
+    // The commits pull makes (a merge, a merge of the receipts) carry the
+    // project's commit identity, whatever this Mac's Git configuration or
+    // the caller's environment names, as atelier merge's do (Astra's fifth
+    // review of t644): identityEnv sets author and committer both.
+    const identity = (await call("GET", P(name), undefined, OWNER))?.project?.policy?.commitIdentity;
+    if (!identity?.name || !identity?.email) die(`${NO_IDENTITY(name)}. Nothing was pulled: a merge pull makes here is made under the project's identity.`);
+    const asProject = () => identityEnv(identity);
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
     git(["fetch", "--quiet", "--no-tags", base.remote, p.branch], { cwd, token: base.token });
     const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
@@ -63,7 +71,7 @@ export default async function pullCommand() {
       notesTip = git(["rev-parse", "FETCH_HEAD"], { cwd });
     }
     // Nothing below reaches the baseline.
-    const receipts = notesTip ? mergeNotes(git, cwd, notesTip) : null;
+    const receipts = notesTip ? mergeNotes(git, cwd, notesTip, asProject) : null;
     const receiptsLine = receipts === null ? "The baseline holds no receipts." : `Receipts: ${receipts} new on refs/notes/atelier, merged with this checkout's own.`;
 
     let target = baselineHead, pair = () => {};
@@ -118,8 +126,10 @@ export default async function pullCommand() {
         for (let i = 1; i <= parts.length; i++) {
           const part = parts.slice(0, i).join("/");
           if (tracked.has(foldPath(part))) continue;
-          const stat = lstatSync(join(cwd, part), { throwIfNoEntry: false });
-          if (!stat) return false;
+          // Nothing there: missing, or below a file the tracked tree has,
+          // which the incoming tree replaces (Astra's fifth review of t644).
+          let stat;
+          try { stat = lstatSync(join(cwd, part)); } catch (error) { if (error.code === "ENOENT" || error.code === "ENOTDIR") return false; throw error; }
           if (i === parts.length || !stat.isDirectory()) return true;
         }
         return false;
@@ -149,7 +159,7 @@ export default async function pullCommand() {
     const tree = merged.stdout.split("\n")[0];
     checkTree(tree);
     const parents = fresh ? [target, head] : [head, target];
-    const commit = git(["commit-tree", tree, "-p", parents[0], "-p", parents[1], "-m", `Merge the baseline's ${p.branch} into ${p.branch} (atelier pull)`], { cwd });
+    const commit = git(["commit-tree", tree, "-p", parents[0], "-p", parents[1], "-m", `Merge the baseline's ${p.branch} into ${p.branch} (atelier pull)`], { cwd, env: asProject() });
     git(["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", commit], { cwd });
     pair();
     console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch} and merged them with ${plural(local, "local commit")}; ${p.branch} is at ${short(commit)}.`);
@@ -161,12 +171,16 @@ export default async function pullCommand() {
 
 // The baseline's receipts merged into this checkout's: copied when this
 // checkout has none, fast-forwarded or merged otherwise. Returns how many
-// commits carry a note now that carried none before.
-function mergeNotes(git, cwd, tip) {
+// commits carry a note now that carried none before. A merge that is not a
+// fast-forward makes a notes commit, under the project's identity (`as`).
+function mergeNotes(git, cwd, tip, as) {
   const annotated = () => new Set(git(["notes", "--ref=atelier", "list"], { cwd }).split("\n").filter(Boolean).map((line) => line.split(" ")[1]));
   const had = git(["rev-parse", "--verify", "-q", "refs/notes/atelier"], { cwd, allowFail: true }).stdout.trim();
   const before = had ? annotated() : new Set();
   if (!had) git(["update-ref", "refs/notes/atelier", tip, ""], { cwd });
-  else git(["notes", "--ref=atelier", "merge", "--quiet", "--strategy=union", tip], { cwd });
+  else if (git(["merge-base", "--is-ancestor", tip, had], { cwd, allowFail: true }).status !== 0) {
+    const fastForward = git(["merge-base", "--is-ancestor", had, tip], { cwd, allowFail: true }).status === 0;
+    git(["notes", "--ref=atelier", "merge", "--quiet", "--strategy=union", tip], { cwd, ...(fastForward ? {} : { env: as() }) });
+  }
   return [...annotated()].filter((object) => !before.has(object)).length;
 }

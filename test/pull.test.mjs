@@ -627,3 +627,56 @@ test("pull refuses a baseline that adds the configuration file an include.path n
   assert.ok(!existsSync(join(dir, "extra.gitconfig")));
   assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
 });
+
+// Astra's fifth review of t644: where main tracks a file `docs` and the
+// baseline puts a folder there, the check for ignored files read
+// docs/readme.md below a file, and the error ended a fast-forward that is
+// fine. A file in the way that Git does not track is still refused.
+test("pull fast-forwards over a tracked file the baseline replaces with a folder, and refuses an untracked file in the way", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  f.git(f.other, "pull", "-q", "--no-rebase", "origin", "main");
+  commitElsewhere(f, "docs", "a file\n");
+  const dir = await cloneOn(t, f, a);
+  f.git(f.other, "rm", "-q", "docs");
+  mkdirSync(join(f.other, "docs"));
+  const theirs = commitElsewhere(f, "docs/readme.md", "a folder\n");
+  const r = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.equal(r.code, 0, r.output);
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), theirs);
+  assert.equal(readFileSync(join(dir, "docs", "readme.md"), "utf8"), "a folder\n");
+  // An ignored file where the baseline puts a folder.
+  writeFileSync(join(f.git(dir, "rev-parse", "--absolute-git-dir"), "info", "exclude"), "notes\n");
+  writeFileSync(join(dir, "notes"), "my notes\n");
+  mkdirSync(join(f.other, "notes"));
+  commitElsewhere(f, "notes/a.md", "the baseline's\n");
+  const refused = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.output, /the baseline's main adds notes\/a\.md, which this checkout holds as a file Git does not track/);
+  assert.equal(readFileSync(join(dir, "notes"), "utf8"), "my notes\n");
+});
+
+// Astra's fifth review of t644: pull's merge commit and its merge of the
+// receipts took author and committer from this Mac's Git configuration and
+// the caller's environment. They carry the project's commit identity, as
+// atelier merge's commits do: atelier is public and commits as its noreply
+// address.
+test("pull's merge and its merge of the receipts carry the project's identity, whatever this Mac and its environment name", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  f.git(dir, "config", "--local", "user.name", "Personal Name");
+  f.git(dir, "config", "--local", "user.email", "personal@me.test");
+  commitIn(f, dir, "mine.txt", "mine\n");
+  f.git(dir, "notes", "--ref=atelier", "add", "-m", "Local receipt", "HEAD");
+  commitElsewhere(f, "theirs.txt", "theirs\n", { note: "Atelier receipt for t2" });
+  const personal = { GIT_AUTHOR_NAME: "Personal Name", GIT_AUTHOR_EMAIL: "personal@me.test", GIT_COMMITTER_NAME: "Personal Name", GIT_COMMITTER_EMAIL: "personal@me.test" };
+  const r = await run(t, f, a, ["pull", "--project", "demo"], { env: personal });
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /merged them with 1 local commit/);
+  const who = (ref) => f.git(dir, "log", "-1", "--format=%an <%ae>|%cn <%ce>", ref);
+  const project = `${IDENTITY.name} <${IDENTITY.email}>`;
+  assert.equal(who("HEAD"), `${project}|${project}`, "the merge commit");
+  assert.equal(f.git(dir, "rev-list", "--parents", "-n", "1", "refs/notes/atelier").split(" ").length, 3, "the receipts were merged, not fast-forwarded");
+  assert.equal(who("refs/notes/atelier"), `${project}|${project}`, "the receipts' merge commit");
+});
