@@ -34,7 +34,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -515,9 +515,13 @@ export interface RefreshView {
   last: RefreshResult | null;
 }
 
-// The harness/model actors live runners offer, each once.
+// The harness/model actors live runners offer, each once: only a runner
+// that serves the project the offers were read for counts (servesProject,
+// t652). Before, a refresh could pick a resolver only another project's
+// runner offers, and the task waited in resolve for a runner that never
+// polls this project.
 function offerActors(offers: readonly RunnerOffer[]): string[] {
-  return [...new Set(offers.flatMap((o) => o.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`))))];
+  return [...new Set(offers.filter((o) => servesProject(o)).flatMap((o) => o.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`))))];
 }
 
 // A runner's reason as a refresh records it: one line, at most REASON_MAX.
@@ -3994,7 +3998,7 @@ export class Ledger extends DurableObject<Env> {
     // that the deduplication binding has changed.
     const now = new Date();
     const lease = this.projectLanding();
-    if (pool && offers && liveOffers(offers, now).some((o) => (o.jobs ?? []).includes(PREREVIEW_JOB))
+    if (pool && offers && liveOffers(offers, now).some((o) => servesProject(o) && (o.jobs ?? []).includes(PREREVIEW_JOB))
       && prereviewCandidates(lease, !!lease && this.landingLive(lease, now.toISOString()), this.projectLandingQueue(), now.getTime()).length) {
       try {
         using repo = await this.env.ARTIFACTS.get(this.project().repo);
@@ -4041,9 +4045,10 @@ export class Ledger extends DurableObject<Env> {
     }
     const candidates = prereviewCandidates(lease, leaseLive, queue, now.getTime());
     if (!candidates.length || !pool || !live) return;
-    // Pre-review needs a runner that advertises it. Where no live runner
-    // does, it is off: nothing is asked and nothing is recorded.
-    if (!live.some((o) => (o.jobs ?? []).includes(PREREVIEW_JOB))) return;
+    // Pre-review needs a runner that advertises it and serves this project
+    // (servesProject, t652). Where no live runner does, it is off: nothing
+    // is asked and nothing is recorded.
+    if (!live.some((o) => servesProject(o) && (o.jobs ?? []).includes(PREREVIEW_JOB))) return;
     for (const w of candidates) this.askPrereview(w.item, pool, live, at);
   }
 
