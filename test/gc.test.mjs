@@ -58,6 +58,16 @@ test("gc previews, then removes only clean closed clones; preserves all local wo
   for (const dir of [active, dirty, ignored, untracked, branch, ahead, current, foreign, abandonedMoved, busy, submodules]) assert.ok(existsSync(dir), dir);
 });
 
+// t672: the busy list named rebase, merge, cherry-pick and revert state but not
+// BISECT_START, so a clean, finished workspace left mid-bisect was removed.
+test("gc keeps a finished workspace left mid-bisect (t672)", async (t) => {
+  const f = fixture(t), dir = f.workspace("t1");
+  f.git(dir, "bisect", "start");
+  assert.ok(existsSync(join(dir, ".git", "BISECT_START")), "the scenario left the workspace mid-bisect");
+  await collectCache({ ...f.options, apply: true });
+  assert.ok(existsSync(dir), "a workspace mid-bisect is busy");
+});
+
 test("gc rechecks server state and local files before removal", async (t) => {
   const f = fixture(t), dir = f.workspace("t1");
   await collectCache({ ...f.options, apply: true, getItem: async () => ({ ...f.items[0], state: "claimed" }) });

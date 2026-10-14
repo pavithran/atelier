@@ -546,6 +546,13 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   // restored, the answer says so, with main's head and the fix.
   const restore = () => {
     runGit(cwd, ["merge", "--abort"]);
+    // A project command can leave this checkout itself mid-rebase or
+    // mid-bisect; checkout -f and reset --hard succeed but keep that state
+    // (t672), so each is ended first. Its state lives in the checkout's own
+    // git directory.
+    const gitDir = runGit(cwd, ["rev-parse", "--absolute-git-dir"]).stdout.trim();
+    if (["rebase-merge", "rebase-apply"].some((p) => existsSync(join(gitDir, p)))) runGit(cwd, ["rebase", "--abort"]);
+    if (existsSync(join(gitDir, "BISECT_START"))) runGit(cwd, ["bisect", "reset"]);
     const main = () => runGit(cwd, ["rev-parse", "--verify", "-q", "refs/heads/main"]).stdout.trim();
     const failed = (r) => (r.stderr || r.stdout || "").trim().split("\n").at(-1);
     const onMain = runGit(cwd, ["symbolic-ref", "-q", "HEAD"]).stdout.trim() === "refs/heads/main";
