@@ -376,3 +376,26 @@ test('executablePaths and hooksOff read the checkout as its Git commands do', (t
   ]);
   assert.deepEqual(hooksOff(repo, env), [['core.hooksPath', '/dev/null'], ['core.fsmonitor', 'false'], ['hook.Global.Lint.enabled', 'false'], ['hook.lint.enabled', 'false']]);
 });
+
+// Astra's fourth review of t644: included configuration was found only
+// through the origins of settings it already defines, so a file an
+// include.path or includeIf.*.path names that did not exist yet was not
+// protected, and an accepted change (or a pull) could add it.
+test('executablePaths names the files include.path and includeIf.*.path name, existing or not, so merge refuses a change that adds one', (t) => {
+  const p = realpathSync(mkdtempSync(join(tmpdir(), 'atelier-guard-')));
+  t.after(() => rmSync(p, { recursive: true, force: true }));
+  const env = isolated(p), repo = join(p, 'repo');
+  const git = (...args) => execFileSync('git', args, { cwd: repo, env, encoding: 'utf8' }).trim();
+  mkdirSync(repo);
+  git('init', '-q', '-b', 'main');
+  // Relative to .git/config's folder: the top of the work tree, then tools/.
+  git('config', 'include.path', '../extra.gitconfig');
+  git('config', 'includeIf.gitdir:/nowhere/.path', '../tools/when.gitconfig');
+  const paths = executablePaths(repo, env);
+  assert.deepEqual(paths.filter((e) => /gitconfig/.test(e.path)), [
+    { path: 'extra.gitconfig', setting: 'a Git configuration file this checkout includes' },
+    { path: 'tools/when.gitconfig', setting: 'a Git configuration file this checkout includes' },
+  ]);
+  assert.deepEqual(touchedExecutables(['extra.gitconfig', 'README.md'], paths).map((r) => r.path), ['extra.gitconfig']);
+  assert.deepEqual(touchedExecutables(['tools/when.gitconfig'], paths).map((r) => r.path), ['tools/when.gitconfig']);
+});

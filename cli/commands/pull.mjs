@@ -1,7 +1,8 @@
 // atelier pull. Its forms, flags and help are declared in src/usage/commands/pull.ts.
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
+import { join } from "node:path";
 import { adoptOldLanding, describeTouched, executablePaths, landingJournalFile, landingLock, touchedExecutables, treeEntries } from "../landing.mjs";
-import { pathCollisions } from "../../src/rules.ts";
+import { foldPath, pathCollisions } from "../../src/rules.ts";
 import { carryBaseline, loadPairs, savePairs, useRealHistory } from "../fresh.mjs";
 import { historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
@@ -103,10 +104,33 @@ export default async function pullCommand() {
       let runs;
       try { runs = touchedExecutables(git(["diff", "--name-only", "--no-renames", "-z", head, tree], { cwd, raw: true }).split("\0").filter(Boolean), executablePaths(cwd, gitEnv())); } catch (error) { die(error.message); }
       if (runs.length) die(`the baseline's ${p.branch} changes files that this checkout's Git configuration runs: ${describeTouched(runs)}. Pulling it would run them, during the checkout or at your next Git command. ${unchanged} Review those files in ${target}, the baseline's ${p.branch} as fetched, and bring it in by hand (git merge ${target}) once you trust them.`);
+      // A path the pull adds that this checkout already holds as a file Git
+      // does not track, an ignored one such as private notes (PROJECT.md,
+      // t645), would be written over: Git's checkout replaces ignored files
+      // without a word (Astra's fourth review of t644). The clean check above
+      // sees only untracked files that are not ignored. A path counts when
+      // it, or a part of it that must be a folder, is on disk and no tracked
+      // path is there, compared as a Mac's disk finds them.
+      const tracked = new Set(git(["ls-files", "-z"], { cwd, raw: true }).split("\0").filter(Boolean).flatMap((path) => path.split("/").map((_, i, parts) => foldPath(parts.slice(0, i + 1).join("/")))));
+      const added = git(["diff", "--name-only", "--no-renames", "-z", "--diff-filter=A", head, tree], { cwd, raw: true }).split("\0").filter(Boolean);
+      const held = added.filter((path) => {
+        const parts = path.split("/");
+        for (let i = 1; i <= parts.length; i++) {
+          const part = parts.slice(0, i).join("/");
+          if (tracked.has(foldPath(part))) continue;
+          const stat = lstatSync(join(cwd, part), { throwIfNoEntry: false });
+          if (!stat) return false;
+          if (i === parts.length || !stat.isDirectory()) return true;
+        }
+        return false;
+      });
+      if (held.length) die(`the baseline's ${p.branch} adds ${held.join(", ")}, which this checkout holds as ${held.length === 1 ? "a file" : "files"} Git does not track (ignored, as private notes are). Pulling would write over ${held.length === 1 ? "it" : "them"}. ${unchanged} Move ${held.length === 1 ? "it" : "them"} aside or rename ${held.length === 1 ? "it" : "them"}, then run atelier pull --project ${name} again.`);
     };
     if (local === 0) {
       checkTree(target);
-      git(["merge", "--ff-only", "--quiet", target], { cwd });
+      // --no-overwrite-ignore: should an ignored file appear after the
+      // check, Git stops rather than write over it.
+      git(["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", target], { cwd });
       pair();
       console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch}; ${p.branch} moved from ${short(head)} to ${short(target)}.`);
       console.log(subjects);
@@ -126,7 +150,7 @@ export default async function pullCommand() {
     checkTree(tree);
     const parents = fresh ? [target, head] : [head, target];
     const commit = git(["commit-tree", tree, "-p", parents[0], "-p", parents[1], "-m", `Merge the baseline's ${p.branch} into ${p.branch} (atelier pull)`], { cwd });
-    git(["merge", "--ff-only", "--quiet", commit], { cwd });
+    git(["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", commit], { cwd });
     pair();
     console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch} and merged them with ${plural(local, "local commit")}; ${p.branch} is at ${short(commit)}.`);
     console.log(subjects);

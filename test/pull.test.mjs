@@ -576,3 +576,54 @@ test("pull refuses a merge whose tree holds paths that differ only by letter cas
   assert.notEqual(u.code, 0);
   assert.match(u.output, /differ only by letter case or Unicode form/);
 });
+
+// Astra's fourth review of t644: Git's checkout writes over an ignored file
+// without a word, and private notes (PROJECT.md, t645) are ignored in the
+// checkout, so a baseline that added the same path destroyed them.
+test("pull refuses a baseline that adds a path this checkout holds as an ignored file, and keeps the file", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const gitDir = f.git(dir, "rev-parse", "--absolute-git-dir");
+  mkdirSync(join(gitDir, "info"), { recursive: true });
+  writeFileSync(join(gitDir, "info", "exclude"), "PROJECT.md\nprivate/\n");
+  writeFileSync(join(dir, "PROJECT.md"), "my notes\n");
+  mkdirSync(join(dir, "private"));
+  writeFileSync(join(dir, "private", "plan.md"), "my plan\n");
+  const head = f.git(dir, "rev-parse", "HEAD");
+  commitElsewhere(f, "PROJECT.md", "the baseline's\n");
+  const ff = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(ff.code, 0);
+  assert.match(ff.output, new RegExp(`the baseline's main adds PROJECT\\.md, which this checkout holds as a file Git does not track \\(ignored, as private notes are\\)\\. Pulling would write over it\\. Nothing was pulled: main is still at ${head.slice(0, 8)}`));
+  assert.equal(readFileSync(join(dir, "PROJECT.md"), "utf8"), "my notes\n");
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
+  // In a merge too, and for a file in an ignored folder.
+  rmSync(join(dir, "PROJECT.md"));
+  const local = commitIn(f, dir, "mine.txt", "mine\n");
+  f.git(f.other, "pull", "-q", "--no-rebase", "origin", "main");
+  mkdirSync(join(f.other, "private"), { recursive: true });
+  commitElsewhere(f, "private/plan.md", "the baseline's plan\n");
+  writeFileSync(join(dir, "PROJECT.md"), "my notes\n");
+  const merge = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(merge.code, 0);
+  assert.match(merge.output, /the baseline's main adds PROJECT\.md, private\/plan\.md, which this checkout holds as files Git does not track/);
+  assert.equal(readFileSync(join(dir, "private", "plan.md"), "utf8"), "my plan\n");
+  assert.equal(readFileSync(join(dir, "PROJECT.md"), "utf8"), "my notes\n");
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
+});
+
+// Astra's fourth review of t644: a configuration file an include.path names
+// that does not exist yet is protected too, so a pull cannot add it.
+test("pull refuses a baseline that adds the configuration file an include.path names", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  f.git(dir, "config", "--local", "include.path", "../extra.gitconfig");
+  const head = f.git(dir, "rev-parse", "HEAD");
+  commitElsewhere(f, "extra.gitconfig", "[core]\n\tfsmonitor = ./tools/watch.sh\n");
+  const r = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.output, /changes files that this checkout's Git configuration runs: extra\.gitconfig, a Git configuration file this checkout includes\./);
+  assert.ok(!existsSync(join(dir, "extra.gitconfig")));
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
+});
