@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 const cli = resolve("cli/atelier.mjs");
 const brief = {
@@ -13,7 +14,7 @@ const brief = {
 
 // Exercise the CLI against the older server contract without opening sockets.
 function fixture(t, status = 404, error = "not_found", detail = "no such route", queue = null, body = null) {
-  const root = mkdtempSync(join(process.cwd(), ".show-compat-test-"));
+  const root = mkdtempSync(join(tmpdir(), "atelier-show-compat-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const preload = join(root, "server.mjs");
   writeFileSync(preload, `

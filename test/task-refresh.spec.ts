@@ -210,6 +210,25 @@ it("with no eligible resolver a mechanical conflict waits, saying why, until one
   await refusal(L.leaseRefresh(id, INTEGRATOR, null, "refresh"), "not_queued", /waiting/);
 });
 
+// t652, codex/gpt-6-astra's review of 7f6f0077: the resolver pick read
+// every runner's offer (offerActors), so a mechanical refresh could choose a
+// resolver only another project's runner offers, and the task waited in
+// resolve for a runner that never polls this project.
+it("a resolver offered only by a runner scoped to another project is not picked; the refresh waits until one serving it is offered", async () => {
+  const L = await setup("tr-scoped-resolver", { resolvers: [OPUS, GPT] });
+  const id = await task(L, "Reviewed", "submitted");
+  await L.addReview({ itemId: id, by: FABLE, head: H1, criteria: await L.criteria(id), approve: true, note: "fine", at: new Date().toISOString() });
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  const elsewhere = { ...offer("codex", "gpt-6-astra"), projects: ["tr-elsewhere"] };
+  const waited = await L.taskRefreshFailed(id, INTEGRATOR, { ...report(l), outcome: "mechanical", reason: "imports" }, [offer("claude-code", "opus-5.5"), elsewhere]);
+  expect(waited.result).toMatchObject({ outcome: "waiting", resolver: null });
+  expect((await queue(L))[0].target.state).toBe("waiting");
+  // A runner whose token serves this project, offering the same model, ends the wait.
+  const [job] = await L.refreshJobs({ runner: "home:g", kind: "home", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["task-resolve"], projects: ["tr-scoped-resolver"] });
+  expect(job.dispatch).toMatchObject({ job: "task-resolve", agent: "codex", model: "gpt-6-astra" });
+});
+
 it("a behavioural conflict goes back to the builder with the heads, paths and hunks; the builder's push queues it again", async () => {
   const L = await setup("tr-returned");
   const id = await task(L, "Conflicts", "submitted");

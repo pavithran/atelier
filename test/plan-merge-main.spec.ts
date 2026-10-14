@@ -329,9 +329,14 @@ it("POST integrated records main as taken only when the merge commit holds the p
 it("plan refresh --resolve --to names an entry whose id differs from the routed builder's only in letter case, and it builds", async () => {
   const L = await setup("mm-resolve-case");
   const reviewOnly = (e: ModelEntry): ModelEntry => ({ ...e, roles: ["review"] });
-  const pool = [reviewOnly(entry("opus-5.5", "claude-code")), reviewOnly(entry("gpt-6-astra", "codex")), entry("glm-5.3", "zcode"), reviewOnly(entry("GLM-5.3", "zcode"))];
-  await L.poolChanged(pool);
-  const { id } = await behindPlan(L, pool);
+  // The plan is approved with zcode/glm-5.3 its only builder; zcode/GLM-5.3,
+  // free to build, joins the pool after. Until t649 GLM-5.3 was review-only
+  // here and built anyway: the standing check read whichever zcode entry
+  // came first in the pool, glm-5.3, for it.
+  const approved = [reviewOnly(entry("opus-5.5", "claude-code")), reviewOnly(entry("gpt-6-astra", "codex")), entry("glm-5.3", "zcode")];
+  await L.poolChanged(approved);
+  const { id } = await behindPlan(L, approved);
+  await L.poolChanged([...approved, entry("GLM-5.3", "zcode")]);
   await L.claim(id, INTEGRATOR, RUNNER, true);
   await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
   await L.release(id, INTEGRATOR, "refresh failed");

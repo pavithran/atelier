@@ -28,7 +28,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
@@ -72,6 +72,13 @@ function runGit(cwd, args, { encoding = "utf8", env, input } = {}) {
   return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, input, env: { ...gitEnv(), GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
 }
 
+// A string quoted for a POSIX shell: single quotes, each ' written as '\''.
+// Every path in a command fast land prints for the developer to run goes
+// through it (codex/gpt-6-astra's second review of t646): JSON.stringify's
+// double quotes left $ and backticks to the shell, so a repository at
+// /tmp/project-$batch had $batch expanded and the fix aimed elsewhere.
+export const shellQuote = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
+
 // What can make Git show history other than the history that lands:
 // replacement refs (ignored by runGit, and refused anyway, since they mean
 // something rewrote what Git shows), a grafts file, and a shallow boundary
@@ -88,23 +95,68 @@ function shallowOf(cwd) {
 // tree (atelier's own, which keeps .git off iCloud) is listed by Git under
 // its repository's path, not its own, so comparing that with cwd's
 // --show-toplevel took cwd's own checkout for another worktree holding main.
-// The first entry is the main worktree, whose Git directory is the common
-// one; a linked worktree's is what rev-parse answers inside it.
+//
+// Both come from Git's own registry, never from running Git inside a
+// candidate folder (t646): a project command can add a linked worktree
+// inside the checkout and delete its .git file, and rev-parse inside that
+// folder then answers with the checkout's Git directory, so the real holder
+// was skipped and main moved past its unreset index. The main worktree is
+// the porcelain list's first entry, whose Git directory is the common one;
+// each linked worktree is $GIT_COMMON_DIR/worktrees/<name>, holding what its
+// HEAD names, at the folder its gitdir file names.
+//
+// A worktree mid-rebase or mid-bisect holds the branch it started from
+// though its HEAD is detached, and Git refuses to check that branch out
+// elsewhere (t656): rollback, reading HEAD alone, missed such a holder and
+// moved main with update-ref under it. The state is read the way Git reads
+// it, from the worktree's own Git directory: rebase-apply/head-name (unless
+// rebase-apply/applying says it is git am) or else rebase-merge/head-name,
+// counted only while HEAD is detached, and BISECT_START.
+//
+// It answers { path, gitDir, workTree }: the folder Git lists, the holder's
+// own Git directory, and its working tree when the registry names one (null
+// for a main worktree Git lists under its Git directory, t639's layout), and
+// midway, "rebase" or "bisect" when that holds the branch, else null.
+// Advice to the developer acts on gitDir and workTree, never on a command
+// run in `path` (codex/gpt-6-astra's review of t646): with the holder's .git
+// file deleted, Git run there finds the enclosing checkout's repository.
 export function worktreeHolding(cwd, ref) {
   const real = (path) => { try { return realpathSync(path); } catch { return path; } };
-  const gitDirOf = (dir, ...flags) => {
-    const r = runGit(dir, ["rev-parse", ...flags]);
+  const read = (path) => { try { return readFileSync(path, "utf8").trim(); } catch { return null; } };
+  const gitDirOf = (...flags) => {
+    const r = runGit(cwd, ["rev-parse", ...flags]);
     return r.status === 0 && r.stdout.trim() ? real(r.stdout.trim()) : null;
   };
-  const here = gitDirOf(cwd, "--absolute-git-dir");
-  const common = gitDirOf(cwd, "--path-format=absolute", "--git-common-dir");
-  const blocks = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n");
-  for (const [i, block] of blocks.entries()) {
-    const path = /^worktree (.+)$/m.exec(block)?.[1];
-    if (!path || !new RegExp(`^branch ${ref}$`, "m").test(block)) continue;
-    const gitDir = i === 0 ? common : existsSync(path) ? gitDirOf(path, "--absolute-git-dir") : null;
-    if (here && gitDir === here) continue;
-    return path;
+  const branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : null;
+  const names = (path) => read(path)?.replace(/^refs\/heads\//, "") === branch;
+  const midway = (dir) => {
+    if (!branch) return null;
+    if (names(join(dir, "BISECT_START"))) return "bisect";
+    if (read(join(dir, "HEAD"))?.startsWith("ref:") !== false) return null;
+    const rebasing = existsSync(join(dir, "rebase-apply"))
+      ? !existsSync(join(dir, "rebase-apply", "applying")) && names(join(dir, "rebase-apply", "head-name"))
+      : names(join(dir, "rebase-merge", "head-name"));
+    return rebasing ? "rebase" : null;
+  };
+  const here = gitDirOf("--absolute-git-dir");
+  const common = gitDirOf("--path-format=absolute", "--git-common-dir");
+  const first = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n")[0];
+  const mainPath = /^worktree (.+)$/m.exec(first)?.[1];
+  const mainMidway = common && !/^bare$/m.test(first) ? midway(common) : null;
+  if (mainPath && (new RegExp(`^branch ${ref}$`, "m").test(first) || mainMidway) && !(here && common === here)) {
+    return { path: mainPath, gitDir: common, workTree: common && real(mainPath) !== common ? mainPath : null, midway: mainMidway };
+  }
+  if (!common) return null;
+  let entries = [];
+  try { entries = readdirSync(join(common, "worktrees")).sort(); } catch { return null; }
+  for (const name of entries) {
+    const admin = join(common, "worktrees", name);
+    const state = midway(admin);
+    if (read(join(admin, "HEAD")) !== `ref: ${ref}` && !state) continue;
+    if (here && real(admin) === here) continue;
+    const gitFile = read(join(admin, "gitdir"));
+    const workTree = gitFile ? dirname(resolve(admin, gitFile)) : null;
+    return { path: workTree ?? admin, gitDir: admin, workTree, midway: state };
   }
   return null;
 }
@@ -143,6 +195,29 @@ function sh(cwd, command, env) {
 
 // The default test setup in the clean clone, as a project's check does it.
 export const CLEAN_CLONE_SETUP = "npm ci --prefer-offline && npm run types";
+
+// The batch's commands where the owner names none, from the checkout's own
+// package.json (t667): `npm run typecheck` and `npm test` only where the
+// project has those scripts, and `npm run types` in the clean clone's setup
+// only where it has that one. A project without a typecheck or test script
+// is refused before anything merges, naming the flag that supplies it, rather
+// than stopping on npm's "Missing script" after the merges.
+export function fastCommands(cwd, { typecheck, test } = {}) {
+  let scripts = {};
+  try { scripts = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")).scripts ?? {}; } catch { /* no package.json: no scripts */ }
+  const missing = [];
+  if (typecheck === undefined && !scripts.typecheck) missing.push('--typecheck CMD (no "typecheck" script in package.json)');
+  if (test === undefined && !scripts.test) missing.push('--test CMD (no "test" script in package.json)');
+  if (missing.length) {
+    const has = Object.keys(scripts);
+    return { refusal: `this checkout's project needs ${missing.join(" and ")}; nothing was merged.${has.length ? ` Its scripts: ${has.join(", ")}.` : ""}` };
+  }
+  return {
+    typecheck: typecheck ?? "npm run typecheck",
+    test: test ?? "npm test",
+    cleanClone: test === undefined ? { setup: scripts.types ? CLEAN_CLONE_SETUP : "npm ci --prefer-offline" } : null,
+  };
+}
 
 // Clones the checkout at `head` into a temporary directory, runs `setup`
 // there (when given) and then `test`, and removes the clone whatever
@@ -486,8 +561,15 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       // read, and touches no branch checked out here.
       const holder = worktreeHolding(cwd, "refs/heads/main");
       if (holder) {
-        problem = `main is checked out in the worktree ${holder}, so fast land could not move it`;
-        fix = `git -C ${JSON.stringify(holder)} reset --hard ${start}`;
+        // A holder mid-rebase or mid-bisect has HEAD detached, so a reset
+        // there would move HEAD, not main (t656): the rebase or bisect is
+        // ended first, which puts main back in HEAD.
+        const end = { rebase: "rebase --abort", bisect: "bisect reset" }[holder.midway];
+        problem = `main is checked out in the worktree ${holder.path}${end ? `, mid-${holder.midway}` : ""}, so fast land could not move it`;
+        const there = `git --git-dir=${shellQuote(holder.gitDir)} --work-tree=${shellQuote(holder.workTree)}`;
+        fix = holder.gitDir && holder.workTree
+          ? `${end ? `${there} ${end} && ` : ""}${there} reset --hard ${start}`
+          : `${end ? `git ${end}, then ` : ""}git reset --hard ${start} in the checkout whose .git names ${shellQuote(holder.gitDir ?? holder.path)}`;
       } else {
         const r = runGit(cwd, ["update-ref", "refs/heads/main", start, main()]);
         if (r.status !== 0) problem = `git checkout main failed (${failed(checkout)}) and so did git update-ref (${failed(r)})`;

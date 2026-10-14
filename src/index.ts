@@ -32,12 +32,17 @@ import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
+import { buildPairwise, type PairwiseRecord } from "./models/pairwise.ts";
+import { canonicalName, compareModel, type ModelComparison } from "./models/compare.ts";
+import type { CardView } from "./models/cards.ts";
+import type { PrecisionRecord } from "./models/precision.ts";
+import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
 import { buildPulse, PULSE_DAYS, pulseFromCounts } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
@@ -1323,6 +1328,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const added = await I.addModelCard(named, input, actor, at);
       return json(added, added.retried ? 200 : 201);
     }
+    // A model's vendor claims beside Atelier's record of it, role by role
+    // (t621, src/models/compare.ts): the developer's alone, as the cards and
+    // the role assignments it shows are. The name is checked as a card's is.
+    if (parts.length === 3 && parts[2] === "compare" && m === "GET") {
+      requireOwner(env, actor);
+      const named = cleanCardModel(id);
+      const readers = await modelReaders(env);
+      const [cards] = await I.modelCardViews([readers.keyOf(named)]);
+      const res = json(readers.compare(named, cards));
+      if (readers.track.unread.length) res.headers.set("x-atelier-incomplete", readers.track.unread.map((p) => p.name).sort().join(","));
+      return res;
+    }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
@@ -1455,8 +1472,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const parsedOffer = m === "POST" ? runnerOffer(body) : null;
-    const offer = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
-    if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
+    const asked = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
+    if (c.token?.runner && (!asked || asked.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -1466,7 +1483,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // letting it wait as though merely unclaimed, and plan routing picks from
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
-    const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    const projects = (await index(env).askQueue(asked, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    // The offer names each project its token serves by its current name too,
+    // as askQueue records it, so a project renamed since the token was
+    // issued reads the runner as serving it (servesProject, t652).
+    const offer = asked?.projects ? { ...asked, projects: [...new Set([...asked.projects, ...projects.map((p) => p.name)])] } : asked;
     // Every runner's last poll, this one's included, goes to each project,
     // where a claim whose runner stopped polling holds no other dispatch
     // (t537, orphanedBy in src/dispatch/rules.ts).
@@ -2391,7 +2412,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
         // The suggestion is checked against runners' offers for the job this
         // dispatch will carry, a plain build unless it names another.
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers }, { to: body.to, model: body.model, job: body.job ?? "build" });
+        // Read for this project (offersFor, t652): a model only a runner
+        // scoped to another project offers is not suggested here.
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -2543,7 +2566,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a run skip names its runner in X-Atelier-Runner", 400);
       const kind = body.kind;
-      if (kind !== "failures" && kind !== "infrastructure" && kind !== "skipped") throw new RuleError("bad_kind", "a run skip's kind is failures, infrastructure or skipped", 400);
+      if (!isRunSkipKind(kind)) throw new RuleError("bad_kind", `a run skip's kind is ${RUN_SKIP_KINDS.join(", ")}`, 400);
       const failures = body.failures;
       if (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1 || failures > 1000) throw new RuleError("bad_failures", "a run skip names how many failures it gave up after", 400);
       // Under a runner token the job's actor is the caller, checked at the gateway.
@@ -3234,7 +3257,8 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, track, gateway] = await Promise.all([I.models(), trackRecords(env), readGateway(env)]);
+  const [readers, gateway] = await Promise.all([modelReaders(env), readGateway(env)]);
+  const { entries, track, precision, judgement } = readers;
   const record = new Map<string, ActorRecord>();
   for (const { events } of track.sources) {
     for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
@@ -3243,14 +3267,47 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
-  // each model's speed comes with the track record (trackRecords).
-  const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
-  // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
-  // harness/model that acted for the owner (src/models/judgement.ts).
-  // Role assignments are recorded on the index, one more source (t622).
-  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: await I.assignmentEvents() }], judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
+  // One comparison per model in the pool, under its first entry's name, from
+  // the readers above (t621).
+  const named = [...new Map(entries.map((e) => [readers.keyOf(`${e.harness}/${e.id}`), `${e.harness}/${e.id}`])).values()];
+  const cards = await I.modelCardViews(named);
+  const comparisons = named.map((n, i) => readers.compare(n, cards[i]));
+  return html(renderModels(entries, record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement, comparisons), error ? 400 : 200);
+}
+
+// What the Models page and GET /api/models/ID/compare read, built once per
+// request: the pool, every project's events with the reliability and speed
+// records (trackRecords), review precision over the last
+// PRECISION_WINDOW_DAYS, the acting models' judgements over the last
+// JUDGEMENT_WINDOW_DAYS (role assignments are recorded on the index, one more
+// source, t622), pairwise catches over precision's window, and the standing
+// role assignments; and a model's comparison from them (t621).
+interface ModelReaders {
+  entries: ModelEntry[];
+  track: Awaited<ReturnType<typeof trackRecords>>;
+  precision: PrecisionRecord;
+  judgement: JudgementRecord;
+  pairwise: PairwiseRecord;
+  keyOf(named: string): string;
+  compare(named: string, cards: CardView | null): ModelComparison;
+}
+async function modelReaders(env: Env): Promise<ModelReaders> {
+  const I = index(env);
+  const [pool, track, assignmentEvents, roles] = await Promise.all([I.models(), trackRecords(env), I.assignmentEvents(), I.roleAssignments()]);
+  const entries = pool as unknown as ModelEntry[];
+  const owner = ownerActor(env), now = new Date();
+  const precision = buildPrecision(track.sources, precisionWindow(now), owner);
+  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: assignmentEvents }], judgementWindow(now), owner, entries);
+  const pairwise = buildPairwise(track.sources, precisionWindow(now), owner, entries);
+  const standing = roles.assignments.filter((a) => a.status === "current");
+  return {
+    entries, track, precision, judgement, pairwise,
+    keyOf: (named) => canonicalName(named, entries),
+    compare: (named, cards) => compareModel({
+      named, pool: entries, cards, reliability: track.reliability, precision, speed: track.speed, judgement, pairwise, assignments: standing, projectNames: roles.names,
+      coverage: { projects: track.sources.length, events: track.events, unread: track.unread.map((p) => p.name) },
+    }),
+  };
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────

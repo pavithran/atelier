@@ -162,6 +162,47 @@ test("the receipt names a merge recorded after the fact as made outside Atelier,
   assert.doesNotMatch(text, /accepted, merge commit/);
 });
 
+// t660 (follow-up from t653): a fast landing's merge printed "bbbbbbbb
+// accepted, merge commit 5af22431 on the baseline", though a fast landing
+// records no acceptance and the server had not observed the merge on the
+// baseline (landedFast records observedOnBaseline: false). The line says
+// what happened instead, in the task page's words for the review.
+test("a fast landing's merge never says accepted or on the baseline, and says whether its post-merge review is recorded", () => {
+  const landed = ev(1, "2026-10-13T22:00:00.000Z", "pavi", "item.landed_fast", { commit: B, mergeCommit: M, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "f".repeat(64), where: "clean clone" }, reason: "forks fail" });
+  const merged = ev(2, "2026-10-13T22:00:00.000Z", "pavi", "item.merged", { mergeCommit: M, head: B, observedOnBaseline: false, fast: true });
+  const mergeLine = (...later) => receiptText("atelier", "t1", { item: detail().item, events: [landed, merged, ...later] }).split("\n").find((l) => l.includes("merged in fast mode") || l.includes("merged by"));
+  const stamp = "2026-10-13 22:00 UTC  ";
+  assert.equal(mergeLine(), `${stamp}merged in fast mode by pavi: bbbbbbbb merged as 5af22431, no baseline observation recorded; it skipped the gate, and no post-merge review was requested`);
+  const requested = ev(3, "2026-10-13T22:01:00.000Z", "pavi", "review.requested", { head: M });
+  assert.equal(mergeLine(requested), `${stamp}merged in fast mode by pavi: bbbbbbbb merged as 5af22431, no baseline observation recorded; it skipped the gate; a post-merge review was requested and is not recorded yet`);
+  const review = ev(4, "2026-10-13T22:05:00.000Z", "opencode/glm-5.3", "review.approved", { note: "Holds.", head: M, postMerge: true, findings: [] });
+  assert.equal(mergeLine(requested, review), `${stamp}merged in fast mode by pavi: bbbbbbbb merged as 5af22431, no baseline observation recorded; it skipped the gate; its post-merge review is recorded`);
+  // Only a baseline observation recorded on the event lets the line say so.
+  const seen = receiptText("atelier", "t1", { item: detail().item, events: [landed, ev(2, merged.at, "pavi", "item.merged", { ...merged.data, observedOnBaseline: true })] });
+  assert.match(seen, /merged in fast mode by pavi: bbbbbbbb merged as 5af22431, on the baseline; it skipped the gate/);
+  assert.doesNotMatch(seen, /accepted/);
+  // A fast merge event without its flag is still told as fast when the
+  // landing it records sits before it with the same merge commit.
+  const unflagged = receiptText("atelier", "t1", { item: detail().item, events: [landed, ev(2, merged.at, "pavi", "item.merged", { mergeCommit: M, head: B, observedOnBaseline: false })] });
+  assert.match(unflagged, /merged in fast mode by pavi: bbbbbbbb merged as 5af22431/);
+  for (const text of [receiptText("atelier", "t1", { item: detail().item, events: [landed, merged] }), unflagged]) {
+    assert.doesNotMatch(text, /accepted/);
+    assert.doesNotMatch(text, /on the baseline/);
+  }
+});
+
+// A gated landing prints exactly as before t660: the accepted head, the
+// merge commit, on the baseline. So does an older merge event recorded
+// before observedOnBaseline was, and a plan's part merged through its plan.
+test("a gated landing's merge line is unchanged by the fast-landing wording", () => {
+  const line = (data) => receiptText("atelier", "t1", { item: detail().item, events: [ev(1, "2026-10-07T21:28:44.552Z", "pavi", "item.merged", data)] }).split("\n").at(-1);
+  const gated = "2026-10-07 21:28 UTC  merged by pavi: bbbbbbbb accepted, merge commit 5af22431 on the baseline";
+  assert.equal(line({ mergeCommit: M, head: B, observedOnBaseline: true }), gated);
+  assert.equal(line({ mergeCommit: M, head: B }), gated);
+  assert.equal(line({ mergeCommit: M, head: B, via: "t0" }), gated);
+  assert.equal(receiptText("atelier", "t1", detail()).split("\n").at(-1), gated);
+});
+
 test("the receipt as JSON carries the item's events in the ledger's order, whole", () => {
   const json = receiptJson("atelier", "t1", detail());
   assert.deepEqual(json, { project: "atelier", id: "t1", title: "Fix the parser", state: "merged", events: [...detail().events].sort((a, b) => a.seq - b.seq) });

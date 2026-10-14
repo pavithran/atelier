@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { checked, runTask, runPlanTask, runRunner, failureCount, infrastructureFailureCount, runOutcome } from "../cli/runner.mjs";
 import { runnerDenied, runnerTaskTerminal, terminalTaskExit, TERMINAL_TASK_EXITS } from "../src/tokens.ts";
@@ -56,9 +57,7 @@ test("ordinary authorization and infrastructure exits are not terminal", async (
 });
 
 for (const terminalState of ["merged", "abandoned"]) test(`runner continues other jobs and never retries ${terminalState}`, async (t) => {
-  const root = resolve(".cache/runner-closed");
-  mkdirSync(root, { recursive: true });
-  const dir = mkdtempSync(join(root, "loop-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-closed-loop-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configPath = join(dir, "config.json");
   writeFileSync(configPath, JSON.stringify(config));
@@ -126,7 +125,7 @@ test("terminalTaskExit reads the state's exit from the server's answer alone", (
 });
 
 function cliExit(t, argv, answer) {
-  const dir = mkdtempSync(join(resolve(".cache/runner-closed"), "cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-closed-cli-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const cli = resolve("cli/atelier.mjs");
   const script = `
