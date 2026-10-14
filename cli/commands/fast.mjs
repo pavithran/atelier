@@ -2,7 +2,7 @@
 import { COMMAND_USAGE } from "../help.mjs";
 import { I, OWNER, P, actingHeaders, actor, args, call, cfg, die, fastTakeWorkspace, git, itemArg, landingGit, project, wsConfig } from "../atelier.mjs";
 import { behindRefusal } from "../pull.mjs";
-import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs, postPending, readPending, readySources } from "../fast.mjs";
+import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs, postPending, readPending, readySources, shellQuote } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
 
@@ -96,7 +96,7 @@ function unrecordedMessage(name, result) {
   return [
     `${result.failure.step} failed: ${result.failure.detail}`,
     `Main holds the batch${result.head ? ` at ${result.head.slice(0, 12)}` : ""}. Recorded: ${list(result.recorded ?? [])}. Not recorded: ${list(result.unrecorded ?? [])}.`,
-    `Record the rest, without merging again: atelier fast record ${JSON.stringify(result.pending)} --project ${name}`,
+    `Record the rest, without merging again: atelier fast record ${shellQuote(result.pending)} --project ${name}`,
   ].join("\n");
 }
 
@@ -125,7 +125,7 @@ async function fastTake(name) {
   const runner = typeof args.runner === "string" ? args.runner : null;
   const r = await fastTakeWorkspace(name, id, as, runner);
   if (args.json) return console.log(JSON.stringify({ item: r.item, dir: r.dir, base: r.base, head: r.head, resumed: r.resumed }));
-  console.log(`${id} is yours, ${as}, in fast mode: no fork, no write token. Work here, in a clean clone of main at ${r.base.slice(0, 12)}:\n  cd ${JSON.stringify(r.dir)}`);
+  console.log(`${id} is yours, ${as}, in fast mode: no fork, no write token. Work here, in a clean clone of main at ${r.base.slice(0, 12)}:\n  cd ${shellQuote(r.dir)}`);
   if (r.resumed) console.log(`The clone holds ${r.head.slice(0, 12)}, a commit never reported; report it with atelier fast ready ${id}.`);
   console.log(`Then: commit with your Agent line, then atelier fast ready ${id}. Nothing is pushed; the developer lands it with atelier fast land.`);
 }
