@@ -1,8 +1,8 @@
 // atelier pull. Its forms, flags and help are declared in src/usage/commands/pull.ts.
 import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
-import { carryBaseline, loadPairs, savePairs } from "../fresh.mjs";
-import { NO_REPLACE, historyOverride } from "../pull.mjs";
+import { carryBaseline, loadPairs, savePairs, useRealHistory } from "../fresh.mjs";
+import { historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, P, args, call, cfg, die, landingGit, landingHome, project, short } from "../atelier.mjs";
 
@@ -29,10 +29,11 @@ import { OWNER, P, args, call, cfg, die, landingGit, landingHome, project, short
 // from the commit the baseline matches.
 export default async function pullCommand() {
   // Every Git command here, and the commit rebuilds in cli/fresh.mjs, reads
-  // the objects themselves, never a replacement of them (refs/replace): a
-  // replacement that gave main the baseline's head as a parent would make
-  // pull report it held what it lacks (review of t644, finding 4).
-  Object.assign(process.env, NO_REPLACE);
+  // the objects themselves, never a replacement or a graft of them
+  // (REAL_HISTORY_ENV in cli/fresh.mjs): one that gave main the baseline's
+  // head as a parent would make pull report it held what it lacks (Astra's
+  // reviews of t644).
+  useRealHistory(process.env);
   const git = landingGit;
   if (args._.length > 1) die(COMMAND_USAGE.pull);
   const name = project();

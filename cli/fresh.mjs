@@ -18,6 +18,25 @@ import { join } from "node:path";
 
 export const FRESH_TRAILER = "Atelier-Fresh-History";
 
+// The environment every Git command runs in that reads a project's history
+// for a baseline (pull, the behind-baseline guard, the rebuilds here): the
+// objects themselves and the repository's own boundaries. Replacement refs
+// are off; GIT_GRAFT_FILE names a path that cannot exist, so neither a graft
+// file the caller's environment names nor info/grafts is read (as
+// SCAN_ENV in cli/mirror.mjs); a replace-ref base or shallow file the
+// caller's environment names is dropped (an undefined value is left out of
+// a child's environment). The object directories are left as they are:
+// objects are named by their content, so an alternate store cannot change
+// what a commit's parents are, and a checkout set up with one needs it.
+export const REAL_HISTORY_ENV = Object.freeze({ GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null/atelier-no-grafts", GIT_REPLACE_REF_BASE: undefined, GIT_SHALLOW_FILE: undefined });
+
+// The same, applied to an environment object in place (process.env, whose
+// values become strings when assigned, so a dropped one is deleted).
+export function useRealHistory(env) {
+  for (const [key, value] of Object.entries(REAL_HISTORY_ENV)) { if (value === undefined) delete env[key]; else env[key] = value; }
+  return env;
+}
+
 const mapFile = (gitDir) => join(gitDir, "atelier-baseline-map.json");
 
 // The pairs for one project, baseline commit to project commit.
@@ -39,8 +58,8 @@ export function savePairs(gitDir, project, pairs) {
 // A commit object's bytes, read and written without decoding, so a message or
 // name in any encoding passes through unchanged.
 function bytes(cwd, args, input) {
-  // The objects themselves, never a replacement (refs/replace) of them.
-  const r = spawnSync("git", args, { cwd, input, maxBuffer: 256 * 1024 * 1024, env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" } });
+  // The objects themselves, never a replacement or graft (REAL_HISTORY_ENV).
+  const r = spawnSync("git", args, { cwd, input, maxBuffer: 256 * 1024 * 1024, env: { ...process.env, ...REAL_HISTORY_ENV } });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${String(r.stderr).trim()}`);
   return r.stdout;
 }

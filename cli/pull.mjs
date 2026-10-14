@@ -6,14 +6,13 @@
 // and fast land ask this first and refuse, naming atelier pull.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { loadPairs } from "./fresh.mjs";
+import { REAL_HISTORY_ENV, loadPairs } from "./fresh.mjs";
 
-// Git as the baseline's history really is: replacement refs
-// (refs/replace) would let a commit claim a parent it does not have, so
-// every command that reads ancestry for the guard or for pull runs with
-// them off (review of t644, finding 4).
-export const NO_REPLACE = { GIT_NO_REPLACE_OBJECTS: "1" };
-export const realHistory = (git) => (args, opts = {}) => git(args, { ...opts, env: { ...opts.env, ...NO_REPLACE } });
+// Git as the baseline's history really is: a replacement ref or a graft
+// (info/grafts, or a file GIT_GRAFT_FILE names) would let a commit claim a
+// parent it does not have, so every command that reads ancestry for the
+// guard runs in REAL_HISTORY_ENV (cli/fresh.mjs; Astra's reviews of t644).
+export const realHistory = (git) => (args, opts = {}) => git(args, { ...opts, env: { ...opts.env, ...REAL_HISTORY_ENV } });
 
 // What in the checkout changes the history Git shows and cannot be turned
 // off per command: a grafts file, or a shallow boundary, which cuts the
