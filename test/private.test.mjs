@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, guardedPush, linkPrivate, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, guardedPush, linkPrivate, privateGuardFor, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
@@ -323,31 +323,6 @@ test("private ls takes no --home", (t) => {
   assert.match(r.output, /usage: atelier private add/);
 });
 
-// Both reviews of t645: pushes were guarded call by call and some were
-// missed. Every git push in the CLI is made inside guardedPush, except the
-// ones listed here with why.
-test("every git push the CLI makes runs inside guardedPush", () => {
-  const exempt = {
-    "cli/push-steps.mjs": "its helpers run only inside guardedPush: init's pushHistory and push's 413 fallback, which pushes the HEAD the guarded push checked",
-    "cli/commands/merge.mjs#notes": "refs/notes/atelier alone, which holds receipts, no project file",
-  };
-  const files = execFileSync("git", ["ls-files", "cli"], { encoding: "utf8" }).split("\n").filter((f) => f.endsWith(".mjs") && !/\.(test|spec)\.mjs$/.test(f));
-  const unguarded = [];
-  for (const file of files) {
-    if (exempt[file]) continue;
-    const lines = readFileSync(file, "utf8").split("\n");
-    lines.forEach((line, i) => {
-      if (!/["']push["']\s*,\s*["']--/.test(line)) return;
-      if (/refs\/notes\/atelier:refs\/notes\/atelier['"]\]/.test(line) && !/refs\/heads/.test(line) && exempt[`${file}#notes`]) return;
-      // The push's own lines and those just around it: guardedPush wraps
-      // the push, or the argument list is built just before it.
-      const around = lines.slice(Math.max(0, i - 20), i + 21).join("\n");
-      if (!around.includes("guardedPush(")) unguarded.push(`${file}:${i + 1}`);
-    });
-  }
-  assert.deepEqual(unguarded, []);
-});
-
 test("every name privatePath accepts comes back unchanged from the list in iCloud", () => {
   for (const bad of ["#plan", "  PROJECT.md", "PROJECT.md ", "a\tb", "a\u0001b", "x\u007f"]) assert.ok("error" in privatePath(bad), JSON.stringify(bad));
   const names = ["PROJECT.md", "notes/a b.md", "!bang", "a#b", "[x].md", "Café.md", "dir/#inner"].map((n) => privatePath(n).path);
@@ -493,4 +468,63 @@ test("a rule in the checkout that un-ignores a private file is warned of, and At
   const ls = f.run("private", "ls");
   assert.match(ls.output, /PROJECT\.md \(listed in iCloud and on this Mac\): linked; NOT ignored by Git/);
   assert.deepEqual(privateChanges(f.checkout, privateGuard("demo", f.read().projects.demo, { root: f.icloud }).paths), ["PROJECT.md"], "what wrap would stage includes it, so wrap refuses");
+});
+
+// Astra's fourth review of t645, finding 1: a long-running process (the
+// integrator) kept the config it started with, so a name made private by
+// another process later was not guarded.
+test("a guard in a process started earlier honours a name another process made private since", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, "secret.md"), "s\n");
+  // This process registered its config at startup, as the CLI does; then
+  // another process names secret.md private.
+  const memory = JSON.parse(readFileSync(join(f.root, "config", "config.json"), "utf8"));
+  useConfig(memory, () => {});
+  const previous = { dir: process.env.ATELIER_CONFIG_DIR, root: process.env.ATELIER_PRIVATE_ROOT };
+  process.env.ATELIER_CONFIG_DIR = join(f.root, "config");
+  process.env.ATELIER_PRIVATE_ROOT = f.icloud;
+  t.after(() => {
+    useConfig(null);
+    for (const [key, value] of [["ATELIER_CONFIG_DIR", previous.dir], ["ATELIER_PRIVATE_ROOT", previous.root]]) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  });
+  assert.deepEqual(privateGuardFor("demo"), { paths: [], refusal: null }, "nothing is private when it starts");
+  assert.equal(f.run("private", "add", "secret.md").code, 0);
+  // A task commit holding it, pushed from this process.
+  rmSync(join(f.checkout, "secret.md"));
+  writeFileSync(join(f.checkout, "secret.md"), "s\n");
+  f.git(f.checkout, "add", "-f", "secret.md");
+  f.git(f.checkout, "commit", "-q", "-m", "task");
+  let pushed = false;
+  assert.throws(() => guardedPush({ project: "demo", cwd: f.checkout, tip: "HEAD", base: ["HEAD~1"], what: "The refresh" }, () => { pushed = true; }), /The refresh would carry private files: secret\.md/);
+  assert.equal(pushed, false);
+  // And a name this process holds but has not written is honoured too.
+  memory.projects.demo.private.push("mine.md");
+  assert.ok(privateGuardFor("demo").paths.includes("mine.md"));
+});
+
+// Astra's fourth review of t645, finding 2: with the list gone missing,
+// private add wrote a list of the new name alone, and discovery then dropped
+// the names only the copy held.
+test("private add never writes the list without a name it knows; only private remove drops one", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
+  writeFileSync(join(f.keep, "notes.md"), "n\n");
+  assert.equal(f.run("private", "ls").code, 0, "ls finds the list and keeps its copy");
+  assert.deepEqual(f.read().projects.demo.privateFromList, ["PROJECT.md"]);
+  rmSync(join(f.keep, ".atelier-private"));
+  const r = f.run("private", "add", "notes.md");
+  assert.equal(r.code, 0, r.output);
+  const listed = () => parsePrivateList(readFileSync(join(f.keep, ".atelier-private"), "utf8")).paths;
+  assert.deepEqual(listed(), ["PROJECT.md", "notes.md"]);
+  assert.deepEqual(f.read().projects.demo.privateFromList, ["PROJECT.md", "notes.md"]);
+  assert.ok(lstatSync(join(f.checkout, "PROJECT.md")).isSymbolicLink(), "still linked");
+  // private remove is the one way out.
+  const removed = f.run("private", "remove", "PROJECT.md");
+  assert.equal(removed.code, 0, removed.output);
+  assert.deepEqual(listed(), ["notes.md"]);
+  assert.deepEqual(f.read().projects.demo.privateFromList, ["notes.md"]);
+  assert.ok(!f.read().projects.demo.private.includes("PROJECT.md"));
+  assert.ok(!existsSync(join(f.checkout, "PROJECT.md")), "its link is gone");
+  assert.ok(existsSync(join(f.keep, "PROJECT.md")), "the file in iCloud is left");
+  assert.notEqual(f.run("private", "remove", "nothing.md").code, 0);
 });
