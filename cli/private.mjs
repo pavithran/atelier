@@ -4,9 +4,11 @@
 // private files stay in the project's iCloud folder, which iCloud syncs, and
 // each checkout holds a symbolic link to each of them. Git ignores them
 // through the checkout's .git/info/exclude, never .gitignore, which is
-// pushed. The project's entry in this Mac's config.json names them:
-// `private` (paths in the checkout) and `privateHome` (the folder holding
-// them; by default the iCloud ai-projects folder named for the project).
+// pushed. The folder keeps the list of them too, .atelier-private, so the
+// list follows the developer between Macs; the project's entry in this
+// Mac's config.json may name more (`private`) and the folder (`privateHome`;
+// by default the iCloud ai-projects folder named for the project). The list
+// is never linked into a checkout and never pushed.
 //
 // Atelier never pushes them: wrap refuses to stage one, and every command
 // that pushes commits (sync, publish, merge, wrap --push and publish REMOTE)
@@ -14,10 +16,10 @@
 // one (privateCommits). Git commits a symbolic link as a link, never the
 // file it points at, and the refusal covers the link too.
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { privateExcludeLine, privateFolderMatches, privatePathsAmong } from "../src/rules.ts";
+import { PRIVATE_LIST, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
 
 // The iCloud folder that holds a folder per project.
 export const privateRoot = () => join(homedir(), "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects");
@@ -41,6 +43,46 @@ export function privateHome(name, entry, root = privateRoot()) {
   if (found.length === 1) return { home: join(root, found[0]), named: false };
   if (!found.length) return { error: `no folder in ${root} is named for ${name}; name one with atelier private add --home DIR --project ${name}` };
   return { error: `more than one folder in ${root} is named for ${name} (${found.join(", ")}); name one with atelier private add --home DIR --project ${name}` };
+}
+
+// The list in the folder that keeps the private files: its valid paths and
+// each line refused, with why. A missing list is an empty one.
+export function readPrivateList(home) {
+  const file = join(home, PRIVATE_LIST);
+  if (!existsSync(file)) return { paths: [], refused: [], exists: false };
+  let text;
+  try { text = readFileSync(file, "utf8"); } catch (error) { return { paths: [], refused: [{ line: 0, text: "", error: `${file} cannot be read (${error.code ?? error.message})` }], exists: true }; }
+  return { ...parsePrivateList(text), exists: true };
+}
+
+// Writes the list, sorted, each path once, whole or not at all: a reader on
+// another Mac never sees half of it.
+export function writePrivateList(home, paths) {
+  const file = join(home, PRIVATE_LIST), part = `${file}.${process.pid}.part`;
+  writeFileSync(part, privateListText(paths));
+  try { renameSync(part, file); } catch (error) { rmSync(part, { force: true }); throw error; }
+}
+
+// A project's private files on this Mac: those the folder's list names and
+// those this Mac's config names, each once, with where each came from
+// ("iCloud", "this Mac" or both), the lines of the list refused, and the
+// folder (or why there is none).
+export function privateList(name, entry, root) {
+  const config = [];
+  for (const p of entry?.private ?? []) { const r = privatePath(p); if ("path" in r && !config.includes(r.path)) config.push(r.path); }
+  const found = privateHome(name, entry, root);
+  const home = found.error ? null : found.home;
+  const listed = home && existsSync(home) ? readPrivateList(home) : { paths: [], refused: [], exists: false };
+  const paths = [...new Set([...listed.paths, ...config])];
+  const sources = Object.fromEntries(paths.map((p) => [p, [listed.paths.includes(p) ? "iCloud" : null, config.includes(p) ? "this Mac" : null].filter(Boolean).join(" and ")]));
+  return { paths, sources, refused: listed.refused, listed: listed.exists, home, homeError: found.error ?? null, named: found.named };
+}
+
+// The paths no Atelier command may stage or push: the project's private
+// files, and the list itself, which sits in a checkout that is the folder.
+export function guardedPaths(name, entry, root) {
+  const list = privateList(name, entry, root);
+  return list.paths.length || list.listed ? [...list.paths, PRIVATE_LIST] : [];
 }
 
 // The checkout's info/exclude file, wherever its Git directory keeps it.
@@ -111,14 +153,18 @@ export function privateState(checkout, home, path) {
 // elsewhere (a home that moved) is replaced. Returns what it did, with the
 // lines to print in `said`.
 export function linkPrivate(checkout, entry, { name, root } = {}) {
-  const paths = entry?.private ?? [];
-  const result = { linked: [], kept: [], missing: [], refused: [], said: [] };
-  if (!paths.length) return result;
+  const list = privateList(name, entry, root);
+  const paths = list.paths;
+  const result = { linked: [], kept: [], missing: [], refused: [], invalid: list.refused, said: [] };
   const say = (line) => result.said.push(line);
-  excludePrivate(checkout, paths);
-  const found = privateHome(name, entry, root);
-  if (found.error) { say(`Private files not linked: ${found.error}. Git ignores ${paths.join(", ")} in ${checkout}.`); result.home = null; return result; }
-  const home = result.home = found.home;
+  // A line of the list that is no plain path in the checkout is named and
+  // skipped; the others are linked.
+  for (const r of list.refused) say(`${PRIVATE_LIST}${r.line ? ` line ${r.line}` : ""}: ${r.error}; skipped.`);
+  if (!paths.length && !list.listed) return result;
+  excludePrivate(checkout, [...paths, PRIVATE_LIST]);
+  if (!paths.length) return result;
+  if (list.homeError) { say(`Private files not linked: ${list.homeError}. Git ignores ${paths.join(", ")} in ${checkout}.`); result.home = null; return result; }
+  const home = result.home = list.home;
   if (!existsSync(home) || !statSync(home).isDirectory()) {
     result.missingHome = true;
     say(`Private files not linked: ${home}, the folder that keeps them, is not on this Mac. iCloud may not have brought it here yet; once it has, run atelier private add ${paths.join(" ")} --project ${name} to link them. Git ignores them in ${checkout} meanwhile.`);

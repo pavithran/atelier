@@ -2394,7 +2394,32 @@ export function privatePath(input: string): { path: string } | { error: string }
   const parts = path.split("/");
   if (parts.some((part) => part === "" || part === "." || part === "..")) return { error: `${shown} has an empty, "." or ".." part; name the file as it sits in the checkout` };
   if (foldPath(parts[0]) === ".git") return { error: `${shown} is inside .git` };
+  if (foldPath(path) === PRIVATE_LIST) return { error: `${shown} is the list of private files itself, which stays in the folder that keeps them` };
   return { path };
+}
+
+// The list of a project's private files, kept beside them in the project's
+// iCloud folder so it follows the developer between Macs: one path per line,
+// relative to the checkout; # starts a comment. It is data from iCloud, so
+// every line is read as `private add` reads what the developer types.
+export const PRIVATE_LIST = ".atelier-private";
+
+export function parsePrivateList(text: string): { paths: string[]; refused: { line: number; text: string; error: string }[] } {
+  const paths: string[] = [], refused: { line: number; text: string; error: string }[] = [];
+  String(text ?? "").split("\n").forEach((raw, i) => {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim() || line.trimStart().startsWith("#")) return;
+    const r = privatePath(line);
+    if ("error" in r) refused.push({ line: i + 1, text: line, error: r.error });
+    else if (!paths.includes(r.path)) paths.push(r.path);
+  });
+  return { paths, refused };
+}
+
+// The list's text: a comment saying what it is, then each path once, sorted.
+export function privateListText(paths: string[]): string {
+  const sorted = [...new Set(paths)].sort();
+  return `# Private files of this project (atelier private add): one path per line, relative to the checkout.\n# Atelier links each into the checkout on every Mac and never pushes them.\n${sorted.map((p) => `${p}\n`).join("")}`;
 }
 
 // The paths among `paths` that are private or inside a private folder,
