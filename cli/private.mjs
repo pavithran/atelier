@@ -68,7 +68,8 @@ export function privateHome(name, entry, root = privateRoot()) {
 // is there but cannot be read says why in `unreadable`.
 export function readPrivateList(home) {
   const file = join(home, PRIVATE_LIST);
-  if (!lstat(file)) return { paths: [], refused: [], exists: false };
+  try { if (!lstat(file)) return { paths: [], refused: [], exists: false }; }
+  catch (error) { return { paths: [], refused: [], exists: true, unreadable: `${file} cannot be read (${error.code ?? error.message})` }; }
   let text;
   try { text = readFileSync(file, "utf8"); } catch (error) { return { paths: [], refused: [], exists: true, unreadable: `${file} cannot be read (${error.code ?? error.message})` }; }
   return { ...parsePrivateList(text), exists: true };
@@ -99,15 +100,22 @@ export function privateList(name, entry, root) {
   const config = plainPaths(entry?.private);
   const found = privateHome(name, entry, root);
   const home = found.error ? null : found.home;
-  let listed = { paths: [], refused: [], exists: false }, unreadable = null;
-  if (home && existsSync(home)) {
+  let listed = { paths: [], refused: [], exists: false }, unreadable = null, there = null;
+  if (home) { try { there = lstat(home) && statSync(home); } catch (error) { unreadable = `${home}, the folder that keeps ${name}'s private files and their list, cannot be read (${error.code ?? error.message})`; } }
+  if (home && there) {
     listed = readPrivateList(home);
     unreadable = listed.unreadable ?? null;
-  } else if (home) unreadable = `${home}, the folder that keeps ${name}'s private files and their list, is not on this Mac`;
+  }
+  const homeMissing = !!home && !there && !unreadable;
+  if (homeMissing) unreadable = `${home}, the folder that keeps ${name}'s private files and their list, is not on this Mac`;
   else if (found.unreadable) unreadable = found.error;
-  const paths = [...new Set([...listed.paths, ...config])];
-  const sources = Object.fromEntries(paths.map((p) => [p, [listed.paths.includes(p) ? "iCloud" : null, config.includes(p) ? "this Mac" : null].filter(Boolean).join(" and ")]));
-  return { paths, sources, refused: listed.refused, listed: listed.exists, fromList: listed.exists && !unreadable ? listed.paths : null, unreadable, home, homeError: found.error ?? null, named: found.named };
+  // The copy of the list this Mac keeps counts as well (Astra's fifth
+  // review of t645): with the list unavailable, its names are still
+  // excluded, linked where they can be and reported.
+  const cached = plainPaths(entry?.privateFromList);
+  const paths = [...new Set([...listed.paths, ...config, ...cached])];
+  const sources = Object.fromEntries(paths.map((p) => [p, [listed.paths.includes(p) ? "iCloud" : cached.includes(p) ? "this Mac's copy of the iCloud list" : null, config.includes(p) ? "this Mac" : null].filter(Boolean).join(" and ")]));
+  return { paths, sources, refused: listed.refused, listed: listed.exists, fromList: listed.exists && !unreadable ? listed.paths : null, unreadable, homeMissing, home, homeError: found.error ?? null, named: found.named };
 }
 
 // What every Atelier command that stages or pushes is checked against: the
@@ -249,7 +257,13 @@ export function trackedPrivate(checkout, paths) {
   return paths.filter((path) => privatePathsAmong(tracked, [path]).length);
 }
 
-const lstat = (path) => { try { return lstatSync(path); } catch { return null; } };
+// What is at a path, or null when nothing is: only ENOENT and ENOTDIR mean
+// nothing is there. Any other error (EACCES, EIO, …) is thrown, so what
+// cannot be read is never taken for absent (Astra's fifth review of t645).
+const lstat = (path) => {
+  try { return lstatSync(path); }
+  catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null; throw error; }
+};
 
 // A folder between the checkout and a private path that is a symbolic link:
 // a link made under it would land outside the checkout.
@@ -267,6 +281,9 @@ function linkAbove(checkout, path) {
 // the home, "missing" from the home, "file" (something Atelier did not make
 // stands there), "other-link" (a link to elsewhere) or "absent".
 export function privateState(checkout, home, path) {
+  try { return stateOf(checkout, home, path); } catch { return "unreadable"; }
+}
+function stateOf(checkout, home, path) {
   const target = join(home, path), stat = lstat(join(checkout, path));
   if (stat?.isSymbolicLink()) return readlinkSync(join(checkout, path)) === target ? (lstat(target) ? "linked" : "missing") : "other-link";
   if (stat) return "file";
@@ -293,7 +310,10 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
   if (!paths.length) return result;
   if (list.homeError) { say(`Private files not linked: ${list.homeError}. Git ignores ${paths.join(", ")} in ${checkout}.`); result.home = null; return result; }
   const home = result.home = list.home;
-  if (!existsSync(home) || !statSync(home).isDirectory()) {
+  let homeStat = null;
+  try { homeStat = lstat(home) && statSync(home); }
+  catch (error) { result.unreadableHome = true; say(`Private files not linked: ${home}, the folder that keeps them, cannot be read (${error.code ?? error.message}). Git ignores ${paths.join(", ")} in ${checkout} meanwhile.`); return result; }
+  if (!homeStat || !homeStat.isDirectory()) {
     result.missingHome = true;
     say(`Private files not linked: ${home}, the folder that keeps them, is not on this Mac. iCloud may not have brought it here yet; once it has, run atelier private add ${paths.join(" ")} --project ${name} to link them. Git ignores them in ${checkout} meanwhile.`);
     return result;
@@ -307,10 +327,14 @@ export function linkPrivate(checkout, entry, { name, root } = {}) {
   for (const path of paths) {
     const target = join(home, path), link = join(checkout, path);
     if (tracked.has(path)) { result.refused.push(path); say(`${path}: Git tracks it in the checkout, so it is not private there; not linked.`); continue; }
-    const above = linkAbove(checkout, path);
+    let above;
+    try { above = linkAbove(checkout, path); }
+    catch (error) { result.refused.push(path); say(`${path}: a folder above it in the checkout cannot be read (${error.code ?? error.message}); not linked.`); continue; }
     if (above) { result.refused.push(path); say(`${path}: ${above} in the checkout is a symbolic link, so a link under it would land outside the checkout; not linked.`); continue; }
-    if (!lstat(target)) { result.missing.push(path); say(`${path}: not in ${home}; not linked.`); continue; }
-    const stat = lstat(link);
+    let there, stat;
+    try { there = lstat(target); stat = lstat(link); }
+    catch (error) { result.refused.push(path); say(`${path}: cannot be read (${error.code ?? error.message}); not linked.`); continue; }
+    if (!there) { result.missing.push(path); say(`${path}: not in ${home}; not linked.`); continue; }
     if (stat?.isSymbolicLink()) {
       if (readlinkSync(link) === target) { result.kept.push(path); continue; }
       unlinkSync(link);

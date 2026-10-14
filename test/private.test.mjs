@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, guardedPush, linkPrivate, privateGuardFor, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, excludesPrivate, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
@@ -527,4 +527,52 @@ test("private add never writes the list without a name it knows; only private re
   assert.ok(!existsSync(join(f.checkout, "PROJECT.md")), "its link is gone");
   assert.ok(existsSync(join(f.keep, "PROJECT.md")), "the file in iCloud is left");
   assert.notEqual(f.run("private", "remove", "nothing.md").code, 0);
+});
+
+// Astra's fifth review of t645, finding 1: every lstat error was taken for
+// "nothing there", so a list that could not be read counted as no list.
+test("a list that cannot be reached is unreadable, not missing, and an opted-in project refuses", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
+  chmodSync(f.keep, 0o600); // readable, but nothing in it can be reached
+  let read, guard;
+  try {
+    read = readPrivateList(f.keep);
+    guard = privateGuard("demo", { path: f.checkout, private: ["mine.md"], privateHome: f.keep }, { root: f.icloud });
+  } finally { chmodSync(f.keep, 0o755); }
+  assert.equal(read.exists, true);
+  assert.match(read.unreadable, /\.atelier-private cannot be read \(EACCES\)/);
+  assert.match(guard.refusal ?? "", /cannot be read \(EACCES\).*Nothing was pushed\./);
+});
+
+// Astra's fifth review of t645, finding 2: names only the copy of the list
+// held were left out of what linkPrivate worked on.
+test("names only this Mac's copy of the list holds are excluded and reported when the folder is gone", (t) => {
+  const f = setup(t);
+  const gone = join(f.root, "gone");
+  const r = linkPrivate(f.checkout, { path: f.checkout, privateHome: gone, privateFromList: ["PROJECT.md"] }, { name: "demo", root: f.icloud });
+  assert.equal(r.missingHome, true);
+  assert.match(r.said.join("\n"), /Private files not linked: .*gone, the folder that keeps them, is not on this Mac/);
+  assert.ok(excludesPrivate(f.checkout, "PROJECT.md"), "Git ignores it meanwhile");
+});
+
+// Astra's fifth review of t645, finding 3: private add replaced a list it
+// could not read with the names known here.
+test("private add and remove refuse a list they cannot read, and change nothing", (t) => {
+  const f = setup(t);
+  const file = join(f.keep, ".atelier-private");
+  writeFileSync(file, "PROJECT.md\nother.md\n");
+  chmodSync(file, 0o000);
+  const before = f.read();
+  let add, remove;
+  try {
+    add = f.run("private", "add", "notes.md");
+    remove = f.run("private", "remove", "PROJECT.md");
+  } finally { chmodSync(file, 0o644); }
+  assert.notEqual(add.code, 0);
+  assert.match(add.output, /\.atelier-private cannot be read \(EACCES\); nothing was changed/);
+  assert.notEqual(remove.code, 0);
+  assert.match(remove.output, /cannot be read.*nothing was changed/);
+  assert.equal(readFileSync(file, "utf8"), "PROJECT.md\nother.md\n", "the list is as it was");
+  assert.deepEqual(f.read(), before, "the config is as it was");
 });

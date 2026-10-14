@@ -44,6 +44,12 @@ function add(words) {
     try { tracked = trackedPrivate(entry.path, paths); } catch (error) { die(`${error.message}; nothing was changed`); }
     if (tracked.length) die(`Git tracks ${tracked.join(", ")} in ${entry.path}, so ${tracked.length === 1 ? "it is" : "they are"} not private: the baseline may already hold ${tracked.length === 1 ? "it" : "them"}. Stop tracking ${tracked.length === 1 ? "it" : "them"} first (git rm --cached PATH, then commit), then name ${tracked.length === 1 ? "it" : "them"} again. Nothing was changed.`);
   }
+  // A list that is there but cannot be read is never replaced by the names
+  // known here (Astra's fifth review of t645): nothing is changed.
+  {
+    const list = privateList(name, { ...entry, privateHome: home });
+    if (list.home && list.unreadable && !list.homeMissing) die(`${list.unreadable}; nothing was changed. Make it readable, then run atelier private add again`);
+  }
   const named = [...(entry.private ?? [])];
   const added = paths.filter((path) => !named.includes(path));
   entry.private = [...named, ...added];
@@ -115,7 +121,7 @@ function ls() {
   const sameFolder = there && list.home && existsSync(list.home) && realpathSync(list.home) === realpathSync(entry.path);
   const STATES = {
     linked: "linked", missing: `not in ${list.home ?? "the folder"}`, file: "a file Atelier did not link is in the checkout",
-    "other-link": "a link to somewhere else", absent: "not linked yet: run atelier private add again",
+    "other-link": "a link to somewhere else", absent: "not linked yet: run atelier private add again", unreadable: "cannot be read here",
   };
   let tracked = new Set();
   try { if (there) tracked = new Set(trackedPrivate(entry.path, paths)); } catch { /* reported per path below as not linked */ }
@@ -127,6 +133,6 @@ function ls() {
     else if (!list.home) state = "not linked";
     else state = STATES[privateState(entry.path, list.home, path)];
     const ignored = there ? (excludesPrivate(entry.path, path) ? "ignored by Git" : "NOT ignored by Git: a rule in the checkout (a !-line in a .gitignore) outweighs Atelier's; Atelier still refuses to stage or push it") : "";
-    console.log(`  ${path} (listed ${list.sources[path] === "iCloud" ? "in iCloud" : list.sources[path] === "this Mac" ? "on this Mac" : "in iCloud and on this Mac"}): ${state}${ignored ? `; ${ignored}` : ""}`);
+    console.log(`  ${path} (listed ${({ iCloud: "in iCloud", "this Mac": "on this Mac", "iCloud and this Mac": "in iCloud and on this Mac" })[list.sources[path]] ?? `in ${list.sources[path]}`}): ${state}${ignored ? `; ${ignored}` : ""}`);
   }
 }
