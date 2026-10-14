@@ -5,7 +5,7 @@ import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
 import { signIn } from "./signin.ts";
-import { renderItem } from "../src/ui.ts";
+import { renderItem, type Detail } from "../src/ui.ts";
 import type { ShowcaseCounts } from "../src/graph.ts";
 
 // Fast mode (t585). On 2026-10-13 Artifacts failed every new fork, so no
@@ -274,6 +274,21 @@ it("the task page's fast-landing summary names the developer's words and the act
   const html = renderItem(await L.project(), await L.detail(item.id));
   expect(html).toContain(`Reason: forks fail; on the developer&#39;s words: “land &lt;b&gt;it&lt;/b&gt; &amp; &quot;go&quot; &#39;now&#39;”, relayed by ${OPUS}.</p>`);
   expect(html).not.toContain("<b>it</b>");
+
+  // codex/gpt-6-astra's review of t637: the page read the receipt from the
+  // newest 200 events only, so 200 later edits of the merged task hid the
+  // whole summary. It is read by kind now; the window really is passed here.
+  for (let i = 0; i < 201; i++) await L.editItem(item.id, "owner", { area: null });
+  const late = await L.detail(item.id) as unknown as Detail;
+  expect(late.events.some((x) => x.kind === "item.landed_fast")).toBe(false);
+  const lateHtml = renderItem(await L.project(), late);
+  expect(lateHtml).toContain("Landed in fast mode");
+  expect(lateHtml).toContain(`relayed by ${OPUS}.</p>`);
+  expect(lateHtml).toContain("no post-merge review was requested");
+  // A post-merge review requested since the landing is read by kind too.
+  await L.requestReview(item.id, "owner", SONNET, POOL);
+  for (let i = 0; i < 201; i++) await L.editItem(item.id, "owner", { area: null });
+  expect(renderItem(await L.project(), await L.detail(item.id))).toContain("a post-merge review was requested and is not recorded yet");
 
   // Through the route: an agent token and a visitor not signed in never see the page.
   const page = `https://atelier.test/p/${name}/${item.id}`;
