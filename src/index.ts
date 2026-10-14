@@ -2578,6 +2578,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runner offering its reviewer has skipped is withdrawn and asked anew.
       return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers()));
     }
+    // The developer withdraws an open, unclaimed review request with a
+    // reason (t627), so another reviewer can be asked at the same head.
+    case "review-withdraw": {
+      requireOwner(env, actor);
+      return json({ withdrawn: true, ...await L.withdrawReviewRequest(id, actor, body.reason, body.request, !!c.token) });
+    }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).
     case "land": {

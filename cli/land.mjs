@@ -928,6 +928,8 @@ async function reviewStep(io, { id, name, itemPath, reviewer, head: pushed, reco
     return;
   }
   const head = ask.head ?? pushed, since = ask.at;
+  // The named reviewer redirected an unclaimed request for another (t627).
+  for (const w of Array.isArray(ask.withdrew) ? ask.withdrew : []) print(`Withdrew the unclaimed review request ${w.request}${w.reviewer ? ` for ${w.reviewer}` : ""}, since --reviewer names ${reviewer}.`);
   print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}. Waiting for the verdict…`);
   // While no runner has claimed the request, the landing says what the
   // runners are busy with and what waits ahead in the queue, once and
