@@ -57,9 +57,10 @@ export default async function pullCommand() {
     // The commits pull makes (a merge, a merge of the receipts) carry the
     // project's commit identity, whatever this Mac's Git configuration or
     // the caller's environment names, as atelier merge's do (Astra's fifth
-    // review of t644): identityEnv sets author and committer both.
+    // review of t644): identityEnv sets author and committer both. A pull
+    // that only fast-forwards makes no commit and needs none, so a project
+    // with no identity yet still pulls that way.
     const identity = (await call("GET", P(name), undefined, OWNER))?.project?.policy?.commitIdentity;
-    if (!identity?.name || !identity?.email) die(`${NO_IDENTITY(name)}. Nothing was pulled: a merge pull makes here is made under the project's identity.`);
     const asProject = () => identityEnv(identity);
     const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
     git(["fetch", "--quiet", "--no-tags", base.remote, p.branch], { cwd, token: base.token });
@@ -71,9 +72,6 @@ export default async function pullCommand() {
       notesTip = git(["rev-parse", "FETCH_HEAD"], { cwd });
     }
     // Nothing below reaches the baseline.
-    const receipts = notesTip ? mergeNotes(git, cwd, notesTip, asProject) : null;
-    const receiptsLine = receipts === null ? "The baseline holds no receipts." : `Receipts: ${receipts} new on refs/notes/atelier, merged with this checkout's own.`;
-
     let target = baselineHead, pair = () => {};
     const fresh = p.fresh === true;
     if (fresh) {
@@ -89,6 +87,18 @@ export default async function pullCommand() {
     }
     const head = git(["rev-parse", "--verify", `refs/heads/${p.branch}^{commit}`], { cwd });
     const holds = (older, newer) => git(["merge-base", "--is-ancestor", older, newer], { cwd, allowFail: true }).status === 0;
+    // Whether pull will make a commit, read before anything changes: main
+    // and the baseline's main each hold commits the other lacks, or the
+    // receipts do. Without the project's identity, such a pull is refused
+    // here with nothing changed, as merge refuses.
+    const notesHad = git(["rev-parse", "--verify", "-q", "refs/notes/atelier"], { cwd, allowFail: true }).stdout.trim();
+    const commits = [
+      ...(!holds(target, head) && !holds(head, target) ? [`${p.branch} and the baseline's ${p.branch} each hold commits the other lacks`] : []),
+      ...(notesTip && notesHad && !holds(notesTip, notesHad) && !holds(notesHad, notesTip) ? ["this checkout's receipts and the baseline's each hold notes the other lacks"] : []),
+    ];
+    if (commits.length && !(identity?.name && identity?.email)) die(`${NO_IDENTITY(name)}. Nothing was pulled: ${commits.join(", and ")}, so pull would make a merge commit, and it makes one only under the project's identity.`);
+    const receipts = notesTip ? mergeNotes(git, cwd, notesTip, asProject) : null;
+    const receiptsLine = receipts === null ? "The baseline holds no receipts." : `Receipts: ${receipts} new on refs/notes/atelier, merged with this checkout's own.`;
     if (holds(target, head)) {
       pair();
       console.log(`${name}: ${p.branch} @ ${short(head)} already holds the baseline's ${p.branch} @ ${short(baselineHead)}; no commits to bring.`);
