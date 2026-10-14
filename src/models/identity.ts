@@ -34,8 +34,10 @@ export function exactEntry<E extends Pick<ModelEntry, "id" | "harness">>(pool: r
 // only when the earlier ones did not. Undefined when none answers: a model
 // outside the pool. storedActor reads legacy stored names by the same rule.
 export function entryNamed<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(pool: readonly E[], name: string): E | undefined {
-  const { found, how } = namedCandidates(pool, name);
-  if (found.length > 1) throw new RuleError("ambiguous_model", `${name} ${how} ${found.map((m) => `${m.harness}/${m.id}`).join(" and ")}; name one by its id`, 400);
+  const { found } = namedCandidates(pool, name);
+  // The refusal names no pool entry: a caller who may not read the pool
+  // learns nothing of it (gpt-6-astra's fifteenth review of t622, finding 2).
+  if (found.length > 1) throw new RuleError("ambiguous_model", `${name} names more than one model in the pool; use its exact harness/id`, 400);
   return found[0];
 }
 
@@ -71,7 +73,7 @@ export function typedModel(pool: readonly Pick<ModelEntry, "id" | "harness" | "a
   if (exact) return exact.id;
   const one = (ids: string[], how: string): string | undefined => {
     const distinct = [...new Set(ids)];
-    if (distinct.length > 1) throw new RuleError("ambiguous_model", `${model} ${how} ${distinct.join(" and ")}; name one by its id`, 400);
+    if (distinct.length > 1) throw new RuleError("ambiguous_model", `${model} names more than one model in the pool; use its exact id`, 400);
     return distinct[0];
   };
   return one(pool.filter((m) => modelKey(m.id) === modelKey(model)).map((m) => m.id), "is the same model as")

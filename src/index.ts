@@ -3973,11 +3973,6 @@ export default {
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
           return json({ error: "bad_body", detail: "the request body must be a JSON object" }, 400);
         }
-        // The one boundary for model names (t622): a field that chooses a
-        // model to use is converted here to the exact pool entry it names,
-        // before its route reads it (canonicalNames). The declared actor is an
-        // identity and is kept as declared.
-        await canonicalNames(env, body as NameFields, choiceRoute(parts, req.method, body as NameFields));
         // The project a path names is resolved here, once: a former name
         // reaches the project as the current one does, for a token limited to
         // either, and the answer names the project as it is called now.
@@ -4039,6 +4034,13 @@ export default {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
+        // The one boundary for model names (t622): a field that chooses a
+        // model to use is converted to the exact pool entry it names, before
+        // its route reads it (canonicalNames), and only once the request is
+        // authorized and in scope, so a refused request reads nothing of the
+        // pool (gpt-6-astra's fifteenth review of t622, finding 2). The
+        // declared actor is an identity and is kept as declared.
+        await canonicalNames(env, body as NameFields, choiceRoute(parts, req.method, body as NameFields));
         let res: Response;
         try {
           res = await api({ env, req, url, actor, body, token, ref, acting, declaredActing, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
