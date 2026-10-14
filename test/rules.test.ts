@@ -1378,3 +1378,45 @@ test("the iCloud list of private files is read line by line as data, and written
   assert.deepEqual(text.split("\n").filter((l) => l && !l.startsWith("#")), ["PROJECT.md", "notes"]);
   assert.deepEqual(parsePrivateList(text), { paths: ["PROJECT.md", "notes"], refused: [] });
 });
+
+import { gateApprovals } from "../src/rules.ts";
+import { recordedApproval } from "../src/landing-verdict.ts";
+
+// t628 review (gpt-6-astra, gemini-3.1-pro-argon): a landing took any
+// approval at a ready head for the review it needed. The gate's own
+// selection says which approvals it counts, and a landing reads only that.
+test("gateApprovals is the gate's selection: only approvals it counts as the independent review, none where no review is needed", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const a: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, proved: false, claimed: true };
+  const unproved: Review = { ...a, by: "antigravity/gemini-3.1-pro", claimed: false };
+  const sameFamily: Review = { ...a, by: "claude-code/sonnet-5.5" };
+  const tier: Review = { ...a, by: "antigravity/gemini-3.1-pro", tier: true };
+  const later: Review = { ...a, approve: false, at: "2026-10-03T13:00:00.000Z" };
+  // A's claimed approval makes the gate ready; the unproved, same-family and
+  // tier approvals beside it are never counted.
+  assert.equal(gate(item(), policy, [touching], [a, unproved, sameFamily, tier]).ready, true);
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [a, unproved, sameFamily, tier]).map((r) => r.by), ["codex/gpt-5.5"]);
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [unproved, sameFamily, tier]), []);
+  // The reviewer's latest verdict is a rejection: its approval no longer counts.
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [a, later]), []);
+  // An unprotected change needs no review, so no approval is counted for one.
+  assert.equal(gate(item(), policy, [pass()], [a]).ready, true);
+  assert.deepEqual(gateApprovals(item(), policy, [pass()], [a]), []);
+  // A review held outside the item counts none either.
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [a], "owner", { reviewHeld: true }), []);
+});
+
+test("a landing counts a recorded approval only where the gate is ready and counts that very approval, the named reviewer's where one is named (t628)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const a: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, proved: false, claimed: true };
+  const b: Review = { ...a, by: "antigravity/gemini-3.1-pro", claimed: false };
+  const detail = (reviews: Review[], evidence = [touching]) => ({ item: item({ state: "submitted" }), policy, evidence, reviews, gate: gate(item({ state: "submitted" }), policy, evidence, reviews) });
+  assert.equal(recordedApproval(detail([a, b]), H1, null)?.by, "codex/gpt-5.5");
+  assert.equal(recordedApproval(detail([a, b]), H1, "codex/gpt-5.5")?.by, "codex/gpt-5.5");
+  // B's unproved approval stands beside A's counting one: naming B asks B.
+  assert.equal(recordedApproval(detail([a, b]), H1, "antigravity/gemini-3.1-pro"), null);
+  // Another head, a gate not ready, or a change that needs no review: none.
+  assert.equal(recordedApproval(detail([a]), H2, null), null);
+  assert.equal(recordedApproval(detail([b]), H1, null), null);
+  assert.equal(recordedApproval(detail([a], [pass()]), H1, null), null);
+});

@@ -1780,6 +1780,29 @@ export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan"
 // blocker stands, a rejection at the head among them.
 export interface GateOptions { reviewHeld?: boolean }
 
+// The approvals the gate counts as a change's independent review: of the
+// reviews standing at the item's head and criteria (countingReviews, the
+// latest per reviewer), each one independentApproval admits for a change
+// whose class needs a review. None for a change that needs no review, one
+// whose review is held outside the item, or one with no measured paths. The
+// gate reads this and so does a landing (recordedApproval in
+// src/landing-verdict.ts, t628), so a landing never takes an approval the
+// gate sets aside (an unproved one, a same-family one, a contributor's) for
+// the review it needs.
+export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Review[] {
+  const view = evidenceAt(policy, evidence, item.head);
+  const kind = view.changedPaths === null ? null : changeClass(view.changedPaths, policy);
+  return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, owner, options);
+}
+
+// gateApprovals over reviews already counted, for the gate that has them.
+function approvalsCounted(item: Item, policy: ProjectPolicy, counting: Review[], kind: ChangeClass | null, owner: string, options: GateOptions): Review[] {
+  if (options.reviewHeld || !(kind === "protected" || (policy.execution !== undefined && kind === "coordinated"))) return [];
+  const contributors = contributorsOf(item);
+  const single = singleFamily(policy);
+  return counting.filter((r) => independentApproval(r, kind, contributors, owner, single));
+}
+
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {
   reviews = countingReviews(reviews, bindingOf(item), policy, owner);
   const blockers: string[] = [];
@@ -1811,7 +1834,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
     const single = singleFamily(policy);
-    if (!reviews.some((r) => independentApproval(r, kind, contributors, owner, single))) {
+    if (!approvalsCounted(item, policy, reviews, kind, owner, options).length) {
       // A project that forbids overrides (t371) counts none, an override
       // recorded before the prohibition included: the change waits for its
       // review as if the override had never been made.
