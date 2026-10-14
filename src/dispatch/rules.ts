@@ -78,7 +78,13 @@ export interface RunnerOffer {
   kind: RunnerKind;
   agents: { agent: string; models: string[] }[];
   jobs?: string[];
+  // The projects a runner token lets it serve (t626), by current name; an
+  // offer naming none serves every project.
   projects?: string[];
+  // The project these offers were read for (offersFor), when a project's
+  // routing reads them: an offer whose `projects` leave that project out
+  // offers it nothing, though its runner still counts as live.
+  forProject?: string;
   // When the runner's process started, as it says: what it passes by after
   // failures or a refused claim it forgets on a restart, so the reasons
   // that name it count only from then (skippedBy, refusedBy).
@@ -459,6 +465,34 @@ export function skippedBy(runs: readonly RunSeen[], project: string, item: strin
 // reported for, and only from a live runner since its process started.
 export type RunSkipKind = "failures" | "infrastructure" | "skipped";
 
+// The kinds a runner reports, and the only ones the ledger keeps (t652). The
+// runner sends one place (gaveUp in cli/runner.mjs): `failures` after
+// SKIP_AFTER failed runs, `infrastructure` after three infrastructure
+// failures in a row, and `skipped` for a job it passes by, as when the
+// validation-blocked marker stops it. Each may follow a run that kept its
+// claim, since a run that committed before failing keeps it ("claim
+// preserved"), so each is taken for a task the reporting runner holds as
+// well as for an open one. recordRunSkip took any kind for a held task, so
+// a caller past the route's check could keep a kind no reason line knows.
+export const RUN_SKIP_KINDS: readonly RunSkipKind[] = ["failures", "infrastructure", "skipped"];
+
+export function isRunSkipKind(kind: unknown): kind is RunSkipKind {
+  return typeof kind === "string" && (RUN_SKIP_KINDS as readonly string[]).includes(kind);
+}
+
+// How long a runner's idle mark (an idle poll asked with `why`, which says
+// it has a free slot) counts. An idle runner polls every 30 seconds
+// (cli/runner.mjs) and renews the mark each time, so a mark older than three
+// of its polls says it has stopped asking idle: it took a job elsewhere, its
+// polls are backing off, or it stopped. Before t652 the mark never lapsed,
+// so a runner that went on to claim another project's job was never said to
+// be busy again.
+export const RUNNER_IDLE_MS = 90_000;
+
+export function idleMarked(at: string | null | undefined, now: number): boolean {
+  return typeof at === "string" && Number.isFinite(Date.parse(at)) && now - Date.parse(at) < RUNNER_IDLE_MS;
+}
+
 export interface RunSkip {
   runner: string;
   actor: string;
@@ -670,9 +704,26 @@ function missingJob(d: Pick<Dispatch, "job" | "planHead" | "task">, offer: Runne
   return needs.find((job): job is string => !!job && !jobs.includes(job) && !(job === "build" && !jobs.length)) ?? null;
 }
 
+// Whether a runner serves a project: the one named, else the one its offer
+// was read for (offersFor). An offer naming no projects serves them all.
+export function servesProject(offer: RunnerOffer, project = offer.forProject): boolean {
+  return !project || !offer.projects || offer.projects.includes(project);
+}
+
+// Offers as a project's routing reads them (t652). A model only a runner
+// scoped to another project offers was available to this project's plan,
+// review and dispatch routing, which read every runner's offer: each offer
+// is marked with the project, so assign, offeredActors and offering pass by
+// a runner that does not serve it. The runner stays in the list, so a live
+// runner scoped elsewhere is no reason to fall back to the whole pool, and
+// the lines that name what each runner offers say it serves other projects.
+export function offersFor<T extends RunnerOffer>(offers: readonly T[], project: string): T[] {
+  return offers.map((o) => ({ ...o, forProject: project }));
+}
+
 // The agent and model a runner should use for a dispatch, or null if it cannot.
 export function assign(d: Dispatch, offer: RunnerOffer, project?: string): Assignment | null {
-  if (project && offer.projects && !offer.projects.includes(project)) return null;
+  if (!servesProject(offer, project)) return null;
   // The integrate and refresh jobs always run as the reserved integrator,
   // which the queue returns to a runner that offers the job.
   if (d.job === "integrate" || d.job === "refresh" || d.job === "task-refresh") {
@@ -760,7 +811,7 @@ export function liveOffers(offers: readonly SeenOffer[], now = new Date()): Seen
 // offering's question, below.
 export function offeredActors(offers: readonly SeenOffer[]): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  for (const offer of offers) {
+  for (const offer of offers.filter((o) => servesProject(o))) {
     for (const { agent, models } of offer.agents) {
       for (const model of models.filter((m) => claimable(agent, m))) {
         const actor = `${agent}/${model}`.toLowerCase();
@@ -777,7 +828,7 @@ export function offeredActors(offers: readonly SeenOffer[]): Map<string, string[
 // hand the job to under this offer, whatever harness was asked — the useful
 // fact is what could take the job instead, not which harness is missing.
 function offeredNames(d: OfferAsk, offer: RunnerOffer, project?: string): string[] | null {
-  if (project && offer.projects && !offer.projects.includes(project)) return null;
+  if (!servesProject(offer, project)) return null;
   if (d.to !== "any" && d.to !== offer.kind) return null;
   if (missingJob(d, offer)) return null;
   const names: string[] = [];
@@ -793,7 +844,8 @@ function insteadLines(d: OfferAsk, live: readonly SeenOffer[], project?: string)
   return live.map((offer) => {
     const names = offeredNames(d, offer, project);
     if (names === null) {
-      if (project && offer.projects && !offer.projects.includes(project)) return `${offer.runner} serves only ${offer.projects.join(", ") || "no projects"}, not ${project}`;
+      const asked = project ?? offer.forProject;
+      if (!servesProject(offer, asked)) return `${offer.runner} serves only ${offer.projects!.join(", ") || "no projects"}, not ${asked}`;
       if (d.to !== "any" && d.to !== offer.kind) return `${offer.runner} is a ${offer.kind} runner, not a ${d.to} one`;
       return `${offer.runner} offers no ${missingJob(d, offer)} job`;
     }
