@@ -1762,3 +1762,15 @@ test("a renewal refused as stale prevents a late verdict from the review child",
   const release = calls.find((c) => c.argv?.[0] === "review-release");
   assert.equal(release.argv[release.argv.indexOf("--request") + 1], String(claimed.request));
 });
+
+// t675: the prose assessment of 2026-10-14 found no review brief named the
+// project's prose standard; the claim carries it and the brief names it.
+test("runReview names the project's prose standard the claim carries, and none when the claim carries none", async () => {
+  const path = "../ai-projects-house-style/house-style.md";
+  const { io, calls } = fixture({ claim: { ...claimed, proseStandard: path } });
+  await runReview(assignment, config, "home:studio", io);
+  assert.match(calls.find((c) => c.brief).brief, /## Prose standard\n\nProse standard: this project's prose follows `\.\.\/ai-projects-house-style\/house-style\.md`/);
+  const none = fixture();
+  await runReview(assignment, config, "home:studio", none.io);
+  assert.ok(!none.calls.find((c) => c.brief).brief.includes("Prose standard"));
+});

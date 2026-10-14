@@ -1767,6 +1767,9 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       diff: large && claimed.diffRef ? null : diff, diffRef: large ? claimed.diffRef ?? null : null,
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
+      // The project's prose standard (t675), as the claim carries it; an
+      // older server sends none, and the brief names none.
+      proseStandard: claimed.proseStandard ?? null,
       // Under single-family mode the brief says the review is by a different
       // model of the one company, not a cross-company one (t394).
       singleFamily: claimed.singleFamily ?? null,
@@ -2163,6 +2166,8 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     const large = diff.length > BRIEF_LIMITS.diff;
     const text = prereviewBrief({
       item: claimed.item, project, request, binding, reviewer: actor, contributors: pre.contributors, bar: claimed.reviewBar ?? null,
+      // The project's prose standard (t675); an older server sends none.
+      proseStandard: claimed.proseStandard ?? null,
       checks: pre.checks ?? [], changed, tests, evidence: claimed.evidence ?? null, preparation, diffFile: REVIEW_DIFF,
       // The owner's standing decisions bind a pre-reviewer as they bind the gate's.
       decisions: claimed.decisions ?? null,

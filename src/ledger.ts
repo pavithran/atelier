@@ -61,6 +61,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { reviewBrief, type ReviewEvidence } from "./review/brief.ts";
+import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { SuggestionRecords } from "./models/suggest.ts";
@@ -148,6 +149,9 @@ export interface ReviewClaim {
   events: LedgerEvent[];
   owner: string;
   reviewBar: string | null;
+  // The project's prose standard (src/prose-standard.ts, t675), which the
+  // brief names; null when the project records none.
+  proseStandard: string | null;
   // The company the project runs on alone (single-family mode, t394), so the
   // brief says the review is by a different model of that company, not a
   // cross-company one; null under the default.
@@ -286,6 +290,8 @@ export interface ProjectInit {
   regenerate?: string | null;
   // What may block a review; null clears it (see ProjectPolicy.reviewBar).
   reviewBar?: string | null;
+  // The project's prose standard; null clears it (see ProjectPolicy.proseStandard).
+  proseStandard?: string | null;
   // The model that triages a landing before its review; null clears it
   // (see ProjectPolicy.triage).
   triage?: string | null;
@@ -636,6 +642,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
+  const proseStandard = i.proseStandard === undefined ? p?.proseStandard : i.proseStandard ?? undefined;
   const triage = i.triage === undefined ? p?.triage : i.triage ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const resolvers = i.resolvers ?? p?.resolvers ?? [];
@@ -666,6 +673,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
       ...(reviewBar ? { reviewBar } : {}),
+      ...(proseStandard ? { proseStandard } : {}),
       ...(triage ? { triage } : {}),
       ...(reviewTier.length ? { reviewTier: [...reviewTier] } : {}),
       ...(resolvers.length ? { resolvers: [...resolvers] } : {}),
@@ -4297,7 +4305,7 @@ export class Ledger extends DurableObject<Env> {
     const request = prereviewRequest(row.id as number);
     this.log(itemId, actor, "prereview.claimed", { request, head: binding.head, main, runner: runner.runner, criteria: binding.criteria }, at, proved);
     return {
-      item, head: binding.head, need: null, plan: null, events: [], owner: this.owner, reviewBar: policy.reviewBar ?? null,
+      item, head: binding.head, need: null, plan: null, events: [], owner: this.owner, reviewBar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null,
       singleFamily: singleFamily(policy), tier: false, decisions: standingDecisions(this.decisionStore),
       evidence: this.reviewEvidence(itemId, binding.head, policy), criteria: binding.criteria, request,
       prereview: { request, binding, reviewer: actor, contributors: binding.contributors, checks: [...policy.checks], regenerate: policy.regenerate ?? null, attempts: row.attempts as number },
@@ -5410,7 +5418,10 @@ export class Ledger extends DurableObject<Env> {
       // What the criteria reviewers found and how the owner answered (t438),
       // so the builder reads the criteria as they were questioned.
       const criteria = criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id));
-      const text = [...sections.map((f) => findingsSection(f)), criteria].filter(Boolean).join("\n\n");
+      // The project's prose standard (t675), which the runner's own brief
+      // cannot know: the server holds the policy.
+      const prose = proseStandardLine(this.project().policy.proseStandard);
+      const text = [...sections.map((f) => findingsSection(f)), criteria, prose].filter(Boolean).join("\n\n");
       return { job: sections.length ? "rework" : "build", text, hash: await sha256(text) };
     }
     assertOwner(item, actor);
@@ -5425,6 +5436,7 @@ export class Ledger extends DurableObject<Env> {
         ...await plannerBrief({
           item: { id, project: project.name }, goal: record.goal, scope: record.scope,
           actor: record.planner, attempt: failed + 1, note, errors: lastErrors,
+          proseStandard: project.policy.proseStandard ?? null,
         }),
       };
     }
@@ -5465,6 +5477,7 @@ export class Ledger extends DurableObject<Env> {
         mergeMain: added ? { head: added.mainHead } : null,
         mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
         criteriaReview: criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id)) || null,
+        proseStandard: project.policy.proseStandard ?? null,
       }),
     };
   }
@@ -6254,7 +6267,7 @@ export class Ledger extends DurableObject<Env> {
       const dispatch = { ...this.standingDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
       const brief = reviewBrief({
         need, item: p, events: this.briefEvents(p.id),
-        plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null, singleFamily: single,
+        plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null, singleFamily: single,
         decisions: standingDecisions(this.decisionStore),
         criteriaReviews: this.criteriaReviewsFor(p.id), criteriaResolutions: this.criteriaResolutionsFor(p.id), criteriaRev: this.criteriaRevision(p.id),
         evidence: this.reviewEvidence(p.id, need.head, policy),
@@ -6545,7 +6558,7 @@ export class Ledger extends DurableObject<Env> {
       item, head,
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
-      events: item.state === "merged" ? this.events(itemId, Number.MAX_SAFE_INTEGER).toReversed() : this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, singleFamily: singleFamily(policy), tier,
+      events: item.state === "merged" ? this.events(itemId, Number.MAX_SAFE_INTEGER).toReversed() : this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null, singleFamily: singleFamily(policy), tier,
       decisions: standingDecisions(this.decisionStore),
       evidence: this.reviewEvidence(itemId, head, policy),
       criteria, request: row.id as number,
@@ -7379,7 +7392,7 @@ export class Ledger extends DurableObject<Env> {
   // owner's resolutions.
   private criteriaBrief(item: Item, rev: number, authors: readonly string[], round: number): string {
     const plan = this.planAccountOf(item);
-    return criteriaReviewBrief({ item, rev, authors, plan, previous: this.criteriaReviewsFor(item.id), resolutions: this.criteriaResolutionsFor(item.id), round, owner: this.owner });
+    return criteriaReviewBrief({ item, rev, authors, plan, previous: this.criteriaReviewsFor(item.id), resolutions: this.criteriaResolutionsFor(item.id), round, owner: this.owner, proseStandard: this.project().policy.proseStandard ?? null });
   }
 
   // The approved plan's account of a part: its goal and the part, or null
