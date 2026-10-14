@@ -1,4 +1,5 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
+import { typedModel } from "./identity.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
 import { latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
@@ -105,8 +106,14 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   // keeps the order (gemini-4-argon's and gpt-6-astra's eighth reviews of
   // t622). Without it, a build assignment puts its eligible choices ahead of
   // the outcome ranking (src/models/assignments.ts, precedence).
+  // --model selects exactly the entry id the naming rule resolves it to
+  // (typedModel in src/models/identity.ts, the boundary's own rule, which
+  // leaves an id it already resolved as it is), profile included, so
+  // qwen-3:72b never admits qwen-3:32b (gpt-6-astra's fourteenth review of
+  // t622, finding 1).
+  const chosen = constraints.model ? typedModel(input.pool, String(constraints.model)).toLowerCase() : null;
   const rows = ranked(input)
-    .filter(({ entry }) => !(constraints.model && modelKey(entry.id) !== modelKey(String(constraints.model))))
+    .filter(({ entry }) => chosen === null || entry.id.toLowerCase() === chosen)
     .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
     .map((row) => ({ ...row, refusal: refusalOf(row.entry) }));
   const assigned = applicableAssignments(input.assignments ?? [], input.project, ["build"]);

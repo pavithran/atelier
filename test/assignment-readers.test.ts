@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ALL_PROJECTS, applicableAssignments, reviewRoles, type Assignment, type AssignmentRole } from "../src/models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, withStanding, type ModelEntry } from "../src/models/pool.ts";
-import { storedActor, typedModel } from "../src/models/identity.ts";
+import { storedActor, typedActor, typedModel } from "../src/models/identity.ts";
 import { suggestBuilder } from "../src/models/suggest.ts";
 import { routeParts } from "../src/plans/route.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
@@ -543,13 +543,13 @@ test("rule 2: every selector names each assignment skipped for an explicit choic
 test("suggestBuilder: --model bypasses assignment ordering in the same call that names each skipped, and matches ids alone", () => {
   const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
   const base = { item, project: "atelier", policy, sources: [], runs: [], owner: "owner" };
-  // Two entries run opus-5.5; the ranking puts antigravity's first, the assignment claude-code's.
-  const agOpus = entry("antigravity", "claude-opus-5.5");
+  // Two entries have the id opus-5.5; the ranking puts antigravity's first, the assignment claude-code's.
+  const agOpus = entry("antigravity", "opus-5.5");
   const promote = assigned("build", ["claude-code/opus-5.5"]);
   const pool = [astra, argon, opus, agOpus];
   assert.equal(suggestBuilder({ ...base, pool, assignments: [promote] }).actor, "claude-code/opus-5.5", "without --model the assignment orders");
   const named = suggestBuilder({ ...base, pool, assignments: [promote] }, { model: "opus-5.5" });
-  assert.equal(named.actor, "antigravity/claude-opus-5.5", "--model: the ranking, not the assignment");
+  assert.equal(named.actor, "antigravity/opus-5.5", "--model: the ranking, not the assignment");
   said(named.reasons, new RegExp(`Role assignment ${promote.id} skipped: the developer's --model comes before role assignments`));
   // Astra lists Argon's id as an alias: --model gemini-4-argon is Argon, converted where typed.
   const trap = [{ ...astra, aliases: ["gemini-4-argon", "gpt-6-luna"] }, argon, entry("codex", "gpt-6-luna")];
@@ -656,7 +656,10 @@ test("routeParts: an unmarked prefer under an alias is honoured; a marked one is
 // the project's triage model, so `codex/luna-paid` (paid Luna's alias) was
 // stored as codex/gpt-6-luna, which the triage reader matched to Astra (who
 // lists gpt-6-luna as an alias) and found free. The triage model is kept as
-// declared now, as on main, and the reader refuses it as paid.
+// declared now, as on main, and the reader refuses it as paid. A
+// characterization test: the reader is main's, so it passes on main; the
+// regression (the boundary converting the triage model) is caught by the
+// init assertion in test/model-roles.spec.ts.
 test("a triage model declared under an alias is read as declared and still refused as paid", () => {
   const pool = [{ ...astra, aliases: ["gpt-6-luna"] }, entry("codex", "gpt-6-luna", { provider: "openai", aliases: ["luna-paid"] })];
   assert.match(triageModelRefusal("codex/luna-paid", pool) ?? "", /paid per token \(openai\)/);
@@ -669,4 +672,35 @@ test("gateServesTier: a gate reviewer declared under an alias serves its entry's
   const astraLocal = { ...astra, aliases: ["gpt-6-astra-local"] };
   assert.equal(gateServesTier(["codex/gpt-6-astra"], "codex/gpt-6-astra-local", ["claude-code/opus-5.5"], null, [astraLocal]), true);
   assert.equal(gateServesTier(["codex/gpt-6-astra"], "codex/gpt-6-luna", ["claude-code/opus-5.5"], null, [astraLocal]), false);
+});
+
+// ── the fourteenth review of t622: profile suffixes (regression tests) ───
+
+// Finding 1: --model resolved to qwen-3:72b by its alias, and the selector
+// compared models without their profile, so it could pick qwen-3:32b.
+test("suggestBuilder: an explicit --model selects exactly the entry the naming rule resolves, profile included", () => {
+  const small = entry("opencode", "qwen-3:32b"), large = entry("opencode", "qwen-3:72b", { aliases: ["large"] });
+  const pool = [small, large];
+  assert.equal(typedModel(pool, "large"), "qwen-3:72b");
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
+  const base = { item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner" };
+  assert.equal(suggestBuilder(base, { model: typedModel(pool, "large") }).actor, "opencode/qwen-3:72b");
+  assert.equal(suggestBuilder(base, { model: "large" }).actor, "opencode/qwen-3:72b");
+  // Naming the model without a profile is two entries: refused, not guessed.
+  assert.throws(() => typedModel(pool, "qwen-3"), /qwen-3 is the same model as qwen-3:32b and qwen-3:72b/);
+});
+
+// Finding 2: a tier naming codex/gpt-6-astra:high, where the pool holds
+// codex/gpt-6-astra, was left unchanged by the naming rule and then read as
+// absent, losing its priority and its eligibility check.
+test("a tier naming a model with a profile is that model's entry: it keeps its priority and its checks", () => {
+  const pool = [astra, argon];
+  assert.equal(typedActor(pool, "codex/gpt-6-astra:high"), "codex/gpt-6-astra");
+  const tier = tierIds({ reviewTier: ["codex/gpt-6-astra:high", "antigravity/gemini-4-argon"] }, pool);
+  assert.deepEqual(tier, ["codex/gpt-6-astra", "antigravity/gemini-4-argon"]);
+  assert.equal(pickReviewer({ item: built, pool, policy, allowPaid: false, tier }).reviewer?.actor, "codex/gpt-6-astra");
+  const paid = [{ ...astra, provider: "openai" as const }, argon];
+  assert.match(String(tierEligible(paid, null, tierIds({ reviewTier: ["codex/gpt-6-astra:high"] }, paid)[0])), /paid per token/);
+  // Two entries that are the same model in a harness: the profile-less name is refused as ambiguous.
+  assert.throws(() => typedActor([entry("opencode", "qwen-3:32b"), entry("opencode", "qwen-3:72b")], "opencode/qwen-3"), /same model as opencode\/qwen-3:32b and opencode\/qwen-3:72b/);
 });

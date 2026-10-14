@@ -83,6 +83,7 @@
 import { DECISION_NOTE_MAX, DECISION_QUOTE_MAX, DECISION_TEXT_MAX, line } from "../decisions.ts";
 import { RuleError, sameActor } from "../rules.ts";
 import { canonicalModel } from "./judgement.ts";
+import { namedCandidates } from "./identity.ts";
 import { entryRuns, standingRefusal, type ModelEntry, type ModelRole } from "./pool.ts";
 
 export const ASSIGNMENT_ROLES = ["build", "review", "security-review", "claims-review", "plan"] as const;
@@ -273,13 +274,11 @@ export function resolveChoices(raw: readonly string[], pool: readonly ModelEntry
       const runs = pool.filter((e) => entryRuns(e, name)).map((e) => `${e.harness}/${e.id}`);
       throw bad(`${name} names no harness${runs.length ? `; the pool runs it as ${runs.join(", ")}` : ""}: name each choice harness/model`);
     }
-    const harness = name.slice(0, slash).toLowerCase();
-    // An entry whose id is the name exactly is the one meant; otherwise
-    // every entry in the harness that answers to it, by an alias or by the
-    // model it runs, and more than one is ambiguous.
-    const model = name.slice(slash + 1).toLowerCase();
-    const exact = pool.filter((e) => e.harness === harness && e.id.toLowerCase() === model);
-    const found = exact.length ? exact : pool.filter((e) => e.harness === harness && ([e.id, ...e.aliases].some((id) => sameActor(`${e.harness}/${id}`, name)) || entryRuns(e, name)));
+    // A typed name, read by the one naming rule (namedCandidates in
+    // src/models/identity.ts): the entry whose id it is, else the one whose
+    // id is the same model (a profile, letter case), else the one listing it
+    // as an alias; more than one at a step is ambiguous.
+    const { found } = namedCandidates(pool, name);
     if (!found.length) throw bad(`${name} is not a model in the pool; add it with atelier models add, or name a harness/model the pool has`);
     if (found.length > 1) throw bad(`${name} is ambiguous: the pool has ${found.map((e) => `${e.harness}/${e.id}`).join(" and ")} under that name; name one by its id`);
     const entry = found[0];
