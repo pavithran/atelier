@@ -2307,6 +2307,70 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
   return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
 }
 
+// ── merges recorded after the fact (t653) ──────────────────────────────────
+// A task merged into main outside Atelier (the 2026-10-13 freeze merged
+// t590-t651 by hand, with no land or accept) is recorded afterwards by the
+// developer: the merge commit main holds, the commit it merged (its second
+// parent), and the reviews that approved it as the developer gives them. The
+// record says it was made outside Atelier and carries no checks or test
+// receipt, since none was run through Atelier; it is never a gated landing.
+export const REVIEW_VERDICTS = ["approve", "reject"] as const;
+export type RecordedReviewVerdict = (typeof REVIEW_VERDICTS)[number];
+export interface RecordedReview { by: string; verdict: RecordedReviewVerdict; head: string; at?: string }
+export interface RecordedMerge {
+  mergeCommit: string;
+  commit: string;
+  reviews: RecordedReview[];
+  note?: string;
+  outside: true;
+  at: string;
+  by: string;
+}
+const RECORDED_REVIEWS_MAX = 20;
+// A review's date as given: a day (2026-10-13) or an ISO time.
+const REVIEW_WHEN = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2}))?$/;
+
+// The request's shape: both commits as full SHAs, one review or more, each
+// with its reviewer as harness/model, approve or reject, the full head it
+// read and, when given, the day or time. At least one review approves the
+// commit merged, since the record is of the reviews that approved it.
+export function recordedMerge(body: Record<string, unknown>, actor: string, at: string): RecordedMerge {
+  const bad = (detail: string) => new RuleError("bad_record", detail, 400);
+  if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw bad("the record names the merge commit on main, a full SHA (--merge)");
+  if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw bad("the record names the commit merged, a full SHA (--head, or the task's recorded head)");
+  if (!Array.isArray(body.reviews) || !body.reviews.length) throw bad("the record names the reviews that approved the merge, one --review H/M=VERDICT@HEAD or more");
+  if (body.reviews.length > RECORDED_REVIEWS_MAX) throw bad(`the record names at most ${RECORDED_REVIEWS_MAX} reviews`);
+  const reviews = body.reviews.map((raw, n): RecordedReview => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    const which = `review ${n + 1}`;
+    if (typeof r.by !== "string" || !r.by.includes("/") || !validActor(r.by)) throw bad(`${which} names its reviewer as harness/model`);
+    if (!REVIEW_VERDICTS.includes(r.verdict as RecordedReviewVerdict)) throw bad(`${which}'s verdict is ${REVIEW_VERDICTS.join(" or ")}`);
+    if (typeof r.head !== "string" || !SHA.test(r.head)) throw bad(`${which} names the head it read, a full SHA`);
+    if (r.at !== undefined && (typeof r.at !== "string" || !REVIEW_WHEN.test(r.at) || Number.isNaN(Date.parse(r.at)))) throw bad(`${which}'s date is a day (2026-10-13) or an ISO time`);
+    return { by: r.by, verdict: r.verdict as RecordedReviewVerdict, head: r.head, ...(typeof r.at === "string" ? { at: r.at } : {}) };
+  });
+  if (!reviews.some((r) => r.verdict === "approve" && r.head === body.commit)) {
+    throw new RuleError("no_approval", `no review given approves ${body.commit.slice(0, 8)}, the commit merged; name the review that approved it at that head`, 400);
+  }
+  if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) throw bad("the note is text, at most 2000 characters");
+  const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
+  return { mergeCommit: body.mergeCommit, commit: body.commit, reviews, ...(note ? { note } : {}), outside: true, at, by: actor };
+}
+
+// What the baseline says of the merge: whether main holds it (null when its
+// history could not be read far enough to say) and the merge commit's
+// parents (null when the baseline has no such commit). The merge is recorded
+// only when main holds it and its second parent is the commit merged.
+export function recordedMergeRefusal(record: { mergeCommit: string; commit: string }, baseline: { parents: readonly string[] | null; holds: boolean | null }): RuleError | null {
+  const m = record.mergeCommit.slice(0, 8);
+  if (baseline.parents === null) return new RuleError("merge_not_on_main", `the baseline has no commit ${m}; bring main in first (atelier sync) and record again`, 409);
+  if (baseline.holds === null) return new RuleError("merge_unconfirmed", `main's history could not be read far enough to find ${m}, so the merge is not recorded`, 409);
+  if (!baseline.holds) return new RuleError("merge_not_on_main", `main does not hold ${m}; bring main in first (atelier sync) and record again`, 409);
+  if (baseline.parents.length < 2) return new RuleError("not_a_merge", `${m} has ${baseline.parents.length} parent${baseline.parents.length === 1 ? "" : "s"}, so it is not a merge`, 409);
+  if (baseline.parents[1] !== record.commit) return new RuleError("second_parent_differs", `${m}'s second parent is ${baseline.parents[1].slice(0, 8)}, not ${record.commit.slice(0, 8)}, the commit named as the task's head`, 409);
+  return null;
+}
+
 // The builder a commit's message names: its last Agent: line, as harness/model.
 export function agentOfMessage(message: string): string | null {
   const lines = message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l));
