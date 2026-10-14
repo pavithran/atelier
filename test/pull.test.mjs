@@ -88,7 +88,7 @@ async function serve(t, f) {
       let status = 200, body;
       if (req.url === "/api/version") body = { capabilities: SERVER_CAPABILITIES };
       else if (req.url === "/api/projects") body = [{ name: "demo", title: "Demo" }];
-      else if (req.method === "GET" && req.url === "/api/projects/demo") body = { project: { name: "demo", title: "Demo", repo: "demo", policy: { protected: [], commitIdentity: IDENTITY } }, items: [], events: [] };
+      else if (req.method === "GET" && req.url === "/api/projects/demo") body = { project: { name: "demo", title: "Demo", repo: "demo", policy: { protected: [], ...(f.noIdentity ? {} : { commitIdentity: IDENTITY }) } }, items: [], events: [] };
       else if (req.method === "POST" && req.url === "/api/projects/demo/baseline-token") body = f.http
         ? { remote: `${f.url}/git/baseline.git`, token: f.http.mint(), tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" }
         : { remote: f.bare, token: TOKEN, tokenId: "tok1", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" };
@@ -679,4 +679,30 @@ test("pull's merge and its merge of the receipts carry the project's identity, w
   assert.equal(who("HEAD"), `${project}|${project}`, "the merge commit");
   assert.equal(f.git(dir, "rev-list", "--parents", "-n", "1", "refs/notes/atelier").split(" ").length, 3, "the receipts were merged, not fast-forwarded");
   assert.equal(who("refs/notes/atelier"), `${project}|${project}`, "the receipts' merge commit");
+});
+
+// Many projects have no commit identity yet. A pull that only
+// fast-forwards makes no commit and needs none; one that would make a merge
+// commit, of main or of the receipts, is refused before anything changes.
+test("a project with no commit identity fast-forwards, and a pull that would merge is refused with nothing changed", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  f.noIdentity = true;
+  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n", { note: "Atelier receipt for t2" });
+  const ff = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.equal(ff.code, 0, ff.output);
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), theirs);
+  assert.equal(f.git(dir, "notes", "--ref=atelier", "show", theirs), "Atelier receipt for t2");
+  // Diverged: a local commit with a local receipt, and more on the baseline.
+  const local = commitIn(f, dir, "mine.txt", "mine\n");
+  f.git(dir, "notes", "--ref=atelier", "add", "-m", "Local receipt", local);
+  const notesBefore = f.git(dir, "rev-parse", "refs/notes/atelier");
+  commitElsewhere(f, "more.txt", "more\n", { note: "Atelier receipt for t3" });
+  const merge = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.notEqual(merge.code, 0);
+  assert.match(merge.output, /demo has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL.*\. Nothing was pulled: main and the baseline's main each hold commits the other lacks, and this checkout's receipts and the baseline's each hold notes the other lacks, so pull would make a merge commit, and it makes one only under the project's identity\./);
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
+  assert.equal(f.git(dir, "rev-parse", "refs/notes/atelier"), notesBefore, "the receipts are as they were");
+  assert.equal(f.git(dir, "status", "--porcelain"), "");
 });
