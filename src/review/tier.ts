@@ -30,8 +30,14 @@ import { independenceRefusal } from "./independence.ts";
 // tierIds), and the gate's reviewer and contributors are recorded ones, so
 // no name is read through a pool alias (gpt-6-astra's eighth review of
 // t622, finding 2).
-export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): boolean {
-  return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors, single) === null;
+//
+// The tier holds stored choices, exact ids; the gate's reviewer is a
+// declared identity (a plan's named reviewer may be an alias), so it serves
+// a tier entry when it is any name of that entry, its aliases included
+// (gpt-6-astra's thirteenth review of t622, finding 2).
+export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[], single: PoolFamily | null = null, pool: PoolNames = []): boolean {
+  const names = (a: string) => { const e = exactEntry(pool, a); return e ? [e.id, ...e.aliases].map((id) => `${e.harness}/${id}`) : [a]; };
+  return !!tier?.some((a) => sameActor(a, reviewer) || names(a).some((n) => sameActor(n, reviewer))) && independenceRefusal(reviewer, contributors, single) === null;
 }
 
 // The project's review tier as exact harness/ids. A tier written since

@@ -557,34 +557,29 @@ async function namedBuilderReasons(env: Env, projectKey: string, body: Record<st
 }
 
 // The one boundary for model names (gpt-6-astra's and gemini-4-argon's
-// eighth to eleventh reviews of t622). A field that chooses a model to use
-// is converted here, once, before its route reads it, to the exact pool
-// entry it names (typedActor; typedModel for a bare model): an alias to its
-// entry's id, an ambiguous one refused, a name the pool lacks kept as given
-// for the places that allow one. Identities are never converted: the
-// X-Atelier-Actor a request declares, a token's actor, a handoff's new
-// holder and a finding's reviewer stay as written, as on main, so ownership,
-// runner offers and recorded reviews keep matching them; the owner's
-// standing (src/models/pool.ts, alias-aware) holds an alias of a held model
-// wherever one arrives. --as (X-Atelier-Acting) is attribution only and is
-// converted by registeredActing, which keeps the declaration for retries.
+// eighth to thirteenth reviews of t622). A name is converted here, once, to
+// the exact pool entry it names (typedActor; typedModel for a bare model),
+// only where what is stored from it is read by an exact reader of t622's:
 //
-//   route (under /projects/P)                  fields converted
-//   items/ID/dispatch                          agent + model, or a bare model
-//   items/ID/review-request, land-fast,        reviewer
-//     landing-workflow, criteria-review-request
-//   items (POST, kind plan)                    planner
-//   items/ID/plan (a plan document)            parts[].prefer.actor
-//   items/ID/plan/reroute, plan/refresh        to
-//   PUT /projects/P (init)                     reviewTier, triage, resolvers
-//   /ui/P/ID/dispatch (the page's form)        agent + model, or a bare model
+//   route (under /projects/P)                  converted       read by
+//   PUT /projects/P (init)                     reviewTier      tierIds, marked exactNames (src/review/tier.ts)
+//   items/ID/plan (a plan document)            parts[].prefer  routePart, the proposal marked (src/plans/route.ts)
+//   items/ID/dispatch with --suggest           a bare model    suggestBuilder's --model filter (src/models/suggest.ts)
 //
-// The pool is read only when such a field is present.
+// Every other name stays as declared, as on main, because what reads it
+// compares it with a declared name from elsewhere: a dispatch's agent and
+// model, a named reviewer, planner or reroute/refresh builder become a
+// dispatch that a runner's offer must name (assign in src/dispatch/rules.ts)
+// and that the claiming actor must match; a triage model is run by the CLI
+// under the name stored; resolvers are matched with runners' offers; the
+// declared X-Atelier-Actor, a token's actor and a handoff's new holder are
+// identities. The owner's standing (src/models/pool.ts, alias-aware, as on
+// main) holds an alias of a held model wherever one arrives. --as
+// (X-Atelier-Acting) is attribution only and is converted by
+// registeredActing, which keeps the declaration for retries. The pool is
+// read only when such a field is present.
 type NameFields = Record<string, unknown>;
-const CHOICES: Record<string, string[]> = {
-  dispatch: ["model"], "review-request": ["reviewer"], "landed-fast": ["reviewer"], "landing-workflow": ["reviewer"],
-  "criteria-review-request": ["reviewer"], plan: ["parts"], reroute: ["to"], refresh: ["to"], "new-plan": ["planner"], init: ["reviewTier", "triage", "resolvers"],
-};
+const CHOICES: Record<string, string[]> = { dispatch: ["model"], plan: ["parts"], init: ["reviewTier"] };
 // Which choice fields a request carries, by its route: the item's verb, a
 // plan's sub-verb, a new plan, or the project init.
 function choiceRoute(parts: readonly string[], method: string, body: NameFields): string | null {
@@ -600,17 +595,14 @@ async function canonicalNames(env: Env, body: NameFields, route: string | null):
   if (!fields.length) return;
   const named = (v: unknown) => typeof v === "string" && v.includes("/");
   const parts = fields.includes("parts") && Array.isArray(body.parts) ? body.parts as { prefer?: { actor?: unknown } }[] : [];
-  const needed = (fields.includes("model") && typeof body.model === "string" && body.model !== "")
+  const needed = (fields.includes("model") && body.suggest === true && !body.agent && typeof body.model === "string" && body.model !== "")
     || fields.some((f) => named(body[f]) || Array.isArray(body[f])) || parts.some((p) => named(p?.prefer?.actor));
   if (!needed) return;
   const pool = await index(env).models();
   const one = (v: string) => typedActor(pool, v.trim());
-  if (fields.includes("model") && typeof body.model === "string" && body.model) {
-    if (typeof body.agent === "string" && body.agent) {
-      const exact = one(`${body.agent}/${body.model}`);
-      body.model = exact.slice(exact.indexOf("/") + 1);
-    } else body.model = typedModel(pool, body.model.trim());
-  }
+  // A --suggest dispatch's --model filters the suggestion's candidates, by
+  // id; the suggestion then names the entry it picks.
+  if (fields.includes("model") && body.suggest === true && !body.agent && typeof body.model === "string" && body.model) body.model = typedModel(pool, body.model.trim());
   for (const f of fields) {
     if (f === "model" || f === "parts") continue;
     const v = body[f];
@@ -3384,11 +3376,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // the limit the page showed holds. The API and CLI text is never changed.
     const note = verb === "dispatch" ? String(form.get("note") ?? "").replace(/\r\n?/g, "\n") : String(form.get("note") ?? "");
     const owner = ownerActor(env);
-    // The page's dispatch form names a builder: converted at the same
-    // boundary as the API's (canonicalNames). A handoff's new holder is an
-    // identity and is kept as written.
+    // The page's forms name a builder or a new holder, kept as declared, as
+    // the API's explicit dispatch and handoff keep them (canonicalNames).
     const formNames: NameFields = { to: form.get("to") ?? undefined, agent: form.get("agent") ?? undefined, model: form.get("model") ?? undefined };
-    if (verb === "dispatch") await canonicalNames(env, formNames, "dispatch");
     if (id === "new" && !verb) {
       // A long title with no brief becomes the brief, with a short title derived from it (itemText).
       const brief = String(form.get("brief") ?? "");
