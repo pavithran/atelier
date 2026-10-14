@@ -105,9 +105,18 @@ function shallowOf(cwd) {
 // each linked worktree is $GIT_COMMON_DIR/worktrees/<name>, holding what its
 // HEAD names, at the folder its gitdir file names.
 //
+// A worktree mid-rebase or mid-bisect holds the branch it started from
+// though its HEAD is detached, and Git refuses to check that branch out
+// elsewhere (t656): rollback, reading HEAD alone, missed such a holder and
+// moved main with update-ref under it. The state is read the way Git reads
+// it, from the worktree's own Git directory: rebase-apply/head-name (unless
+// rebase-apply/applying says it is git am) or else rebase-merge/head-name,
+// counted only while HEAD is detached, and BISECT_START.
+//
 // It answers { path, gitDir, workTree }: the folder Git lists, the holder's
 // own Git directory, and its working tree when the registry names one (null
-// for a main worktree Git lists under its Git directory, t639's layout).
+// for a main worktree Git lists under its Git directory, t639's layout), and
+// midway, "rebase" or "bisect" when that holds the branch, else null.
 // Advice to the developer acts on gitDir and workTree, never on a command
 // run in `path` (codex/gpt-6-astra's review of t646): with the holder's .git
 // file deleted, Git run there finds the enclosing checkout's repository.
@@ -118,23 +127,36 @@ export function worktreeHolding(cwd, ref) {
     const r = runGit(cwd, ["rev-parse", ...flags]);
     return r.status === 0 && r.stdout.trim() ? real(r.stdout.trim()) : null;
   };
+  const branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : null;
+  const names = (path) => read(path)?.replace(/^refs\/heads\//, "") === branch;
+  const midway = (dir) => {
+    if (!branch) return null;
+    if (names(join(dir, "BISECT_START"))) return "bisect";
+    if (read(join(dir, "HEAD"))?.startsWith("ref:") !== false) return null;
+    const rebasing = existsSync(join(dir, "rebase-apply"))
+      ? !existsSync(join(dir, "rebase-apply", "applying")) && names(join(dir, "rebase-apply", "head-name"))
+      : names(join(dir, "rebase-merge", "head-name"));
+    return rebasing ? "rebase" : null;
+  };
   const here = gitDirOf("--absolute-git-dir");
   const common = gitDirOf("--path-format=absolute", "--git-common-dir");
   const first = (runGit(cwd, ["worktree", "list", "--porcelain"]).stdout ?? "").split("\n\n")[0];
   const mainPath = /^worktree (.+)$/m.exec(first)?.[1];
-  if (mainPath && new RegExp(`^branch ${ref}$`, "m").test(first) && !(here && common === here)) {
-    return { path: mainPath, gitDir: common, workTree: common && real(mainPath) !== common ? mainPath : null };
+  const mainMidway = common && !/^bare$/m.test(first) ? midway(common) : null;
+  if (mainPath && (new RegExp(`^branch ${ref}$`, "m").test(first) || mainMidway) && !(here && common === here)) {
+    return { path: mainPath, gitDir: common, workTree: common && real(mainPath) !== common ? mainPath : null, midway: mainMidway };
   }
   if (!common) return null;
-  let names = [];
-  try { names = readdirSync(join(common, "worktrees")).sort(); } catch { return null; }
-  for (const name of names) {
+  let entries = [];
+  try { entries = readdirSync(join(common, "worktrees")).sort(); } catch { return null; }
+  for (const name of entries) {
     const admin = join(common, "worktrees", name);
-    if (read(join(admin, "HEAD")) !== `ref: ${ref}`) continue;
+    const state = midway(admin);
+    if (read(join(admin, "HEAD")) !== `ref: ${ref}` && !state) continue;
     if (here && real(admin) === here) continue;
     const gitFile = read(join(admin, "gitdir"));
     const workTree = gitFile ? dirname(resolve(admin, gitFile)) : null;
-    return { path: workTree ?? admin, gitDir: admin, workTree };
+    return { path: workTree ?? admin, gitDir: admin, workTree, midway: state };
   }
   return null;
 }
@@ -539,10 +561,15 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       // read, and touches no branch checked out here.
       const holder = worktreeHolding(cwd, "refs/heads/main");
       if (holder) {
-        problem = `main is checked out in the worktree ${holder.path}, so fast land could not move it`;
+        // A holder mid-rebase or mid-bisect has HEAD detached, so a reset
+        // there would move HEAD, not main (t656): the rebase or bisect is
+        // ended first, which puts main back in HEAD.
+        const end = { rebase: "rebase --abort", bisect: "bisect reset" }[holder.midway];
+        problem = `main is checked out in the worktree ${holder.path}${end ? `, mid-${holder.midway}` : ""}, so fast land could not move it`;
+        const there = `git --git-dir=${shellQuote(holder.gitDir)} --work-tree=${shellQuote(holder.workTree)}`;
         fix = holder.gitDir && holder.workTree
-          ? `git --git-dir=${shellQuote(holder.gitDir)} --work-tree=${shellQuote(holder.workTree)} reset --hard ${start}`
-          : `git reset --hard ${start} in the checkout whose .git names ${shellQuote(holder.gitDir ?? holder.path)}`;
+          ? `${end ? `${there} ${end} && ` : ""}${there} reset --hard ${start}`
+          : `${end ? `git ${end}, then ` : ""}git reset --hard ${start} in the checkout whose .git names ${shellQuote(holder.gitDir ?? holder.path)}`;
       } else {
         const r = runGit(cwd, ["update-ref", "refs/heads/main", start, main()]);
         if (r.status !== 0) problem = `git checkout main failed (${failed(checkout)}) and so did git update-ref (${failed(r)})`;
