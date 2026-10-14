@@ -1934,6 +1934,48 @@ export function repoName(project: string, itemId?: string): string {
   return name;
 }
 
+// The developer's branches (t641): work in progress that travels between
+// the developer's Macs. They live in a repository of their own beside the
+// baseline, BRANCHES_REPO_SUFFIX after the project's key, which only the
+// developer is given a token for: Artifacts scopes a token to a whole
+// repository, read or write, never to refs, so a branch kept in the
+// baseline would be readable with every agent's and runner's read token,
+// and a token that could push it could push main as well. In a repository
+// of their own, no push of a branch can reach the baseline's main, which
+// still moves only through landing and sync.
+//
+// Every developer branch is under DEVELOPER_BRANCH_PREFIX. A NAME given
+// without it is taken under it (`atelier branch push idea` pushes
+// wip/idea), except a name that is the project's branch, main, HEAD or a
+// task's id, which is refused rather than quietly renamed, and a name with
+// another prefix (feature/x, refs/heads/x), which is outside the prefix.
+// The rest of the name keeps to what git check-ref-format takes, more
+// strictly: letters, digits, . _ - and / between parts.
+export const BRANCHES_REPO_SUFFIX = "branches";
+export const DEVELOPER_BRANCH_PREFIX = "wip/";
+const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+export function developerBranch(name: unknown, defaultBranch = "main"): string {
+  const refuse = (why: string) => { throw new RuleError("bad_branch", `${typeof name === "string" ? JSON.stringify(name) : "the branch"} ${why}; a developer branch is ${DEVELOPER_BRANCH_PREFIX}NAME, such as ${DEVELOPER_BRANCH_PREFIX}idea`, 400); };
+  if (typeof name !== "string" || !name) return refuse("is not a branch name");
+  const reserved = new Set(["main", "master", "HEAD", defaultBranch]);
+  if (reserved.has(name) || /^t[0-9]+$/.test(name)) return refuse("is the project's branch or a task's; main changes only through landing or sync, and a task's work only through its workspace");
+  if (name.startsWith("refs/")) return refuse(`is a full ref; name the branch under ${DEVELOPER_BRANCH_PREFIX} alone`);
+  const full = name.startsWith(DEVELOPER_BRANCH_PREFIX) ? name : name.includes("/") ? refuse(`is outside ${DEVELOPER_BRANCH_PREFIX}`) : `${DEVELOPER_BRANCH_PREFIX}${name}`;
+  if (full.length > 200) return refuse("is longer than 200 characters");
+  const parts = full.slice(DEVELOPER_BRANCH_PREFIX.length).split("/");
+  if (parts.some((p) => !BRANCH_PART.test(p) || p.endsWith(".lock") || p.endsWith(".") || p.includes(".."))) return refuse("is not a name Git takes for a branch here: use letters, digits, . _ - and / between parts");
+  return full;
+}
+
+// Where a developer branch was last pushed from: the Mac's name as
+// os.hostname() gives it, less a trailing .local, one line of at most 100
+// characters.
+export function branchHost(host: unknown): string {
+  const clean = typeof host === "string" ? host.trim().replace(/\.local$/i, "") : "";
+  if (!clean || clean.length > 100 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(clean)) throw new RuleError("bad_host", "the Mac a branch was pushed from is named on one line of at most 100 characters", 400);
+  return clean;
+}
+
 // Files Git ignores that a build or install makes again, so a finished
 // workspace holding them loses nothing when it goes: dependencies, build
 // output, caches and generated types. Any other ignored file (a harness's
