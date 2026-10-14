@@ -2029,7 +2029,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);
-    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)) });
+    // It names the project's prose standard as any brief does (t675).
+    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)), proseStandard: (await L.project()).policy.proseStandard ?? null });
     const detail = await L.detail(id) as Detail;
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
@@ -2878,6 +2879,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
         regenerate: p.policy.regenerate ?? null, checks: p.policy.checks, commitIdentity: p.policy.commitIdentity ?? null,
+        // Named in a resolver's brief (t675), which commits.
+        proseStandard: p.policy.proseStandard ?? null,
       });
     }
     case "refresh-pushing": {
