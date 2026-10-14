@@ -174,6 +174,29 @@ function sh(cwd, command, env) {
 // The default test setup in the clean clone, as a project's check does it.
 export const CLEAN_CLONE_SETUP = "npm ci --prefer-offline && npm run types";
 
+// The batch's commands where the owner names none, from the checkout's own
+// package.json (t667): `npm run typecheck` and `npm test` only where the
+// project has those scripts, and `npm run types` in the clean clone's setup
+// only where it has that one. A project without a typecheck or test script
+// is refused before anything merges, naming the flag that supplies it, rather
+// than stopping on npm's "Missing script" after the merges.
+export function fastCommands(cwd, { typecheck, test } = {}) {
+  let scripts = {};
+  try { scripts = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")).scripts ?? {}; } catch { /* no package.json: no scripts */ }
+  const missing = [];
+  if (typecheck === undefined && !scripts.typecheck) missing.push('--typecheck CMD (no "typecheck" script in package.json)');
+  if (test === undefined && !scripts.test) missing.push('--test CMD (no "test" script in package.json)');
+  if (missing.length) {
+    const has = Object.keys(scripts);
+    return { refusal: `this checkout's project needs ${missing.join(" and ")}; nothing was merged.${has.length ? ` Its scripts: ${has.join(", ")}.` : ""}` };
+  }
+  return {
+    typecheck: typecheck ?? "npm run typecheck",
+    test: test ?? "npm test",
+    cleanClone: test === undefined ? { setup: scripts.types ? CLEAN_CLONE_SETUP : "npm ci --prefer-offline" } : null,
+  };
+}
+
 // Clones the checkout at `head` into a temporary directory, runs `setup`
 // there (when given) and then `test`, and removes the clone whatever
 // happened. Untracked and ignored files in the checkout are not in the
