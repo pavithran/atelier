@@ -5,6 +5,7 @@
 
 import { bindingOf, DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, independentReviewerText, mergedBlockers, modelOf, recordedText, singleFamily, stateLabel, type Review } from "./rules.ts";
 import { assertLength } from "./text.ts";
+import { readyToAccept } from "./landing-verdict.ts";
 import { criteriaOf } from "./criteria.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
@@ -219,7 +220,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
     const closed = item.state === "abandoned" ? "abandoned" : commit ? `merged as ${commit.slice(0, 8)}` : "merged";
     return { verdict: "none", reason: `The task is closed (${closed}), so nothing is waiting on you.` };
   }
-  if (item.state === "submitted" && gate.ready) {
+  if (readyToAccept(d)) {
     return {
       verdict: "accept",
       reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.`
