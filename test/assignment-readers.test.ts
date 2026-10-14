@@ -124,7 +124,7 @@ test("tierReviewerPick: says which assignment chose the tier reviewer, or why no
   // The tier is policy text: its names are converted once, to the entries
   // they name (tierIds), so the pick is that entry by its own id
   // (gpt-6-astra's and gemini-4-argon's fifth and eighth reviews).
-  const tier = tierIds(["antigravity/gemini-4-argon", "codex/astra-alias"], pool);
+  const tier = tierIds({ reviewTier: ["antigravity/gemini-4-argon", "codex/astra-alias"] }, pool);
   assert.deepEqual(tier, ["antigravity/gemini-4-argon", "codex/gpt-6-astra"]);
   const pick = tierReviewerPick(tier, ["claude-code/opus-5.5"], [], () => true, null, null, [a], pool);
   assert.equal(pick.actor, "codex/gpt-6-astra");
@@ -425,7 +425,7 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
   // A tier name written as an alias is offered and dispatched as the entry it names.
   const offers = [{ runner: "home:studio", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
   const aliased = [{ ...astra, aliases: ["astra-alias"], where: "home" as const }];
-  const [astraTier] = tierIds(["codex/astra-alias"], aliased);
+  const [astraTier] = tierIds({ reviewTier: ["codex/astra-alias"] }, aliased);
   assert.equal(tierEligible(aliased, offers, astraTier), true);
   assert.equal(reviewTarget(aliased, astraTier).model, "gpt-6-astra");
 });
@@ -469,7 +469,7 @@ test("tierReviewerPick and gateServesTier read every tier, gate and contributor 
   const sonnetAliased = { ...sonnet, aliases: ["sonnet-alias"] };
   const pool = [sonnetAliased, argon, astra];
   // The tier text holds an alias: converted once where read (tierIds).
-  const tier = tierIds(["claude-code/sonnet-alias", "antigravity/gemini-4-argon"], pool);
+  const tier = tierIds({ reviewTier: ["claude-code/sonnet-alias", "antigravity/gemini-4-argon"] }, pool);
   const promote = [assigned("review", ["claude-code/sonnet-5.5"])];
   // Sonnet built it: its alias is not asked to review it.
   assert.equal(tierReviewerPick(tier, ["claude-code/sonnet-5.5"], [], () => true, null, null, promote, pool).actor, "antigravity/gemini-4-argon");
@@ -618,5 +618,17 @@ test("storedActor converts a stored alias once, leaves an exact id, an unknown n
   assert.equal(storedActor(pool, "codex/gpt-6-astra"), "codex/gpt-6-astra");
   assert.equal(storedActor(pool, "codex/gpt-9"), "codex/gpt-9");
   assert.equal(storedActor([{ ...astra, aliases: ["shared"] }, { ...entry("codex", "gpt-6-luna"), aliases: ["shared"] }], "codex/shared"), "codex/shared");
-  assert.deepEqual(tierIds(["codex/astra", "codex/gpt-6-astra"], pool), ["codex/gpt-6-astra"]);
+  assert.deepEqual(tierIds({ reviewTier: ["codex/astra", "codex/gpt-6-astra"] }, pool), ["codex/gpt-6-astra"]);
+});
+
+// gpt-6-astra's ninth review of t622, finding 3: storedActor re-read every
+// stored tier through the aliases, so a tier written as codex/gpt-6-luna
+// became Astra once Luna left the pool. A tier written since names are
+// converted where typed is marked (exactNames) and read as it is; only an
+// unmarked, legacy one goes through the aliases.
+test("tierIds reads a marked tier as it is and only an unmarked one through the aliases", () => {
+  const afterRemoval = [{ ...astra, aliases: ["gpt-6-luna"] }, argon];
+  assert.deepEqual(tierIds({ reviewTier: ["codex/gpt-6-luna"], exactNames: ["reviewTier"] }, afterRemoval), ["codex/gpt-6-luna"]);
+  assert.equal(tierReviewerPick(tierIds({ reviewTier: ["codex/gpt-6-luna"], exactNames: ["reviewTier"] }, afterRemoval), ["claude-code/opus-5.5"], [], () => true, null, null, [], afterRemoval).actor, "codex/gpt-6-luna");
+  assert.deepEqual(tierIds({ reviewTier: ["codex/gpt-6-luna"] }, afterRemoval), ["codex/gpt-6-astra"], "legacy text is read through the aliases");
 });

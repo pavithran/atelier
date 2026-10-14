@@ -146,7 +146,8 @@ export interface Assignment {
   evidence: string[];         // KEY/tN or KEY/tN#SEQ, each checked when recorded
   by: string;
   at: string;                 // the server's time
-  acting?: string;            // the harness/model that recorded it for the developer
+  acting?: string;            // the harness/model that recorded it for the developer, its exact pool id
+  actingDeclared?: string;    // the --as text as the request declared it, which a retry is matched by
   supersedes?: string;        // the assignment that stood for this scope and role
 }
 
@@ -160,6 +161,7 @@ export interface AssignmentWithdrawal {
   by: string;
   at: string;
   acting?: string;
+  actingDeclared?: string;
 }
 
 export type AssignmentRecord = Assignment | AssignmentWithdrawal;
@@ -336,7 +338,18 @@ const sameContent = (a: Assignment, b: ResolvedAssignment) =>
   && JSON.stringify(a.choices.map((c) => c.actor)) === JSON.stringify(b.choices.map((c) => c.actor))
   && JSON.stringify(a.evidence) === JSON.stringify(b.evidence);
 
-export function recordAssignment(store: AssignmentStore, actor: string, input: ResolvedAssignment, now: string, acting: string | null = null): Assignment & { retried?: true } {
+// The acting model a request declared: its exact pool id, recorded, and the
+// --as text as declared, kept so a retry is matched by what it sent and
+// never by a conversion the pool may since answer otherwise (gpt-6-astra's
+// ninth review of t622, finding 2). A bare string is both.
+export type ActingDeclaration = { id: string; declared: string } | string | null;
+const actingOfDecl = (a: ActingDeclaration) => (a === null ? null : typeof a === "string" ? { id: a, declared: a } : a);
+const declaredOf = (r: { acting?: string; actingDeclared?: string }) => r.actingDeclared ?? r.acting ?? null;
+const actingFields = (a: ActingDeclaration) => { const d = actingOfDecl(a); return d ? { acting: d.id, ...(d.declared !== d.id ? { actingDeclared: d.declared } : {}) } : {}; };
+
+export function recordAssignment(store: AssignmentStore, actor: string, input: ResolvedAssignment, now: string, actingDecl: ActingDeclaration = null): Assignment & { retried?: true } {
+  const acting = actingOfDecl(actingDecl)?.id ?? null;
+  const declared = actingOfDecl(actingDecl)?.declared ?? null;
   ownerOnly(store, actor, "assigns a role");
   const records = store.records();
   const standing = standingFor(records, input.scope, input.role);
@@ -351,10 +364,10 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
   // (gpt-6-astra's fourth review of t622, finding 3).
   if (own) {
     if (own.fingerprint !== undefined && input.fingerprint !== undefined) {
-      isRetryOf(own, input.request, input.fingerprint, acting);
+      isRetryOf(own, input.request, input.fingerprint, declared);
       return { ...own, retried: true };
     }
-    if (sameContent(own, input) && (own.supersedes ?? null) === input.replaces && sameActing(own.acting, acting)) return { ...own, retried: true };
+    if (sameContent(own, input) && (own.supersedes ?? null) === input.replaces && sameActing(declaredOf(own), declared)) return { ...own, retried: true };
     throw new RuleError("request_reused", `request ${input.request} already recorded ${own.id}, with other content or another acting model; a new decision needs a new request id`, 409);
   }
   if (standing && input.replaces !== standing.id) {
@@ -367,7 +380,7 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
   const record: Assignment = {
     id: nextId(records), kind: "assigned", request: input.request, ...(input.fingerprint ? { fingerprint: input.fingerprint } : {}), scope: input.scope, role: input.role, choices: input.choices,
     reason: input.reason, quote: input.quote, evidence: input.evidence, by: actor, at: now,
-    ...(acting ? { acting } : {}), ...(standing ? { supersedes: standing.id } : {}),
+    ...actingFields(actingDecl), ...(standing ? { supersedes: standing.id } : {}),
   };
   store.insert(record);
   store.log("assignment.recorded", { id: record.id, scope: record.scope, role: record.role, choices: record.choices.map((c) => c.actor), reason: record.reason, quote: record.quote, evidence: record.evidence, ...(standing ? { supersedes: standing.id } : {}), ...(acting ? { acting } : {}) });
@@ -376,7 +389,9 @@ export function recordAssignment(store: AssignmentStore, actor: string, input: R
 
 // The developer withdraws the standing assignment, with a note. What stood
 // before it does not return: the reader falls back to FALLBACK.
-export function withdrawAssignment(store: AssignmentStore, actor: string, id: string, note: unknown, now: string, acting: string | null = null): AssignmentWithdrawal & { retried?: true } {
+export function withdrawAssignment(store: AssignmentStore, actor: string, id: string, note: unknown, now: string, actingDecl: ActingDeclaration = null): AssignmentWithdrawal & { retried?: true } {
+  const acting = actingOfDecl(actingDecl)?.id ?? null;
+  const declared = actingOfDecl(actingDecl)?.declared ?? null;
   ownerOnly(store, actor, "withdraws a role assignment");
   if (note !== undefined && typeof note !== "string") throw new RuleError("bad_note", "a note is text", 400);
   const why = line(note);
@@ -387,12 +402,12 @@ export function withdrawAssignment(store: AssignmentStore, actor: string, id: st
   if (!target || target.kind !== "assigned") throw new RuleError("no_assignment", `no assignment ${id}; atelier models roles lists them`, 404);
   const done = records.find((r): r is AssignmentWithdrawal => r.kind === "withdrawn" && r.withdraws === id);
   if (done) {
-    if (isWithdrawalRetry(done, why, acting)) return { ...done, retried: true };
+    if (isWithdrawalRetry(done, why, declared)) return { ...done, retried: true };
     throw new RuleError("not_standing", `${id} was withdrawn on ${done.at.slice(0, 10)} (${done.id})${done.note === why ? `, acting as ${done.acting ?? "nobody"}` : ""}, so there is nothing to withdraw`, 409);
   }
   const after = records.find((r): r is Assignment => r.kind === "assigned" && r.supersedes === id);
   if (after) throw new RuleError("not_standing", `${id} was superseded by ${after.id} on ${after.at.slice(0, 10)}; withdraw ${after.id} to return ${target.role} in ${scopeText(target.scope)} to its fallback`, 409);
-  const record: AssignmentWithdrawal = { id: nextId(records), kind: "withdrawn", withdraws: id, scope: target.scope, role: target.role, note: why, by: actor, at: now, ...(acting ? { acting } : {}) };
+  const record: AssignmentWithdrawal = { id: nextId(records), kind: "withdrawn", withdraws: id, scope: target.scope, role: target.role, note: why, by: actor, at: now, ...actingFields(actingDecl) };
   store.insert(record);
   store.log("assignment.withdrawn", { id: record.id, withdraws: id, scope: target.scope, role: target.role, note: why, ...(acting ? { acting } : {}) });
   return record;
@@ -456,17 +471,21 @@ export function inputFingerprint(input: AssignmentInput): string {
 // reusing it, and is refused.
 const sameActing = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").toLowerCase() === (b ?? "").toLowerCase();
 
-export function isRetryOf(prior: Pick<Assignment, "id" | "fingerprint" | "acting">, request: string, fingerprint: string, acting: string | null): true {
-  if (prior.fingerprint === fingerprint && sameActing(prior.acting, acting)) return true;
-  const what = prior.fingerprint === fingerprint ? `acting as ${prior.acting ?? "nobody"}, not ${acting ?? "nobody"}` : "with other content";
+//
+// `declared` is the --as text as this request sent it, compared with what
+// the first request declared (actingDeclared, or its acting when that was
+// the declaration itself), never with a conversion through the pool.
+export function isRetryOf(prior: Pick<Assignment, "id" | "fingerprint" | "acting" | "actingDeclared">, request: string, fingerprint: string, declared: string | null): true {
+  if (prior.fingerprint === fingerprint && sameActing(declaredOf(prior), declared)) return true;
+  const what = prior.fingerprint === fingerprint ? `acting as ${declaredOf(prior) ?? "nobody"}, not ${declared ?? "nobody"}` : "with other content";
   throw new RuleError("request_reused", `request ${request} already recorded ${prior.id}, ${what}; a new decision needs a new request id`, 409);
 }
 
 // Whether a withdrawal request is a retry of the withdrawal recorded: the
 // same note, by the same acting model. Otherwise it is not, and
 // withdrawAssignment judges it as a new request.
-export function isWithdrawalRetry(done: Pick<AssignmentWithdrawal, "note" | "acting">, note: unknown, acting: string | null): boolean {
-  return typeof note === "string" && line(note) === done.note && sameActing(done.acting, acting);
+export function isWithdrawalRetry(done: Pick<AssignmentWithdrawal, "note" | "acting" | "actingDeclared">, note: unknown, declared: string | null): boolean {
+  return typeof note === "string" && line(note) === done.note && sameActing(declaredOf(done), declared);
 }
 
 // ── reading ─────────────────────────────────────────────────────────────

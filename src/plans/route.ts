@@ -32,7 +32,7 @@
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
-import { actorStanding, familyOf, exactEntry, paidPerToken, standingRefusal, storedActor, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { actorStanding, familyOf, exactEntry, paidPerToken, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -445,11 +445,12 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   let builder: Verdict | undefined;
   if (part.prefer) {
     const { actor, reason } = part.prefer;
-    // The prefer is a name the planner wrote in the plan document, kept as
-    // written: it is read once here by storedActor (an entry's exact id, else
-    // the one entry listing it as an alias), then matched exactly
-    // (src/models/pool.ts, identity).
-    const named = exactEntry(ctx.input.pool, storedActor(ctx.input.pool, actor));
+    // The prefer is converted to an exact id where the plan document is
+    // posted (canonicalNames in src/index.ts) and matched exactly here. A
+    // plan posted before that, naming an alias, finds no entry: its
+    // preference is set aside with the reason below, and routing goes on as
+    // without one (src/models/pool.ts, identity).
+    const named = exactEntry(ctx.input.pool, actor);
     const wanted = named ? verdicts.find((v) => ctx.entries.get(v.actor) === named) : undefined;
     if (!wanted) lead.push(`The plan preferred ${actor} (${reason}); it is not in the pool`);
     else if (wanted.build.length) lead.push(`The plan preferred ${wanted.actor} (${reason}); not chosen: ${wanted.build.join("; ")}`);

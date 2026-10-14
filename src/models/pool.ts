@@ -97,15 +97,29 @@ export function hasModelRole(entry: Pick<ModelEntry, "roles">, role: ModelRole):
 // (gemini-4-argon's eighth review of t622, finding 1).
 export function withStanding(saved: readonly ModelEntry[], current: readonly ModelEntry[]): ModelEntry[] {
   return saved.map((entry) => {
-    const now = standingEntry(current, `${entry.harness}/${entry.id}`, "review");
-    if (!now) return entry;
-    const { state: _state, stateAt: _stateAt, roles: _roles, ...rest } = entry;
-    return {
-      ...rest, note: now.note,
-      ...(now.state ? { state: now.state } : {}), ...(now.stateAt ? { stateAt: now.stateAt } : {}),
-      ...(now.roles ? { roles: now.roles } : {}),
-    };
+    const found = standingEntry(current, `${entry.harness}/${entry.id}`, "review");
+    if (!found) return entry;
+    // A saved id the pool now lists as two entries' alias is held, as
+    // actorStanding holds it.
+    if ("alias" in found) return { ...entry, state: "paused" as const, stateAt: entry.stateAt ?? entry.addedAt, note: aliasNote(found.alias) };
+    // A saved id the pool now lists as one entry's alias is held when that
+    // entry is, as actorStanding holds it, and keeps its own saved standing
+    // otherwise: the alias never lends its entry's standing to make a held
+    // saved entry free (gpt-6-astra's seventh review of t622, finding 1).
+    if (found.aliasOf) return standingRefusal(found.entry, "review") === null && standingRefusal(found.entry, "build") === null ? entry : copyStanding(entry, found.entry);
+    return copyStanding(entry, found.entry);
   });
+}
+
+
+// A saved entry with the standing (state, note, roles) of an entry now.
+function copyStanding(entry: ModelEntry, now: ModelEntry): ModelEntry {
+  const { state: _state, stateAt: _stateAt, roles: _roles, ...rest } = entry;
+  return {
+    ...rest, note: now.note,
+    ...(now.state ? { state: now.state } : {}), ...(now.stateAt ? { stateAt: now.stateAt } : {}),
+    ...(now.roles ? { roles: now.roles } : {}),
+  };
 }
 
 // The one check every path makes before it chooses or accepts a model for a
@@ -123,11 +137,22 @@ export function standingRefusal(entry: ModelEntry, role: ModelRole): string | nu
 
 // The same check for an actor (harness/model), prefixed with its name. An
 // actor no entry runs is not held.
+//
+// A name that is no entry's id but is an entry's alias is held exactly when
+// that entry is: names are converted to ids where they are typed, and a
+// boundary that missed one fails closed here instead of reading the alias
+// as no model at all (gpt-6-astra's and gemini-4-argon's ninth reviews of
+// t622). An alias two entries list is refused outright. An alias is not
+// refused for being one: a reviewer admission (atelier models admit) lets
+// an admitted model review under the aliases it was admitted with.
 export function actorStanding(pool: readonly ModelEntry[], actor: string, role: ModelRole): string | null {
-  const entry = standingEntry(pool, actor, role);
-  const refusal = entry ? standingRefusal(entry, role) : null;
+  const found = standingEntry(pool, actor, role);
+  if (found && "alias" in found) return `${actor} is ${aliasNote(found.alias)}`;
+  const refusal = found ? standingRefusal(found.entry, role) : null;
   return refusal ? `${actor} is ${refusal}` : null;
 }
+
+const aliasNote = (of: readonly ModelEntry[]) => `an alias of both ${of.map((e) => `${e.harness}/${e.id}`).join(" and ")} in the pool; name the model by its id`;
 
 // Whether a pool entry runs the model an actor or a bare model name names:
 // its id by modelKey, the canonical model (src/rules.ts), so letter case, a
@@ -187,10 +212,13 @@ export function typedModel(pool: readonly Pick<ModelEntry, "id" | "harness" | "a
   return ids[0] ?? model;
 }
 
-// Stored data from before identities were converted where typed (a review
-// tier, a plan's prefer, an acting name on an old event) may hold an alias:
-// it is converted once when read, here, as a typed name is, except that an
-// ambiguous one is left as stored rather than refused.
+// Stored data from before identities were converted where typed may hold
+// an alias: it is converted when read, here, as a typed name is, except
+// that an ambiguous one is left as stored rather than refused. Only such
+// legacy data comes here. Values written since carry a mark (a policy's
+// exactNames, an event's actingExact), and a marked value is an exact id,
+// compared as it is and never read again through the aliases (gpt-6-astra's
+// ninth review of t622, finding 3).
 export function storedActor(pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[], name: string): string {
   try { return typedActor(pool, name); } catch { return name; }
 }
@@ -225,18 +253,24 @@ export function poolEligibility(pool: readonly ModelEntry[] | null, actor: strin
 }
 
 // The one lookup of the entry whose standing holds for an actor, read by
-// actorStanding and withStanding alike: its exact entry; else, of the
+// actorStanding and withStanding alike: its exact entry; else, when it is
+// another entry's alias, that it is one (both then hold it); else, of the
 // entries whose id runs its model (entryRuns), the one in its harness, else
-// for a role the first that refuses it, else the first. No pool alias is
-// read, so an entry removed never takes the standing of another that lists
-// its id as an alias.
-function standingEntry(pool: readonly ModelEntry[], actor: string, role?: ModelRole): ModelEntry | undefined {
+// for a role the first that refuses it, else the first. An alias never
+// lends an entry's standing, so an entry removed never takes the standing
+// of another that lists its id as an alias.
+function standingEntry(pool: readonly ModelEntry[], actor: string, role?: ModelRole): { entry: ModelEntry; aliasOf?: true } | { alias: ModelEntry[] } | undefined {
   const exact = exactEntry(pool, actor);
-  if (exact) return exact;
+  if (exact) return { entry: exact };
+  const lower = actor.toLowerCase();
+  const alias = pool.filter((m) => m.aliases.some((a) => `${m.harness}/${a}`.toLowerCase() === lower));
+  if (alias.length > 1) return { alias };
+  if (alias.length === 1) return { entry: alias[0], aliasOf: true };
   const runs = pool.filter((e) => entryRuns(e, actor));
   const slash = actor.indexOf("/");
   const harness = slash === -1 ? null : actor.slice(0, slash).toLowerCase();
-  return runs.find((e) => e.harness === harness) ?? (role ? runs.find((e) => standingRefusal(e, role)) : undefined) ?? runs[0];
+  const entry = runs.find((e) => e.harness === harness) ?? (role ? runs.find((e) => standingRefusal(e, role)) : undefined) ?? runs[0];
+  return entry ? { entry } : undefined;
 }
 
 // Names, as patterns, oldest-established first within each family. Anything

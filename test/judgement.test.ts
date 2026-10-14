@@ -292,3 +292,18 @@ test("registeredActing refuses a name two pool entries answer to, and accepts an
   assert.equal(registeredActing("codex/GPT-6-Luna", pool), "codex/gpt-6-luna");
   assert.throws(() => registeredActing("codex/gpt-7", pool), /not a model in the pool/);
 });
+
+// gpt-6-astra's ninth review of t622, finding 3: an acting name recorded as
+// an exact id was re-read through the aliases, so a removed Luna's verdicts
+// counted as Astra's. One marked actingExact is read as it is.
+test("an acting name marked exact is its own model, whatever the pool's aliases say now", () => {
+  const pool = [{ id: "gpt-6-astra", harness: "codex" as const, aliases: ["gpt-6-luna"] }];
+  const LUNA = "codex/gpt-6-luna";
+  const marked = verdict(1, "refuted", LUNA);
+  marked.data.actingExact = true;
+  const r = buildJudgement([{ project: "atelier", events: [marked] }], WINDOW, OWNER, pool);
+  assert.ok(row(r, "gpt-6-luna"), "the marked event is Luna's");
+  assert.equal(row(r, "gpt-6-astra"), undefined);
+  // An unmarked event, from before, is read through the aliases, once.
+  assert.ok(row(buildJudgement([{ project: "atelier", events: [verdict(1, "refuted", LUNA)] }], WINDOW, OWNER, pool), "gpt-6-astra"));
+});

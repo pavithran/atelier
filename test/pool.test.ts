@@ -149,11 +149,12 @@ test("a saved pool takes the owner's standing now, and a held model or one witho
   assert.deepEqual(withStanding([luna], []), [luna]);
   // An alias is converted where it is typed (typedActor), and the standing
   // read by the exact id it became (gpt-6-astra's and gemini-4-argon's
-  // eighth reviews of t622); a reader given the alias itself reads no entry.
+  // eighth reviews of t622).
   const typed = typedActor(now, "codex/astra");
   assert.equal(typed, "codex/gpt-6-astra");
   assert.match(actorStanding(now, typed, "review")!, /^codex\/gpt-6-astra is reserved since 2026-10-09 \(the developer's standing\): credits/);
-  assert.equal(actorStanding(now, "codex/astra", "review"), null);
+  // A missed boundary fails closed: the alias is held as its entry is (the ninth review).
+  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since/);
   assert.match(actorStanding(now, "codex/gpt-6-luna", "review")!, /not a reviewer; its roles are build/);
   assert.equal(actorStanding(now, "codex/gpt-6-luna", "build"), null);
   assert.match(actorStanding(now, typed, "build")!, /reserved since/);

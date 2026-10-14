@@ -17,7 +17,7 @@ import type { PoolNames } from "../models/judgement.ts";
 import { exactEntry, poolEligibility, storedActor, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { offering, type SeenOffer } from "../dispatch/rules.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
-import { actorFamily, contributed, sameActor } from "../rules.ts";
+import { actorFamily, contributed, sameActor, type ProjectPolicy } from "../rules.ts";
 import { independenceRefusal } from "./independence.ts";
 
 // Whether the gate's reviewer gives the tier review too: it is a tier model
@@ -32,12 +32,14 @@ export function gateServesTier(tier: readonly string[] | undefined, reviewer: st
   return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors, single) === null;
 }
 
-// The project's review tier as exact harness/ids: the policy text the
-// developer wrote, each name converted once by storedActor (a policy written
-// before names were converted where typed may hold an alias), and one model
-// listed twice asked once.
-export function tierIds(tier: readonly string[] | undefined, pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[]): string[] {
-  return [...new Set((tier ?? []).map((a) => storedActor(pool, a)))];
+// The project's review tier as exact harness/ids. A tier written since
+// names are converted where typed (policy.exactNames lists it) is read as it
+// is; only one written before goes through storedActor once per read
+// (gpt-6-astra's ninth review of t622, finding 3). One model listed twice
+// is asked once.
+export function tierIds(policy: Pick<ProjectPolicy, "reviewTier" | "exactNames">, pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[]): string[] {
+  const exact = policy.exactNames?.includes("reviewTier") ?? false;
+  return [...new Set((policy.reviewTier ?? []).map((a) => (exact ? a : storedActor(pool, a))))];
 }
 
 // The tier model asked for a change's separate tier review: the first, in
