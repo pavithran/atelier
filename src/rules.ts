@@ -1934,6 +1934,76 @@ export function repoName(project: string, itemId?: string): string {
   return name;
 }
 
+// The developer's branches (t641): work in progress that travels between
+// the developer's Macs. They live in a repository of their own beside the
+// baseline, branchesRepoName(key), which only the developer is given a token
+// for: Artifacts scopes a token to a whole repository, read or write, never
+// to refs, so a branch kept in the baseline would be readable with every
+// agent's and runner's read token, and a token that could push it could push
+// main as well. In a repository of their own, no push of a branch can reach
+// the baseline's main, which still moves only through landing and sync.
+//
+// The branches repository's name is BRANCHES_REPO_PREFIX and the first 32
+// hex digits of the SHA-256 of the project's key: a fixed form whose length
+// never depends on the key, so a key of any length a baseline takes has one
+// (Astra's review of t641, finding 2). A name derived from the key by adding
+// to it met other names: demo--branches is a baseline name, and
+// branches--t1 is project branches's fork of t1 (the reviews of t641).
+// BRANCHES_REPO_NAME matches the form, and assertBaselineName refuses it to
+// any baseline a project would be registered with; a task fork, KEY--tN,
+// never has the form. Every place that finds a repository already under the
+// name it would make checks it was made for that purpose before any token
+// is minted for it (src/index.ts), so even a name a project registered
+// before this change holds is never taken for another's.
+//
+// Every developer branch is under DEVELOPER_BRANCH_PREFIX. A NAME given
+// without it is taken under it (`atelier branch push idea` pushes
+// wip/idea), except a name that is the project's branch, main, HEAD or a
+// task's id, which is refused rather than quietly renamed, and a name with
+// another prefix (feature/x, refs/heads/x), which is outside the prefix.
+// The rest of the name keeps to what git check-ref-format takes, more
+// strictly: letters, digits, . _ - and / between parts.
+export const BRANCHES_REPO_PREFIX = "devbr-";
+export const BRANCHES_REPO_NAME = /^devbr-[0-9a-f]{32}$/;
+export const DEVELOPER_BRANCH_PREFIX = "wip/";
+export async function branchesRepoName(key: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
+  return `${BRANCHES_REPO_PREFIX}${[...digest].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32)}`;
+}
+export function assertBaselineName(repo: string): void {
+  if (BRANCHES_REPO_NAME.test(repo)) throw new RuleError("repo_reserved", `a baseline cannot be named ${repo}: names of the form ${BRANCHES_REPO_PREFIX} and 32 hex digits are kept for the developer's branches repositories`, 409);
+}
+
+// What Atelier writes as the description of each repository it makes, and
+// reads back before it takes one it finds already under the name it would
+// make: an earlier attempt's, whose answer was lost (t349), is taken; one
+// made for any other purpose is refused (the reviews of t641).
+export const baselineMark = (project: string) => `Atelier baseline for ${project}`;
+export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
+export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
+const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+export function developerBranch(name: unknown, defaultBranch = "main"): string {
+  const refuse = (why: string) => { throw new RuleError("bad_branch", `${typeof name === "string" ? JSON.stringify(name) : "the branch"} ${why}; a developer branch is ${DEVELOPER_BRANCH_PREFIX}NAME, such as ${DEVELOPER_BRANCH_PREFIX}idea`, 400); };
+  if (typeof name !== "string" || !name) return refuse("is not a branch name");
+  const reserved = new Set(["main", "master", "HEAD", defaultBranch]);
+  if (reserved.has(name) || /^t[0-9]+$/.test(name)) return refuse("is the project's branch or a task's; main changes only through landing or sync, and a task's work only through its workspace");
+  if (name.startsWith("refs/")) return refuse(`is a full ref; name the branch under ${DEVELOPER_BRANCH_PREFIX} alone`);
+  const full = name.startsWith(DEVELOPER_BRANCH_PREFIX) ? name : name.includes("/") ? refuse(`is outside ${DEVELOPER_BRANCH_PREFIX}`) : `${DEVELOPER_BRANCH_PREFIX}${name}`;
+  if (full.length > 200) return refuse("is longer than 200 characters");
+  const parts = full.slice(DEVELOPER_BRANCH_PREFIX.length).split("/");
+  if (parts.some((p) => !BRANCH_PART.test(p) || p.endsWith(".lock") || p.endsWith(".") || p.includes(".."))) return refuse("is not a name Git takes for a branch here: use letters, digits, . _ - and / between parts");
+  return full;
+}
+
+// Where a developer branch was last pushed from: the Mac's name as
+// os.hostname() gives it, less a trailing .local, one line of at most 100
+// characters.
+export function branchHost(host: unknown): string {
+  const clean = typeof host === "string" ? host.trim().replace(/\.local$/i, "") : "";
+  if (!clean || clean.length > 100 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(clean)) throw new RuleError("bad_host", "the Mac a branch was pushed from is named on one line of at most 100 characters", 400);
+  return clean;
+}
+
 // Files Git ignores that a build or install makes again, so a finished
 // workspace holding them loses nothing when it goes: dependencies, build
 // output, caches and generated types. Any other ignored file (a harness's

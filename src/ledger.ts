@@ -11,7 +11,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { ledgerRestart, parseLedgerRestart } from "./rules";
+import { assertBaselineName, ledgerRestart, parseLedgerRestart } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -97,6 +97,18 @@ export interface FastLanding {
 // A build a runner made in fast mode (t589) and reported ready for the
 // owner's batch: the commit atelier fast land takes as tN=SHA.
 export type FastReadyEntry = FastReady & { item: string; title: string; at: string; by: string };
+
+// A developer branch's last push (t641): its name under wip/, the commit
+// the branches repository held for it after the push, that commit's first
+// line and time, and the Mac it was pushed from.
+export interface DeveloperBranch {
+  name: string;
+  commit: string;
+  subject: string;
+  committedAt: string | null;
+  host: string;
+  pushedAt: string;
+}
 
 export interface LedgerEvent {
   seq: number;
@@ -648,6 +660,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
 
 export function assertRepoAvailable(projects: ProjectRecord[], name: string, repo: string): void {
   if (projects.some((p) => p.name === name)) return;
+  // A new baseline never takes a developer branches repository's name (t641).
+  assertBaselineName(repo);
   const other = projects.find((p) => p.name !== name && p.repo === repo);
   if (other) throw new RuleError("repo_taken", `baseline ${repo} is already registered to ${other.name}`, 409);
 }
@@ -798,6 +812,8 @@ export class Ledger extends DurableObject<Env> {
     // refresh under its key (src/refresh/queue.ts).
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_targets (item TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_results (key TEXT PRIMARY KEY, item TEXT NOT NULL, json TEXT NOT NULL)`);
+    // The developer's branches (t641), one row each by name.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS developer_branches (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
@@ -1660,6 +1676,60 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`UPDATE items SET area = NULL, updated_at = ? WHERE area = ?`, at, id);
       this.sql.exec(`DELETE FROM areas WHERE id = ?`, id);
       this.log(null, actor, "area.removed", { id }, at);
+    });
+  }
+
+  // The developer's branches (t641, developerBranch in src/rules.ts): each
+  // one's last commit as the branches repository holds it, read there by
+  // the Worker after the push, and the Mac it was pushed from.
+  developerBranches(): DeveloperBranch[] {
+    return this.sql.exec(`SELECT json FROM developer_branches`).toArray().map((r) => JSON.parse(r.json as string) as DeveloperBranch)
+      .sort((a, b) => b.pushedAt.localeCompare(a.pushedAt) || a.name.localeCompare(b.name));
+  }
+
+  // The branches repository Atelier made for this project (t641), recorded
+  // when it was made: the only repository the branch routes mint a token for.
+  branchesRepo(): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'branches-repo'`).toArray()[0];
+    return row ? String(row.value) : null;
+  }
+
+  recordBranchesRepo(actor: string, repo: string): string {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branches repository", 403);
+    const held = this.branchesRepo();
+    if (held && held !== repo) throw new RuleError("branches_repo_mismatch", `this project's branches repository is ${held}, not ${repo}`, 409);
+    if (!held) {
+      const at = new Date().toISOString();
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('branches-repo', ?)`, repo);
+      this.log(null, actor, "branches.repo", { repo }, at);
+    }
+    return repo;
+  }
+
+  // A branch's record as stored, or null: the version a record is written
+  // against (recordDeveloperBranch).
+  developerBranch(name: string): DeveloperBranch | null {
+    const row = this.sql.exec(`SELECT json FROM developer_branches WHERE name = ?`, name).toArray()[0];
+    return row ? JSON.parse(row.json as string) as DeveloperBranch : null;
+  }
+
+  // A push is recorded only when the branch's record is still the one the
+  // caller read before it read the branch's tip (Astra's third review of
+  // t641, finding 1): a compare-and-set in one synchronous transaction, so
+  // a record another Mac wrote since is never replaced by an older push.
+  // The caller then reads again. Nothing here waits on anything outside
+  // the Ledger: a read of the tip that fails fails in the Worker, never
+  // inside the Ledger (Astra's fourth review of t641), so it cannot reset
+  // the Ledger, and nothing is recorded.
+  recordDeveloperBranch(actor: string, branch: Omit<DeveloperBranch, "pushedAt">, expected: DeveloperBranch | null): { recorded: DeveloperBranch } | { moved: DeveloperBranch | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a branch", 403);
+    return this.ctx.storage.transactionSync(() => {
+      const current = this.developerBranch(branch.name);
+      if (JSON.stringify(current) !== JSON.stringify(expected)) return { moved: current };
+      const record: DeveloperBranch = { ...branch, pushedAt: new Date().toISOString() };
+      this.sql.exec(`INSERT OR REPLACE INTO developer_branches (name, json) VALUES (?, ?)`, record.name, JSON.stringify(record));
+      this.log(null, actor, "branch.pushed", { name: record.name, commit: record.commit, host: record.host }, record.pushedAt);
+      return { recorded: record };
     });
   }
 

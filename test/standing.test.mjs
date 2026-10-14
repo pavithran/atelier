@@ -229,14 +229,18 @@ test("status --project prints where it stands and says the checkout is in step, 
   assert.match(r.output, /Waiting on /);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   // The baseline's head is read from the server; no read token is minted.
-  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
+  // The developer's branches (t641) are read last; the stand-in has none.
+  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/branches"]);
+  assert.match(r.output, /\n  Developer branches: not read/);
 });
 
 test("status --project with an agent token reads the baseline's head through a route the allowlist admits", async (t) => {
   const r = await run(t, () => null, undefined, { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
+  // An agent is not asked for the developer's branches, which are the developer's alone (t641).
   assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
+  assert.doesNotMatch(r.output, /Developer branches/);
 });
 
 test("status --project says the checkout is out of step when the baseline has moved on", async (t) => {

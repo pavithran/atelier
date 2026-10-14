@@ -9,6 +9,7 @@ import command_base_token from "./base-token.mjs";
 import command_baseline_token from "./baseline-token.mjs";
 import command_block from "./block.mjs";
 import command_board from "./board.mjs";
+import command_branch from "./branch.mjs";
 import command_check from "./check.mjs";
 import command_check_log from "./check-log.mjs";
 import command_claim from "./claim.mjs";
@@ -102,6 +103,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/baseline-token.mjs", run: command_baseline_token },
   { path: "cli/commands/block.mjs", run: command_block },
   { path: "cli/commands/board.mjs", run: command_board },
+  { path: "cli/commands/branch.mjs", run: command_branch },
   { path: "cli/commands/check.mjs", run: command_check },
   { path: "cli/commands/check-log.mjs", run: command_check_log },
   { path: "cli/commands/claim.mjs", run: command_claim },

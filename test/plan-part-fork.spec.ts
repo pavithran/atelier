@@ -47,12 +47,15 @@ type L = ReturnType<typeof ledger>;
 // history every repository here shares.
 function artifacts(heads: Map<string, string>, parents = new Map<string, string>()) {
   const calls = { forks: [] as string[], deletes: [] as string[] };
+  // The description each repository was made with, which a move reads back
+  // before it takes a fork an earlier attempt made (t641).
+  const descriptions = new Map<string, string | undefined>();
   const missing = (name: string) => Object.assign(new Error(`repo not found: ${name}`), { code: "NOT_FOUND" });
   const ARTIFACTS = {
     get: async (name: string) => {
       if (!heads.has(name)) throw missing(name);
       return {
-        info: async () => ({ remote: `https://git.test/${name}.git`, defaultBranch: "main" }),
+        info: async () => ({ remote: `https://git.test/${name}.git`, defaultBranch: "main", description: descriptions.get(name) ?? null }),
         createToken: async () => ({ plaintext: "token", id: `id-${name}-${calls.forks.length}`, expiresAt: "soon" }),
         revokeToken: async () => true,
         log: async ({ ref }: { ref?: string } = {}) => {
@@ -60,9 +63,10 @@ function artifacts(heads: Map<string, string>, parents = new Map<string, string>
           for (let at: string | undefined = ref ?? heads.get(name); at; at = parents.get(at)) page.push({ hash: at, parents: parents.has(at) ? [parents.get(at)] : [] });
           return page;
         },
-        fork: async (to: string) => {
+        fork: async (to: string, opts?: { description?: string }) => {
           if (heads.has(to)) throw Object.assign(new Error(`repo already exists: ${to}`), { code: "ALREADY_EXISTS" });
           calls.forks.push(to);
+          descriptions.set(to, opts?.description);
           heads.set(to, heads.get(name)!);
           return {};
         },

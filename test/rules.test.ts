@@ -4,7 +4,7 @@ import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerR
 import assert from "node:assert/strict";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertCriteriaAllowed, assertEligible, checkFiles, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
@@ -1285,4 +1285,41 @@ test("the stored last restart is read back, and anything unreadable is none", ()
   assert.equal(parseLedgerRestart(undefined), null);
   assert.equal(parseLedgerRestart("not json"), null);
   assert.equal(parseLedgerRestart(JSON.stringify({ at: "soon" })), null);
+});
+
+// t641: the developer's branches. A name is taken under wip/ or refused;
+// main, the project's branch, a task's id, a full ref and a name under
+// another prefix are refused rather than renamed, which is what keeps
+// `atelier branch push main` from ever naming main.
+test("a developer branch is a name under wip/, and main, a task's id and any other prefix are refused", () => {
+  assert.equal(developerBranch("idea"), "wip/idea");
+  assert.equal(developerBranch("wip/idea"), "wip/idea");
+  assert.equal(developerBranch("wip/mac/draft-2.1_x"), "wip/mac/draft-2.1_x");
+  for (const name of ["main", "master", "HEAD", "t641", "trunk", "refs/heads/main", "refs/heads/wip/x", "feature/x", "wip/", "wip//x", "wip/x/", "wip/../main", "wip/x..y", "wip/.hidden", "wip/x.lock", "wip/x.", "wip/a b", "wip/x:y", "wip/x~1", "wip/-x", "", "wip/" + "a".repeat(200)]) {
+    assert.throws(() => developerBranch(name, "trunk"), (e: unknown) => e instanceof RuleError && e.code === "bad_branch", name);
+  }
+  assert.throws(() => developerBranch(undefined), RuleError);
+  // Only the project's own branch name is reserved beyond main, master and HEAD.
+  assert.equal(developerBranch("trunk"), "wip/trunk");
+});
+
+test("the Mac a branch was pushed from is one short line, without .local", () => {
+  assert.equal(branchHost("Pavis-MacBook-Pro.local"), "Pavis-MacBook-Pro");
+  assert.equal(branchHost(" studio "), "studio");
+  for (const host of ["", "  ", "a\nb", "x".repeat(101), 5, null]) assert.throws(() => branchHost(host), RuleError);
+});
+
+// The reviews of t641: a branches repository's name has a fixed form from a
+// hash of the key, of the same length whatever the key, which every new
+// baseline is refused and no task fork (KEY--tN) can have.
+test("a branches repository is named devbr- and 32 hex digits of the key's hash, a form no baseline may take", async () => {
+  const demo = await branchesRepoName("demo");
+  assert.match(demo, /^devbr-[0-9a-f]{32}$/);
+  assert.equal(await branchesRepoName("demo"), demo);
+  assert.notEqual(await branchesRepoName("Demo"), demo);
+  assert.match(await branchesRepoName("k".repeat(63)), /^devbr-[0-9a-f]{32}$/);
+  // Argon's collision: project branches's fork of t1 is not project t1's branches.
+  assert.notEqual(repoName("branches", "t1"), await branchesRepoName("t1"));
+  assert.throws(() => assertBaselineName(demo), (e: unknown) => e instanceof RuleError && e.code === "repo_reserved");
+  for (const repo of ["demo", "demo--branches", "branches", "branches--t1", "devbr-", "devbr-xyz", `${demo}x`]) assert.doesNotThrow(() => assertBaselineName(repo), repo);
 });
