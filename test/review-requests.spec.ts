@@ -1681,3 +1681,41 @@ it("with no other reviewer than the one withdrawn, the part waits for the develo
   expect((await events(L, partId)).filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer)).toEqual([reviewer]);
   expect((await L.planView(item.id)).blocked).toBeNull();
 });
+
+// t675: the prose assessment of 2026-10-14 found that no brief Atelier
+// composed named the project's prose standard. With the policy naming one,
+// the planner's brief, a part's build brief, an ordinary task's job brief
+// (which the runner appends to its own) and the review claim all carry it;
+// a project with none gets no line.
+it("the planner's, a part's and a task's job briefs and the review claim carry the project's prose standard", async () => {
+  const PATH = "../ai-projects-house-style/house-style.md";
+  const L = ledger("prose-standard");
+  await L.setProject({ name: "prose-standard", repo: "prose-standard--baseline", policy: { ...policy, proseStandard: PATH }, createdAt: new Date().toISOString() }, "owner");
+  const line = `Prose standard: this project's prose follows \`${PATH}\``;
+  const { item: plan } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+  await L.claim(plan.id, PLANNER, RUNNER);
+  expect((await L.jobBrief(plan.id, PLANNER)).text).toContain(line);
+  const post = await L.postPlan(plan.id, PLANNER, doc(part("a")));
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(plan.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(plan.id, "owner", post.hash, false, POOL);
+  const partId = parts[0].id, builder = `${parts[0].dispatch!.agent}/${parts[0].dispatch!.model}`;
+  await L.claim(partId, builder, RUNNER);
+  expect((await L.jobBrief(partId, builder)).text).toContain(line);
+  await L.release(partId, builder, "stuck");
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const claim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.proseStandard).toBe(PATH);
+  // An ordinary task's runner writes its own brief and appends the server's.
+  const task = await L.newItem("Plain task", ["docs/**"], "owner");
+  await L.claim(task.id, OPUS);
+  const brief = await L.jobBrief(task.id, OPUS);
+  expect(brief.job).toBe("build");
+  expect(brief.text).toContain(line);
+  // A project with no prose standard gets no line.
+  const bare = await setup("prose-standard-none");
+  const other = await bare.newItem("Plain task", ["docs/**"], "owner");
+  await bare.claim(other.id, OPUS);
+  expect((await bare.jobBrief(other.id, OPUS)).text).not.toContain("Prose standard");
+});
