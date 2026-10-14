@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
 import { behindRefusal, realHistory } from "../pull.mjs";
+import { guardedPush } from "../private.mjs";
 import { OWNER, P, call, cfg, die, landingGit, landingHome, project, refreshControlPlane, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
@@ -49,10 +50,16 @@ export default async function syncCommand() {
     if (head === paired) return console.log(`${name}: the baseline already matches ${p.branch} @ ${short(head)}.`);
     let built;
     try { built = syncHistory(realHistory(git), cwd, baselineHead, paired, head); } catch (error) { die(error.message); }
-    // The pairs are saved before the push: a push that lands just before a
-    // crash is still paired, and the rebuild gives the same commits again.
-    savePairs(gitDir, name, { ...pairs, ...built.pairs });
-    git(["push", "--quiet", "--recurse-submodules=no", base.remote, `${built.head}:refs/heads/${p.branch}`], { cwd, token: base.token });
+    // No commit carried may hold a private file (t645). What is read is
+    // what is pushed: the rebuilt commits, against the baseline's head
+    // (Astra's third review of t645: the originals were read, and a
+    // replacement could make the rebuilt ones differ).
+    guardedPush({ project: name, cwd, tip: built.head, base: [baselineHead], what: `Carrying ${p.branch} to ${name}'s baseline`, fail: die }, (sha) => {
+      // The pairs are saved before the push: a push that lands just before a
+      // crash is still paired, and the rebuild gives the same commits again.
+      savePairs(gitDir, name, { ...pairs, ...built.pairs });
+      git(["push", "--quiet", "--recurse-submodules=no", base.remote, `${sha}:refs/heads/${p.branch}`], { cwd, token: base.token });
+    });
     const n = Object.keys(built.pairs).length;
     console.log(`${name}: carried ${n} commit${n === 1 ? "" : "s"} to the baseline; it now matches ${p.branch} @ ${short(head)}. Tasks forked earlier can run atelier update.`);
   } finally { unlock(); }

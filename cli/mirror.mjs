@@ -37,6 +37,7 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { settleCommitIdentity, sameEmail } from "../src/commit-identity.ts";
 import { scanLine } from "../src/secret-scan.ts";
+import { guardedPush, remoteBases } from "./private.mjs";
 
 const SCAN_BYTES = 8 * 1024 * 1024;
 const LFS_POINTER_BYTES = 1024; // the spec's upper bound on a pointer file
@@ -112,19 +113,25 @@ const firstLine = (text) => (text || "").trim().split("\n")[0];
 // get the public check before anything is pushed, failing closed. Each push
 // URL is fetched, scanned for what it lacks and pushed by that URL itself,
 // so pushurl fanout and a remote re-pointed mid-check are covered alike.
-export function publishCheckoutRemote({ git, dir, branch, remote, say, identity }) {
+export function publishCheckoutRemote({ git, dir, branch, remote, say, identity, project }) {
   if (!identity?.publicMirrors?.length) {
-    const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true });
+    // Checked against every push URL the remote has, each as it stands
+    // (t645): one may lack commits another already holds.
+    const ref = `refs/heads/${branch}`;
+    let refused = null;
+    const result = guardedPush({ project, cwd: dir, tip: ref, bases: () => remoteBases({ git, cwd: dir, remote, ref }), what: `Not pushed to ${remote}: ${branch}`, fail: (message) => { refused = message; return null; } },
+      (sha) => git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `${sha}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true }));
+    if (refused) { say(refused); return { ok: false }; }
     return { ok: result.status === 0 };
   }
   const policy = readPolicy(identity);
   if (!policy.ok) { say(`Not published: ${policy.why}.`); return { ok: false }; }
-  if (policy.mirrors[remote]) return publishMirror({ git, dir, branch, remote, say, identity });
+  if (policy.mirrors[remote]) return publishMirror({ git, dir, branch, remote, say, identity, project });
   const urls = git(["remote", "get-url", "--push", "--all", remote], { cwd: dir, allowFail: true });
   const destinations = urls.status === 0 ? urls.stdout.split("\n").filter(Boolean) : [];
   if (!destinations.length) { say(`Not published: cannot read push destinations for ${remote}.`); return { ok: false }; }
   for (const destination of destinations) {
-    if (!checkAndPush({ git, dir, branch, remote, say, policy, destination }).ok) return { ok: false };
+    if (!checkAndPush({ git, dir, branch, remote, say, policy, destination, project }).ok) return { ok: false };
   }
   return { ok: true };
 }
@@ -345,7 +352,7 @@ export function lfsObject(storage, { oid, size }) {
 
 // Publishes. `git(args, opts)` is atelier's runner; `say` prints. It returns
 // { ok } and never exits itself, so the caller chooses the status.
-export function publishMirror({ git, dir, branch, remote, say, identity }) {
+export function publishMirror({ git, dir, branch, remote, say, identity, project }) {
   const refuse = (...lines) => { for (const l of lines) say(l); return { ok: false }; };
   const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts });
   const out = (args) => { const r = raw(args); return r.status === 0 ? r.stdout.trim() : null; };
@@ -360,14 +367,14 @@ export function publishMirror({ git, dir, branch, remote, say, identity }) {
   if (!url) return refuse(`Not published: ${dir} has no remote called ${remote}.`);
   if (!sameUrl(url, mirror.destination)) return refuse(`Not published: remote ${remote} points at a different place than the policy's destination for it; it was not pushed to. Point the remote at the declared destination, or change the policy.`);
 
-  return checkAndPush({ git, dir, branch, remote, say, policy, destination: mirror.destination, urlNow, url });
+  return checkAndPush({ git, dir, branch, remote, say, policy, destination: mirror.destination, urlNow, url, project });
 }
 
 // Steps 2 to 5 for one destination: fetch what it holds of the branch, refuse
 // divergence, check every commit it lacks, and push the scanned tip there.
 // `urlNow` and `url` let a declared mirror refuse a remote re-pointed during
 // the check; a destination given as a URL is pushed to by that URL.
-function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlNow, url }) {
+function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlNow, url, project }) {
   const refuse = (...lines) => { for (const l of lines) say(l); return { ok: false }; };
   const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts, env: { ...opts.env, ...SCAN_ENV } });
   const out = (args) => { const r = raw(args); return r.status === 0 ? r.stdout.trim() : null; };
@@ -521,7 +528,11 @@ function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlN
   // refused here; a mirror that moved since the fetch is refused by git, which
   // rejects a push that is not a fast-forward.
   if (urlNow && urlNow() !== url) return refuse("Not published: the remote's URL changed during the check; it was not pushed to.");
-  const pushed = raw(["-c", `remote.${remote}.mirror=false`, "-c", "push.followTags=false", "push", "--no-force", "--quiet", "--no-follow-tags", "--recurse-submodules=no", mirror.destination, `${tip}:${ref}`], { ownerRemote: true });
+  // Private files (t645) go to no mirror, whatever its rules allow.
+  let held = null;
+  const pushed = guardedPush({ project, cwd: dir, tip, base: head ? [head] : [], what: `Not published: ${remote}'s ${branch}`, fail: (message) => { held = message; return null; } },
+    () => raw(["-c", `remote.${remote}.mirror=false`, "-c", "push.followTags=false", "push", "--no-force", "--quiet", "--no-follow-tags", "--recurse-submodules=no", mirror.destination, `${tip}:${ref}`], { ownerRemote: true }));
+  if (held) return refuse(held);
   if (pushed.status !== 0) return refuse(`Not published: the mirror refused the push (it may have moved since it was fetched): ${firstLine(pushed.stderr)}`);
   say(`Mirror ${remote} now at ${tip.slice(0, 8)}: ${commits.length} commit${commits.length === 1 ? "" : "s"} checked and pushed to ${branch}.`);
   return { ok: true };

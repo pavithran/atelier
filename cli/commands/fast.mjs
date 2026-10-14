@@ -61,6 +61,8 @@ export default async function fastCommand() {
     // Kept in the receipts file, so atelier fast record posts the rest as
     // this run would have (Astra's audit of 2026-10-13, finding 9).
     note: { project: name, ...(args.reviewer ? { reviewer: args.reviewer } : {}) },
+    // The project's private files (t645), refused in what the batch lands.
+    project: name,
     log: (line) => console.log(line),
     record: recorder(name, args.reviewer),
   });

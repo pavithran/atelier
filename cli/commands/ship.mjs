@@ -7,7 +7,7 @@ import { landingJournalFile, oldLandingJournalFile } from "../landing.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
-import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, workspaceTokens } from "../atelier.mjs";
+import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
 
 // The project owner runs the project's ship order in its registered
 // checkout (cli/ship.mjs): each protected step only with an approval at the

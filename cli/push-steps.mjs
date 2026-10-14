@@ -55,8 +55,9 @@ function baselineTip(git, cwd, remote, token, branch) {
 // prints a line of progress. Every push, the steps too, runs the checkout's
 // pre-push hook: a refusal by that hook can read like one for size or time,
 // and the steps must not carry the history past it.
-export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_STEP }) {
-  const whole = ["push", "--quiet", "--recurse-submodules=no", remote, `${branch}:${branch}`];
+export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_STEP, head: pinned = null }) {
+  // Pushed by the id of the commit the guard scanned, when given (t645).
+  const whole = ["push", "--quiet", "--recurse-submodules=no", remote, pinned ? `${pinned}:refs/heads/${branch}` : `${branch}:${branch}`];
   const first = git(whole, { cwd, token, allowFail: true });
   if (first.status === 0) return;
   const refusal = said(first, token);
@@ -66,7 +67,7 @@ export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_
   const read = baselineTip(git, cwd, remote, token, branch);
   if (read.error) throw new Error(`${failed.message}\nThe baseline's ${branch} could not be read afterwards, so the steps cannot start from what it holds. git said:\n${indent(read.error)}`);
   const held = read.tip;
-  const head = git(["rev-parse", "--verify", `${branch}^{commit}`], { cwd });
+  const head = pinned ?? git(["rev-parse", "--verify", `${branch}^{commit}`], { cwd });
   if (held === head) {
     say(`The push was reported as failed, but the baseline holds ${branch} at ${head.slice(0, 8)}: nothing is left to push.`);
     return;
@@ -146,7 +147,7 @@ export function commitWeight(git, cwd, commit, prev) {
 // push stops with the commit, its size and `ownerHint`. `git` is the CLI's
 // helper; each call passes `opts` (token, env) through. Returns the commits
 // pushed; throws with a message for the caller to print.
-export function pushCommitsInTurn(git, cwd, { remote, branch, opts = {}, say = () => {}, fallback = null, ownerHint = "", refusal = "" }) {
+export function pushCommitsInTurn(git, cwd, { remote, branch, head: pinned = null, opts = {}, say = () => {}, fallback = null, ownerHint = "", refusal = "" }) {
   const run = (args, extra = {}) => git(args, { cwd, ...opts, ...extra, allowFail: true });
   const out = (r) => String(r.stdout ?? "").trim();
   const told = (r) => { let t = String(r.stderr || r.stdout || r.error?.message || "").trim(); if (opts.token) t = t.split(opts.token).join("[redacted]"); return t; };
@@ -156,7 +157,9 @@ export function pushCommitsInTurn(git, cwd, { remote, branch, opts = {}, say = (
     return { tip: /^([0-9a-f]{40,64})\s/.exec(String(r.stdout ?? ""))?.[1] ?? null };
   };
   const ancestor = (older, newer) => run(["merge-base", "--is-ancestor", older, newer]).status === 0;
-  const head = out(run(["rev-parse", "--verify", "HEAD^{commit}"]));
+  // The commit the guarded push scanned, when given, never HEAD as it may
+  // be by now (t645).
+  const head = pinned ?? out(run(["rev-parse", "--verify", "HEAD^{commit}"]));
   const read = tipOf();
   if (read.error) throw new Error(`the push answered 413, and ${branch} could not be read from the remote afterwards, so the commits cannot be pushed one at a time:\n${indent(read.error)}`);
   const held = read.tip;

@@ -274,7 +274,7 @@ exit \${DEPLOY_EXIT:-0}
   const run = (args, env = {}, cwd = checkout) => new Promise((done) => {
     const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("ATELIER_")));
     const child = spawn(process.execPath, [cli, ...args], {
-      cwd, env: { ...clean, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_SERVER: url, MY_API_TOKEN: SECRET, SHIP_MARKER: marker, ...env },
+      cwd, env: { ...clean, ATELIER_PRIVATE_ROOT: join(dir, "no-icloud"), ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_SERVER: url, MY_API_TOKEN: SECRET, SHIP_MARKER: marker, ...env },
     });
     let stdout = "", stderr = "";
     child.stdout.on("data", (s) => { stdout += s; });
@@ -470,4 +470,31 @@ test("ship --push publishes a declared public mirror only through the privacy ch
   assert.equal(refused.status, 1, refused.stdout);
   assert.match(refused.stderr, /declares public mirrors, so ship pushes only main to main/);
   assert.deepEqual(other.writes(), []);
+});
+
+// Both reviews of t645: ship --push pushed the checkout's history to the
+// project's own remote unchecked, so a commit holding a private file that
+// was later removed (one from before the file was named private) reached it.
+test("ship --push carries no commit holding a private file to the remote", async (t) => {
+  const f = await fixture(t);
+  writeFileSync(join(f.checkout, "PROJECT.md"), "the plan\n");
+  git(f.checkout, "add", "-f", "PROJECT.md");
+  git(f.checkout, "commit", "-q", "-m", "before it was private");
+  const leak = git(f.checkout, "rev-parse", "HEAD");
+  git(f.checkout, "rm", "-q", "--cached", "PROJECT.md");
+  git(f.checkout, "commit", "-q", "-m", "now private");
+  rmSync(join(f.checkout, "PROJECT.md"));
+  const head = git(f.checkout, "rev-parse", "HEAD");
+  git(f.checkout, "push", "-q", f.baseline, "main");
+  f.state.approvals.push({ id: "a9", kind: "deploy", commit: head, note: "", by: "owner", at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString() });
+  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
+  config.projects.demo.private = ["PROJECT.md"];
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  const before = git(f.github, "rev-parse", "main");
+  const r = await f.run(["ship", "--push"]);
+  assert.notEqual(r.status, 0, r.stdout);
+  assert.match(r.stderr, /ship stopped at push/);
+  const push = f.state.runs.find((x) => x.step === "push");
+  assert.match(push.outputTail, new RegExp(`Not pushed to github: main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
+  assert.equal(git(f.github, "rev-parse", "main"), before, "the remote got nothing");
 });

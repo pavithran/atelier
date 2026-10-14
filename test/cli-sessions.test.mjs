@@ -4,11 +4,14 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { constants as osConstants } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 
 import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
 import { landingDir, landingJournalFile, oldLandingJournalFile } from "../cli/landing.mjs";
+import { linkPrivate } from "../cli/private.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
@@ -814,4 +817,119 @@ test("publish and wrap --push share the registered mirror privacy policy", (t) =
     assert.ok(!r.stdout.includes(secret));
     assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), before);
   }
+});
+
+// Private files (t645): named in the project's entry, linked from a folder
+// outside the checkout and ignored by Git; wrap never stages one, and no
+// push carries a commit that holds one.
+function privateFiles(t, f) {
+  const keep = mkdtempSync(join(tmpdir(), "atelier-private-keep-"));
+  t.after(() => rmSync(keep, { recursive: true, force: true }));
+  writeFileSync(join(keep, "PROJECT.md"), "the plan\n");
+  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
+  Object.assign(config.projects.demo, { private: ["PROJECT.md"], privateHome: keep });
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  assert.deepEqual(linkPrivate(f.checkout, config.projects.demo, { name: "demo" }).linked, ["PROJECT.md"]);
+  return keep;
+}
+
+test("wrap stages no private file: a linked one is ignored, and one forced into the index stops wrap with nothing staged", (t) => {
+  const f = fixture(t);
+  privateFiles(t, f);
+  f.git("add", "-f", "PROJECT.md");
+  const refused = f.run("wrap", "Private", "--no-check");
+  assert.equal(refused.status, 1, refused.stdout);
+  assert.match(refused.stderr, /wrap will not commit private files: PROJECT\.md\. .*Nothing was staged\./);
+  assert.equal(f.git("rev-parse", "HEAD"), f.head);
+  assert.equal(f.git("diff", "--cached", "--name-only"), "PROJECT.md", "the index is as the owner left it");
+  assert.ok(!f.requests().some((r) => r.method === "POST" && r.path.endsWith("/sessions")));
+  f.git("rm", "-q", "--cached", "PROJECT.md");
+  const ok = f.run("wrap", "Private", "--no-check");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(f.git("ls-tree", "-r", "--name-only", "HEAD").split("\n"), ["STATE.md", "loose.txt"]);
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+});
+
+test("publish and wrap --push never push a commit holding a private file, committed by hand past the exclude", (t) => {
+  const f = fixture(t), origin = remote(f, "origin");
+  privateFiles(t, f);
+  f.clean();
+  f.git("add", "-f", "PROJECT.md");
+  f.git("commit", "-q", "-m", "by hand");
+  const leak = f.git("rev-parse", "HEAD").slice(0, 12);
+  const published = f.run("publish");
+  assert.notEqual(published.status, 0, published.stdout);
+  assert.match(published.stderr, new RegExp(`Publishing .* to demo's baseline would carry private files: PROJECT\\.md in ${leak}\\. .*Nothing was pushed\\.`));
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head);
+  const wrapped = f.run("wrap", "Push", "--push", "--no-check");
+  assert.notEqual(wrapped.status, 0, wrapped.stdout);
+  assert.match(wrapped.stdout, new RegExp(`Not pushed to origin: .* would carry private files: PROJECT\\.md in ${leak}`));
+  assert.equal(f.git("--git-dir", origin, "for-each-ref", "refs/heads"), "", "the checkout remote got nothing");
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head, "nor did the baseline");
+});
+
+// Astra's review of t645, finding 4: with the private folder gone and no
+// copy of its list kept, publish guarded nothing; it now refuses.
+test("publish refuses when the list of private files cannot be read and this Mac keeps no copy", (t) => {
+  const f = fixture(t);
+  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
+  const gone = join(tmpdir(), `atelier-private-gone-${process.pid}-${Date.now()}`);
+  Object.assign(config.projects.demo, { privateHome: gone });
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  f.clean();
+  writeFileSync(join(f.checkout, "new.txt"), "x\n");
+  f.git("add", "new.txt");
+  f.git("commit", "-q", "-m", "work");
+  const r = f.run("publish");
+  assert.notEqual(r.status, 0, r.stdout);
+  assert.match(r.stderr, new RegExp(`${gone}, the folder that keeps demo's private files and their list, is not on this Mac.*Nothing was pushed\\.`));
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.head);
+  // With a copy of the list kept, the same publish goes.
+  Object.assign(config.projects.demo, { privateFromList: [] });
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  const ok = f.run("publish");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+});
+
+// Astra's third review of t645, finding 3: a tracked .gitignore saying
+// !PROJECT.md made the linked file one git add -A takes; wrap refuses it
+// whatever the ignore rules say.
+test("wrap refuses a private file a .gitignore un-ignores, and stages nothing", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.checkout, ".gitignore"), "!PROJECT.md\n");
+  f.git("add", ".gitignore");
+  f.git("commit", "-qm", "unignore");
+  const head = f.git("rev-parse", "HEAD");
+  privateFiles(t, f);
+  const r = f.run("wrap", "Private", "--no-check");
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /wrap will not commit private files: PROJECT\.md\./);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(f.git("diff", "--cached", "--name-only"), "");
+});
+
+// Astra's thirteenth review of t645: a push read the branch, then pushed it
+// by name, so a commit made between the scan and the push went unread.
+test("publish pushes the commit it scanned, not one made on the branch while it pushed", async (t) => {
+  const f = fixture(t);
+  privateFiles(t, f);
+  f.clean();
+  writeFileSync(join(f.checkout, "work.txt"), "w\n");
+  f.git("add", "work.txt");
+  f.git("commit", "-qm", "work");
+  const scanned = f.git("rev-parse", "HEAD");
+  const hold = join(mkdtempSync(join(tmpdir(), "atelier-pin-")), "hold");
+  t.after(() => rmSync(dirname(hold), { recursive: true, force: true }));
+  const proc = f.spawnWith({ ATELIER_TEST_HOLD: hold, ATELIER_TEST_HOLD_STAGE: "push" }, "publish");
+  const closed = new Promise((ok) => proc.on("close", ok));
+  const end = Date.now() + 15_000;
+  while (!existsSync(`${hold}.read`)) { if (Date.now() > end) throw new Error("publish never reached its push"); await new Promise((r) => setTimeout(r, 10)); }
+  // Between the scan and the push, a commit holding the private file.
+  f.git("add", "-f", "PROJECT.md");
+  f.git("commit", "-qm", "by hand, after the scan");
+  writeFileSync(`${hold}.go`, "");
+  assert.equal(await closed, 0);
+  assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), scanned, "the baseline holds the commit that was scanned");
+  assert.doesNotMatch(f.git("--git-dir", f.baseline, "log", "--all", "--name-only", "--format="), /PROJECT\.md/);
 });

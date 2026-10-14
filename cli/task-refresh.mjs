@@ -49,6 +49,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TRANSFORMATIONS, classifyConflicts, conflictReport, verifyResolution } from "../src/refresh/mechanical.ts";
 import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/moved-code.ts";
+import { guardedPush } from "./private.mjs";
 
 const HASH = /^[a-f0-9]{40,64}$/;
 const CHECKS_FAILED = 2;
@@ -283,7 +284,14 @@ export async function runTaskRefresh(assignment, config, name, io) {
     }
     const branch = workspace.defaultBranch || "main";
     if (Date.now() - pushStarted >= PUSH_TIMEOUT_MS) throw new Error("push authorization expired before git started");
-    const push = await git(["push", "--quiet", workspace.remote, `${head}:refs/heads/${branch}`], { token: workspace.token, allowFail: true, timeoutMs: PUSH_TIMEOUT_MS });
+    // The merge adds none of the project's private files to the fork (t645):
+    // everything the fork lacks is read for them, main's commits included,
+    // against the fork's head alone, which the lease names (Astra's third
+    // review of t645: main's history was taken as held).
+    let privateHeld = null;
+    const push = await guardedPush({ project, cwd: dir, tip: head, base: [lease.expectedHead], what: `${item.id}'s refresh`, fail: (message) => { privateHeld = message; return null; } },
+      () => git(["push", "--quiet", workspace.remote, `${head}:refs/heads/${branch}`], { token: workspace.token, allowFail: true, timeoutMs: PUSH_TIMEOUT_MS }));
+    if (privateHeld) throw new Error(privateHeld);
     // A transport error may arrive after the remote installed the commit.
     // Reconcile before declaring the push superseded and dropping its fence.
     let pushedDespiteError = false;
