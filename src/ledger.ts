@@ -43,6 +43,7 @@ import {
 } from "./dispatch/prereview.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
+import { sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
 import { matchServed, SERVED, SERVED_LIMIT, servedActor, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
@@ -1633,6 +1634,77 @@ export class Ledger extends DurableObject<Env> {
 
   runsForItem(project: string, item: string): RunReport[] {
     return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  // The run reports a model snapshot reads (t623): those kept at or before
+  // row `through` (the last row now, when null) that the server received
+  // before `before`, the newest RUN_REPORTS of them, with the cutoff used,
+  // so a replay from the same cutoff reads the same reports however many
+  // arrive later.
+  runsThrough(through: number | null, before: string, limit = RUN_REPORTS): { through: number; runs: RunReport[] } {
+    const cut = through ?? ((this.sql.exec(`SELECT MAX(id) AS id FROM runs`).one().id as number | null) ?? 0);
+    const runs = this.sql.exec(`SELECT json FROM runs WHERE id <= ? AND json_extract(json, '$.at') < ? ORDER BY id DESC LIMIT ?`, cut, before, limit).toArray().map((r) => JSON.parse(r.json as string) as RunReport);
+    return { through: cut, runs };
+  }
+
+  // ── model snapshots (src/models/snapshot.ts, t623) ─────────────────────
+  // Each UTC day's figures per model and role, with the cutoffs they were
+  // read at, beside the pool on the index instance. A take is the day's
+  // context (cutoffs, pool names, coverage, origin); its rows are the
+  // figures, one per canonical model and role. Neither is an event, and
+  // nothing that routes work reads either table.
+
+  private snapshotTables(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS snapshot_takes (day TEXT NOT NULL, schema INTEGER NOT NULL, rev INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (day, schema, rev))`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS model_snapshots (day TEXT NOT NULL, schema INTEGER NOT NULL, rev INTEGER NOT NULL, model TEXT NOT NULL, role TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (day, schema, model, role, rev))`);
+  }
+
+  // A day's snapshot, stored once. A day with a complete snapshot under this
+  // schema is never written again: a retried or concurrent run is answered
+  // with the one stored. A day whose newest snapshot is partial takes a new
+  // revision when the new one says something else, and the partial one is
+  // kept beside it; one that says the same stores nothing. The check and
+  // the write are one synchronous transaction, so two runs at once cannot
+  // both store.
+  putModelSnapshot(s: ComputedSnapshot): { day: string; rev: number; stored: boolean } {
+    this.snapshotTables();
+    return this.ctx.storage.transactionSync(() => {
+      const last = this.sql.exec(`SELECT rev FROM snapshot_takes WHERE day = ? AND schema = ? ORDER BY rev DESC LIMIT 1`, s.take.day, s.take.schema).toArray()[0];
+      if (last) {
+        const kept = this.modelSnapshot(s.take.day, last.rev as number)!;
+        if (kept.take.complete || sameSnapshot(kept, s)) return { day: s.take.day, rev: kept.take.rev, stored: false };
+      }
+      const rev = last ? (last.rev as number) + 1 : 1;
+      const take: SnapshotTake = { ...s.take, rev, revises: last ? (last.rev as number) : null };
+      this.sql.exec(`INSERT INTO snapshot_takes (day, schema, rev, json) VALUES (?, ?, ?, ?)`, take.day, take.schema, rev, JSON.stringify(take));
+      for (const r of s.rows) this.sql.exec(`INSERT INTO model_snapshots (day, schema, rev, model, role, json) VALUES (?, ?, ?, ?, ?, ?)`, take.day, take.schema, rev, r.model, r.role, JSON.stringify(r));
+      return { day: take.day, rev, stored: true };
+    });
+  }
+
+  // A day's snapshot: the revision named, or the newest.
+  modelSnapshot(day: string, rev?: number, schema = SNAPSHOT_SCHEMA): StoredSnapshot | null {
+    this.snapshotTables();
+    const row = rev === undefined
+      ? this.sql.exec(`SELECT json FROM snapshot_takes WHERE day = ? AND schema = ? ORDER BY rev DESC LIMIT 1`, day, schema).toArray()[0]
+      : this.sql.exec(`SELECT json FROM snapshot_takes WHERE day = ? AND schema = ? AND rev = ?`, day, schema, rev).toArray()[0];
+    if (!row) return null;
+    const take = JSON.parse(row.json as string) as SnapshotTake;
+    const rows = this.sql.exec(`SELECT json FROM model_snapshots WHERE day = ? AND schema = ? AND rev = ? ORDER BY model, role`, day, schema, take.rev).toArray().map((r) => JSON.parse(r.json as string) as SnapshotRow);
+    return { take, rows };
+  }
+
+  // Every take, every revision, of the days from `from` to `to`, and one
+  // model's rows of them: what a trend reads (trendOf).
+  modelSnapshotTakes(from: string, to: string): SnapshotTake[] {
+    this.snapshotTables();
+    return this.sql.exec(`SELECT json FROM snapshot_takes WHERE day >= ? AND day <= ? ORDER BY day, rev`, from, to).toArray().map((r) => JSON.parse(r.json as string) as SnapshotTake);
+  }
+
+  modelSnapshotRows(model: string, from: string, to: string): (SnapshotRow & { day: string; rev: number })[] {
+    this.snapshotTables();
+    return this.sql.exec(`SELECT day, rev, json FROM model_snapshots WHERE model = ? AND day >= ? AND day <= ? AND schema = ? ORDER BY day, rev, role`, model, from, to, SNAPSHOT_SCHEMA).toArray()
+      .map((r) => ({ ...(JSON.parse(r.json as string) as SnapshotRow), day: r.day as string, rev: r.rev as number }));
   }
 
   // ── runner offers ─────────────────────────────────────────────────────────

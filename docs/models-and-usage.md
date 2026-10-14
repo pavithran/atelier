@@ -169,6 +169,33 @@ on one review is ambiguous; neither is in the denominator. The comparison,
 the cards and the evidence it shows are the developer's alone, as the cards
 and the role assignments are.
 
+## Atelier's record over time
+
+Every six hours the Worker's scheduled handler (`takeModelSnapshots` in
+`src/index.ts`, the cron in `wrangler.jsonc`) takes each ended UTC day of
+the last `BACKFILL_DAYS` that has no complete snapshot, and keeps on the
+index Ledger the figures the comparison above gives each pool model, role by
+role, as of the end of that day (`src/models/snapshot.ts`, t623). A snapshot
+keeps the cutoffs it was read at: each project Ledger's last event sequence,
+the index's last assignment event and the last run report, with the pool's
+names, each project's name and the developer's actor as they stood. Only
+events at or under a cutoff and recorded before the day ended count, so a
+replay (`replayModelSnapshot`) gives the stored figures however many
+verdicts, served annotations, renames or aliases come later. A day is stored
+once: a repeated or concurrent run stores nothing, a project that could not
+be read leaves the day partial, and a later run that reads it adds a revision
+while keeping the partial one. A day taken after the day following it had
+ended is labelled a reconstruction.
+
+The Models page and `atelier models show ID --trend` (GET
+/api/models/ID/trend, capability `models.trend.v1`) show the last
+`TREND_DAYS` days of each figure: its value, what it is over, its window,
+its measure version and how its snapshot was taken. A day with no snapshot,
+a partial record, too few samples or none is a labelled gap, never a zero.
+Points under another measure version, window, threshold or set of names are
+not joined, and each figure says how far consecutive windows overlap.
+Routing reads none of this: it reads the events and run reports themselves.
+
 ## Each model's reliability
 
 The Models page and the Usage page show each model's record across every

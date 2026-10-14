@@ -12,10 +12,11 @@
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
-  // An empty cron list clears the schedules an earlier deploy left on the
-  // Worker; without the key, a deploy leaves them running. Nothing exports
-  // scheduled(), so none may fire.
-  "triggers": { "crons": [] },
+  // The daily model snapshots (t623, takeModelSnapshots in src/index.ts):
+  // every six hours, so a run that fails or finds a project unreadable is
+  // tried again within the day; a run with nothing due writes nothing. The
+  // list replaces whatever schedules an earlier deploy left on the Worker.
+  "triggers": { "crons": ["7 */6 * * *"] },
   // Cloudflare Access in front of the owner's pages (src/access.ts): set all
   // three, as vars or secrets, and the Worker verifies the Access assertion
   // on every owner route — /login and its token form among them — against the
