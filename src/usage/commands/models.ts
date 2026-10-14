@@ -58,8 +58,18 @@ const spec: CommandSpec = {
       form: "models remove ID",
       about: "Removes a model from the pool.",
     },
+    {
+      group: "Models", line: 1, slot: 90,
+      form: "models assign ROLE H/M [H/M]... --reason TEXT --quote TEXT --evidence PROJECT/tN [--evidence REF]... [--scope PROJECT] [--replaces aN] [--as H/M]",
+      about: "Developer only: records which models take a role (build, review, security-review, claims-review or plan), in order, for every project or one, dated, with the reason, the developer's words and evidence as PROJECT/tN or PROJECT/tN#SEQ, each checked to exist. Routing, review requests, the planner and dispatch suggestions put its eligible choices first; an assignment never makes a model eligible. Superseding a standing one names it with `--replaces`.",
+    },
+    {
+      group: "Models", line: 1, slot: 95,
+      form: "models roles [--json] | models roles withdraw aN --note TEXT [--as H/M]",
+      about: "Lists the standing role assignments, their history with evidence and author, and the fallback each role without one goes by. `withdraw` ends the standing one with a note: the role returns to its fallback, never to an assignment it superseded.",
+    },
   ],
-  flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false, json: true, state: false, roles: false, tier: false, file: false, withdraw: false },
+  flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false, json: true, state: false, roles: false, tier: false, file: false, withdraw: false, quote: false, evidence: false, scope: false, replaces: false },
   // The pool itself is listed, added to and pruned on any server; the dated
   // notes, which `note` posts and `show` prints, need models.note.v1, and the
   // standing (t389), which `set` posts, needs models.standing.v1, as does
@@ -75,17 +85,21 @@ const spec: CommandSpec = {
     card: { capabilities: ["models.card.v1"] },
     set: { capabilities: ["models.standing.v1"] },
     add: { capabilities: ["models.standing.v1"] },
+    // Role assignments (t622): recorded, listed and withdrawn on a server
+    // with models.roles.v1.
+    assign: { capabilities: ["models.roles.v1"] },
+    roles: { capabilities: ["models.roles.v1"] },
   },
   help: {
     flags: {
-      "--reason TEXT": "why the developer admits or withdraws a reviewer, or withdraws a vendor card",
+      "--reason TEXT": "why the developer admits or withdraws a reviewer, or withdraws a vendor card; with assign, why these models take the role",
       "--harness H": "the harness that runs the model: opencode, claude-code, codex, zcode, gemini-cli or antigravity",
       "--where home|cloud": "home, a harness on a home runner; cloud, a hosted service",
       "--provider P": "the provider the harness reaches the model through; a cloud opencode model must name one",
       "--endpoint URL": "the endpoint the harness is pointed at, for a home server",
       "--keychain NAME": "the Keychain entry that holds the key; the key itself is never sent",
       "--alias A": "another name the harness reports the model under; once per alias",
-      "--note TEXT": "a note kept with the entry",
+      "--note TEXT": "a note kept with the entry; with roles withdraw, why the assignment is withdrawn",
       "--state paused|reserved|available": "with set, the developer's standing; paused and reserved keep the model out of routing, dispatch suggestions and review requests",
       "--roles build,review,plan": "with set or add, the jobs the model may take; a review-only model is never a builder",
       "--tier frontier|execution|budget": "with set or add, the model's tier, stored and returned in JSON",
@@ -93,6 +107,10 @@ const spec: CommandSpec = {
       "--item tN": "the task a dated note concerns; without it the note bears on every task the model is suggested for",
       "--file FILE": "with card, the JSON file holding the card or a list of cards; without it the card is read from standard input",
       "--withdraw cN": "with card, the card to withdraw; give --reason",
+      "--quote TEXT": "with assign, the developer's own words the assignment rests on",
+      "--evidence REF": "with assign, a task or event the assignment rests on, as PROJECT/tN or PROJECT/tN#SEQ; once per reference, a bare tN is refused",
+      "--scope PROJECT": "with assign, the one project the assignment is for; every project when not given",
+      "--replaces aN": "with assign, the standing assignment it supersedes, so two sessions cannot both replace it",
     },
     example: "atelier models add gpt-6-astra --harness codex --where cloud",
   },

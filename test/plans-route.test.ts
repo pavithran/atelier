@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { OFFER_LIVE_MS, type SeenOffer } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { typedActor } from "../src/models/identity.ts";
 import { paidPerToken, routeParts, SIZE_M_CONTEXT, type PartRoute, type RouteInput } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
@@ -116,11 +117,14 @@ test("a governed policy keeps executors as builders and assessors as reviewers",
   const paused = one([opus, gpt, glm], { policy: { ...governed, agents: { ...governed.agents, glm: { available: false, eligible_roles: ["executor", "assessor"] } } } });
   assert.equal(paused.builder!.actor, "claude-code/opus-5.5");
   assert.deepEqual(actors(paused.excluded), ["zcode/glm-5.3", "codex/gpt-6-astra"]);
-  // Without agents, the project's eligible harnesses are the claim's rule, and any model may review.
+  // Without agents, the project's eligible harnesses are the claim's rule, and the review's too, as
+  // pickReviewer and the ledger apply it (gpt-6-astra's review of t622, finding 5): a
+  // reviewer whose review the ledger would refuse is never routed.
   const legacy = one([opus, gpt], { policy: { ...policy, eligible: ["claude"] } });
   assert.equal(legacy.builder!.actor, "claude-code/opus-5.5");
   assert.deepEqual(legacy.excluded, [{ actor: "codex/gpt-6-astra", reasons: ["codex is not an eligible agent here (eligible: claude)"] }]);
-  assert.equal(legacy.reviewer!.actor, "codex/gpt-6-astra");
+  assert.equal(legacy.reviewer, null);
+  assert.match(legacy.unrouted!, /codex\/gpt-6-astra \(codex is not an eligible agent here \(eligible: claude\)\)/);
   assert.ok(!legacy.builder!.reasons.some((reason) => reason.startsWith("Governed policy")));
 });
 
@@ -141,9 +145,15 @@ test("a preference is honoured when the actor passes every rule, and refused wit
   // Not in the pool, by alias, and by a differently cased name.
   const missing = one([opus, gpt], {}, part("a", { prefer: { actor: "codex/gpt-7", reason: "newer" } }));
   assert.equal(missing.builder!.reasons[0], "The plan preferred codex/gpt-7 (newer); it is not in the pool");
-  const alias = one([{ ...opus, aliases: ["claude-opus-5-5"] }, gpt], {}, part("a", { prefer: { actor: "Claude-Code/Claude-Opus-5-5", reason: "alias" } }));
+  // An alias is converted where the plan is posted (canonicalNames in
+  // src/index.ts; t622's eighth and ninth reviews), and routing matches the
+  // exact id it became; an alias reaching routing unconverted is no entry.
+  const aliased = [{ ...opus, aliases: ["claude-opus-5-5"] }, gpt];
+  const alias = one(aliased, {}, part("a", { prefer: { actor: typedActor(aliased, "Claude-Code/Claude-Opus-5-5"), reason: "alias" } }));
   assert.equal(alias.builder!.actor, "claude-code/opus-5.5");
   assert.equal(alias.builder!.reasons[0], "Preferred by the plan (alias); passes every rule");
+  // Unconverted, an unmarked (legacy) prefer is read through the aliases once.
+  assert.equal(one(aliased, {}, part("a", { prefer: { actor: "claude-code/claude-opus-5-5", reason: "alias" } })).builder!.actor, "claude-code/opus-5.5");
 });
 
 test("a size M part goes only to a model with a 64K context window or an unknown one", () => {
@@ -208,11 +218,12 @@ test("a reviewer is routed only to a model a live runner offers for the review j
   assert.equal(buildOnly.builder!.actor, "codex/gpt-6-astra");
   assert.equal(buildOnly.reviewer, null);
   assert.equal(buildOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5 for the review job: home:mbp offers no review job)");
-  // A cloud runner offering the models is not a home review runner either.
+  // A cloud runner offering the models is not a home review runner either,
+  // nor a home build runner: a part's build goes home (dispatchPart), so no
+  // model it offers builds (gpt-6-astra's third review of t622, finding 2).
   const cloud = one([opus, gpt], { offers: [seen("cloud:far", { kind: "cloud", jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }] })] });
-  assert.equal(cloud.builder!.actor, "codex/gpt-6-astra");
-  assert.equal(cloud.reviewer, null);
-  assert.match(cloud.unrouted!, /no live runner offers claude-code\/opus-5\.5 for the review job: cloud:far is a cloud runner, not a home one/);
+  assert.equal(cloud.builder, null);
+  assert.match(cloud.unrouted!, /no eligible builder: .*codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra for a build at home: cloud:far is a cloud runner, not a home one\)/);
   // A live runner offering review under another cross-family model routes
   // the reviewer to it alone, its reasons naming the runner, and the build
   // side is untouched by the review job's offer.
@@ -348,15 +359,22 @@ test("routing picks builders, alternates and reviewers only from the models live
   assert.equal(gptOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5, so no runner could claim its dispatch), claude-code/sonnet-5.5 (no live runner offers claude-code/sonnet-5.5, so no runner could claim its dispatch)");
 
   // A runner offering the whole pool, the review job among its own, routes
-  // as no offers would; the case of the offered names is not the case of
-  // the pool's, and a reviewer the offers count needs the job offered too.
+  // as no offers would; a reviewer the offers count needs the job offered too.
   const whole = { ...offer("home:studio", [
-    { agent: "Codex", models: ["GPT-6-Astra"] },
-    { agent: "Claude-Code", models: ["opus-5.5", "sonnet-5.5"] },
+    { agent: "codex", models: ["gpt-6-astra"] },
+    { agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] },
   ], now), jobs: ["build", "review"] };
   const routed = one([opus, sonnet, gpt], { offers: [whole] });
   const unconstrained = one([opus, sonnet, gpt]);
   assert.deepEqual([routed.builder!.actor, routed.reviewer!.actor, actors(routed.alternates), routed.unrouted], [unconstrained.builder!.actor, unconstrained.reviewer!.actor, actors(unconstrained.alternates), unconstrained.unrouted]);
+  // An offer counts only as assign() hands the job out: the agent and model
+  // the dispatch names, in their letter case. A runner offering Codex/GPT-6-Astra
+  // could not claim a dispatch for codex/gpt-6-astra, so it builds nothing
+  // here (t622's eighteenth review; main read offers in any letter case).
+  const cased = { ...offer("home:studio", [{ agent: "Codex", models: ["GPT-6-Astra"] }, { agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }], now), jobs: ["build", "review"] };
+  const casedRoute = one([opus, sonnet, gpt], { offers: [cased] });
+  assert.notEqual(casedRoute.builder?.actor, "codex/gpt-6-astra");
+  assert.notEqual(casedRoute.reviewer?.actor, "codex/gpt-6-astra");
 
   // A stale offer is no offer: every ask has gone stale, so no runner is
   // live and routing falls back to the whole pool (routable decides the

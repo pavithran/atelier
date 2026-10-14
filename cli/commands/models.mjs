@@ -5,6 +5,7 @@ import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, args, at, call, die, project, serverVersion } from "../atelier.mjs";
 import { cleanCard, cleanCardModel, cleanWithdrawal, conditionText } from "../../src/models/cards.ts";
 import { modelKey } from "../../src/rules.ts";
+import { assignCommand, rolesCommand } from "../model-roles.mjs";
 
 // The model pool. With no subcommand, lists it. `models add ID --harness H
 // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
@@ -26,6 +27,9 @@ export default async function modelsCommand() {
   const taskOf = (n) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item);
   const noteLines = (m) => (m.notes ?? []).map((n) => `  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${taskOf(n)}` : ""}: ${n.text}`);
   const entryNotes = (m) => { const lines = noteLines(m); return lines.length ? lines : ["  No notes yet. Add one: atelier models note ID 'text'"]; };
+  // Role assignments (t622): cli/model-roles.mjs.
+  if (sub === "assign") return assignCommand();
+  if (sub === "roles") return rolesCommand();
   if (sub === "admit" || sub === "withdraw") {
     if (!id || !args.reason) die(`atelier models ${sub} ID --project NAME --reason TEXT`);
     const name = project();
@@ -118,7 +122,7 @@ export default async function modelsCommand() {
     return;
   }
   if (sub) die(`${COMMAND_USAGE.models}
-unknown models command "${sub}"; use add, set, remove, note, card, show, admit, withdraw, reviewers, or nothing to list`);
+unknown models command "${sub}"; use add, set, remove, note, card, show, admit, withdraw, reviewers, assign, roles, or nothing to list`);
   const pool = await call("GET", "/models", undefined, OWNER);
   if (args.json) return console.log(JSON.stringify(pool, null, 2));
   if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");

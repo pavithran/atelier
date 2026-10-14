@@ -28,6 +28,8 @@ import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
+import { typedActor, typedModel } from "./models/identity.ts";
+import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -74,7 +76,7 @@ const READ_TTL = 3600;
 // not that confirmation, since without Access the owner token buys one.
 // `acting` is the harness/model an owner-token request names as acting for
 // the owner (X-Atelier-Acting, src/models/judgement.ts), or null.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; declaredActing?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -518,8 +520,103 @@ function index(env: Env) {
 async function sendPool(env: Env): Promise<string[]> {
   const I = index(env);
   const [pool, projects] = await Promise.all([I.models(), I.projects()]);
-  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool).then(() => null).catch(() => p.name)));
-  return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
+  // Each project gets the role assignments bearing on it with the pool, as a
+  // versioned snapshot its ledger refuses when older than its copy.
+  return unreachedOf(projects, async (p) => { await ledgerOf(env, p).poolChanged(pool, await I.assignmentSnapshotFor(p.key ?? p.name)); });
+}
+// The projects a send to each could not reach: one whose snapshot could not
+// be read counts as one whose ledger could not be, never as reached
+// (gpt-6-astra's third review of t622, follow-up 6).
+async function unreachedOf(projects: readonly ProjectRecord[], send: (p: ProjectRecord) => Promise<void>): Promise<string[]> {
+  const results = await Promise.all(projects.map((p) => send(p).then(() => null, () => p.name)));
+  return results.filter((name): name is string => name !== null);
+}
+// Sends each project's ledger the role assignments bearing on it (its own,
+// by its key, and every project's; src/models/assignments.ts), after one is
+// recorded or withdrawn, so its selectors read them without the index. Each
+// is a snapshot with the record's version, and a ledger keeps the newest it
+// has seen, whatever order the broadcasts land in. Returns the projects it
+// could not reach.
+async function sendAssignments(env: Env): Promise<string[]> {
+  const I = index(env);
+  const projects = await I.projects();
+  return unreachedOf(projects, async (p) => { await ledgerOf(env, p).assignmentsChanged(await I.assignmentSnapshotFor(p.key ?? p.name)); });
+}
+// What a dispatch the developer names a builder for says of the build
+// assignments bearing on the task: none orders it, and each is named as
+// skipped for the named builder, by orderByAssignment's explicit path, the
+// call every selector orders and explains by. Every dispatch path asks it:
+// the API with --agent and --model or a bare --model, a held dispatch's
+// --overlap-ok, and the page's form (gpt-6-astra's twelfth review of t622,
+// finding 3). Undefined when the dispatch names no builder or no assignment
+// bears.
+async function namedBuilderReasons(env: Env, projectKey: string, body: Record<string, unknown>, actor: string): Promise<string | undefined> {
+  if (actor !== ownerActor(env) || body.job !== undefined || !(body.model || body.agent)) return undefined;
+  const bearing = applicableAssignments(await index(env).currentRoleAssignments(), projectKey, ["build"]);
+  const named = body.agent && body.model ? "the developer's named builder" : body.model ? "the developer's --model" : "the developer's --agent";
+  return orderByAssignment<string>([], (c) => c, bearing, () => null, FALLBACK.build, named).outcome.lines.join(" ") || undefined;
+}
+
+// The one boundary for model names (gpt-6-astra's and gemini-4-argon's
+// eighth to thirteenth reviews of t622). A name is converted here, once, to
+// the exact pool entry it names (typedActor; typedModel for a bare model),
+// only where what is stored from it is read by an exact reader of t622's:
+//
+//   route (under /projects/P)                  converted       read by
+//   PUT /projects/P (init)                     reviewTier      tierIds, marked exactNames (src/review/tier.ts)
+//   items/ID/plan (a plan document)            parts[].prefer  routePart, the proposal marked (src/plans/route.ts)
+//   items/ID/dispatch with --suggest           a bare model    suggestBuilder's --model filter (src/models/suggest.ts)
+//
+// Every other name stays as declared, as on main, because what reads it
+// compares it with a declared name from elsewhere: a dispatch's agent and
+// model, a named reviewer, planner or reroute/refresh builder become a
+// dispatch that a runner's offer must name (assign in src/dispatch/rules.ts)
+// and that the claiming actor must match; a triage model is run by the CLI
+// under the name stored; resolvers are matched with runners' offers; the
+// declared X-Atelier-Actor, a token's actor and a handoff's new holder are
+// identities. The owner's standing (src/models/pool.ts, alias-aware, as on
+// main) holds an alias of a held model wherever one arrives. --as
+// (X-Atelier-Acting) is attribution only and is converted by
+// registeredActing, which keeps the declaration for retries. The pool is
+// read only when such a field is present.
+type NameFields = Record<string, unknown>;
+const CHOICES: Record<string, string[]> = { dispatch: ["model"], plan: ["parts"], init: ["reviewTier"] };
+// Which choice fields a request carries, by its route: the item's verb, a
+// plan's sub-verb, a new plan, or the project init.
+function choiceRoute(parts: readonly string[], method: string, body: NameFields): string | null {
+  if (parts[1] !== "projects") return null;
+  if (parts.length === 3 && method === "PUT") return "init";
+  if (parts.length === 4 && parts[3] === "items" && method === "POST" && body.kind === "plan") return "new-plan";
+  if (parts[3] !== "items" || method !== "POST") return null;
+  if (parts[5] === "plan") return parts[6] ?? "plan";
+  return parts[5] ?? null;
+}
+async function canonicalNames(env: Env, body: NameFields, route: string | null): Promise<void> {
+  const fields = route ? CHOICES[route] ?? [] : [];
+  if (!fields.length) return;
+  const named = (v: unknown) => typeof v === "string" && v.includes("/");
+  const parts = fields.includes("parts") && Array.isArray(body.parts) ? body.parts as { prefer?: { actor?: unknown } }[] : [];
+  const needed = (fields.includes("model") && body.suggest === true && !body.agent && typeof body.model === "string" && body.model !== "")
+    || fields.some((f) => named(body[f]) || Array.isArray(body[f])) || parts.some((p) => named(p?.prefer?.actor));
+  if (!needed) return;
+  const pool = await index(env).models();
+  const one = (v: string) => typedActor(pool, v.trim());
+  // A --suggest dispatch's --model filters the suggestion's candidates, by
+  // id; the suggestion then names the entry it picks.
+  if (fields.includes("model") && body.suggest === true && !body.agent && typeof body.model === "string" && body.model) body.model = typedModel(pool, body.model.trim());
+  for (const f of fields) {
+    if (f === "model" || f === "parts") continue;
+    const v = body[f];
+    if (Array.isArray(v)) body[f] = v.map((a) => (typeof a === "string" && a.includes("/") ? one(a) : a));
+    else if (named(v)) body[f] = (v as string).split(",").map((a) => (a.includes("/") ? one(a) : a.trim())).join(",");
+  }
+  for (const part of parts) if (part?.prefer && named(part.prefer.actor)) part.prefer.actor = one(part.prefer.actor as string);
+}
+
+// The acting model a request declared, checked against the pool now, for a
+// route that checks it itself (the role assignments').
+async function registeredActingOf(env: Env, c: Pick<Ctx, "declaredActing">): Promise<string | null> {
+  return c.declaredActing ? registeredActing(c.declaredActing, await index(env).models()) : null;
 }
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
   return index(env).resolveProject(name);
@@ -782,7 +879,11 @@ function parseReviewTier(value: unknown): string[] {
   const out: string[] = [];
   for (const entry of raw.map((a) => a.trim()).filter(Boolean)) {
     if (!validActor(entry) || !entry.includes("/")) throw new RuleError("bad_review_tier", `"${entry}" is not harness/model; the review tier lists actors such as claude-code/opus-5.5`, 400);
-    if (!out.some((a) => sameActor(a, entry))) out.push(entry);
+    // Deduplicated by exact id: the tier's names were converted to exact pool
+    // ids where they entered (canonicalNames), and two entries of one model
+    // (codex/gpt-6-astra:a and :b) are two tier models (gpt-6-astra's
+    // nineteenth review of t622, finding 1).
+    if (!out.includes(entry)) out.push(entry);
   }
   if (out.length > REVIEW_TIER_MAX) throw new RuleError("too_long", `the review tier lists at most ${REVIEW_TIER_MAX} models`, 400);
   return out;
@@ -1228,6 +1329,66 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
+  // Role assignments (t622, src/models/assignments.ts): the developer's dated
+  // judgements of which model does what, with evidence, which routing reads.
+  // Developer-only and private, reading included. GET lists every one with
+  // its status and the fallback each role returns to; POST records one, its
+  // scope, choices and evidence checked against the index, the pool and each
+  // project's ledger; POST model-roles/aN/withdraw withdraws the standing one.
+  if (parts[0] === "model-roles") {
+    requireOwner(env, actor);
+    const I = index(env);
+    // inPool names the pool's models, so the listing marks a choice the pool
+    // has lost (gemini-4-argon's review of t622, finding 3).
+    if (parts.length === 1 && m === "GET") return json({ ...(await I.roleAssignments()), fallback: FALLBACK, inPool: (await I.models()).map((e) => `${e.harness}/${e.id}`) });
+    if (parts.length === 1 && m === "POST") {
+      const input = cleanAssignmentInput(body);
+      // A retry is answered from its stored request before the pool or the
+      // projects are read again, so what changed since cannot fail it; the
+      // same id with other content is refused (gpt-6-astra's second review,
+      // finding 5).
+      // The retry is judged against what was recorded, the acting model
+      // included, so one removed from the pool since does not fail it
+      // (gpt-6-astra's third review, finding 4). It sends every project the
+      // snapshot standing now, as the first request did or should have, and
+      // says which it could not reach and whether the record still stands:
+      // a first request that stopped before its broadcast is repaired, and a
+      // later withdrawal or supersession is kept (gpt-6-astra's third
+      // review, finding 3).
+      const fingerprint = inputFingerprint(input);
+      const prior = await I.assignmentForRequest(input.request);
+      if (prior && isRetryOf(prior, input.request, fingerprint, c.declaredActing ?? null)) {
+        return json({ ...prior, retried: true, unreached: await sendAssignments(env) }, 200);
+      }
+      const acting = await registeredActingOf(env, c);
+      let scope = ALL_PROJECTS;
+      if (input.scope !== ALL_PROJECTS) {
+        const ref = await resolveProject(env, input.scope);
+        if (!ref.registered) throw new RuleError("bad_scope", `no project ${input.scope}`, 404);
+        scope = ref.key;
+      }
+      const evidence = await checkEvidence(input.evidence, (name) => resolveProject(env, name), (key, item, seq) => ledger(env, key).evidenceMissing(item, seq));
+      const choices = resolveChoices(input.choices, await I.models(), input.role);
+      const record = await I.assignRole(actor, { ...input, fingerprint, scope, choices, evidence }, acting && c.declaredActing ? { id: acting, declared: c.declaredActing } : null);
+      const unreached = await sendAssignments(env);
+      // A retry that reached the write (two requests past the lookup above)
+      // is answered with its record's status now, as the early retry is
+      // (gpt-6-astra's seventh review of t622, follow-up 3).
+      if (record.retried) return json({ ...(await I.assignmentForRequest(input.request) ?? record), retried: true, unreached }, 200);
+      return json({ ...record, unreached }, 201);
+    }
+    if (parts.length === 3 && parts[2] === "withdraw" && m === "POST") {
+      // A retried withdrawal, too, is judged against its record before the
+      // acting model is checked against the pool.
+      const done = await I.assignmentWithdrawalOf(parts[1]);
+      if (done && isWithdrawalRetry(done, body.note, c.declaredActing ?? null)) return json({ ...done, retried: true, unreached: await sendAssignments(env) });
+      const acting = await registeredActingOf(env, c);
+      const record = await I.withdrawRoleAssignment(parts[1], actor, body.note, acting && c.declaredActing ? { id: acting, declared: c.declaredActing } : null);
+      const unreached = await sendAssignments(env);
+      return json({ ...record, unreached });
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   // Usage, limits and balances. A runner reports one tool at a time under
   // its name, as it reports a model's status: the owner token, and the
   // runner named in X-Atelier-Runner. The owner reads every report, the
@@ -1266,7 +1427,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // `judgement` is each acting model's verdicts on findings, decisions and
     // overrides over its window, with the window's totals.
     const { sources, reliability, speed, events, unread } = await trackRecords(env);
-    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    // Role assignments are recorded on the index, so its events are one
+    // more source of the acting models' decisions (t622).
+    const assigned = { project: "(model roles)", events: await index(env).assignmentEvents() };
+    const judgement = buildJudgement([...sources, assigned], judgementWindow(new Date()), ownerActor(env), await index(env).models());
     const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
@@ -1496,6 +1660,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // (settleCommitIdentity), so an invalid one is refused before anything is made.
       ...(IDENTITY_FIELDS.some(has) ? { commitIdentity: Object.fromEntries(IDENTITY_FIELDS.filter(has).map((k) => [k, body[k]])) } : {}),
     };
+    // Its model names were converted where the request entered (canonicalNames).
+    init.namesExact = true;
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
     mergeProject(await L.project().catch(() => null), init, new Date().toISOString());
@@ -1511,8 +1677,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!known) await assertMadeAs(env, repo, baselineMark(project), `${project}'s baseline`);
     }
     const record = await L.initProject(init, actor);
-    await L.poolChanged(await index(env).models());
-    await index(env).registerProject(record);
+    // The pool and the role assignments standing now, so a project made
+    // after an assignment for every project reads it from the start
+    // (gpt-6-astra's review of t622, finding 3); registered first, so no
+    // broadcast between the read and the install misses it (finding 4 of
+    // the second review).
+    const models = await index(env).models();
+    await seedProject({
+      register: () => index(env).registerProject(record),
+      snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
+      install: (snapshot) => L.poolChanged(models, snapshot),
+    });
     return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }
   if (parts.length === 2 && m === "DELETE") {
@@ -2192,7 +2367,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A builder given in the dispatch's place is checked against the
           // pool's current standing, as a dispatch's own is below.
           if (body.agent || body.model) await L.poolChanged(await index(env).models());
-          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }));
+          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }, await namedBuilderReasons(env, ref.key, body, actor)));
         }
       }
       let suggestion;
@@ -2202,8 +2377,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // restrictions unless named, so it asks for no suggestion.
       if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
         requireOwner(env, actor);
-        const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
+        // The suggestion is checked against runners' offers for the job this
+        // dispatch will carry, a plain build unless it names another.
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers }, { to: body.to, model: body.model, job: body.job ?? "build" });
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -2225,7 +2402,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (body.agent && body.model) await L.poolChanged(await index(env).models());
       const before = await L.checkDispatch(id, actor, body);
       if (before.owner) await revoke(env, before.fork, oldToken);
-      return json({ ...await L.dispatch(id, actor, body, oldToken), ...(suggestion ? { suggestion } : {}) });
+      // What chose the builder is kept on the dispatch: the suggestion's
+      // reasons, or, for a builder the developer named, each build
+      // assignment bearing on the task skipped for it (gpt-6-astra's seventh
+      // review of t622, finding 2).
+      const why = suggestion ? suggestion.reasons.join(" ") : await namedBuilderReasons(env, ref.key, body, actor);
+      return json({ ...await L.dispatch(id, actor, body, oldToken, why), ...(suggestion ? { suggestion } : {}) });
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
@@ -2906,7 +3088,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: string | undefined): Promise<Response> {
   const { env, actor, body } = c;
   if (sub === undefined) {
-    const post = await L.postPlan(id, actor, body, !!c.token);
+    const post = await L.postPlan(id, actor, body, !!c.token, true);
     if (post.valid) return json({ ...post, next: `the developer reads it with atelier plan show ${id} and approves that hash; release the plan item when done` });
     return json({ error: "invalid_plan", detail: `the plan was refused (attempt ${post.attempt} of ${post.attempts}): ${post.errors.join("; ")}`, ...post }, 422);
   }
@@ -3017,7 +3199,8 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
   // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
   // harness/model that acted for the owner (src/models/judgement.ts).
-  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
+  // Role assignments are recorded on the index, one more source (t622).
+  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: await I.assignmentEvents() }], judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
   return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
 }
 
@@ -3363,6 +3546,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // the limit the page showed holds. The API and CLI text is never changed.
     const note = verb === "dispatch" ? String(form.get("note") ?? "").replace(/\r\n?/g, "\n") : String(form.get("note") ?? "");
     const owner = ownerActor(env);
+    // The page's forms name a builder or a new holder, kept as declared, as
+    // the API's explicit dispatch and handoff keep them (canonicalNames).
+    const formNames: NameFields = { to: form.get("to") ?? undefined, agent: form.get("agent") ?? undefined, model: form.get("model") ?? undefined };
     if (id === "new" && !verb) {
       // A long title with no brief becomes the brief, with a short title derived from it (itemText).
       const brief = String(form.get("brief") ?? "");
@@ -3430,14 +3616,14 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // change would then take it off the record while it still works.
       const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
       if (moving) {
-        if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+        if (verb === "dispatch") await L.checkDispatch(id, owner, { to: formNames.to, agent: formNames.agent, model: formNames.model, note });
         else if (verb === "abandon") await L.checkAbandon(id, owner, note);
         else if (verb === "release") await L.checkRelease(id, owner, note);
-        else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
+        else await L.checkHandoff(id, owner, String(formNames.to ?? ""), note);
         const { fork } = await L.item(id);
         await revoke(env, fork, oldToken);
       }
-      if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
+      if (verb === "dispatch") await L.dispatch(id, owner, { to: formNames.to, agent: formNames.agent, model: formNames.model, note }, oldToken, await namedBuilderReasons(env, ref.key, { agent: formNames.agent || undefined, model: formNames.model || undefined }, owner));
       else if (verb === "undispatch") await L.undispatch(id, owner);
       else if (verb === "accept") await L.accept(id, owner, expected, undefined, undefined, undefined, undefined, String(shownCriteria));
       // The page's override form: accept with the owner's override of a missing
@@ -3450,7 +3636,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       else if (verb === "unblock") await L.unblock(id, owner);
       else if (verb === "clear-secret") await L.clearSecret(id, owner, note);
       else if (verb === "release") await L.release(id, owner, note, false, oldToken);
-      else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
+      else if (verb === "handoff") await L.handoff(id, owner, String(formNames.to ?? ""), note, false, oldToken);
       else if (verb === "approve" || verb === "reject") {
         await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
       } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
@@ -3796,7 +3982,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
@@ -3947,8 +4133,11 @@ export default {
         // malformed name, or one an agent or runner token sends, is refused
         // before anything is recorded. A name must be a model in the pool;
         // it is kept as declared, since the owner token cannot prove it.
+        // A role assignment's routes check it themselves, after a retry is
+        // matched to its record (gpt-6-astra's third review of t622, finding 4).
         const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
-        const acting = declaredActing === null ? null : registeredActing(declaredActing, await index(env).models());
+        const deferActing = parts[1] === "model-roles" && req.method === "POST";
+        const acting = declaredActing === null || deferActing ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -4015,9 +4204,16 @@ export default {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the developer token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
+        // The one boundary for model names (t622): a field that chooses a
+        // model to use is converted to the exact pool entry it names, before
+        // its route reads it (canonicalNames), and only once the request is
+        // authorized and in scope, so a refused request reads nothing of the
+        // pool (gpt-6-astra's fifteenth review of t622, finding 2). The
+        // declared actor is an identity and is kept as declared.
+        await canonicalNames(env, body as NameFields, choiceRoute(parts, req.method, body as NameFields));
         let res: Response;
         try {
-          res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+          res = await api({ env, req, url, actor, body, token, ref, acting, declaredActing, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
           await noteRefusal(error);
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
