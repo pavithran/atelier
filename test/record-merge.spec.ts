@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
+import { setRetryBaseMs } from "../src/transient.ts";
 import worker from "../src/index.ts";
 import { renderItem } from "../src/ui.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -17,6 +18,8 @@ const AT = "2026-10-14T00:00:00.000Z";
 const BUILDER = "claude-code/opus-5.5", ASTRA = "codex/gpt-6-astra", ARGON = "antigravity/gemini-4-argon";
 const BASE = "a".repeat(40), HEAD = "b".repeat(40), MERGE = "c".repeat(40), OTHER = "d".repeat(40), LATER = "e".repeat(40), SOLO = "f".repeat(40);
 const T = "0".repeat(40);
+beforeAll(() => setRetryBaseMs(1));
+afterAll(() => setRetryBaseMs());
 
 async function setup(name: string) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
@@ -33,18 +36,21 @@ async function setup(name: string) {
   ];
   const elsewhere = [{ hash: OTHER, parents: [BASE, HEAD], treeHash: T }];
   const revoked: string[] = [];
+  let revokeFails = false;
   const artifacts = {
     get: async () => ({
       log: async () => main,
       readCommit: async (hash: string) => [...main, ...elsewhere].find((c) => c.hash === hash) ?? null,
-      revokeToken: async (id: string) => { revoked.push(id); },
+      revokeToken: async (id: string) => { if (revokeFails) throw new Error("INTERNAL_ERROR: Artifacts is unavailable"); revoked.push(id); },
       [Symbol.dispose]() {},
     }),
   } as unknown as Artifacts;
-  const call = (id: string, body: unknown, actor = "owner") => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/record-merge`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
+  const request = (method: string, path: string, token: string, actor: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
-  return { L, call, revoked, dropMerge: () => { main = main.filter((c) => c.hash !== MERGE && c.hash !== LATER); } };
+  const call = (id: string, body: unknown, actor = "owner", token = TOKEN) => request("POST", `/projects/${name}/items/${id}/record-merge`, token, actor, body);
+  const issue = async (body: unknown) => (await (await request("POST", "/tokens", TOKEN, "owner", body)).json() as { token: string }).token;
+  return { L, call, issue, revoked, failRevoke: (fails: boolean) => { revokeFails = fails; }, dropMerge: () => { main = main.filter((c) => c.hash !== MERGE && c.hash !== LATER); } };
 }
 const reviews = [{ by: ASTRA, verdict: "approve", head: HEAD, at: "2026-10-13" }, { by: ARGON, verdict: "approve", head: HEAD }];
 const refusal = async (r: Response, status: number, code: string, detail?: RegExp) => {
@@ -97,11 +103,20 @@ it("takes the task's recorded head when no head is named", async () => {
 });
 
 it("refuses an agent: only the developer records a merge", async () => {
-  const { L, call } = await setup("record-merge-agent");
+  const { L, call, issue } = await setup("record-merge-agent");
   const item = await L.newItem("Agent tries", [], "owner");
   await L.claim(item.id, BUILDER);
-  await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews }, BUILDER), 403, "not_project_owner");
-  await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews }, ASTRA), 403, "not_project_owner");
+  const body = { mergeCommit: MERGE, head: HEAD, reviews };
+  // The developer's token naming an agent.
+  await refusal(await call(item.id, body, BUILDER), 403, "not_project_owner");
+  await refusal(await call(item.id, body, ASTRA), 403, "not_project_owner");
+  // An agent token and a runner token, under their own names and naming the
+  // developer (an agent token is bound to its actor, a runner token to its jobs).
+  const agent = await issue({ actor: BUILDER, projects: ["record-merge-agent"] });
+  const runner = await issue({ runner: "home:studio", projects: ["record-merge-agent"] });
+  for (const [token, actor, code] of [[agent, BUILDER, "owner_token_required"], [agent, "owner", "actor_mismatch"], [runner, ASTRA, "runner_forbidden"], [runner, "owner", "runner_forbidden"]] as const) {
+    await refusal(await call(item.id, body, actor, token), 403, code);
+  }
   expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: BUILDER });
   // The Ledger refuses it too, whatever the route.
   const err = await L.recordMerge(item.id, BUILDER, { mergeCommit: MERGE, commit: HEAD, reviews }, { parents: [BASE, HEAD], holds: true }).then(() => null, (e: unknown) => e as Error);
@@ -135,4 +150,27 @@ it("refuses when the merge commit's second parent is not the task's head, or it 
   await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews: [{ by: ASTRA, verdict: "reject", head: HEAD }] }), 400, "no_approval");
   expect((await L.item(item.id)).state).toBe("open");
   expect(((await L.events(item.id)) as unknown as LedgerEvent[]).some((e) => e.kind === "item.merged" || e.kind === "item.merge_recorded")).toBe(false);
+});
+
+// gpt-6-astra's review of t653: the record dropped the workspace token
+// before revoking it, so a revocation that failed left the token live with
+// no record of it, and the retry, reading no token, never revoked it. The
+// token is revoked first now, as abandon and release do.
+it("a revocation that fails changes nothing, and the retry revokes the token and records the merge", async () => {
+  const { L, call, revoked, failRevoke } = await setup("record-merge-revoke");
+  const item = await L.newItem("Claimed with a live token", [], "owner");
+  const { generation } = await L.claim(item.id, BUILDER);
+  expect(await L.recordToken(item.id, BUILDER, generation, null, "tok-live")).toBe(true);
+  await L.setFork(item.id, "record-merge-revoke--t1", BASE, BUILDER);
+  const body = { mergeCommit: MERGE, head: HEAD, reviews };
+  failRevoke(true);
+  await refusal(await call(item.id, body), 503, "revoke_failed", /nothing was changed/);
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: BUILDER });
+  expect(await L.tokenId(item.id)).toBe("tok-live");
+  expect(((await L.events(item.id)) as unknown as LedgerEvent[]).some((e) => e.kind === "item.merge_recorded")).toBe(false);
+  failRevoke(false);
+  expect((await call(item.id, body)).status).toBe(200);
+  expect(revoked).toEqual(["tok-live"]);
+  expect(await L.tokenId(item.id)).toBeNull();
+  expect((await L.item(item.id)).state).toBe("merged");
 });

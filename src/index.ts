@@ -3017,10 +3017,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const top = found ? await headOf(env, p.repo) : null;
         holds = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
       }
+      // As abandon and release do: check, revoke the workspace token, then
+      // record, dropping the token only if it is still the one revoked. A
+      // revocation that fails changes nothing, and the retry revokes again.
       const oldToken = await L.tokenId(id);
-      const recorded = await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, oldToken);
+      await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
       await revoke(env, before.fork, oldToken);
-      return json(recorded);
+      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, oldToken));
     }
     case "landing": {
       requireOwner(env, actor);
