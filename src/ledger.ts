@@ -5131,7 +5131,7 @@ export class Ledger extends DurableObject<Env> {
       reasons = ["Named by the developer", ...aheadOfAssignments(applicableAssignments(this.heldAssignments(), null, ["plan"]), "the developer's named planner").lines];
     } else {
       const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers(), this.heldAssignments());
-      if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model`, 409);
+      if (!pick.actor) throw new RuleError("no_planner", `no planner for this plan: ${pick.reasons[0]}. Add a model with atelier models add, or name one with --planner harness/model.${pick.reasons.length > 1 ? ` ${pick.reasons.slice(1).join(" ")}` : ""}`, 409);
       chosen = pick.actor;
       reasons = pick.reasons;
     }

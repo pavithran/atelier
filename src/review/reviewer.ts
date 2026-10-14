@@ -179,7 +179,8 @@ export function pickReviewer(input: PickInput): ReviewerPick {
     return { reviewer: { actor: actorOf(entry), reasons: [...lead, position(source, input), ...lines, ...judged.passed, ...precise] }, passedOver, unpicked: null, ...(assignment ? { assignment: assignment.outcome } : {}) };
   }
   const tried = passedOver.length ? passedOver.map((c) => `${c.actor} (${c.reasons.join("; ")})`).join(", ") : "no model in the pool";
-  const unpicked = none(`${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} (${describeContributors(contributors)}): ${tried}`, passedOver);
+  // A failure says what became of the review assignments too.
+  const unpicked = none([`${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} (${describeContributors(contributors)}): ${tried}`, ...(poolBy?.outcome.lines ?? [])].join(" "), passedOver);
   // No reviewer: every model in the pool was asked, and no assignment had
   // an eligible choice among them.
   return poolBy ? { ...unpicked, assignment: poolBy.outcome } : unpicked;

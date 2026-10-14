@@ -487,7 +487,8 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
     builder = picked.pick;
     if (picked.lead) lead.push(picked.lead);
   }
-  if (!builder) return none(`no eligible builder: ${excluded.map((e) => `${e.actor} (${e.reasons.join("; ")})`).join(", ")}`, excluded);
+  // A failure says what became of the build assignments too.
+  if (!builder) return none([`no eligible builder: ${excluded.map((e) => `${e.actor} (${e.reasons.join("; ")})`).join(", ")}`, ...(buildOrder?.outcome.lines ?? [])].join(" "), excluded);
   builds.add(builder);
   const alternates = (buildOrder?.outcome.applied ? buildOrder.order.filter((v) => !v.build.length) : able).filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
   const chosen = choice(builder, [...lead, rank(builder)], "executor", ctx);
@@ -524,7 +525,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
       : builder.family === "other"
         ? `no reviewer can be of another family than ${builder.actor}, whose family is not recognised from its name`
         : `no reviewer of another family than ${builder.family} (${builder.actor}): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : v.family === "other" ? "family not recognised from its name" : `same family, ${v.family}`})`).join(", ") : "no other model in the pool"}`;
-    return { key: part.key, builder: chosen, alternates, reviewer: null, excluded, unrouted: why };
+    return { key: part.key, builder: chosen, alternates, reviewer: null, excluded, unrouted: [why, ...(reviewOrder?.outcome.lines ?? [])].join(" ") };
   }
   reviews.add(reviewer.pick);
   const family = single

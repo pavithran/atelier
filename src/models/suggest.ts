@@ -124,5 +124,7 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     const note = latestNote(entry, input.project, input.item.id);
     return { actor, where: entry.where, reasons: [why, ...said(row), `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
   }
-  throw new RuleError("no_builder", `${why} No eligible builder in the pool. ${excluded.join("; ")}`, 409);
+  // A failure says what became of the build assignments too (gpt-6-astra's
+  // sixteenth review of t622, finding 2).
+  throw new RuleError("no_builder", [`${why} No eligible builder in the pool. ${excluded.join("; ")}`, ...byAssignment.outcome.lines].join(" "), 409);
 }
