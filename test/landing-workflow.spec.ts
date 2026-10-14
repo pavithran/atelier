@@ -1064,10 +1064,9 @@ it("a review request withdrawn with no verdict ends the wait at once, naming the
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/^no review request of t\d+ at aaaaaaaa is open or claimed and no verdict was given, so none will come; t\d+ stays submitted\. Run atelier land t\d+ --workflow --reviewer codex\/gpt-6-astra to ask again/);
 });
 
-it("counts an approval already recorded by hand against a claimed request at the head, asking for no new review and waiting for none (t628)", async () => {
-  // micahapp t6 and t7 held such approvals, and atelier show recommended
-  // accept, yet the landing named the reviewer, asked anew and waited its hour.
-  const project = "wf-recorded-review", instance = "wf-recorded-review-1";
+// A protected task held by OPUS, submitted at H1, with gpt-6-astra and
+// gemini-3.1-pro registered and offered for review at home (t628).
+async function protectedSubmitted(project: string, instance: string) {
   const L = ledger(project);
   const record = { name: project, repo: `${project}--baseline`, policy: { checks: [], protected: ["README.md"] }, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner");
@@ -1079,15 +1078,20 @@ it("counts an approval already recorded by hand against a claimed request at the
   await L.recordPush(id, OPUS, H1, H1);
   await observed(L, id, H1);
   await L.submit(id, OPUS);
-  const gpt = "codex/gpt-6-astra";
   await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
-  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  await index.putModel({ id: "gemini-3.1-pro", harness: "antigravity", where: "home", provider: "subscription", aliases: [], family: familyOf("gemini-3.1-pro"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "antigravity", models: ["gemini-3.1-pro"] }] }, new Date().toISOString());
+  // gpt-6-astra's verdict, recorded by hand against the request it claimed.
+  const gpt = "codex/gpt-6-astra";
   expect(await L.requestReview(id, "owner", gpt, await index.models(), true, false, undefined, await index.runnerOffers())).toMatchObject({ needed: true, requested: true, reviewer: gpt });
   const claim = await L.claimReview(id, gpt, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
-  // The verdict, recorded by hand against the claimed request.
   await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: gpt, head: H1, approve: true, note: "Approved by hand.", at: new Date().toISOString() });
   await L.setLandingWorkflow(id, instance, "owner");
-  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  return { L, id };
+}
+
+async function startLanding(instance: string, project: string, id: string, reviewer: string) {
+  const wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
   await wf.modify(async (m) => {
     await m.disableSleeps();
     await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
@@ -1095,12 +1099,39 @@ it("counts an approval already recorded by hand against a claimed request at the
     await m.mockStepResult({ name: "wait for the merge #0" }, true);
   });
   // A short review wait: only a recorded approval can end the landing well.
-  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer: gpt, pollMs: 10, reviewTimeoutMs: 50 } });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer, pollMs: 10, reviewTimeoutMs: 50 } });
   await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: false });
+  return wf;
+}
+
+it("counts an approval already recorded by hand against a claimed request at the head, asking for no new review and waiting for none (t628)", async () => {
+  // micahapp t6 and t7 held such approvals, and atelier show recommended
+  // accept, yet the landing named the reviewer, asked anew and waited its hour.
+  const project = "wf-recorded-review", instance = "wf-recorded-review-1";
+  const { L, id } = await protectedSubmitted(project, instance);
+  await using wf = await startLanding(instance, project, id, "codex/gpt-6-astra");
   await wf.waitForStatus("complete");
   expect((await L.item(id)).state).toBe("accepted");
   const events = (await L.events(id)) as unknown as LedgerEvent[];
   expect(events.filter((e) => e.kind === "review.requested")).toHaveLength(1);
-  expect(events.find((e) => e.kind === "land.review")).toMatchObject({ data: { verdict: "approve", reviewer: gpt } });
+  expect(events.find((e) => e.kind === "land.review")).toMatchObject({ data: { verdict: "approve", reviewer: "codex/gpt-6-astra" } });
   expect(await L.reviewWaiting()).toEqual([]);
+});
+
+it("asks the named reviewer whose recorded approval the gate does not count, though another's makes the gate ready (t628 review)", async () => {
+  // gpt-6-astra's review of t628: gemini-3.1-pro's approval, recorded with
+  // the developer token answering no request it claimed, sat beside
+  // gpt-6-astra's counting one, and --reviewer gemini-3.1-pro took it.
+  const project = "wf-recorded-unproved", instance = "wf-recorded-unproved-1";
+  const { L, id } = await protectedSubmitted(project, instance);
+  const gemini = "antigravity/gemini-3.1-pro";
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: gemini, head: H1, approve: true, note: "Recorded by hand, unclaimed.", at: new Date().toISOString() });
+  expect(((await L.detail(id)) as unknown as { gate: { ready: boolean } }).gate.ready).toBe(true);
+  await using wf = await startLanding(instance, project, id, gemini);
+  await wf.waitForStatus("errored");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/^no verdict from antigravity\/gemini-3\.1-pro within/);
+  const events = (await L.events(id)) as unknown as LedgerEvent[];
+  // Newest first: the landing asked gemini-3.1-pro after gpt-6-astra's request.
+  expect(events.filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer)).toEqual([gemini, "codex/gpt-6-astra"]);
+  expect(events.find((e) => e.kind === "land.review")).toMatchObject({ data: { verdict: "timeout", reviewer: gemini } });
 });

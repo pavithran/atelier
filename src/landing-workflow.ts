@@ -82,7 +82,7 @@ import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, allSkipped, recordedApproval, reviewStall, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
+import { landingVerdict, allSkipped, recordedApproval, reviewStall, type RecordedDetail, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
 import { fenceText, type PrereviewFence } from "./dispatch/prereview.ts";
@@ -703,8 +703,8 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // A qualifying approval already recorded at this head, which the gate
       // holds ready to accept (`atelier show`'s accept), settles the review
       // before any request (t628), as the CLI's landing reads it.
-      const now = (await L.detail(p.item)) as unknown as Parameters<typeof recordedApproval>[0];
-      const held = recordedApproval(now, head, p.reviewer, p.actor);
+      const now = (await L.detail(p.item)) as unknown as RecordedDetail;
+      const held = recordedApproval({ ...now, ownerActor: p.actor }, head, p.reviewer);
       if (held) return { needed: false, held: held.by, reason: `${held.by} already approved ${short(head)}, and the gate counts it`, at: "", asked: "", reviewer: null, request: null };
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();

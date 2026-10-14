@@ -9,7 +9,7 @@
 // share this judgment, so both count the same verdicts the same way.
 
 import { offering, type SeenOffer } from "./dispatch/rules.ts";
-import { sameActor } from "./rules.ts";
+import { DEFAULT_OWNER, gateApprovals, sameActor, type Evidence, type Item, type ProjectPolicy, type Review } from "./rules.ts";
 
 export interface LandingReview {
   by: string;
@@ -49,21 +49,31 @@ export function readyToAccept(d: { item: { state: string }; gate?: { ready: bool
 }
 
 // The approval a landing counts without asking for a review (t628): the task
-// is ready to accept at the head it landed, and a reviewer other than the
-// owner, not withdrawn and not as a tier's second opinion, approved that
-// head, the named reviewer where the landing names one. micahapp t6 and t7
-// each held such an approval, recorded by hand against a claimed review
-// request (atelier review --request N), while `atelier show` recommended
-// accept; the landing asked for a new review instead, counted only verdicts
-// given after that ask, and waited its 60 minutes for one that never came.
-// Null when nothing recorded settles it, so the landing asks as before.
-export function recordedApproval(
-  d: { item: { state: string; head?: string | null }; gate?: { ready: boolean } | null; reviews?: readonly LandingReview[] | null },
-  head: string, reviewer: string | null, owner: string | null,
-): LandingReview | null {
+// is ready to accept at the head it landed, and the gate counts an approval
+// there as the change's independent review (gateApprovals, the gate's own
+// selection, never a copy of it), the named reviewer's where the landing
+// names one. micahapp t6 and t7 each held such an approval, recorded by hand
+// against a claimed review request (atelier review --request N), while
+// `atelier show` recommended accept; the landing asked for a new review
+// instead, counted only verdicts given after that ask, and waited its 60
+// minutes for one that never came. An approval the gate sets aside (one the
+// developer token recorded answering no claimed request, a same-family or a
+// contributor's) is never taken, even where another reviewer's approval, an
+// unprotected change or an override makes the gate ready. Null when nothing
+// recorded settles it, so the landing asks as before.
+export interface RecordedDetail {
+  item: Item;
+  policy: ProjectPolicy;
+  evidence?: Evidence[] | null;
+  reviews?: Review[] | null;
+  gate?: { ready: boolean } | null;
+  ownerActor?: string | null;
+}
+
+export function recordedApproval(d: RecordedDetail, head: string, reviewer: string | null): Review | null {
   if (d.item.head !== head || !readyToAccept(d)) return null;
-  return (d.reviews ?? []).filter((v) => v && v.head === head && v.approve && !v.withdrawn && !v.tier
-    && (owner === null || !sameActor(v.by, owner)) && (reviewer === null || sameActor(v.by, reviewer))).at(-1) ?? null;
+  const counted = gateApprovals(d.item, d.policy, d.evidence ?? [], d.reviews ?? [], d.ownerActor ?? DEFAULT_OWNER);
+  return counted.filter((v) => reviewer === null || sameActor(v.by, reviewer)).at(-1) ?? null;
 }
 
 // Whether a review request will ever be claimed, by which runners have

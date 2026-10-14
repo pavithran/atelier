@@ -917,7 +917,7 @@ async function reviewStep(io, { id, name, itemPath, reviewer, head: pushed, reco
   // settles the review before any request (t628): a new request would count
   // only verdicts given after it, and wait its hour for one.
   const now = await request("GET", itemPath);
-  const held = recordedApproval(now, pushed, reviewer ?? null, now.ownerActor ?? null);
+  const held = recordedApproval(now, pushed, reviewer ?? null);
   if (held) {
     print(`${held.by} already approved ${id} at ${short(pushed)}, and the gate counts it: no review request was needed.`);
     await record("review", Date.now() - t0, { verdict: "approve", reviewer: held.by, resolvedBy: held.by, reason: "approval recorded at the head before the landing asked for a review" });
