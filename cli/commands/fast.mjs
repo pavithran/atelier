@@ -1,6 +1,7 @@
 // atelier fast. Its forms, flags and help are declared in src/usage/commands/fast.ts.
 import { COMMAND_USAGE } from "../help.mjs";
-import { I, OWNER, P, actingHeaders, actor, args, call, die, fastTakeWorkspace, git, itemArg, project, wsConfig } from "../atelier.mjs";
+import { I, OWNER, P, actingHeaders, actor, args, call, cfg, die, fastTakeWorkspace, git, itemArg, landingGit, project, wsConfig } from "../atelier.mjs";
+import { behindRefusal } from "../pull.mjs";
 import { CLEAN_CLONE_SETUP, DEFAULT_REGEN, fastLand, parsePairs, postPending, readPending, readySources } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
@@ -28,6 +29,17 @@ export default async function fastCommand() {
   if (args.reviewer !== undefined && (typeof args.reviewer !== "string" || !args.reviewer.includes("/"))) die("--reviewer names harness/model");
   const mode = await call("GET", `${P(name)}/mode`, undefined, OWNER);
   if (mode.mode !== "fast") die(`${mode.line}: switch with atelier mode fast --reason TEXT before landing fast`);
+  const cwd = process.cwd();
+  // Main as fast land leaves it is published to the baseline afterwards. When
+  // another checkout has moved the baseline on (t644), that push would be
+  // refused after the merges, checks and receipts, so fast land refuses
+  // first and names atelier pull.
+  const base = await call("POST", `${P(name)}/baseline-token`, { scope: "read" }, OWNER);
+  landingGit(["fetch", "--quiet", "--no-tags", base.remote, "main"], { cwd, token: base.token });
+  const baselineHead = landingGit(["rev-parse", "FETCH_HEAD"], { cwd });
+  const gitDir = landingGit(["rev-parse", "--absolute-git-dir"], { cwd });
+  const behind = behindRefusal(landingGit, cwd, { gitDir, name, fresh: cfg.projects?.[name]?.fresh === true, branch: "main", baselineHead, nothing: "Nothing was merged.", command: `atelier fast land ${rest.join(" ")} --project ${name}` });
+  if (behind) die(behind);
   const titles = {};
   for (const { id } of pairs) {
     const item = await call("GET", I(name, id), undefined, OWNER);
@@ -35,7 +47,6 @@ export default async function fastCommand() {
     if (["merged", "abandoned"].includes(it.state)) die(`${id} is ${it.state}`);
     titles[id] = it.title;
   }
-  const cwd = process.cwd();
   // The default test runs in a temporary clean clone of the batch's head
   // (t588); a --test the owner gives runs in the checkout, where it says.
   const result = await fastLand({

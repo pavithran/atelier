@@ -17,6 +17,8 @@ function fixture(run) {
   writeFileSync(join(dir, "git"), `#!/usr/bin/env node
 if (process.argv.includes('--show-toplevel')) console.log(process.cwd());
 else if (process.argv.includes('--abbrev-ref')) console.log('main');
+else if (process.argv.includes('symbolic-ref')) console.log('refs/heads/main');
+else if (process.argv.includes('--is-shallow-repository')) console.log('false');
 else if (process.argv.includes('rev-parse')) console.log('a'.repeat(40));
 else if (process.argv.includes('config')) process.exit(1);
 else if (!process.argv.includes('push')) process.exit(2);
@@ -258,6 +260,8 @@ test("CLI sync refreshes ControlPlane policy even when the baseline already matc
 if (process.argv.includes('--show-toplevel')) console.log(process.cwd());
 else if (process.argv.includes('--absolute-git-dir')) console.log(process.cwd() + '/fake-git');
 else if (process.argv.includes('--abbrev-ref')) console.log('main');
+else if (process.argv.includes('symbolic-ref')) console.log('refs/heads/main');
+else if (process.argv.includes('--is-shallow-repository')) console.log('false');
 else if (process.argv.includes('rev-parse')) console.log('a'.repeat(40));
 else if (process.argv.includes('config')) process.exit(1);
 else if (!process.argv.includes('status') && !process.argv.includes('fetch')) process.exit(2);
