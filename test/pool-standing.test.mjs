@@ -134,7 +134,7 @@ const PATHS = [
   ['src/review/reviewer.ts', 'judge', 'standingRefusal(', 'pickReviewer: plan reviews, landing reviews, reviewer suggestions'],
   ['src/review/suggest.ts', 'suggestReviewer', 'pickReviewer(', 'reviewer suggestions, through pickReviewer'],
   ['src/ledger.ts', 'assertStanding', 'actorStanding(', 'every model the owner names'],
-  ['src/ledger.ts', 'requestReview', 'this.assertStanding(', 'a named reviewer (atelier land --reviewer)'],
+  ['src/ledger.ts', 'askReview', 'this.assertStanding(', 'a named reviewer (atelier land --reviewer)'],
   ['src/ledger.ts', 'newPlan', 'this.assertStanding(', 'a named planner (atelier plan --planner)'],
   ['src/ledger.ts', 'reroutePlan', 'this.assertStanding(', 'a named planner or builder (atelier plan reroute)'],
   ['src/ledger.ts', 'rerouteReviewer', 'this.assertStanding(', "a named reviewer of a plan's part"],

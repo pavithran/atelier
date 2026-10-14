@@ -109,7 +109,7 @@ test("a review request is bound to its reviewer only by bindReview, which judges
   // here once it is shown to ask only a reviewer the mode allows, or to
   // leave the company to the bind.
   assert.deepEqual([...new Set(sites(/INSERT INTO review_requests/))].sort(), [
-    "askTierReview", "reaskForCriteria", "reaskReview", "replaceReviewClaim", "requestReview", "reviewTick",
+    "askReview", "askTierReview", "reaskForCriteria", "reaskReview", "replaceReviewClaim", "reviewTick",
   ], "a new path makes a review request; list it here once its reviewer is checked for the mode");
   passes("reaskForCriteria", "companyRefusal(");
   passes("reaskReview", "companyRefusal(");

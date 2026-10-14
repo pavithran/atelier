@@ -532,7 +532,89 @@ it("a standalone expired claim is reoffered within one queue poll with its routi
   });
   expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL)).toMatchObject({ requested: true, reviewer: GEMINI });
   expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL)).toMatchObject({ requested: false, reviewer: GEMINI, head });
-  await refusal(L.requestReview(id, "owner", GPT, POOL), "review_requested", /already requested from antigravity\/gemini-3.1-pro/);
+  // Once a runner claims it, naming another reviewer is refused (t627).
+  await L.claimReview(id, GEMINI, RUNNER);
+  await refusal(L.requestReview(id, "owner", GPT, POOL), "review_requested", /already requested from antigravity\/gemini-3.1-pro, and a runner has claimed it/);
+});
+
+// micahapp t9 (t627): an unclaimed request for codex/gpt-6-astra at 02700476
+// held the head; naming another reviewer was refused as already requested,
+// review-release answered stale_request for every number, and only an empty
+// commit let it go. The developer now withdraws it with a reason, or
+// redirects it by naming another reviewer; a claimed request stays.
+it("the developer withdraws an unclaimed review request with a reason and asks another reviewer at the same head (t627)", async () => {
+  const GEMINI = "antigravity/gemini-3.1-pro";
+  const L = await setup("land-withdraw");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "d".repeat(40);
+  await submittedTask(L, id, head);
+  const asked = await L.requestReview(id, "owner", GPT, POOL, true);
+  // The developer alone withdraws, and only with a reason.
+  await refusal(L.withdrawReviewRequest(id, OPUS, "no runner"), "not_project_owner", /only the developer withdraws/);
+  await refusal(L.withdrawReviewRequest(id, "owner", "  "), "bad_reason", /needs a reason/);
+  await refusal(L.withdrawReviewRequest(id, "owner", undefined), "bad_reason", /needs a reason/);
+  await refusal(L.withdrawReviewRequest(id, "owner", "x".repeat(1001)), "too_long", /at most 1000/);
+  await refusal(L.withdrawReviewRequest(id, "owner", "no runner", 99999), "no_request", /has no review request 99999/);
+  const gone = await L.withdrawReviewRequest(id, "owner", "No runner serves  codex/gpt-6-astra");
+  expect(gone).toEqual({ request: asked.request, head, reviewer: GPT, reason: "No runner serves codex/gpt-6-astra" });
+  expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ actor: "owner", data: { head, reviewer: GPT, request: asked.request, reason: "No runner serves codex/gpt-6-astra" } });
+  expect(await L.reviewWaiting()).toEqual([]);
+  // Nothing stands now, so a second withdrawal finds nothing.
+  await refusal(L.withdrawReviewRequest(id, "owner", "again"), "no_request", /nothing to withdraw/);
+  // Another reviewer is asked at the same head, with no new commit.
+  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true);
+  expect(next).toMatchObject({ needed: true, requested: true, reviewer: GEMINI, head });
+  expect(next.withdrew).toBeUndefined();
+  const [waiting] = await L.reviewWaiting();
+  expect(waiting).toMatchObject({ id, request: next.request, dispatch: { agent: "antigravity", model: "gemini-3.1-pro" } });
+  // A claimed request is being served, and is refused, by number too.
+  await L.claimReview(id, GEMINI, RUNNER);
+  await refusal(L.withdrawReviewRequest(id, "owner", "changed my mind"), "review_claimed", new RegExp(`request ${next.request}\\) is claimed by ${GEMINI}`));
+  await refusal(L.withdrawReviewRequest(id, "owner", "changed my mind", next.request), "review_claimed", /is being served and is not withdrawn/);
+  expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ state: "claimed", claimedBy: GEMINI });
+  // A request already withdrawn, named by number, is not withdrawn again.
+  await refusal(L.withdrawReviewRequest(id, "owner", "again", asked.request), "no_request", /is withdrawn, so there is nothing to withdraw/);
+});
+
+it("naming another reviewer redirects an unclaimed review request, says so, and leaves it standing when the new ask is refused (t627)", async () => {
+  const GEMINI = "antigravity/gemini-3.1-pro";
+  const L = await setup("land-redirect");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "e".repeat(40);
+  await submittedTask(L, id, head);
+  const asked = await L.requestReview(id, "owner", GPT, POOL, true);
+  // A refused new reviewer (a contributor) withdraws nothing.
+  await refusal(L.requestReview(id, "owner", OPUS, POOL, true), "self_review", /contributed to/);
+  expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ state: "open" });
+  // Nor does an ask the gate refuses after the redirect began: the check
+  // failing at the head blocks the new request, and the old one stands.
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: false, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
+  await refusal(L.requestReview(id, "owner", GEMINI, NAMED_POOL, true), "review_blocked", /failed at/);
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["open"]);
+  expect((await events(L, id)).some((e) => e.kind === "review.withdrawn")).toBe(false);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
+  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true);
+  expect(next).toMatchObject({ needed: true, requested: true, reviewer: GEMINI, head, withdrew: [{ request: asked.request, reviewer: GPT }] });
+  expect(next.request).not.toBe(asked.request);
+  expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ actor: "owner", data: { head, reviewer: GPT, request: asked.request, reason: `the developer named ${GEMINI} to review it` } });
+  const waiting = await L.reviewWaiting();
+  expect(waiting.map((w) => w.request)).toEqual([next.request]);
+  // Naming the same reviewer again keeps the request as it stands.
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true)).toMatchObject({ requested: false, reviewer: GEMINI, request: next.request });
+  // The review-withdraw route is the developer's alone and needs a reason.
+  const ownerToken = "land-withdraw-token";
+  const token = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;
+  const post = async (actor: string, body: unknown) => {
+    const res = await worker.fetch(new Request(`https://atelier.test/api/projects/land-redirect/items/${id}/review-withdraw`, {
+      method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": actor }, body: JSON.stringify(body),
+    }), token);
+    return { status: res.status, body: await res.json() as Record<string, unknown> };
+  };
+  expect(await post(OPUS, { reason: "Stuck" })).toMatchObject({ status: 403, body: { error: "not_project_owner" } });
+  expect(await post("owner", {})).toMatchObject({ status: 400, body: { error: "bad_reason" } });
+  expect(await post("owner", { reason: "Stuck", request: "8" })).toMatchObject({ status: 400, body: { error: "bad_request" } });
+  expect(await post("owner", { reason: "Stuck" })).toEqual({ status: 200, body: { withdrawn: true, request: next.request, head, reviewer: GEMINI, reason: "Stuck" } });
+  expect(await L.reviewWaiting()).toEqual([]);
 });
 
 it("the landing's steps are recorded as land.* events with their duration, and anything else is refused", async () => {

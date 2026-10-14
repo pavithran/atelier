@@ -408,6 +408,11 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "r
   main: "string", beforeLease: "ms", waited: "ms",
 };
 export const LAND_JSON_MAX = 4000;
+// What a review request answers: the request made or standing, and any
+// unclaimed request of another reviewer it withdrew in its place (t627).
+export type ReviewAsked = { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number; withdrew?: { request: number; reviewer: string | null }[] };
+// The longest reason the developer gives for withdrawing a review request (t627).
+export const REVIEW_WITHDRAW_REASON_MAX = 1000;
 
 const LAND_KIND_TEXT: Record<string, string> = {
   string: "text", boolean: "true or false", strings: "a list of commit hashes or paths",
@@ -6523,11 +6528,21 @@ export class Ledger extends DurableObject<Env> {
   // the live runner offers (`offers`), an open request at this head that
   // every runner offering its reviewer has skipped is withdrawn and asked
   // anew (renewSkippedRequest), so the runners serve the new request.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
+  // One transaction (t627): a request the developer's named reviewer
+  // redirects is withdrawn only if the new one is asked, so a refusal after
+  // the withdrawal (the gate blocked, no runner) leaves the old one standing.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): ReviewAsked {
+    // The offers and the pool are kept whatever the answer, as they were
+    // before the transaction: the ticks read them.
     this.keepOffers(offers);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
-    const item = this.reviewItem(id);
+    this.reviewItem(id);
     this.keepPool(pool);
+    return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers));
+  }
+
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: (SuggestionRecords & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined): ReviewAsked {
+    const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
     // A named reviewer is judged even when a request already stands, so a
@@ -6584,18 +6599,24 @@ export class Ledger extends DurableObject<Env> {
         this.log(id, ORCHESTRATOR, "review.expired", { request: row.id }, at);
       }
     }
-    // A request carried to this head when the head moved (reaskReview) asks
-    // the reviewer of the earlier request. While no runner has claimed it,
-    // the owner naming another reviewer replaces it rather than being told a
-    // review is already requested: the owner did not ask for that one here.
+    // An open request at this head that no runner has claimed, whoever asked
+    // it (the developer earlier, or reaskReview carrying it when the head
+    // moved), is redirected when the developer names another reviewer: it
+    // is withdrawn, the new reviewer is asked below, and the answer names
+    // the withdrawn request (`withdrew`) so atelier land says so (t627).
+    // Before this only a carried request was replaced, and micahapp t9's
+    // own unclaimed request held its head until an empty commit moved it.
+    // A claimed request is being served and stays: review_requested below.
+    const withdrew: { request: number; reviewer: string | null }[] = [];
     if (reviewer !== null && item.head) {
-      const carried = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL AND carried = 1`, id, item.head).toArray();
-      for (const r of carried) {
+      const open = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL`, id, item.head).toArray();
+      for (const r of open) {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         if (asked && sameActor(asked, reviewer)) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
-        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the developer named ${reviewer} to review it` }, at, proved);
+        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, request: r.id as number, reason: `the developer named ${reviewer} to review it` }, at, proved);
+        withdrew.push({ request: r.id as number, reviewer: asked });
       }
     }
     // A request at this head whose reviewer has replied to it with no verdict
@@ -6650,7 +6671,7 @@ export class Ledger extends DurableObject<Env> {
           if (refusal) throw new RuleError("no_reviewer", `the review requested of ${standing} at ${item.head!.slice(0, 8)} cannot count: ${refusal}. Name another with atelier land ${id} --reviewer H/M`, 409);
         }
         if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
-          throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
+          throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}, and a runner has claimed it; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
         const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
         return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
@@ -6716,7 +6737,7 @@ export class Ledger extends DurableObject<Env> {
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved, pool, offers);
-    return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number, ...(withdrew.length ? { withdrew } : {}) };
   }
 
   // When the newest review.requested event for a head was recorded, so a
@@ -6952,6 +6973,41 @@ export class Ledger extends DurableObject<Env> {
     const row = this.currentReviewClaim(itemId, actor, request);
     this.replaceReviewClaim(row.id as number);
     this.log(itemId, actor, "review.released", { note, request }, new Date().toISOString(), proved);
+  }
+
+  // The developer withdraws an open, unclaimed review request of the item's
+  // head (t627), with the reason, kept on the review.withdrawn event; the
+  // gate then asks no one until the developer asks again, of any reviewer,
+  // at the same head. Before this an unclaimed request for a reviewer no
+  // runner served held the head: micahapp t9's request for codex/gpt-6-astra
+  // at 02700476 refused every other reviewer as already requested,
+  // review-release answered stale_request for every number, and only an
+  // empty commit (a new head) let it go. A claimed request is being served
+  // and is refused: its verdict, or its claim lapsing, ends it. `request`
+  // names one; without it, the gate's newest live request at the head.
+  withdrawReviewRequest(itemId: string, actor: string, reason: unknown, request?: unknown, proved = false): { request: number; head: string; reviewer: string | null; reason: string } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer withdraws a review request", 403);
+    if (reason !== undefined && typeof reason !== "string") throw new RuleError("bad_reason", "a reason is text", 400);
+    const why = (reason ?? "").replace(/\s+/g, " ").trim();
+    if (!why) throw new RuleError("bad_reason", "withdrawing a review request needs a reason: --reason \"…\"", 400);
+    if (why.length > REVIEW_WITHDRAW_REASON_MAX) throw new RuleError("too_long", `the reason is at most ${REVIEW_WITHDRAW_REASON_MAX} characters`, 400);
+    if (request !== undefined && (typeof request !== "number" || !Number.isSafeInteger(request) || request < 1)) throw new RuleError("bad_request", "--request names a review request by its number", 400);
+    const item = this.reviewItem(itemId);
+    // A lapsed claim is asked again as an open request first, so it can be withdrawn.
+    this.expireReviewClaims();
+    const live = request !== undefined
+      ? this.sql.exec(`SELECT id, head, dispatch, state, claimedBy FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0]
+      : this.sql.exec(`SELECT id, head, dispatch, state, claimedBy FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, itemId, item.head ?? "").toArray()[0];
+    if (!live) throw new RuleError("no_request", request !== undefined ? `${itemId} has no review request ${request}` : `no review of ${itemId}${item.head ? ` at ${item.head.slice(0, 8)}` : ""} is requested, so there is nothing to withdraw`, 409);
+    const d = JSON.parse(live.dispatch as string) as Dispatch;
+    const reviewer = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+    const head = live.head as string;
+    if (live.state === "claimed") throw new RuleError("review_claimed", `the review of ${itemId} at ${head.slice(0, 8)} (request ${live.id}) is claimed by ${live.claimedBy ?? reviewer}, so it is being served and is not withdrawn; wait for its verdict, or let its claim lapse`, 409);
+    if (live.state !== "open") throw new RuleError("no_request", `review request ${live.id} of ${itemId} is ${live.state}, so there is nothing to withdraw`, 409);
+    const at = new Date().toISOString();
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'open'`, live.id);
+    this.log(itemId, actor, "review.withdrawn", { head, reviewer, request: live.id as number, reason: why }, at, proved);
+    return { request: live.id as number, head, reviewer, reason: why };
   }
 
   // A reviewer's reply parseVerdict could not read (t407): kept on the task,
