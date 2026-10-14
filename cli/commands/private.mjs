@@ -5,7 +5,7 @@ import { privatePath } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { args, cfg, die, project, saveConfig } from "../atelier.mjs";
 import { PRIVATE_LIST } from "../../src/rules.ts";
-import { excludesPrivate, linkPrivate, privateGuard, privateList, privateState, readPrivateList, trackedPrivate, writePrivateList } from "../private.mjs";
+import { excludesPrivate, linkPrivate, privateGuardFor, privateList, privateState, readPrivateList, trackedPrivate, writePrivateList } from "../private.mjs";
 
 // The developer names the project's private files (t645). The names go to
 // the list beside the files in the project's iCloud folder, which follows the
@@ -59,7 +59,7 @@ function add(words) {
     console.log(`${join(list.home, PRIVATE_LIST)} lists them, so atelier clone links them on every Mac.`);
   } else console.log(`${name}'s private files are named on this Mac only: ${list.homeError ?? `${list.home} is not on this Mac`}.`);
   if (!existsSync(entry.path)) return console.log(`${entry.path}, ${name}'s checkout, is not on this Mac; atelier clone links them when it makes one.`);
-  privateGuard(name, entry, { save: () => saveConfig(cfg) });
+  privateGuardFor(name);
   let r;
   try { r = linkPrivate(entry.path, entry, { name }); } catch (error) { die(error.message); }
   for (const line of r.said) console.log(line);
@@ -68,7 +68,7 @@ function add(words) {
 
 function ls() {
   const name = project(), entry = entryOf(name);
-  privateGuard(name, entry, { save: () => saveConfig(cfg) });
+  privateGuardFor(name);
   const list = privateList(name, entry);
   const where = list.homeError ? `no folder: ${list.homeError}` : `${list.home}${list.named ? "" : ` (found by ${name}'s name)`}${existsSync(list.home) ? "" : ", not on this Mac"}`;
   console.log(`${name}: private files are kept in ${where}.`);

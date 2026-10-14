@@ -51,10 +51,15 @@ export function privateHome(name, entry, root = privateRoot()) {
     found = readdirSync(root, { withFileTypes: true })
       .filter((d) => (d.isDirectory() || d.isSymbolicLink()) && privateFolderMatches(String(name ?? ""), d.name))
       .map((d) => d.name).sort();
-  } catch { return { error: `${root} cannot be read, so no folder there is known to be ${name}'s; name one with atelier private add --home DIR --project ${name}` }; }
+  } catch (error) {
+    // No iCloud ai-projects folder on this Mac at all is no folder for the
+    // project; one that is there and cannot be read hides what may be in it.
+    if (error?.code === "ENOENT") return { error: `there is no ${root} on this Mac`, none: true };
+    return { error: `${root} cannot be read (${error?.code ?? error?.message}), so whether ${name} keeps private files there cannot be known; name its folder with atelier private add --home DIR --project ${name}`, unreadable: true };
+  }
   if (found.length === 1) return { home: join(root, found[0]), named: false };
-  if (!found.length) return { error: `no folder in ${root} is named for ${name}; name one with atelier private add --home DIR --project ${name}` };
-  return { error: `more than one folder in ${root} is named for ${name} (${found.join(", ")}); name one with atelier private add --home DIR --project ${name}` };
+  if (!found.length) return { error: `no folder in ${root} is named for ${name}; name one with atelier private add --home DIR --project ${name}`, none: true };
+  return { error: `more than one folder in ${root} is named for ${name} (${found.join(", ")}); name one with atelier private add --home DIR --project ${name}`, unreadable: true };
 }
 
 // The list in the folder that keeps the private files: its valid paths and
@@ -98,9 +103,10 @@ export function privateList(name, entry, root) {
     listed = readPrivateList(home);
     unreadable = listed.unreadable ?? null;
   } else if (home) unreadable = `${home}, the folder that keeps ${name}'s private files and their list, is not on this Mac`;
+  else if (found.unreadable) unreadable = found.error;
   const paths = [...new Set([...listed.paths, ...config])];
   const sources = Object.fromEntries(paths.map((p) => [p, [listed.paths.includes(p) ? "iCloud" : null, config.includes(p) ? "this Mac" : null].filter(Boolean).join(" and ")]));
-  return { paths, sources, refused: listed.refused, listed: listed.exists, fromList: home && !unreadable ? listed.paths : null, unreadable, home, homeError: found.error ?? null, named: found.named };
+  return { paths, sources, refused: listed.refused, listed: listed.exists, fromList: listed.exists && !unreadable ? listed.paths : null, unreadable, home, homeError: found.error ?? null, named: found.named };
 }
 
 // What every Atelier command that stages or pushes is checked against: the
@@ -112,6 +118,8 @@ export function privateList(name, entry, root) {
 // naming where it should be, so the caller pushes nothing.
 export function privateGuard(name, entry, { root, save } = {}) {
   const list = privateList(name, entry, root);
+  // Only a list that is there and was read replaces the copy: a list that
+  // is missing (not synced yet, evicted) or cannot be read never shrinks it.
   if (entry && list.fromList) {
     const kept = entry.privateFromList ?? null;
     if (!kept || kept.length !== list.fromList.length || kept.some((p, i) => p !== list.fromList[i])) {
@@ -119,12 +127,37 @@ export function privateGuard(name, entry, { root, save } = {}) {
       save?.();
     }
   }
+  const kept = Array.isArray(entry?.privateFromList);
   const copy = plainPaths(entry?.privateFromList);
   const paths = [...new Set([...list.paths, ...copy])];
-  const refusal = list.unreadable && !Array.isArray(entry?.privateFromList)
+  const refusal = list.unreadable && !kept
     ? `${list.unreadable}, and this Mac keeps no copy of its list of private files, so what may not leave cannot be known. Make the folder available on this Mac (or name another with atelier private add --home DIR --project ${name}) and try again. Nothing was pushed.`
     : null;
-  return { paths: paths.length || list.listed || Array.isArray(entry?.privateFromList) ? [...paths, PRIVATE_LIST] : [], refusal };
+  return { paths: paths.length || list.listed || kept ? [...paths, PRIVATE_LIST] : [], refusal };
+}
+
+// The one loader every guard uses (t645): the project's entry in this
+// Mac's config, read by the project's name, so no caller passes (or
+// forgets) its private configuration. The CLI registers its own config
+// (useConfig), so what it reads and what it saves stay one; elsewhere the
+// config file is read, and a copy of the list kept is written back to it.
+let shared = null;
+export function useConfig(cfg, save) { shared = { cfg, save }; }
+export function privateGuardFor(project, { root } = {}) {
+  if (typeof project !== "string" || !project) throw new Error("the private-file guard needs the project's name");
+  if (shared) return privateGuard(project, shared.cfg.projects?.[project], { root, save: shared.save });
+  const dir = process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), file = join(dir, "config.json");
+  let cfg;
+  try { cfg = JSON.parse(readFileSync(file, "utf8")); }
+  catch (error) {
+    if (error?.code !== "ENOENT") return { paths: [PRIVATE_LIST], refusal: `${file} cannot be read (${error?.code ?? error?.message}), so ${project}'s private files cannot be known. Nothing was pushed.` };
+    cfg = { projects: {} };
+  }
+  return privateGuard(project, cfg.projects?.[project], { root, save: () => {
+    const part = `${file}.${process.pid}.part`;
+    writeFileSync(part, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+    renameSync(part, file);
+  } });
 }
 
 // The checkout's info/exclude file, wherever its Git directory keeps it.
@@ -265,14 +298,16 @@ export function privateCommits(cwd, privates, tip, base = []) {
   if (!privates?.length) return [];
   const tips = Array.isArray(tip) ? tip : [tip];
   if ([...tips, ...base].some((rev) => typeof rev !== "string" || !rev || rev.startsWith("-"))) throw new Error("the commits to be pushed could not be read for private files (a revision was not named)");
-  // -z with --raw frames every field with a NUL: a commit's line, then for
+  // Each merge is compared with every parent (--diff-merges=separate), so a
+  // merge whose first parent still holds a private file shows it against the
+  // parent that removed it. -z with --raw frames every field with a NUL: a commit's line, then for
   // each changed path its ":modes objects status" field and the path. A path
   // is only ever read as the field after a status, so no byte in it can be
   // taken for a commit or another path. --root shows a root commit's files
   // whatever log.showRoot says.
   const r = gitRead(cwd, [
     ...SCAN_CONFIG, "log", "--no-color", "--format=C%H", "-z", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv",
-    "--root", "--diff-merges=first-parent", "--diff-filter=d", ...tips, ...(base.length ? ["--not", ...base] : []), "--",
+    "--root", "--diff-merges=separate", "--diff-filter=d", ...tips, ...(base.length ? ["--not", ...base] : []), "--",
   ], { env: SCRUBBED });
   if (r.status !== 0) throw new Error(`the commits to be pushed could not be read for private files (${(r.stderr || "").trim().split("\n")[0] || `git log exited ${r.status}`})`);
   const found = [], fields = r.stdout.split("\0");
@@ -288,12 +323,22 @@ export function privateCommits(cwd, privates, tip, base = []) {
     } else if (/^C[0-9a-f]{40,64}$/.test(field)) commit = field.slice(1);
     else throw new Error("the commits to be pushed could not be read for private files (git log's output was not as expected)");
   }
+  // And the state, not only the changes: no tree pushed holds a private
+  // file, however the history reached it.
+  for (const rev of tips) {
+    const tree = gitRead(cwd, [...SCAN_CONFIG, "ls-tree", "-r", "-z", "--full-tree", "--name-only", rev], { env: SCRUBBED });
+    if (tree.status !== 0) throw new Error(`the tree to be pushed could not be read for private files (${(tree.stderr || "").trim().split("\n")[0] || `git ls-tree exited ${tree.status}`})`);
+    const commit = gitRead(cwd, ["rev-parse", "--verify", "--end-of-options", `${rev}^{commit}`], { env: SCRUBBED }).stdout?.trim() || rev;
+    for (const path of privatePathsAmong(tree.stdout.split("\0").filter(Boolean), privates)) {
+      if (!found.some((f) => f.commit === commit && f.path === path)) found.push({ commit, path, tree: true });
+    }
+  }
   return found;
 }
 
 // The commits privateCommits found, as one line: each path with its commit.
 export function privateCommitsText(found) {
-  const shown = found.slice(0, 20).map(({ commit, path }) => `${path} in ${commit.slice(0, 12)}`);
+  const shown = found.slice(0, 20).map(({ commit, path, tree }) => `${path} in ${tree ? "the tree of " : ""}${commit.slice(0, 12)}`);
   return `${shown.join(", ")}${found.length > 20 ? `, and ${found.length - 20} more` : ""}`;
 }
 
@@ -306,16 +351,18 @@ export function privateRefusal(cwd, privates, tip, base, what) {
 }
 
 // Every Atelier push of the developer's or a task's history goes through
-// here (t645): `push` runs only when the guard's list could be read and no
+// here (t645), named by its project, whose private configuration the one
+// loader reads: `push` runs only when the guard's list could be read and no
 // commit reachable from `tip` and from none of a `bases` entry carries a
 // private file. Each entry of `bases` is what one destination already
 // holds, and the check is made against each; `bases` may be a function,
 // called only when there is something to check, returning the entries or
 // { error } (a destination that cannot be read stops the push). `fail` takes
 // the refusal (by default it is thrown). Returns what `push` returns.
-export function guardedPush({ guard, cwd, tip, base = [], bases = [base], what, fail = (message) => { throw new Error(message); } }, push) {
-  if (guard?.refusal) return fail(`${what}: ${guard.refusal}`);
-  if (guard?.paths?.length) {
+export function guardedPush({ project, cwd, tip, base = [], bases = [base], what, fail = (message) => { throw new Error(message); }, root }, push) {
+  const guard = privateGuardFor(project, { root });
+  if (guard.refusal) return fail(`${what}: ${guard.refusal}`);
+  if (guard.paths.length) {
     const read = typeof bases === "function" ? bases() : { bases };
     if (read.error) return fail(`${what}: ${read.error}. Nothing was pushed.`);
     for (const held of read.bases) {

@@ -7,7 +7,7 @@ import { pathCollisions } from "../../src/rules.ts";
 import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
 import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
-import { guardedPush, privateGuard, privateRefusal } from "../private.mjs";
+import { guardedPush, privateGuardFor, privateRefusal } from "../private.mjs";
 import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
@@ -31,7 +31,7 @@ export default async function mergeCommand() {
         log: (line) => console.log(line.replace(/^REMOVED /, `Removed ${id}'s workspace `).replace(/^KEEP +(.*?): /, `Kept ${id}'s workspace $1: `)) });
     } catch (error) { console.log(`${id}'s workspace was left in place: ${error.message}`); }
   };
-  const postMerge = (name, id) => executePostMerge({ name, id, entry: cfg.projects?.[name] ?? null, request: (method, path, body) => request(method, path, body, OWNER) });
+  const postMerge = (name, id) => executePostMerge({ name, id, request: (method, path, body) => request(method, path, body, OWNER) });
   // A plan's branch is updated only by its integrator, which merges
   // recorded parts, so an accepted plan that conflicts with main would stay
   // accepted with no one able to update it. Its merge, already aborted,
@@ -190,7 +190,7 @@ export default async function mergeCommand() {
     const taskRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,item.acceptedHead);
     if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's holder rewrites those commits under an allowed identity and submits a new revision, or the developer allows the address with atelier init --agent-email EMAIL.`);
     // The project's private files (t645) reach the baseline through no task.
-    const guard=privateGuard(name,p,{save:()=>saveConfig(cfg)});
+    const guard=privateGuardFor(name);
     if (guard.refusal) die(`${id} was not merged: ${guard.refusal}`);
     const taskPrivate=privateRefusal(cwd,guard.paths,item.acceptedHead,[baselineHead],`${id}'s accepted revision`);
     if (taskPrivate) die(`${taskPrivate} Nothing was merged.`);
@@ -333,7 +333,7 @@ export default async function mergeCommand() {
     if(notesRefusals.length)die(`the landing would push provenance notes whose identity the project's policy refuses:\n  ${notesRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, fix refs/notes/atelier, then merge again.`);
     const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
     // Nor through the checkout's own commits the push carries with it (t645).
-    guardedPush({guard,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>die(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`)},
+    guardedPush({project:name,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>die(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`)},
       ()=>git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token}));
     journal.save({phase:'published'});
     const recorded = await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);

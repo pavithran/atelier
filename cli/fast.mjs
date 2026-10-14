@@ -33,7 +33,7 @@ import { scanTrees } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
 import { checkEnv } from "./check-env.mjs";
-import { privateRefusal } from "./private.mjs";
+import { privateGuardFor, privateRefusal } from "./private.mjs";
 
 const SHA = /^[0-9a-f]{7,64}$/;
 
@@ -459,7 +459,7 @@ const hasCommit = (cwd, sha) => runGit(cwd, ["cat-file", "-e", `${sha}^{commit}`
 // (the project and reviewer, for atelier fast record). Returns { ok, start,
 // head, landed, failure }, and once the batch landed, the tasks recorded
 // and unrecorded and `pending`, the receipts file while any is unrecorded.
-export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, guard = null, log = () => {} }) {
+export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, project = null, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -599,6 +599,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     // Nor a private file of the project (t645): what fast land lands is
     // what the next publish pushes.
     if (!failure) {
+      const guard = project ? privateGuardFor(project) : null;
       const held = guard?.refusal ? `The batch: ${guard.refusal}` : privateRefusal(cwd, guard?.paths ?? [], scanned, [start], "The batch");
       if (held) failure = { step: "private files", detail: held };
     }

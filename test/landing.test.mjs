@@ -327,7 +327,7 @@ test('a merge refuses to push the checkout\'s own commit holding a private file 
  const baselineBefore=git(checkout,'ls-remote',baseline,'refs/heads/main');
  const r=await run(checkout,'merge','t1');
  assert.notEqual(r.status,0,r.output);
- assert.match(r.output,/The landing would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./s);
+ assert.match(r.output,/The landing would carry private files: PROJECT\.md in [0-9a-f]{12}.*Nothing was pushed\./s);
  assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
  assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
 });

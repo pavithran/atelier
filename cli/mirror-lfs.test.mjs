@@ -54,7 +54,7 @@ test("a replaced LFS extension cannot publish an intermediate secret or a missin
     git(["rm", "-q", "data.txt"]);
     git(["commit", "-qm", "Remove pointer"]);
     const lines = [];
-    const result = publishMirror({ git, dir: checkout, branch: "main", remote: "public", say: (line) => lines.push(line),
+    const result = publishMirror({ git, dir: checkout, branch: "main", remote: "public", project: "mirror-fixture", say: (line) => lines.push(line),
       identity: { name: "Public", email, agentEmails: [], publicMirrors: ["public"], publicMirrorDestinations: { public: mirror } } });
     const output = lines.join("\n");
     assert.equal(result.ok, content === "safe\n", output);
@@ -88,7 +88,7 @@ function repository(t) {
   git(["remote", "add", "public", mirror]);
   const commit = () => { git(["add", "-A"]); git(["commit", "-qm", "Change"]); return git(["rev-parse", "HEAD"]).stdout.trim(); };
   const lines = [];
-  return { git, checkout, mirror, commit, lines, options: { git, dir: checkout, branch: "main", remote: "public", say: (line) => lines.push(line),
+  return { git, checkout, mirror, commit, lines, options: { git, dir: checkout, branch: "main", remote: "public", project: "mirror-fixture", say: (line) => lines.push(line),
     identity: { name: "Public", email, agentEmails: [], publicMirrors: ["public"], publicMirrorDestinations: { public: mirror } } } };
 }
 

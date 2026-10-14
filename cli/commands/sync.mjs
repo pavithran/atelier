@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
-import { guardedPush, privateGuard } from "../private.mjs";
+import { guardedPush } from "../private.mjs";
 import { OWNER, P, call, cfg, die, git, landingGit, landingHome, project, refreshControlPlane, saveConfig, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
@@ -40,8 +40,7 @@ export default async function syncCommand() {
     if (git(["merge-base", "--is-ancestor", paired, head], { cwd, allowFail: true }).status !== 0) die(`${p.branch} no longer contains ${short(paired)}, the commit the baseline matches; its history was rewritten, and it cannot be carried`);
     // No commit carried may hold a private file (t645): the checkout's own
     // commits are read, which the rebuilt ones copy tree for tree.
-    const guard = privateGuard(name, p, { save: () => saveConfig(cfg) });
-    const built = guardedPush({ guard, cwd, tip: head, base: [paired], what: `Carrying ${p.branch} to ${name}'s baseline`, fail: die }, () => {
+    const built = guardedPush({ project: name, cwd, tip: head, base: [paired], what: `Carrying ${p.branch} to ${name}'s baseline`, fail: die }, () => {
       let built;
       try { built = syncHistory(git, cwd, baselineHead, paired, head); } catch (error) { die(error.message); }
       // The pairs are saved before the push: a push that lands just before a

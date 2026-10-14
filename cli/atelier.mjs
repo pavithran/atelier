@@ -52,6 +52,7 @@ import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
 import { serverFetch } from "./server-fetch.mjs";
+import { useConfig } from "./private.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -455,6 +456,9 @@ if (isMain && process.argv[2] === "ops") {
 
 export const args = parseArgs(process.argv.slice(2));
 export const cfg = isMain ? loadConfig() : {};
+// The private-file guard reads and keeps its copy of the list in this same
+// config (t645), so what it saves is not lost to a later saveConfig.
+if (isMain) useConfig(cfg, () => saveConfig(cfg));
 
 // The server says which actor stands for the project owner; `login` records it.
 export const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";

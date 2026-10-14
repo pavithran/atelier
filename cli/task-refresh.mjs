@@ -49,7 +49,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TRANSFORMATIONS, classifyConflicts, conflictReport, verifyResolution } from "../src/refresh/mechanical.ts";
 import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/moved-code.ts";
-import { guardedPush, privateGuard } from "./private.mjs";
+import { guardedPush } from "./private.mjs";
 
 const HASH = /^[a-f0-9]{40,64}$/;
 const CHECKS_FAILED = 2;
@@ -287,7 +287,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
     // The merge adds none of the project's private files to the fork (t645):
     // what it holds beyond the task's head and main is read for them.
     let privateHeld = null;
-    const push = await guardedPush({ guard: privateGuard(project, null), cwd: dir, tip: head, base: [lease.expectedHead, lease.mainHead], what: `${item.id}'s refresh`, fail: (message) => { privateHeld = message; return null; } },
+    const push = await guardedPush({ project, cwd: dir, tip: head, base: [lease.expectedHead, lease.mainHead], what: `${item.id}'s refresh`, fail: (message) => { privateHeld = message; return null; } },
       () => git(["push", "--quiet", workspace.remote, `${head}:refs/heads/${branch}`], { token: workspace.token, allowFail: true, timeoutMs: PUSH_TIMEOUT_MS }));
     if (privateHeld) throw new Error(privateHeld);
     // A transport error may arrive after the remote installed the commit.

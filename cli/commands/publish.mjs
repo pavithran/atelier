@@ -2,7 +2,7 @@
 import { OWNER, P, args, call, cfg, die, git, project, saveConfig, short } from "../atelier.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { publishMirror } from "../mirror.mjs";
-import { guardedPush, privateGuard, remoteBases } from "../private.mjs";
+import { guardedPush, remoteBases } from "../private.mjs";
 
 // The project owner: push commits made directly in the checkout so new forks
 // start from them. With a REMOTE, it publishes the registered branch to the
@@ -14,7 +14,7 @@ export default async function publishCommand() {
   const name = project();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
   const { project: record } = await call("GET", P(name), undefined, OWNER);
-  const r = publishMirror({ git, dir: p.path, branch: p.branch, remote: args._[1], say: console.log, identity: record?.policy?.commitIdentity, guard: privateGuard(name, p, { save: () => saveConfig(cfg) }) });
+  const r = publishMirror({ git, dir: p.path, branch: p.branch, remote: args._[1], say: console.log, identity: record?.policy?.commitIdentity, project: name });
   if (!r.ok) process.exit(1);
 }
 
@@ -26,9 +26,8 @@ export async function publishBaseline() {
   const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
   // No commit the baseline lacks may carry a private file (t645). The
   // baseline's head is read, and fetched when this checkout lacks it.
-  const guard = privateGuard(name, p, { save: () => saveConfig(cfg) });
   const ref = `refs/heads/${p.branch}`;
-  guardedPush({ guard, cwd: p.path, tip: ref, bases: () => remoteBases({ git, cwd: p.path, remote: t.remote, ref, opts: { token: t.token, ownerRemote: false } }), what: `Publishing ${p.branch} to ${name}'s baseline`, fail: die },
+  guardedPush({ project: name, cwd: p.path, tip: ref, bases: () => remoteBases({ git, cwd: p.path, remote: t.remote, ref, opts: { token: t.token, ownerRemote: false } }), what: `Publishing ${p.branch} to ${name}'s baseline`, fail: die },
     () => git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${p.branch}:${p.branch}`], { cwd: p.path, token: t.token }));
   console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
 }

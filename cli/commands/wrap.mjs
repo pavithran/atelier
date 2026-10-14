@@ -5,7 +5,7 @@ import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefus
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { OWNER, P, actor, args, at, call, cfg, die, git, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
 import { publishCheckoutRemote } from "../mirror.mjs";
-import { privateChanges, privateGuard } from "../private.mjs";
+import { privateChanges, privateGuardFor } from "../private.mjs";
 import { publishBaseline } from "./publish.mjs";
 import syncCommand from "./sync.mjs";
 
@@ -111,7 +111,7 @@ export default async function wrapCommand() {
   // A private file (t645) is never staged: Git ignores each one through
   // info/exclude, and one staged by hand or no longer excluded stops wrap
   // here, before anything is staged. A symbolic link is refused as the file.
-  const guard = privateGuard(name, cfg.projects[name], { save: () => saveConfig(cfg) });
+  const guard = privateGuardFor(name);
   if (guard.refusal) die(`wrap stopped before staging anything: ${guard.refusal}`);
   const privates = guard.paths;
   let held;
@@ -135,7 +135,7 @@ export default async function wrapCommand() {
   data.pushes = [];
   for (const remote of remotes) {
     const identity = record.policy.commitIdentity;
-    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log, guard });
+    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log, project: name });
     data.pushes.push({ remote, passed: result.ok });
     console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
   }
