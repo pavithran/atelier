@@ -1,5 +1,12 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// No test touches this Mac's own ~/.config/atelier (t645): the run, and
+// every process it starts, gets a config folder of its own.
+process.env.ATELIER_CONFIG_DIR = mkdtempSync(join(tmpdir(), "atelier-vitest-config-"));
 
 // The test/**/*.spec.ts and runner-token spec run inside workerd through the Workers
 // test pool, against the bindings wrangler.jsonc declares: the Ledger
