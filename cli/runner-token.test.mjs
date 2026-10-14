@@ -1,15 +1,17 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { runnerCredential, runnerChildEnv, storeRunnerCredential } from "./credentials.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { runRunner, planFilePath } from "./runner.mjs";
 import { readMovedCodeRecords } from "./landing.mjs";
 
-const root = resolve(".cache/runner-token-tests");
-mkdirSync(root, { recursive: true });
+// Scratch lives under the system temp folder and goes with the run (t640).
+const root = mkdtempSync(join(tmpdir(), "atelier-runner-token-tests-"));
+after(() => rmSync(root, { recursive: true, force: true }));
 function fixture(t) {
   const dir = mkdtempSync(join(root, "test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -198,7 +198,7 @@ export function attentionFor(
   for (const item of ordered) {
     const queued = taskStage(item) === "queued";
     if (queued && !offers) unread++;
-    const noRunner = queued && offers ? unoffered(item.dispatch!, offers, now) : undefined;
+    const noRunner = queued && offers ? unoffered(item.dispatch!, offers, now, project) : undefined;
     const placed = placeTask(project, item, byItem.get(item.id) ?? [], noRunner);
     if (!placed) continue;
     if (isOwnerTask(placed)) owner.push(placed);

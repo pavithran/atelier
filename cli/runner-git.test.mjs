@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { runnerGitRequest } from "../src/runner-git.ts";
 import { runnerDenied, sha256 } from "../src/tokens.ts";
 import { parseRuleError } from "../src/rules.ts";
@@ -24,9 +25,7 @@ async function listen(server) {
 }
 
 test("real git clone and push use the gateway; expiry, revocation, release and reassignment close direct access", async (t) => {
-  const root = resolve(".cache/runner-token-tests");
-  mkdirSync(root, { recursive: true });
-  const dir = mkdtempSync(join(root, "git-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-git-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, "fork.git"), seed = join(dir, "seed"), clone = join(dir, "clone");
   const git = async (cwd, ...args) => {

@@ -1,7 +1,8 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { runRunner } from "../cli/runner.mjs";
 import { runnerDenied, runnerTaskTerminal, TERMINAL_TASK_EXITS } from "../src/tokens.ts";
@@ -19,8 +20,9 @@ import { serveRunner, subsequence } from "./helpers/runner-server.mjs";
 // poll and neither failure counter charged. A refused claim and a
 // nonterminal finish failure keep their own handling.
 
-const root = resolve(".cache/runner-closed-route");
-mkdirSync(root, { recursive: true });
+// Scratch lives under the system temp folder and goes with the run (t640).
+const root = mkdtempSync(join(tmpdir(), "atelier-runner-closed-route-"));
+after(() => rmSync(root, { recursive: true, force: true }));
 const PROJECT = "demo", ACTOR = "claude-code/model", RUNNER = "home:studio", TOKEN = "runner-closed-secret";
 const STATES = Object.keys(TERMINAL_TASK_EXITS);
 const label = (state) => `is ${state === "abandoned" ? "closed" : state} (state: ${state})`;

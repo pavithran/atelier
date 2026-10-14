@@ -6,7 +6,7 @@ import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { inScope, runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
+import { actorStanding, dispatchActor, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -35,7 +35,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -516,9 +516,13 @@ export interface RefreshView {
   last: RefreshResult | null;
 }
 
-// The harness/model actors live runners offer, each once.
+// The harness/model actors live runners offer, each once: only a runner
+// that serves the project the offers were read for counts (servesProject,
+// t652). Before, a refresh could pick a resolver only another project's
+// runner offers, and the task waited in resolve for a runner that never
+// polls this project.
 function offerActors(offers: readonly RunnerOffer[]): string[] {
-  return [...new Set(offers.flatMap((o) => o.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`))))];
+  return [...new Set(offers.filter((o) => servesProject(o)).flatMap((o) => o.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`))))];
 }
 
 // A runner's reason as a refresh records it: one line, at most REASON_MAX.
@@ -1258,6 +1262,13 @@ export class Ledger extends DurableObject<Env> {
     return modelCardView(this.cardRecords(), this.models(), named);
   }
 
+  // Several models' cards at once, read from one copy of the table, for the
+  // Models page's comparisons (t621): one view per name, in the order given.
+  modelCardViews(names: readonly string[]): CardView[] {
+    const all = this.cardRecords(), pool = this.models();
+    return names.map((named) => modelCardView(all, pool, named));
+  }
+
   // A card or a withdrawal, stored once: the same record sent again (a
   // retry) is answered with the one stored, and nothing is added.
   addModelCard(named: string, input: CardInput | WithdrawalInput, by: string, at: string): { record: CardRecord; retried: boolean; view: CardView } {
@@ -1411,7 +1422,9 @@ export class Ledger extends DurableObject<Env> {
     // With previous, an overlap override keeps the offer it overrides
     // (overrideDispatch, t491); the builder it leaves is checked as any other.
     const d = overrideDispatch(input, previous, by, at);
-    if (d.agent && d.model) this.assertStanding(`${d.agent}/${d.model}`, role, pool);
+    // A model named without a harness is checked as the bare model (t649).
+    const actor = dispatchActor(d);
+    if (actor) this.assertStanding(actor, role, pool);
     return d;
   }
 
@@ -1492,7 +1505,7 @@ export class Ledger extends DurableObject<Env> {
     for (const r of open) {
       if (r.plan && this.planRecord(r.plan as string).approval) continue;
       const d = JSON.parse(r.dispatch as string) as Dispatch;
-      const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+      const asked = dispatchActor(d);
       const held = asked ? actorStanding(pool, asked, "review") : null;
       if (held) this.withdrawHeldRequest(r.item as string, r.id as number, r.head as string, asked!, held, r.tier === 1, at);
     }
@@ -1507,7 +1520,8 @@ export class Ledger extends DurableObject<Env> {
     }
     for (const row of this.sql.exec(`SELECT * FROM prereviews WHERE state = 'open' AND dispatch IS NOT NULL`).toArray()) {
       const d = JSON.parse(row.dispatch as string) as Dispatch;
-      const held = d.agent && d.model ? actorStanding(pool, `${d.agent}/${d.model}`, "review") : null;
+      const asked = dispatchActor(d);
+      const held = asked ? actorStanding(pool, asked, "review") : null;
       if (held) this.settlePrereview(row, "withdrawn", { detail: held }, ORCHESTRATOR, at);
     }
     // A queued build of a standalone task, or an unapproved plan's queued
@@ -1517,8 +1531,9 @@ export class Ledger extends DurableObject<Env> {
       const item = this.item(row.id as string);
       const d = item.dispatch!;
       const role = claimRole(item);
-      if (!role || !d.agent || !d.model) continue;
-      const held = actorStanding(pool, `${d.agent}/${d.model}`, role);
+      const asked = dispatchActor(d);
+      if (!role || !asked) continue;
+      const held = actorStanding(pool, asked, role);
       if (held) this.withdrawHeldDispatch(item, held, at);
     }
     const plans = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
@@ -2652,7 +2667,7 @@ export class Ledger extends DurableObject<Env> {
     const runners = this.runnerPolls(), now = Date.now();
     const busy = this.items().filter((i) => i.state === "claimed" && i.owner && i.runner && i.dispatch
       && !orphanedBy(i, runners, now)
-      && !this.runnerMeta(`runner-idle:${i.runner.toLowerCase()}`)
+      && !idleMarked(this.runnerMeta<string>(`runner-idle:${i.runner.toLowerCase()}`), now)
       && !(skipped.get(i.id) ?? []).some((s) => s.dispatchAt === i.dispatch!.at && s.runner.toLowerCase() === i.runner!.toLowerCase()))
       .map((i) => ({ runner: i.runner!, id: i.id }));
     return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting(), ...this.prereviewWaiting()], busy };
@@ -2704,7 +2719,11 @@ export class Ledger extends DurableObject<Env> {
   // cli/runner.mjs). Kept on the task under its current dispatch, so status
   // and show name it however many run reports follow; a report for a task
   // no longer open and dispatched is not kept, since nothing waits on it.
+  // A task the reporting runner holds is kept too, for any kind it reports
+  // (RUN_SKIP_KINDS in src/dispatch/rules.ts says why each may follow a run
+  // that kept its claim); a kind it never reports is refused.
   recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, note: string): boolean {
+    if (!isRunSkipKind(kind)) throw new RuleError("bad_kind", `a run skip's kind is ${RUN_SKIP_KINDS.join(", ")}, not ${String(kind).slice(0, 40)}`, 400);
     const item = this.item(id);
     const d = item.dispatch;
     const heldByRunner = item.state === "claimed" && (item.runner ?? "").toLowerCase() === runner.toLowerCase();
@@ -3999,6 +4018,7 @@ export class Ledger extends DurableObject<Env> {
     try {
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       [pool, offers] = await Promise.all([index.models(), index.runnerOffers()]) as unknown as [ModelEntry[], SeenOffer[]];
+      offers = this.ownOffers(offers);
     } catch { /* the index could not be read: nothing new is asked this time */ }
     // A baseline push need not record item.merged (for example sync). Read
     // main here, on both CLI and Workflow polls, even when the previous
@@ -4006,7 +4026,7 @@ export class Ledger extends DurableObject<Env> {
     // that the deduplication binding has changed.
     const now = new Date();
     const lease = this.projectLanding();
-    if (pool && offers && liveOffers(offers, now).some((o) => (o.jobs ?? []).includes(PREREVIEW_JOB))
+    if (pool && offers && liveOffers(offers, now).some((o) => servesProject(o) && (o.jobs ?? []).includes(PREREVIEW_JOB))
       && prereviewCandidates(lease, !!lease && this.landingLive(lease, now.toISOString()), this.projectLandingQueue(), now.getTime()).length) {
       try {
         using repo = await this.env.ARTIFACTS.get(this.project().repo);
@@ -4053,9 +4073,10 @@ export class Ledger extends DurableObject<Env> {
     }
     const candidates = prereviewCandidates(lease, leaseLive, queue, now.getTime());
     if (!candidates.length || !pool || !live) return;
-    // Pre-review needs a runner that advertises it. Where no live runner
-    // does, it is off: nothing is asked and nothing is recorded.
-    if (!live.some((o) => (o.jobs ?? []).includes(PREREVIEW_JOB))) return;
+    // Pre-review needs a runner that advertises it and serves this project
+    // (servesProject, t652). Where no live runner does, it is off: nothing
+    // is asked and nothing is recorded.
+    if (!live.some((o) => servesProject(o) && (o.jobs ?? []).includes(PREREVIEW_JOB))) return;
     for (const w of candidates) this.askPrereview(w.item, pool, live, at);
   }
 
@@ -5045,6 +5066,19 @@ export class Ledger extends DurableObject<Env> {
     return { item: this.item(id), record };
   }
 
+  // The events a task page's fast-landing summary reads (fastLandingBlock in
+  // src/ui.ts), newest first, read by kind rather than from the newest 200
+  // events detail() carries (t637, codex/gpt-6-astra's review: two hundred
+  // edits of the merged task pushed the receipt out of that window and the
+  // whole summary vanished). The landing itself, the fix tasks a rejected
+  // post-merge review filed, and the review requests and verdicts since the
+  // landing; none when the task did not land fast.
+  fastLandingEvents(id: string): LedgerEvent[] {
+    const landed = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'item.landed_fast'`, id).one().seq;
+    if (landed === null || landed === undefined) return [];
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.landed_fast', 'item.fix_filed') OR (seq >= ? AND kind IN ('review.requested', 'review.approved', 'review.rejected'))) ORDER BY seq DESC`, id, landed).toArray().map(eventOf);
+  }
+
   landedFastReceipt(id: string): FastReceipt | null {
     const e = this.events(id, Number.MAX_SAFE_INTEGER).find((x) => x.kind === "item.landed_fast");
     return e ? e.data as unknown as FastReceipt : null;
@@ -5295,7 +5329,7 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id) };
+    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -5348,7 +5382,7 @@ export class Ledger extends DurableObject<Env> {
   // is live, however many runners asked. A read that fails says the same.
   private async routingOffers(): Promise<readonly SeenOffer[] | undefined> {
     try {
-      const recorded = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
+      const recorded = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
       this.keepOffers(recorded);
       return routable(recorded);
     } catch {
@@ -5376,7 +5410,15 @@ export class Ledger extends DurableObject<Env> {
       const held = newest.get(offer.runner);
       if (!held || held.at < offer.at) newest.set(offer.runner, offer);
     }
-    return [...newest.values()];
+    return this.ownOffers([...newest.values()]);
+  }
+
+  // The offers as this project's routing reads them (offersFor in
+  // src/dispatch/rules.ts, t652): a runner whose token serves other
+  // projects offers this one nothing. Every offer a project's routing,
+  // review or dispatch reads comes through here.
+  private ownOffers<T extends readonly SeenOffer[] | null | undefined>(offers: T): T {
+    return (offers ? offersFor(offers, this.project().name) : offers) as T;
   }
 
   // The owner states a goal. The plan item is created and dispatched as a
@@ -5543,6 +5585,7 @@ export class Ledger extends DurableObject<Env> {
   // plan order, the tick dispatches what may start, all in one transaction,
   // and the alarm is set for the deadline.
   async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[], offers: readonly SeenOffer[] | null = null): Promise<{ item: Item; parts: Item[] }> {
+    offers = this.ownOffers(offers);
     this.keepOffers(offers);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer approves a plan", 403);
     const item = this.planItem(id);
@@ -5759,6 +5802,7 @@ export class Ledger extends DurableObject<Env> {
   // them; null when the caller read none, and the preview then reads them
   // itself. Nothing here is written.
   async planView(id: string, pool: ModelEntry[] | null = null, mainNow: string | null = null, offers: SeenOffer[] | null = null): Promise<PlanView> {
+    offers = this.ownOffers(offers);
     const asked = this.item(id);
     const item = asked.kind === "part" ? this.item(asked.plan!) : asked;
     if (item.kind !== "plan") throw new RuleError("not_a_plan", `${id} is not a plan or a part of one`, 404);
@@ -6100,8 +6144,9 @@ export class Ledger extends DurableObject<Env> {
     const standing = this.poolStanding();
     for (const p of parts) {
       const d = p.dispatch;
-      if (p.state !== "open" || p.owner || !d?.agent || !d.model || (d.job && d.job !== "merge-main")) continue;
-      const held = actorStanding(standing, `${d.agent}/${d.model}`, "build");
+      const asked = d ? dispatchActor(d) : null;
+      if (p.state !== "open" || p.owner || !asked || (d!.job && d!.job !== "merge-main")) continue;
+      const held = actorStanding(standing, asked, "build");
       if (!held) continue;
       this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
       this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: held }, at);
@@ -6651,8 +6696,11 @@ export class Ledger extends DurableObject<Env> {
   // verdicts; the Models page reads every project's.
   private reviewPrecision(at: string): PrecisionRecord {
     const window = precisionWindow(new Date(at));
-    // The review events too, so a legacy verdict is placed on its review.
-    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected') ORDER BY seq`).toArray().map(eventOf);
+    // The review events too, so a legacy verdict is placed on its review,
+    // and the served annotations, so a finding counts under the model that
+    // served its review here as on the Models page (t621; gpt-6-astra's and
+    // gemini-4-argon's reviews: routing read the declared model).
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected', 'event.served') ORDER BY seq`).toArray().map(eventOf);
     return buildPrecision([{ project: "this", events }], window, this.owner);
   }
 
@@ -6678,6 +6726,7 @@ export class Ledger extends DurableObject<Env> {
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): ReviewAsked {
     // The offers and the pool are kept whatever the answer, as they were
     // before the transaction: the ticks read them.
+    offers = this.ownOffers(offers);
     this.keepOffers(offers);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
     this.reviewItem(id);
@@ -7898,6 +7947,7 @@ export class Ledger extends DurableObject<Env> {
   // gives the reason; the refresh job clears. The runner offers the Worker
   // read come with it, for the merge-main part a conflict adds.
   async refreshFailed(id: string, actor: string, mainHead: string, reason: string, kind: string | null, offers: readonly SeenOffer[] | null = null): Promise<Item> {
+    offers = this.ownOffers(offers);
     this.keepOffers(offers);
     const { record, refresh } = this.reportedRefresh(id, actor, mainHead, " failure");
     const at = new Date().toISOString();
@@ -7966,6 +8016,7 @@ export class Ledger extends DurableObject<Env> {
   // offers the Worker read come with it, for the part's routing as approval
   // routes it.
   async planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown, offers: readonly SeenOffer[] | null = null, token?: string | null): Promise<Item> {
+    offers = this.ownOffers(offers);
     this.keepOffers(offers);
     const { plan, record, reopening, builder } = this.resolveAllowed(id, actor, mainHead, holds, to);
     const at = new Date().toISOString();
@@ -8447,6 +8498,7 @@ export class Ledger extends DurableObject<Env> {
   // (superseded: queued again from the new head). A repeated report answers
   // the recorded outcome.
   taskRefreshFailed(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; outcome: string; reason: string; report?: unknown }, offers: readonly SeenOffer[] | null = null): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
+    offers = this.ownOffers(offers);
     this.keepOffers(offers);
     const outcome = report.outcome;
     if (!["mechanical", "returned", "superseded"].includes(outcome)) throw new RuleError("bad_outcome", "outcome must be mechanical, returned or superseded", 400);

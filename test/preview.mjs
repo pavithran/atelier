@@ -5,27 +5,33 @@
 // server fills it (fillShell). `route(url)` answers one address without a
 // server; test/preview.test.mjs requests each page from a running preview.
 import { build } from "esbuild";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
 const ENTRIES = ["ui", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view"];
-await build({ entryPoints: ENTRIES.map((x) => join(ROOT, "src", `${x}.ts`)), bundle: true, platform: "node", format: "esm", loader: { ".css": "text" }, outdir: dir, outbase: join(ROOT, "src"), logLevel: "error" });
-const load = (x) => import(pathToFileURL(join(dir, `${x}.js`)));
-const ui = await load("ui");
-const { buildFloor } = await load("floor");
-const { renderHow } = await load("how");
-const { attentionFor } = await load("attention");
-const { buildStory, addTally, emptyTally } = await load("graph");
-const { renderActions } = await load("actions-page");
-const { buildRecord } = await load("models/record");
-const { renderUsage } = await load("usage/page");
-const { DEFAULT_THRESHOLDS } = await load("usage/report");
-const browse = await load("browse/view");
+// The bundles are loaded once, then their folder is removed (t658: it was
+// left in the temp folder on every run).
+const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
+const modules = {};
+try {
+  await build({ entryPoints: ENTRIES.map((x) => join(ROOT, "src", `${x}.ts`)), bundle: true, platform: "node", format: "esm", loader: { ".css": "text" }, outdir: dir, outbase: join(ROOT, "src"), logLevel: "error" });
+  for (const x of ENTRIES) modules[x] = await import(pathToFileURL(join(dir, `${x}.js`)));
+} finally { rmSync(dir, { recursive: true, force: true }); }
+const load = (x) => modules[x];
+const ui = load("ui");
+const { buildFloor } = load("floor");
+const { renderHow } = load("how");
+const { attentionFor } = load("attention");
+const { buildStory, addTally, emptyTally } = load("graph");
+const { renderActions } = load("actions-page");
+const { buildRecord } = load("models/record");
+const { renderUsage } = load("usage/page");
+const { DEFAULT_THRESHOLDS } = load("usage/report");
+const browse = load("browse/view");
 
 // Fixed revisions that look like real ones, so screenshots never show placeholders.
 const HEAD = "9621fac2436196a267f96ec81225c2cc3181512d";

@@ -79,7 +79,7 @@ test("a legacy server is refused for a requirement no level guarantees", () => {
 });
 
 test("new declarations, including queued legacy metadata, require published names", async (t) => {
-  const dir = mkdtempSync(resolve(".capabilities-new-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-new-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const declarations = [...CAPABILITIES,
     { name: "future.named.v1", summary: "a new route" },
@@ -419,7 +419,7 @@ test("the review job requires the skip routes, and a legacy server from before t
 // which routes the file to the records driver (t463) through this
 // repository's manifest, installed as Atelier installs it in every clone.
 test("independent capability additions merge cleanly, including the same and new families; a name both sides add stops as a conflict", async (t) => {
-  const dir = mkdtempSync(resolve(".capabilities-merge-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-merge-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
   git("init", "-q");
@@ -566,7 +566,9 @@ function invocations(root) {
 }
 
 test("a server missing one capability a command needs refuses it before its first request, naming the capability", async (t) => {
-  for (const { argv, required } of invocations(mkdtempSync(join(tmpdir(), "atelier-capabilities-argv-")))) {
+  const argvDir = mkdtempSync(join(tmpdir(), "atelier-capabilities-argv-"));
+  t.after(() => rmSync(argvDir, { recursive: true, force: true }));
+  for (const { argv, required } of invocations(argvDir)) {
     for (const missing of required) {
       const f = await stub(t, { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES.filter((n) => n !== missing) });
       const r = await f.run(argv);
@@ -698,4 +700,14 @@ test("--quote asks for the developer's direction by name, and a server without i
     assert.match(r.output, /Until then, the developer gives the permission on the project's Settings page \(Allow fast mode from the command line\) or the task's page \(Allow an override from the command line\), and the command runs again without --quote/, argv.join(" "));
     assert.deepEqual(f.requests, [{ method: "GET", path: "/api/version" }], argv.join(" "));
   }
+});
+
+// t621: the comparison route is published by name without raising the route
+// level, and `models show` requires no more than before: it prints the
+// comparison when the server publishes models.compare.v1 and says so when not.
+test("models.compare.v1 is a named capability that models show reads without requiring (t621)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "models.compare.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("models.compare.v1"));
+  assert.equal(ROUTE_LEVEL, 28);
+  assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
 });

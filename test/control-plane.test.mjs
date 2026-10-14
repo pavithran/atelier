@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { controlPlaneChanges, mergePolicyDecision, readControlPlane, refreshControlPlane } from "../cli/atelier.mjs";
 import { acceptancePolicy, mergeContext } from "../src/control-plane.ts";
@@ -11,8 +12,7 @@ const agents = { codex: { available: true, eligible_roles: ["executor"], preferr
 const execution = { allowed_classes: ["direct", "protected"], direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: ["src/security/**"] };
 
 test("CLI reads roles, preferences and classes without losing protected surfaces", () => {
-  mkdirSync(".cache", { recursive: true });
-  const top = mkdtempSync(resolve(".cache/control-plane-"));
+  const top = mkdtempSync(join(tmpdir(), "atelier-control-plane-"));
   const dir = join(top, "docs/control-plane");
   try {
     assert.equal(readControlPlane(top), null);
@@ -35,8 +35,7 @@ test("CLI reads roles, preferences and classes without losing protected surfaces
 
 
 function fixture(run) {
-  mkdirSync(".cache", { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/control-plane-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-control-plane-"));
   const cp = join(dir, "docs/control-plane");
   mkdirSync(cp, { recursive: true });
   const write = (name, data) => writeFileSync(join(cp, `${name}.v1.json`), JSON.stringify(data));

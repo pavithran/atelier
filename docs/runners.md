@@ -91,6 +91,23 @@ subcommands. One or more existing projects are required. Renaming a project pres
 access through both its old and new names. The token cannot act as the
 developer or choose an actor independently of the current dispatched job.
 
+One runner can serve several projects with one token. Name each project with
+its own `--project`:
+
+```sh
+atelier token issue --runner home:studio --project demo --project site --days 30
+```
+
+The runner stores and uses this token exactly as a one-project token, below;
+each poll offers it the jobs of both projects, oldest dispatch first. A model
+that only this runner offers counts as offered to `demo` and `site` alone:
+plan routing, review routing and the dispatch suggestion of any other project
+pass it by, and `atelier queue` says of a job elsewhere that waits for it
+that `home:studio` serves only demo, site. To add a project, issue a new
+token naming all of them, store it with `atelier token store --runner
+home:studio`, which replaces the stored entry, and end the old token with
+`atelier token revoke ID`; `atelier token ls` lists the IDs.
+
 On the runner machine, install Node and the harness, copy the runner config
 prepared on the developer's machine, and configure the server. Do not run developer
 login on this machine. Store the issued value at the hidden prompt:
