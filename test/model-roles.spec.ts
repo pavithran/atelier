@@ -642,3 +642,49 @@ it("an assignment and a withdrawal sent with --as under an alias are retried by 
   expect(retried.status, await retried.clone().text()).toBe(200);
   expect(await retried.json()).toMatchObject({ withdraws: a.id, retried: true, actingDeclared: "opencode/qwen-alias" });
 });
+
+// gpt-6-astra's eleventh review of t622: the boundary converted the actor a
+// request declares, so a runner offering a model under its alias claimed as
+// the entry's id, which its offer and the dispatch did not name, and a task
+// held under an alias was no longer its holder's. Identities are kept as
+// declared now; only fields that choose a model are converted.
+it("a runner working under an alias claims, submits and releases as the alias it declares", async () => {
+  const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
+  await index().putModel(qwen);
+  try {
+    const name = "roles-alias-runner", ALIAS = "opencode/qwen-alias", H = "d".repeat(40);
+    const L = await project(name);
+    await L.poolChanged(await index().models());
+    const forkable = {
+      create: async () => ({}),
+      get: async () => ({
+        info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+        createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+        fork: async () => ({}), log: async () => [{ hash: H }],
+        [Symbol.dispose]() {},
+      }),
+    } as unknown as typeof env.ARTIFACTS;
+    const as = (method: string, path: string, body: unknown, actor: string, runner?: string) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
+      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS: forkable } as typeof env);
+    // A dispatch recorded under the alias, as main records one, and a runner offering the alias.
+    const task = await L.newItem("Alias task", ["src/e.ts"], "owner", { accept: ["Works"] });
+    await L.dispatch(task.id, "owner", { to: "home", agent: "opencode", model: "qwen-alias" });
+    const claimed = await as("POST", `/projects/${name}/items/${task.id}/claim`, {}, ALIAS, "home:studio");
+    expect(claimed.status, await claimed.clone().text()).toBe(200);
+    expect((await L.item(task.id)).owner).toBe(ALIAS);
+    const pushed = "e".repeat(40);
+    await L.recordPush(task.id, ALIAS, pushed, pushed);
+    await L.addEvidence({ itemId: task.id, claim: "npm test", grade: "observed", passed: true, head: pushed, changedPaths: ["src/e.ts"], by: "owner", at: new Date().toISOString() });
+    const submitted = await as("POST", `/projects/${name}/items/${task.id}/submit`, {}, ALIAS);
+    expect(submitted.status, await submitted.clone().text()).toBe(200);
+    // A task held under the alias before this change is released by its holder.
+    const held = await L.newItem("Held task", ["src/f.ts"], "owner", { accept: ["Works"] });
+    await L.claim(held.id, ALIAS);
+    const released = await as("POST", `/projects/${name}/items/${held.id}/release`, { note: "done for now" }, ALIAS);
+    expect(released.status, await released.clone().text()).toBe(200);
+    expect((await L.item(held.id)).owner).toBeNull();
+  } finally {
+    await index().removeModel("qwen-3");
+  }
+});
