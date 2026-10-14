@@ -763,8 +763,8 @@ function stateOf(checkout, home, path) {
 
 // Links each private path the project's entry names into the checkout, from
 // the folder that keeps them, and makes Git ignore each one. Run by clone
-// after it clones and by private add; atelier pull (t644) is to call it after
-// it pulls. It never overwrites a file or folder: one standing where a link
+// after it clones, by private add, and by atelier pull after a pull that
+// succeeds (t651). It never overwrites a file or folder: one standing where a link
 // would go is left as it is and reported. A link of its own pointing
 // elsewhere (a home that moved) is replaced. Returns what it did, with the
 // lines to print in `said`.
