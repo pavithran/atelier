@@ -1973,7 +1973,9 @@ export class Ledger extends DurableObject<Env> {
         head: need.head, reviewer, round: need.round, via: "criteria-changed",
         ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
       }, at);
-      this.askTierReview(item, need, reviewer, ORCHESTRATOR, at);
+      // The tier is judged against the live offers this ledger holds, as
+      // every tier request is (gpt-6-astra's seventeenth review of t622).
+      this.askTierReview(item, need, reviewer, ORCHESTRATOR, at, false, undefined, this.heldOffers());
       asked.push(reviewer);
     }
     return asked;
@@ -6563,7 +6565,9 @@ export class Ledger extends DurableObject<Env> {
     const slash = chosen.indexOf("/");
     // The entry chosen, as the one check finds it (reviewTarget), so its
     // destination is its own and not another entry's of the same model.
-    const where = records || reviewerAdmission(chosen, policy)?.active ? reviewTarget(pool, chosen).where : "home";
+    // The chosen reviewer may be a name the developer declared, found as main
+    // finds it (sameActor on the pool's ids).
+    const where = records || reviewerAdmission(chosen, policy)?.active ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
     const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
     if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
       throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
@@ -6611,7 +6615,9 @@ export class Ledger extends DurableObject<Env> {
   // not protected, the gate's reviewer gives the tier review too, a tier
   // request was made or a tier review recorded for this head already, or no
   // tier model remains.
-  private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers?: readonly SeenOffer[]): void {
+  // `offers`: the live offers a tier model must be offered by; a caller that
+  // read none passes the ones this ledger holds (heldOffers), the default.
+  private askTierReview(item: Item, need: ReviewRequired, gateReviewer: string, actor: string, at: string, proved = false, pool: readonly ModelEntry[] = this.poolStanding(), offers: readonly SeenOffer[] | undefined = this.heldOffers()): void {
     const policy = this.project().policy;
     if (!policy.reviewTier?.length || need.changeClass !== "protected") return;
     if (this.gateIsTier(item, need, gateReviewer, pool)) return;
@@ -6730,7 +6736,7 @@ export class Ledger extends DurableObject<Env> {
       head: need.head, reviewer, round: need.round, via: "head-moved", from: last.head as string,
       ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
     }, at);
-    this.askTierReview(item, need, reviewer, ORCHESTRATOR, at);
+    this.askTierReview(item, need, reviewer, ORCHESTRATOR, at, false, undefined, this.heldOffers());
   }
 
   // A request number is also its claim generation. Never reopen a claimed

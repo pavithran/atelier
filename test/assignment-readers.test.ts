@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALL_PROJECTS, applicableAssignments, reviewRoles, type Assignment, type AssignmentRole } from "../src/models/assignments.ts";
+import { ALL_PROJECTS, applicableAssignments, resolveChoices, reviewRoles, type Assignment, type AssignmentRole } from "../src/models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, withStanding, type ModelEntry } from "../src/models/pool.ts";
 import { storedActor, typedActor, typedModel } from "../src/models/identity.ts";
 import { suggestBuilder } from "../src/models/suggest.ts";
@@ -411,7 +411,8 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
   }
   // A review's destination and name (requestReview, pickPrereviewer, the tier request) are Luna's own entry's.
   assert.deepEqual(reviewTarget([trapAstra, luna], LUNA), { agent: "codex", model: "gpt-6-luna", where: "home", actor: LUNA });
-  assert.deepEqual(reviewTarget([trapAstra, luna], "codex/GPT-6-Luna"), { agent: "codex", model: "gpt-6-luna", where: "home", actor: LUNA });
+  // A name in another letter case is converted where typed; the reader compares exact ids.
+  assert.deepEqual(reviewTarget([trapAstra, luna], typedActor([trapAstra, luna], "codex/GPT-6-Luna")), { agent: "codex", model: "gpt-6-luna", where: "home", actor: LUNA });
   // Two entries of one model in a harness keep their own destinations.
   const twins = [{ ...opus, where: "home" as const }, entry("claude-code", "claude-opus-5-5", { where: "cloud" })];
   assert.equal(reviewTarget(twins, "claude-code/claude-opus-5-5").where, "cloud");
@@ -756,4 +757,27 @@ test("a selector that finds no model still says which assignment was skipped and
   const [rr] = routeParts(plan(part("a")), { pool: [opus, { ...astra, ...paused }], events: [], policy, allowPaid: false, assignments: [a42("review", "codex/gpt-6-astra")] });
   assert.equal(rr.reviewer, null);
   assert.match(rr.unrouted!, skipped);
+});
+
+// gpt-6-astra's seventeenth review of t622, finding 1: readers compared exact
+// ids in any letter case, so with codex/gpt-6-astra and codex/GPT-6-ASTRA
+// both registered an assignment or --model naming the uppercase entry chose
+// the lowercase one, and removing the uppercase entry left its assignment
+// matching the lowercase one. Through the selectors, in either pool order.
+test("selectors tell entries whose ids differ only in letter case apart, end to end", () => {
+  const lower = entry("codex", "gpt-6-astra"), upper = entry("codex", "GPT-6-ASTRA");
+  const item = { id: "t1", title: "Tidy the docs", brief: "", scope: ["docs/**"], owner: null, pushActors: [] as string[] };
+  for (const pool of [[lower, upper, argon], [upper, lower, argon]]) {
+    const [choice] = resolveChoices(["codex/GPT-6-ASTRA"], pool, "build");
+    const toUpper = (role: AssignmentRole) => ({ ...assigned(role, ["codex/GPT-6-ASTRA"]), choices: [{ ...choice }] });
+    const base = { item, project: "atelier", pool, policy, sources: [], runs: [], owner: "owner" };
+    assert.equal(suggestBuilder({ ...base, assignments: [toUpper("build")] }).actor, "codex/GPT-6-ASTRA", "build assignment");
+    assert.equal(suggestBuilder(base, { model: typedModel(pool, "GPT-6-ASTRA") }).actor, "codex/GPT-6-ASTRA", "--model");
+    assert.equal(pickReviewer({ item: built, pool, policy, allowPaid: false, assigned: [toUpper("review")] }).reviewer?.actor, "codex/GPT-6-ASTRA", "review assignment");
+    assert.equal(routeParts(plan(part("a")), { pool, events: [], policy, allowPaid: false, assignments: [toUpper("build")] })[0].builder?.actor, "codex/GPT-6-ASTRA", "plan builder");
+    // The uppercase entry removed: its assignment stops applying, and never passes to the lowercase one.
+    const without = pool.filter((e) => e !== upper);
+    const after = pickReviewer({ item: built, pool: without, policy, allowPaid: false, assigned: [toUpper("review")] });
+    assert.equal(after.assignment?.applied, null, "removed");
+  }
 });
