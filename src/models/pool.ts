@@ -69,6 +69,10 @@ export interface ModelEntry {
   roles?: readonly ModelRole[]; // the jobs it may take; all three when none are named
   tier?: ModelTier;           // frontier, execution or budget
   notes?: ModelNote[];        // oldest first; read with the entry, never stored on it
+  // Set only by withStanding, never stored: the roles of the entries whose
+  // standing a removed saved entry takes share none, so it may take no job.
+  // Roles cannot say so (none named means every role).
+  noRole?: readonly (readonly ModelRole[])[];
 }
 
 // The state as routing reads it: available unless the owner paused or reserved it.
@@ -108,19 +112,18 @@ export function withStanding(saved: readonly ModelEntry[], current: readonly Mod
 // A saved entry with the standing of the entries that hold it now, as
 // actorStanding reads them for every role: held (paused or reserved, with
 // that entry's note) when any one is, and given only the roles all of them
-// share. Roles they share none of cannot be written as roles (none means
-// all), so the first entry's roles stand; the dispatch check reads the pool now
-// and refuses what they would let through.
+// share. When they share none it may take no job (noRole), so a plan's tick
+// passes over it as the dispatch check would refuse it, and asks another
+// (gpt-6-astra's and gemini-4-argon's review of t649).
 function layStanding(entry: ModelEntry, from: readonly ModelEntry[]): ModelEntry {
-  const { state: _state, stateAt: _stateAt, roles: _roles, ...rest } = entry;
+  const { state: _state, stateAt: _stateAt, roles: _roles, noRole: _noRole, ...rest } = entry;
   const now = from.find(offThePool) ?? from[0];
   const named = from.map((e) => e.roles).filter((r): r is readonly ModelRole[] => !!r?.length);
   const shared = MODEL_ROLES.filter((r) => named.every((of) => of.includes(r)));
-  const roles = named.length ? (shared.length ? shared : named[0]) : undefined;
   return {
     ...rest, note: now.note,
     ...(now.state ? { state: now.state } : {}), ...(now.stateAt ? { stateAt: now.stateAt } : {}),
-    ...(roles ? { roles } : {}),
+    ...(named.length ? (shared.length ? { roles: shared } : { noRole: named }) : {}),
   };
 }
 
@@ -133,6 +136,7 @@ function layStanding(entry: ModelEntry, from: readonly ModelEntry[]): ModelEntry
 const ROLE_NOUN: Record<ModelRole, string> = { build: "builder", review: "reviewer", plan: "planner" };
 export function standingRefusal(entry: ModelEntry, role: ModelRole): string | null {
   if (offThePool(entry)) return `${modelState(entry)} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the developer's standing)${entry.note ? `: ${entry.note}` : ""}`;
+  if (entry.noRole) return `not a ${ROLE_NOUN[role]}; the entries running its model share no role (${entry.noRole.map((r) => r.join(", ")).join("; ")})`;
   if (!hasModelRole(entry, role)) return `not a ${ROLE_NOUN[role]}; its roles are ${entry.roles!.join(", ")}`;
   return null;
 }
@@ -165,24 +169,28 @@ export function entryRuns(entry: Pick<ModelEntry, "id" | "aliases">, name: strin
   return [entry.id, ...entry.aliases].some((id) => modelKey(id) === key);
 }
 
-// The entries whose standing holds for an actor. own is the entry itself,
-// under the actor's harness: the entry whose id is the actor's model
-// exactly (two ids may differ only in letter case and be two entries, as
-// src/models/identity.ts reads them), else those whose id is the same model
-// by modelKey (a profile or letter case is the same entry). When the pool
-// has it, its standing is the actor's, ahead of any entry that merely lists
-// the model as an alias, whatever the pool's order. When it has none (a
-// bare model, a removed entry, the model under another harness or only as
-// an alias), runs is every entry running the model, and any one of them
-// that is held holds the actor: an alias never releases what its entry holds.
+// The entries whose standing holds for an actor. own is the entry itself:
+// the entry whose id is the actor's model exactly (two ids may differ only
+// in letter case and be two entries, as src/models/identity.ts reads them),
+// else those whose id is the same model by modelKey (a profile or letter
+// case is the same entry); under the actor's harness, or, for a bare model
+// a dispatch names without one, under any harness, since a runner of any
+// harness may claim it. When the pool has it, its standing is the actor's,
+// ahead of any entry that merely lists the model as an alias, whatever the
+// pool's order; of several, any one held holds the actor. When it has none
+// (a removed entry, the model under another harness or only as an alias),
+// runs is every entry running the model, and any one of them that is held
+// holds the actor: an alias never releases what its entry holds. A claim of
+// a bare dispatch is checked again under the claimant's harness.
 function standingEntries(pool: readonly ModelEntry[], actor: string): { own: ModelEntry[]; runs: ModelEntry[] } {
   const runs = pool.filter((e) => entryRuns(e, actor));
   const slash = actor.indexOf("/");
   const harness = slash === -1 ? null : actor.slice(0, slash).toLowerCase();
   const model = slash === -1 ? actor : actor.slice(slash + 1);
   const key = modelKey(actor);
-  const exact = runs.filter((e) => e.harness === harness && e.id === model);
-  return { own: exact.length ? exact : runs.filter((e) => e.harness === harness && modelKey(e.id) === key), runs };
+  const under = runs.filter((e) => harness === null || e.harness === harness);
+  const exact = under.filter((e) => e.id === model);
+  return { own: exact.length ? exact : under.filter((e) => modelKey(e.id) === key), runs };
 }
 
 // Names, as patterns, oldest-established first within each family. Anything

@@ -62,13 +62,13 @@ async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promi
 const events = async (L: L, id?: string) => (await L.events(id)) as unknown as LedgerEvent[];
 
 // A plan approved over the pool, its part item.
-async function approved(L: L) {
+async function approved(L: L, pool: ModelEntry[] = POOL) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
   return { id: item.id, partId: parts[0].id, builder: `${parts[0].dispatch!.agent}/${parts[0].dispatch!.model}` };
 }
 
@@ -1064,6 +1064,27 @@ it("a plan's reviewer the owner reserves after approval is passed over, and its 
   const other = [OPUS, GLM].find((a) => a !== builder)!;
   expect(await routedReviewer(L, partId)).toBe(other);
   expect((await events(L, partId)).find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ data: { from: GPT, to: other, reason: expect.stringMatching(/reserved since 2026-10-06.*astra's credits/) } });
+  expect((await L.planView(id)).blocked).toBeNull();
+});
+
+// gpt-6-astra's and gemini-4-argon's review of t649: a reviewer saved
+// review-only at approval, then removed, while a build-only entry now lists
+// its id as an alias, shares no role with it. withStanding gave it its saved
+// review role, the tick picked it, the dispatch check (which reads the pool
+// now) refused it, and every tick failed (plan.tick_failed) instead of
+// asking the remaining reviewer.
+it("a removed reviewer whose roles share none with the entry now running its model is passed over, and the plan's tick asks another", async () => {
+  const L = await setup("review-held-no-shared-role");
+  const reviewOnly = POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, roles: ["review" as const] } : e);
+  const { id, partId, builder } = await approved(L, reviewOnly);
+  expect(builder).not.toBe(GPT);
+  const luna = { ...entry("gpt-6-luna", "codex"), aliases: ["gpt-6-astra"], roles: ["build" as const] };
+  await L.poolChanged([...POOL.filter((e) => e.id !== "gpt-6-astra"), luna]);
+  await submitPart(L, partId, "a".repeat(40));
+  const other = [OPUS, GLM].find((a) => a !== builder)!;
+  expect(await routedReviewer(L, partId)).toBe(other);
+  expect((await events(L, partId)).find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ data: { from: GPT, to: other, reason: expect.stringMatching(/not a reviewer/) } });
+  expect((await events(L)).filter((e) => e.kind === "plan.tick_failed")).toEqual([]);
   expect((await L.planView(id)).blocked).toBeNull();
 });
 
