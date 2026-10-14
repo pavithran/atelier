@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { createVitest } from "vitest/node";
 import { assign, discover, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
@@ -10,8 +11,9 @@ import { assign, discover, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
 const run = resolve("test/run.mjs");
 function tree(t, files) {
-  mkdirSync(".cache", { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/atelier-suites-test-"));
+  // The real path: macOS reaches its temp folder through the /var symlink,
+  // and Vitest matches its globs against the resolved root.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "atelier-suites-test-")));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const file of files) {
     mkdirSync(join(dir, file, ".."), { recursive: true });

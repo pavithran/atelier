@@ -16,8 +16,7 @@ import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 function fixture(t) {
-  mkdirSync(resolve(".cache"), { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/session-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-session-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const checkout = join(dir, "checkout");
   mkdirSync(checkout);
