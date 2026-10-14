@@ -141,7 +141,15 @@ function linesFor(e, verdicts, used, owner) {
     }
     case "item.accepted":
       return [`accepted by ${flat(e.actor)} at ${short(d.head)}${d.note ? `: ${flat(d.note)}` : ""}`];
+    // A merge made outside Atelier and recorded afterwards (t653): the
+    // reviews as the developer gave them, never a gated landing.
+    case "item.merge_recorded":
+      return [
+        `merged outside Atelier, recorded afterwards by ${flat(e.actor)}: ${short(d.commit)} merged as ${short(d.mergeCommit)} on main; no checks or test receipt recorded${d.recordedHead ? `; the task's recorded head was ${short(d.recordedHead)}` : ""}${d.note ? `: ${flat(d.note)}` : ""}`,
+        ...(Array.isArray(d.reviews) ? d.reviews : []).map((v) => `review as given: ${v.verdict === "approve" ? "approved" : "rejected"} by ${flat(v.by)} at ${short(v.head)}${v.at ? ` (${flat(v.at)})` : ""}`),
+      ];
     case "item.merged":
+      if (d.outside === true) return null;
       return [`merged by ${flat(e.actor)}: ${short(d.head)} accepted, merge commit ${short(d.mergeCommit)} on the baseline`];
     case "item.abandoned":
       return [`abandoned by ${flat(e.actor)}${d.note ? `: ${flat(d.note)}` : ""}${d.deliveredBy ? `; delivered by ${flat(d.deliveredBy)}` : ""}`];

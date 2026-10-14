@@ -1084,7 +1084,7 @@ test("only the project owner can port to an open unclaimed task", () => {
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
 // its pure rules.
-import { projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, agentOfMessage, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
+import { projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
 
 test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
   assert.deepEqual(projectMode(null), { mode: "full" });
@@ -1419,4 +1419,37 @@ test("a landing counts a recorded approval only where the gate is ready and coun
   assert.equal(recordedApproval(detail([a]), H2, null), null);
   assert.equal(recordedApproval(detail([b]), H1, null), null);
   assert.equal(recordedApproval(detail([a], [pass()]), H1, null), null);
+});
+
+// t653: the tasks t590-t651 were merged into main outside Atelier under the
+// 2026-10-13 freeze, and the ledger still showed them open or claimed. The
+// record names the merge, the commit merged and the reviews as given, and is
+// refused when main lacks the merge or its second parent is another commit.
+test("a merge recorded after the fact needs both commits and a review approving the commit merged", () => {
+  const H2 = "b".repeat(40), M = "c".repeat(40);
+  const review = { by: "codex/gpt-6-astra", verdict: "approve", head: H1, at: "2026-10-13" };
+  const body = { mergeCommit: M, commit: H1, reviews: [review, { by: "antigravity/gemini-4-argon", verdict: "reject", head: H2 }] };
+  assert.deepEqual(recordedMerge(body, "owner", "2026-10-14T00:00:00Z"), { ...body, outside: true, at: "2026-10-14T00:00:00Z", by: "owner" });
+  assert.equal(recordedMerge({ ...body, note: "  freeze  " }, "owner", "x").note, "freeze");
+  for (const bad of [{ mergeCommit: "abc" }, { commit: null }, { reviews: [] }, { reviews: "x" }, { reviews: [{ ...review, by: "nobody" }] }, { reviews: [{ ...review, verdict: "lgtm" }] },
+    { reviews: [{ ...review, head: "3f313d3b" }] }, { reviews: [{ ...review, at: "yesterday" }] }, { reviews: [{ ...review, at: "2026-13-45" }] }, { note: 5 }]) {
+    assert.throws(() => recordedMerge({ ...body, ...bad }, "owner", "x"), (e: RuleError) => e.code === "bad_record", JSON.stringify(bad));
+  }
+  // The reviews that approved it: a rejection alone, or an approval of another head, is refused.
+  for (const reviews of [[{ ...review, verdict: "reject" }], [{ ...review, head: H2 }]]) {
+    assert.throws(() => recordedMerge({ ...body, reviews }, "owner", "x"), (e: RuleError) => e.code === "no_approval" && /approves aaaaaaaa/.test(e.detail));
+  }
+});
+
+test("a merge is recorded only when main holds it and its second parent is the task's head", () => {
+  const record = { mergeCommit: "c".repeat(40), commit: H1 };
+  const P1 = "e".repeat(40);
+  assert.equal(recordedMergeRefusal(record, { parents: [P1, H1], holds: true }), null);
+  const code = (baseline: { parents: string[] | null; holds: boolean | null }) => recordedMergeRefusal(record, baseline)?.code;
+  assert.equal(code({ parents: null, holds: false }), "merge_not_on_main");
+  assert.equal(code({ parents: [P1, H1], holds: false }), "merge_not_on_main");
+  assert.equal(code({ parents: [P1, H1], holds: null }), "merge_unconfirmed");
+  assert.equal(code({ parents: [P1], holds: true }), "not_a_merge");
+  assert.equal(code({ parents: [H1, P1], holds: true }), "second_parent_differs");
+  assert.match(recordedMergeRefusal(record, { parents: [H1, P1], holds: true })!.detail, /second parent is eeeeeeee, not aaaaaaaa/);
 });

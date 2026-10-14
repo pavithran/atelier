@@ -27,6 +27,7 @@ import {
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
+  recordedMerge, recordedMergeRefusal, type RecordedMerge,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -4940,6 +4941,39 @@ export class Ledger extends DurableObject<Env> {
     });
     this.afterPlanChange(id);
     return { item: this.item(id), receipt };
+  }
+
+  // The developer records a task merged into main outside Atelier (t653),
+  // after the fact: the merge commit, the commit merged and the reviews as
+  // given, once the route has read from the baseline that main holds the
+  // merge and its parents. The item is marked merged with an item.merged
+  // event that says the merge was made outside Atelier and recorded later
+  // (outside: true), beside item.merge_recorded with the reviews; it is
+  // never an accepted or gated landing, so acceptedHead is left as it was,
+  // and main's recorded head is not moved, since main has gone past the
+  // merge by the time it is recorded. The task's workspace token, if a
+  // holder had one, is dropped with the claim.
+  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, token?: string | null): { item: Item; record: RecordedMerge } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a merge made outside Atelier", 403);
+    const at = new Date().toISOString();
+    const record = recordedMerge(body, actor, at);
+    const item = this.item(id);
+    const prior = this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "item.merge_recorded");
+    if (item.state === "merged" && prior?.data.mergeCommit === record.mergeCommit) return { item, record: prior.data as unknown as RecordedMerge };
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409);
+    if (item.kind === "plan") throw new RuleError("plan_merge", `${id} is a plan; a plan's merge lands its parts, and atelier merge records it`, 409);
+    const refusal = recordedMergeRefusal(record, baseline);
+    if (refusal) throw refusal;
+    this.assertPostMergeFree(id);
+    this.ctx.storage.transactionSync(() => {
+      this.dropToken(id, token);
+      this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
+      this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
+      this.log(id, actor, "item.merge_recorded", { ...record, ...(item.head && item.head !== item.base && item.head !== record.commit ? { recordedHead: item.head } : {}) }, at);
+      this.log(id, actor, "item.merged", { mergeCommit: record.mergeCommit, head: record.commit, observedOnBaseline: true, outside: true }, at);
+    });
+    this.afterPlanChange(id);
+    return { item: this.item(id), record };
   }
 
   landedFastReceipt(id: string): FastReceipt | null {
