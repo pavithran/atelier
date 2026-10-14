@@ -361,3 +361,33 @@ it("the merge-main part is routed to a model a runner offers the merge-main job 
   expect(m.route?.builder?.actor).toBe("claude-code/opus-5.5");
   expect(m.route?.builder?.reasons.join(" ")).toMatch(/Role assignment a1 skipped: no choice is eligible here \(codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
 });
+
+// gpt-6-astra's twenty-second review of t622, finding 2: a --to that the
+// routing could not honour became a reroute whose reasons said only
+// "Rerouted by the developer", and plan.part_added recorded no assignment
+// outcome, so nothing said the build assignment was passed over for it.
+it("a merge-main --to the routing did not pick names each build assignment skipped for it, on the route and on the event", async () => {
+  const L = await setup("mm-resolve-to-ahead");
+  const { id } = await behindPlan(L);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
+  await L.release(id, INTEGRATOR, "refresh failed");
+  await L.assignmentsChanged({ version: 999, assignments: [{ id: "a1", kind: "assigned", scope: "*", role: "build", choices: [{ actor: "codex/gpt-6-astra", model: "gpt-6-astra" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  const now = new Date().toISOString();
+  // No runner offers glm-5.3 the merge-main job, so the routing picks Opus
+  // and the developer's --to reroutes the part.
+  const offers = [
+    { runner: "home:glm", kind: "home" as const, jobs: ["build", "review"], agents: [{ agent: "zcode", models: ["glm-5.3"] }], at: now },
+    { runner: "home:opus", kind: "home" as const, jobs: ["merge-main", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: now },
+  ];
+  await L.planResolve(id, "owner", M1, false, "zcode/glm-5.3", offers);
+  const [m] = await mergePart(L, id);
+  expect(m.route?.builder?.actor).toBe("zcode/glm-5.3");
+  expect(m.route?.builder?.reasons).toEqual([
+    "Rerouted by the developer",
+    "The developer's --to comes before role assignments",
+    "Role assignment a1 skipped: the developer's --to comes before role assignments",
+  ]);
+  const added = (await events(L, id)).find((e) => e.kind === "plan.part_added");
+  expect(added?.data).toMatchObject({ builder: "zcode/glm-5.3", assignment: { applied: null, skipped: [{ id: "a1", why: "the developer's --to comes before role assignments" }] } });
+});

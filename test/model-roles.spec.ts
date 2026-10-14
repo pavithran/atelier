@@ -879,3 +879,38 @@ it("a tier review that finds no tier model records the assignment it skipped", a
   const unasked = (await L.events(id) as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "review.tier_unasked");
   expect(String(unasked?.data.reason)).toMatch(/Role assignment a991 skipped: no choice is eligible here \(claude-code\/fable-5.1: paused since/);
 });
+
+// gpt-6-astra's twenty-second review of t622, finding 1: the reviewer
+// suggestion decided the review roles from paths alone, so a docs part over
+// src/** read the general review assignment where plan routing read
+// claims-review. The ledger's reviewAssigned decides the roles once, from the
+// part's kind, and the suggestion takes its result.
+it("a docs part's suggested reviewer reads its claims-review assignment, as plan routing does", async () => {
+  const name = "roles-docs-part";
+  const sonnet = entry("claude-code", "sonnet-5.5");
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
+  await L.assignmentsChanged({ version: 1001, assignments: [assignment("a2", "claims-review", "antigravity/gemini-4-argon"), assignment("a3", "review", "codex/gpt-6-astra")] });
+  const runner = { runner: "home:studio", kind: "home" } as const;
+  const { item } = await L.newPlan("Write the docs", ["src/**"], "owner", "claude-code/opus-5.5", []);
+  await L.claim(item.id, "claude-code/opus-5.5", runner);
+  const part = { key: "d", title: "Document the module", kind: "docs", taskKind: "docs", scope: ["src/**"], dependsOn: [], provides: [], uses: [], brief: "Write it up", acceptance: ["It reads"], tests: [], size: "S" };
+  const post = await L.postPlan(item.id, "claude-code/opus-5.5", { schema: "atelier.plan.v1", goal: "Write the docs", parts: [part] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, "claude-code/opus-5.5", "proposed");
+  const pool = [...POOL, sonnet];
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
+  const partId = parts[0].id;
+  // Every model of another family is paused when the part is submitted, so
+  // the plan's tick finds no reviewer and blocks the part; the review is then
+  // asked through the suggestion, with the pool as it is again.
+  const paused = pool.map((m) => (familyOf(m.id) === "anthropic" ? m : { ...m, state: "paused" as const, stateAt: AT }));
+  await L.poolChanged(paused);
+  const d = (await L.item(partId)).dispatch!;
+  await submitted(L, partId, `${d.agent}/${d.model}`, runner);
+  await L.poolChanged(pool);
+  if ((await L.item(partId)).state === "blocked") await L.unblock(partId, "owner");
+  const asked = await L.requestReview(partId, "owner", null, POOL, false, false, { sources: [], runs: [], project: name });
+  expect(asked).toMatchObject({ reviewer: "antigravity/gemini-4-argon" });
+  expect(String(asked.reason)).toMatch(/Role assignment a2 \(claims-review/);
+});

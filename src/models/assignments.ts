@@ -115,6 +115,18 @@ export function reviewRoles(opts: { sensitive?: boolean; docs?: boolean }): Assi
   return [...(opts.sensitive ? ["security-review" as const] : []), ...(opts.docs ? ["claims-review" as const] : []), "review"];
 }
 
+// The review roles a review reads, the one place they are decided (gpt-6-astra's
+// twenty-second review of t622): sensitive from the work's words and paths,
+// the scope and the paths its change measured; docs from the part's kind
+// when it is a plan part, else from those paths being docs alone. The
+// ledger's reviewAssigned and plan routing both call it; no selector decides
+// roles itself.
+export function reviewRolesFor(work: { title?: string | null; brief?: string | null; scope: readonly string[] }, changed: readonly string[] = [], part: { kind?: string; taskKind?: string } | null = null): AssignmentRole[] {
+  const paths = [...work.scope, ...changed];
+  const docs = part ? part.kind === "docs" || part.taskKind === "docs" : docsOnly(paths);
+  return reviewRoles({ sensitive: sensitiveText([work.title, work.brief, ...paths]), docs });
+}
+
 // Security, concurrency or gate work, read from a task's or a part's words
 // and paths: its review reads security-review first. Dispatch suggestions
 // ask a frontier builder for the same work (src/models/suggest.ts).
