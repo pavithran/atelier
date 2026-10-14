@@ -466,6 +466,31 @@ test("worktreeHolding tells worktrees apart by Git directory when the checkout's
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// t646 (codex/gpt-6-astra's review of t639): a failing command that adds a
+// linked worktree holding main inside the checkout and deletes its .git file
+// left rev-parse inside that folder answering with the checkout's own Git
+// directory, so rollback took the holder for the checkout itself and moved
+// main past the holder's unreset index. The holder is found from Git's
+// worktree registry instead.
+test("a rollback finds the worktree holding main from Git's registry when its .git file was deleted (t646)", async () => {
+  const { dir, one } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const id = "-c user.name=t -c user.email=t@example.com";
+    const hijack = `printf 'k\\0AKIA' > late.bin && git ${id} add late.bin && git ${id} commit -q -m late && git checkout -q -b temporary && git worktree add -q nested main && rm nested/.git`;
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: hijack, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false);
+    assert.equal(r.failure.step, "checkout changed");
+    assert.ok(!existsSync(join(dir, "nested", ".git")), "the scenario deleted the holder's .git file");
+    const main = git(dir, "rev-parse", "refs/heads/main");
+    assert.notEqual(main, start, "main was not moved past the holder's unreset index");
+    assert.equal(r.restored, false);
+    assert.match(r.restoreProblem, /main was NOT restored/);
+    assert.ok(r.restoreProblem.includes(join(realpathSync(dir), "nested")) || r.restoreProblem.includes(join(dir, "nested")), r.restoreProblem);
+    assert.equal(worktreeHolding(dir, "refs/heads/main"), r.restoreProblem.match(/checked out in the worktree (.+?), so/)[1]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Fourth review of t592 (codex/gpt-6-astra): a typecheck or regeneration
 // script that moved main back before the scan left the scan an empty range,
 // the head checks compared against that moved head, and the receipts named
