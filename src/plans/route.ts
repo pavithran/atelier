@@ -59,6 +59,12 @@ export interface RouteInput {
   // Unmarked, a prefer from before is read through the aliases once
   // (storedActor in src/models/identity.ts).
   namesExact?: boolean;
+  // The job a part's build dispatch carries: none for a plain build,
+  // "merge-main" for the part that merges main into the plan's branch
+  // (dispatchPart in src/ledger.ts). The offer check asks for that job, so
+  // a builder is routed only to a model a runner would claim the part as
+  // (gpt-6-astra's twenty-first review of t622).
+  buildJob?: Dispatch["job"];
   events: readonly LedgerEvent[];         // the project's ledger; buildRecord() makes the track record
   policy: ProjectPolicy;                  // governed when it names agents
   allowPaid: boolean;                     // the owner's approval of paid-per-token models
@@ -350,8 +356,8 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // finding 2). A model no live runner offers at all is excluded above.
   // Offered as assign() hands the part's build out, by the entry's own agent
   // and model (claimants in src/dispatch/rules.ts).
-  if (ctx.buildOffered && ctx.offered?.has(actor.toLowerCase()) && !claimants({ to: "home", agent: entry.harness, model: entry.id }, ctx.input.offers ?? [])?.length)
-    build.push(`no live runner offers ${actor} for a build at home: ${ctx.buildOffered.instead.join("; ")}`);
+  if (ctx.buildOffered && ctx.offered?.has(actor.toLowerCase()) && !claimants({ to: "home", job: ctx.input.buildJob, agent: entry.harness, model: entry.id }, ctx.input.offers ?? [])?.length)
+    build.push(`no live runner offers ${actor} for ${ctx.input.buildJob ? `the ${ctx.input.buildJob} job` : "a build"} at home: ${ctx.buildOffered.instead.join("; ")}`);
   if (heldBuild) build.push(heldBuild);
   // The reviewer's eligibility as pickReviewer judges it: under a governed
   // policy the assessor role; otherwise the project's eligible harnesses and
@@ -574,7 +580,7 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     offered: live.length ? offeredActors(live) : null,
     governed: input.policy.agents !== undefined,
     reviewOffered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
-    buildOffered: input.offers != null ? offering(BUILD_JOB, input.offers) : null,
+    buildOffered: input.offers != null ? offering({ ...BUILD_JOB, job: input.buildJob }, input.offers) : null,
     offersRead: input.offers != null,
     single: singleFamily(input.policy),
   };
