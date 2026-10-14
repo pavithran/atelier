@@ -155,6 +155,13 @@ export function privateGuard(name, entry, { root, save, homes = [] } = {}) {
   for (const home of others) {
     try { if (lstat(home)) more.push(...readPrivateList(home).paths); } catch { /* an older folder that cannot be read adds nothing */ }
   }
+  // Names read from an older folder are kept in the copy too (Astra's
+  // sixteenth review of t645), so they stay guarded once that folder is no
+  // longer known; the copy only grows.
+  if (entry && more.some((p) => !copy.includes(p))) {
+    entry.privateFromList = [...new Set([...copy, ...plainPaths(more)])];
+    save?.();
+  }
   const paths = [...new Set([...list.paths, ...copy, ...more])];
   const refusal = list.unreadable && !kept
     ? `${list.unreadable}, and this Mac keeps no copy of its list of private files, so what may not leave cannot be known. Make the folder available on this Mac (or name another with atelier private add --home DIR --project ${name}) and try again. Nothing was pushed.`
@@ -623,7 +630,7 @@ function linksFile(checkout) {
   if (r.status !== 0) throw new Error(`${checkout} is not a Git checkout`);
   return resolve(checkout, r.stdout.trim());
 }
-function linkedBefore(checkout) {
+export function linkedBefore(checkout) {
   const made = new Map();
   let text = "";
   try { text = readFileSync(linksFile(checkout), "utf8"); } catch { return made; }

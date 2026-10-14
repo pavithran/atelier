@@ -5,7 +5,7 @@ import { privatePath } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { args, cfg, die, project, saveConfig } from "../atelier.mjs";
 import { PRIVATE_LIST } from "../../src/rules.ts";
-import { excludesPrivate, linkPrivate, privateGuardFor, savePrivateFields, privateList, privateState, readPrivateList, testHold, trackedPrivate, withListLock, writePrivateList } from "../private.mjs";
+import { excludesPrivate, linkedBefore, linkPrivate, privateGuardFor, savePrivateFields, privateList, privateState, readPrivateList, testHold, trackedPrivate, withListLock, writePrivateList } from "../private.mjs";
 
 // The developer names the project's private files (t645). The names go to
 // the list beside the files in the project's iCloud folder, which follows the
@@ -118,9 +118,18 @@ function remove(words) {
   if (entry.private) entry.private = keep(entry.private);
   if (entry.privateFromList) entry.privateFromList = keep(entry.privateFromList);
   savePrivateFields(name, entry, { drop: gone });
+  // A link is removed only when the checkout's record says Atelier made
+  // that link, at that path, to that target (Astra's sixteenth review of
+  // t645); a developer's own is left as it is, and said so.
+  let made = new Map();
+  try { made = linkedBefore(entry.path); } catch { /* no checkout here */ }
   for (const path of gone) {
     const link = join(entry.path, path);
-    try { if (lstatSync(link).isSymbolicLink() && list.home && readlinkSync(link) === join(list.home, path)) unlinkSync(link); } catch { /* not linked here */ }
+    let points = null;
+    try { if (lstatSync(link).isSymbolicLink()) points = readlinkSync(link); } catch { /* not linked here */ }
+    if (points === null) continue;
+    if (made.get(path) === points) unlinkSync(link);
+    else console.log(`${path}: the link in the checkout (to ${points}) is not one Atelier made; it was left as it is.`);
   }
   console.log(`${name}: ${gone.join(", ")} ${gone.length === 1 ? "is" : "are"} no longer private; the file${gone.length === 1 ? "" : "s"} in iCloud ${gone.length === 1 ? "is" : "are"} left as ${gone.length === 1 ? "it is" : "they are"}.`);
 }
