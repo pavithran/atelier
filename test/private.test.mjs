@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { guardedPush, linkPrivate, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, guardedPush, linkPrivate, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 const cli = resolve("cli/atelier.mjs");
 
@@ -38,7 +40,7 @@ function setup(t, { folder = "Demo" } = {}) {
   const read = () => JSON.parse(readFileSync(join(config, "config.json"), "utf8"));
   write({ demo: { path: checkout, branch: "main", protect: [] } });
   const run = (...argv) => {
-    const r = spawnSync(process.execPath, [cli, ...argv, "--project", "demo"], { cwd: root, encoding: "utf8", env: { ...env, HOME: home, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: join(root, "cache"), ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_TOKEN: "t", ATELIER_ACTOR: "owner" } });
+    const r = spawnSync(process.execPath, [cli, ...argv, "--project", "demo"], { cwd: root, encoding: "utf8", env: { ...env, HOME: home, ATELIER_PRIVATE_ROOT: icloud, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: join(root, "cache"), ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_TOKEN: "t", ATELIER_ACTOR: "owner" } });
     return { code: r.status, output: `${r.stdout}${r.stderr}` };
   };
   return { root, env, git, home, icloud, keep, checkout, write, read, run };
@@ -178,9 +180,8 @@ test("privateCommits finds a private file a commit adds, changes, links or a mer
   const found = privateCommits(c, ["project.md"], "HEAD", [base]);
   assert.deepEqual(found.map((x) => x.commit).sort(), [leak, merge].sort());
   assert.ok(found.every((x) => x.path === "PROJECT.md"));
-  // Already on the base, the history adds nothing; but the tree pushed
-  // still holds it, which is refused (Argon's second review of t645).
-  assert.deepEqual(privateCommits(c, ["PROJECT.md"], "HEAD", [merge]), [{ commit: merge, path: "PROJECT.md", tree: true }]);
+  // Already on the base: nothing is pushed, so nothing is refused.
+  assert.deepEqual(privateCommits(c, ["PROJECT.md"], "HEAD", [merge]), []);
   // A deletion carries no content.
   git("rm", "-q", "PROJECT.md");
   git("commit", "-q", "-m", "drop");
@@ -235,11 +236,15 @@ test("the guard keeps a copy of each list it reads and fails closed when the lis
   writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
   const entry = { path: f.checkout, branch: "main" };
   let saved = 0;
-  const read = privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
-  assert.deepEqual(read, { paths: ["PROJECT.md", ".atelier-private"], refusal: null });
+  // Opt-in (third reviews of t645): nothing configured, nothing guarded and
+  // nothing read; discovery (clone, private add, ls) keeps the list's copy,
+  // which opts the project in.
+  assert.deepEqual(privateGuard("demo", entry, { root: join(f.root, "never-read") }), { paths: [], refusal: null });
+  discoverPrivate("demo", entry, { root: f.icloud, save: () => saved++ });
   assert.deepEqual(entry.privateFromList, ["PROJECT.md"]);
   assert.equal(saved, 1);
-  privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
+  const read = privateGuard("demo", entry, { root: f.icloud, save: () => saved++ });
+  assert.deepEqual(read, { paths: ["PROJECT.md", ".atelier-private"], refusal: null });
   assert.equal(saved, 1, "an unchanged list is not saved again");
   // The folder gone from this Mac: the copy still guards.
   rmSync(f.keep, { recursive: true });
@@ -257,7 +262,7 @@ test("the guard keeps a copy of each list it reads and fails closed when the lis
   // An unreadable list, with no copy, is refused the same way.
   const g = setup(t);
   mkdirSync(join(g.keep, ".atelier-private"));
-  assert.match(privateGuard("demo", { path: g.checkout }, { root: g.icloud }).refusal, /\.atelier-private cannot be read/);
+  assert.match(privateGuard("demo", { path: g.checkout, private: ["mine.md"] }, { root: g.icloud }).refusal, /\.atelier-private cannot be read/);
   // A project with no folder and nothing named guards nothing and refuses nothing.
   assert.deepEqual(privateGuard("other", { path: g.checkout }, { root: g.icloud }), { paths: [], refusal: null });
 });
@@ -336,7 +341,7 @@ test("every git push the CLI makes runs inside guardedPush", () => {
       if (/refs\/notes\/atelier:refs\/notes\/atelier['"]\]/.test(line) && !/refs\/heads/.test(line) && exempt[`${file}#notes`]) return;
       // The push's own lines and those just around it: guardedPush wraps
       // the push, or the argument list is built just before it.
-      const around = lines.slice(Math.max(0, i - 12), i + 9).join("\n");
+      const around = lines.slice(Math.max(0, i - 20), i + 21).join("\n");
       if (!around.includes("guardedPush(")) unguarded.push(`${file}:${i + 1}`);
     });
   }
@@ -371,13 +376,16 @@ test("a missing list never shrinks the copy kept, and an unreadable iCloud folde
   chmodSync(blocked, 0o000);
   let none, kept;
   try {
-    none = privateGuard("demo", { path: f.checkout }, { root: blocked });
+    none = privateGuard("demo", { path: f.checkout, private: ["mine.md"] }, { root: blocked });
     kept = privateGuard("demo", { path: f.checkout, privateFromList: ["PROJECT.md"] }, { root: blocked });
   } finally { chmodSync(blocked, 0o755); }
   assert.match(none.refusal ?? "", /cannot be read .*Nothing was pushed\./);
   assert.deepEqual(kept, { paths: ["PROJECT.md", ".atelier-private"], refusal: null });
   // No ai-projects folder on this Mac at all is no folder for the project.
-  assert.deepEqual(privateGuard("demo", { path: f.checkout }, { root: join(f.root, "absent") }), { paths: [], refusal: null });
+  assert.deepEqual(privateGuard("demo", { path: f.checkout, private: ["mine.md"] }, { root: join(f.root, "absent") }), { paths: ["mine.md", ".atelier-private"], refusal: null });
+  // And a project with nothing configured never reads it, readable or not.
+  chmodSync(blocked, 0o000);
+  try { assert.deepEqual(privateGuard("demo", { path: f.checkout }, { root: blocked }), { paths: [], refusal: null }); } finally { chmodSync(blocked, 0o755); }
 });
 
 // Second reviews of t645 (Astra 2 and 3, Argon 2): post-merge recovery and
@@ -433,4 +441,56 @@ test("a path is checked as it will be kept, so no accepted spelling fails to rea
     assert.deepEqual(privatePath(r.path), r, "a kept name is accepted as it is");
   }
   assert.ok(accepted > 100);
+});
+
+// Argon's third review of t645, finding 2: only the tip's tree was read, so
+// a pushed commit between base and tip could still hold a private file, and
+// a stepped push could leave the remote at it.
+test("the tree of every commit pushed is read, not only the tip's", (t) => {
+  const f = setup(t);
+  const c = f.checkout, g = (...a) => f.git(c, ...a);
+  writeFileSync(join(c, "PROJECT.md"), "the plan\n");
+  g("add", "-f", "PROJECT.md");
+  g("commit", "-q", "-m", "A");
+  const a = g("rev-parse", "HEAD");
+  g("rm", "-q", "--cached", "PROJECT.md");
+  g("commit", "-q", "-m", "B, on the remote");
+  const b = g("rev-parse", "HEAD");
+  rmSync(join(c, "PROJECT.md"));
+  // Case A: a side line from A that keeps PROJECT.md unchanged, merged
+  // over B keeping B's tree.
+  g("checkout", "-q", "-b", "side", a);
+  writeFileSync(join(c, "other.txt"), "x\n");
+  g("add", "other.txt");
+  g("commit", "-q", "-m", "C1");
+  const c1 = g("rev-parse", "HEAD");
+  g("checkout", "-q", "main");
+  g("merge", "-q", "-s", "ours", "--no-edit", "side");
+  assert.ok(privateCommits(c, ["PROJECT.md"], "HEAD", [b]).some((x) => x.commit === c1 && x.path === "PROJECT.md"));
+  // Case B: B itself held PROJECT.md; C1 leaves it, C2 removes it. A
+  // stepped push could stop at C1, so C1 is refused.
+  g("checkout", "-q", "-b", "stepped", a);
+  writeFileSync(join(c, "other.txt"), "y\n");
+  g("add", "other.txt");
+  g("commit", "-q", "-m", "C1");
+  const s1 = g("rev-parse", "HEAD");
+  g("rm", "-q", "PROJECT.md");
+  g("commit", "-q", "-m", "C2");
+  assert.deepEqual(privateCommits(c, ["PROJECT.md"], "HEAD", [a]).map((x) => x.commit), [s1]);
+});
+
+// Astra's third review of t645, finding 3: a tracked .gitignore with
+// !PROJECT.md outweighs .git/info/exclude.
+test("a rule in the checkout that un-ignores a private file is warned of, and Atelier still refuses to stage it", (t) => {
+  const f = setup(t);
+  writeFileSync(join(f.checkout, ".gitignore"), "!PROJECT.md\n");
+  f.git(f.checkout, "add", ".gitignore");
+  f.git(f.checkout, "commit", "-q", "-m", "unignore");
+  const r = f.run("private", "add", "PROJECT.md");
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /Warning: Git does not ignore PROJECT\.md here: a rule in the checkout/);
+  assert.match(f.git(f.checkout, "status", "--porcelain"), /\?\? PROJECT\.md/, "git sees it, as the warning says");
+  const ls = f.run("private", "ls");
+  assert.match(ls.output, /PROJECT\.md \(listed in iCloud and on this Mac\): linked; NOT ignored by Git/);
+  assert.deepEqual(privateChanges(f.checkout, privateGuard("demo", f.read().projects.demo, { root: f.icloud }).paths), ["PROJECT.md"], "what wrap would stage includes it, so wrap refuses");
 });

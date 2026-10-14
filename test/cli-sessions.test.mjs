@@ -10,6 +10,8 @@ import { createHash } from "node:crypto";
 import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
 import { landingDir, landingJournalFile, oldLandingJournalFile } from "../cli/landing.mjs";
 import { linkPrivate } from "../cli/private.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
@@ -888,4 +890,21 @@ test("publish refuses when the list of private files cannot be read and this Mac
   const ok = f.run("publish");
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(f.git("--git-dir", f.baseline, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+});
+
+// Astra's third review of t645, finding 3: a tracked .gitignore saying
+// !PROJECT.md made the linked file one git add -A takes; wrap refuses it
+// whatever the ignore rules say.
+test("wrap refuses a private file a .gitignore un-ignores, and stages nothing", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.checkout, ".gitignore"), "!PROJECT.md\n");
+  f.git("add", ".gitignore");
+  f.git("commit", "-qm", "unignore");
+  const head = f.git("rev-parse", "HEAD");
+  privateFiles(t, f);
+  const r = f.run("wrap", "Private", "--no-check");
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /wrap will not commit private files: PROJECT\.md\./);
+  assert.equal(f.git("rev-parse", "HEAD"), head);
+  assert.equal(f.git("diff", "--cached", "--name-only"), "");
 });

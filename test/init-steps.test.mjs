@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PUSH_STEP, pushHistory, refusedForSize } from "../cli/push-steps.mjs";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 // atelier init pushes a project's history to its new baseline. When Artifacts
 // refuses the push for size or time, the history goes in steps of about 700

@@ -285,9 +285,11 @@ export async function runTaskRefresh(assignment, config, name, io) {
     const branch = workspace.defaultBranch || "main";
     if (Date.now() - pushStarted >= PUSH_TIMEOUT_MS) throw new Error("push authorization expired before git started");
     // The merge adds none of the project's private files to the fork (t645):
-    // what it holds beyond the task's head and main is read for them.
+    // everything the fork lacks is read for them, main's commits included,
+    // against the fork's head alone, which the lease names (Astra's third
+    // review of t645: main's history was taken as held).
     let privateHeld = null;
-    const push = await guardedPush({ project, cwd: dir, tip: head, base: [lease.expectedHead, lease.mainHead], what: `${item.id}'s refresh`, fail: (message) => { privateHeld = message; return null; } },
+    const push = await guardedPush({ project, cwd: dir, tip: head, base: [lease.expectedHead], what: `${item.id}'s refresh`, fail: (message) => { privateHeld = message; return null; } },
       () => git(["push", "--quiet", workspace.remote, `${head}:refs/heads/${branch}`], { token: workspace.token, allowFail: true, timeoutMs: PUSH_TIMEOUT_MS }));
     if (privateHeld) throw new Error(privateHeld);
     // A transport error may arrive after the remote installed the commit.

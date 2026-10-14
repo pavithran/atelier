@@ -59,7 +59,7 @@ function add(words) {
     console.log(`${join(list.home, PRIVATE_LIST)} lists them, so atelier clone links them on every Mac.`);
   } else console.log(`${name}'s private files are named on this Mac only: ${list.homeError ?? `${list.home} is not on this Mac`}.`);
   if (!existsSync(entry.path)) return console.log(`${entry.path}, ${name}'s checkout, is not on this Mac; atelier clone links them when it makes one.`);
-  privateGuardFor(name);
+  privateGuardFor(name, { discover: true });
   let r;
   try { r = linkPrivate(entry.path, entry, { name }); } catch (error) { die(error.message); }
   for (const line of r.said) console.log(line);
@@ -68,7 +68,7 @@ function add(words) {
 
 function ls() {
   const name = project(), entry = entryOf(name);
-  privateGuardFor(name);
+  privateGuardFor(name, { discover: true });
   const list = privateList(name, entry);
   const where = list.homeError ? `no folder: ${list.homeError}` : `${list.home}${list.named ? "" : ` (found by ${name}'s name)`}${existsSync(list.home) ? "" : ", not on this Mac"}`;
   console.log(`${name}: private files are kept in ${where}.`);
@@ -90,7 +90,7 @@ function ls() {
     else if (sameFolder) state = "kept in place: the checkout is that folder";
     else if (!list.home) state = "not linked";
     else state = STATES[privateState(entry.path, list.home, path)];
-    const ignored = there ? (excludesPrivate(entry.path, path) ? "ignored by Git" : "NOT ignored by Git: run atelier private add again") : "";
+    const ignored = there ? (excludesPrivate(entry.path, path) ? "ignored by Git" : "NOT ignored by Git: a rule in the checkout (a !-line in a .gitignore) outweighs Atelier's; Atelier still refuses to stage or push it") : "";
     console.log(`  ${path} (listed ${list.sources[path] === "iCloud" ? "in iCloud" : list.sources[path] === "this Mac" ? "on this Mac" : "in iCloud and on this Mac"}): ${state}${ignored ? `; ${ignored}` : ""}`);
   }
 }

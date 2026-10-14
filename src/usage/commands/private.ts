@@ -14,7 +14,7 @@ const spec: CommandSpec = {
     {
       group: "Setup", line: 3, slot: 20,
       form: "private ls",
-      about: "Lists the project's private files, whether each is listed in iCloud, on this Mac or both, any line of `.atelier-private` it refuses, the folder that keeps them and whether each is linked into this Mac's checkout and ignored by Git. It changes nothing.",
+      about: "Lists the project's private files, whether each is listed in iCloud, on this Mac or both, any line of `.atelier-private` it refuses, the folder that keeps them and whether each is linked into this Mac's checkout and ignored by Git. It changes nothing in the checkout; it keeps this Mac's copy of the list current, which opts the project in when iCloud holds one.",
     },
   ],
   flags: { home: false },

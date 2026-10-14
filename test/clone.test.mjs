@@ -128,7 +128,7 @@ async function run(t, f, argv, { projects = {}, login = true, cwd, globalConfig 
   writeFileSync(join(f.config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects }));
   const cliConfig = join(f.root, "cli-gitconfig");
   writeFileSync(cliConfig, globalConfig ?? "");
-  const env = { ...f.env, GIT_CONFIG_GLOBAL: cliConfig, HOME: f.home, ATELIER_CONFIG_DIR: f.config, ATELIER_CACHE: f.cache, ATELIER_SERVER: url, ATELIER_SECRET_STORE: "file", ATELIER_ACTOR: "owner" };
+  const env = { ...f.env, GIT_CONFIG_GLOBAL: cliConfig, HOME: f.home, ATELIER_PRIVATE_ROOT: join(f.home, "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects"), ATELIER_CONFIG_DIR: f.config, ATELIER_CACHE: f.cache, ATELIER_SERVER: url, ATELIER_SECRET_STORE: "file", ATELIER_ACTOR: "owner" };
   delete env.ATELIER_TOKEN;
   if (login) env.ATELIER_TOKEN = "test-token";
   const child = spawn(process.execPath, [cli, ...argv], { cwd: cwd ?? f.root, env });
@@ -417,4 +417,36 @@ test("a Mac with a fresh config links the files .atelier-private lists with the 
   assert.equal(r.config.projects.demo.private, undefined, "nothing had to be named on this Mac");
   // A copy of the list is kept, so the guards hold when iCloud cannot give it (Astra's review of t645, finding 4).
   assert.deepEqual(r.config.projects.demo.privateFromList, ["PROJECT.md", "notes/plan.md"]);
+});
+
+// Astra's third review of t645, finding 2: sync scanned the checkout's
+// commits but pushed rebuilt ones, and the rebuild read commits through
+// replacement refs, so a replacement holding a private file was pushed
+// unscanned. The rebuild now reads the real commits and the scan reads what
+// is pushed.
+test("sync pushes what it scanned: a replacement ref cannot slip a private file into the rebuilt commits", async (t) => {
+  const f = setup(t, { fresh: true });
+  const dir = join(f.root, "demo");
+  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"] } } });
+  assert.equal(r.code, 0, r.output);
+  writeFileSync(join(dir, "code.txt"), "public\n");
+  f.git(dir, "add", "code.txt");
+  f.git(dir, "commit", "-q", "-m", "code");
+  const real = f.git(dir, "rev-parse", "HEAD");
+  // A stand-in for that commit whose tree holds PROJECT.md, put in its place.
+  writeFileSync(join(dir, "PROJECT.md"), "the plan\n");
+  f.git(dir, "add", "-f", "PROJECT.md");
+  const tree = f.git(dir, "write-tree");
+  f.git(dir, "reset", "-q", "PROJECT.md");
+  rmSync(join(dir, "PROJECT.md"));
+  const fake = f.git(dir, "commit-tree", tree, "-p", `${real}^`, "-m", "code");
+  writeFileSync(join(dir, "more.txt"), "more\n");
+  f.git(dir, "add", "more.txt");
+  f.git(dir, "commit", "-q", "-m", "more");
+  f.git(dir, "replace", real, fake);
+  assert.equal(f.git(dir, "status", "--porcelain"), "");
+  const s = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
+  assert.equal(s.code, 0, s.output);
+  assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt\nmore.txt");
+  assert.doesNotMatch(f.git(f.bare, "log", "--all", "--name-only", "--format="), /PROJECT\.md/);
 });

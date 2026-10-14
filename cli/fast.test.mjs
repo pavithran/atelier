@@ -14,6 +14,8 @@ import { deflateSync } from "node:zlib";
 import { fastLand, parsePairs, recordPending, scanBatch, worktreeHolding } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 import { privateConfig } from "../test/fixtures/private-config.mjs";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
 
