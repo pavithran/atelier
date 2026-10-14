@@ -466,7 +466,7 @@ test("worktreeHolding tells worktrees apart by Git directory when the checkout's
     assert.equal(worktreeHolding(linked, "refs/heads/main")?.path, repository, "from the linked worktree, the main worktree holds main");
     // The main worktree's folder is unknown in this layout, so no advice may
     // name repository.git as a working tree (t646); a linked one's is known.
-    assert.deepEqual(worktreeHolding(linked, "refs/heads/main"), { path: repository, gitDir: repository, workTree: null });
+    assert.deepEqual(worktreeHolding(linked, "refs/heads/main"), { path: repository, gitDir: repository, workTree: null, midway: null });
     assert.equal(worktreeHolding(checkout, "refs/heads/other")?.workTree, linked);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -530,6 +530,64 @@ test("a rollback's printed fix works through sh when the repository's path holds
     assert.equal(git(dir, "rev-parse", "refs/heads/main"), start, "following the printed fix restores main");
     assert.ok(!existsSync(join(dir, "nested", "late.bin")), "following the printed fix resets the holder's files");
   } finally { rmSync(dirname(dir), { recursive: true, force: true }); }
+});
+
+// t656: a worktree mid-rebase or mid-bisect on main has HEAD detached, so
+// t646's worktreeHolding, which read only each worktree's HEAD, found no
+// holder; checkout main failed and rollback moved main with update-ref
+// under that worktree. Git itself refuses to check main out there, reading
+// rebase-merge/head-name, rebase-apply/head-name and BISECT_START.
+const midway = {
+  "rebase-merge": (id) => `git ${id} -C nested rebase -q --exec false HEAD^ >/dev/null 2>&1; test -d .git/worktrees/nested/rebase-merge`,
+  "rebase-apply": (id) => `printf side > late.bin && git ${id} commit -q -a -m side && printf mine > nested/late.bin && git ${id} -C nested commit -q -a -m mine && git ${id} -C nested rebase -q --apply temporary >/dev/null 2>&1; test -d .git/worktrees/nested/rebase-apply`,
+  bisect: (id) => `git -C nested bisect start main HEAD~2 >/dev/null 2>&1 && test -f .git/worktrees/nested/BISECT_START`,
+};
+for (const [state, enter] of Object.entries(midway)) {
+  test(`a rollback refuses to move main under a worktree mid-${state.split("-")[0]} on it (${state}, t656)`, async () => {
+    const { dir, one } = repo();
+    try {
+      const start = git(dir, "rev-parse", "HEAD");
+      const id = "-c user.name=t -c user.email=t@example.com";
+      const hijack = `printf 'k\\0AKIA' > late.bin && git ${id} add late.bin && git ${id} commit -q -m late && git checkout -q -b temporary && git worktree add -q nested main && ${enter(id)} && false`;
+      const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: hijack, record: () => assert.fail("recorded") });
+      assert.equal(r.ok, false);
+      assert.ok(existsSync(join(dir, ".git", "worktrees", "nested", state === "bisect" ? "BISECT_START" : state)), `the scenario left nested mid-${state}`);
+      assert.doesNotMatch(readFileSync(join(dir, ".git", "worktrees", "nested", "HEAD"), "utf8"), /^ref:/, "the holder's HEAD is detached");
+      const main = git(dir, "rev-parse", "refs/heads/main");
+      assert.notEqual(main, start, "main was not moved under the worktree holding it");
+      assert.equal(r.restored, false);
+      assert.match(r.restoreProblem, /main was NOT restored/);
+      assert.match(r.restoreProblem, new RegExp(`checked out in the worktree .*nested, mid-${state.split("-")[0]}, so fast land could not move it`));
+      assert.equal(worktreeHolding(dir, "refs/heads/main")?.gitDir, realpathSync(join(dir, ".git", "worktrees", "nested")));
+      // A reset in the detached holder would move its HEAD, not main: the
+      // printed fix ends the rebase or bisect first, and run through sh it
+      // restores main and leaves the holder's files at the start.
+      const fix = r.restoreProblem.match(/Restore it with: (.+)$/)[1];
+      const ran = spawnSync("sh", ["-c", fix], { cwd: tmpdir(), encoding: "utf8" });
+      assert.equal(ran.status, 0, `${fix}\n${ran.stderr}`);
+      assert.equal(git(dir, "rev-parse", "refs/heads/main"), start, "following the printed fix restores main");
+      assert.ok(!existsSync(join(dir, "nested", "late.bin")), "following the printed fix resets the holder's files");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+// t656: the main worktree keeps its rebase and bisect state in the common
+// Git directory, and Git lists it as detached while it is mid-rebase.
+test("worktreeHolding finds the main worktree mid-rebase on main from a linked worktree (t656)", () => {
+  const { dir } = repo();
+  const linked = join(mkdtempSync(join(tmpdir(), "fast-land-linked-")), "wt");
+  try {
+    git(dir, "worktree", "add", "-q", linked, "one");
+    writeFileSync(join(dir, "b.txt"), "b\n");
+    git(dir, "add", "b.txt"); git(dir, "commit", "-q", "-m", "b");
+    spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "rebase", "-q", "--exec", "false", "HEAD^"], { cwd: dir, encoding: "utf8" });
+    assert.ok(existsSync(join(dir, ".git", "rebase-merge")), "the main worktree is mid-rebase");
+    assert.match(git(dir, "worktree", "list", "--porcelain").split("\n\n")[0], /^detached$/m, "Git lists it as detached");
+    assert.deepEqual(worktreeHolding(linked, "refs/heads/main"), { path: realpathSync(dir), gitDir: realpathSync(join(dir, ".git")), workTree: realpathSync(dir), midway: "rebase" });
+    assert.equal(worktreeHolding(linked, "refs/heads/two"), null, "it holds only the branch it is rebasing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true }); rmSync(dirname(linked), { recursive: true, force: true });
+  }
 });
 
 test("shellQuote quotes a path for a POSIX shell (t646)", () => {
