@@ -546,11 +546,13 @@ it("every entry point that takes a model name refuses, or stores as its exact id
     const open = async (title: string) => (await L.newItem(title, [`src/${title}.ts`], "owner", { accept: ["Works"] })).id;
     // dispatch --agent --model, a bare --model, and --overlap-ok's retain.
     await refused("dispatch", await call("POST", `${P}/items/${await open("d1")}/dispatch`, { to: "home", agent: "opencode", model: "glm-alias" }));
-    // A bare --model is kept as declared; the standing does not check a
-    // dispatch that names no harness (as on main), so it is stored.
+    // A bare --model is kept as declared, and standing-checked as the bare
+    // model: refused while any entry running it is held (t649; main stored it).
     const d2 = await open("d2");
-    expect((await call("POST", `${P}/items/${d2}/dispatch`, { to: "home", model: "glm-alias" })).status).toBe(200);
-    expect((await L.item(d2)).dispatch).toMatchObject({ model: "glm-alias" });
+    const bare = await call("POST", `${P}/items/${d2}/dispatch`, { to: "home", model: "glm-alias" });
+    expect(bare.status).toBe(409);
+    expect(await bare.text()).toMatch(/glm-alias is paused since/);
+    expect((await L.item(d2)).dispatch).toBeNull();
     const d3 = await open("d3");
     expect((await call("POST", `${P}/items/${d3}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
     await refused("dispatch --overlap-ok", await call("POST", `${P}/items/${d3}/dispatch`, { retain: true, overlapOk: true, agent: "opencode", model: "glm-alias" }));

@@ -223,6 +223,26 @@ it("a build dispatched before its model was held is refused at claim and withdra
   }
 });
 
+// t649 (found reviewing t622, gemini-4-argon's and gpt-6-astra's tenth
+// reviews): a dispatch naming a model and no harness skipped the standing
+// check, so the owner could queue a build for a held model, and a pool
+// change left such a queued build standing.
+it("a dispatch naming a model without a harness is refused, and withdrawn by a pool change, while its model is held", async () => {
+  for (const [name, change, reason] of HELD) {
+    const L = await project(`build-held-bare-${name}`);
+    const bare = new RegExp(`^${reason.source.replace("codex\\/", "")}`);
+    await L.poolChanged(holding(change));
+    const { id } = await L.newItem("Small task", ["src/**"], "owner");
+    await refusal(L.dispatch(id, "owner", { to: "home", model: "gpt-6-astra" }), "model_held", bare);
+    expect((await L.item(id)).dispatch, name).toBeNull();
+    await L.poolChanged(POOL);
+    expect((await L.dispatch(id, "owner", { to: "home", model: "gpt-6-astra" })).dispatch, name).toMatchObject({ agent: null, model: "gpt-6-astra" });
+    await L.poolChanged(holding(change));
+    expect((await L.item(id)).dispatch, name).toBeNull();
+    expect((await undispatched(L, id)).map((e) => e.data), name).toEqual([{ reason: expect.stringMatching(bare) }]);
+  }
+});
+
 it("a held model cannot claim a task by hand, and a model still free to build can", async () => {
   const L = await project("build-held-hand");
   await L.poolChanged(holding({ roles: ["review"] }));

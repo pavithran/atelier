@@ -6,7 +6,7 @@ import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { inScope, runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
+import { actorStanding, dispatchActor, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -1403,7 +1403,9 @@ export class Ledger extends DurableObject<Env> {
     // With previous, an overlap override keeps the offer it overrides
     // (overrideDispatch, t491); the builder it leaves is checked as any other.
     const d = overrideDispatch(input, previous, by, at);
-    if (d.agent && d.model) this.assertStanding(`${d.agent}/${d.model}`, role, pool);
+    // A model named without a harness is checked as the bare model (t649).
+    const actor = dispatchActor(d);
+    if (actor) this.assertStanding(actor, role, pool);
     return d;
   }
 
@@ -1484,7 +1486,7 @@ export class Ledger extends DurableObject<Env> {
     for (const r of open) {
       if (r.plan && this.planRecord(r.plan as string).approval) continue;
       const d = JSON.parse(r.dispatch as string) as Dispatch;
-      const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+      const asked = dispatchActor(d);
       const held = asked ? actorStanding(pool, asked, "review") : null;
       if (held) this.withdrawHeldRequest(r.item as string, r.id as number, r.head as string, asked!, held, r.tier === 1, at);
     }
@@ -1499,7 +1501,8 @@ export class Ledger extends DurableObject<Env> {
     }
     for (const row of this.sql.exec(`SELECT * FROM prereviews WHERE state = 'open' AND dispatch IS NOT NULL`).toArray()) {
       const d = JSON.parse(row.dispatch as string) as Dispatch;
-      const held = d.agent && d.model ? actorStanding(pool, `${d.agent}/${d.model}`, "review") : null;
+      const asked = dispatchActor(d);
+      const held = asked ? actorStanding(pool, asked, "review") : null;
       if (held) this.settlePrereview(row, "withdrawn", { detail: held }, ORCHESTRATOR, at);
     }
     // A queued build of a standalone task, or an unapproved plan's queued
@@ -1509,8 +1512,9 @@ export class Ledger extends DurableObject<Env> {
       const item = this.item(row.id as string);
       const d = item.dispatch!;
       const role = claimRole(item);
-      if (!role || !d.agent || !d.model) continue;
-      const held = actorStanding(pool, `${d.agent}/${d.model}`, role);
+      const asked = dispatchActor(d);
+      if (!role || !asked) continue;
+      const held = actorStanding(pool, asked, role);
       if (held) this.withdrawHeldDispatch(item, held, at);
     }
     const plans = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
@@ -5995,8 +5999,9 @@ export class Ledger extends DurableObject<Env> {
     const standing = this.poolStanding();
     for (const p of parts) {
       const d = p.dispatch;
-      if (p.state !== "open" || p.owner || !d?.agent || !d.model || (d.job && d.job !== "merge-main")) continue;
-      const held = actorStanding(standing, `${d.agent}/${d.model}`, "build");
+      const asked = d ? dispatchActor(d) : null;
+      if (p.state !== "open" || p.owner || !asked || (d!.job && d!.job !== "merge-main")) continue;
+      const held = actorStanding(standing, asked, "build");
       if (!held) continue;
       this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
       this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: held }, at);
