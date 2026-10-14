@@ -13,7 +13,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, branchesRepoName, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -831,6 +831,21 @@ async function repoExists(env: Env, repo: string): Promise<boolean> {
   });
 }
 
+// A repository found already under the name Atelier would make it with is
+// taken only when its description is the one Atelier gives it for that
+// purpose (baselineMark, taskForkMark, branchesMark in src/rules.ts): an
+// earlier attempt's, whose answer was lost (t349). One made for anything
+// else, such as another project's branches repository or baseline, is
+// refused before any token is minted for it (the reviews of t641).
+async function assertMadeAs(env: Env, repo: string, mark: string, purpose: string): Promise<void> {
+  await headOf(env, repo);
+  const description = await artifactsStep(`read ${repo}`, async () => {
+    using r = await env.ARTIFACTS.get(repo);
+    return (await r.info()).description;
+  });
+  if (description !== mark) throw new RuleError("repo_foreign", `${repo} already exists and was not made as ${purpose}; nothing was given out for it`, 409);
+}
+
 // The developer's branches repository (t641), made on the first push as a
 // fork of the baseline's branch, so a branch push sends only what main does
 // not already hold. The repository the Ledger recorded is taken as it
@@ -840,7 +855,6 @@ async function repoExists(env: Env, repo: string): Promise<boolean> {
 // written; a repository made otherwise is refused, and no token is minted
 // for it (Astra's review of t641, finding 1). One still being made is
 // waited for (headOf).
-const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
 async function developerBranchesRepo(env: Env, L: ReturnType<typeof ledger>, actor: string, key: string, baseline: string, repo: string, project: string): Promise<void> {
   if (await L.branchesRepo() !== repo) {
     if (!await repoExists(env, repo)) {
@@ -851,12 +865,7 @@ async function developerBranchesRepo(env: Env, L: ReturnType<typeof ledger>, act
         if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
       });
     }
-    await headOf(env, repo);
-    const description = await artifactsStep(`read ${repo}`, async () => {
-      using r = await env.ARTIFACTS.get(repo);
-      return (await r.info()).description;
-    });
-    if (description !== branchesMark(key)) throw new RuleError("branches_repo_foreign", `${repo} exists and was not made as ${project}'s branches repository; nothing was minted for it`, 409);
+    await assertMadeAs(env, repo, branchesMark(key), `${project}'s branches repository`);
     await L.recordBranchesRepo(actor, repo);
   }
   await artifactsStep(`read the head of ${repo}`, () => headOf(env, repo));
@@ -962,12 +971,16 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
     return true;
   });
   if (!deleted) return false;
-  await artifactsStep(`fork ${planFork} as ${fork}`, async () => {
+  const remade = await artifactsStep(`fork ${planFork} as ${fork}`, async () => {
     using plan = await env.ARTIFACTS.get(planFork);
-    await plan.fork(fork, { description: `${project.name} ${item.id}: ${item.title}`, defaultBranchOnly: true });
+    await plan.fork(fork, { description: taskForkMark(fork), defaultBranchOnly: true });
+    return true;
   }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
     if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+    return false;
   });
+  // A fork found under the name is taken only as this move's own (t641).
+  if (!remade) await assertMadeAs(env, fork, taskForkMark(fork), `${project.name} ${item.id}'s fork`);
   const base = await artifactsStep(`read the head of ${fork}`, () => headOf(env, fork));
   if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
   await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
@@ -1474,12 +1487,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
     mergeProject(await L.project().catch(() => null), init, new Date().toISOString());
+    const known = ref.registered || await L.project().then(() => true, () => false);
     try {
-      await env.ARTIFACTS.create(repo, { description: `Atelier baseline for ${project}`, setDefaultBranch: branch ?? "main" });
+      await env.ARTIFACTS.create(repo, { description: baselineMark(project), setDefaultBranch: branch ?? "main" });
       // A baseline created without a branch named was created on main.
       init.branch ??= "main";
     } catch (err) {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+      // A project new here takes a repository already under its baseline's
+      // name only when an earlier init of it made that repository (t641).
+      if (!known) await assertMadeAs(env, repo, baselineMark(project), `${project}'s baseline`);
     }
     const record = await L.initProject(init, actor);
     await L.poolChanged(await index(env).models());
@@ -1650,7 +1667,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "branches") {
     requireOwner(env, actor);
     const p = await L.project();
-    const repo = branchesRepoName(ref.key);
+    const repo = await branchesRepoName(ref.key);
     // A baseline registered under that name before the prefix was reserved
     // would be shared with it: refused rather than handed out.
     const clash = (await index(env).projects()).find((q) => q.repo === repo);
@@ -1863,12 +1880,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // attempt made, in this call or in a claim that failed after it
           // (t349): no fork is recorded for the item, so no token was ever
           // made for it, and it is taken as this claim's fork.
-          await artifactsStep(`fork ${from} as ${name}`, async () => {
+          const made = await artifactsStep(`fork ${from} as ${name}`, async () => {
             using base = await env.ARTIFACTS.get(from);
-            await base.fork(name, { description: `${p.name} ${id}: ${item.title}`, defaultBranchOnly: true });
+            await base.fork(name, { description: taskForkMark(name), defaultBranchOnly: true });
+            return true;
           }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
             if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+            return false;
           });
+          // Only an earlier attempt's fork is taken: a repository made for
+          // anything else under this name is refused before any token is
+          // made for it (the reviews of t641).
+          if (!made) await assertMadeAs(env, name, taskForkMark(name), `${p.name} ${id}'s fork`);
           const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
           await L.setFork(id, name, head, actor, !!c.token);
         } catch (err) {

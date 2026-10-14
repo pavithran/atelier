@@ -61,12 +61,12 @@ async function serve(t, f) {
       const developer = req.headers["x-atelier-actor"] === "owner";
       if (req.url === "/api/version") answer = { commit: "c".repeat(40), routeLevel: 28, capabilities: f.capabilities };
       else if (req.url.startsWith("/api/projects/demo/branches") && !developer) { status = 403; answer = { error: "not_project_owner", detail: "only the developer can do this" }; }
-      else if (req.method === "POST" && req.url === "/api/projects/demo/branches/token") answer = { remote: f.branches, token: TOKEN, tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repo: "branches--demo", prefix: "wip/" };
+      else if (req.method === "POST" && req.url === "/api/projects/demo/branches/token") answer = { remote: f.branches, token: TOKEN, tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repo: "devbr-0123456789abcdef0123456789abcdef", prefix: "wip/" };
       else if (req.method === "POST" && req.url === "/api/projects/demo/branches") {
         const held = f.git(f.branches, "rev-parse", `refs/heads/${body.name}`);
         if (held !== body.commit) { status = 409; answer = { error: "branch_not_pushed", detail: "not pushed" }; }
         else { status = 201; answer = f.records[body.name] = { name: body.name, commit: body.commit, subject: f.git(f.branches, "log", "-1", "--format=%s", body.commit), committedAt: null, host: body.host, pushedAt: "2026-10-13T18:30:00.000Z" }; }
-      } else if (req.method === "GET" && req.url === "/api/projects/demo/branches") answer = { repo: "branches--demo", prefix: "wip/", branches: Object.values(f.records) };
+      } else if (req.method === "GET" && req.url === "/api/projects/demo/branches") answer = { repo: "devbr-0123456789abcdef0123456789abcdef", prefix: "wip/", branches: Object.values(f.records) };
       else if (req.url === "/api/projects/demo/standing") answer = { project: { name: "demo", title: "Demo", repo: "demo" }, generatedAt: "2026-10-13T10:00:00.000Z", live: [], waiting: [], queued: [], merged: [], handoffs: [], controlPlane: null, checks: [], partial: [] };
       else if (req.url === "/api/projects/demo/baseline-head") answer = { head: f.git(f.baseline, "rev-parse", "main") };
       else if (req.url === "/api/projects/demo/landing-lease") answer = { lease: null };
@@ -183,6 +183,10 @@ test("branch ls and status --project list each branch with its last commit and M
   const commit = commitOn(f, f.mac1, "wip/idea", "Draft the idea");
   assert.equal((await run(t, f, ["branch", "push"])).code, 0);
   const line = `wip/idea  ${commit.slice(0, 8)}  Draft the idea  (from ${HOST}, 2026-10-13 18:30 UTC)`;
+  // ls takes no flag (Argon's review of t641).
+  const forced = await run(t, f, ["branch", "ls", "--force"]);
+  assert.equal(forced.code, 1);
+  assert.match(forced.output, /branch ls does not take --force/);
   const ls = await run(t, f, ["branch", "ls"]);
   assert.equal(ls.code, 0, ls.output);
   assert.equal(ls.output.trim(), `Developer branches\n  ${line}`);

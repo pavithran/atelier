@@ -1943,14 +1943,18 @@ export function repoName(project: string, itemId?: string): string {
 // main as well. In a repository of their own, no push of a branch can reach
 // the baseline's main, which still moves only through landing and sync.
 //
-// The two namespaces never meet (Astra's review of t641, finding 1): a
-// project's baseline is repoName(key) and a task fork repoName(key, tN),
-// which may hold any of the letters, digits, . _ - Artifacts allows, so no
-// character is free for the branches repository alone. It takes the fixed
-// prefix BRANCHES_REPO_PREFIX instead, and assertBaselineName refuses that
-// prefix to any baseline a project would be registered with, so no project
-// named branches--demo can be given demo's branches as its baseline, and no
-// fork, which begins with its project's baseline name, can be either.
+// The branches repository's name is BRANCHES_REPO_PREFIX and the first 32
+// hex digits of the SHA-256 of the project's key: a fixed form whose length
+// never depends on the key, so a key of any length a baseline takes has one
+// (Astra's review of t641, finding 2). A name derived from the key by adding
+// to it met other names: demo--branches is a baseline name, and
+// branches--t1 is project branches's fork of t1 (the reviews of t641).
+// BRANCHES_REPO_NAME matches the form, and assertBaselineName refuses it to
+// any baseline a project would be registered with; a task fork, KEY--tN,
+// never has the form. Every place that finds a repository already under the
+// name it would make checks it was made for that purpose before any token
+// is minted for it (src/index.ts), so even a name a project registered
+// before this change holds is never taken for another's.
 //
 // Every developer branch is under DEVELOPER_BRANCH_PREFIX. A NAME given
 // without it is taken under it (`atelier branch push idea` pushes
@@ -1959,16 +1963,24 @@ export function repoName(project: string, itemId?: string): string {
 // another prefix (feature/x, refs/heads/x), which is outside the prefix.
 // The rest of the name keeps to what git check-ref-format takes, more
 // strictly: letters, digits, . _ - and / between parts.
-export const BRANCHES_REPO_PREFIX = "branches--";
+export const BRANCHES_REPO_PREFIX = "devbr-";
+export const BRANCHES_REPO_NAME = /^devbr-[0-9a-f]{32}$/;
 export const DEVELOPER_BRANCH_PREFIX = "wip/";
-export function branchesRepoName(key: string): string {
-  const name = `${BRANCHES_REPO_PREFIX}${repoName(key)}`;
-  if (name.length > 63) throw new RuleError("bad_name", `cannot make a branches repository name from "${key}": ${name} is longer than 63 characters`, 400);
-  return name;
+export async function branchesRepoName(key: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
+  return `${BRANCHES_REPO_PREFIX}${[...digest].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32)}`;
 }
 export function assertBaselineName(repo: string): void {
-  if (repo.startsWith(BRANCHES_REPO_PREFIX)) throw new RuleError("repo_reserved", `a baseline cannot be named ${repo}: names beginning ${BRANCHES_REPO_PREFIX} are kept for the developer's branches repositories`, 409);
+  if (BRANCHES_REPO_NAME.test(repo)) throw new RuleError("repo_reserved", `a baseline cannot be named ${repo}: names of the form ${BRANCHES_REPO_PREFIX} and 32 hex digits are kept for the developer's branches repositories`, 409);
 }
+
+// What Atelier writes as the description of each repository it makes, and
+// reads back before it takes one it finds already under the name it would
+// make: an earlier attempt's, whose answer was lost (t349), is taken; one
+// made for any other purpose is refused (the reviews of t641).
+export const baselineMark = (project: string) => `Atelier baseline for ${project}`;
+export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
+export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
 const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 export function developerBranch(name: unknown, defaultBranch = "main"): string {
   const refuse = (why: string) => { throw new RuleError("bad_branch", `${typeof name === "string" ? JSON.stringify(name) : "the branch"} ${why}; a developer branch is ${DEVELOPER_BRANCH_PREFIX}NAME, such as ${DEVELOPER_BRANCH_PREFIX}idea`, 400); };

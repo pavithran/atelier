@@ -34,7 +34,9 @@ const artifactsError = (code: string, message: string) => Object.assign(new Erro
 const tick = () => new Promise<void>((ok) => setTimeout(ok, Math.random() * 20));
 
 function fakeArtifacts(faults: Faults) {
-  const repos = new Map<string, { reads: number }>();
+  // Each repository keeps the description it was made with, which a claim
+  // reads back before it takes a fork an earlier attempt made (t641).
+  const repos = new Map<string, { reads: number; description?: string }>();
   const tokens = new Map<string, Tok>();
   let forks = 0, mints = 0, infos = 0, revokes = 0, gets = 0, n = 0;
   const artifacts = {
@@ -43,13 +45,13 @@ function fakeArtifacts(faults: Faults) {
       if (faults.get?.(++gets)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
       const known = () => { const r = repos.get(repo); if (!r) throw artifactsError("NOT_FOUND", `repo not found: ${repo}`); return r; };
       return {
-        fork: async (name: string) => {
+        fork: async (name: string, opts?: { description?: string }) => {
           known();
           await tick();
           const k = ++forks;
           if (faults.forkBefore(k)) throw artifactsError("INTERNAL_ERROR", "fork failed: upstream connection reset");
           if (repos.has(name)) throw artifactsError("ALREADY_EXISTS", `repo already exists: ${name}`);
-          repos.set(name, { reads: 0 });
+          repos.set(name, { reads: 0, description: opts?.description });
           if (faults.forkAfter(k)) throw artifactsError("DEADLINE_EXCEEDED", "fork timed out");
         },
         log: async () => {
@@ -59,9 +61,9 @@ function fakeArtifacts(faults: Faults) {
           return [{ hash: H0 }];
         },
         info: async () => {
-          known();
+          const r = known();
           if (faults.info?.(++infos)) throw artifactsError("UNAVAILABLE", "repository service unavailable");
-          return { remote: `https://git.test/${repo}.git`, defaultBranch: "main" };
+          return { remote: `https://git.test/${repo}.git`, defaultBranch: "main", description: r.description ?? null };
         },
         createToken: async (scope: string) => {
           known();
