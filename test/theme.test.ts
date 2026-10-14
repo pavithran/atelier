@@ -340,3 +340,42 @@ test("theme.css is exactly what bin/sync-theme makes of the portfolio's copy, an
     assert.equal(readFileSync(join(dir, "src/theme.css"), "utf8"), theme, "a second pass adds no second guard");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// t673: .show-stack painted with var(--accent), which no sheet defines (added
+// in e5036b32), so the Cloudflare line silently took its parent's colour.
+// Every var() in layout.css and how.css must name a property theme.css or
+// layout.css defines, or one the markup sets in a style attribute (--c, --d
+// and --l, per element, in src/*.ts). A var() with a fallback passes only when
+// its fallback is literal or every var() inside the fallback is itself defined.
+test("every custom property the page styles use is one the sheets or the markup define", () => {
+  const defined = new Set<string>();
+  for (const sheet of [theme, layout]) for (const m of css(sheet).matchAll(/(--[\w-]+)\s*:/g)) defined.add(m[1]);
+  const inline = new Set<string>();
+  for (const f of readdirSync("src").filter((f) => f.endsWith(".ts")))
+    for (const m of readFileSync(`src/${f}`, "utf8").matchAll(/(?:style="|;)(--[a-z][\w-]*):/g)) inline.add(m[1]);
+  assert.ok(defined.has("--text-muted") && defined.has("--signal"), "the theme's tokens were not found");
+  for (const name of ["--c", "--d", "--l"]) assert.ok(inline.has(name), `${name} is not set by any markup`);
+  // Each var( call with its arguments, balancing parentheses so a nested
+  // fallback such as var(--c, var(--text)) is read whole.
+  const calls = (s: string) => {
+    const out: { name: string; fallback: string | null }[] = [];
+    for (let at = s.indexOf("var("); at >= 0; at = s.indexOf("var(", at + 4)) {
+      let depth = 0, end = at + 3;
+      do { if (s[end] === "(") depth++; else if (s[end] === ")") depth--; end++; } while (depth > 0 && end < s.length);
+      const args = s.slice(at + 4, end - 1);
+      const comma = args.indexOf(",");
+      out.push({ name: (comma < 0 ? args : args.slice(0, comma)).trim(), fallback: comma < 0 ? null : args.slice(comma + 1).trim() });
+    }
+    return out;
+  };
+  const known = (name: string) => defined.has(name) || inline.has(name);
+  const undefinedUses: string[] = [];
+  for (const [file, sheet] of [["src/layout.css", layout], ["src/how.css", how]] as const) {
+    for (const { name, fallback } of calls(css(sheet))) {
+      if (known(name)) continue;
+      if (fallback !== null && calls(fallback).every((inner) => known(inner.name))) continue;
+      undefinedUses.push(`${file}: var(${name}${fallback === null ? "" : `, ${fallback}`})`);
+    }
+  }
+  assert.deepEqual(undefinedUses, [], "a page style uses a custom property nothing defines");
+});
