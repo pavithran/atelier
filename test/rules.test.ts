@@ -1309,13 +1309,17 @@ test("the Mac a branch was pushed from is one short line, without .local", () =>
   for (const host of ["", "  ", "a\nb", "x".repeat(101), 5, null]) assert.throws(() => branchHost(host), RuleError);
 });
 
-// Astra's review of t641, finding 1: a branches repository's name is one no
-// baseline or task fork can take, since every new baseline is refused the
-// prefix, and a fork begins with its project's baseline name.
-test("a branches repository is named with a prefix no baseline may take", () => {
-  assert.equal(branchesRepoName("Demo"), "branches--demo");
-  assert.equal(branchesRepoName("demo--branches"), "branches--demo--branches");
-  for (const repo of [branchesRepoName("demo"), "branches--x--t1"]) assert.throws(() => assertBaselineName(repo), (e: unknown) => e instanceof RuleError && e.code === "repo_reserved");
-  for (const repo of ["demo", "demo--branches", "branches", "my-branches--x", repoName("branches--demo".slice(1))]) assert.doesNotThrow(() => assertBaselineName(repo), repo);
-  assert.throws(() => branchesRepoName("k".repeat(60)), RuleError);
+// The reviews of t641: a branches repository's name has a fixed form from a
+// hash of the key, of the same length whatever the key, which every new
+// baseline is refused and no task fork (KEY--tN) can have.
+test("a branches repository is named devbr- and 32 hex digits of the key's hash, a form no baseline may take", async () => {
+  const demo = await branchesRepoName("demo");
+  assert.match(demo, /^devbr-[0-9a-f]{32}$/);
+  assert.equal(await branchesRepoName("demo"), demo);
+  assert.notEqual(await branchesRepoName("Demo"), demo);
+  assert.match(await branchesRepoName("k".repeat(63)), /^devbr-[0-9a-f]{32}$/);
+  // Argon's collision: project branches's fork of t1 is not project t1's branches.
+  assert.notEqual(repoName("branches", "t1"), await branchesRepoName("t1"));
+  assert.throws(() => assertBaselineName(demo), (e: unknown) => e instanceof RuleError && e.code === "repo_reserved");
+  for (const repo of ["demo", "demo--branches", "branches", "branches--t1", "devbr-", "devbr-xyz", `${demo}x`]) assert.doesNotThrow(() => assertBaselineName(repo), repo);
 });

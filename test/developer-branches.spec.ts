@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { branchesRepoName, repoName } from "../src/rules.ts";
 
 // The developer's branches (t641): work in progress carried between the
 // developer's Macs lives in a repository of the project's own beside the
@@ -18,42 +19,55 @@ import worker from "../src/index.ts";
 const OWNER = "branches-owner", AGENT = "codex/gpt-6-astra", HEAD = "a".repeat(40), WIP = "b".repeat(40);
 let serial = 0;
 
-async function setup() {
-  const name = `branches-${++serial}`;
+type World = { repos: Set<string>; refs: Record<string, Record<string, string>>; descriptions: Record<string, string | null>; minted: Array<{ repo: string; scope: string }>; forks: Array<{ from: string; to: string; defaultBranchOnly: unknown }> };
+const newWorld = (): World => ({ repos: new Set(), refs: {}, descriptions: {}, minted: [], forks: [] });
+
+// A project registered under `name` with its baseline in `world`, a fake
+// Artifacts shared by every project of one test, so names can meet there.
+async function setup(name = `branches-${++serial}`, world = newWorld()) {
   const index: any = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   const L: any = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const project = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const repo = name.toLowerCase();
+  const project = { name, repo, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
   await L.setProject(project, "owner");
   await index.registerProject(project);
-  const repos = new Set([name]);
-  const descriptions: Record<string, string | null> = { [name]: `Atelier baseline for ${name}` };
-  const refs: Record<string, Record<string, string>> = { [name]: { main: HEAD } };
-  const minted: Array<{ repo: string; scope: string }> = [];
-  const forks: Array<{ from: string; to: string; defaultBranchOnly: unknown }> = [];
-  const missing = (repo: string) => Object.assign(new Error(`repo not found: ${repo}`), { code: "NOT_FOUND" });
-  const artifacts = { get: async (repo: string) => {
-    if (!repos.has(repo)) throw missing(repo);
-    return {
-      info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main", description: descriptions[repo] ?? null }),
-      fork: async (to: string, opts: { defaultBranchOnly?: boolean; description?: string }) => {
-        if (repos.has(to)) throw Object.assign(new Error(`repo already exists: ${to}`), { code: "ALREADY_EXISTS" });
-        forks.push({ from: repo, to, defaultBranchOnly: opts?.defaultBranchOnly }); repos.add(to); descriptions[to] = opts?.description ?? null; refs[to] = { main: refs[repo].main };
-      },
-      log: async (opts: { ref?: string } = {}) => {
-        const hash = refs[repo][opts.ref ?? "main"];
-        return hash ? [{ hash, treeHash: "c".repeat(40), parents: [], message: "Draft the idea\n\nMore", author: { name: "Dev" }, committedAt: 1_800_000_000 }] : [];
-      },
-      createToken: async (scope: string, ttl: number) => { minted.push({ repo, scope }); return { id: `tok-${minted.length}`, plaintext: "upstream-secret", expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }; },
-      [Symbol.dispose]() {},
-    };
-  } } as unknown as Artifacts;
+  const { repos, refs, descriptions, minted, forks } = world;
+  repos.add(repo);
+  refs[repo] = { main: HEAD };
+  descriptions[repo] = `Atelier baseline for ${name}`;
+  const missing = (r: string) => Object.assign(new Error(`repo not found: ${r}`), { code: "NOT_FOUND" });
+  const artifacts = {
+    create: async (r: string, opts: { description?: string }) => {
+      if (repos.has(r)) throw Object.assign(new Error(`repo already exists: ${r}`), { code: "ALREADY_EXISTS" });
+      repos.add(r); refs[r] = { main: HEAD }; descriptions[r] = opts?.description ?? null;
+      return { id: r, name: r, description: null, defaultBranch: "main", remote: `https://git.test/${r}.git`, token: "upstream-secret" };
+    },
+    get: async (r: string) => {
+      if (!repos.has(r)) throw missing(r);
+      return {
+        info: async () => ({ remote: `https://git.test/${r}.git`, defaultBranch: "main", description: descriptions[r] ?? null }),
+        fork: async (to: string, opts: { defaultBranchOnly?: boolean; description?: string }) => {
+          if (repos.has(to)) throw Object.assign(new Error(`repo already exists: ${to}`), { code: "ALREADY_EXISTS" });
+          forks.push({ from: r, to, defaultBranchOnly: opts?.defaultBranchOnly }); repos.add(to); descriptions[to] = opts?.description ?? null; refs[to] = { main: refs[r].main };
+        },
+        log: async (opts: { ref?: string } = {}) => {
+          const hash = refs[r][opts.ref ?? "main"];
+          return hash ? [{ hash, treeHash: "c".repeat(40), parents: [], message: "Draft the idea\n\nMore", author: { name: "Dev" }, committedAt: 1_800_000_000 }] : [];
+        },
+        readTree: async () => [],
+        createToken: async (scope: string, ttl: number) => { minted.push({ repo: r, scope }); return { id: `tok-${minted.length}`, plaintext: "upstream-secret", expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }; },
+        revokeToken: async () => true,
+        [Symbol.dispose]() {},
+      };
+    },
+  } as unknown as Artifacts;
   const bindings = { ...env, ATELIER_TOKEN: OWNER, ARTIFACTS: artifacts } as typeof env;
   const request = (method: string, path: string, token: string, actor: string | null, body?: unknown) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bindings);
   const owner = (method: string, path: string, body?: unknown) => request(method, path, OWNER, "owner", body);
-  return { name, repos, refs, minted, forks, request, owner, branches: `branches--${name}`, index, artifacts: repos, descriptions };
+  return { name, L, repos, refs, minted, forks, request, owner, branches: await branchesRepoName(name), artifacts: repos, descriptions, world };
 }
 
 it("the developer's write token is for the branches repository alone, which is made from the baseline's branch on the first push and never the baseline", async () => {
@@ -133,29 +147,86 @@ it("a push is recorded with its commit and Mac only once the branches repository
   expect(t.refs[t.name]).toEqual({ main: HEAD });
 });
 
-// Astra's review of t641, finding 1: demo's branches repository must never
-// be another project's baseline, in either order. A baseline name may hold
-// any letter Artifacts allows, so the branches repository takes a prefix
-// registration refuses to every new baseline, and the branch routes mint
-// only for the repository this project's Ledger recorded making.
-it("no project can be registered with a baseline named as a branches repository, before or after the branches exist", async () => {
+// The reviews of t641: a branches repository's name must never be one any
+// baseline or task fork can have, whatever the keys, and a repository found
+// under a name Atelier would make is taken only when Atelier made it for
+// that purpose. Each case is a collision the reviews found.
+it("no project can be registered with a baseline of the branches repositories' form, before or after the branches exist", async () => {
   const t = await setup();
   const init = (name: string) => t.owner("PUT", `/projects/${name}`, {});
-  // Before demo has pushed a branch.
   const before = await init(t.branches);
   expect(before.status, await before.clone().text()).toBe(409);
   expect(await before.text()).toContain("repo_reserved");
   expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
-  // And after: the repository exists, and is still refused as a baseline.
   const after = await init(t.branches);
   expect(after.status).toBe(409);
   expect(await after.text()).toContain("repo_reserved");
   expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
 });
 
+it("Astra's order: a branches repository made first, then a claim whose fork would take its name, refuses the claim and mints nothing for it", async () => {
+  // A legacy project whose task fork is named as another project's
+  // branches repository is the worst case; it is made here by giving the
+  // claim's fork name to demo's branches repository directly.
+  const world = newWorld();
+  const demo = await setup(undefined, world);
+  expect((await demo.owner("POST", `/projects/${demo.name}/branches/token`, { scope: "write" })).status).toBe(200);
+  const legacy = await setup(`legacy-${serial}`, world);
+  await legacy.L.newItem("Build", [], "owner");
+  const fork = repoName(legacy.name, "t1");
+  // demo's branches repository, as it would stand under the fork's name.
+  world.repos.add(fork); world.refs[fork] = { main: HEAD, "wip/idea": WIP }; world.descriptions[fork] = world.descriptions[demo.branches];
+  world.minted.length = 0;
+  const agent = await (await legacy.owner("POST", "/tokens", { actor: AGENT, projects: [legacy.name] })).json() as { token: string };
+  const claim = await legacy.request("POST", `/projects/${legacy.name}/items/t1/claim`, agent.token, AGENT, {});
+  expect(claim.status, await claim.clone().text()).toBe(409);
+  const text = await claim.text();
+  expect(text).toContain("repo_foreign");
+  expect(text).not.toContain("upstream-secret");
+  expect(world.minted).toEqual([]);
+  expect((await legacy.L.item("t1")).fork ?? null).toBe(null);
+});
+
+it("a claim takes a fork an earlier attempt of its own made", async () => {
+  const t = await setup();
+  await t.L.newItem("Build", [], "owner");
+  const fork = repoName(t.name, "t1");
+  t.repos.add(fork); t.refs[fork] = { main: HEAD }; t.descriptions[fork] = `Atelier: the task fork ${fork}`;
+  const agent = await (await t.owner("POST", "/tokens", { actor: AGENT, projects: [t.name] })).json() as { token: string };
+  const claim = await t.request("POST", `/projects/${t.name}/items/t1/claim`, agent.token, AGENT, {});
+  expect(claim.status, await claim.clone().text()).toBe(200);
+  expect((await t.L.item("t1")).fork).toBe(fork);
+});
+
+it("Argon's case: project branches's fork of t1 and project t1's branches repository are different repositories", async () => {
+  const world = newWorld();
+  const t1 = await setup(`t1x${serial}`, world);
+  const branches = await setup(`branches${serial}`, world);
+  expect(repoName(branches.name, "t1")).not.toBe(t1.branches);
+  expect(repoName("branches", "t1")).not.toBe(await branchesRepoName("t1"));
+  expect((await t1.owner("POST", `/projects/${t1.name}/branches/token`, { scope: "write" })).status).toBe(200);
+  await branches.L.newItem("Build", [], "owner");
+  const agent = await (await branches.owner("POST", "/tokens", { actor: AGENT, projects: [branches.name] })).json() as { token: string };
+  world.minted.length = 0;
+  expect((await branches.request("POST", `/projects/${branches.name}/items/t1/claim`, agent.token, AGENT, {})).status).toBe(200);
+  expect(world.minted.map((m) => m.repo)).not.toContain(t1.branches);
+});
+
+it("a project with a 63-character key pushes and lists its branches", async () => {
+  const name = `k${serial++}-`.padEnd(63, "k");
+  expect(name).toHaveLength(63);
+  const t = await setup(name);
+  expect(t.branches).toMatch(/^devbr-[0-9a-f]{32}$/);
+  expect((await t.owner("POST", `/projects/${name}/branches/token`, { scope: "write" })).status).toBe(200);
+  t.refs[t.branches]["wip/idea"] = WIP;
+  expect((await t.owner("POST", `/projects/${name}/branches`, { name: "wip/idea", commit: WIP, host: "Studio" })).status).toBe(201);
+  const list = await t.owner("GET", `/projects/${name}/branches`);
+  expect(list.status).toBe(200);
+  expect(((await list.json()) as { branches: Array<{ name: string }> }).branches.map((b) => b.name)).toEqual(["wip/idea"]);
+});
+
 it("a repository under the branches name that Atelier did not make for this project is refused, and nothing is minted for it", async () => {
   const t = await setup();
-  // Another project's baseline, or anything made outside the branch route.
   t.artifacts.add(t.branches);
   t.refs[t.branches] = { main: "e".repeat(40) };
   t.descriptions[t.branches] = "Atelier baseline for someone else";
@@ -170,14 +241,23 @@ it("a repository under the branches name that Atelier did not make for this proj
   expect(t.forks).toEqual([]);
 });
 
-it("a fork made for this project whose record was lost is taken once its description names this project", async () => {
+it("a branches repository made for this project whose record was lost is taken by its description", async () => {
   const t = await setup();
-  const L: any = env.LEDGER.get(env.LEDGER.idFromName(`project:${t.name}`));
   t.artifacts.add(t.branches);
   t.refs[t.branches] = { main: HEAD };
   t.descriptions[t.branches] = `Atelier: the developer's branches of the project stored under ${t.name}`;
-  expect(await L.branchesRepo()).toBe(null);
+  expect(await t.L.branchesRepo()).toBe(null);
   expect((await t.owner("POST", `/projects/${t.name}/branches/token`, { scope: "write" })).status).toBe(200);
-  expect(await L.branchesRepo()).toBe(t.branches);
+  expect(await t.L.branchesRepo()).toBe(t.branches);
   expect(t.minted).toEqual([{ repo: t.branches, scope: "write" }]);
+});
+
+it("init refuses to take as a new project's baseline a repository Atelier made for something else", async () => {
+  const world = newWorld();
+  const t = await setup(undefined, world);
+  const name = `fresh-${serial}`;
+  world.repos.add(name); world.refs[name] = { main: HEAD }; world.descriptions[name] = `Atelier: the task fork ${name}`;
+  const res = await t.owner("PUT", `/projects/${name}`, {});
+  expect(res.status, await res.clone().text()).toBe(409);
+  expect(await res.text()).toContain("repo_foreign");
 });

@@ -17,7 +17,11 @@ import { OWNER, P, actor, args, call, cfg, die, landingGit, project, request, sh
 export default async function branchCommand() {
   const git = landingGit;
   const [, sub, given] = args._;
-  if (sub === "ls" && args._.length === 2) return list();
+  if (sub === "ls" && args._.length === 2) {
+    // ls takes no flag of its own (Argon's review of t641).
+    if (args.force !== undefined) die("atelier branch ls does not take --force");
+    return list();
+  }
   if (!["push", "fetch"].includes(sub) || args._.length > 3 || (sub === "fetch" && given === undefined)) die(COMMAND_USAGE.branch);
   if (wsConfig("project")) die("atelier branch carries the developer's own work between Macs, from the project's checkout; this folder is a task workspace, whose work moves through atelier push");
   const name = project(), as = await actor(OWNER);
