@@ -837,13 +837,25 @@ async function repoExists(env: Env, repo: string): Promise<boolean> {
 // earlier attempt's, whose answer was lost (t349). One made for anything
 // else, such as another project's branches repository or baseline, is
 // refused before any token is minted for it (the reviews of t641).
-async function assertMadeAs(env: Env, repo: string, mark: string, purpose: string): Promise<void> {
+async function assertMadeAs(env: Env, repo: string, mark: string | ((description: string | null) => boolean), purpose: string): Promise<void> {
   await headOf(env, repo);
   const description = await artifactsStep(`read ${repo}`, async () => {
     using r = await env.ARTIFACTS.get(repo);
     return (await r.info()).description;
   });
-  if (description !== mark) throw new RuleError("repo_foreign", `${repo} already exists and was not made as ${purpose}; nothing was given out for it`, 409);
+  if (typeof mark === "string" ? description !== mark : !mark(description)) throw new RuleError("repo_foreign", `${repo} already exists and was not made as ${purpose}; nothing was given out for it`, 409);
+}
+
+// A task fork's provenance: the description Atelier gives a fork now
+// (taskForkMark), or the one it gave before t641, "PROJECT ID: TITLE",
+// when PROJECT is one of this project's names and ID this task's. The
+// title is not compared: it may have been edited since the fork was made.
+// Without the older form, a claim retried after the deploy that brought
+// t641 could never take the fork its own earlier attempt made (Astra's
+// third review of t641, finding 2).
+function madeAsTaskFork(description: string | null, fork: string, names: string[], id: string): boolean {
+  if (description === taskForkMark(fork)) return true;
+  return typeof description === "string" && names.some((n) => description.startsWith(`${n} ${id}: `));
 }
 
 // The developer's branches repository (t641), made on the first push as a
@@ -980,7 +992,7 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
     return false;
   });
   // A fork found under the name is taken only as this move's own (t641).
-  if (!remade) await assertMadeAs(env, fork, taskForkMark(fork), `${project.name} ${item.id}'s fork`);
+  if (!remade) await assertMadeAs(env, fork, (d) => madeAsTaskFork(d, fork, [project.name], item.id), `${project.name} ${item.id}'s fork`);
   const base = await artifactsStep(`read the head of ${fork}`, () => headOf(env, fork));
   if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
   await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
@@ -1689,17 +1701,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
       const commit = String(body.commit ?? "");
       if (!/^[0-9a-f]{40}$/.test(commit)) throw new RuleError("bad_commit", "commit must be a 40-character commit id", 400);
-      const top = await artifactsStep(`read ${name} in ${repo}`, async () => {
+      const readTop = () => artifactsStep(`read ${name} in ${repo}`, async () => {
         using r = await env.ARTIFACTS.get(repo);
         return (await r.log({ ref: name, limit: 1 }))[0] ?? null;
       }, (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
         if (NOT_FOUND.test(codeOf(err))) return null;
         throw err;
       });
+      const top = await readTop();
       if (!top || top.hash !== commit) throw new RuleError("branch_not_pushed", `${repo} holds ${top ? `${top.hash.slice(0, 8)} on ${name}` : `no ${name}`}, not ${commit.slice(0, 8)}; push the branch again with atelier branch push ${name}`, 409);
       const subject = top.message.split("\n")[0].slice(0, 200);
       const committedAt = Number.isFinite(top.committedAt) ? new Date(top.committedAt * 1000).toISOString() : null;
-      return json(await L.recordDeveloperBranch(actor, { name, commit, subject, committedAt, host }), 201);
+      // The Ledger reads the tip again as it writes, so a push another Mac
+      // recorded since is never overwritten by this older one (t641).
+      const result = await L.recordDeveloperBranch(actor, { name, commit, subject, committedAt, host }, async () => (await readTop())?.hash ?? null);
+      if ("recorded" in result) return json(result.recorded, 201);
+      const from = result.current && result.current.commit === result.tip ? ` from ${result.current.host}` : "";
+      return json({ error: "branch_moved", detail: `another Mac pushed ${name} since: the branches repository holds ${result.tip ? result.tip.slice(0, 8) : "no such branch"}${from}, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`, ...result }, 409);
     }
     throw new RuleError("not_found", "no such route", 404);
   }
@@ -1891,7 +1909,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // Only an earlier attempt's fork is taken: a repository made for
           // anything else under this name is refused before any token is
           // made for it (the reviews of t641).
-          if (!made) await assertMadeAs(env, name, taskForkMark(name), `${p.name} ${id}'s fork`);
+          if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
           const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
           await L.setFork(id, name, head, actor, !!c.token);
         } catch (err) {

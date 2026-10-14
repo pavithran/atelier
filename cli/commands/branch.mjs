@@ -40,7 +40,12 @@ export default async function branchCommand() {
     const token = await call("POST", `${P(name)}/branches/token`, { scope: "write" }, as);
     git(["push", "--quiet", "--no-follow-tags", token.remote, spec], { cwd: dir, token: token.token });
     const host = hostname().replace(/\.local$/i, "");
-    const recorded = await call("POST", `${P(name)}/branches`, { name: branch, commit, host }, as);
+    // A push another Mac made and recorded since is the tip the server
+    // keeps; this one is then not recorded over it (t641), and that is said.
+    const recorded = await request("POST", `${P(name)}/branches`, { name: branch, commit, host }, as).catch((error) => {
+      if (String(error.message).startsWith("branch_moved: ")) die(`${name}: pushed ${branch} @ ${short(commit)}, but ${error.message.slice("branch_moved: ".length)}`);
+      die(error.message, error.code ?? 1);
+    });
     console.log(`${name}: pushed ${branchLine(recorded)} to the project's branches repository. The baseline's main is untouched; on another Mac, atelier branch fetch ${branch.slice("wip/".length)} brings it there.`);
     return;
   }

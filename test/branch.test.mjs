@@ -62,6 +62,7 @@ async function serve(t, f) {
       if (req.url === "/api/version") answer = { commit: "c".repeat(40), routeLevel: 28, capabilities: f.capabilities };
       else if (req.url.startsWith("/api/projects/demo/branches") && !developer) { status = 403; answer = { error: "not_project_owner", detail: "only the developer can do this" }; }
       else if (req.method === "POST" && req.url === "/api/projects/demo/branches/token") answer = { remote: f.branches, token: TOKEN, tokenId: "tok", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main", repo: "devbr-0123456789abcdef0123456789abcdef", prefix: "wip/" };
+      else if (req.method === "POST" && req.url === "/api/projects/demo/branches" && f.moved) { status = 409; answer = { error: "branch_moved", detail: `another Mac pushed ${body.name} since: the branches repository holds ${f.moved.slice(0, 8)} from Mac-B, not ${body.commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`, stale: true, tip: f.moved }; }
       else if (req.method === "POST" && req.url === "/api/projects/demo/branches") {
         const held = f.git(f.branches, "rev-parse", `refs/heads/${body.name}`);
         if (held !== body.commit) { status = 409; answer = { error: "branch_not_pushed", detail: "not pushed" }; }
@@ -218,4 +219,15 @@ test("status across projects lists each branch and names the projects whose bran
   assert.equal(formatAllDeveloperBranches([{ name: "demo", branches: [b] }, { name: "old", branches: null }, { name: "empty", branches: [] }]),
     "Developer branches\n  demo  wip/idea  aaaaaaaa  Draft  (from Studio, 2026-10-13 18:30 UTC)\n  not read for old (the server keeps none, or could not answer)");
   assert.equal(formatAllDeveloperBranches([{ name: "empty", branches: [] }]), "");
+});
+
+// Astra's third review of t641: a push whose record finds another Mac's
+// newer push already recorded says so, and that its own was not recorded.
+test("a push the server answers stale says another Mac pushed since and points to branch ls", async (t) => {
+  const f = setup(t);
+  const commit = commitOn(f, f.mac1, "wip/idea", "Draft the idea");
+  f.moved = "9".repeat(40);
+  const r = await run(t, f, ["branch", "push"]);
+  assert.equal(r.code, 1, r.output);
+  assert.match(r.output, new RegExp(`demo: pushed wip/idea @ ${commit.slice(0, 8)}, but another Mac pushed wip/idea since: the branches repository holds 99999999 from Mac-B, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`));
 });
