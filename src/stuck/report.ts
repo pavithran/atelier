@@ -151,7 +151,9 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     }
   }
   // Active jobs across projects are required before concluding a runner is idle.
+  // A runner whose token serves other projects is no idle runner of this one (t669).
   if (offers && activeRunners) for (const offer of offers) {
+    if (offer.projects && !offer.projects.includes(project)) continue;
     if (activeRunners.includes(offer.runner)) continue;
     if (age(offer.at) - OFFER_REFRESH_MS > limits.runnerPollMinutes * 60_000)
       add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);
