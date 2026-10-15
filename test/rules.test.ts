@@ -1420,3 +1420,16 @@ test("a landing counts a recorded approval only where the gate is ready and coun
   assert.equal(recordedApproval(detail([b]), H1, null), null);
   assert.equal(recordedApproval(detail([a], [pass()]), H1, null), null);
 });
+
+
+test("an explicit rejection override waives only the recorded reviews and never checks or future rejections", () => {
+  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const rejected = review("codex/gpt-6", { approve: false, note: "Sandbox EPERM prevented tests" });
+  const made = reviewOverrideFor(item(), policy, evidence, [rejected], "owner", "Override environment-only rejection", T);
+  const accepted = item({ reviewOverride: made.override });
+  assert.equal(gate(accepted, policy, evidence, [rejected]).ready, true);
+  assert.equal(gate(accepted, { ...policy, noOverride: true }, evidence, [rejected]).ready, false);
+  assert.equal(gate(accepted, policy, [pass({ passed: false, changedPaths: ["AGENTS.md"] })], [rejected]).ready, false);
+  assert.equal(gate(accepted, policy, evidence, [{ ...rejected, at: "2026-10-16T00:00:00Z" }]).ready, false);
+  assert.equal(gate(item({ head: H2, reviewOverride: made.override }), policy, evidence, [rejected]).ready, false);
+});

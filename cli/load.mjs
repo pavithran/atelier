@@ -33,8 +33,8 @@ export function slotPriority(value = "ordinary") {
 // Only retain process identity and our random marker, never command lines or
 // other environment values. Unlike PID liveness (including kill(pid, 0)), an
 // inherited launch nonce cannot mistake a recycled PID for the old tree.
-// ps must expose the environment of every pool participant. Failure is fatal:
-// unavailable process information must never be interpreted as an empty host.
+// Unavailable process information must never be interpreted as an empty host.
+// The command wrapper can instead run without touching the pool.
 export function slotProcesses() {
   let output;
   try {
@@ -200,7 +200,8 @@ Landings set release and review harnesses set review; other checks default to
 ordinary. SIGINT/SIGTERM cancel waiting or terminate the running tree.
 A killed wrapper's surviving children keep its slot until they exit. A status
 read or admission reclaims abandoned entries. ps must expose participants'
-process environments; inspection failure refuses admission, never frees slots.
+process environments; when inspection is unavailable, commands run without
+process-tree accounting and warn on stderr. This fallback never frees slots.
 The inherited ATELIER_TEST_LEASE must be preserved by descendants, including
 commands that detach. This is cooperative scheduling, not a security sandbox.
 ATELIER_LOAD, ATELIER_LOAD_LIMIT and runner loadLimit are retired and ignored.
@@ -260,7 +261,13 @@ export async function runSlotCommand(command, metadata = {}, options = {}) {
   process.on("SIGINT", onInt).on("SIGTERM", onTerm);
   let acquired, exitSignal;
   try {
-    acquired = await acquireSlot(metadata, { ...options, signal: controller.signal });
+    // Probe before opening SQLite: read-only review sandboxes can forbid both.
+    try { (options.processes ?? slotProcesses)(); }
+    catch (error) {
+      console.error(`test slots: ${error.message}; running without process-tree accounting`);
+      acquired = { reused: true }; // Supervise only the direct child; do not touch the pool.
+    }
+    acquired ??= await acquireSlot(metadata, { ...options, signal: controller.signal });
     if (controller.signal.aborted) throw new Error("test slot wait cancelled");
     const child = spawn(command[0], command.slice(1), { stdio: "inherit" });
     let ended = false, code = 1, spawnError;
