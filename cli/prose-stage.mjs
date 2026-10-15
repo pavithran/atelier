@@ -27,11 +27,21 @@ function excludeIfRepository(workspace) {
   if (realpathSync(top) === realpathSync(workspace)) excludeScratch(workspace);
 }
 
+// True when the workspace's repository (if it is in one) tracks anything under
+// .scratch: a tracked copy would be overwritten and then show as a change that
+// `git add -A` commits, since an exclude rule does not untrack a file.
+function trackedUnderScratch(workspace) {
+  try {
+    return execFileSync("git", ["ls-files", "--", ".scratch"], { cwd: workspace, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== "";
+  } catch { return false; }
+}
+
 // Writes the copy without following a link the checkout controls: .scratch
 // and the destination may be tracked symlinks, so each is lstat-ed, a link or
 // anything but a folder / a file is refused, and the copy is a fresh file
 // opened exclusively and without following a link.
 function writeCopy(workspace, bytes) {
+  if (trackedUnderScratch(workspace)) throw refuse(`the checkout tracks ${PROSE_STANDARD_COPY} or other files under .scratch, which the exclude rule cannot untrack, so nothing was written`);
   const root = realpathSync(workspace);
   const scratch = join(workspace, ".scratch");
   const held = lstatOrNull(scratch);

@@ -211,6 +211,19 @@ test("a symlinked destination is refused and its target is left untouched", () =
   assert.ok(lstatSync(join(workspace, ".scratch", "prose-standard.md")).isSymbolicLink());
 });
 
+test("a tracked .scratch/prose-standard.md is refused and left as it was", () => {
+  const { checkout, workspace } = scene();
+  mkdirSync(join(workspace, ".scratch"));
+  writeFileSync(join(workspace, ".scratch", "prose-standard.md"), "placeholder\n");
+  const git = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: workspace, encoding: "utf8" });
+  git("add", "-f", ".scratch/prose-standard.md");
+  git("commit", "-q", "-m", "track the placeholder");
+  const staged = stageBrief(workspace, `${LINE}\n`, checkout, PATH);
+  assert.match(staged, /could not be copied into your workspace \(.*tracks/);
+  assert.equal(readFileSync(join(workspace, ".scratch", "prose-standard.md"), "utf8"), "placeholder\n");
+  assert.equal(git("status", "--porcelain").trim(), "");
+});
+
 test("a workspace that is not a repository still gets the copy", () => {
   const { checkout } = scene();
   const plain = mkdtempSync(join(tmpdir(), "t676-plain-"));
