@@ -258,7 +258,7 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   for (const blank of ["", "   "]) await refusal(L.accept("t1", "owner", H1, blank), "override_reason", /needs a reason/);
   // It waives the missing review and nothing else, and a refused one leaves no record.
   await L.addReview(review("t1", B, H1, false, "unsafe"));
-  await refusal(L.accept("t1", "owner", H1, reason), "not_ready", /rejected by codex\/gpt-5\.5: unsafe/);
+  await refusal(L.accept("t1", "owner", H1, reason), "override_unconfirmed", /needs the developer/);
   expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
   expect((await L.item("t1")).reviewOverride).toBeUndefined();
   // Where another family has approved, there is nothing to override.
@@ -1826,4 +1826,24 @@ it("failed claim restores its prior state instead of assuming it was open", asyn
   const claim = await L.claim("t1", A);
   await L.unclaim("t1", A, "not_ready", false, claim.generation);
   expect(await L.item("t1")).toMatchObject({ state: "submitted", owner: null, runner: null });
+});
+
+
+it("accept with a developer quote overrules an environment-only rejection and records it", async () => {
+  const L = await setup("environment-rejection-override");
+  await L.newItem("Review environment", ["AGENTS.md"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "env--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  await L.addReview({ ...review("t1", B, H1, false, "Environment limitation, not a demonstrated code defect"),
+    findings: [{ file: "cli/load.mjs", line: 41, severity: "blocking", text: "Sandbox EPERM prevented the test command" }] });
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /rejected by/);
+  await refusal(L.accept("t1", "owner", H1, "Environment failure"), "override_unconfirmed", /needs the developer/);
+  const quote = "Override this environment-only rejection";
+  const accepted = await L.accept("t1", "owner", H1, "Environment failure", undefined, undefined, undefined, undefined, B, quote);
+  expect(accepted.state).toBe("accepted");
+  expect(accepted.reviewOverride).toMatchObject({ head: H1, quote, acting: B, rejections: [{ by: B, at: expect.any(String) }] });
+  expect(kinds(await L.events("t1"))).toContain("review.overridden");
 });

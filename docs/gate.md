@@ -175,9 +175,11 @@ contributor's family is not recognised, the developer can accept with
 without an independent review" on the task's page. The reason is required.
 The override is recorded as an event of its own, `review.overridden`, never as
 a review. It counts only at the head it names, so a later push needs a review
-or another override, and it waives that review and nothing else: a failing
-check or a rejection still refuses acceptance. Atelier refuses an override
-where no review is missing. The task page, the inbox and the decision brief
+or another override. An explicit override can also waive recorded agent
+rejections, including a rejection caused only by the reviewer’s environment.
+It records which rejections it waives; a later rejection still blocks, as do
+failing checks and the developer’s own rejection. Atelier refuses an override
+where no review is missing and no agent rejection stands. The task page, the inbox and the decision brief
 show it with its reason, and the landing receipt records it. The merge's
 provenance note, which can be pushed to a public remote, names the override and
 who made it but not its reason; it names each review's reviewer, verdict, head
