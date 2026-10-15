@@ -144,6 +144,58 @@ its tick picks a reviewer the routing no longer gives. Each project's ledger
 holds a copy of the assignments that bear on it, sent when one changes and
 with the pool. `src/models/assignments.ts` holds the rules.
 
+## Vendor claims beside Atelier's record
+
+The Models page and `atelier models show ID` (GET /api/models/ID/compare,
+capability `models.compare.v1`) show one projection per model
+(`src/models/compare.ts`): the claims of its cards in force, with their
+sources and conditions, and then each role (build, review, security review,
+claims review, plan, and acting for the developer) with the developer's
+standing assignments of the model to it and Atelier's figures. Each figure
+names its reader, its window, its numerator and denominator or its samples,
+and the threshold under which no share or median is given: the readers' own
+(five judged findings for precision, three samples for a median) and five
+for the shares that had none. A vendor's score is never placed in a figure.
+Claims are not sorted into roles, since a card names the kind of task a
+claim is about and not a role; security review, claims review and planning
+have no figure of their own yet, and say why.
+
+Pairwise catches (`src/models/pairwise.ts`) count, over review precision's
+window, the revisions one model approved in which another model, reviewing
+the same task, head, criteria and scope, raised a blocking finding whose
+latest verdict is confirmed or fixed. A pair with an unjudged finding is
+pending, and one resting on a verdict from before t486 that cannot be placed
+on one review is ambiguous; neither is in the denominator. The comparison,
+the cards and the evidence it shows are the developer's alone, as the cards
+and the role assignments are.
+
+## Atelier's record over time
+
+Every six hours the Worker's scheduled handler (`takeModelSnapshots` in
+`src/index.ts`, the cron in `wrangler.jsonc`) takes each ended UTC day of
+the last `BACKFILL_DAYS` that has no complete snapshot, and keeps on the
+index Ledger the figures the comparison above gives each pool model, role by
+role, as of the end of that day (`src/models/snapshot.ts`, t623). A snapshot
+keeps the cutoffs it was read at: each project Ledger's last event sequence,
+the index's last assignment event and the last run report, with the pool's
+names, each project's name and the developer's actor as they stood. Only
+events at or under a cutoff and recorded before the day ended count, so a
+replay (`replayModelSnapshot`) gives the stored figures however many
+verdicts, served annotations, renames or aliases come later. A day is stored
+once: a repeated or concurrent run stores nothing, a project that could not
+be read leaves the day partial, and a later run that reads it adds a revision
+while keeping the partial one. A day taken after the day following it had
+ended is labelled a reconstruction.
+
+The Models page and `atelier models show ID --trend` (GET
+/api/models/ID/trend, capability `models.trend.v1`) show the last
+`TREND_DAYS` days of each figure: its value, what it is over, its window,
+its measure version and how its snapshot was taken. A day with no snapshot,
+a partial record, too few samples or none is a labelled gap, never a zero.
+Points under another measure version, window, threshold or set of names are
+not joined, and each figure says how far consecutive windows overlap.
+Routing reads none of this: it reads the events and run reports themselves.
+
 ## Each model's reliability
 
 The Models page and the Usage page show each model's record across every

@@ -86,6 +86,7 @@ import { landingVerdict, allSkipped, recordedApproval, reviewStall, type Recorde
 import type { RunRequest } from "./sandbox/runner";
 import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
 import { fenceText, type PrereviewFence } from "./dispatch/prereview.ts";
+import { offersFor } from "./dispatch/rules.ts";
 
 // What the landing-workflow route passes when it creates the instance.
 // `key` is the project's storage key; `actor` is the project owner;
@@ -782,10 +783,11 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // an earlier request's at the same head are that request's.
       if (ask.reviewer && ask.request !== null) {
         const stuck = await step.do(`see whether every reviewer skipped #${i}${p.sfx}`, RETRIES, async () => {
-          const offers = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
+          const [offers, project] = await Promise.all([this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers(), L.project()]);
           const live = await L.liveReviewRequest(p.item, head);
           if (!live) return null;
-          const runners = allSkipped(live.reviewer, offers, await L.reviewSkips(p.item, live.request));
+          // Only the runners that serve this project count (offersFor, t652).
+          const runners = allSkipped(live.reviewer, offersFor(offers, project.name), await L.reviewSkips(p.item, live.request));
           return runners ? { runners } : null;
         });
         if (stuck) {

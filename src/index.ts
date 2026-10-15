@@ -15,6 +15,7 @@ import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalTe
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
+import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
@@ -26,18 +27,23 @@ import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
-import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
-import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
+import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability, type RunReport } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
+import type { PairwiseRecord } from "./models/pairwise.ts";
+import { canonicalName, compareModel, measureRecords, type ModelComparison } from "./models/compare.ts";
+import { addDays, BACKFILL_DAYS, computeSnapshot, dayEnd, daysDue, replayDifferences, SNAPSHOT_SCHEMA, TREND_DAYS, trendOf, utcDay, type ModelTrend, type SnapshotRow, type StoredSnapshot } from "./models/snapshot.ts";
+import type { CardView } from "./models/cards.ts";
+import type { PrecisionRecord } from "./models/precision.ts";
+import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
 import { buildPulse, PULSE_DAYS, pulseFromCounts } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
@@ -857,6 +863,22 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's prose standard (src/prose-standard.ts) as init sends it: the
+// path of the document the project's prose follows, which every build, plan
+// and review brief names. One line with no backticks, so the brief's code
+// span holds it whole; null or "" clears it, and no brief names one.
+function proseStandardArg(value: unknown): string | null {
+  if (value !== null && typeof value !== "string") {
+    throw new RuleError("bad_prose_standard", "the prose standard is the path of the document the project's prose follows, or \"\" to clear it", 400);
+  }
+  const text = (value ?? "").trim();
+  if (text.replace(TEXT_CONTROLS, "") !== text || text.includes("`")) {
+    throw new RuleError("bad_prose_standard", "the prose standard is one path on one line, with no control characters or backticks", 400);
+  }
+  assertLength(text, PROSE_STANDARD_MAX, "the prose standard");
+  return text || null;
+}
+
 // The project's triage model (src/review/triage.ts) as init sends it:
 // harness/model under a harness Atelier ships an adapter for; null or ""
 // clears it, and a landing then triages only when it names a model.
@@ -1190,7 +1212,12 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!repo || !tokenId || tokenId.startsWith("runner:")) return;
+  if (!tokenId || tokenId.startsWith("runner:")) return;
+  // A write token is recorded only once its fork exists (the claim route
+  // sets the fork, then mints and records the token), so a token with no
+  // repository means the caller read the fork before a claim made both. It
+  // is refused, never passed over, or the token would stay live off the record (t653).
+  if (!repo) throw new RuleError("workspace_changed", "the task was claimed while this was asked, so its new workspace token was not revoked and nothing was changed; try again", 409);
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -1318,6 +1345,28 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const added = await I.addModelCard(named, input, actor, at);
       return json(added, added.retried ? 200 : 201);
     }
+    // A model's vendor claims beside Atelier's record of it, role by role
+    // (t621, src/models/compare.ts): the developer's alone, as the cards and
+    // the role assignments it shows are. The name is checked as a card's is.
+    if (parts.length === 3 && parts[2] === "compare" && m === "GET") {
+      requireOwner(env, actor);
+      const named = cleanCardModel(id);
+      const readers = await modelReaders(env);
+      const [cards] = await I.modelCardViews([readers.keyOf(named)]);
+      const res = json(readers.compare(named, cards));
+      if (readers.track.unread.length) res.headers.set("x-atelier-incomplete", readers.track.unread.map((p) => p.name).sort().join(","));
+      return res;
+    }
+    // A model's figures over time, from the daily snapshots (t623,
+    // src/models/snapshot.ts): the developer's alone, as the comparison is.
+    // The projection the Models page renders; `atelier models show ID
+    // --trend` prints it.
+    if (parts.length === 3 && parts[2] === "trend" && m === "GET") {
+      requireOwner(env, actor);
+      const named = cleanCardModel(id);
+      const [trend] = await modelTrends(env, [named], (await I.models()) as unknown as ModelEntry[]);
+      return json(trend);
+    }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
@@ -1428,11 +1477,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // prints it, and says so when an older server sends none.
     // `judgement` is each acting model's verdicts on findings, decisions and
     // overrides over its window, with the window's totals.
-    const { sources, reliability, speed, events, unread } = await trackRecords(env);
-    // Role assignments are recorded on the index, so its events are one
-    // more source of the acting models' decisions (t622).
-    const assigned = { project: "(model roles)", events: await index(env).assignmentEvents() };
-    const judgement = buildJudgement([...sources, assigned], judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    // The same five readers the Models page and a daily snapshot use
+    // (measureRecords, t623); role assignments are recorded on the index, so
+    // its events are one more source of the acting models' decisions (t622).
+    const I = index(env);
+    const [read, assignmentEvents, pool] = await Promise.all([readSources(env), I.assignmentEvents(), I.models()]);
+    const { events, unread } = read;
+    const { reliability, speed, judgement } = measureRecords({ sources: read.sources, runs: read.runs, assignmentEvents, pool: pool as unknown as ModelEntry[], owner: ownerActor(env) }, new Date());
     const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
@@ -1450,8 +1501,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const parsedOffer = m === "POST" ? runnerOffer(body) : null;
-    const offer = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
-    if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
+    const asked = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
+    if (c.token?.runner && (!asked || asked.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -1461,7 +1512,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // letting it wait as though merely unclaimed, and plan routing picks from
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
-    const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    const projects = (await index(env).askQueue(asked, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    // The offer names each project its token serves by its current name too,
+    // as askQueue records it, so a project renamed since the token was
+    // issued reads the runner as serving it (servesProject, t652).
+    const offer = asked?.projects ? { ...asked, projects: [...new Set([...asked.projects, ...projects.map((p) => p.name)])] } : asked;
     // Every runner's last poll, this one's included, goes to each project,
     // where a claim whose runner stopped polling holds no other dispatch
     // (t537, orphanedBy in src/dispatch/rules.ts).
@@ -1635,6 +1690,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The path of the project's prose standard, named in every build, plan
+      // and review brief: a path, or null or "" to clear it.
+      ...(has("proseStandard") ? { proseStandard: proseStandardArg(body.proseStandard) } : {}),
       // The model that triages a landing before its review (t475):
       // harness/model, or null or "" to clear it.
       ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
@@ -1988,7 +2046,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);
-    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)) });
+    // It names the project's prose standard as any brief does (t675).
+    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)), proseStandard: (await L.project()).policy.proseStandard ?? null });
     const detail = await L.detail(id) as Detail;
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
@@ -2103,7 +2162,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // made for it (the reviews of t641).
           if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
           const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
-          await L.setFork(id, name, head, actor, !!c.token);
+          await L.setFork(id, name, head, actor, !!c.token, generation);
         } catch (err) {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
@@ -2386,7 +2445,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
         // The suggestion is checked against runners' offers for the job this
         // dispatch will carry, a plain build unless it names another.
-        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers }, { to: body.to, model: body.model, job: body.job ?? "build" });
+        // Read for this project (offersFor, t652): a model only a runner
+        // scoped to another project offers is not suggested here.
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env), assignments, offers: offers && offersFor(offers, p.name) }, { to: body.to, model: body.model, job: body.job ?? "build" });
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -2538,7 +2599,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a run skip names its runner in X-Atelier-Runner", 400);
       const kind = body.kind;
-      if (kind !== "failures" && kind !== "infrastructure" && kind !== "skipped") throw new RuleError("bad_kind", "a run skip's kind is failures, infrastructure or skipped", 400);
+      if (!isRunSkipKind(kind)) throw new RuleError("bad_kind", `a run skip's kind is ${RUN_SKIP_KINDS.join(", ")}`, 400);
       const failures = body.failures;
       if (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1 || failures > 1000) throw new RuleError("bad_failures", "a run skip names how many failures it gave up after", 400);
       // Under a runner token the job's actor is the caller, checked at the gateway.
@@ -2835,6 +2896,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
         regenerate: p.policy.regenerate ?? null, checks: p.policy.checks, commitIdentity: p.policy.commitIdentity ?? null,
+        // Named in a resolver's brief (t675), which commits.
+        proseStandard: p.policy.proseStandard ?? null,
       });
     }
     case "refresh-pushing": {
@@ -2994,6 +3057,38 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
       const postMerge = await L.postMergeRun(id);
       return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
+    }
+    // A merge made outside Atelier, recorded after the fact (t653): the
+    // baseline is read here, where Git is, for the merge commit's parents and
+    // whether main holds it (main reaches the baseline through atelier sync);
+    // the Ledger refuses the record unless main holds it and its second
+    // parent is the commit named as the task's head (head, or the task's
+    // recorded head).
+    case "record-merge": {
+      requireOwner(env, actor);
+      const p = await L.project();
+      const before = await L.item(id);
+      // A fork's head starts at its base; only a head pushed since is the task's own.
+      const pushed = before.head && before.head !== before.base ? before.head : null;
+      const commit = body.head === undefined || body.head === null ? pushed : body.head;
+      const merge = typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null;
+      let parents: string[] | null = null, holds: boolean | null = false;
+      if (merge) {
+        using baseline = await env.ARTIFACTS.get(p.repo);
+        const found = await baseline.readCommit(merge);
+        parents = found ? found.parents : null;
+        const top = found ? await headOf(env, p.repo) : null;
+        holds = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
+      }
+      // As abandon and release do: check, revoke the workspace token, then
+      // record. The fork and token are read together after the baseline
+      // reads, so a claim made meanwhile is the one revoked, and the record
+      // is refused if either changes after that read. A revocation that
+      // fails changes nothing, and the retry revokes again.
+      await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
+      const workspace = await L.workspaceOf(id);
+      await revoke(env, workspace.fork, workspace.token);
+      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, workspace));
     }
     case "landing": {
       requireOwner(env, actor);
@@ -3168,9 +3263,10 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
 const MODEL_EVENTS = 1000;
 
 // Every event of a project, read a page at a time, newest page first.
-async function allEvents(L: { events(id?: string, limit?: number, before?: number): Promise<unknown> }): Promise<LedgerEvent[]> {
+async function allEvents(L: { events(id?: string, limit?: number, before?: number): Promise<unknown> }, through?: number): Promise<LedgerEvent[]> {
   const out: LedgerEvent[] = [];
-  for (let before: number | undefined; ;) {
+  // From the event at `through` down, when a cutoff is given (t623).
+  for (let before: number | undefined = through === undefined ? undefined : through + 1; ;) {
     const page = (await L.events(undefined, MODEL_EVENTS, before)) as unknown as LedgerEvent[];
     out.push(...page);
     if (page.length < MODEL_EVENTS) return out;
@@ -3197,7 +3293,8 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
       error = rule.detail;
     }
   }
-  const [entries, track, gateway] = await Promise.all([I.models(), trackRecords(env), readGateway(env)]);
+  const [readers, gateway] = await Promise.all([modelReaders(env), readGateway(env)]);
+  const { entries, track, precision, judgement } = readers;
   const record = new Map<string, ActorRecord>();
   for (const { events } of track.sources) {
     for (const [actor, r] of buildRecord([...events].sort((a, b) => a.seq - b.seq))) {
@@ -3206,14 +3303,49 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
     }
   }
   const window = { events: track.events, unread: track.unread.map(titleOf) };
-  // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
-  // each model's speed comes with the track record (trackRecords).
-  const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
-  // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
-  // harness/model that acted for the owner (src/models/judgement.ts).
-  // Role assignments are recorded on the index, one more source (t622).
-  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: await I.assignmentEvents() }], judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
+  // One comparison per model in the pool, under its first entry's name, from
+  // the readers above (t621).
+  const named = [...new Map(entries.map((e) => [readers.keyOf(`${e.harness}/${e.id}`), `${e.harness}/${e.id}`])).values()];
+  const cards = await I.modelCardViews(named);
+  const comparisons = named.map((n, i) => readers.compare(n, cards[i]));
+  // Each model's trend from the daily snapshots (t623), the projection GET
+  // /api/models/ID/trend answers.
+  const trends = await modelTrends(env, named, entries);
+  return html(renderModels(entries, record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement, comparisons, trends), error ? 400 : 200);
+}
+
+// What the Models page and GET /api/models/ID/compare read, built once per
+// request: the pool, every project's events with the reliability and speed
+// records (trackRecords), review precision over the last
+// PRECISION_WINDOW_DAYS, the acting models' judgements over the last
+// JUDGEMENT_WINDOW_DAYS (role assignments are recorded on the index, one more
+// source, t622), pairwise catches over precision's window, and the standing
+// role assignments; and a model's comparison from them (t621).
+interface ModelReaders {
+  entries: ModelEntry[];
+  track: Awaited<ReturnType<typeof trackRecords>>;
+  precision: PrecisionRecord;
+  judgement: JudgementRecord;
+  pairwise: PairwiseRecord;
+  keyOf(named: string): string;
+  compare(named: string, cards: CardView | null): ModelComparison;
+}
+async function modelReaders(env: Env): Promise<ModelReaders> {
+  const I = index(env);
+  const [pool, read, assignmentEvents, roles] = await Promise.all([I.models(), readSources(env), I.assignmentEvents(), I.roleAssignments()]);
+  const entries = pool as unknown as ModelEntry[];
+  // The same five readers a daily snapshot reads (measureRecords, t623).
+  const { reliability, speed, precision, judgement, pairwise } = measureRecords({ sources: read.sources, runs: read.runs, assignmentEvents, pool: entries, owner: ownerActor(env) }, new Date());
+  const track = { sources: read.sources, reliability, speed, events: read.events, unread: read.unread };
+  const standing = roles.assignments.filter((a) => a.status === "current");
+  return {
+    entries, track, precision, judgement, pairwise,
+    keyOf: (named) => canonicalName(named, entries),
+    compare: (named, cards) => compareModel({
+      named, pool: entries, cards, reliability: track.reliability, precision, speed: track.speed, judgement, pairwise, assignments: standing, projectNames: roles.names,
+      coverage: { projects: track.sources.length, events: track.events, unread: track.unread.map((p) => p.name) },
+    }),
+  };
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
@@ -3229,14 +3361,117 @@ export function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = 
 // SPEED_DAYS) from those and the runners' reports. The pages and the API say
 // how many events, and which projects could not be read.
 async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; speed: SpeedRecord; events: number; unread: ProjectRecord[] }> {
+  const { sources, runs, events, unread } = await readSources(env);
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), speed: buildSpeed(sources, runs, ownerActor(env), Date.now()), events, unread };
+}
+
+// Every project's events, by its key (so a renamed project keeps its history, as suggestionRecords has it), with the newest RUN_REPORTS run
+// reports and the projects whose Ledger could not be read just then.
+async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
-    try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
+    try { return { project: p.key ?? p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
-  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), speed: buildSpeed(sources, runs, ownerActor(env), Date.now()), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
+  return { sources, runs: runs as unknown as RunReport[], events: sources.reduce((n, s) => n + s.events.length, 0), unread };
+}
+
+// ── model snapshots (t623, src/models/snapshot.ts) ──────────────────────────
+// The scheduled handler's job: each ended UTC day of the last BACKFILL_DAYS
+// with no complete snapshot is taken from one read of every project's events,
+// the index's assignment events and the run reports, at the cutoffs that read
+// gives, and stored on the index once (putModelSnapshot). A project whose
+// Ledger cannot be read leaves the snapshot partial, and a later run takes
+// the day again. Exported for the tests, which run it at chosen instants.
+// Every run report received before `before`, up to row `through` (the last
+// now, when null), read page by page until the Ledger says there are no more.
+// `complete` is false, with the pages read so far, when a page could not be
+// read: the snapshot is then partial, never computed as if it held the lot.
+// `from` is the lowest row to read (a partial snapshot's replay stops where
+// the original read did); a read that fails partway returns the lowest row
+// it did read, so the snapshot records enough to be reproduced.
+async function readRunsThrough(I: ReturnType<typeof index>, through: number | null, before: string, from = 0): Promise<{ through: number; reports: RunReport[]; complete: boolean; from?: number }> {
+  const reports: RunReport[] = [];
+  let cut = through, after: number | null = null;
+  try {
+    for (;;) {
+      const page: { through: number; runs: RunReport[]; next: number | null } = await I.runsPage(cut, before, after, undefined, from);
+      cut = page.through;
+      reports.push(...page.runs);
+      if (page.next === null) return { through: cut, reports, complete: true };
+      after = page.next;
+    }
+  } catch (err) {
+    console.error(errorLine("model snapshot: run reports", err));
+    return { through: cut ?? 0, reports, complete: false, from: after ?? (cut ?? 0) + 1 };
+  }
+}
+
+export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ day: string; rev: number; stored: boolean; complete: boolean }[]> {
+  const I = index(env);
+  const last = addDays(utcDay(now), -1);
+  const complete = new Set((await I.modelSnapshotTakes(addDays(last, -(BACKFILL_DAYS - 1)), last)).filter((t) => t.schema === SNAPSHOT_SCHEMA && t.complete).map((t) => t.day));
+  const due = daysDue(now, complete);
+  if (!due.length) return [];
+  const [projects, pool, assignmentRows] = await Promise.all([I.projects(), I.models(), I.assignmentEvents()]);
+  const assignmentEvents = assignmentRows as unknown as LedgerEvent[];
+  const ledgers = await Promise.all(projects.map(async (p) => {
+    const key = p.key ?? p.name;
+    try {
+      const events = await allEvents(ledgerOf(env, p));
+      return { key, name: p.name, through: events.reduce((m, e) => Math.max(m, e.seq), 0), events };
+    } catch (err) {
+      console.error(errorLine(`model snapshot: ${p.name}`, err));
+      return { key, name: p.name, through: 0, events: null };
+    }
+  }));
+  const index_ = { through: assignmentEvents.reduce((m, e) => Math.max(m, e.seq), 0), events: assignmentEvents };
+  const takenAt = new Date(now).toISOString();
+  const out = [];
+  let runsCut: number | null = null;
+  for (const day of due) {
+    const runs = await readRunsThrough(I, runsCut, dayEnd(day));
+    runsCut = runs.through || null;
+    const snapshot = computeSnapshot({ day, takenAt, owner: ownerActor(env), pool: (pool as unknown as ModelEntry[]).map((e) => ({ id: e.id, harness: e.harness, aliases: e.aliases })), ledgers, runs: { through: runs.through, reports: runs.reports, complete: runs.complete, from: runs.from }, index: index_ });
+    out.push({ ...(await I.putModelSnapshot(snapshot)), complete: snapshot.take.complete });
+  }
+  return out;
+}
+
+// A stored snapshot computed again from its own cutoffs: each project's
+// events up to its recorded sequence under its recorded name, the run
+// reports up to the recorded row, the index's assignment events up to the
+// recorded one, the pool's names and the developer's actor as recorded. A
+// project unread then is not read now. `differences` is empty when the
+// replay gives the stored figures.
+export async function replayModelSnapshot(env: Env, day: string, rev?: number): Promise<{ stored: StoredSnapshot; replayed: SnapshotRow[]; differences: string[] } | null> {
+  const I = index(env);
+  const stored = await I.modelSnapshot(day, rev);
+  if (!stored) return null;
+  const { take } = stored;
+  const ledgers = [
+    ...await Promise.all(take.cutoffs.ledgers.map(async (c) => ({ key: c.key, name: c.name, through: c.seq, events: c.seq ? await allEvents(ledger(env, c.key), c.seq) : [] }))),
+    ...take.cutoffs.unread.map((u) => ({ key: u.key, name: u.name, through: 0, events: null })),
+  ];
+  const runs = await readRunsThrough(I, take.cutoffs.runs, take.cutoffs.asOf, take.cutoffs.runsFrom ?? 0);
+  if (!runs.complete) throw new Error("the run reports could not all be read, so the day cannot be replayed");
+  const replayed = computeSnapshot({ day, takenAt: take.takenAt, owner: take.owner, pool: take.pool, ledgers, runs: { through: runs.through, reports: runs.reports, complete: take.runsRead !== false, from: take.cutoffs.runsFrom }, index: { through: take.cutoffs.index, events: (await I.assignmentEvents()) as unknown as LedgerEvent[] } });
+  return { stored, replayed: replayed.rows, differences: replayDifferences(stored.rows, replayed.rows) };
+}
+
+// One model's trend over the TREND_DAYS ended days, by its canonical key
+// through the pool now: what GET /api/models/ID/trend answers and the
+// Models page renders.
+async function modelTrends(env: Env, named: readonly string[], pool: readonly ModelEntry[], now = Date.now()): Promise<ModelTrend[]> {
+  const I = index(env);
+  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
+  const takes = await I.modelSnapshotTakes(from, to);
+  return Promise.all(named.map(async (n) => {
+    const model = canonicalName(n, pool);
+    return trendOf(model, takes, await I.modelSnapshotRows(model, from, to), to);
+  }));
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -3997,6 +4232,11 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
+  // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
+  // A run with nothing due reads nothing but the index's list of takes.
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    await takeModelSnapshots(env, controller.scheduledTime);
+  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {

@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { runRevert } from "../cli/revert.mjs";
 import { itemFields } from "../src/rules.ts";
 
 function fixture(t) {
-  const dir = mkdtempSync(join(process.cwd(), ".revert-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-revert-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (args, options = {}) => {
     const r = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], { cwd: dir, encoding: "utf8" });

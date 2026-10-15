@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { acquireSlot, slotStatus } from "../cli/load.mjs";
 
 test("real slots CLI changes an isolated occupied pool and reports draining without credentials", async (t) => {
-  const root = mkdtempSync(join(process.cwd(), ".slots-cli-"));
+  const root = mkdtempSync(join(tmpdir(), "atelier-slots-cli-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, "pool.sqlite"), preload = join(root, "isolate.mjs");
   const processes = [{ pid: 100, lease: "held-one", birth: "one" }, { pid: 101, lease: "held-two", birth: "two" }];
@@ -66,7 +67,7 @@ test("real slots CLI changes an isolated occupied pool and reports draining with
 
 
 test("a refused ps runs the command without accounting and preserves its exit status", (t) => {
-  const root = mkdtempSync(join(process.cwd(), ".slots-denied-"));
+  const root = mkdtempSync(join(tmpdir(), ".slots-denied-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "ps"), "#!/bin/sh\necho 'ps: Operation not permitted' >&2\nexit 1\n", { mode: 0o755 });
   for (const code of [0, 7]) {

@@ -31,6 +31,8 @@ import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, ty
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
 import { pace, stalledText, type Measure, type RoleSpeed, type SpeedRecord } from "./models/speed.ts";
+import { claimText, coverageText, figureText, ROLE_LABEL, type ModelComparison } from "./models/compare.ts";
+import { measureHeading, TREND_NONE, trendPointText, type ModelTrend } from "./models/snapshot.ts";
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -258,6 +260,10 @@ export interface Detail {
   // every criteria review and resolution; absent from an older server.
   criteriaReview?: CriteriaReviewView;
   events: LedgerEvent[];
+  // The events the fast-landing summary reads, by kind and outside the window
+  // `events` is (fastLandingEvents in src/ledger.ts, t637); unset where the
+  // page is drawn without a ledger, which then reads `events`.
+  fastLanding?: LedgerEvent[];
 }
 export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
@@ -1073,7 +1079,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="show-section show-hero" id="top">
     <p class="kicker">Public showcase · read only · from the ledger</p>
-    <h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>
+    <h1><span class="given"><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the <span class="hl">receipts.</span></span></span></h1>
     <p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>
     <p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>
     <p class="show-lead">Agents of several model families work one repository at once. In full mode, the default, a change merges once its checks pass at the exact head Atelier reads and the developer accepts it, and a change to a protected path first needs a review by a model of another company (another model of that company in single-family mode) unless the developer records an override. In fast mode any review follows the merge, and only when the developer asks for one.</p>
@@ -1106,7 +1112,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null, comparisons: readonly ModelComparison[] = [], trends: readonly ModelTrend[] = []): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -1153,6 +1159,8 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${precision ? precisionSection(precision) : ""}
   ${judgement ? judgementSection(judgement) : ""}
   ${speed ? speedSection(speed) : ""}
+  ${comparisonSection(comparisons)}
+  ${trendSection(trends)}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
@@ -1219,6 +1227,63 @@ export function judgementSection(j: JudgementRecord): string {
     <tbody>${rows.map(row).join("")}</tbody>
   </table>` : `<p class="empty">Nothing was judged for the developer from ${e(from)} to ${e(to)}.</p>`}
   ${causes.length ? `<ul class="causes">${causes.map((c) => `<li class="meta">${when(c.at)} · ${c.model ? `<code>${e(c.model)}</code>` : "unknown"}'s verdict (event ${c.event}) on <code>${e(c.project)}/${e(c.item)}</code> ${c.by === "defect" ? "contradicted by a defect" : "corrected"}: ${e(c.note)}</li>`).join("")}</ul>` : ""}
+</section>`;
+}
+
+// ── vendor claims beside Atelier's record ─────────────────────────────────
+// Each pool model's comparison (src/models/compare.ts), the projection
+// `atelier models show` prints too: the vendor's claims with their sources
+// and conditions, then each role with the developer's assignments of the
+// model to it and Atelier's figures, each with its window and its numerator
+// and denominator or its samples. Every text is escaped here.
+
+export function comparisonSection(views: readonly ModelComparison[]): string {
+  if (!views.length) return "";
+  const view = (v: ModelComparison) => `<details class="comparison">
+    <summary><code>${e(v.model)}</code>${v.entries.length ? `<span class="meta">${v.entries.map(e).join(", ")}</span>` : ""}${v.coverage.unread.length ? ` ${tag("partial record", "ask")}` : ""}</summary>
+    <p class="meta"${v.coverage.unread.length ? ' role="note"' : ""}>${e(coverageText(v.coverage))}</p>
+    <h3>The vendor's claims</h3>
+    ${v.vendor.claims.length ? `<ul class="causes">${v.vendor.claims.map((c) => `<li class="meta">${e(claimText(c))}</li>`).join("")}</ul>` : `<p class="empty">No vendor card in force. Record one with <code>atelier models card</code>.</p>`}
+    ${v.vendor.limitations.map((l) => `<p class="meta">Vendor limitation, card ${e(l.card)}: ${e(l.text)}</p>`).join("")}
+    ${v.vendor.ended ? `<p class="meta">${plural(v.vendor.ended, "card")} corrected, superseded or withdrawn, not shown as claims.</p>` : ""}
+    ${v.vendor.disagreements.map((d) => `<p class="meta">${d.kind === "conflict" ? "Conflicting claims" : "Claims under different conditions"}: ${e(d.benchmark)}${d.version ? ` ${e(d.version)}` : ""}, cards ${[...new Set(d.claims.map((c) => c.card))].map(e).join(", ")}</p>`).join("")}
+    ${v.vendor.priors.map((p) => `<p class="meta">Prior, the registry's and not a card: ${e(p.claim)}; ${e(p.source)}</p>`).join("")}
+    ${v.roles.map((r) => `<h3>${e(ROLE_LABEL[r.role])}</h3>
+    <ul class="causes">
+      ${r.assignments.map((a) => `<li class="meta">Assigned ${e(a.id)} (${e(a.scope)}), choice ${a.position} of ${a.of}, ${e(a.at.slice(0, 10))} by ${e(a.acting ?? a.by)}: ${e(a.reason)}${a.evidence.length ? `; evidence ${a.evidence.map((x) => `<code>${e(x)}</code>`).join(", ")}` : ""}</li>`).join("")}
+      ${r.unmeasured ? `<li class="meta">Atelier's record: unknown. ${e(r.unmeasured)}</li>` : ""}
+      ${r.figures.map((f) => `<li class="meta">${e(figureText(f))}${f.refs?.length ? `<br>${f.refs.map((x) => `<code>${e(x)}</code>`).join(", ")}` : ""}</li>`).join("")}
+    </ul>`).join("")}
+    ${v.leftOut.map((l) => `<p class="meta">Left out: ${e(l)}</p>`).join("")}
+  </details>`;
+  return `<section class="comparison" aria-label="Vendor claims beside Atelier's record">
+  <h2 class="section-title">Vendor claims beside Atelier's record</h2>
+  <p class="meta">For each model in the pool: what its vendor claims, from the cards the developer recorded, and what Atelier measured of it in each role, beside the developer's standing assignments of it to that role. The vendor's figures are its own benchmarks under its own conditions; Atelier's are shares and medians of its own events, each with its window and what it is over. Neither is a measure of the other, and no share is given under its threshold.</p>
+  ${views.map(view).join("")}
+</section>`;
+}
+
+// ── Atelier's record over time ────────────────────────────────────────────
+// Each pool model's trend from the daily snapshots (src/models/snapshot.ts,
+// t623), the projection `atelier models show ID --trend` prints: the same
+// lines (trendLines), each escaped here, under the model and its roles.
+
+export function trendSection(views: readonly ModelTrend[]): string {
+  if (!views.length) return "";
+  const view = (t: ModelTrend) => {
+    const roles = [...new Set(t.measures.map((m) => m.role))];
+    return `<details class="trend">
+    <summary><code>${e(t.model)}</code><span class="meta">${e(t.from)} to ${e(t.to)}, ${t.snapshots} of ${t.days} days with a snapshot</span></summary>
+    ${t.measures.length ? "" : `<p class="empty">${e(TREND_NONE)}</p>`}
+    ${roles.map((role) => `<h3>${e(ROLE_LABEL[role])}</h3>
+    ${t.measures.filter((m) => m.role === role).map((m) => `<p class="meta">${e(measureHeading(m))}</p>
+    <ul class="causes">${m.points.map((p) => `<li class="meta">${e(trendPointText(p, m.kind))}</li>`).join("")}</ul>`).join("")}`).join("")}
+  </details>`;
+  };
+  return `<section class="trend" aria-label="Atelier's record over time">
+  <h2 class="section-title">Atelier's record over time</h2>
+  <p class="meta">A snapshot of each model's figures is kept for every UTC day, as of the end of the day, with the cutoffs it was read at. A gap is a day with no figure, never a zero: no snapshot, a partial record, or too few samples. Points are joined only under one measure version, window, threshold and set of names, and nothing routes by them.</p>
+  ${views.map(view).join("")}
 </section>`;
 }
 
@@ -2308,7 +2373,8 @@ function progressBlock(item: Item, checks: { grade: string; passed: boolean | nu
 // recorded, the same-family reviews it allowed, and the fix task a rejected
 // post-merge review filed.
 function fastLandingBlock(p: ProjectRecord, d: Detail): string {
-  const ev = d.events.find((x) => x.kind === "item.landed_fast");
+  const events = d.fastLanding ?? d.events;
+  const ev = events.find((x) => x.kind === "item.landed_fast");
   if (!ev) return "";
   const r = ev.data as Record<string, unknown>;
   const tests = (r.tests ?? {}) as { command?: string; sha256?: string; where?: string };
@@ -2317,13 +2383,32 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   const sameFamily = d.reviews.filter((x) => x.independence).map((x) => `<li>${e(x.by)}: ${e(x.independence!)}</li>`).join("");
   // What the receipt says of the review is what happened: a fast landing asks
   // for one only when the developer names a reviewer (t605, Astra's review).
-  const after = d.events.filter((x) => x.at >= ev.at);
+  const after = events.filter((x) => x.at >= ev.at);
   const reviewed = d.reviews.some((x) => x.postMerge) || after.some((x) => x.kind === "review.approved" || x.kind === "review.rejected");
   const requested = after.some((x) => x.kind === "review.requested");
   const reviewLine = reviewed ? "It skipped the gate; its post-merge review is recorded." : requested ? "It skipped the gate; a post-merge review was requested and is not recorded yet." : "It skipped the gate, and no post-merge review was requested.";
-  const fixes = d.events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
-  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}.</p>
+  const fixes = events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
+  // Fast mode switched on the developer's direction (t629) holds their words
+  // and the acting model on the receipt; they read as the text receipt
+  // (cli/receipt.mjs) and the override block say them, through directionText.
+  const words = typeof r.quote === "string" && r.quote ? `; on ${e(directionText({ quote: r.quote, acting: typeof r.acting === "string" ? r.acting : undefined }))}` : "";
+  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}${words}.</p>
   <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. ${reviewLine}</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
+}
+
+// A task merged into main outside Atelier and recorded afterwards (t653):
+// the merge, the commit merged and the reviews as the developer gave them,
+// said plainly so it is never read as a gated landing.
+function recordedMergeBlock(d: Detail): string {
+  const ev = d.events.find((x) => x.kind === "item.merge_recorded");
+  if (!ev) return "";
+  const r = ev.data as Record<string, unknown>;
+  const short = (v: unknown) => e(String(v ?? "").slice(0, 12));
+  const reviews = (Array.isArray(r.reviews) ? r.reviews : []) as { by?: string; verdict?: string; head?: string; at?: string }[];
+  const items = reviews.map((v) => `<li>${e(String(v.by ?? ""))} ${v.verdict === "approve" ? "approved" : "rejected"} <code>${short(v.head)}</code>${v.at ? ` (${e(v.at)})` : ""}</li>`).join("");
+  const prior = typeof r.recordedHead === "string" ? ` The task's recorded head was <code>${short(r.recordedHead)}</code>.` : "";
+  return `<div class="fast-landing"><p><strong>Merged outside Atelier</strong>, recorded afterwards by ${e(ev.actor)} on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: <code>${short(r.commit)}</code> merged as <code>${short(r.mergeCommit)}</code> on main. It did not pass through the gate, and no checks or test receipt are recorded.${prior}</p>
+  ${typeof r.note === "string" && r.note ? `<p class="meta">${e(r.note)}</p>` : ""}<p class="meta">Reviews as the developer gave them:</p><ul>${items}</ul></div>`;
 }
 
 // A task a runner built in fast mode (t589) and reported ready: the commit
@@ -2912,7 +2997,7 @@ ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
   ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${prereview}${overrideNote}${blockers}
   ${item.state === "merged" ? d.events.filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
-  ${fastLandingBlock(p, d)}${fastReadyBlock(d)}
+  ${fastLandingBlock(p, d)}${recordedMergeBlock(d)}${fastReadyBlock(d)}
 </section>
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>

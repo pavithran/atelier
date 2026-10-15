@@ -26,6 +26,7 @@
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "../landing-lease.ts";
 import { sameActor, type Evidence, type Finding } from "../rules.ts";
 import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
+import { proseStandardLine } from "../prose-standard.ts";
 
 // The job a runner names in its offer to be given pre-reviews, and the job a
 // pre-review dispatch carries. A runner that does not advertise it is never
@@ -306,6 +307,9 @@ export interface PrereviewBriefInput {
   reviewer: string;
   contributors: readonly string[];
   bar: string | null;
+  // The project's prose standard (src/prose-standard.ts, t675), as the claim
+  // carries it; null or absent when the project has none.
+  proseStandard?: string | null;
   // The project's required checks, as commands, run in the merged checkout.
   checks: readonly string[];
   changed: readonly string[];
@@ -339,6 +343,7 @@ export function prereviewBrief(input: PrereviewBriefInput): string {
   const runs = input.evidence?.runs ?? [];
   const atHead = runs.filter((r) => r.head === binding.head);
   const results = atHead.map((r) => `- ${line1(r.claim)}: ${r.passed ? "passed" : "failed"} (${r.grade}${r.where ? `, ${r.where}` : ""}) at ${r.head.slice(0, 8)}, on the task's own tree`);
+  const prose = proseStandardLine(input.proseStandard);
   const missing = required.filter((c) => !atHead.some((r) => r.claim === c && r.grade === "observed"));
   const omitted = [
     "- No check has run on this merged tree: every result above is the task's own head's. Run the commands below here before judging.",
@@ -390,6 +395,7 @@ export function prereviewBrief(input: PrereviewBriefInput): string {
     "",
     ...(input.decisions?.length ? decisionLines(input.decisions).map(line1) : [NO_DECISIONS]),
     "",
+    ...(prose ? ["## Prose standard", "", prose, ""] : []),
     "## The bar",
     "",
     input.bar ?? "Block only for a defect a reviewer would block the landing for: a correctness, security or data-loss defect, a behaviour without a test, docs that now contradict the code, or a breaking change without a migration. Anything else is a follow-up.",

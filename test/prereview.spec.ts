@@ -148,6 +148,20 @@ it("asks nothing where no live runner advertises pre-review, and records an unav
   expect((await L.readProjectLanding())?.item).toBe(t2);
 });
 
+// t652: the off switch asked whether any live runner advertises pre-review,
+// whatever project its token serves, so a runner scoped to another project
+// turned it on here, and each waiter was recorded unavailable for want of a
+// reviewer, though no runner serving this project offers the job at all.
+it("a runner scoped to another project that advertises pre-review leaves it off here: nothing is asked or recorded", async () => {
+  const L = await setup("pre-scoped");
+  await index().putRunnerOffer({ runner: RUNNER.runner, kind: "home", jobs: ["build", "review", "prereview"], projects: ["pre-elsewhere"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  const [t1, t2] = [await submitted(L, head(1)), await submitted(L, head(2))];
+  await L.beginProjectLanding(t1, "owner");
+  await L.queueProjectLanding(t2, "owner");
+  expect(await views(L, t2)).toEqual([]);
+  await L.cancelProjectLanding(t1, "owner");
+});
+
 it("a pass is evidence only: the queue, the gate, the reviews and the review requests are untouched", async () => {
   const { L, t2, t3, t4 } = await landing("pre-pass");
   const before = await L.detail(t2) as unknown as { gate: unknown; reviews: unknown[] };

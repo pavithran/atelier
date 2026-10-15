@@ -12,7 +12,12 @@
 set -eu
 which=$1 ws=${2:A} out=${3:A} prompt=$4
 mkdir -p "$ws/.scratch/xdg-data"
-grep -qx ".scratch/" "$ws/.git/info/exclude" 2>/dev/null || echo ".scratch/" >> "$ws/.git/info/exclude"
+# In a linked worktree .git is a file, so ask git where the exclude file is.
+# It may answer relative to the workspace, and its folder may not exist yet.
+excl=$(git -C "$ws" rev-parse --git-path info/exclude)
+[[ $excl == /* ]] || excl="$ws/$excl"
+mkdir -p "${excl:h}"
+grep -qx ".scratch/" "$excl" 2>/dev/null || echo ".scratch/" >> "$excl"
 if [[ -f $prompt ]]; then
   brief=${prompt:A}
 else

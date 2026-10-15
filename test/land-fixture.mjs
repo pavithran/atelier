@@ -410,12 +410,11 @@ export function scriptWorkflow(f) {
 
 // The workspace's write token (t275), against runLand with injected fakes:
 // the server's answers, Git's (a real repository only where the preflight
-// reads one from disk, under .scratch/) and the CLI's own steps. The task is
+// reads one from disk, under the system temp folder) and the CLI's own steps. The task is
 // held by codex/test, the owner is "owner", and the workspace records
 // `expiresAt` as its token's expiry (none when null).
 export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, dispatch = null, actor = "codex/test", committed = true, workflow = false, push = [] } = {}) {
-  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
-  const dir = mkdtempSync(join(scratch, "land-token-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-land-token-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
   const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": actor, ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
   const calls = [], lines = [], adopted = [], commands = [];
