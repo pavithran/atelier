@@ -131,6 +131,7 @@ export const EVIDENCE_OUTPUT_MAX = 2000;
 // reviewers none of them. test/fixtures/briefs/review-rules.txt pins the text.
 export const REVIEW_RULES = [
   "- Verify each blocking finding before you report it, by reading the code it names or by running a test, and say in the finding how you verified it: the lines you read, or the test you ran and what it printed.",
+  "- Inability to run a command in the reviewer’s environment is never blocking. Report sandbox permissions, missing dependencies and unavailable services as verification limits, not code defects; use Atelier’s Observed results at the head under review. A demonstrated defect in the project remains blocking. If environment limits prevent a verdict, explain the limitation without a VERDICT line so the run is recorded as failed, rather than rejecting the change.",
   "- Give at most 12 findings, the most serious first.",
   "- Edit nothing: change, create and delete no file, and do not commit or push.",
 ].join("\n");
@@ -293,7 +294,7 @@ export function reviewBrief(input: BriefInput): string {
     ...(item.state === "merged"
       ? ["Historical checks belong to the submitted revision, not the merge under review. They do not verify this merge; run relevant checks in the clone.", ...need.checks.map((c) => `- ${code(c.claim)}: ${c.grade}${c.grade === "observed" ? c.passed ? " passed" : " failed" : ""}`)]
       : need.checks.length
-      ? ["Every required check was observed passing at this head:", ...need.checks.map((c) => `- ${code(c.claim)}, ${WHERE_LABEL[c.where ?? "runner"]}`)]
+      ? ["Required checks at the head under review:", ...need.checks.map((c) => `- ${code(c.claim)}: ${c.grade === "observed" ? `Observed ${c.passed ? "passed" : "failed"}` : c.grade}, head ${code(head)}, ${WHERE_LABEL[c.where ?? "runner"]}`)]
       : ["The project requires no checks."]),
   );
 
