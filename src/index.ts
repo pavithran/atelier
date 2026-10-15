@@ -1632,7 +1632,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
       for (const r of other.reviews) if (r.runner) active.push(r.runner);
     }));
-    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable));
+    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names));
   }
 
   if (parts[2] === "reviewers") {

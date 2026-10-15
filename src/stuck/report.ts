@@ -4,6 +4,7 @@ import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
 import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
+import { inScope } from "../tokens.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
 export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
@@ -26,7 +27,7 @@ export interface Snapshot {
 }
 export interface Entry { kind: string; subject: string; reason: string; since: string; ageMs: number; evidence: string; recovery: string }
 export function stuckReport(project: string, origin: string, now: Date, limits: ReportLimits, snapshot: Snapshot | null,
-  offers: SeenOffer[] | null, runs: RunReport[] | null, activeRunners: string[] | null, unavailable: string[] = []) {
+  offers: SeenOffer[] | null, runs: RunReport[] | null, activeRunners: string[] | null, unavailable: string[] = [], names: string[] = [project]) {
   const entries: Entry[] = [], checks: Entry[] = [];
   const time = now.getTime(), age = (at: string) => time - Date.parse(at);
   const base = `${origin}/p/${encodeURIComponent(project)}`;
@@ -153,7 +154,8 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   // Active jobs across projects are required before concluding a runner is idle.
   // A runner whose token serves other projects is no idle runner of this one (t669).
   if (offers && activeRunners) for (const offer of offers) {
-    if (offer.projects && !offer.projects.includes(project)) continue;
+    // An offer lists a project by the name it had when the runner last polled.
+    if (!inScope({ projects: offer.projects }, names)) continue;
     if (activeRunners.includes(offer.runner)) continue;
     if (age(offer.at) - OFFER_REFRESH_MS > limits.runnerPollMinutes * 60_000)
       add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);
