@@ -185,7 +185,11 @@ function errorMessage(value, harness) {
     if (value.type !== "error") return null;
     error = value;
   } else if (harness === "opencode") {
-    if (value.type !== "error" || value.error?.name !== "APIError") return null;
+    // opencode 1 names a provider failure error.name "APIError"; opencode 2
+    // gives error.type "provider.*" (provider.auth, with status 401 and the
+    // provider's body, recorded from 2.0.29 in test/fixtures/opencode2).
+    if (value.type !== "error") return null;
+    if (value.error?.name !== "APIError" && !/^provider\./.test(value.error?.type ?? "")) return null;
     error = value.error;
   } else if (harness === "antigravity") {
     if (value.response !== undefined || !value.error || typeof value.error !== "object") return null;
@@ -197,6 +201,7 @@ function errorMessage(value, harness) {
     detail.statusCode, detail.resets_at == null ? "" : `resets_at: ${detail.resets_at}`,
     detail.resets_in_seconds == null ? "" : `resets_in_seconds: ${detail.resets_in_seconds}`,
     detail.retryDelay == null ? "" : `retry after ${detail.retryDelay}`,
+    typeof error.response?.body === "string" ? error.response.body : "",
   ].filter((x) => typeof x === "string" || typeof x === "number").join(" ");
 }
 

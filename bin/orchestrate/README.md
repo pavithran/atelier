@@ -80,6 +80,45 @@ line, so the gateway's figures count calls per task (docs/models-and-usage.md,
 "AI Gateway costs"). The provider's own key still goes in its own header; the
 gateway passes it through and logs the call.
 
+### Switching to opencode 2
+
+Atelier runs opencode 1 and opencode 2 and tells them apart by asking the
+executable once, with `opencode --version`, the major version it prints.
+Nothing in Atelier needs changing to switch: put an opencode 2 first on the
+`PATH` (with Homebrew, `brew unlink` the npm release's link and `brew link
+opencode`), and the next run is an opencode 2 run. To go back, put the 1.x
+release first again. What differs for a run on opencode 2:
+
+- `--standalone` is added to every `opencode run`, by the adapter
+  (`cli/harness/adapter.mjs`, both the run and its `--continue`) and by
+  `run-agent.sh`. Without it opencode 2 hands the run to a background service
+  that all runs share, which keeps its own data folder and undoes the run's
+  `XDG_DATA_HOME`. opencode 1 is not given the flag.
+- A rule denying `external_directory` is in every config Atelier generates, as
+  opencode 2's top-level `permissions` array beside the V1 `permission`
+  object (`PERMISSIONS` in `cli/harness/providers.mjs`). opencode 2 asks
+  where a rule is missing, and `opencode run` approves what it is asked: a
+  run with an unchanged config read `/etc/hosts`. `run-agent.sh` has no
+  generated config, so on opencode 2 it passes the same rule through
+  `OPENCODE_CONFIG_CONTENT`. The wrappers' own configs in
+  `~/.config/opencode` are yours: add
+  `"permissions": [{ "action": "external_directory", "resource": "*", "effect": "deny" }]`
+  to each for runs that do not go through `run-agent.sh`.
+- The rule fences opencode's file tools, not its shell: on opencode 2.0.29 a
+  `head /etc/hosts` run by the shell tool succeeded under it. The workspace
+  rule in an agent's brief, and a `shell` rule of your own, are what restrain
+  that.
+- `--format json` output has the same events as opencode 1 for text
+  (`{"type":"text","part":{"text":...}}`), which the adapter reads. A provider
+  failure differs: opencode 2 reports `error.type` `provider.*` where
+  opencode 1 reports `error.name` `APIError`, and the adapter's limit
+  detection reads both. Recorded output is in `test/fixtures/opencode2`.
+
+The tests that run opencode 2 itself (`test/opencode2.test.mjs`) are skipped
+unless `ATELIER_OPENCODE2` names an opencode 2 executable, for example
+`ATELIER_OPENCODE2=/opt/homebrew/opt/opencode/bin/opencode`. They need no
+key: a local stand-in answers as the model.
+
 Reviews run through Antigravity's CLI, `agy`, signed in to a Google account
 with Gemini access; its models include `gemini-3.1-pro-high` and
 `gpt-oss-120b-medium`. A runner serves the same reviews through
