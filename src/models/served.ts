@@ -38,6 +38,19 @@ export function servedActor(ev: LedgerEvent, served: ReadonlyMap<number, string>
   return model === undefined || !ev.actor.includes("/") ? ev.actor : `${harnessOf(ev.actor)}/${model}`;
 }
 
+// The reviewer a verdict on a finding counts under (t621). The verdict is the
+// developer's adjudication: its event's actor is the developer, the reviewer
+// is named in `by`, and no annotation of the verdict event moves the finding.
+// The review it judged is the reviewed event: when an annotation says another
+// model served that review, the finding counts under the served model, as the
+// review itself does. `review` is the review event the verdict judged, or
+// undefined when it cannot be placed (a verdict from before t486 at a head
+// with no review by its reviewer), and then `by` stands as recorded.
+export function reviewerOf(by: string, review: Pick<LedgerEvent, "seq" | "actor"> | undefined, served: ReadonlyMap<number, string>): string {
+  if (!review || !sameActor(review.actor, by)) return by;
+  return servedActor(review as LedgerEvent, served);
+}
+
 // The events as the pages count them: each annotated event under its served
 // actor, and the annotations themselves left out, since they are the owner's
 // bookkeeping and not work.

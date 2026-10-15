@@ -1,12 +1,16 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
-function run(args, token = "owner-test-token", config = resolve(".cache/token-cli-config")) {
+// The default configuration folder lives under the system temp folder and goes with the run (t640).
+const defaultConfig = mkdtempSync(join(tmpdir(), "atelier-token-cli-config-"));
+after(() => rmSync(defaultConfig, { recursive: true, force: true }));
+function run(args, token = "owner-test-token", config = defaultConfig) {
   const source = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}];
     globalThis.fetch = async (url, options = {}) => {
@@ -41,8 +45,7 @@ test("token issue sends repeated scopes and prints the token exactly once", () =
 });
 
 test("stored agent tokens resolve their actor and respect environment overrides", () => {
-  mkdirSync(".cache", { recursive: true });
-  const config = mkdtempSync(resolve(".cache/token-store-"));
+  const config = mkdtempSync(join(tmpdir(), "atelier-token-store-"));
   try {
     writeFileSync(resolve(config, "secrets.json"), JSON.stringify({ API_TOKEN: "atl_stored" }), { mode: 0o600 });
     // The server the stored token belongs to, as login records it when that

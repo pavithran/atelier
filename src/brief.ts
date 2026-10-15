@@ -31,6 +31,10 @@ export interface Brief {
   criteriaReview: string | null;
   evidence: string[];
   recommendation: { verdict: Verdict; reason: string };
+  // The project's prose standard (src/prose-standard.ts, t675), which
+  // `atelier show` names for the agent that reads the brief before building;
+  // null, or absent from an older server, when the project has none.
+  proseStandard?: string | null;
 }
 
 // One line on the criteria review (t438): whether the project requires it,
@@ -178,6 +182,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     criteriaReview: criteriaReviewLine(detail.criteriaReview),
     evidence: lines.map((l) => l.text),
     recommendation,
+    proseStandard: policy.proseStandard ?? null,
   };
 }
 

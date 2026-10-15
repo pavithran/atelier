@@ -2500,11 +2500,19 @@ test('a runner whose token covers atelier and micahapp claims micahapp t6 at the
   });
 
   // 1. With a single-project token scoped only to ["atelier"], micahapp t6 and t7 are never offered.
+  // Every claim the runner makes is recorded (t652: before, claimedSingle was
+  // never filled, so this step asserted nothing); with the server's scope
+  // check reverted it claims micahapp/t6 and the assertion below fails.
   const singleIssued = await issueToken(['atelier']);
   assert.equal(singleIssued.status, 0, singleIssued.stderr);
   const singleToken = singleIssued.stdout.trim().split('\n').at(-1);
   const claimedSingle = [];
   const { io: ioSingle } = fixture();
+  const singleCli = ioSingle.cli;
+  ioSingle.cli = async (argv, cwd) => {
+    if (argv[0] === 'claim') claimedSingle.push(`${argv[argv.indexOf('--project') + 1]}:${argv[1]}`);
+    return singleCli(argv, cwd);
+  };
   await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath, once: true }, {
     workspacePath: ioSingle.workspacePath,
     taskIO: ioSingle,

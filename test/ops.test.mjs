@@ -16,9 +16,15 @@ function toolkit(dir) {
   return exe;
 }
 
-const run = (argv, env) => spawnSync(process.execPath, [cli, ...argv], {
-  encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, ATELIER_CONFIG_DIR: mkdtempSync(join(tmpdir(), "atelier-ops-cfg-")), ...env },
-});
+// Each run gets a config folder of its own, removed when it ends (t658).
+const run = (argv, env) => {
+  const config = mkdtempSync(join(tmpdir(), "atelier-ops-cfg-"));
+  try {
+    return spawnSync(process.execPath, [cli, ...argv], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ...env },
+    });
+  } finally { rmSync(config, { recursive: true, force: true }); }
+};
 
 test("atelier ops hands every argument, --help included, to the toolkit and exits with its status", () => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-ops-"));

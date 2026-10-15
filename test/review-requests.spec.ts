@@ -62,13 +62,13 @@ async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promi
 const events = async (L: L, id?: string) => (await L.events(id)) as unknown as LedgerEvent[];
 
 // A plan approved over the pool, its part item.
-async function approved(L: L) {
+async function approved(L: L, pool: ModelEntry[] = POOL) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
   return { id: item.id, partId: parts[0].id, builder: `${parts[0].dispatch!.agent}/${parts[0].dispatch!.model}` };
 }
 
@@ -1067,6 +1067,27 @@ it("a plan's reviewer the owner reserves after approval is passed over, and its 
   expect((await L.planView(id)).blocked).toBeNull();
 });
 
+// gpt-6-astra's and gemini-4-argon's review of t649: a reviewer saved
+// review-only at approval, then removed, while a build-only entry now lists
+// its id as an alias, shares no role with it. withStanding gave it its saved
+// review role, the tick picked it, the dispatch check (which reads the pool
+// now) refused it, and every tick failed (plan.tick_failed) instead of
+// asking the remaining reviewer.
+it("a removed reviewer whose roles share none with the entry now running its model is passed over, and the plan's tick asks another", async () => {
+  const L = await setup("review-held-no-shared-role");
+  const reviewOnly = POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, roles: ["review" as const] } : e);
+  const { id, partId, builder } = await approved(L, reviewOnly);
+  expect(builder).not.toBe(GPT);
+  const luna = { ...entry("gpt-6-luna", "codex"), aliases: ["gpt-6-astra"], roles: ["build" as const] };
+  await L.poolChanged([...POOL.filter((e) => e.id !== "gpt-6-astra"), luna]);
+  await submitPart(L, partId, "a".repeat(40));
+  const other = [OPUS, GLM].find((a) => a !== builder)!;
+  expect(await routedReviewer(L, partId)).toBe(other);
+  expect((await events(L, partId)).find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ data: { from: GPT, to: other, reason: expect.stringMatching(/not a reviewer/) } });
+  expect((await events(L)).filter((e) => e.kind === "plan.tick_failed")).toEqual([]);
+  expect((await L.planView(id)).blocked).toBeNull();
+});
+
 it("an open review request is withdrawn when the owner pauses its reviewer or takes away its review role, and asked of another", async () => {
   for (const [name, change, reason] of [
     ["paused", { state: "paused", stateAt: AT }, /paused since 2026-10-06/],
@@ -1659,4 +1680,42 @@ it("with no other reviewer than the one withdrawn, the part waits for the develo
   expect(await reviewWaiting(L)).toEqual([]);
   expect((await events(L, partId)).filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer)).toEqual([reviewer]);
   expect((await L.planView(item.id)).blocked).toBeNull();
+});
+
+// t675: the prose assessment of 2026-10-14 found that no brief Atelier
+// composed named the project's prose standard. With the policy naming one,
+// the planner's brief, a part's build brief, an ordinary task's job brief
+// (which the runner appends to its own) and the review claim all carry it;
+// a project with none gets no line.
+it("the planner's, a part's and a task's job briefs and the review claim carry the project's prose standard", async () => {
+  const PATH = "../ai-projects-house-style/house-style.md";
+  const L = ledger("prose-standard");
+  await L.setProject({ name: "prose-standard", repo: "prose-standard--baseline", policy: { ...policy, proseStandard: PATH }, createdAt: new Date().toISOString() }, "owner");
+  const line = `Prose standard: this project's prose follows \`${PATH}\``;
+  const { item: plan } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+  await L.claim(plan.id, PLANNER, RUNNER);
+  expect((await L.jobBrief(plan.id, PLANNER)).text).toContain(line);
+  const post = await L.postPlan(plan.id, PLANNER, doc(part("a")));
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(plan.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(plan.id, "owner", post.hash, false, POOL);
+  const partId = parts[0].id, builder = `${parts[0].dispatch!.agent}/${parts[0].dispatch!.model}`;
+  await L.claim(partId, builder, RUNNER);
+  expect((await L.jobBrief(partId, builder)).text).toContain(line);
+  await L.release(partId, builder, "stuck");
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const claim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.proseStandard).toBe(PATH);
+  // An ordinary task's runner writes its own brief and appends the server's.
+  const task = await L.newItem("Plain task", ["docs/**"], "owner");
+  await L.claim(task.id, OPUS);
+  const brief = await L.jobBrief(task.id, OPUS);
+  expect(brief.job).toBe("build");
+  expect(brief.text).toContain(line);
+  // A project with no prose standard gets no line.
+  const bare = await setup("prose-standard-none");
+  const other = await bare.newItem("Plain task", ["docs/**"], "owner");
+  await bare.claim(other.id, OPUS);
+  expect((await bare.jobBrief(other.id, OPUS)).text).not.toContain("Prose standard");
 });

@@ -41,6 +41,7 @@ import type { PlanPart } from "../plans/schema.ts";
 import { actorFamily, assertEligible, companyRefusal, DEFAULT_OWNER, familyRefusal, hasRole, modelKey, parseRuleError, sameActor, singleFamily, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { CRITERIA_REPLY_FORMAT } from "./verdict.ts";
+import { proseStandardLine } from "../prose-standard.ts";
 
 // One revision of an item's criteria: its number from 1, the binding of the
 // lists it stored (src/criteria.ts), who stored it and when.
@@ -370,6 +371,9 @@ export interface CriteriaBriefInput {
   resolutions: readonly CriteriaResolution[];
   round: number;
   owner?: string;
+  // The project's prose standard (src/prose-standard.ts, t675); null or
+  // absent when the project has none.
+  proseStandard?: string | null;
 }
 
 const visible = (c: string) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`;
@@ -441,6 +445,8 @@ export function criteriaReviewBrief(input: CriteriaBriefInput): string {
     ...(partAccept.length ? [`The plan's criteria for this part, numbered after the task's (criterion-${accept.length + 1} onward):`, block(numbered(partAccept, accept.length))] : []),
   );
   if (input.previous.length) section("## Earlier criteria reviews", "", ...earlierCriteriaReviews(input.previous, input.resolutions, input.rev));
+  const prose = proseStandardLine(input.proseStandard);
+  if (prose) section("## Prose standard", "", prose);
   section(
     "## Rules for blocking",
     "",

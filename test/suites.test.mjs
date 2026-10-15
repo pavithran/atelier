@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { createVitest } from "vitest/node";
 import { assign, discover, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
@@ -10,8 +11,9 @@ import { assign, discover, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
 const run = resolve("test/run.mjs");
 function tree(t, files) {
-  mkdirSync(".cache", { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/atelier-suites-test-"));
+  // The real path: macOS reaches its temp folder through the /var symlink,
+  // and Vitest matches its globs against the resolved root.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "atelier-suites-test-")));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const file of files) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
@@ -118,6 +120,21 @@ test("active config changes affect ownership; duplicate and excluded paths stop 
   assert.doesNotMatch(cli.stdout + cli.stderr, /SUITE_STARTED/);
   writeFileSync(config, `export default { test: { include: ["test/**/*.spec.ts"] } };`);
   assert.deepEqual(rejections(await plan(dir)), []);
+});
+
+// t658: plan() resolved its root with path.resolve only, so a root reached
+// through a symlink (macOS's /var -> /private/var, where os.tmpdir() lives)
+// matched none of Vitest's globs, which Vitest checks against the real path,
+// and every spec file came back unassigned.
+test("plan() assigns Vitest's files when its root is reached through a symlink", async (t) => {
+  const dir = tree(t, ["test/a.spec.ts", "b.test.mjs"]);
+  const links = mkdtempSync(join(tmpdir(), "atelier-suites-link-"));
+  t.after(() => rmSync(links, { recursive: true, force: true }));
+  const link = join(links, "root");
+  symlinkSync(dir, link, "dir");
+  const result = await plan(link);
+  assert.deepEqual(rejections(result), []);
+  assert.deepEqual(result.byRunner, { node: ["b.test.mjs"], vitest: ["test/a.spec.ts"] });
 });
 
 test("assignments equal actual configured Vitest collection and Node executes its assigned files", async (t) => {

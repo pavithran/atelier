@@ -79,7 +79,7 @@ test("a legacy server is refused for a requirement no level guarantees", () => {
 });
 
 test("new declarations, including queued legacy metadata, require published names", async (t) => {
-  const dir = mkdtempSync(resolve(".capabilities-new-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-new-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const declarations = [...CAPABILITIES,
     { name: "future.named.v1", summary: "a new route" },
@@ -148,7 +148,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "adopt", "area", "board", "branch", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "publish", "push", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "adopt", "area", "board", "branch", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "publish", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
@@ -179,6 +179,8 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.plan, ["plans.refresh.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES["review-unparsable"], ["reviews.unparsable.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES["review-withdraw"], ["reviews.withdraw.v1"]);
+  // record-merge records a merge made outside Atelier (t653).
+  assert.deepEqual(COMMAND_CAPABILITIES["record-merge"], ["land.record-merge.v1"]);
   // The declarations are the modules' own: the module says what the registry reads.
   for (const { spec } of COMMAND_MODULES) {
     const declared = [...new Set([...(spec.capabilities ?? []), ...Object.values(spec.subcommands ?? {}).flatMap((s) => s.capabilities ?? [])])];
@@ -417,7 +419,7 @@ test("the review job requires the skip routes, and a legacy server from before t
 // which routes the file to the records driver (t463) through this
 // repository's manifest, installed as Atelier installs it in every clone.
 test("independent capability additions merge cleanly, including the same and new families; a name both sides add stops as a conflict", async (t) => {
-  const dir = mkdtempSync(resolve(".capabilities-merge-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-merge-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
   git("init", "-q");
@@ -564,7 +566,9 @@ function invocations(root) {
 }
 
 test("a server missing one capability a command needs refuses it before its first request, naming the capability", async (t) => {
-  for (const { argv, required } of invocations(mkdtempSync(join(tmpdir(), "atelier-capabilities-argv-")))) {
+  const argvDir = mkdtempSync(join(tmpdir(), "atelier-capabilities-argv-"));
+  t.after(() => rmSync(argvDir, { recursive: true, force: true }));
+  for (const { argv, required } of invocations(argvDir)) {
     for (const missing of required) {
       const f = await stub(t, { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES.filter((n) => n !== missing) });
       const r = await f.run(argv);
@@ -696,4 +700,24 @@ test("--quote asks for the developer's direction by name, and a server without i
     assert.match(r.output, /Until then, the developer gives the permission on the project's Settings page \(Allow fast mode from the command line\) or the task's page \(Allow an override from the command line\), and the command runs again without --quote/, argv.join(" "));
     assert.deepEqual(f.requests, [{ method: "GET", path: "/api/version" }], argv.join(" "));
   }
+});
+
+// t621: the comparison route is published by name without raising the route
+// level, and `models show` requires no more than before: it prints the
+// comparison when the server publishes models.compare.v1 and says so when not.
+test("models.compare.v1 is a named capability that models show reads without requiring (t621)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "models.compare.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("models.compare.v1"));
+  assert.equal(ROUTE_LEVEL, 28);
+  assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
+});
+
+// t623: the trend route is published by name without raising the route
+// level, and `models show` requires no more than before: --trend asks for
+// models.trend.v1 itself and refuses a server without it.
+test("models.trend.v1 is a named capability that models show --trend reads without requiring (t623)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "models.trend.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("models.trend.v1"));
+  assert.equal(ROUTE_LEVEL, 28);
+  assert.deepEqual(requiredForCommand("models", "show", { trend: true }), ["models.note.v1"]);
 });
