@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -283,11 +283,24 @@ test("the opencode adapter, run as a process, passes --standalone on opencode 2 
   assert.deepEqual(JSON.parse(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").at(-1)).argv, ["run", "--standalone", "--model", "deepseek-api/deepseek-v4-pro", "--continue", "--format", "json"]);
 });
 
-test("the generated provider config the opencode adapter is given denies external_directory in opencode 1's and 2's forms", (t) => {
+test("the provider config the opencode adapter is given keeps opencode 1's deny, and the adapter adds opencode 2's at run time", (t) => {
   const s = setup(t);
-  const config = JSON.parse(readFileSync(run("opencode", s, { model: "deepseek-v4-pro" }).seen.env.OPENCODE_CONFIG, "utf8"));
+  const seen = run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "2.0.29" } }).seen;
+  const config = JSON.parse(readFileSync(seen.env.OPENCODE_CONFIG, "utf8"));
   assert.equal(config.permission.external_directory, "deny");
-  assert.deepEqual(config.permissions, [{ action: "external_directory", resource: "*", effect: "deny" }]);
+  assert.equal("permissions" in config, false, "the stored config here was written with no V2 key (an installation from before t683)");
+  assert.deepEqual(JSON.parse(seen.env.OPENCODE_CONFIG_CONTENT), { permissions: [{ action: "external_directory", resource: "*", effect: "deny" }] });
+  assert.equal(run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "1.18.34" } }).seen.env.OPENCODE_CONFIG_CONTENT, undefined);
+});
+
+// The finding on t683: an unreadable version was run as opencode 1.
+test("the opencode adapter refuses to run when `--version` prints no version", (t) => {
+  const s = setup(t);
+  const env = { PATH: process.env.PATH, HOME: s.dir, ATELIER_OPENCODE: s.fake, FAKE_VERSION: "unknown", CF_AIG_METADATA: gatewayMetadata("t9", "build", "home:mbp") };
+  const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS.opencode), "--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store, "deepseek-v4-pro", s.brief, s.ws, "undefined", "undefined", "undefined"], { encoding: "utf8", env, timeout: 10_000 });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /could not read the version of .*no run was started/);
+  assert.equal(existsSync(s.record), false, "opencode itself was never run");
 });
 
 test("codex runs with its MCP features off and its config.toml servers switched off by name, checked against codex", (t) => {

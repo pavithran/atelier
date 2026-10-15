@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { opencodeMajor } from "../cli/harness/adapter.mjs";
-import { PERMISSIONS, opencodeConfig } from "../cli/harness/providers.mjs";
+import { OPENCODE2_CONFIG_CONTENT, PERMISSIONS, opencodeConfig } from "../cli/harness/providers.mjs";
 import { detectLimit, runWithLimits } from "../bin/harness/limit.mjs";
 import { parseVerdict } from "../src/review/verdict.ts";
 
@@ -46,21 +46,32 @@ test("the major version is read from either release's --version, asked once per 
   assert.equal(opencodeMajor("/x/oc-missing", {}, () => ({ error: new Error("ENOENT") })), null);
 });
 
-test("every generated opencode config denies external_directory in both forms, opencode 1's and 2's", () => {
-  const config = opencodeConfig("deepseek-api", [{ providerModel: "m", atelierId: "m", limit: { context: 128000, output: 8000 } }], { gateway: { account: "a", id: "atelier" } });
-  assert.equal(config.permission.external_directory, "deny");
-  assert.deepEqual(config.permissions.filter((r) => r.action === "external_directory"), [{ action: "external_directory", resource: "*", effect: "deny" }]);
-  assert.equal(config.permissions, PERMISSIONS);
-  for (const rule of config.permissions) assert.deepEqual(Object.keys(rule).sort(), ["action", "effect", "resource"]);
+const MODELS = [{ providerModel: "m", atelierId: "m", limit: { context: 128000, output: 8000 } }];
+
+// The finding on t683 (reviewer astra): opencode 1.18.34's config loader throws
+// on the V2 "permissions" key ("V2 permissions are not supported by OpenCode
+// V1"), which was written unconditionally.
+test("a generated opencode config carries the V2 permissions only for opencode 2, and opencode 1's deny always", () => {
+  for (const major of [undefined, null, 1]) {
+    const config = opencodeConfig("deepseek-api", MODELS, { gateway: { account: "a", id: "atelier" }, major });
+    assert.equal(config.permission.external_directory, "deny", `V1 deny, major ${major}`);
+    assert.equal("permissions" in config, false, `no V2 key for major ${major}`);
+  }
+  const two = opencodeConfig("deepseek-api", MODELS, { gateway: { account: "a", id: "atelier" }, major: 2 });
+  assert.equal(two.permission.external_directory, "deny");
+  assert.deepEqual(two.permissions.filter((r) => r.action === "external_directory"), [{ action: "external_directory", resource: "*", effect: "deny" }]);
+  assert.equal(two.permissions, PERMISSIONS);
+  for (const rule of two.permissions) assert.deepEqual(Object.keys(rule).sort(), ["action", "effect", "resource"]);
+  assert.deepEqual(JSON.parse(OPENCODE2_CONFIG_CONTENT), { permissions: PERMISSIONS });
 });
 
 // Runs the real adapter, limit handling included, against a spawn that
 // answers as the recorded opencode 2 did.
-function adapterRun(t, { version, replies, exe, review = true }) {
+function adapterRun(t, { version, replies, exe, review = true, stored }) {
   const dir = temp(t, "atelier-oc2-");
   const ws = join(dir, "ws"), providers = join(dir, "providers"), verdict = join(dir, "verdict.md");
   mkdirSync(ws); mkdirSync(providers);
-  writeFileSync(join(providers, "deepseek-api.json"), JSON.stringify(opencodeConfig("deepseek-api", [{ providerModel: "m", atelierId: "m", limit: { context: 128000, output: 8000 } }], { gateway: { account: "a", id: "atelier" } })));
+  writeFileSync(join(providers, "deepseek-api.json"), JSON.stringify(stored ?? opencodeConfig("deepseek-api", MODELS, { gateway: { account: "a", id: "atelier" } })));
   writeFileSync(join(providers, "models.json"), JSON.stringify({ models: { m: { provider: "deepseek-api", providerModel: "m", config: "deepseek-api.json", key: "k", keyVar: "DEEPSEEK_API_KEY", gateway: true } } }));
   const brief = join(dir, "brief.md"), diff = join(dir, "diff.txt");
   writeFileSync(brief, "Task: t9\nReview it.\n");
@@ -101,11 +112,30 @@ test("on opencode 1 the adapter's arguments are unchanged: no --standalone", (t)
   ]);
 });
 
-test("a version it cannot read runs as opencode 1 and says so", (t) => {
-  const { status, calls, errors } = adapterRun(t, { exe: "/x/oc-run-none", version: "", replies: [JSON.stringify({ type: "text", part: { text: "VERDICT: APPROVE" } })] });
-  assert.equal(status, 0);
-  assert.equal(calls[0].argv.includes("--standalone"), false);
-  assert.match(errors.join(""), /could not read the version of .*; running it as opencode 1/);
+// The finding on t683: a failed or unparseable version probe was treated as
+// opencode 1 and launched without --standalone or the deny. A run refused
+// cannot leak, and a guess either way breaks (opencode 1 rejects both).
+test("a version it cannot read refuses the run: nothing is launched", (t) => {
+  for (const version of ["", "no version here"]) {
+    const { status, calls, errors } = adapterRun(t, { exe: `/x/oc-run-none-${version.length}`, version, replies: [] });
+    assert.equal(status, 1);
+    assert.equal(calls.length, 0, "opencode was never run");
+    assert.match(errors.join(""), /could not read the version of .*no run was started/);
+  }
+});
+
+// The finding on t683: the V2 rule was written at setup only, so an
+// installation set up before it kept a config without it.
+test("on opencode 2 the deny is injected at every run, over a stored config that lacks it; on opencode 1 nothing is injected", (t) => {
+  const old = opencodeConfig("deepseek-api", MODELS, { gateway: { account: "a", id: "atelier" } });
+  assert.equal("permissions" in old, false);
+  const reply = JSON.stringify({ type: "text", part: { text: "VERDICT: APPROVE" } });
+  const two = adapterRun(t, { exe: "/x/oc-inject-v2", version: "opencode v2.0.29\n", replies: [reply], stored: old });
+  assert.equal(two.status, 0);
+  assert.deepEqual(JSON.parse(two.calls[0].env.OPENCODE_CONFIG_CONTENT), { permissions: PERMISSIONS });
+  const one = adapterRun(t, { exe: "/x/oc-inject-v1", version: "1.18.34\n", replies: [reply], stored: old });
+  assert.equal(one.status, 0);
+  assert.equal(one.calls[0].env.OPENCODE_CONFIG_CONTENT, undefined);
 });
 
 test("opencode 2's provider error is read: an auth failure is no limit, a 429 is", () => {
@@ -148,6 +178,25 @@ fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.
   assert.equal(one.content, null);
 });
 
+test("run-agent.sh refuses to start when the version cannot be read", { skip: !zsh && "zsh is not installed" }, (t) => {
+  const dir = temp(t, "atelier-run-agent-n-");
+  const wrappers = join(dir, "wrappers"), ws = join(dir, "ws"), ran = join(dir, "ran");
+  mkdirSync(wrappers); mkdirSync(ws);
+  execFileSync("git", ["init", "--quiet", "-b", "main"], { cwd: ws });
+  writeFileSync(join(wrappers, "opencode-glm"), `#!${process.execPath}
+const fs = require("node:fs");
+if (process.argv[2] === "--version") { process.stdout.write(process.env.FAKE_VERSION + "\\n"); process.exit(Number(process.env.FAKE_STATUS ?? 0)); }
+fs.writeFileSync(${JSON.stringify(ran)}, "ran");
+`);
+  chmodSync(join(wrappers, "opencode-glm"), 0o755);
+  for (const fake of [{ FAKE_VERSION: "no version here" }, { FAKE_VERSION: "2.0.29", FAKE_STATUS: "1" }]) {
+    const r = spawnSync(zsh, [join(repo, "bin", "orchestrate", "run-agent.sh"), "glm", ws, join(dir, "out.txt"), "A short prompt."], { encoding: "utf8", env: { ...process.env, OPENCODE_WRAPPER_DIR: wrappers, ...fake } });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /could not read the version of .*no run was started/);
+    assert.equal(existsSync(ran), false, "the wrapper was never run");
+  }
+});
+
 // ── opencode 2 itself ───────────────────────────────────────────────────────
 
 // A stand-in for a model provider (OpenAI chat completions, streamed): to a
@@ -180,7 +229,7 @@ function modelServer() {
 
 // Runs opencode 2 on one prompt against the stand-in model, in folders of its
 // own, with `config` as its only config; returns the parsed JSON events.
-async function liveRun(t, config) {
+async function liveRun(t, config, extraEnv = {}) {
   const dir = temp(t, "atelier-oc2-live-");
   const { server, port } = await modelServer();
   t.after(() => server.close());
@@ -188,7 +237,7 @@ async function liveRun(t, config) {
   mkdirSync(ws);
   execFileSync("git", ["init", "--quiet", "-b", "main"], { cwd: ws });
   const home = join(dir, "home");
-  const env = { PATH: process.env.PATH, HOME: home, AI_STUDIO_API_KEY: "dummy", OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1" };
+  const env = { PATH: process.env.PATH, HOME: home, AI_STUDIO_API_KEY: "dummy", OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1", ...extraEnv };
   for (const [name, sub] of Object.entries({ XDG_CONFIG_HOME: "config", XDG_DATA_HOME: "data", XDG_CACHE_HOME: "cache", XDG_STATE_HOME: "state" })) { env[name] = join(dir, sub); mkdirSync(env[name], { recursive: true }); }
   mkdirSync(home);
   const file = join(dir, "opencode.json");
@@ -206,7 +255,7 @@ async function liveRun(t, config) {
   return { code, events, out, err };
 }
 
-const generated = (baseURL) => opencodeConfig("ai-studio", [{ providerModel: "fake", atelierId: "fake", limit: { context: 128000, output: 8000 } }], { baseURL });
+const generated = (baseURL) => opencodeConfig("ai-studio", [{ providerModel: "fake", atelierId: "fake", limit: { context: 128000, output: 8000 } }], { baseURL, major: 2 });
 const reads = (events) => events.filter((e) => e.type === "tool_use" && e.part?.tool === "read");
 
 test("opencode 2 refuses a read outside the workspace under the generated config", { skip: !opencode2 && "ATELIER_OPENCODE2 names no opencode 2 executable" }, async (t) => {
@@ -226,4 +275,19 @@ test("opencode 2 reads outside the workspace when nothing denies it (the control
   const read = reads(events);
   assert.equal(read.length, 1, out.slice(0, 600));
   assert.equal(read[0].part.state.status, "completed", "without a rule opencode run approves the read");
+});
+
+// The finding on t683: an installation set up before the V2 rule keeps a
+// config without it. OPENCODE_CONFIG_CONTENT must merge over OPENCODE_CONFIG on
+// opencode 2 itself for the run-time injection to fence it.
+test("opencode 2 refuses the read under an old stored config (no V2 rule) when the deny arrives in OPENCODE_CONFIG_CONTENT", { skip: !opencode2 && "ATELIER_OPENCODE2 names no opencode 2 executable" }, async (t) => {
+  const old = (baseURL) => {
+    const { permissions, ...rest } = generated(baseURL);
+    return rest;
+  };
+  const { events, out, err } = await liveRun(t, old, { OPENCODE_CONFIG_CONTENT: OPENCODE2_CONFIG_CONTENT });
+  const read = reads(events);
+  assert.equal(read.length, 1, `${out.slice(0, 600)} ${err.slice(0, 600)}`);
+  assert.equal(read[0].part.state.status, "error");
+  assert.match(read[0].part.state.error, /Permission denied: external_directory/);
 });

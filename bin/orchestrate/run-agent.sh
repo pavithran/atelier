@@ -48,9 +48,18 @@ esac
 # before it reads outside the workspace, and `run` approves what it is asked,
 # so a deny rule for external_directory goes in through
 # OPENCODE_CONFIG_CONTENT, which opencode merges over the wrapper's config.
-major=$("$wrapper" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1 || true)
+# A version that cannot be read is refused: it might be opencode 2, and
+# opencode 1 rejects both the flag and the rule.
+major=
+if version=$("$wrapper" --version 2>/dev/null); then
+  major=$(print -r -- "$version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1 || true)
+fi
+if [[ -z $major ]]; then
+  echo "run-agent.sh: could not read the version of $wrapper (--version failed or printed no version), so it is not known whether it needs --standalone and the external_directory deny; no run was started" >&2
+  exit 69
+fi
 flags=()
-if [[ ${major:-1} -ge 2 ]]; then
+if [[ $major -ge 2 ]]; then
   flags=(--standalone)
   export OPENCODE_CONFIG_CONTENT='{"permissions":[{"action":"external_directory","resource":"*","effect":"deny"}]}'
 fi
