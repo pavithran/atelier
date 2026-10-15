@@ -68,6 +68,30 @@ export function atelierGitDir(dir, git = localGit) {
   return join(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir }), "atelier");
 }
 
+// The node the drivers run. A Homebrew node's real path sits in a versioned
+// Cellar folder that an upgrade removes, so a Cellar path is never answered:
+// the stable link in the prefix's bin when it exists, else a node on PATH
+// outside any Cellar, else the bare command `node`, which the shell Git runs
+// a driver through resolves from PATH. `exists` and `pathDirs` are injectable.
+export function stableNode(execPath, exists = existsSync, pathDirs = (process.env.PATH ?? "").split(":")) {
+  const at = execPath.indexOf("/Cellar/");
+  if (at < 0) return execPath;
+  const link = `${execPath.slice(0, at)}/bin/node`;
+  if (exists(link)) return link;
+  const onPath = pathDirs.filter((d) => d && d.startsWith("/")).map((d) => join(d, "node")).find((p) => !p.includes("/Cellar/") && exists(p));
+  return onPath ?? "node";
+}
+
+// The node a configured driver command names, or null.
+function configuredNode(command) {
+  const m = /^'((?:[^']|'\\'')*)'/.exec(command);
+  return m ? m[1].replace(/'\\''/g, "'") : null;
+}
+
+// A configured node exists when its path does; a bare command is left to the
+// shell's PATH.
+const nodeExists = (node) => !node.startsWith("/") || existsSync(node);
+
 // The settings a clone needs for the declared drivers, with the driver
 // copied to `driver`.
 function mergeSettings(driver, node) {
@@ -82,13 +106,14 @@ function mergeSettings(driver, node) {
 
 // What the clone at `dir` lacks of its merge configuration: each missing or
 // different setting, and the driver copy when it is absent or stale.
-export function mergeConfigProblems(dir, { git = localGit, node = process.execPath } = {}) {
+export function mergeConfigProblems(dir, { git = localGit, node = stableNode(process.execPath) } = {}) {
   const home = atelierGitDir(dir, git), driver = join(home, "merge-driver.mjs");
   const problems = [];
   problems.push(...staleCopies(home));
   for (const [key, value] of mergeSettings(driver, node)) {
     const r = git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
     if (r.status !== 0 || r.stdout.replace(/\n$/, "") !== value) problems.push(key);
+    else if (key.endsWith(".driver") && !nodeExists(configuredNode(r.stdout.replace(/\n$/, "")) ?? node)) problems.push(key);
   }
   return problems;
 }
@@ -96,7 +121,7 @@ export function mergeConfigProblems(dir, { git = localGit, node = process.execPa
 // Installs the merge configuration in the clone at `dir`: the driver copied
 // into its Git directory and the settings naming it. Idempotent; answers
 // what it changed, which is nothing for a clone already set up.
-export function installMergeConfig(dir, { git = localGit, node = process.execPath } = {}) {
+export function installMergeConfig(dir, { git = localGit, node = stableNode(process.execPath) } = {}) {
   const missing = mergeConfigProblems(dir, { git, node });
   if (!missing.length) return [];
   const home = atelierGitDir(dir, git), driver = join(home, "merge-driver.mjs");
@@ -110,7 +135,7 @@ export function installMergeConfig(dir, { git = localGit, node = process.execPat
 
 // The same installation through a git that may answer promises, as
 // mergeThrough runs it.
-async function installMergeConfigAwaiting(dir, git, node = process.execPath) {
+async function installMergeConfigAwaiting(dir, git, node = stableNode(process.execPath)) {
   const home = join(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir }), "atelier"), driver = join(home, "merge-driver.mjs");
   const problems = async () => {
     const left = staleCopies(home);
