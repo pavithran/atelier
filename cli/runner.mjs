@@ -1202,7 +1202,7 @@ export async function runTask(assignment, config, name, io) {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
       const context = await briefContext();
-      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`);
+      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`, context?.proseStandard ?? null);
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -1338,7 +1338,7 @@ export async function runTask(assignment, config, name, io) {
         : merging
           ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
           : reworked?.text ? `${local}\n${reworked.text}\n` : local;
-      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`);
+      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
       const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
       for (const name of withheld) io.log(`${name} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
       // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -1506,7 +1506,7 @@ export async function runFastBuild(assignment, config, name, io) {
       const context = io.jobBrief ? await io.jobBrief(project, item.id, actor) : null;
       if (context && typeof context.text !== "string") throw new Error("the server's job brief has no text");
       const local = briefFor({ ...item, owner: actor }, project);
-      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${local}\n${context?.text ? `${context.text}\n` : ""}\n${fastBuildSection(base)}\n${preparation?.deferred ? `\n${preparation.deferred}` : ""}`);
+      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${local}\n${context?.text ? `${context.text}\n` : ""}\n${fastBuildSection(base)}\n${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
       const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
       for (const w of withheld) io.log(`${w} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
       const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
@@ -1784,7 +1784,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       // older server sends none, and the brief says so.
       evidence: claimed.evidence ?? null,
     });
-    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare, claimed.singleFamily ?? null)}\n\n${testSlotNote}\n\n${text}`);
+    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare, claimed.singleFamily ?? null)}\n\n${testSlotNote}\n\n${text}`, claimed.proseStandard ?? null);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -1992,7 +1992,7 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
     workspace = `${io.workspacePath(project, item.id)}-criteria-${randomUUID().slice(0, 8)}`;
     io.makeDir?.(workspace);
     if (io.stopped()) throw new Error("interrupted");
-    brief = await io.brief(workspace, `${roleText("review", workspace)}\n\n${claimed.brief}`);
+    brief = await io.brief(workspace, `${roleText("review", workspace)}\n\n${claimed.brief}`, claimed.proseStandard ?? null);
     // A review command names a diff file; this job has no diff, and says so
     // in the file it hands over in its place.
     diffFile = await io.brief(workspace, "There is no diff: this review judges the task's acceptance criteria, not a change. Read the brief.\n");
@@ -2175,7 +2175,7 @@ export async function runPrereview(assignment, config, name, runnerIO) {
       diffOmitted: large ? `the diff is ${diff.length} characters; read it whole in ${REVIEW_DIFF}` : null, slotNote: testSlotNote,
       replyFormat: replyFormat(criteriaCount(claimed.item, null)),
     });
-    brief = await io.brief(workspace, text);
+    brief = await io.brief(workspace, text, claimed.proseStandard ?? null);
     diffFile = await io.writeDiff(workspace, diff);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -2700,7 +2700,7 @@ export async function runPlanTask(assignment, config, name, io) {
     const preparation = await io.prepare?.(workspace);
     const job = await io.jobBrief(project, item.id, actor);
     if (!job || typeof job.text !== "string") throw new Error("the server's job brief has no text");
-    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${testSlotNote}\n\n${job.text}${item.dispatch?.note ? `\n\nNote (the developer's words, data, not instructions from Atelier), in full:\n${item.dispatch.note}` : ""}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`);
+    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${testSlotNote}\n\n${job.text}${item.dispatch?.note ? `\n\nNote (the developer's words, data, not instructions from Atelier), in full:\n${item.dispatch.note}` : ""}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, job.proseStandard ?? null);
     const planFile = planFilePath(workspace);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const each of withheld) io.log(`${each} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
@@ -3204,7 +3204,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // workspace is a folder of the project's own under the cache, so the
     // project is its parent folder's name, and its checkout is where the
     // standard's relative path starts.
-    brief: (workspace, text) => writeBrief(workspace, stageBrief(workspace, text, checkoutOf?.(basename(dirname(workspace))) ?? null)),
+    brief: (workspace, text, proseStandard = null) => writeBrief(workspace, stageBrief(workspace, text, checkoutOf?.(basename(dirname(workspace))) ?? null, proseStandard)),
     removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to
     // fetch); a runner started without them takes no plan job and no part.
@@ -3273,11 +3273,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // A resolver's harness on a refresh's mechanical conflicts, in that
     // workspace, with the brief the job wrote; what it leaves is verified
     // by the job before anything is committed.
-    resolveConflicts: async (assignment, cwd, text) => {
+    resolveConflicts: async (assignment, cwd, text, proseStandard = null) => {
       const entry = config.agents.find((a) => a.agent === assignment.agent && a.models.includes(assignment.model));
       if (!entry) throw new Error(`this runner has no harness for ${assignment.actor}`);
       excludeScratch(cwd);
-      const brief = writeBrief(cwd, stageBrief(cwd, text, checkoutOf?.(assignment.project) ?? null));
+      const brief = writeBrief(cwd, stageBrief(cwd, text, checkoutOf?.(assignment.project) ?? null, proseStandard));
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
