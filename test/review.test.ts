@@ -715,7 +715,7 @@ test("reviewBrief: names what to review, carries the plan, checks and summary, a
     "Part `rules`: a build part, feature work, size S. Its title:",
     "Acceptance criteria. A change that fails one has a correctness fault, which blocks:\n```\n1. node --test test/review.test.ts passes\n```",
     "depends on: nothing\nprovides: reviewNeeded\nuses: nothing",
-    "Every required check was observed passing at this head:\n- `npm test`, in a Cloudflare container",
+    `Required checks at the head under review:\n- \`npm test\`: Observed passed, head \`${H2}\`, in a Cloudflare container`,
     "## The builder's summary\n\n```\nAdds reviewNeeded with tests.\n```",
     "```diff\ndiff --git a/src/review/needed.ts b/src/review/needed.ts\n+export const x = 1;\n```",
     "- data loss: it can destroy, corrupt or silently drop stored data;",
@@ -887,7 +887,7 @@ test("reviewBrief: an item outside a plan, with no diff and no summary", () => {
   assert.ok(!text.includes("## The plan"));
   assert.ok(text.includes("Change class: protected, because it touches a protected path. It needs an independent review before the developer can accept it."));
   assert.ok(text.includes("The item has no scope, so no changed file is outside it."));
-  assert.ok(text.includes("- `npm test`, on a runner, in a clean clone"));
+  assert.ok(text.includes(`- \`npm test\`: Observed passed, head \`${H2}\`, on a runner, in a clean clone`));
   assert.ok(text.includes("The builder gave no summary with this submission."));
   assert.ok(text.includes(`The diff is not included here. Read it in your clone: git diff ${H0} ${H2}`));
   const unbased = brief({ need, plan: null, diff: null, events: [], item: item({ base: null }) });
@@ -1080,7 +1080,7 @@ const evidenceOf = (text: string) => text.slice(text.indexOf("## Observed eviden
 
 test("reviewBrief evidence: ad-hoc runs are shown apart from required checks, whose gating section is unchanged", () => {
   const text = brief({ evidence: { required: ["npm test"], runs: [pass({ outputTail: "ok 12" }), run("npm run verify:visual", 5, { outputTail: "visual ok" })] } });
-  assert.ok(text.includes("## Checks\n\nEvery required check was observed passing at this head:\n- `npm test`, in a Cloudflare container\n\n## Observed evidence"));
+  assert.ok(text.includes(`## Checks\n\nRequired checks at the head under review:\n- \`npm test\`: Observed passed, head \`${H2}\`, in a Cloudflare container\n\n## Observed evidence`));
   const ev = evidenceOf(text);
   assert.ok(ev.includes(`exact head ${H2}`));
   const req = ev.slice(ev.indexOf("### Required checks' runs"), ev.indexOf("### Supplemental runs"));

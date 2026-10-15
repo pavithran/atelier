@@ -158,11 +158,14 @@ export function samePlan(a: Pick<Item, "id" | "kind" | "plan">, b: Pick<Item, "i
 }
 
 // The project owner's override of the independent review a change needs,
-// for when no reviewer qualifies. It is not a review: it approves nothing,
+// for when no reviewer qualifies or the developer overrules a rejection.
+// It is not a review: it approves nothing,
 // it is recorded as an event of its own (review.overridden) with a required
 // reason, and the gate counts it in place of the missing review only at the
 // head it names. The owner records it while accepting (Ledger.accept).
 export interface ReviewOverride {
+  // Only the rejections present when the developer explicitly overrode them.
+  rejections?: { by: string; at: string }[];
   head: string;
   by: string;
   reason: string;
@@ -1373,7 +1376,7 @@ export function overrideReason(value: unknown): string {
 
 // The override the owner may record at an item's head, and what it waives.
 // It is refused when the gate at that head is not missing an independent
-// review, as when one has been given or the change needs none: an override
+// review and has no agent rejection, as when an approval has been given: an override
 // there would waive nothing, and recording one would blur what the owner
 // decided. Whatever else the gate asks still applies once it is recorded.
 export function reviewOverrideFor(
@@ -1382,11 +1385,16 @@ export function reviewOverrideFor(
   assertOverridesAllowed(policy);
   const text = overrideReason(reason);
   const g = gate({ ...item, reviewOverride: null }, policy, evidence, reviews, owner);
-  if (!item.head || !g.needsAssessor) {
+  const rejections = countingReviews(reviews, bindingOf(item), policy, owner).filter((r) => r.head === item.head && !r.approve && r.by !== owner).map(({ by, at }) => ({ by, at }));
+  if (!item.head || (!g.needsAssessor && !rejections.length)) {
     const where = item.head ? ` at ${item.head.slice(0, 8)}` : "";
     throw new RuleError("override_unneeded", `${item.id}${where} is not missing an independent review, so there is nothing to override${g.ready ? "; accept it without an override" : `: ${g.blockers.join("; ")}`}`);
   }
-  return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? protectedNeed(singleFamily(policy)), contributors: contributorsOf(item) };
+  const requirement = g.requirement ?? protectedNeed(singleFamily(policy));
+  const waived = rejections.length
+    ? `Recorded rejections by ${rejections.map((r) => r.by).join(", ")}${g.needsAssessor ? `; ${requirement}` : ""}`
+    : requirement;
+  return { override: { head: item.head, by: owner, reason: text, at, ...(rejections.length ? { rejections } : {}) }, waived, contributors: contributorsOf(item) };
 }
 
 // An item holds its scope against other claims while it is claimed,
@@ -1854,7 +1862,10 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       }
     }
   }
-  const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
+  const rejectionOverride = policy.noOverride ? null : overrideAt(item, owner);
+  const rejected = reviews.filter((r) => r.head === item.head && !r.approve &&
+    !rejectionOverride?.rejections?.some((saved) => saved.by === r.by && saved.at === r.at));
+  if (rejectionOverride?.rejections?.length) overridden = rejectionOverride;
   for (const r of rejected) blockers.push(`rejected by ${r.by}${r.tier ? " (tier review)" : r.topTier ? " (gate review, top tier)" : ""}: ${r.note || "no note"}`);
   // Scope is matched as written: a path in another letter case is reported
   // outside it, which shows the variant rather than hiding it.

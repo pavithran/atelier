@@ -3616,6 +3616,7 @@ export class Ledger extends DurableObject<Env> {
       const factor = confirmedBy ?? confirmation?.factor;
       this.log(id, actor, "review.overridden", {
         head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
+        ...(override.override.rejections ? { rejections: override.override.rejections } : {}),
         confirmed: confirmedBy ? "page" : direction ? "direction" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
         ...(direction ? { quote: direction.quote } : {}),
         availability: availability ?? { known: false, reviewer: null, source: "none", at, why: "no reviewer was looked for as the override was made" },
