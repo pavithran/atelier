@@ -167,6 +167,11 @@ function harness(t) {
   mkdirSync(ws);
   writeFileSync(brief, "Task: t9\nBuild it.\n");
   writeFileSync(fake, `#!${process.execPath}
+// opencode --version (t683): answered whatever the configured response is.
+if (process.argv[2] === "--version") {
+  process.stdout.write((process.env.FAKE_VERSION ?? "1.18.34") + "\\n");
+  process.exit(0);
+}
 if (process.argv.includes("mcp")) {
   process.stdout.write("[]");
   process.exit(0);
@@ -252,6 +257,7 @@ for (const name of NAMES) {
           env: { PATH: process.env.PATH, HOME: h.dir }, now: () => NOW, timeZone: NY,
           stdout() {}, stderr: (text) => err.push(text),
           spawn(exe, argv, options) {
+            if (argv[0] === "--version") return { status: 0, stdout: "1.18.34\n" };
             if (options.input === undefined) return { status: 0, stdout: "[]" };
             if (name === "claude-code" || name === "antigravity") assert.equal(argv[argv.indexOf("--output-format") + 1], "json");
             if (name === "codex") assert.ok(argv.includes("--json"));
