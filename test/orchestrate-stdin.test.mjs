@@ -69,6 +69,25 @@ test("run-agent.sh passes the brief file to opencode on standard input, not as a
   assert.equal(JSON.parse(readFileSync(record, "utf8")).metadata, '{"task":"t271","role":"build","runner":"hand"}');
 });
 
+// t678: in a linked worktree `.git` is a file, so the exclude file is found
+// through git, not by a path under the workspace.
+test("run-agent.sh runs in a linked worktree and keeps .scratch/ out of Git there", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-run-agent-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const home = join(dir, "home"), main = join(dir, "main"), ws = join(dir, "linked"), record = join(dir, "record.json");
+  mkdirSync(join(home, ".local", "bin"), { recursive: true });
+  standIn(join(home, ".local", "bin", "opencode-glm"), record);
+  const git = gitRepo(main);
+  git("commit", "--quiet", "--allow-empty", "-m", "init");
+  git("worktree", "add", "--quiet", "-b", "t678-linked", ws);
+  const result = spawnSync(zsh, [join(repo, "bin", "orchestrate", "run-agent.sh"), "glm", ws, join(dir, "out.txt"), "A short prompt."], { encoding: "utf8", env: { ...process.env, HOME: home } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(existsSync(record), "the agent ran");
+  const exclude = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], { cwd: ws, encoding: "utf8" }).trim();
+  assert.match(readFileSync(exclude, "utf8"), /^\.scratch\/$/m);
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: ws, encoding: "utf8" }), "", ".scratch/ is kept out of Git");
+});
+
 test("review.sh passes its prompt to agy on standard input, not as an argument", { skip }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-review-sh-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
