@@ -58,6 +58,21 @@ function writeCopy(workspace, bytes) {
   if (old) unlinkSync(dest);
   const fd = openSync(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
   try { writeSync(fd, bytes); } finally { closeSync(fd); }
+  // The outcome, not each cause: whatever un-ignores the copy (a tracked
+  // .gitignore with `!.scratch/`, a global rule, a nested repository), git
+  // would stage it. Exit 1 is "not ignored"; any other failure (not a
+  // repository) leaves the copy as it was.
+  if (gitIgnores(workspace) === false) {
+    unlinkSync(dest);
+    throw refuse(`git does not ignore ${PROSE_STANDARD_COPY} here (a tracked .gitignore may un-ignore it), so \`git add -A\` would commit the copy and it was removed`);
+  }
+}
+
+function gitIgnores(workspace) {
+  try {
+    execFileSync("git", ["check-ignore", "-q", "--", PROSE_STANDARD_COPY], { cwd: workspace, stdio: "ignore" });
+    return true;
+  } catch (e) { return e?.status === 1 ? false : null; }
 }
 
 function lstatOrNull(path) {

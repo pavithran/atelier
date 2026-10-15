@@ -224,6 +224,19 @@ test("a tracked .scratch/prose-standard.md is refused and left as it was", () =>
   assert.equal(git("status", "--porcelain").trim(), "");
 });
 
+test("a tracked .gitignore that un-ignores .scratch gets no copy, and staging adds nothing (review 3)", () => {
+  const { checkout, workspace } = scene();
+  const git = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: workspace, encoding: "utf8" });
+  writeFileSync(join(workspace, ".gitignore"), "!.scratch/\n");
+  git("add", ".gitignore");
+  git("commit", "-q", "-m", "track a gitignore that un-ignores .scratch");
+  const staged = stageBrief(workspace, `${LINE}\n`, checkout, PATH);
+  assert.match(staged, /could not be copied into your workspace \(.*does not ignore/);
+  assert.ok(!existsSync(join(workspace, ".scratch", "prose-standard.md")));
+  git("add", "-A");
+  assert.equal(git("status", "--porcelain").trim(), "");
+});
+
 test("a workspace that is not a repository still gets the copy", () => {
   const { checkout } = scene();
   const plain = mkdtempSync(join(tmpdir(), "t676-plain-"));
