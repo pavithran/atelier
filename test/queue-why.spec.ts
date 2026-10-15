@@ -312,6 +312,11 @@ it("a runner's skip of a task it holds is kept for a kind it reports and refused
   expect(await L.recordRunSkip(task.id, "home:held-skip", "opencode/glm-5.3", "failures", 2, "checks failed")).toBe(true);
   const refused = await L.recordRunSkip(task.id, "home:held-skip", "opencode/glm-5.3", "claim-refused" as never, 1, "").then(() => null, (e: unknown) => e);
   expect(parseRuleError(refused)).toMatchObject({ status: 400, code: "bad_kind" });
+  // t669: caught a report for a held task from an actor that does not hold
+  // it (the developer token with an X-Atelier-Runner header names any
+  // actor), which the ledger kept as the holder's word.
+  const stranger = await L.recordRunSkip(task.id, "home:held-skip", "codex/gpt-6", "skipped", 1, "").then(() => null, (e: unknown) => e);
+  expect(parseRuleError(stranger)).toMatchObject({ status: 403, code: "not_owner" });
   // Another runner's word on a task it does not hold is not kept.
   expect(await L.recordRunSkip(task.id, "home:other-skip", "opencode/glm-5.3", "skipped", 1, "")).toBe(false);
 });
