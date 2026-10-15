@@ -50,6 +50,7 @@ import { join } from "node:path";
 import { TRANSFORMATIONS, classifyConflicts, conflictReport, verifyResolution } from "../src/refresh/mechanical.ts";
 import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/moved-code.ts";
 import { guardedPush } from "./private.mjs";
+import { proseStandardLine } from "../src/prose-standard.ts";
 
 const HASH = /^[a-f0-9]{40,64}$/;
 const CHECKS_FAILED = 2;
@@ -74,7 +75,12 @@ export function diffIdentity(diff) {
 
 // The brief a resolver's harness gets: the transformations it may apply,
 // and each conflict, with what applies to it.
-export function resolverBrief(item, files) {
+//
+// A resolver writes no prose of its own, but it commits, and a commit message
+// is prose the project's standard covers (t675), so the brief names it when
+// the lease carries one (proseStandard, from the project's policy).
+export function resolverBrief(item, files, proseStandard = null) {
+  const prose = proseStandardLine(proseStandard);
   return [
     `# Resolve the mechanical conflicts of ${item.id}'s refresh`,
     "",
@@ -88,6 +94,7 @@ export function resolverBrief(item, files) {
     "",
     ...files.flatMap((f) => [`- ${f.path}: ${f.why}`, ...f.hunks.map((h) => `  - at line ${h.line}: ${h.transformation}, ${h.why}`)]),
     "",
+    ...(prose ? ["## Prose standard", "", prose, ""] : []),
   ].join("\n");
 }
 
@@ -238,7 +245,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
       const snapshot = () => git(["ls-files", "-s", "-z"], { raw: true });
       const untracked = async () => (await git(["ls-files", "--others", "--exclude-standard", "-z"], { raw: true })).split("\0").filter((p) => p && !p.startsWith(".scratch/"));
       const indexBefore = await snapshot(), untrackedBefore = await untracked();
-      await io.resolveConflicts(assignment, dir, resolverBrief(item, classified.files));
+      await io.resolveConflicts(assignment, dir, resolverBrief(item, classified.files, leased.proseStandard ?? null));
       const faults = [];
       if (await io.head(dir) !== headBefore) faults.push("the resolver moved HEAD; it must leave the merge for the runner to commit");
       if ((await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], { allowFail: true })).status !== 0) faults.push("the merge is no longer in progress");

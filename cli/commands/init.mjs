@@ -190,6 +190,9 @@ export default async function initCommand() {
     // What may block a review, stated in every review brief; omitted keeps
     // it, "" restores the default bar.
     ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
+    // The path of the document the project's prose follows, named in every
+    // build, plan and review brief (t675); omitted keeps it, "" clears it.
+    ...(args["prose-standard"] !== undefined ? { proseStandard: args["prose-standard"] } : {}),
     // The model that triages a landing's diff against the task's criteria
     // before its review (t475), harness/model; omitted keeps it, "" clears it.
     ...(args.triage !== undefined ? { triage: args.triage } : {}),
@@ -280,6 +283,9 @@ export default async function initCommand() {
   console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
   // A server older than the review bar ignores it and answers without one.
   if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
+  console.log(`Prose:      ${pol.proseStandard ? `${pol.proseStandard}, which every build, plan and review brief names for the agent to load before it writes prose` : "no prose standard; no brief names one (atelier init --prose-standard PATH)"}`);
+  // A server older than the prose standard ignores it and answers without one.
+  if (typeof args["prose-standard"] === "string" && args["prose-standard"].trim() && !pol.proseStandard) console.log("Warning: the server did not record the prose standard; deploy the server, then run atelier init --prose-standard again.");
   console.log(`Triage:     ${pol.triage ? `${pol.triage}, which triages each landing's diff against the task's acceptance criteria before the review is asked for (atelier land --triage H/M names another, --no-triage REASON skips it)` : "none, unless a landing names a model with atelier land --triage H/M"}`);
   // A server older than the triage setting ignores it and answers without one.
   if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");

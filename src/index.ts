@@ -15,6 +15,7 @@ import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalTe
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
+import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
@@ -862,6 +863,22 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's prose standard (src/prose-standard.ts) as init sends it: the
+// path of the document the project's prose follows, which every build, plan
+// and review brief names. One line with no backticks, so the brief's code
+// span holds it whole; null or "" clears it, and no brief names one.
+function proseStandardArg(value: unknown): string | null {
+  if (value !== null && typeof value !== "string") {
+    throw new RuleError("bad_prose_standard", "the prose standard is the path of the document the project's prose follows, or \"\" to clear it", 400);
+  }
+  const text = (value ?? "").trim();
+  if (text.replace(TEXT_CONTROLS, "") !== text || text.includes("`")) {
+    throw new RuleError("bad_prose_standard", "the prose standard is one path on one line, with no control characters or backticks", 400);
+  }
+  assertLength(text, PROSE_STANDARD_MAX, "the prose standard");
+  return text || null;
+}
+
 // The project's triage model (src/review/triage.ts) as init sends it:
 // harness/model under a harness Atelier ships an adapter for; null or ""
 // clears it, and a landing then triages only when it names a model.
@@ -1195,7 +1212,12 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!repo || !tokenId || tokenId.startsWith("runner:")) return;
+  if (!tokenId || tokenId.startsWith("runner:")) return;
+  // A write token is recorded only once its fork exists (the claim route
+  // sets the fork, then mints and records the token), so a token with no
+  // repository means the caller read the fork before a claim made both. It
+  // is refused, never passed over, or the token would stay live off the record (t653).
+  if (!repo) throw new RuleError("workspace_changed", "the task was claimed while this was asked, so its new workspace token was not revoked and nothing was changed; try again", 409);
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -1666,6 +1688,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The path of the project's prose standard, named in every build, plan
+      // and review brief: a path, or null or "" to clear it.
+      ...(has("proseStandard") ? { proseStandard: proseStandardArg(body.proseStandard) } : {}),
       // The model that triages a landing before its review (t475):
       // harness/model, or null or "" to clear it.
       ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
@@ -2019,7 +2044,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (verb === "brief" && parts.length === 5 && m === "GET") {
     // A plan item's brief is its plan's: phase, proposal or parts, and the decision it waits on.
     const asked = await L.item(id);
-    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)) });
+    // It names the project's prose standard as any brief does (t675).
+    if (asked.kind === "plan") return json({ title: asked.title, ...planBrief(await L.planView(id)), proseStandard: (await L.project()).policy.proseStandard ?? null });
     const detail = await L.detail(id) as Detail;
     return json({ title: detail.item.title, ...briefFor(detail) });
   }
@@ -2134,7 +2160,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // made for it (the reviews of t641).
           if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
           const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
-          await L.setFork(id, name, head, actor, !!c.token);
+          await L.setFork(id, name, head, actor, !!c.token, generation);
         } catch (err) {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
@@ -2868,6 +2894,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
         regenerate: p.policy.regenerate ?? null, checks: p.policy.checks, commitIdentity: p.policy.commitIdentity ?? null,
+        // Named in a resolver's brief (t675), which commits.
+        proseStandard: p.policy.proseStandard ?? null,
       });
     }
     case "refresh-pushing": {
@@ -3027,6 +3055,38 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
       const postMerge = await L.postMergeRun(id);
       return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
+    }
+    // A merge made outside Atelier, recorded after the fact (t653): the
+    // baseline is read here, where Git is, for the merge commit's parents and
+    // whether main holds it (main reaches the baseline through atelier sync);
+    // the Ledger refuses the record unless main holds it and its second
+    // parent is the commit named as the task's head (head, or the task's
+    // recorded head).
+    case "record-merge": {
+      requireOwner(env, actor);
+      const p = await L.project();
+      const before = await L.item(id);
+      // A fork's head starts at its base; only a head pushed since is the task's own.
+      const pushed = before.head && before.head !== before.base ? before.head : null;
+      const commit = body.head === undefined || body.head === null ? pushed : body.head;
+      const merge = typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null;
+      let parents: string[] | null = null, holds: boolean | null = false;
+      if (merge) {
+        using baseline = await env.ARTIFACTS.get(p.repo);
+        const found = await baseline.readCommit(merge);
+        parents = found ? found.parents : null;
+        const top = found ? await headOf(env, p.repo) : null;
+        holds = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
+      }
+      // As abandon and release do: check, revoke the workspace token, then
+      // record. The fork and token are read together after the baseline
+      // reads, so a claim made meanwhile is the one revoked, and the record
+      // is refused if either changes after that read. A revocation that
+      // fails changes nothing, and the retry revokes again.
+      await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
+      const workspace = await L.workspaceOf(id);
+      await revoke(env, workspace.fork, workspace.token);
+      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, workspace));
     }
     case "landing": {
       requireOwner(env, actor);
