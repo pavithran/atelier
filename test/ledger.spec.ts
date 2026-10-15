@@ -1005,6 +1005,13 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(barred, { ...base, reviewBar: null }, "later").policy).not.toHaveProperty("reviewBar");
   expect(full.policy).not.toHaveProperty("reviewBar");
   expect(mergeProject(barred, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewBar");
+  // The prose standard (t675) is set, kept by an init that does not name it, and cleared by null or reset.
+  const prose = mergeProject(full, { ...base, proseStandard: "../house-style.md" }, "later");
+  expect(prose.policy.proseStandard).toBe("../house-style.md");
+  expect(mergeProject(prose, { ...base, title: "V" }, "later").policy.proseStandard).toBe("../house-style.md");
+  expect(mergeProject(prose, { ...base, proseStandard: null }, "later").policy).not.toHaveProperty("proseStandard");
+  expect(mergeProject(prose, { ...base, reset: true }, "later").policy).not.toHaveProperty("proseStandard");
+  expect(full.policy).not.toHaveProperty("proseStandard");
   // The review tier is unset by default, set, kept by an init that does not
   // name it, cleared by an empty list, and dropped by reset.
   expect(full.policy).not.toHaveProperty("reviewTier");

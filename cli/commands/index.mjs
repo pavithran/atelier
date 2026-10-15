@@ -59,6 +59,7 @@ import command_push from "./push.mjs";
 import command_queue from "./queue.mjs";
 import command_read_token from "./read-token.mjs";
 import command_receipt from "./receipt.mjs";
+import command_record_merge from "./record-merge.mjs";
 import command_refresh_checked from "./refresh-checked.mjs";
 import command_refresh_failed from "./refresh-failed.mjs";
 import command_refresh_lease from "./refresh-lease.mjs";
@@ -155,6 +156,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/queue.mjs", run: command_queue },
   { path: "cli/commands/read-token.mjs", run: command_read_token },
   { path: "cli/commands/receipt.mjs", run: command_receipt },
+  { path: "cli/commands/record-merge.mjs", run: command_record_merge },
   { path: "cli/commands/refresh-checked.mjs", run: command_refresh_checked },
   { path: "cli/commands/refresh-failed.mjs", run: command_refresh_failed },
   { path: "cli/commands/refresh-lease.mjs", run: command_refresh_lease },

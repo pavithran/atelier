@@ -97,3 +97,70 @@ test("review.sh passes its prompt to agy on standard input, not as an argument",
   assert.ok(seen.input.includes("+++ b/b.txt"), "the prompt carries the diff");
   assert.equal(readFileSync(`${out}.md`, "utf8"), "VERDICT: APPROVE\nSUMMARY: Read it.\n");
 });
+
+// t675: review.sh suppressed the policy lookup's errors, so a failed lookup
+// briefed the reviewer as if the project had no prose standard. A failure is
+// now said on standard error and in the prompt; a project that records none
+// is not a failure; PROSE_STANDARD overrides the lookup.
+test("review.sh names the prose standard the policy records, says when the lookup failed, and lets PROSE_STANDARD override", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-prose-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const tools = join(dir, "tools"), record = join(dir, "record.json"), main = join(dir, "main"), ws = join(dir, "ws");
+  mkdirSync(tools);
+  standIn(join(tools, "agy"), record, JSON.stringify({ response: "VERDICT: APPROVE\nSUMMARY: Read it.\n" }));
+  const gitMain = gitRepo(main);
+  writeFileSync(join(main, "a.txt"), "a\n");
+  gitMain("add", "."); gitMain("commit", "--quiet", "-m", "base");
+  execFileSync("git", ["clone", "--quiet", main, ws]);
+  const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", ...args], { cwd: ws, encoding: "utf8" }).trim();
+  git("config", "--local", "atelier.project", "demo");
+  git("config", "--local", "atelier.item", "t9");
+  writeFileSync(join(ws, "b.txt"), "b\n");
+  git("add", "."); git("commit", "--quiet", "-m", "the change");
+  writeFileSync(join(dir, "context.txt"), "The task: add b.txt.\n");
+  const PATH_ = "../ai-projects-house-style/house-style.md";
+  // A stand-in for `atelier show`: prints `stdout` and exits `status`.
+  const atelier = (stdout, status = 0) => {
+    writeFileSync(join(tools, "atelier"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(stdout)});\nprocess.exit(${status});\n`);
+    chmodSync(join(tools, "atelier"), 0o755);
+  };
+  const review = (env = {}) => {
+    const out = join(ws, ".scratch", "review");
+    const result = spawnSync(zsh, [join(repo, "bin", "orchestrate", "review.sh"), ws, out, join(dir, "context.txt")], {
+      encoding: "utf8", env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, MAIN_REPO: main, TMPDIR: dir, ...env },
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return { prompt: readFileSync(`${out}.prompt.md`, "utf8"), stderr: result.stderr };
+  };
+  const COULD_NOT = /could not read demo's prose standard|prose standard could not be read/;
+
+  atelier(JSON.stringify({ proseStandard: PATH_ }));
+  let r = review();
+  assert.ok(r.prompt.includes(`this project's prose follows \`${PATH_}\``), "the recorded standard is named");
+  assert.doesNotMatch(r.prompt, COULD_NOT);
+  assert.doesNotMatch(r.stderr, COULD_NOT);
+
+  // A project that records none is a successful lookup: no line, no warning.
+  atelier(JSON.stringify({ proseStandard: null }));
+  r = review();
+  assert.ok(!r.prompt.includes("Prose standard"));
+  assert.doesNotMatch(r.stderr, COULD_NOT);
+
+  // A failed command and an answer that is not JSON are failures, said twice.
+  for (const [stdout, status] of [["server unreachable", 1], ["not json", 0]]) {
+    atelier(stdout, status);
+    r = review();
+    assert.match(r.stderr, COULD_NOT);
+    assert.match(r.prompt, COULD_NOT);
+    assert.ok(!r.prompt.includes(PATH_));
+  }
+
+  // PROSE_STANDARD overrides the lookup, failed or not; empty means none.
+  atelier("server unreachable", 1);
+  r = review({ PROSE_STANDARD: PATH_ });
+  assert.ok(r.prompt.includes(`\`${PATH_}\``));
+  assert.doesNotMatch(r.stderr, COULD_NOT);
+  r = review({ PROSE_STANDARD: "" });
+  assert.ok(!r.prompt.includes("Prose standard"));
+  assert.doesNotMatch(r.stderr, COULD_NOT);
+});

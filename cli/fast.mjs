@@ -576,6 +576,22 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         else fix = `git checkout -f main`;
       }
     }
+    // A project command can leave this checkout itself mid-rebase or
+    // mid-bisect; checkout -f and reset --hard succeed but keep that state
+    // (t672). It is ended after main is forced, with forms that need no clean
+    // tree: `rebase --abort` and `bisect reset` both check out files and fail
+    // on a dirty or untracked one (reviews of t672), and `rebase --abort`
+    // would also move HEAD back onto a main another worktree holds. The state
+    // lives in the checkout's own git directory and is checked afterwards.
+    const gitDir = runGit(cwd, ["rev-parse", "--absolute-git-dir"]).stdout.trim();
+    const leftover = () => ["rebase-merge", "rebase-apply", "BISECT_START"].filter((p) => existsSync(join(gitDir, p)));
+    if (leftover().some((p) => p.startsWith("rebase"))) runGit(cwd, ["rebase", "--quit"]);
+    if (leftover().includes("BISECT_START")) runGit(cwd, ["bisect", "reset", "HEAD"]);
+    const left = leftover();
+    if (left.length && !problem) {
+      problem = `the checkout is still mid-${left.some((p) => p.startsWith("rebase")) ? "rebase" : "bisect"} (${left.join(", ")} in ${gitDir})`;
+      fix = `git rebase --quit; git bisect reset HEAD; ${fix}`;
+    }
     const now = main();
     if (now === start && !problem) return { restored: true, head: now };
     return {
