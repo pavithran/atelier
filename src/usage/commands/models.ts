@@ -35,8 +35,8 @@ const spec: CommandSpec = {
     },
     {
       group: "Models", line: 1, slot: 30,
-      form: "models show ID",
-      about: "Shows a pool entry with its notes, oldest first, then the vendor cards recorded for the model under any of its names or harnesses, the claims that conflict and the registry's priors, then the vendor's claims beside Atelier's record of the model role by role: the developer's assignments of it, and each figure with its window, what it is over and its threshold. A model the pool does not have is shown by its cards.",
+      form: "models show ID [--trend]",
+      about: "Shows a pool entry with its notes, oldest first, then the vendor cards recorded for the model under any of its names or harnesses, the claims that conflict and the registry's priors, then the vendor's claims beside Atelier's record of the model role by role: the developer's assignments of it, and each figure with its window, what it is over and its threshold. A model the pool does not have is shown by its cards. `--trend` shows instead each figure over the recent UTC days the server keeps a trend for, from its daily snapshots: each day's value with its window and samples, how the snapshot was taken, and every gap labelled.",
     },
     {
       group: "Models", line: 1, slot: 45,
@@ -69,14 +69,15 @@ const spec: CommandSpec = {
       about: "Lists the standing role assignments, their history with evidence and author, and the fallback each role without one goes by. `withdraw` ends the standing one with a note: the role returns to its fallback, never to an assignment it superseded.",
     },
   ],
-  flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false, json: true, state: false, roles: false, tier: false, file: false, withdraw: false, quote: false, evidence: false, scope: false, replaces: false },
+  flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false, json: true, trend: true, state: false, roles: false, tier: false, file: false, withdraw: false, quote: false, evidence: false, scope: false, replaces: false },
   // The pool itself is listed, added to and pruned on any server; the dated
   // notes, which `note` posts and `show` prints, need models.note.v1, and the
   // standing (t389), which `set` posts, needs models.standing.v1, as does
   // `add` when it gives --state, --roles or --tier (requiredForCommand).
   // Vendor cards (t625), which `card` posts, need models.card.v1; `show`
   // prints them when the server has it and says so when it does not, and
-  // the comparison (t621) likewise with models.compare.v1.
+  // the comparison (t621) likewise with models.compare.v1; `show --trend`
+  // (t623) refuses without models.trend.v1.
   subcommands: {
     admit: { capabilities: ["reviews.admission.v1"] },
     withdraw: { capabilities: ["reviews.admission.v1"] },
@@ -105,6 +106,7 @@ const spec: CommandSpec = {
       "--roles build,review,plan": "with set or add, the jobs the model may take; a review-only model is never a builder",
       "--tier frontier|execution|budget": "with set or add, the model's tier, stored and returned in JSON",
       "--json": "prints the pool as JSON, carrying each entry's state, roles, tier and notes",
+      "--trend": "with show, the model's figures over recent UTC days, one snapshot per day, in place of its cards and comparison",
       "--item tN": "the task a dated note concerns; without it the note bears on every task the model is suggested for",
       "--file FILE": "with card, the JSON file holding the card or a list of cards; without it the card is read from standard input",
       "--withdraw cN": "with card, the card to withdraw; give --reason",

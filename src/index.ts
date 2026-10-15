@@ -27,14 +27,14 @@ import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
-import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { typedActor, typedModel } from "./models/identity.ts";
 import { ALL_PROJECTS, applicableAssignments, checkEvidence, cleanAssignmentInput, FALLBACK, orderByAssignment, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
-import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
+import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability, type RunReport } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
-import { buildPairwise, type PairwiseRecord } from "./models/pairwise.ts";
-import { canonicalName, compareModel, type ModelComparison } from "./models/compare.ts";
+import type { PairwiseRecord } from "./models/pairwise.ts";
+import { canonicalName, compareModel, measureRecords, type ModelComparison } from "./models/compare.ts";
+import { addDays, BACKFILL_DAYS, computeSnapshot, dayEnd, daysDue, replayDifferences, SNAPSHOT_SCHEMA, TREND_DAYS, trendOf, utcDay, type ModelTrend, type SnapshotRow, type StoredSnapshot } from "./models/snapshot.ts";
 import type { CardView } from "./models/cards.ts";
 import type { PrecisionRecord } from "./models/precision.ts";
 import type { JudgementRecord } from "./models/judgement.ts";
@@ -1356,6 +1356,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const res = json(readers.compare(named, cards));
       if (readers.track.unread.length) res.headers.set("x-atelier-incomplete", readers.track.unread.map((p) => p.name).sort().join(","));
       return res;
+    }
+    // A model's figures over time, from the daily snapshots (t623,
+    // src/models/snapshot.ts): the developer's alone, as the comparison is.
+    // The projection the Models page renders; `atelier models show ID
+    // --trend` prints it.
+    if (parts.length === 3 && parts[2] === "trend" && m === "GET") {
+      requireOwner(env, actor);
+      const named = cleanCardModel(id);
+      const [trend] = await modelTrends(env, [named], (await I.models()) as unknown as ModelEntry[]);
+      return json(trend);
     }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
@@ -3251,9 +3261,10 @@ async function planRoute(c: Ctx, L: ReturnType<typeof ledger>, id: string, sub: 
 const MODEL_EVENTS = 1000;
 
 // Every event of a project, read a page at a time, newest page first.
-async function allEvents(L: { events(id?: string, limit?: number, before?: number): Promise<unknown> }): Promise<LedgerEvent[]> {
+async function allEvents(L: { events(id?: string, limit?: number, before?: number): Promise<unknown> }, through?: number): Promise<LedgerEvent[]> {
   const out: LedgerEvent[] = [];
-  for (let before: number | undefined; ;) {
+  // From the event at `through` down, when a cutoff is given (t623).
+  for (let before: number | undefined = through === undefined ? undefined : through + 1; ;) {
     const page = (await L.events(undefined, MODEL_EVENTS, before)) as unknown as LedgerEvent[];
     out.push(...page);
     if (page.length < MODEL_EVENTS) return out;
@@ -3295,7 +3306,10 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   const named = [...new Map(entries.map((e) => [readers.keyOf(`${e.harness}/${e.id}`), `${e.harness}/${e.id}`])).values()];
   const cards = await I.modelCardViews(named);
   const comparisons = named.map((n, i) => readers.compare(n, cards[i]));
-  return html(renderModels(entries, record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement, comparisons), error ? 400 : 200);
+  // Each model's trend from the daily snapshots (t623), the projection GET
+  // /api/models/ID/trend answers.
+  const trends = await modelTrends(env, named, entries);
+  return html(renderModels(entries, record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement, comparisons, trends), error ? 400 : 200);
 }
 
 // What the Models page and GET /api/models/ID/compare read, built once per
@@ -3316,12 +3330,11 @@ interface ModelReaders {
 }
 async function modelReaders(env: Env): Promise<ModelReaders> {
   const I = index(env);
-  const [pool, track, assignmentEvents, roles] = await Promise.all([I.models(), trackRecords(env), I.assignmentEvents(), I.roleAssignments()]);
+  const [pool, read, assignmentEvents, roles] = await Promise.all([I.models(), readSources(env), I.assignmentEvents(), I.roleAssignments()]);
   const entries = pool as unknown as ModelEntry[];
-  const owner = ownerActor(env), now = new Date();
-  const precision = buildPrecision(track.sources, precisionWindow(now), owner);
-  const judgement = buildJudgement([...track.sources, { project: "(model roles)", events: assignmentEvents }], judgementWindow(now), owner, entries);
-  const pairwise = buildPairwise(track.sources, precisionWindow(now), owner, entries);
+  // The same five readers a daily snapshot reads (measureRecords, t623).
+  const { reliability, speed, precision, judgement, pairwise } = measureRecords({ sources: read.sources, runs: read.runs, assignmentEvents, pool: entries, owner: ownerActor(env) }, new Date());
+  const track = { sources: read.sources, reliability, speed, events: read.events, unread: read.unread };
   const standing = roles.assignments.filter((a) => a.status === "current");
   return {
     entries, track, precision, judgement, pairwise,
@@ -3346,6 +3359,13 @@ export function readGateway(env: Env, now = Date.now(), fetcher: typeof fetch = 
 // SPEED_DAYS) from those and the runners' reports. The pages and the API say
 // how many events, and which projects could not be read.
 async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; reliability: Reliability; speed: SpeedRecord; events: number; unread: ProjectRecord[] }> {
+  const { sources, runs, events, unread } = await readSources(env);
+  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), speed: buildSpeed(sources, runs, ownerActor(env), Date.now()), events, unread };
+}
+
+// Every project's events, by its name now, with the newest RUN_REPORTS run
+// reports and the projects whose Ledger could not be read just then.
+async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
@@ -3353,7 +3373,103 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
     try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
-  return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), speed: buildSpeed(sources, runs, ownerActor(env), Date.now()), events: sources.reduce((n, s) => n + s.events.length, 0), unread };
+  return { sources, runs: runs as unknown as RunReport[], events: sources.reduce((n, s) => n + s.events.length, 0), unread };
+}
+
+// ── model snapshots (t623, src/models/snapshot.ts) ──────────────────────────
+// The scheduled handler's job: each ended UTC day of the last BACKFILL_DAYS
+// with no complete snapshot is taken from one read of every project's events,
+// the index's assignment events and the run reports, at the cutoffs that read
+// gives, and stored on the index once (putModelSnapshot). A project whose
+// Ledger cannot be read leaves the snapshot partial, and a later run takes
+// the day again. Exported for the tests, which run it at chosen instants.
+// Every run report received before `before`, up to row `through` (the last
+// now, when null), read page by page until the Ledger says there are no more.
+// `complete` is false, with the pages read so far, when a page could not be
+// read: the snapshot is then partial, never computed as if it held the lot.
+// `from` is the lowest row to read (a partial snapshot's replay stops where
+// the original read did); a read that fails partway returns the lowest row
+// it did read, so the snapshot records enough to be reproduced.
+async function readRunsThrough(I: ReturnType<typeof index>, through: number | null, before: string, from = 0): Promise<{ through: number; reports: RunReport[]; complete: boolean; from?: number }> {
+  const reports: RunReport[] = [];
+  let cut = through, after: number | null = null;
+  try {
+    for (;;) {
+      const page: { through: number; runs: RunReport[]; next: number | null } = await I.runsPage(cut, before, after, undefined, from);
+      cut = page.through;
+      reports.push(...page.runs);
+      if (page.next === null) return { through: cut, reports, complete: true };
+      after = page.next;
+    }
+  } catch (err) {
+    console.error(errorLine("model snapshot: run reports", err));
+    return { through: cut ?? 0, reports, complete: false, from: after ?? (cut ?? 0) + 1 };
+  }
+}
+
+export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ day: string; rev: number; stored: boolean; complete: boolean }[]> {
+  const I = index(env);
+  const last = addDays(utcDay(now), -1);
+  const complete = new Set((await I.modelSnapshotTakes(addDays(last, -(BACKFILL_DAYS - 1)), last)).filter((t) => t.schema === SNAPSHOT_SCHEMA && t.complete).map((t) => t.day));
+  const due = daysDue(now, complete);
+  if (!due.length) return [];
+  const [projects, pool, assignmentRows] = await Promise.all([I.projects(), I.models(), I.assignmentEvents()]);
+  const assignmentEvents = assignmentRows as unknown as LedgerEvent[];
+  const ledgers = await Promise.all(projects.map(async (p) => {
+    const key = p.key ?? p.name;
+    try {
+      const events = await allEvents(ledgerOf(env, p));
+      return { key, name: p.name, through: events.reduce((m, e) => Math.max(m, e.seq), 0), events };
+    } catch (err) {
+      console.error(errorLine(`model snapshot: ${p.name}`, err));
+      return { key, name: p.name, through: 0, events: null };
+    }
+  }));
+  const index_ = { through: assignmentEvents.reduce((m, e) => Math.max(m, e.seq), 0), events: assignmentEvents };
+  const takenAt = new Date(now).toISOString();
+  const out = [];
+  let runsCut: number | null = null;
+  for (const day of due) {
+    const runs = await readRunsThrough(I, runsCut, dayEnd(day));
+    runsCut = runs.through || null;
+    const snapshot = computeSnapshot({ day, takenAt, owner: ownerActor(env), pool: (pool as unknown as ModelEntry[]).map((e) => ({ id: e.id, harness: e.harness, aliases: e.aliases })), ledgers, runs: { through: runs.through, reports: runs.reports, complete: runs.complete, from: runs.from }, index: index_ });
+    out.push({ ...(await I.putModelSnapshot(snapshot)), complete: snapshot.take.complete });
+  }
+  return out;
+}
+
+// A stored snapshot computed again from its own cutoffs: each project's
+// events up to its recorded sequence under its recorded name, the run
+// reports up to the recorded row, the index's assignment events up to the
+// recorded one, the pool's names and the developer's actor as recorded. A
+// project unread then is not read now. `differences` is empty when the
+// replay gives the stored figures.
+export async function replayModelSnapshot(env: Env, day: string, rev?: number): Promise<{ stored: StoredSnapshot; replayed: SnapshotRow[]; differences: string[] } | null> {
+  const I = index(env);
+  const stored = await I.modelSnapshot(day, rev);
+  if (!stored) return null;
+  const { take } = stored;
+  const ledgers = [
+    ...await Promise.all(take.cutoffs.ledgers.map(async (c) => ({ key: c.key, name: c.name, through: c.seq, events: c.seq ? await allEvents(ledger(env, c.key), c.seq) : [] }))),
+    ...take.cutoffs.unread.map((u) => ({ key: u.key, name: u.name, through: 0, events: null })),
+  ];
+  const runs = await readRunsThrough(I, take.cutoffs.runs, take.cutoffs.asOf, take.cutoffs.runsFrom ?? 0);
+  if (!runs.complete) throw new Error("the run reports could not all be read, so the day cannot be replayed");
+  const replayed = computeSnapshot({ day, takenAt: take.takenAt, owner: take.owner, pool: take.pool, ledgers, runs: { through: runs.through, reports: runs.reports, complete: take.runsRead !== false, from: take.cutoffs.runsFrom }, index: { through: take.cutoffs.index, events: (await I.assignmentEvents()) as unknown as LedgerEvent[] } });
+  return { stored, replayed: replayed.rows, differences: replayDifferences(stored.rows, replayed.rows) };
+}
+
+// One model's trend over the TREND_DAYS ended days, by its canonical key
+// through the pool now: what GET /api/models/ID/trend answers and the
+// Models page renders.
+async function modelTrends(env: Env, named: readonly string[], pool: readonly ModelEntry[], now = Date.now()): Promise<ModelTrend[]> {
+  const I = index(env);
+  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
+  const takes = await I.modelSnapshotTakes(from, to);
+  return Promise.all(named.map(async (n) => {
+    const model = canonicalName(n, pool);
+    return trendOf(model, takes, await I.modelSnapshotRows(model, from, to), to);
+  }));
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -4114,6 +4230,11 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
+  // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
+  // A run with nothing due reads nothing but the index's list of takes.
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    await takeModelSnapshots(env, controller.scheduledTime);
+  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {

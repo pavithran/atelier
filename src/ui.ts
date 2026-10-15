@@ -32,6 +32,7 @@ import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./tim
 import { duration, type GatewayView } from "./usage/gateway.ts";
 import { pace, stalledText, type Measure, type RoleSpeed, type SpeedRecord } from "./models/speed.ts";
 import { claimText, coverageText, figureText, ROLE_LABEL, type ModelComparison } from "./models/compare.ts";
+import { measureHeading, TREND_NONE, trendPointText, type ModelTrend } from "./models/snapshot.ts";
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
@@ -1111,7 +1112,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null, comparisons: readonly ModelComparison[] = []): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null, comparisons: readonly ModelComparison[] = [], trends: readonly ModelTrend[] = []): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -1159,6 +1160,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${judgement ? judgementSection(judgement) : ""}
   ${speed ? speedSection(speed) : ""}
   ${comparisonSection(comparisons)}
+  ${trendSection(trends)}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
     <form method="post" action="/models/add" class="stack">
@@ -1257,6 +1259,30 @@ export function comparisonSection(views: readonly ModelComparison[]): string {
   return `<section class="comparison" aria-label="Vendor claims beside Atelier's record">
   <h2 class="section-title">Vendor claims beside Atelier's record</h2>
   <p class="meta">For each model in the pool: what its vendor claims, from the cards the developer recorded, and what Atelier measured of it in each role, beside the developer's standing assignments of it to that role. The vendor's figures are its own benchmarks under its own conditions; Atelier's are shares and medians of its own events, each with its window and what it is over. Neither is a measure of the other, and no share is given under its threshold.</p>
+  ${views.map(view).join("")}
+</section>`;
+}
+
+// ── Atelier's record over time ────────────────────────────────────────────
+// Each pool model's trend from the daily snapshots (src/models/snapshot.ts,
+// t623), the projection `atelier models show ID --trend` prints: the same
+// lines (trendLines), each escaped here, under the model and its roles.
+
+export function trendSection(views: readonly ModelTrend[]): string {
+  if (!views.length) return "";
+  const view = (t: ModelTrend) => {
+    const roles = [...new Set(t.measures.map((m) => m.role))];
+    return `<details class="trend">
+    <summary><code>${e(t.model)}</code><span class="meta">${e(t.from)} to ${e(t.to)}, ${t.snapshots} of ${t.days} days with a snapshot</span></summary>
+    ${t.measures.length ? "" : `<p class="empty">${e(TREND_NONE)}</p>`}
+    ${roles.map((role) => `<h3>${e(ROLE_LABEL[role])}</h3>
+    ${t.measures.filter((m) => m.role === role).map((m) => `<p class="meta">${e(measureHeading(m))}</p>
+    <ul class="causes">${m.points.map((p) => `<li class="meta">${e(trendPointText(p, m.kind))}</li>`).join("")}</ul>`).join("")}`).join("")}
+  </details>`;
+  };
+  return `<section class="trend" aria-label="Atelier's record over time">
+  <h2 class="section-title">Atelier's record over time</h2>
+  <p class="meta">A snapshot of each model's figures is kept for every UTC day, as of the end of the day, with the cutoffs it was read at. A gap is a day with no figure, never a zero: no snapshot, a partial record, or too few samples. Points are joined only under one measure version, window, threshold and set of names, and nothing routes by them.</p>
   ${views.map(view).join("")}
 </section>`;
 }
