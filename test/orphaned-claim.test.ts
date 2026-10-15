@@ -215,3 +215,12 @@ test("atelier stuck lists as idle only the runners whose token serves the projec
   const r = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([]), offers, [], []);
   assert.deepEqual(r.entries.filter((e) => e.kind === "idle-runner").map((e) => e.subject).sort(), ["home:serves-all", "home:serves-atelier"]);
 });
+
+// t669 after review 1: a project renamed since the runner last polled is still
+// served by its token (it answers to its former names), though the stored offer
+// lists only the old name; the runner stays on the idle list.
+test("atelier stuck knows a renamed project by its former names when listing idle runners", () => {
+  const offers = [{ ...offer("home:old-scope", CLAIMED), projects: ["old-atelier"] }, { ...offer("home:other", CLAIMED), projects: ["other"] }];
+  const r = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([]), offers, [], [], [], ["atelier", "old-atelier"]);
+  assert.deepEqual(r.entries.filter((e) => e.kind === "idle-runner").map((e) => e.subject), ["home:old-scope"]);
+});
