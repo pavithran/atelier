@@ -52,6 +52,8 @@ if (mcp !== -1 && argv[mcp + 1] === "list") {
   process.stdout.write(JSON.stringify(shown));
   process.exit(0);
 }
+// opencode --version (t683): FAKE_VERSION, else the 1.x the runs use until the switch.
+if (argv[0] === "--version") { fs.appendFileSync(${JSON.stringify(record)} + ".version", "asked\\n"); process.stdout.write((process.env.FAKE_VERSION ?? "1.18.34") + "\\n"); process.exit(0); }
 const input = fs.readFileSync(0, "utf8");
 const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
   "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION",
@@ -264,6 +266,28 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
   assert.equal(claudeModel("sonnet-5.5"), "claude-sonnet-5-5");
   assert.equal(claudeModel("claude-fable-5-1"), "claude-fable-5-1");
+});
+
+// t683: opencode 2's run joins a shared background service, with a data folder
+// of its own, unless it is given --standalone; opencode 1 gets its old argv.
+test("the opencode adapter, run as a process, passes --standalone on opencode 2 only, and keeps the run's own data folder", (t) => {
+  const s = setup(t);
+  const two = run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "opencode v2.0.29" } }).seen;
+  assert.deepEqual(two.argv, ["run", "--standalone", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
+  assert.match(two.env.XDG_DATA_HOME, /atelier-opencode-run-.*[\\/]data$/);
+  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "1.18.34" } }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
+  const calls = () => readFileSync(`${s.record}.version`, "utf8").trim().split("\n").length;
+  rmSync(`${s.record}.version`);
+  run("opencode", s, { model: "deepseek-v4-pro", review: true, env: { FAKE_VERSION: "2.0.29", FAKE_ANSWER: "no verdict here", FAKE_FOLLOW_UP: "VERDICT: APPROVE" } });
+  assert.equal(calls(), 1, "the version is asked once although the review runs twice");
+  assert.deepEqual(JSON.parse(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").at(-1)).argv, ["run", "--standalone", "--model", "deepseek-api/deepseek-v4-pro", "--continue", "--format", "json"]);
+});
+
+test("the generated provider config the opencode adapter is given denies external_directory in opencode 1's and 2's forms", (t) => {
+  const s = setup(t);
+  const config = JSON.parse(readFileSync(run("opencode", s, { model: "deepseek-v4-pro" }).seen.env.OPENCODE_CONFIG, "utf8"));
+  assert.equal(config.permission.external_directory, "deny");
+  assert.deepEqual(config.permissions, [{ action: "external_directory", resource: "*", effect: "deny" }]);
 });
 
 test("codex runs with its MCP features off and its config.toml servers switched off by name, checked against codex", (t) => {

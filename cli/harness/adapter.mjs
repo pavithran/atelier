@@ -174,12 +174,12 @@ export const HARNESSES = {
   opencode: {
     executable: "opencode",
     command(args, kind, setup) {
-      return { argv: ["run", "--model", `${setup.provider}/${setup.providerModel}`], verdictFrom: "stdout" };
+      return { argv: ["run", ...standalone(setup), "--model", `${setup.provider}/${setup.providerModel}`], verdictFrom: "stdout" };
     },
     // The same session again: the run's own data folder (runHome) holds this
     // job's session alone, so --continue resumes the review just answered.
     followUp(args, kind, setup) {
-      return ["run", "--model", `${setup.provider}/${setup.providerModel}`, "--continue"];
+      return ["run", ...standalone(setup), "--model", `${setup.provider}/${setup.providerModel}`, "--continue"];
     },
   },
   antigravity: {
@@ -192,6 +192,29 @@ export const HARNESSES = {
     },
   },
 };
+
+// opencode 2's `run` connects to a background service shared by every run
+// unless it is given --standalone, and the service keeps its own data folder,
+// which undoes the run's (runHome, XDG_DATA_HOME); opencode 1 has no such
+// service and may reject the flag (t683). So the flag follows the major
+// version, which runAdapter reads into setup.major.
+function standalone(setup) {
+  return setup.major >= 2 ? ["--standalone"] : [];
+}
+
+// The major version of the opencode at `exe`, from `exe --version` ("1.18.34",
+// "opencode v2.0.29"), asked once per executable and kept. null when it
+// cannot be read; the caller then treats it as opencode 1, whose argv is the
+// one that has always worked, and says so.
+const majors = new Map();
+export function opencodeMajor(exe, env, spawn = spawnSync) {
+  if (majors.has(exe)) return majors.get(exe);
+  const r = spawn(exe, ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+  const found = r.error || r.status !== 0 ? null : /(\d+)\.\d+\.\d+/.exec(String(r.stdout ?? ""));
+  const major = found ? Number(found[1]) : null;
+  if (major !== null) majors.set(exe, major);
+  return major;
+}
 
 // The executable for a harness: its name on the PATH, or the variable that
 // names a stand-in (ATELIER_CLAUDE, ATELIER_CODEX, ATELIER_OPENCODE,
@@ -347,6 +370,9 @@ export function runAdapter(harness, argv, io = {}) {
       // Outside the workspace, so nothing opencode leaves in it is committed.
       runDir = mkdtempSync(join(tmpdir(), "atelier-opencode-run-"));
       Object.assign(childEnv, runHome(env, runDir));
+      const major = opencodeMajor(executableFor(harness, env), childEnv, io.spawn);
+      if (major === null) err(`atelier-${harness}: could not read the version of ${executableFor(harness, env)}; running it as opencode 1\n`);
+      setup.major = major ?? 1;
     }
     if (harness === "codex") setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
   } catch (error) {

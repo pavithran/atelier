@@ -176,6 +176,17 @@ export const PERMISSION = {
   },
 };
 
+// The same fence in opencode 2's form, a top-level "permissions" array of
+// ordered rules (the last match wins; the V1 "permission" object above stays
+// for opencode 1). Without a rule opencode 2 asks, and `opencode run`
+// approves what it is asked: with the config unchanged, a run read /etc/hosts
+// (t683, opencode 2.0.29, 2026-10-15). So the outside of the workspace is
+// denied by name. The shell tool is not fenced by this rule (see
+// bin/orchestrate/README.md, "Switching to opencode 2").
+export const PERMISSIONS = [
+  { action: "external_directory", resource: "*", effect: "deny" },
+];
+
 // One provider's opencode config, for the models given as
 // [{ providerModel, atelierId, limit }]. No key: the key's variable only.
 export function opencodeConfig(provider, models, { baseURL, gateway } = {}) {
@@ -190,6 +201,7 @@ export function opencodeConfig(provider, models, { baseURL, gateway } = {}) {
     autoupdate: false,
     mcp: {},
     permission: PERMISSION,
+    permissions: PERMISSIONS,
     provider: {
       [provider]: {
         npm: "@ai-sdk/openai-compatible",
