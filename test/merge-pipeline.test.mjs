@@ -324,10 +324,34 @@ test("a fresh clone lacking the merge configuration has it installed before its 
   assert.match(git(clone, "config", "merge.atelier-records.driver"), /\.git\/atelier\/merge-driver\.mjs' records %O %A %B %P$/);
 });
 
-test("a Homebrew Cellar node is never written: the stable link in the prefix's bin is named when it exists", () => {
-  const cellar = "/opt/homebrew/Cellar/node/26.9.0/bin/node";
-  assert.equal(stableNode(cellar, (p) => p === "/opt/homebrew/bin/node"), "/opt/homebrew/bin/node");
-  assert.equal(stableNode(cellar, () => false), cellar, "no link, so the real path stays");
+test("a Homebrew Cellar node is never written, with the stable link present or absent", (t) => {
+  const f = fixture(t);
+  const prefix = join(f.root, "brew");
+  const cellar = join(prefix, "Cellar", "node", "26.9.0", "bin", "node");
+  const other = join(f.root, "usr-bin"), cellarOnPath = join(prefix, "Cellar", "node", "26.9.0", "bin");
+  for (const p of [cellar, join(other, "node")]) { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, ""); }
+  const written = (clone) => ["generated", "records"].map((k) => git(clone, "config", `merge.atelier-${k}.driver`)).join("\n");
+  const cloneOf = (name) => { const c = join(f.root, name); git(f.root, "clone", "-q", f.dir, c); return c; };
+  // Link present: the prefix's bin/node is named.
+  mkdirSync(join(prefix, "bin"), { recursive: true }); writeFileSync(join(prefix, "bin", "node"), "");
+  let clone = cloneOf("c1");
+  installMergeConfig(clone, { node: stableNode(cellar, existsSync, [cellarOnPath, other]) });
+  assert.ok(!written(clone).includes("/Cellar/"), written(clone));
+  assert.ok(written(clone).includes(join(prefix, "bin", "node")));
+  assert.deepEqual(mergeConfigProblems(clone, { node: stableNode(cellar, existsSync, [cellarOnPath, other]) }), []);
+  // Link absent: a node on PATH outside the Cellar, else the bare command.
+  unlinkSync(join(prefix, "bin", "node"));
+  clone = cloneOf("c2");
+  installMergeConfig(clone, { node: stableNode(cellar, existsSync, [cellarOnPath, other]) });
+  assert.ok(!written(clone).includes("/Cellar/"), written(clone));
+  assert.ok(written(clone).includes(join(other, "node")));
+  clone = cloneOf("c3");
+  const bare = stableNode(cellar, existsSync, [cellarOnPath]);
+  assert.equal(bare, "node");
+  installMergeConfig(clone, { node: bare });
+  assert.ok(!written(clone).includes("/Cellar/"), written(clone));
+  assert.match(written(clone), /^'node' /);
+  assert.deepEqual(mergeConfigProblems(clone, { node: bare }), [], "a bare command is not reported missing");
   assert.equal(stableNode("/usr/local/bin/node", () => true), "/usr/local/bin/node");
 });
 

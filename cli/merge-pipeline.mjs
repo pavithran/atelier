@@ -69,13 +69,17 @@ export function atelierGitDir(dir, git = localGit) {
 }
 
 // The node the drivers run. A Homebrew node's real path sits in a versioned
-// Cellar folder that an upgrade removes, so the stable link in the prefix's
-// bin is named instead, when it exists.
-export function stableNode(execPath, exists = existsSync) {
-  const at = execPath.indexOf("/Cellar/node");
+// Cellar folder that an upgrade removes, so a Cellar path is never answered:
+// the stable link in the prefix's bin when it exists, else a node on PATH
+// outside any Cellar, else the bare command `node`, which the shell Git runs
+// a driver through resolves from PATH. `exists` and `pathDirs` are injectable.
+export function stableNode(execPath, exists = existsSync, pathDirs = (process.env.PATH ?? "").split(":")) {
+  const at = execPath.indexOf("/Cellar/");
   if (at < 0) return execPath;
   const link = `${execPath.slice(0, at)}/bin/node`;
-  return exists(link) ? link : execPath;
+  if (exists(link)) return link;
+  const onPath = pathDirs.filter((d) => d && d.startsWith("/")).map((d) => join(d, "node")).find((p) => !p.includes("/Cellar/") && exists(p));
+  return onPath ?? "node";
 }
 
 // The node a configured driver command names, or null.
@@ -83,6 +87,10 @@ function configuredNode(command) {
   const m = /^'((?:[^']|'\\'')*)'/.exec(command);
   return m ? m[1].replace(/'\\''/g, "'") : null;
 }
+
+// A configured node exists when its path does; a bare command is left to the
+// shell's PATH.
+const nodeExists = (node) => !node.startsWith("/") || existsSync(node);
 
 // The settings a clone needs for the declared drivers, with the driver
 // copied to `driver`.
@@ -105,7 +113,7 @@ export function mergeConfigProblems(dir, { git = localGit, node = stableNode(pro
   for (const [key, value] of mergeSettings(driver, node)) {
     const r = git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
     if (r.status !== 0 || r.stdout.replace(/\n$/, "") !== value) problems.push(key);
-    else if (key.endsWith(".driver") && !existsSync(configuredNode(r.stdout.replace(/\n$/, "")) ?? node)) problems.push(key);
+    else if (key.endsWith(".driver") && !nodeExists(configuredNode(r.stdout.replace(/\n$/, "")) ?? node)) problems.push(key);
   }
   return problems;
 }
