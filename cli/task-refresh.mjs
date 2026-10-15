@@ -245,7 +245,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
       const snapshot = () => git(["ls-files", "-s", "-z"], { raw: true });
       const untracked = async () => (await git(["ls-files", "--others", "--exclude-standard", "-z"], { raw: true })).split("\0").filter((p) => p && !p.startsWith(".scratch/"));
       const indexBefore = await snapshot(), untrackedBefore = await untracked();
-      await io.resolveConflicts(assignment, dir, resolverBrief(item, classified.files, leased.proseStandard ?? null));
+      await io.resolveConflicts(assignment, dir, resolverBrief(item, classified.files, leased.proseStandard ?? null), leased.proseStandard ?? null);
       const faults = [];
       if (await io.head(dir) !== headBefore) faults.push("the resolver moved HEAD; it must leave the merge for the runner to commit");
       if ((await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], { allowFail: true })).status !== 0) faults.push("the merge is no longer in progress");
