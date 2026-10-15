@@ -187,9 +187,21 @@ export const PERMISSIONS = [
   { action: "external_directory", resource: "*", effect: "deny" },
 ];
 
+// The same rule as the text of OPENCODE_CONFIG_CONTENT, which opencode merges
+// over every other config, the stored one included.
+export const OPENCODE2_CONFIG_CONTENT = JSON.stringify({ permissions: PERMISSIONS });
+
 // One provider's opencode config, for the models given as
 // [{ providerModel, atelierId, limit }]. No key: the key's variable only.
-export function opencodeConfig(provider, models, { baseURL, gateway } = {}) {
+//
+// `major` is the major version of the opencode the config is for. The V2
+// "permissions" key is written only for 2 or later: opencode 1.18.34's config
+// loader throws on it ("V2 permissions are not supported by OpenCode V1"). A
+// run on opencode 2 gets the same rule at run time whatever its stored config
+// holds (OPENCODE2_CONFIG_CONTENT, set by the adapter), so a config without
+// the key, as one written before t683 or on an unreadable version, is fenced
+// all the same.
+export function opencodeConfig(provider, models, { baseURL, gateway, major } = {}) {
   const spec = PROVIDERS[provider];
   if (!spec) throw new Error(`unknown provider ${provider}`);
   const viaGateway = !!(gateway && spec.gateway);
@@ -201,7 +213,7 @@ export function opencodeConfig(provider, models, { baseURL, gateway } = {}) {
     autoupdate: false,
     mcp: {},
     permission: PERMISSION,
-    permissions: PERMISSIONS,
+    ...(major >= 2 ? { permissions: PERMISSIONS } : {}),
     provider: {
       [provider]: {
         npm: "@ai-sdk/openai-compatible",

@@ -20,7 +20,7 @@ import { join, relative, resolve } from "node:path";
 
 import { NO_VERDICT, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
-import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, metadataEscaped } from "./providers.mjs";
+import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, metadataEscaped } from "./providers.mjs";
 
 const UNSET = "undefined";
 
@@ -204,8 +204,7 @@ function standalone(setup) {
 
 // The major version of the opencode at `exe`, from `exe --version` ("1.18.34",
 // "opencode v2.0.29"), asked once per executable and kept. null when it
-// cannot be read; the caller then treats it as opencode 1, whose argv is the
-// one that has always worked, and says so.
+// cannot be read; runAdapter then refuses the run.
 const majors = new Map();
 export function opencodeMajor(exe, env, spawn = spawnSync) {
   if (majors.has(exe)) return majors.get(exe);
@@ -371,8 +370,13 @@ export function runAdapter(harness, argv, io = {}) {
       runDir = mkdtempSync(join(tmpdir(), "atelier-opencode-run-"));
       Object.assign(childEnv, runHome(env, runDir));
       const major = opencodeMajor(executableFor(harness, env), childEnv, io.spawn);
-      if (major === null) err(`atelier-${harness}: could not read the version of ${executableFor(harness, env)}; running it as opencode 1\n`);
-      setup.major = major ?? 1;
+      // Fail closed: an opencode whose version cannot be read might be
+      // opencode 2, which needs --standalone and the deny rule, and opencode 1
+      // rejects both, so no run starts on a guess (the finding on t683).
+      if (major === null) throw new Error(`could not read the version of ${executableFor(harness, env)} (\`--version\` failed or printed no version), so it is not known whether it needs --standalone and the external_directory deny; no run was started`);
+      setup.major = major;
+      // opencode 2 gets the deny at every run, over whatever config was stored.
+      if (major >= 2) childEnv.OPENCODE_CONFIG_CONTENT = OPENCODE2_CONFIG_CONTENT;
     }
     if (harness === "codex") setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
   } catch (error) {

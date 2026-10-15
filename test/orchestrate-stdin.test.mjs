@@ -20,6 +20,7 @@ const skip = !zsh && "zsh is not installed";
 function standIn(path, record, output = "") {
   writeFileSync(path, `#!${process.execPath}
 const fs = require("node:fs");
+if (process.argv[2] === "--version") { process.stdout.write("1.18.34\\n"); process.exit(0); }
 const input = fs.readFileSync(0, "utf8");
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), input, metadata: process.env.CF_AIG_METADATA }));
 process.stdout.write(${JSON.stringify(output)});

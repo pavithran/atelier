@@ -86,24 +86,32 @@ Atelier runs opencode 1 and opencode 2 and tells them apart by asking the
 executable once, with `opencode --version`, the major version it prints.
 Nothing in Atelier needs changing to switch: put an opencode 2 first on the
 `PATH` (with Homebrew, `brew unlink` the npm release's link and `brew link
-opencode`), and the next run is an opencode 2 run. To go back, put the 1.x
-release first again. What differs for a run on opencode 2:
+opencode`), and the next run is an opencode 2 run. This Mac stays on opencode
+2 (PAVI, 2026-10-15); 1.x still works, but support for it may be dropped, so
+treat the switch as one-way. What differs for a run on opencode 2:
 
+- A version that cannot be read stops the run: the adapter exits with "could
+  not read the version of ..." and `run-agent.sh` exits 69. It might be
+  opencode 2, which needs the two protections below, and opencode 1 rejects
+  both, so neither guess is safe and nothing is launched.
 - `--standalone` is added to every `opencode run`, by the adapter
   (`cli/harness/adapter.mjs`, both the run and its `--continue`) and by
   `run-agent.sh`. Without it opencode 2 hands the run to a background service
   that all runs share, which keeps its own data folder and undoes the run's
   `XDG_DATA_HOME`. opencode 1 is not given the flag.
-- A rule denying `external_directory` is in every config Atelier generates, as
-  opencode 2's top-level `permissions` array beside the V1 `permission`
-  object (`PERMISSIONS` in `cli/harness/providers.mjs`). opencode 2 asks
+- A rule denying `external_directory` is applied to every run. opencode 2 asks
   where a rule is missing, and `opencode run` approves what it is asked: a
-  run with an unchanged config read `/etc/hosts`. `run-agent.sh` has no
-  generated config, so on opencode 2 it passes the same rule through
-  `OPENCODE_CONFIG_CONTENT`. The wrappers' own configs in
-  `~/.config/opencode` are yours: add
+  run with an unchanged config read `/etc/hosts`. The adapter passes the rule
+  at run time through `OPENCODE_CONFIG_CONTENT` (`OPENCODE2_CONFIG_CONTENT` in
+  `cli/harness/providers.mjs`), which opencode 2 merges over the stored
+  provider config, so a runner set up before the rule existed is fenced too;
+  `run-agent.sh` does the same. The generated provider configs keep opencode
+  1's `permission` deny always and add opencode 2's `permissions` array only
+  when `atelier runner setup` found an opencode 2, since opencode 1.18.34
+  throws on that key ("V2 permissions are not supported by OpenCode V1").
+  The wrappers' own configs in `~/.config/opencode` are yours: add
   `"permissions": [{ "action": "external_directory", "resource": "*", "effect": "deny" }]`
-  to each for runs that do not go through `run-agent.sh`.
+  to each only if you run them without `run-agent.sh` and are on opencode 2.
 - The rule fences opencode's file tools, not its shell: on opencode 2.0.29 a
   `head /etc/hosts` run by the shell tool succeeded under it. The workspace
   rule in an agent's brief, and a `shell` rule of your own, are what restrain
