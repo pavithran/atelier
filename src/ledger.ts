@@ -2814,6 +2814,10 @@ export class Ledger extends DurableObject<Env> {
     const d = item.dispatch;
     const heldByRunner = item.state === "claimed" && (item.runner ?? "").toLowerCase() === runner.toLowerCase();
     if ((item.state !== "open" || item.owner) && !heldByRunner || !d || d.job === "review") return false;
+    // A held task's skip is the holder's word (t669): the developer token with
+    // an X-Atelier-Runner header names any actor, so the report is refused
+    // unless it comes from the actor that holds the task.
+    if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403);
     const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("run-skip", id, runner, d.at, skip);
     return true;
