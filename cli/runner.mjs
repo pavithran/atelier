@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
+import { stageBrief } from "./prose-stage.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
@@ -2970,7 +2971,7 @@ export async function reloadCheck(started, { version, checkout, signal }) {
 // when it is that, else the commit the server runs.
 const targetLine = (check) => check.target === check.main ? `main is at ${short(check.target)}` : `the server runs ${short(check.target)}`;
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -3198,7 +3199,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     },
     writeValidationBlock: async (cwd, block) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), JSON.stringify(block), { mode: 0o600 }),
     env: process.env, ownerTokens: () => [...ownerTokens(process.env), credential].filter(Boolean),
-    brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
+    // A brief that names the project's prose standard (t675) is written with
+    // the standard copied into the workspace and named there (t676). Every
+    // workspace is a folder of the project's own under the cache, so the
+    // project is its parent folder's name, and its checkout is where the
+    // standard's relative path starts.
+    brief: (workspace, text) => writeBrief(workspace, stageBrief(workspace, text, checkoutOf?.(basename(dirname(workspace))) ?? null)),
+    removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to
     // fetch); a runner started without them takes no plan job and no part.
     ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
@@ -3270,7 +3277,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       const entry = config.agents.find((a) => a.agent === assignment.agent && a.models.includes(assignment.model));
       if (!entry) throw new Error(`this runner has no harness for ${assignment.actor}`);
       excludeScratch(cwd);
-      const brief = writeBrief(cwd, text);
+      const brief = writeBrief(cwd, stageBrief(cwd, text, checkoutOf?.(assignment.project) ?? null));
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);

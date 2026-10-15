@@ -1575,10 +1575,11 @@ export function criteriaNotice(id, change) {
 }
 
 // The task an agent starts: its short title, then its whole brief, and the
-// project's prose standard (t675) when its policy records one.
-export function formatTask(item, policy = null) {
+// project's prose standard (t675) when its policy records one, as the copy
+// in the workspace when the claim made one (t676).
+export function formatTask(item, policy = null, proseCopy = null) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
-    proseStandardLine(policy?.proseStandard),
+    proseStandardLine(policy?.proseStandard, proseCopy),
     // The note is carried whole, with its line breaks (t480); only terminal control codes go.
     item.dispatch?.note ? `Note (the developer's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
