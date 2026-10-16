@@ -297,3 +297,18 @@ it("listing the projects reads the names table once, however many are registered
     }
   });
 });
+
+// t687: the standard reviewer set is found by the name "atelier", so a rename
+// out of or into that name would strand or misplace inherited admissions
+// (astra's round-3 finding: reviewers stayed active in other projects after
+// atelier was renamed, and withdrawing them no longer broadcast).
+it("the standard reviewer project cannot be renamed, and no project can be renamed to its name", async () => {
+  await project("atelier");
+  await project("other-std");
+  const out = await rename("atelier", "atelier-2");
+  expect(out.status).toBe(409);
+  expect(JSON.stringify(await out.json())).toContain("atelier cannot be renamed");
+  const into = await rename("other-std", "atelier");
+  expect(into.status).toBe(409);
+  expect(((await (await call("GET", "/projects", "owner")).json()) as { name: string }[]).map((p) => p.name)).toContain("atelier");
+});
