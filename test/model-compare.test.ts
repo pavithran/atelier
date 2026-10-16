@@ -377,6 +377,10 @@ test("a role with no event keeps saying there is no measure yet", () => {
   const v = project(roleReviews(3, undefined));
   assert.match(v.roles.find((r) => r.role === "security-review")!.unmeasured!, /No review has been recorded/);
   assert.equal(fig(v, "review", "review-time").n, 3);
+  // The wording about reviews from before t663 belongs to the review roles and plan only (astra/argon, t663 review 1).
+  const empty = project([]);
+  for (const role of ["build", "review", "acting"]) assert.equal(empty.roles.find((r) => r.role === role)!.unmeasured, undefined, role);
+  assert.match(empty.roles.find((r) => r.role === "plan")!.unmeasured!, /No plan run/);
 });
 
 test("a defect traced to a security-review approval is counted against that role only", () => {

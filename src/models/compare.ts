@@ -309,6 +309,7 @@ export function compareModel(input: CompareInput): ModelComparison {
   const unmeasured = (role: CompareRole): string | undefined => {
     const rows = figures[role];
     if (!rows || rows.some((f) => f.n > 0)) return undefined;
+    if (role !== "plan" && role !== "security-review" && role !== "claims-review") return undefined;
     return role === "plan" ? "No plan run has been recorded for this model yet." : "No review has been recorded for this model in this role yet; reviews from before t663 do not say their role and count as review.";
   };
 
