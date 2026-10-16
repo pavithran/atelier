@@ -81,6 +81,9 @@ export const BYPASSES = [
   // serverFetch (cli/server-fetch.mjs, t568) is fetch after the event loop
   // has caught up: a way to the server like fetch itself.
   /(?<![.\w$])serverFetch\b/g,
+  // The same through a receiver: a namespace import (transport.serverFetch)
+  // or a default one (mod.default is judged by its import, below).
+  /(?<![\w$])[\w$]*\s*\??\.\s*serverFetch\b/g,
   /(?<![.\w$])https?\s*\.\s*(?:request|get)\b/g,
   /\bimport\s*\(\s*["'`]\s*["'`]\s*\)/g, // a dynamic import, whose specifier is blanked: judged below
   /\bnew\s+(?:WebSocket|EventSource|XMLHttpRequest)\b/g,
@@ -91,6 +94,7 @@ export const BYPASSES = [
   /\bgetBuiltinModule\b/g,
   /(?<![.\w$])(?:createRequire|require)\s*\(/g,
 ];
+export const TRANSPORT_MODULE = /(?:^|\/)server-fetch(?:\.mjs)?$/;
 export const NETWORK_MODULE = /^(?:node:)?(?:https?|http2|net|tls|dgram)$|^undici$/;
 
 // Each reference in a source, in source order: its text (the match and the
@@ -117,7 +121,10 @@ export function references(source) {
       at(m.index, source.slice(m.index, m.index + m[0].length + 1).trim());
     }
   }
-  for (const m of source.matchAll(/^\s*import\b[^;]*?from\s*["']([^"']+)["']/gm)) if (NETWORK_MODULE.test(m[1])) at(m.index, `import from "${m[1]}"`);
+  // Importing the server transport module in any form (named, aliased,
+  // default or namespace) is a way to the server that a scan of call
+  // spellings cannot follow, so the import itself is the reference.
+  for (const m of source.matchAll(/^\s*import\b[^;]*?from\s*["']([^"']+)["']/gm)) if (NETWORK_MODULE.test(m[1]) || TRANSPORT_MODULE.test(m[1])) at(m.index, `import from "${m[1]}"`);
   return found.sort((a, b) => a.index - b.index);
 }
 

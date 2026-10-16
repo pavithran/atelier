@@ -838,7 +838,10 @@ export async function request(method, path, body, as, extra = {}, signal) {
   // Validate before even the identity read: spelling, aliases and indirect
   // calls cannot evade this boundary. Ordinary owner commands retain their
   // wider transport; every command the runner can spawn uses the table.
-  const helper = RUNNER_COMMANDS.has(commandFor(args._[0]));
+  // `atelier fast` is also the owner's (status, land, record, close), on
+  // routes no runner declares; only fast take and fast ready are the runner's.
+  const command = commandFor(args._[0]);
+  const helper = RUNNER_COMMANDS.has(command) && (command !== "fast" || ["take", "ready"].includes(args._[1]));
   if (helper) declaredHelperCall(method, path, body, !!tokenRunner);
   if (path !== "/config") await resolveTokenActor();
   if (helper && tokenRunner) declaredHelperCall(method, path, body, true);
