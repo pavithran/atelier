@@ -749,6 +749,19 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const lost = merged.filter((m) => !held(m.mergeCommit) || !held(m.commit));
       if (lost.length) failure = { step: "checkout changed", detail: `main moved: ${scanned.slice(0, 12)} does not hold ${lost.map((m) => `${m.id} (its commit ${m.commit.slice(0, 12)} merged as ${m.mergeCommit.slice(0, 12)})`).join(", ")}` };
     }
+    // The contributors are read again now, from each merge's first parent,
+    // after the last history and object check and while rollback is still
+    // possible (review of t603, round 3): the list taken before the merge
+    // could come from a history a graft written by an earlier merge's
+    // generator had shortened, and a typecheck then removed the graft before
+    // the checks above, leaving a receipt that omitted a contributor.
+    if (!failure) {
+      for (const m of merged) {
+        const found = [...new Set([m.builder, ...rangeAgents(cwd, `${m.mergeCommit}^1`, m.commit)])];
+        if (found.length > FAST_CONTRIBUTORS_MAX) { failure = { step: `merge ${m.id}`, detail: `${m.id}'s commits name ${found.length} distinct agents, more than the ${FAST_CONTRIBUTORS_MAX} a receipt can carry; land a smaller range` }; break; }
+        m.contributors = found;
+      }
+    }
     if (failure) return { ok: false, start, ...restore(), landed: [], failure };
     // The receipts are written before any is posted (finding 9); a write
     // that fails rolls the batch back like any other step, as nothing is

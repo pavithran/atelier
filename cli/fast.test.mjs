@@ -440,6 +440,40 @@ test("a grafts file a project command writes stops the batch (finding 4)", async
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Finding it would have caught (astra, second review of t603): contributors
+// were taken before the merge, so a graft an earlier merge's generator wrote
+// (hiding a task's first commit) and a typecheck removed before the history
+// checks left a receipt without the hidden commit's agent.
+test("a graft written during an earlier merge and removed before validation does not shrink a receipt's contributors (t603)", async () => {
+  const gen = GENERATOR + `import { existsSync, appendFileSync } from "node:fs";
+if (existsSync("graft.txt")) { mkdirSync(".git/info", { recursive: true }); appendFileSync(".git/info/grafts", readFileSync("graft.txt", "utf8")); }
+`;
+  const { dir } = generatedRepo(gen);
+  try {
+    const startSha = git(dir, "rev-parse", "HEAD");
+    // t2: two commits by two agents, off the start.
+    git(dir, "checkout", "-q", "-b", "x", "main");
+    writeFileSync(join(dir, "x1.txt"), "1\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "x1\n\nAgent: codex/gpt-6");
+    writeFileSync(join(dir, "x2.txt"), "2\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "x2\n\nAgent: claude-code/opus-5.5");
+    const tip = git(dir, "rev-parse", "HEAD");
+    // t1 conflicts with main on the generated index, so its merge runs the generator, which writes the graft.
+    git(dir, "checkout", "-q", "-b", "p", "main");
+    mkdirSync(join(dir, "cmds"), { recursive: true });
+    writeFileSync(join(dir, "cmds/p.txt"), "name: p\n"); writeFileSync(join(dir, "graft.txt"), `${tip} ${startSha}\n`);
+    execFileSync(process.execPath, ["gen.mjs"], { cwd: dir });
+    git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "p\n\nAgent: gemini/pro-3");
+    const p = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "main");
+    writeFileSync(join(dir, "cmds/m.txt"), "name: m\n");
+    execFileSync(process.execPath, ["gen.mjs"], { cwd: dir });
+    git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "m");
+    const recorded = [];
+    const r = await fastLand({ ...base, titles: { t1: "P", t2: "X" }, cwd: dir, pairs: [{ id: "t1", sha: p }, { id: "t2", sha: tip }], typecheck: "rm -f .git/info/grafts", test: "true", record: (id, receipt) => { recorded.push([id, receipt]); return { ok: true }; } });
+    assert.equal(r.ok, true, JSON.stringify(r.failure));
+    assert.deepEqual([...recorded[1][1].contributors].sort(), ["claude-code/opus-5.5", "codex/gpt-6"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Second review of t592: a test that left the checkout on another branch
 // had that branch reset, and main kept the refused batch.
 test("a test that switches branch is refused, and main, not the new branch, goes back to the start (finding 4)", async () => {
