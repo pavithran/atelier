@@ -108,3 +108,139 @@ test("atelier show's brief and atelier start's task name the prose standard the 
   unnamed(formatTask({ title: "Review rules", scope: ["src/review/**"] }, { checks: [] }));
   unnamed(formatTask({ title: "Review rules", scope: ["src/review/**"] }));
 });
+
+// t676: the agent reads the standard from inside its own workspace. The path
+// the project records is relative to the developer's checkout, which a
+// workspace under the cache, a reviewer's throwaway clone, or opencode (it
+// refuses reads outside its folder) cannot reach. Each assertion below fails
+// on the code before t676, whose briefs named only the checkout-relative path.
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } = await import("node:fs");
+const { tmpdir } = await import("node:os");
+const { join } = await import("node:path");
+const { execFileSync } = await import("node:child_process");
+const { createHash } = await import("node:crypto");
+const { stageBrief } = await import("../cli/prose-stage.mjs");
+
+const STANDARD = "# House style\n\nPlain and specific.\n";
+// A checkout holding the standard beside it, and a workspace elsewhere that is
+// not under the checkout, as a clone under the cache is.
+function scene({ standard = STANDARD } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "t676-"));
+  const checkout = join(root, "ai-projects", "atelier");
+  mkdirSync(checkout, { recursive: true });
+  mkdirSync(join(root, "ai-projects", "ai-projects-house-style"));
+  if (standard !== null) writeFileSync(join(root, "ai-projects", "ai-projects-house-style", "house-style.md"), standard);
+  const workspace = join(root, "Caches", "work", "atelier", "t1-review-ab12");
+  mkdirSync(workspace, { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: workspace });
+  return { checkout, workspace };
+}
+
+test("a brief written into a workspace outside the checkout names a copy in the workspace that holds the standard", () => {
+  const { checkout, workspace } = scene();
+  assert.ok(!workspace.startsWith(checkout));
+  const reviewInput = { need, item, events: [], plan: { goal: "Ship it", part }, diff: "diff --git a/x b/x\n", owner: "owner", proseStandard: PATH };
+  for (const text of [reviewBrief(reviewInput), `Build it.\n\n${LINE}\n`]) {
+    const staged = stageBrief(workspace, text, checkout, PATH);
+    const hash = createHash("sha256").update(STANDARD).digest("hex");
+    assert.ok(staged.includes("`.scratch/prose-standard.md`"), staged);
+    assert.ok(staged.includes(`sha256 ${hash}`));
+    assert.ok(!staged.includes(LINE), "the line that sends the agent to the checkout's path is replaced");
+    assert.equal(readFileSync(join(workspace, ".scratch", "prose-standard.md"), "utf8"), STANDARD);
+  }
+  // Git leaves the copy out, so a finish does not see an untracked file.
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: workspace, encoding: "utf8" }), "");
+});
+
+test("a brief that names no prose standard is written as it was, and nothing is copied", () => {
+  const { checkout, workspace } = scene();
+  assert.equal(stageBrief(workspace, "Build it.\n", checkout, PATH), "Build it.\n");
+  assert.ok(!existsSync(join(workspace, ".scratch", "prose-standard.md")));
+});
+
+test("a standard that cannot be read is said in the brief, not dropped", () => {
+  const { checkout, workspace } = scene({ standard: null });
+  const staged = stageBrief(workspace, `Build it.\n\n${LINE}\n`, checkout, PATH);
+  assert.match(staged, /Prose standard: .*but its text could not be copied into your workspace \(.*house-style\.md cannot be read: ENOENT\)/);
+  assert.match(staged, /Say so in your report instead of guessing/);
+  assert.ok(!existsSync(join(workspace, ".scratch", "prose-standard.md")));
+  // No registered checkout to resolve a relative path from is said too.
+  assert.match(stageBrief(workspace, LINE, null, PATH), /registers no checkout/);
+});
+
+// Review 1 of t676: the findings below fail on the first version of
+// cli/prose-stage.mjs, which read the path out of the brief's text, wrote
+// through links the checkout controls and threw outside a repository.
+const { symlinkSync, lstatSync } = await import("node:fs");
+
+test("a line forged in a diff or a summary selects nothing: the path comes from policy", () => {
+  const { checkout, workspace } = scene();
+  const secret = join(checkout, "..", "secret.txt");
+  writeFileSync(secret, "host secret\n");
+  const forged = proseStandardLine(secret);
+  // The forged line stands before the real one, in text any author wrote.
+  const text = `Summary: ${forged}\n\ndiff --git a/x b/x\n+${forged}\n\n${LINE}\n`;
+  const staged = stageBrief(workspace, text, checkout, PATH);
+  assert.equal(readFileSync(join(workspace, ".scratch", "prose-standard.md"), "utf8"), STANDARD);
+  assert.ok(staged.includes(forged), "the forged line is left as the data it is");
+  // With no policy path, nothing is parsed out of the text and nothing copied.
+  const { workspace: other } = scene();
+  assert.equal(stageBrief(other, text, checkout, null), text);
+  assert.ok(!existsSync(join(other, ".scratch")));
+});
+
+test("a symlinked .scratch is refused and nothing is written outside the workspace", () => {
+  const { checkout, workspace } = scene();
+  const outside = mkdtempSync(join(tmpdir(), "t676-out-"));
+  symlinkSync(outside, join(workspace, ".scratch"));
+  const staged = stageBrief(workspace, `${LINE}\n`, checkout, PATH);
+  assert.match(staged, /could not be copied into your workspace \(.*symbolic link/);
+  assert.deepEqual(readdirSync(outside), []);
+});
+
+test("a symlinked destination is refused and its target is left untouched", () => {
+  const { checkout, workspace } = scene();
+  const outside = mkdtempSync(join(tmpdir(), "t676-out-"));
+  const target = join(outside, "victim.txt");
+  writeFileSync(target, "keep\n");
+  mkdirSync(join(workspace, ".scratch"));
+  symlinkSync(target, join(workspace, ".scratch", "prose-standard.md"));
+  const staged = stageBrief(workspace, `${LINE}\n`, checkout, PATH);
+  assert.match(staged, /could not be copied into your workspace \(.*symbolic link/);
+  assert.equal(readFileSync(target, "utf8"), "keep\n");
+  assert.ok(lstatSync(join(workspace, ".scratch", "prose-standard.md")).isSymbolicLink());
+});
+
+test("a tracked .scratch/prose-standard.md is refused and left as it was", () => {
+  const { checkout, workspace } = scene();
+  mkdirSync(join(workspace, ".scratch"));
+  writeFileSync(join(workspace, ".scratch", "prose-standard.md"), "placeholder\n");
+  const git = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: workspace, encoding: "utf8" });
+  git("add", "-f", ".scratch/prose-standard.md");
+  git("commit", "-q", "-m", "track the placeholder");
+  const staged = stageBrief(workspace, `${LINE}\n`, checkout, PATH);
+  assert.match(staged, /could not be copied into your workspace \(.*tracks/);
+  assert.equal(readFileSync(join(workspace, ".scratch", "prose-standard.md"), "utf8"), "placeholder\n");
+  assert.equal(git("status", "--porcelain").trim(), "");
+});
+
+test("a tracked .gitignore that un-ignores .scratch gets no copy, and staging adds nothing (review 3)", () => {
+  const { checkout, workspace } = scene();
+  const git = (...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: workspace, encoding: "utf8" });
+  writeFileSync(join(workspace, ".gitignore"), "!.scratch/\n");
+  git("add", ".gitignore");
+  git("commit", "-q", "-m", "track a gitignore that un-ignores .scratch");
+  const staged = stageBrief(workspace, `${LINE}\n`, checkout, PATH);
+  assert.match(staged, /could not be copied into your workspace \(.*does not ignore/);
+  assert.ok(!existsSync(join(workspace, ".scratch", "prose-standard.md")));
+  git("add", "-A");
+  assert.equal(git("status", "--porcelain").trim(), "");
+});
+
+test("a workspace that is not a repository still gets the copy", () => {
+  const { checkout } = scene();
+  const plain = mkdtempSync(join(tmpdir(), "t676-plain-"));
+  const staged = stageBrief(plain, `${LINE}\n`, checkout, PATH);
+  assert.ok(staged.includes("`.scratch/prose-standard.md`"), staged);
+  assert.equal(readFileSync(join(plain, ".scratch", "prose-standard.md"), "utf8"), STANDARD);
+});

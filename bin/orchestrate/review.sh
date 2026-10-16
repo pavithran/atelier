@@ -63,6 +63,12 @@ clone=$(mktemp -d "${TMPDIR:-/tmp}/atelier-review-$project-$(git config --local 
 trap 'rm -rf "$clone"' EXIT
 git clone -q "$ws" "$clone/repo"
 git -C "$clone/repo" checkout -q "$(git rev-parse HEAD)"
+# The prose standard is copied into the clone and the prompt names the copy
+# (t676): the clone is outside the developer's checkout, so the path the
+# project records cannot be read from it. A failed copy is said in the line.
+if [ -z "$prose_failed" ] && [ -n "$prose_path" ]; then
+  prose=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { stagedProseLine } from "./cli/prose-stage.mjs"; process.stdout.write(stagedProseLine(process.argv[1], process.argv[2], process.argv[3]))' "$clone/repo" "$main" "$prose_path")
+fi
 [ -d "$ws/node_modules" ] && ln -s "$ws/node_modules" "$clone/repo/node_modules"
 [ -f "$ws/worker-configuration.d.ts" ] && cp "$ws/worker-configuration.d.ts" "$clone/repo/"
 {
