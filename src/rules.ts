@@ -1,5 +1,5 @@
 import type { PostMergePolicy } from "./post-merge.ts";
-import { familyOf, type PoolFamily } from "./models/pool.ts";
+import { familyOf, HARNESSES, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
@@ -492,6 +492,38 @@ export function reviewerAdmission(actor: string, policy: ProjectPolicy): Reviewe
 export function admissionActor(actor: string, admission: ReviewerAdmission): string {
   return [admission.id, ...admission.aliases].some((name) => modelKey(`model/${name}`) === modelKey(actor))
     ? `${actor.split("/")[0]}/${admission.id}` : actor;
+}
+
+// The project whose reviewer admissions every project shares (t687, PAVI,
+// 2026-10-15: "atelier's reviewers should be the standard for all
+// projects"). A model admitted there is an eligible reviewer everywhere,
+// unless a project records its own admission or withdrawal of that model.
+export const STANDARD_REVIEWER_PROJECT = "atelier";
+
+// What the standard project shares: its active admissions only. A withdrawal
+// there ends the sharing; it is not itself a record other projects inherit.
+export function standardAdmissions(admissions: readonly ReviewerAdmission[]): ReviewerAdmission[] {
+  return admissions.filter((a) => a.active);
+}
+
+export const sharesName = (a: ReviewerAdmission, b: ReviewerAdmission): boolean =>
+  [a.id, ...a.aliases].some((n) => [b.id, ...b.aliases].some((m) => modelKey(`model/${n}`) === modelKey(`model/${m}`)));
+
+// The admissions a project judges by: its own, active or withdrawn, and each
+// standard one it has no record of. A project's own record of a model, a
+// withdrawal included, always stands in place of the standard one.
+export function effectiveAdmissions(own: readonly ReviewerAdmission[], standard: readonly ReviewerAdmission[]): ReviewerAdmission[] {
+  return [...own, ...standardAdmissions(standard).filter((s) => !own.some((o) => sharesName(o, s)))];
+}
+
+// A model named as atelier models prints it, harness/model, is the model it
+// names: `models admit` and `models withdraw` take either form (t687, PAVI
+// hit antigravity/gemini-4-argon answered "not registered"). Only a known
+// harness is taken off, so a model id with a slash of its own stays whole.
+export function splitHarness(name: string): { harness?: string; model: string } {
+  const slash = name.indexOf("/");
+  const harness = slash === -1 ? "" : name.slice(0, slash).toLowerCase();
+  return (HARNESSES as readonly string[]).includes(harness) ? { harness, model: name.slice(slash + 1) } : { model: name };
 }
 
 export interface ProjectPolicy {

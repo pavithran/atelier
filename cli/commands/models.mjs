@@ -39,12 +39,13 @@ export default async function modelsCommand() {
     if (!id || !args.reason) die(`atelier models ${sub} ID --project NAME --reason TEXT`);
     const name = project();
     const record = await call(sub === "admit" ? "PUT" : "DELETE", `/projects/${encodeURIComponent(name)}/reviewers/${encodeURIComponent(id)}`, { reason: args.reason }, OWNER);
-    return console.log(`${record.id}: reviewer ${record.active ? "admitted" : "withdrawn"} in ${name} by ${record.by} at ${record.at}: ${record.reason}`);
+    const unreached = record.unreached?.length ? `\nWarning: could not reach projects ${record.unreached.join(", ")}` : "";
+    return console.log(`${record.id}: reviewer ${record.active ? "admitted" : "withdrawn"} in ${name} by ${record.by} at ${record.at}: ${record.reason}${unreached}`);
   }
   if (sub === "reviewers") {
     const name = project();
     const records = await call("GET", `/projects/${encodeURIComponent(name)}/reviewers`, undefined, OWNER);
-    for (const record of records) console.log(`${record.id}: ${record.active ? "admitted" : "withdrawn"} by ${record.by} at ${record.at}: ${record.reason}`);
+    for (const record of records) console.log(`${record.id}: ${record.active ? "admitted" : "withdrawn"}${record.inherited ? ` (standard, from ${record.inherited})` : ""} by ${record.by} at ${record.at}: ${record.reason}`);
     if (!records.length) console.log(`No reviewer admissions in ${name}.`);
     return;
   }
