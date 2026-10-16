@@ -8,11 +8,11 @@
 //
 // - every call goes through the CLI's shared transport, `call` or `request`
 //   in cli/atelier.mjs (postEvidence wraps `request`); a bare fetch, an
-//   http(s) request or a socket in a command's module, or in any helper of
-//   cli/atelier.mjs it reaches (imported, or named by one it reaches), is a
-//   bypass and fails here, save serverVersion's declared preflight read
-//   (the scanner is test/runner-routes-scan.test.mjs, shared with the
-//   runner's own modules);
+//   http(s) request or a socket in a command's module, in any module it
+//   imports (transitively, through import, re-export, dynamic import and
+//   side-effect import alike), or in any helper of cli/atelier.mjs it reaches
+//   (imported, aliased, or named by one it reaches), is a bypass and fails
+//   here, save serverVersion's declared preflight read;
 // - every call's method and path is one the table declares as a cli call,
 //   so a command that starts calling an undeclared route fails npm test
 //   until the route is declared (and, by the other file, allowed and
@@ -23,25 +23,40 @@
 //   reviewer's or the integrator's, so a runner-token helper that starts
 //   calling an agent-only route is caught before the gateway refuses it;
 // - every declared cli call is made by the command the table names, so a
-//   declaration nothing sends is dropped rather than kept as a spare door.
+//   declaration nothing sends is dropped rather than kept as a spare door;
+// - every helper of cli/atelier.mjs that sends to the server without
+//   request() refuses a spawned helper at run time, before it fetches.
+//
+// All of it is read with one parser-based scanner, test/helpers/source-scan.mjs
+// (the TypeScript compiler's parser): imports in every form, identifier
+// aliases, calls and references to a server outside the transport. The scan
+// guards against accidental undeclared calls by honest builders; the runtime
+// guards (declaredHelperCall, refuseSpawnedHelper, the fetch guard) and the
+// gateway remain the enforcement, and deliberately obfuscated code (eval,
+// computed names built at run time) is out of scope.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { agentRoute, callParts, callPath, declaredHelperCall, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute } from "../src/tokens.ts";
 import { args, call, request, cliState } from "../cli/atelier.mjs";
 import { runnerTransport } from "../cli/runner.mjs";
-// The bypass scanner this file shares with test/runner-routes.test.mjs, which
-// applies the same one to the runner's own modules.
-import { bypasses, codeOnly, importsOf } from "./runner-routes-scan.test.mjs";
+import { bareCalls, bypasses, callsTo, fileSystem, importClosure, namesIn, objectKeys, parseModule, references, resolveImport, staticString, usesOf, withFiles } from "./helpers/source-scan.mjs";
 
 const read = (path) => readFileSync(resolve(path), "utf8");
-const ATELIER = read("cli/atelier.mjs");
 const ITEM = "/projects/{project}/items/{item}";
-const KEYWORDS = new Set(["true", "false", "null", "undefined"]);
 // The CLI's transport: the functions a command calls to reach the server,
 // which are followed to no further call site of their own.
 const TRANSPORT = new Set(["call", "request", "postEvidence"]);
+const ATELIER_FILE = "cli/atelier.mjs";
+const ATELIER_MODULE = /(?:^|\/)atelier\.mjs$/;
+const TRANSPORT_FILE = /(?:^|\/)server-fetch\.mjs$/;
+const isAtelier = (module) => ATELIER_MODULE.test(module);
+const boundary = (path) => isAtelier(path) || TRANSPORT_FILE.test(path);
+// cli/atelier.mjs read with its own names as bindings, so an alias of one of
+// its helpers inside it resolves like an alias of an import.
+const atelierOf = (files = fileSystem) => parseModule(files.read(ATELIER_FILE), ATELIER_FILE, { self: true });
+const ATELIER = atelierOf();
 
 test("the helper transport refuses undeclared operations at runtime regardless of call spelling", async (t) => {
   const before = args._;
@@ -129,13 +144,10 @@ test("the runtime helper boundary resolves the same declarations exercised at th
   }
 });
 
-// The body of an exported function of cli/atelier.mjs: from its declaration
-// to the first line that is its closing brace alone.
-function exported(name) {
-  const start = ATELIER.search(new RegExp(`^export (?:async )?function ${name}\\(`, "m"));
-  if (start < 0) return null;
-  const end = ATELIER.indexOf("\n}\n", start);
-  return ATELIER.slice(start, end < 0 ? undefined : end + 2);
+// The exported function of cli/atelier.mjs by name, as its node, or null.
+function exported(name, atelier = ATELIER) {
+  const d = atelier.declarations.get(name);
+  return d?.exported && d.node.body ? d.node : null;
 }
 
 // The path a call site names, as the table writes it: I(name, id) is the
@@ -154,81 +166,42 @@ function declaredPath(expr) {
   return null;
 }
 
-// The argument list of a call starting at `open` (the index of its "("),
-// split at top-level commas; strings and templates are kept whole.
-function argumentsOf(source, open) {
-  const parts = [];
-  let depth = 0, quote = null, start = open + 1;
-  for (let i = open + 1; i < source.length; i++) {
-    const ch = source[i];
-    if (quote) { if (ch === "\\") i++; else if (ch === quote) quote = null; continue; }
-    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
-    if ("([{".includes(ch)) depth++;
-    else if (")]}".includes(ch)) {
-      if (depth === 0) { parts.push(source.slice(start, i)); return parts; }
-      depth--;
-    } else if (ch === "," && depth === 0) { parts.push(source.slice(start, i)); start = i + 1; }
-  }
-  throw new Error("an unbalanced call");
+// Every server call within `roots` of a module (default the whole module):
+// through `call`, `request` or postEvidence of cli/atelier.mjs under any
+// name the module binds them to (an alias, a destructuring, an import under
+// another name), with the method, the path as declared, and the body's keys
+// ([] for a body that is not an object literal or a conditional on one). The
+// transport passed on where the check cannot follow it (handed to another
+// function, returned, stored in an object) fails: it could be called there.
+function callSitesIn(input, roots, where) {
+  const module = typeof input === "string" ? parseModule(input) : input;
+  const { calls, leaks } = callsTo(module, isAtelier, TRANSPORT, roots);
+  assert.deepEqual(leaks.map((l) => `${l.name} as ${l.text} (line ${l.line})`), [], `${where}: passes the CLI's transport (call, request, postEvidence) on, where this check cannot follow a call through it`);
+  return calls.map((c) => {
+    const [first, second, third] = c.name === "postEvidence" ? [undefined, c.args[0], c.args[1]] : c.args;
+    const method = c.name === "postEvidence" ? "POST" : staticString(first);
+    assert.ok(method, `${where}: a server call whose method this check cannot read: ${c.text}`);
+    assert.ok(second, `${where}: a server call without a path: ${c.text}`);
+    const pathText = second.getText().trim();
+    const declared = declaredPath(pathText);
+    assert.ok(declared, `${where}: a server call to a path this check cannot read: ${pathText}`);
+    const keys = third === undefined || third.getText().trim() === "undefined" ? [] : objectKeys(third);
+    return { where, method, path: declared, keys, text: `${method} ${pathText}` };
+  });
 }
-
-// The top-level and conditional property names an object-literal body sends:
-// an identifier after "{" or "," and before ":", "," or "}", once strings and
-// templates are blanked, so `head: ws.head`, `{ note }` and
-// `...(x ? { merged: true, mainHead } : {})` yield head, note, merged and
-// mainHead, and a value's identifiers yield nothing.
-function bodyKeys(text) {
-  const blank = text.replace(/`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""');
-  const keys = new Set();
-  for (const m of blank.matchAll(/[{,]\s*([A-Za-z_$][\w$]*)\s*(?=[:,}])/g)) if (!KEYWORDS.has(m[1])) keys.add(m[1]);
-  return [...keys];
-}
-
-// Every server call a source makes: through `call`, `request` or
-// postEvidence, with the method, the path as declared, and the body's keys
-// (null for a body that is not an object literal or a conditional on one).
-function callSites(source, where) {
-  const sites = [];
-  for (const m of source.matchAll(/(?<![.\w])(call|request|postEvidence)\(/g)) {
-    const args = argumentsOf(source, m.index + m[0].length - 1);
-    const [method, path, body] = m[1] === "postEvidence" ? ["POST", args[0], args[1]] : [args[0].trim().replace(/^"|"$/g, ""), args[1], args[2]];
-    const declared = declaredPath(path);
-    assert.ok(declared, `${where}: a server call to a path this check cannot read: ${path.trim()}`);
-    const keys = body === undefined || body.trim() === "undefined" ? [] : bodyKeys(body);
-    sites.push({ where, method, path: declared, keys, text: `${method} ${path.trim()}` });
-  }
-  return sites;
-}
-
-// The top-level declarations of cli/atelier.mjs, by name: a function from
-// its declaration to the first line that is its closing brace alone, a const
-// or let to the next line that starts at the margin with neither a closing
-// bracket nor whitespace.
-function declarations(source) {
-  const decls = new Map();
-  for (const m of source.matchAll(/^(?:export )?(?:async )?(?:function\*? ([A-Za-z_$][\w$]*)\(|(?:const|let) ([A-Za-z_$][\w$]*) =)/gm)) {
-    const name = m[1] ?? m[2];
-    let end;
-    if (m[1]) { end = source.indexOf("\n}\n", m.index); end = end < 0 ? source.length : end + 2; }
-    else { const rest = /\n(?![\s})\]])/.exec(source.slice(m.index + 1)); end = rest ? m.index + 1 + rest.index : source.length; }
-    if (!decls.has(name)) decls.set(name, source.slice(m.index, end));
-  }
-  return decls;
-}
-const DECLS = declarations(ATELIER);
 
 // The helpers of cli/atelier.mjs a command reaches: those it imports, and
 // every top-level declaration any of them names, transitively. The
 // transport itself is not followed: its fetch is the one the CLI makes.
-function reachable(names, decls = DECLS) {
+function reachable(names, atelier = ATELIER) {
+  const decls = atelier.declarations;
   const seen = new Set(), queue = names.filter((n) => decls.has(n) && !TRANSPORT.has(n));
   while (queue.length) {
     const name = queue.shift();
     if (seen.has(name)) continue;
     seen.add(name);
-    const code = codeOnly(decls.get(name));
-    for (const m of code.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\b/g)) {
-      if (m[1] !== name && decls.has(m[1]) && !TRANSPORT.has(m[1]) && !seen.has(m[1])) queue.push(m[1]);
+    for (const n of namesIn(atelier, decls.get(name).node)) {
+      if (n !== name && decls.has(n) && !TRANSPORT.has(n) && !seen.has(n)) queue.push(n);
     }
   }
   return [...seen];
@@ -250,160 +223,116 @@ function identityRead(sites, where) {
   return [];
 }
 
-// The server calls a helper body makes, failing on any bypass of the
-// transport. serverVersion is the one helper that fetches: its fetch is the
-// declared public preflight read, judged by preflightFetches below, and any
-// other bypass in it still fails.
-function helperCalls(name, body) {
+// The server calls a helper of cli/atelier.mjs makes, failing on any bypass
+// of the transport. serverVersion is the one helper that fetches: its fetch
+// is the declared public preflight read, judged by preflightFetches below,
+// and any other bypass in it still fails.
+function helperCalls(name, atelier = ATELIER) {
   const where = `cli/atelier.mjs ${name}()`;
-  const found = bypasses(body);
+  const node = atelier.declarations.get(name).node;
+  const found = bypasses(atelier, node);
   if (name === "serverVersion") {
-    preflightFetches(body);
+    preflightFetches(atelier, node);
     const others = found.filter((b) => b !== "fetch(" && b !== "serverFetch(");
     assert.deepEqual(others, [], `${where} reaches the server outside the CLI's transport: ${others.join(", ")}`);
   } else {
     assert.deepEqual(found, [], `${where} reaches the server outside the CLI's transport: ${found.join(", ")}`);
   }
-  const sites = /(?<![.\w])(call|request|postEvidence)\(/.test(codeOnly(body)) ? callSites(body, where) : [];
+  const sites = callSitesIn(atelier, node, where);
   return name === "resolveTokenActor" ? identityRead(sites, where) : sites;
 }
 
 // A command module that holds more than the runner's part: atelier fast also
 // lands and records (the developer's, under the owner's token, on routes no
 // runner token may call), and the runner spawns only fast take and fast
-// ready. The calls judged are those of the named top-level functions; the
-// whole module is still scanned for a bypass of the transport, and
+// ready. The calls judged are those of the named top-level functions and
+// whatever they reach, in this module and in the modules they import; every
+// module is still scanned whole for a bypass of the transport, and
 // helperCommand (cli/runner.mjs) refuses any other form of fast at run time.
 const RUNNER_PART = { fast: ["fastTake", "fastReadyReport"] };
-function functionSource(source, name) {
-  const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
-  assert.ok(start >= 0, `${name} is gone from the command module; update RUNNER_PART`);
-  const end = source.indexOf("\n}\n", start);
-  return source.slice(start, end < 0 ? undefined : end + 2);
-}
 
-const SOURCE_EXTENSIONS = [".mjs", ".js", ".ts", ".mts", ".cjs"];
-// The file a relative specifier names from `file`, as a path from the
-// repository root: the path itself, with a source extension added or a .js
-// swapped for the .ts beside it (how src/ is imported), or a directory's
-// index. Null when it names nothing in the repository.
-export function resolveImport(file, spec, files) {
-  if (!/^\.\.?(?:\/|$)/.test(spec)) return null;
-  const path = relative(resolve("."), resolve(dirname(file), spec));
-  if (path.startsWith("..") || /(?:^|\/)node_modules\//.test(path)) return null;
-  const stem = path.replace(/\.[mc]?js$/, "");
-  const candidates = [path, ...SOURCE_EXTENSIONS.map((e) => path + e), ...SOURCE_EXTENSIONS.map((e) => stem + e), ...SOURCE_EXTENSIONS.map((e) => `${path}/index${e}`)];
-  return candidates.find((candidate) => files.exists(candidate)) ?? null;
-}
-
-const ATELIER_MODULE = /(?:^|\/)atelier\.mjs$/;
-const TRANSPORT_FILE = /(?:^|\/)server-fetch\.mjs$/;
-const fileSystem = { read, exists: (path) => existsSync(resolve(path)) && statSync(resolve(path)).isFile() };
-
-// The relative modules a file imports, transitively, as paths from the
-// repository root: every local source file an import of any form reaches,
-// .mjs under cli/ and TypeScript under src/ alike, save cli/atelier.mjs
-// (whose helpers are judged by declaration) and the transport itself.
-export function importedModules(file, seen = new Set(), files = fileSystem) {
-  for (const { spec } of importsOf(files.read(file))) {
-    const path = resolveImport(file, spec, files);
-    if (!path || ATELIER_MODULE.test(path) || TRANSPORT_FILE.test(path) || seen.has(path)) continue;
-    seen.add(path);
-    importedModules(path, seen, files);
+// What one module contributes to a command's calls: its call sites, the
+// names it takes from cli/atelier.mjs, and the modules it hands on. With
+// `seeds`, only the top-level declarations those names start, and what they
+// reach in the module; null judges the module whole. A module that imports
+// cli/atelier.mjs as a namespace, a default or dynamically as a namespace
+// fails, wherever the use: it reaches every helper in it and cannot be
+// followed.
+function judge(file, seeds, files, state) {
+  const key = `${file}\0${seeds ? [...seeds].sort().join(",") : "*"}`;
+  if (state.seen.has(key)) return;
+  state.seen.add(key);
+  const module = parseModule(files.read(file), file);
+  const atelierImports = module.imports.filter((e) => !e.typeOnly && e.spec !== null && isAtelier(e.spec));
+  for (const entry of atelierImports) assert.ok(!entry.opaque, `${file} imports cli/atelier.mjs as a namespace, a default or dynamically, which reaches every helper in it and cannot be followed`);
+  let roots = [module.sf];
+  if (seeds) {
+    const decls = module.declarations, used = new Set(), queue = [...seeds].filter((n) => decls.has(n));
+    while (queue.length) {
+      const name = queue.shift();
+      if (used.has(name)) continue;
+      used.add(name);
+      for (const n of namesIn(module, decls.get(name).node)) if (decls.has(n) && !used.has(n)) queue.push(n);
+    }
+    roots = [...used].map((n) => decls.get(n).node);
   }
-  return [...seen];
+  state.sites.push(...callSitesIn(module, roots, file));
+  const uses = usesOf(module, roots);
+  state.names.push(...uses.filter((u) => isAtelier(u.module) && !["*", "default"].includes(u.name)).map((u) => u.name));
+  const taken = (entry) => entry.bound.filter((b) => !["*", "default"].includes(b.imported) && (!seeds || entry.kind !== "re-export" || seeds.has(b.local))).map((b) => b.imported);
+  if (!seeds) state.names.push(...atelierImports.flatMap(taken));
+  else state.names.push(...atelierImports.filter((e) => e.kind === "re-export").flatMap(taken));
+  if (!seeds) return;
+  // The modules this part reaches, narrowed to the names it takes from each.
+  for (const entry of module.imports) {
+    if (entry.typeOnly || entry.spec === null || entry.kind === "side-effect") continue;
+    const path = resolveImport(file, entry.spec, files);
+    if (!path || boundary(path)) continue;
+    let next;
+    if (entry.kind === "re-export") {
+      if (entry.opaque && !entry.bound.length) next = seeds;
+      else {
+        const hit = entry.bound.filter((b) => seeds.has(b.local));
+        if (!hit.length) continue;
+        next = hit.some((b) => ["*", "default"].includes(b.imported)) ? null : new Set(hit.map((b) => b.imported));
+      }
+    } else {
+      const names = uses.filter((u) => u.module === entry.spec).map((u) => u.name);
+      if (!names.length) continue;
+      next = names.some((n) => ["*", "default"].includes(n)) ? null : new Set(names);
+    }
+    if (next) judge(path, next, files, state);
+    else for (const f of [path, ...importClosure(path, { files, stop: boundary })]) judge(f, null, files, state);
+  }
 }
 
-// The cli/atelier.mjs helpers a source imports, by the name atelier.mjs
-// exports them under (an alias is stripped, a re-export counts). A form the
-// check cannot follow member by member, a namespace, a default or a dynamic
-// import of atelier.mjs, fails: it would reach every export.
-export function atelierNames(source, where, files = fileSystem, from = where) {
-  const names = [];
-  for (const entry of importsOf(source)) {
-    if (!/^\.\.?\//.test(entry.spec) || !ATELIER_MODULE.test(entry.spec)) continue;
-    assert.ok(!entry.opaque, `${where} imports cli/atelier.mjs as a namespace, a default or dynamically, which reaches every helper in it and cannot be followed`);
-    names.push(...entry.bound.map((b) => b.imported));
-  }
-  return names;
-}
-
-// Whether code names a top-level identifier (not as a property).
-const mentions = (code, name) => new RegExp(`(?<![.\\w$])${name.replace(/\$/g, "\\$")}\\b`).test(codeOnly(code));
-const HAS_CALL = /(?<![.\w])(call|request|postEvidence)\(/;
-
-// The calls a module makes. A whole module for a command that is wholly the
-// runner's; for a module a RUNNER_PART command imports, only the functions
-// the judged code names (and the ones of the module they name in turn), so
-// the owner's other forms in the same module are not held to the runner's
-// table. Each call site is judged where it stands, whatever module holds it.
-function moduleCalls(module, judged, files, seen) {
-  const source = files.read(module);
-  const sites = [], atelier = [];
-  if (judged === null) {
-    if (HAS_CALL.test(codeOnly(source))) sites.push(...callSites(source, module));
-    atelier.push(...atelierNames(source, module, files));
-    return { sites, atelier };
-  }
-  const decls = declarations(source);
-  const used = reachable([...decls.keys()].filter((n) => mentions(judged, n)), decls);
-  const text = used.map((n) => decls.get(n)).join("\n");
-  if (HAS_CALL.test(codeOnly(text))) sites.push(...callSites(text, module));
-  atelier.push(...atelierNames(source, module, files).filter((n) => mentions(text, n)));
-  for (const { spec, bound } of importsOf(source)) {
-    const path = resolveImport(module, spec, files);
-    if (!path || ATELIER_MODULE.test(path) || seen.has(path) || !bound.some((b) => mentions(text, b.local))) continue;
-    seen.add(path);
-    const inner = moduleCalls(path, text, files, seen);
-    sites.push(...inner.sites); atelier.push(...inner.atelier);
-  }
-  return { sites, atelier };
-}
-
-// A module's bypasses. A property key named fetch (`fetch: {...}`, as the
-// usage text in src/usage/commands/branch.ts has for `branch fetch`) is a
-// name, not a reach: its value, or a read of it through an object, is judged
-// by the other patterns, so the key alone is not counted.
-const moduleBypasses = (source) => bypasses(source).filter((text) => text !== "fetch:");
-
-// The calls a command makes: its module's own, those of every module it
-// imports (transitively, of any file kind), and those of every helper of
-// cli/atelier.mjs any of them reaches, each scanned for a bypass of the
-// transport.
-function commandCalls(command, decls = DECLS, files = fileSystem, file = `cli/commands/${command}.mjs`) {
+// The calls a command makes, and the helpers of cli/atelier.mjs it reaches:
+// its module's own and those of every module it imports (transitively, of
+// any import form and file kind), each scanned whole for a bypass of the
+// transport, their call sites judged where they stand, and the helpers of
+// cli/atelier.mjs any of them names followed as the command's.
+function commandFacts(command, files = fileSystem, file = `cli/commands/${command}.mjs`) {
   assert.ok(files.exists(file), `${command} is declared with no module at ${file}`);
-  const source = files.read(file);
-  const own = bypasses(source);
+  const own = bypasses(parseModule(files.read(file), file));
   assert.deepEqual(own, [], `${file} reaches the server outside the CLI's transport: ${own.join(", ")}`);
-  const judged = RUNNER_PART[command] ? RUNNER_PART[command].map((name) => functionSource(source, name)).join("\n") : source;
-  const sites = callSites(judged, file);
-  // The modules the command imports, and those they import in turn: each is
-  // scanned whole for a bypass, its calls are judged like the command's own
-  // and the helpers of cli/atelier.mjs it names are followed as the command's.
-  const modules = importedModules(file, new Set(), files);
+  const modules = importClosure(file, { files, stop: boundary });
   for (const module of modules) {
-    const found = moduleBypasses(files.read(module));
+    const found = bypasses(parseModule(files.read(module), module));
     assert.deepEqual(found, [], `${module}, imported by atelier ${command}, reaches the server outside the CLI's transport: ${found.join(", ")}`);
   }
-  // The command file's own imports are narrowed to the runner's part where
-  // its module holds more; a module a whole command reaches is not.
-  const names = atelierNames(source, file, files).filter((name) => !RUNNER_PART[command] || mentions(judged, name));
+  const state = { sites: [], names: [], seen: new Set() };
   if (RUNNER_PART[command]) {
-    const seen = new Set();
-    for (const { spec, bound } of importsOf(source)) {
-      const path = resolveImport(file, spec, files);
-      if (!path || ATELIER_MODULE.test(path) || seen.has(path) || !bound.some((b) => mentions(judged, b.local))) continue;
-      seen.add(path);
-      const inner = moduleCalls(path, judged, files, seen);
-      sites.push(...inner.sites); names.push(...inner.atelier);
-    }
-  } else {
-    for (const module of modules) {
-      const inner = moduleCalls(module, null, files, null);
-      sites.push(...inner.sites); names.push(...inner.atelier);
-    }
-  }
-  for (const name of reachable(names, decls)) sites.push(...helperCalls(name, decls.get(name)));
+    const declared = parseModule(files.read(file), file).declarations;
+    for (const name of RUNNER_PART[command]) assert.ok(declared.has(name), `${name} is gone from the command module; update RUNNER_PART`);
+    judge(file, new Set(RUNNER_PART[command]), files, state);
+  } else for (const f of [file, ...modules]) judge(f, null, files, state);
+  return state;
+}
+
+function commandCalls(command, files = fileSystem, file) {
+  const { sites, names } = commandFacts(command, files, file);
+  const atelier = atelierOf(files);
+  for (const name of reachable(names, atelier)) sites.push(...helperCalls(name, atelier));
   return sites;
 }
 
@@ -443,6 +372,11 @@ test("the commands the runner spawns reach the server through the CLI's transpor
   assert.deepEqual([...made].sort(), CLI_CALLS.map((c) => c.name).sort(), "a declared cli call is made by no command the runner spawns");
 });
 
+// The call sites as a snippet writes them, with the transport imported as a
+// command would.
+const PRELUDE = 'import { call, request, postEvidence } from "../atelier.mjs";\n';
+const snippetSites = (code) => callSitesIn(parseModule(PRELUDE + code, "cli/commands/x.mjs"), undefined, "x");
+
 test("the source check reads call sites as the commands write them", () => {
   assert.equal(declaredPath("I(name, id)"), ITEM);
   assert.equal(declaredPath("I(name,id)"), ITEM);
@@ -452,20 +386,38 @@ test("the source check reads call sites as the commands write them", () => {
   assert.equal(declaredPath("P(name)"), "/projects/{project}");
   assert.equal(declaredPath("`${P(name)}/baseline-token`"), "/projects/{project}/baseline-token");
   assert.equal(declaredPath("`${P(name)}/items`"), null, "a path on another helper is not read, and fails the check");
-  assert.deepEqual(bodyKeys('{ head, ...(rebasedFrom ? { rebasedFrom } : {}) }'), ["head", "rebasedFrom"]);
-  assert.deepEqual(bodyKeys('{ kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed, outputTail: `${r.output.slice(-3500)}`, ...(mainHead ? { merged: true, mainHead } : {}) }'),
+  const keysOf = (code) => objectKeys(parseModule(`x(${code});`).sf.statements[0].expression.arguments[0]);
+  assert.deepEqual(keysOf("{ head, ...(rebasedFrom ? { rebasedFrom } : {}) }"), ["head", "rebasedFrom"]);
+  assert.deepEqual(keysOf('{ kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed, outputTail: `${r.output.slice(-3500)}`, ...(mainHead ? { merged: true, mainHead } : {}) }'),
     ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "merged", "mainHead"]);
-  assert.deepEqual(bodyKeys('args.summary === undefined ? {} : { summary: args.summary }'), ["summary"]);
-  assert.deepEqual(bodyKeys('{ approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head, ...(findings !== undefined ? { findings } : {}) }'), ["approve", "note", "head", "findings"]);
-  assert.deepEqual(bodyKeys("{}"), []);
-  const sites = callSites('const r = await call("POST", `${I(name, id)}/claim`, {}, as, runner ? { "x-atelier-runner": runner } : {});\nawait request("GET", I(name,id), undefined, as);', "x");
+  assert.deepEqual(keysOf("args.summary === undefined ? {} : { summary: args.summary }"), ["summary"]);
+  assert.deepEqual(keysOf('{ approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head, ...(findings !== undefined ? { findings } : {}) }'), ["approve", "note", "head", "findings"]);
+  assert.deepEqual(keysOf("{}"), []);
+  assert.deepEqual(keysOf("body"), [], "a body that is not an object literal names no key");
+  const sites = snippetSites('const r = await call("POST", `${I(name, id)}/claim`, {}, as, runner ? { "x-atelier-runner": runner } : {});\nawait request("GET", I(name,id), undefined, as);');
   assert.deepEqual(sites.map((s) => [s.method, s.path, s.keys]), [["POST", `${ITEM}/claim`, []], ["GET", ITEM, []]]);
+  assert.deepEqual(snippetSites('await postEvidence(`${I(name, id)}/evidence`, { kind });').map((s) => [s.method, s.path, s.keys]), [["POST", `${ITEM}/evidence`, ["kind"]]]);
   // A call the table does not declare, or a field it does not name, fails.
-  assert.throws(() => callSites('await call("POST", `${P(name)}/items`, { title }, as);', "x"), /a path this check cannot read/);
-  const [site] = callSites('await call("POST", `${I(name, id)}/release`, { note: "", secret: token }, as);', "x");
+  assert.throws(() => snippetSites('await call("POST", `${P(name)}/items`, { title }, as);'), /a path this check cannot read/);
+  assert.throws(() => snippetSites('await call(verb, "/runs", {}, as);'), /whose method this check cannot read/);
+  const [site] = snippetSites('await call("POST", `${I(name, id)}/release`, { note: "", secret: token }, as);');
   assert.deepEqual(site.keys, ["note", "secret"]);
   assert.equal(byRoute("POST", `${ITEM}/handoff`).length, 0, "handoff is no runner helper's call");
   assert.equal(byRoute("POST", `${ITEM}/release`)[0].body.includes("secret"), false);
+  // The transport under another name is the transport: an import alias, a
+  // plain alias, a destructured dynamic import.
+  const aliased = (code) => callSitesIn(parseModule(code, "cli/commands/x.mjs"), undefined, "x").map((s) => [s.method, s.path]);
+  assert.deepEqual(aliased('import { call as send } from "../atelier.mjs";\nawait send("POST", "/runs", {}, as);'), [["POST", "/runs"]]);
+  assert.deepEqual(aliased('import { call } from "../atelier.mjs";\nconst send = call;\nawait send("POST", "/runs", {}, as);'), [["POST", "/runs"]]);
+  assert.deepEqual(aliased('import { request } from "../atelier.mjs";\nlet go;\ngo = (request);\nawait go("GET", "/runs", undefined, as);'), [["GET", "/runs"]]);
+  assert.deepEqual(aliased('const { postEvidence: post } = await import("../atelier.mjs");\nawait post("/runs", {});'), [["POST", "/runs"]]);
+});
+
+// The transport handed on where a call through it cannot be read is a leak.
+test("the CLI's transport passed on, stored or returned instead of called fails the check", () => {
+  for (const code of ['go(call);', 'const table = { send: call };', 'export { call };', 'const all = [request];', 'export default postEvidence;', 'const { send } = { send: call };']) {
+    assert.throws(() => callSitesIn(parseModule(PRELUDE + code, "cli/commands/x.mjs"), undefined, "x"), /passes the CLI's transport \(call, request, postEvidence\) on/, code);
+  }
 });
 
 // The capability check (t458) every spawned command makes before its
@@ -474,12 +426,12 @@ test("the source check reads call sites as the commands write them", () => {
 // public preflight call's path (callPath(declaredCall(NAME))), never a
 // literal URL. A fetch added there without a declaration fails here.
 const PREFLIGHT = RUNNER_CALLS.filter((c) => c.via === "preflight");
-function preflightFetches(source) {
+function preflightFetches(input, root) {
   const names = [];
-  for (const m of source.matchAll(/(?<![.\w])(?:serverFetch|fetch)\(/g)) {
-    const [url] = argumentsOf(source, m.index + m[0].length - 1);
-    const named = /^server\(\) \+ "\/api" \+ callPath\(declaredCall\("([a-z-]+)"\)\)$/.exec(url.trim());
-    assert.ok(named, `serverVersion fetches ${url.trim()}, not a declared call's path`);
+  for (const m of bareCalls(input, new Set(["serverFetch", "fetch"]), root)) {
+    const url = m.args[0]?.getText().trim() ?? "";
+    const named = /^server\(\) \+ "\/api" \+ callPath\(declaredCall\("([a-z-]+)"\)\)$/.exec(url);
+    assert.ok(named, `serverVersion fetches ${url}, not a declared call's path`);
     assert.ok(PREFLIGHT.some((c) => c.name === named[1]), `serverVersion fetches ${named[1]}, which is not a declared preflight call`);
     names.push(named[1]);
   }
@@ -491,10 +443,11 @@ test("the capability check every spawned command makes reads only a declared pub
   for (const c of PREFLIGHT) assert.deepEqual([c.credential, c.method, c.body, c.command], ["public", "GET", [], undefined], `${c.name}: a preflight call is a public GET naming no command`);
   const version = exported("serverVersion"), check = exported("requireCapabilities");
   assert.ok(version && check, "serverVersion or requireCapabilities is gone from cli/atelier.mjs; update this check");
-  assert.match(check, /(?<![.\w])serverVersion\(\)/, "requireCapabilities no longer reads the version through serverVersion");
-  for (const bypass of [/(?<![.\w])(?:serverFetch|fetch)\(/, /(?<![.\w])(call|request)\(/]) assert.doesNotMatch(check, bypass, "requireCapabilities reaches the server outside serverVersion");
-  assert.doesNotMatch(version, /(?<![.\w])(call|request)\(/, "serverVersion makes a call through the authenticated transport");
-  const made = preflightFetches(version);
+  assert.ok(namesIn(ATELIER, check).has("serverVersion"), "requireCapabilities no longer reads the version through serverVersion");
+  assert.deepEqual(bypasses(ATELIER, check), [], "requireCapabilities reaches the server outside serverVersion");
+  assert.deepEqual(callsTo(ATELIER, isAtelier, TRANSPORT, check).calls, [], "requireCapabilities reaches the server outside serverVersion");
+  assert.deepEqual(callsTo(ATELIER, isAtelier, TRANSPORT, version).calls, [], "serverVersion makes a call through the authenticated transport");
+  const made = preflightFetches(ATELIER, version);
   assert.ok(made.length, "serverVersion makes no fetch this check can see");
   assert.deepEqual([...new Set(made)].sort(), PREFLIGHT.map((c) => c.name).sort(), "a declared preflight call is made by no capability check");
   // A literal URL, or a name nobody declared, fails the check.
@@ -503,46 +456,90 @@ test("the capability check every spawned command makes reads only a declared pub
   assert.deepEqual(preflightFetches('await serverFetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal });'), ["capabilities"]);
 });
 
+// The files with a statement added at the top of a function of
+// cli/atelier.mjs, for the mutation cases below.
+function atelierWith(name, line) {
+  const open = ATELIER.source.indexOf("{\n", ATELIER.declarations.get(name).node.getStart());
+  assert.ok(open > 0, `${name} is gone from cli/atelier.mjs; update this check`);
+  return withFiles({ [ATELIER_FILE]: `${ATELIER.source.slice(0, open + 2)}${line}\n${ATELIER.source.slice(open + 2)}` });
+}
+const claimWith = (extra, tree = {}) => withFiles({ "cli/commands/claim.mjs": `${read("cli/commands/claim.mjs")}\n${extra}\n`, ...tree });
+const claimCalls = (extra, tree) => commandCalls("claim", claimWith(extra, tree));
+
 // A helper the runner's commands reach is scanned for a bypass as the
 // command's own module is: one it imports (claimWorkspace, which atelier
 // claim runs) and one reached only through another (setWorkspaceIdentity,
 // which claimWorkspace runs). A fetch added to either fails the check
 // before any route is judged.
 test("a helper a spawned command reaches fails the check when it bypasses the transport", () => {
-  for (const name of ["claimWorkspace", "setWorkspaceIdentity", "workspacePath"]) assert.ok(DECLS.has(name), `${name} is gone from cli/atelier.mjs; update this check`);
+  for (const name of ["claimWorkspace", "setWorkspaceIdentity", "workspacePath"]) assert.ok(ATELIER.declarations.has(name), `${name} is gone from cli/atelier.mjs; update this check`);
   const claimReaches = reachable(["actor", "args", "claimWorkspace", "itemArg", "project"]);
   assert.ok(claimReaches.includes("setWorkspaceIdentity"), "the walk does not follow claimWorkspace to the helpers it runs");
   assert.ok(!claimReaches.includes("call") && !claimReaches.includes("request"), "the walk follows the transport itself");
   assert.doesNotThrow(() => commandCalls("claim"));
-  const injected = (name, line) => {
-    const decls = new Map(DECLS), body = decls.get(name);
-    decls.set(name, body.replace(/\{\n/, `{\n${line}\n`));
-    return decls;
-  };
   for (const name of ["claimWorkspace", "setWorkspaceIdentity"]) {
-    assert.throws(() => commandCalls("claim", injected(name, '  await fetch(server() + "/api/runners", { method: "POST" });')),
+    assert.throws(() => commandCalls("claim", atelierWith(name, '  await fetch(server() + "/api/runners", { method: "POST" });')),
       new RegExp(`cli/atelier\\.mjs ${name}\\(\\) reaches the server outside the CLI's transport: fetch\\(`));
   }
-  assert.throws(() => commandCalls("claim", injected("claimWorkspace", '  const { request: send } = await import("node:https"); send(server());')), /import\("node:https"\)/);
-  assert.throws(() => commandCalls("claim", injected("claimWorkspace", "  const get = globalThis.fetch;")), /globalThis\.fetch/);
-  assert.throws(() => commandCalls("claim", injected("claimWorkspace", '  await serverFetch(server() + "/api/runners");')), /claimWorkspace\(\) reaches the server outside the CLI's transport: serverFetch\(/);
-  assert.throws(() => commandCalls("claim", injected("claimWorkspace", "  https.request(new URL(server()));")), /https\.request/);
+  assert.throws(() => commandCalls("claim", atelierWith("claimWorkspace", '  const { request: send } = await import("node:https"); send(server());')), /import\("node:https"\)/);
+  assert.throws(() => commandCalls("claim", atelierWith("claimWorkspace", "  const get = globalThis.fetch;")), /globalThis\.fetch/);
+  assert.throws(() => commandCalls("claim", atelierWith("claimWorkspace", '  await serverFetch(server() + "/api/runners");')), /claimWorkspace\(\) reaches the server outside the CLI's transport: serverFetch\(/);
+  assert.throws(() => commandCalls("claim", atelierWith("claimWorkspace", "  https.request(new URL(server()));")), /https\.request/);
   // A call through the transport from a helper reached only through another
   // is the command's own call, judged against the table like the rest.
-  const site = commandCalls("claim", injected("setWorkspaceIdentity", '  await call("GET", "/runners", undefined, as);')).find((s) => s.path === "/runners");
+  const site = commandCalls("claim", atelierWith("setWorkspaceIdentity", '  await call("GET", "/runners", undefined, as);')).find((s) => s.path === "/runners");
   assert.deepEqual(site && [site.where, site.method], ["cli/atelier.mjs setWorkspaceIdentity()", "GET"]);
   assert.equal(byRoute("GET", "/runners").length, 0, "the injected route is one the table does not declare");
+  // The same through an alias of the transport inside cli/atelier.mjs.
+  const aliasedSite = commandCalls("claim", atelierWith("setWorkspaceIdentity", '  const ask = call;\n  await ask("GET", "/runners", undefined, as);')).find((s) => s.path === "/runners");
+  assert.deepEqual(aliasedSite && aliasedSite.method, "GET");
 });
 
-// The reviewer's second-round finding: a namespace import of the transport,
-// reached from a module a spawned command imports, escaped both the scan
-// (a property access to serverFetch was excluded) and the traversal (only
-// the declarations of cli/atelier.mjs were followed).
-test("a namespace, aliased or default import of the transport is a bypass, in a command's module or in one it imports", () => {
-  assert.deepEqual(bypasses('import * as transport from "../server-fetch.mjs";\nawait transport.serverFetch(server() + "/api/runners");'), ['import from "../server-fetch.mjs"', "transport.serverFetch("]);
-  assert.deepEqual(bypasses('import { serverFetch as send } from "../server-fetch.mjs";\nawait send(server() + "/api/runners");'), ['import from "../server-fetch.mjs"', "serverFetch"]);
-  assert.deepEqual(bypasses('import send from "./server-fetch.mjs";\nawait send(server() + "/api/runners");'), ['import from "./server-fetch.mjs"']);
-  assert.deepEqual(bypasses("const send = transport?.serverFetch;"), ["transport?.serverFetch;"]);
+// The fifth-round reviewer's findings, in the shape of the forms they named.
+// astra 1: a re-export of a network module, which binds no name but gives any
+// importer a way to the network.
+test("a re-export of a network module, in a command's module or in one it imports, is a bypass", () => {
+  for (const line of ['export { request as send } from "node:https";', 'export * from "node:http";', 'export * as net from "node:https";', 'export { serverFetch } from "../server-fetch.mjs";']) {
+    assert.throws(() => claimCalls(line), /export from "/, `in the command's module: ${line}`);
+    assert.throws(() => claimCalls('import "../route-probe.mjs";', { "cli/route-probe.mjs": line.replace('"../server-fetch.mjs"', '"./server-fetch.mjs"') }), /cli\/route-probe\.mjs, imported by atelier claim, reaches the server outside the CLI's transport: export from "/, `in an imported module: ${line}`);
+  }
+  assert.deepEqual(bypasses('export { request as send } from "node:https";'), ['export from "node:https"']);
+  assert.deepEqual(bypasses('export { x } from "./fine.mjs"; export * from "./also-fine.mjs";'), []);
+  // The helper in cli/atelier.mjs the reviewer mutated: claim itself.
+  assert.throws(() => commandCalls("claim", atelierWith("claimWorkspace", 'const { request: send } = await import("node:https");')), /import\("node:https"\)/);
+});
+
+// astra 2 for the runner's modules is in test/runner-routes.test.mjs. argon 2:
+// aliased imports from cli/atelier.mjs, both the transport and the helpers.
+test("aliased imports from cli/atelier.mjs, the transport or a helper, are followed in a command's module, in an imported one and in a fast helper", () => {
+  const sitesOf = (extra, tree) => claimCalls(extra, tree).filter((s) => s.path === "/runs");
+  // Transport aliases: the call is read under the name it is made by.
+  assert.equal(sitesOf('import { call as send } from "../atelier.mjs";\nawait send("POST", "/runs", {}, as);').length, 1);
+  assert.equal(sitesOf('import { request as ask } from "../atelier.mjs";\nawait ask("GET", "/runs", undefined, as);').length, 1);
+  assert.equal(sitesOf('import { postEvidence as post } from "../atelier.mjs";\nawait post("/runs", {});').length, 1);
+  assert.equal(sitesOf('import { call } from "../atelier.mjs";\nconst send = call;\nawait send("POST", "/runs", {}, as);').length, 1);
+  assert.equal(sitesOf('const { call: send } = await import("../atelier.mjs");\nawait send("POST", "/runs", {}, as);').length, 1);
+  assert.equal(sitesOf('import "../hop.mjs";', { "cli/hop.mjs": 'import { call as send } from "./atelier.mjs";\nexport const go = () => send("POST", "/runs", {}, as);' }).length, 1, "through a module");
+  assert.equal(byRoute("POST", "/runs").length, 0, "the route is one the table does not declare, so the command check fails on each");
+  assert.throws(() => claimCalls('import { call as send } from "../atelier.mjs";\nconsole.log(send);'), /passes the CLI's transport/, "an alias that is not called is a leak");
+  // Helper aliases, from the command's module and from a module it imports.
+  assert.throws(() => claimCalls('import { landingLease as lease } from "../atelier.mjs";\nawait lease("p");'), /landingLease\(\) reaches the server outside the CLI's transport: serverFetch\(/);
+  assert.throws(() => claimCalls('import "../hop.mjs";', { "cli/hop.mjs": 'import { recordedApproval as approved } from "./atelier.mjs";\nexport const go = () => approved("p");' }), /recordedApproval\(\) reaches the server outside the CLI's transport/);
+  assert.throws(() => claimCalls('import "../hop.mjs";', { "cli/hop.mjs": 'const { postAsRunner: report } = await import("./atelier.mjs");' }), /postAsRunner\(\) reaches the server outside the CLI's transport/);
+  // The runner's part of fast: a helper alias in cli/fast.mjs, reached through
+  // a function fastTake names, is the runner's; the owner's fastLand is not.
+  const fastTree = (body) => withFiles({ "cli/fast.mjs": `import { landingLease as lease, postAsRunner as report } from "./atelier.mjs";\n${body}\nexport function fastLand() {\n  return report("/x", {});\n}\n` });
+  assert.doesNotThrow(() => commandCalls("fast", fastTree("export function shellQuote(v) {\n  return `'${v}'`;\n}")), "the owner's fastLand, which the runner's part does not name, is not judged");
+  assert.throws(() => commandCalls("fast", fastTree("export function shellQuote(v) {\n  return lease(v);\n}")), /cli\/atelier\.mjs landingLease\(\) reaches the server outside the CLI's transport: serverFetch\(/, "an aliased helper named by a function the runner's part reaches, one module down");
+  assert.throws(() => commandCalls("fast", fastTree("export function shellQuote(v) {\n  return report(v);\n}")), /postAsRunner\(\)/);
+  const viaAlias = commandCalls("fast", withFiles({ "cli/fast.mjs": 'import { call as send } from "./atelier.mjs";\nexport function shellQuote(v) {\n  return send("POST", "/runs", {}, v);\n}\n' }));
+  assert.ok(viaAlias.some((s) => s.where === "cli/fast.mjs" && s.path === "/runs"), "an aliased transport call in a fast helper is a site to judge");
+});
+
+// A namespace, aliased or default import of the transport module (the second
+// round), a dynamic import of it and a computed serverFetch member (the
+// third), judged by the same scanner as a reach in any module a command imports.
+test("a namespace, aliased, default or dynamic import of the transport is a bypass, in a command's module or in one it imports", () => {
   const tree = {
     "cli/commands/claim.mjs": 'import { thing } from "../helper.mjs";\nimport { call } from "../atelier.mjs";',
     "cli/helper.mjs": 'import { deeper } from "./deeper.mjs";',
@@ -550,77 +547,21 @@ test("a namespace, aliased or default import of the transport is a bypass, in a 
     "cli/atelier.mjs": "", "cli/server-fetch.mjs": "",
   };
   const files = { read: (path) => tree[path], exists: (path) => path in tree };
-  const modules = importedModules("cli/commands/claim.mjs", new Set(), files);
+  const modules = importClosure("cli/commands/claim.mjs", { files, stop: boundary });
   assert.deepEqual(modules, ["cli/helper.mjs", "cli/deeper.mjs"], "atelier.mjs and the transport are not followed; every other cli module is");
-  assert.deepEqual(modules.filter((m) => bypasses(tree[m]).length), ["cli/deeper.mjs"]);
+  assert.deepEqual(modules.filter((m) => bypasses(parseModule(tree[m], m)).length), ["cli/deeper.mjs"]);
+  for (const probe of ['import * as transport from "../server-fetch.mjs";\nawait transport.serverFetch(u);', 'import { serverFetch as send } from "../server-fetch.mjs";\nawait send(u);', 'import send from "../server-fetch.mjs";', 'const transport = await import("../server-fetch.mjs");\nawait transport["serverFetch"](u);', 'const send = transport?.serverFetch;']) {
+    assert.throws(() => claimCalls(probe), /reaches the server outside the CLI's transport/, probe);
+    assert.throws(() => claimCalls('import "../route-probe.mjs";', { "cli/route-probe.mjs": probe.replace("../server-fetch", "./server-fetch") }), /cli\/route-probe\.mjs, imported by atelier claim/, probe);
+  }
+  // A helper a command imports only dynamically is followed too.
+  assert.throws(() => claimCalls('const { go } = await import("../helper.mjs");', { "cli/helper.mjs": 'await fetch(server() + "/api/runners");' }), /cli\/helper\.mjs, imported by atelier claim, reaches the server outside the CLI's transport: fetch\(/);
 });
 
-// The reviewer's third-round finding: a dynamic import of the transport
-// (judged against the network modules only) and a computed serverFetch member
-// (judged as "fetch" alone) returned no bypass, and a dynamically imported
-// helper was never followed.
-test("a dynamic import of the transport, a computed serverFetch member and a dynamically imported helper are bypasses", () => {
-  const reviewer = 'const transport = await import("../server-fetch.mjs");\nawait transport["serverFetch"](server() + "/api/runners");';
-  assert.deepEqual(bypasses(reviewer), ['import("../server-fetch.mjs")', '["serverFetch"]']);
-  assert.deepEqual(bypasses('(await import("./server-fetch.mjs")).default;'), ['import("./server-fetch.mjs")']);
-  assert.deepEqual(bypasses('x[`serverFetch`](u); y["server" + "Fetch"](u); z["fe" + "tch"](u); w[\'fetch\'](u);'), ["[`serverFetch`]", '["server" + "Fetch"]', '["fe" + "tch"]', "['fetch']"]);
-  assert.deepEqual(bypasses('const a = o["fetchAll"]; const b = o["server" + "Name"]; const c = o[`${name}`];'), []);
-  const tree = {
-    "cli/commands/claim.mjs": 'const { go } = await import("../helper.mjs");',
-    "cli/helper.mjs": 'await fetch(server() + "/api/runners");',
-    "cli/atelier.mjs": "", "cli/server-fetch.mjs": "",
-  };
-  const files = { read: (path) => tree[path], exists: (path) => path in tree };
-  const modules = importedModules("cli/commands/claim.mjs", new Set(), files);
-  assert.deepEqual(modules, ["cli/helper.mjs"]);
-  assert.deepEqual(modules.filter((m) => bypasses(tree[m]).length), ["cli/helper.mjs"]);
-});
-
-test("the bypass scan reads code, not strings or comments", () => {
-  assert.deepEqual(bypasses('git(["fetch", "--quiet", "origin"]); // a fetch( in a comment\nconsole.log(`run git fetch first, then ${count(n, "fetch")}`); /* fetch( */'), []);
-  assert.deepEqual(bypasses("const ok = /fetch\\(/.test(text);"), []);
-  assert.deepEqual(bypasses('console.log(`${await fetch(url)}`);'), ["fetch("]);
-  assert.deepEqual(bypasses('import { request } from "node:http";'), ['import from "node:http"']);
-  assert.deepEqual(bypasses("const go = fetch;"), ["fetch;"]);
-  assert.deepEqual(bypasses("await serverFetch(url);"), ["serverFetch("]);
-  assert.deepEqual(bypasses("const go = serverFetch;"), ["serverFetch;"]);
-  assert.deepEqual(bypasses("new WebSocket(url);"), ["new WebSocket("]);
-  // serverVersion keeps its declared preflight read, and nothing else.
-  assert.deepEqual(helperCalls("serverVersion", DECLS.get("serverVersion")), []);
-  assert.throws(() => helperCalls("serverVersion", DECLS.get("serverVersion").replace(/\{\n/, '{\n  await fetch(server() + "/api/runners");\n')), /not a declared call's path/);
-  assert.throws(() => helperCalls("serverVersion", DECLS.get("serverVersion").replace(/\{\n/, "{\n  http.get(server());\n")), /http\.get/);
-});
-
-// The files of the repository with some replaced or added, for the
-// mutation cases below.
-const withFiles = (tree) => ({
-  read: (path) => tree[path] ?? fileSystem.read(path),
-  exists: (path) => path in tree || fileSystem.exists(path),
-});
-const claimWith = (extra, tree = {}) => ({ files: withFiles({ "cli/commands/claim.mjs": `${read("cli/commands/claim.mjs")}\n${extra}\n`, ...tree }) });
-const claimCalls = (extra, tree) => commandCalls("claim", DECLS, claimWith(extra, tree).files);
-
-test("imports are read in every form: side-effect, re-export, dynamic, aliased, namespace, several to a line", () => {
-  const forms = importsOf([
-    'import "./side.mjs";',
-    "import { a as b, type C } from './named.mjs'; import d, * as e from \"./both.mjs\";",
-    'import {\n  x,\n  y as z,\n} from "../multi.mjs";',
-    'export { q } from "./re.mjs"; export * from "./all.ts";',
-    'const m = await import("./lazy.mjs"); import type { T } from "./types.ts";',
-  ].join("\n"));
-  assert.deepEqual(forms.map((f) => f.spec), ["./named.mjs", "./both.mjs", "../multi.mjs", "./re.mjs", "./all.ts", "./types.ts", "./side.mjs", "./lazy.mjs"]);
-  assert.deepEqual(forms.find((f) => f.spec === "./named.mjs").bound, [{ imported: "a", local: "b" }, { imported: "C", local: "C" }]);
-  assert.deepEqual(forms.find((f) => f.spec === "../multi.mjs").bound, [{ imported: "x", local: "x" }, { imported: "y", local: "z" }]);
-  assert.equal(forms.find((f) => f.spec === "./both.mjs").opaque, true);
-  assert.equal(forms.find((f) => f.spec === "./all.ts").opaque, true);
-  assert.equal(forms.find((f) => f.spec === "./lazy.mjs").opaque, true);
-  assert.equal(forms.find((f) => f.spec === "./named.mjs").opaque, false);
-  const files = { exists: (path) => ["src/a.ts", "cli/b.mjs", "cli/c/index.mjs"].includes(path) };
-  assert.equal(resolveImport("cli/commands/x.mjs", "../../src/a.js", files), "src/a.ts", "a .js specifier names the .ts beside it");
-  assert.equal(resolveImport("cli/commands/x.mjs", "../b", files), "cli/b.mjs", "an extensionless specifier gets a source extension");
-  assert.equal(resolveImport("cli/commands/x.mjs", "../c", files), "cli/c/index.mjs");
-  assert.equal(resolveImport("cli/commands/x.mjs", "node:fs", files), null);
-  assert.equal(resolveImport("cli/commands/x.mjs", "../../../outside.mjs", { exists: () => true }), null, "a file outside the repository is not followed");
+test("the capability check keeps serverVersion's preflight read and nothing else", () => {
+  assert.deepEqual(helperCalls("serverVersion"), []);
+  assert.throws(() => helperCalls("serverVersion", atelierOf(atelierWith("serverVersion", '  await fetch(server() + "/api/runners");'))), /not a declared call's path/);
+  assert.throws(() => helperCalls("serverVersion", atelierOf(atelierWith("serverVersion", "  http.get(server());"))), /http\.get/);
 });
 
 // The fourth-round reviewer's first finding (astra): the traversal followed
@@ -637,30 +578,52 @@ test("a side-effect import and an imported TypeScript module are followed and sc
   // Reached through a TypeScript module in turn.
   assert.throws(() => claimCalls('import "../hop.mjs";', { "cli/hop.mjs": 'import "../src/deeper.ts";', "src/deeper.ts": "export const go = () => globalThis.fetch(url);" }), /src\/deeper\.ts, imported by atelier claim.*globalThis\.fetch/);
   // And a call through the transport in a side-effect module is a site to judge.
-  const [site] = claimCalls('import "../route-probe.mjs";', { "cli/route-probe.mjs": 'await call("POST", "/runners", {}, as);' }).filter((s) => s.where === "cli/route-probe.mjs");
+  const [site] = claimCalls('import "../route-probe.mjs";', { "cli/route-probe.mjs": 'import { call } from "./atelier.mjs";\nawait call("POST", "/runners", {}, as);' }).filter((s) => s.where === "cli/route-probe.mjs");
   assert.deepEqual(site && [site.method, site.path], ["POST", "/runners"]);
   assert.equal(byRoute("POST", "/runners").length, 0, "the probe's route is one the table does not declare, so the command check fails on it");
 });
 
-// The fourth-round reviewer's second finding (argon 1): helpers of
-// cli/atelier.mjs that call serverFetch themselves skip request().
-const RAW_FETCHERS = ["requestText", "recordedApproval", "landingLease", "postAsRunner"];
-test("every helper of cli/atelier.mjs that calls serverFetch itself is classified, refuses a spawned helper at run time and is reached by no spawned command", async (t) => {
-  const users = [...DECLS].filter(([, body]) => /(?<![.\w$])serverFetch\(/.test(codeOnly(body))).map(([name]) => name).sort();
-  // The transport (request), the declared preflight read (serverVersion) and
-  // the owner's reads and reports: anything else that fetches must be listed.
-  assert.deepEqual(users, ["request", "serverVersion", ...RAW_FETCHERS].sort(), "a helper of cli/atelier.mjs calls serverFetch outside the classified ones; route it through request or list it as owner-only here");
-  for (const name of RAW_FETCHERS) {
-    const body = DECLS.get(name);
-    assert.ok(body.indexOf("runnerHelper()") > 0 && body.indexOf("runnerHelper()") < body.indexOf("serverFetch("), `${name} must refuse a spawned helper before it fetches`);
+// The fourth-round reviewer's second finding (argon 1), and the fifth
+// round's: helpers of cli/atelier.mjs that send to the server themselves skip
+// request(), so no declaration judges them. Each refuses a spawned helper
+// before it fetches, whatever route it names, and no spawned command reaches
+// one, aliased, through a namespace or through a module.
+const CLASSIFIED = {
+  request: "the transport: declaredHelperCall judges every call",
+  serverVersion: "the declared public preflight read, judged by preflightFetches",
+};
+// How each owner-only fetching helper is called in the runtime case below,
+// naming a route a declaration does cover, so a refusal is the helper's own.
+const ATTEMPTS = {
+  requestText: () => ["/projects/p"],
+  recordedApproval: () => ["p"],
+  landingLease: () => ["p", "test/actor"],
+  postAsRunner: () => ["/projects/p/items/t1/claim", {}, "home:r", new AbortController().signal],
+};
+const SPAWNED_ARGV = (command) => (command === "fast" ? ["fast", "take"] : [command]);
+
+test("every helper of cli/atelier.mjs that sends to the server itself refuses a spawned helper before it fetches, and no spawned command reaches one", async (t) => {
+  const users = [...ATELIER.declarations].filter(([, d]) => references(ATELIER, d.node).some((r) => r.text === "serverFetch(")).map(([name]) => name).sort();
+  const raw = users.filter((name) => !(name in CLASSIFIED));
+  assert.deepEqual(raw, Object.keys(ATTEMPTS).sort(), "a helper of cli/atelier.mjs calls serverFetch outside the classified ones; route it through request, or make it refuse a spawned helper (refuseSpawnedHelper) and list it in ATTEMPTS here");
+  for (const name of Object.keys(CLASSIFIED)) assert.ok(users.includes(name), `${name} no longer calls serverFetch; update CLASSIFIED`);
+  for (const name of raw) {
+    const node = ATELIER.declarations.get(name).node;
+    // The first statement refuses; nothing, not even the identity read,
+    // comes before it, and declaredHelperCall (which a declared GET passes)
+    // is not what stands guard.
+    assert.equal(node.body.statements[0].getText(), `refuseSpawnedHelper("${name}");`, `${name} must refuse a spawned helper in its first statement`);
+    assert.equal(namesIn(ATELIER, node).has("declaredHelperCall"), false, `${name} judges a spawned helper by declaredHelperCall, which a declared route passes`);
     // No spawned command reaches it, directly, aliased or through a module.
     for (const command of RUNNER_COMMANDS) {
-      const file = `cli/commands/${command}.mjs`;
-      const reached = [file, ...importedModules(file)].flatMap((f) => atelierNames(read(f), f).filter((n) => n === name));
-      assert.deepEqual(reached, [], `atelier ${command} reaches ${name}, an owner-only helper that fetches itself`);
+      const { names } = commandFacts(command);
+      assert.equal(names.includes(name), false, `atelier ${command} reaches ${name}, an owner-only helper that sends to the server itself`);
     }
   }
-  // At run time the same refusal stands where the static check could not look.
+  // refuseSpawnedHelper itself refuses unconditionally under a spawned helper.
+  const guard = exported("refuseSpawnedHelper") ?? ATELIER.declarations.get("refuseSpawnedHelper").node;
+  assert.ok(/if \(runnerHelper\(\)\) throw new Error\(/.test(guard.getText()), "refuseSpawnedHelper must throw for a spawned helper, not judge it");
+  // At run time, for every command the runner spawns and every such helper.
   const before = args._, login = cliState.loginToken, server = cliState.loginServer;
   t.after(() => { args._ = before; cliState.loginToken = login; cliState.loginServer = server; });
   cliState.loginToken = "fixture-owner";
@@ -670,28 +633,32 @@ test("every helper of cli/atelier.mjs that calls serverFetch itself is classifie
     sent.push({ url, method: init?.method });
     return Response.json({ ok: true, project: {}, lease: null });
   });
-  const { requestText, recordedApproval, landingLease, postAsRunner } = await import("../cli/atelier.mjs");
-  const attempts = [() => requestText("/projects/p/items/t1/logs/abc"), () => recordedApproval("p"), () => landingLease("p", "test/actor"), () => postAsRunner("/models/m/status", {}, "home:r", new AbortController().signal)];
-  args._ = ["claim"];
-  for (const attempt of attempts.filter((_, i) => i !== 1)) await assert.rejects(attempt(), /not a call the runner helpers declare/);
-  assert.equal(sent.filter((r) => !r.url.endsWith("/config")).length, 0, "a spawned helper's raw read or report is refused before it is sent");
+  const atelier = await import("../cli/atelier.mjs");
+  for (const command of RUNNER_COMMANDS) {
+    args._ = SPAWNED_ARGV(command);
+    for (const name of Object.keys(ATTEMPTS)) {
+      await assert.rejects(atelier[name](...ATTEMPTS[name]()), /not a call the runner helpers declare/, `atelier ${command}: ${name}`);
+    }
+  }
+  assert.equal(sent.length, 0, "a spawned helper's raw read or report is refused before anything is sent, the identity read included");
   // The owner's commands keep them.
   args._ = ["land"];
-  await recordedApproval("p");
-  await landingLease("p", "test/actor");
-  await requestText("/projects/p/items/t1/logs/abc");
-  await postAsRunner("/models/m/status", {}, "home:r", new AbortController().signal);
-  assert.ok(sent.some((r) => r.url.endsWith("/models/m/status")) && sent.some((r) => r.url.endsWith("/landing-lease")), "the owner's land reaches the server");
+  await atelier.recordedApproval("p");
+  await atelier.landingLease("p", "test/actor");
+  await atelier.requestText("/projects/p/items/t1/logs/abc");
+  await atelier.postAsRunner("/models/m/status", {}, "home:r", new AbortController().signal);
+  assert.ok(sent.some((r) => r.url.endsWith("/models/m/status")) && sent.some((r) => r.url.endsWith("/landing-lease")) && sent.some((r) => r.url.endsWith("/projects/p")), "the owner's land reaches the server");
 });
 
 test("a spawned command that reaches an owner-only helper, aliased or through a namespace or a module, fails the check", () => {
-  for (const name of RAW_FETCHERS) {
+  for (const name of Object.keys(ATTEMPTS)) {
     assert.throws(() => claimCalls(`import { ${name} as send } from "../atelier.mjs";\nawait send("/x");`), /cli\/atelier\.mjs \w+\(\) reaches the server outside the CLI's transport: serverFetch\(/, `${name}, aliased`);
     assert.throws(() => claimCalls('import "../hop.mjs";', { "cli/hop.mjs": `import { ${name} } from "./atelier.mjs";\nawait ${name}("/x");` }), /reaches the server outside the CLI's transport: serverFetch\(/, `${name}, through a module`);
   }
-  assert.throws(() => claimCalls('import { requestText } from \'../atelier.mjs\';'), /serverFetch\(/, "a single-quoted second import of atelier.mjs");
+  assert.throws(() => claimCalls("import { requestText } from '../atelier.mjs';"), /serverFetch\(/, "a single-quoted second import of atelier.mjs");
   assert.throws(() => claimCalls('import * as atelier from "../atelier.mjs";\nawait atelier.postAsRunner("/x");'), /imports cli\/atelier\.mjs as a namespace/);
-  assert.throws(() => claimCalls('const { requestText } = await import("../atelier.mjs");'), /imports cli\/atelier\.mjs as a namespace, a default or dynamically/);
+  assert.throws(() => claimCalls('const { requestText } = await import("../atelier.mjs");'), /serverFetch\(/);
+  assert.throws(() => claimCalls('const atelier = await import("../atelier.mjs");'), /imports cli\/atelier\.mjs as a namespace, a default or dynamically/);
   assert.throws(() => claimCalls('import "../hop.mjs";', { "cli/hop.mjs": 'import atelier from "./atelier.mjs";' }), /cli\/hop\.mjs imports cli\/atelier\.mjs as a namespace, a default/);
   assert.throws(() => claimCalls('export { landingLease } from "../atelier.mjs";'), /serverFetch\(/, "a re-export");
 });
@@ -701,26 +668,29 @@ test("a spawned command that reaches an owner-only helper, aliased or through a 
 // dropped the atelier.mjs helpers its modules name.
 test("a call in an imported module is a site to judge, and a fast helper reached through a module is followed", () => {
   // Two modules down, in a module the command imports only for its effect.
-  const tree = { "cli/helper.mjs": 'import { go } from "./deeper.mjs";\nexport { go };', "cli/deeper.mjs": 'export const go = () => call("POST", "/runners", { title }, as);' };
+  const tree = { "cli/helper.mjs": 'import { go } from "./deeper.mjs";\nexport { go };', "cli/deeper.mjs": 'import { call } from "./atelier.mjs";\nexport const go = () => call("POST", "/runners", { title }, as);' };
   const sites = claimCalls('import { go } from "../helper.mjs";\nawait go();', tree).filter((s) => s.where === "cli/deeper.mjs");
   assert.deepEqual(sites.map((s) => [s.method, s.path, s.keys]), [["POST", "/runners", ["title"]]]);
   assert.equal(byRoute("POST", "/runners").length, 0, "no declaration matches it, so the command check fails");
   // request and postEvidence count as call does.
-  assert.deepEqual(claimCalls('import "../deeper.mjs";', { "cli/deeper.mjs": 'await request("GET", "/runners", undefined, as); await postEvidence("/runners", {});' }).filter((s) => s.where === "cli/deeper.mjs").map((s) => s.method), ["GET", "POST"]);
+  assert.deepEqual(claimCalls('import "../deeper.mjs";', { "cli/deeper.mjs": 'import { request, postEvidence } from "./atelier.mjs";\nawait request("GET", "/runners", undefined, as); await postEvidence("/runners", {});' }).filter((s) => s.where === "cli/deeper.mjs").map((s) => s.method), ["GET", "POST"]);
   // An undeclared body field in a module is read as the command's own are.
-  const [field] = claimCalls('import "../deeper.mjs";', { "cli/deeper.mjs": 'await call("POST", `${I(name, id)}/claim`, { secret }, as);' }).filter((s) => s.where === "cli/deeper.mjs");
+  const [field] = claimCalls('import "../deeper.mjs";', { "cli/deeper.mjs": 'import { call } from "./atelier.mjs";\nawait call("POST", `${I(name, id)}/claim`, { secret }, as);' }).filter((s) => s.where === "cli/deeper.mjs");
   assert.deepEqual(field.keys, ["secret"]);
   assert.equal(byRoute("POST", `${ITEM}/claim`)[0].body.includes("secret"), false);
   // fast: only fast take and fast ready are the runner's, so a module it
   // imports is judged by the functions the runner's part names. A helper of
   // atelier.mjs such a function reaches through that module is followed ...
-  const fastTree = (body) => ({ "cli/fast.mjs": `import { landingLease, postAsRunner } from "./atelier.mjs";\n${body}\nexport function fastLand() {\n  return postAsRunner("/x", {});\n}\n` });
-  const fast = (body) => commandCalls("fast", DECLS, withFiles(fastTree(body)));
+  const fastTree = (body) => withFiles({ "cli/fast.mjs": `import { call, landingLease, postAsRunner } from "./atelier.mjs";\n${body}\nexport function fastLand() {\n  return postAsRunner("/x", {});\n}\n` });
+  const fast = (body) => commandCalls("fast", fastTree(body));
   assert.doesNotThrow(() => fast("export function shellQuote(v) {\n  return `'${v}'`;\n}"), "the owner's fastLand, which the runner's part does not name, is not judged");
   assert.throws(() => fast("export function shellQuote(v) {\n  return landingLease(v);\n}"), /cli\/atelier\.mjs landingLease\(\) reaches the server outside the CLI's transport: serverFetch\(/, "a helper named by a function the runner's part reaches, one module down");
   // ... and so is a call through the transport there.
-  const viaCall = commandCalls("fast", DECLS, withFiles(fastTree('export function shellQuote(v) {\n  return call("POST", "/runners", {}, v);\n}')));
+  const viaCall = commandCalls("fast", fastTree('export function shellQuote(v) {\n  return call("POST", "/runners", {}, v);\n}'));
   assert.ok(viaCall.some((s) => s.where === "cli/fast.mjs" && s.path === "/runners"));
   // A function the runner's part never names is the owner's and is not judged.
   assert.ok(!viaCall.some((s) => s.text.includes("/x")));
+  // A re-export hop and a namespace import between the runner's part and the helper.
+  const hop = (head) => withFiles({ "cli/fast.mjs": 'export * from "./fast-more.mjs";', "cli/fast-more.mjs": 'import { landingLease } from "./atelier.mjs";\nexport function shellQuote(v) {\n  return landingLease(v);\n}\n', ...head });
+  assert.throws(() => commandCalls("fast", hop({})), /landingLease\(\) reaches the server/);
 });

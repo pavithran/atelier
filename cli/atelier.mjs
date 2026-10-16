@@ -842,6 +842,14 @@ function runnerHelper() {
   return RUNNER_COMMANDS.has(command) && (command !== "fast" || ["take", "ready"].includes(args._[1]));
 }
 
+// The owner's raw fetching helpers (requestText, recordedApproval,
+// landingLease, postAsRunner) send to the server without request(), so no
+// declaration judges them: a spawned helper may not use one, whatever route
+// it names (t478). The refusal precedes the fetch and the identity read.
+function refuseSpawnedHelper(name) {
+  if (runnerHelper()) throw new Error(`${name} is not a call the runner helpers declare: it is an owner-only read or report that fetches outside request() (RUNNER_CALLS in src/tokens.ts)`);
+}
+
 export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
   // Validate before even the identity read: spelling, aliases and indirect
@@ -889,8 +897,8 @@ export async function request(method, path, body, as, extra = {}, signal) {
 // words.
 export async function requestText(path, as) {
   // The owner's read: no declared helper call is a text payload, so a
-  // spawned helper is refused here as it is in request (t478).
-  if (runnerHelper()) declaredHelperCall("GET", path, undefined);
+  // spawned helper is refused here, before it fetches (t478).
+  refuseSpawnedHelper("requestText");
   await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
@@ -922,7 +930,7 @@ export const logReader = (name, id, as) => (ref) => requestText(`${I(name, id)}/
 // `call`, because a project not yet registered answers 404, and here that is
 // an answer, not a failure.
 export async function recordedApproval(name) {
-  if (runnerHelper()) declaredHelperCall("GET", P(name), undefined);
+  refuseSpawnedHelper("recordedApproval");
   await resolveTokenActor();
   let res, data;
   try {
@@ -1786,7 +1794,7 @@ function landingRunning(name) {
 // token, still gets the rest of the section; the lease is then reported as
 // unreadable. The holder is a person's or agent's name, so it is flattened.
 export async function landingLease(name, as) {
-  if (runnerHelper()) declaredHelperCall("GET", `${P(name)}/landing-lease`, undefined);
+  refuseSpawnedHelper("landingLease");
   await resolveTokenActor();
   let res, data;
   try {
@@ -1939,7 +1947,7 @@ export function wrapReady(name, cwd, report) {
 // names another actor: a runner token cannot act as the owner, so its
 // review skip goes as the review job's actor (t353).
 export async function postAsRunner(path, body, runner, signal, as = OWNER) {
-  if (runnerHelper()) declaredHelperCall("POST", path, body);
+  refuseSpawnedHelper("postAsRunner");
   const res = await serverFetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },

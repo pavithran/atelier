@@ -45,7 +45,7 @@ import { agentRoute, callParts, callPath, declaredCall, RUNNER_CALLS, RUNNER_COM
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { helperCommand, runnerTransport } from "../cli/runner.mjs";
-import { bypasses, codeOnly, importsOf, references } from "./runner-routes-scan.test.mjs";
+import { assignmentsTo, bypasses, importClosure, parseModule, references, withFiles } from "./helpers/source-scan.mjs";
 
 const read = (path) => readFileSync(resolve(path), "utf8");
 
@@ -215,40 +215,72 @@ function transportBounds(runner) {
   assert.ok(start >= 0 && end > start, "runnerTransport or helperCommand is gone from cli/runner.mjs; update this check");
   return { start, end, from: runner.slice(0, start).split("\n").length, to: runner.slice(0, end).split("\n").length - 1 };
 }
-// The source check, over the two modules' texts, so a mutation can be tried.
-function runnerSourceCheck(runner, command) {
+// What the runner's modules import, transitively, and keep that reaches for a
+// server by the scanner's reading (test/helpers/source-scan.mjs), by file and
+// exactly: a module not listed keeps none. The scan guards against an
+// accidental undeclared call by an honest builder; the runtime fetch guard and
+// the gateway remain the enforcement, and code written to hide a reach (eval,
+// a name or specifier assembled at run time) is out of scope.
+const RUNNER_ENTRIES = ["cli/runner.mjs", "cli/commands/runner.mjs"];
+const ACCEPTED_REACHES = {
+  // The git fetch helper (io.fetch, `git fetch` through checked()), called twice.
+  "cli/task-refresh.mjs": ["io.fetch(", "io.fetch("],
+  // runRequest, the HTTP smoke step of `atelier ship`; the runner imports only
+  // runCommand from cli/ship.mjs, through cli/land.mjs.
+  "cli/ship.mjs": ["fetch("],
+};
+// The modules the runner's code stops at: cli/atelier.mjs is judged by the
+// names taken from it, the transport module by every import of it.
+const RUNNER_BOUNDARY = (path) => /(?:^|\/)(?:atelier|server-fetch)\.mjs$/.test(path);
+// The CLI's own transport and the owner's raw reads (t478) are not the
+// runner's: none of them is named from cli/atelier.mjs by any module the
+// runner imports, in any import, re-export or destructuring form, aliased or not.
+const OWNER_TRANSPORT = ["call", "request", "postEvidence", "postAsRunner", "requestText", "recordedApproval", "landingLease", "resolveTokenActor", "serverFetch"];
+
+// The line where `io` is bound to something other than runRunner's io object
+// or runnerIO, or 0: then io.fetch is no longer the git helper.
+function ioBinding(module) {
+  const other = assignmentsTo(module, "io").find((a) => !(a.kind === "object" || (a.kind === "identifier" && a.text === "runnerIO")));
+  return other?.line ?? 0;
+}
+
+// The source check, over the two modules' texts (and any further files a
+// mutation adds), so a mutation can be tried.
+function runnerSourceCheck(runner, command, tree = {}) {
+  const files = withFiles({ ...tree, "cli/runner.mjs": runner, "cli/commands/runner.mjs": command });
+  const mod = (file) => parseModule(files.read(file), file);
   const { start, end } = transportBounds(runner);
-  const transport = runner.slice(start, end);
-  assert.deepEqual(bypasses(transport), ["fetch", "globalThis.fetch", "fetch("], "runnerTransport's fetch references are its default binding and one call; anything more is a second way to the server");
-  // Outside the transport, blanked in place so every line keeps its number.
-  const outside = runner.slice(0, start) + transport.replace(/[^\n]/g, " ") + runner.slice(end);
+  const found = references(mod("cli/runner.mjs"));
+  const inTransport = (r) => r.pos >= start && r.pos < end;
+  assert.deepEqual(found.filter(inTransport).map((r) => r.text), ["fetch = globalThis.fetch", "globalThis.fetch", "fetch("], "runnerTransport's fetch references are its default binding and one call; anything more is a second way to the server");
+  // Outside the transport the runner keeps its git fetch helper alone.
   const lines = runner.split("\n");
-  const gitHelper = (r) => r.text === "io.fetch(" || (r.text === "fetch:" && GIT_FETCH.test(lines[r.line - 1]));
-  const found = references(outside), stray = found.filter((r) => !gitHelper(r));
+  const gitHelper = (r) => r.text === "io.fetch(" || (r.kind === "property-key" && GIT_FETCH.test(lines[r.line - 1]));
+  const stray = found.filter((r) => !inTransport(r) && !gitHelper(r));
   assert.ok(stray.length === 0, `cli/runner.mjs reaches the server outside runnerTransport (a transport bypass): ${stray.map((r) => `${r.line}: ${r.text}`).join(", ")}`);
-  assert.equal(found.filter((r) => r.text === "fetch:").length, 1, "the git fetch helper is declared once, in runRunner's io");
-  const code = codeOnly(runner), bound = /\bio\s*=(?!=)(?!\s*(?:runnerIO\b|\{))/.exec(code);
-  assert.ok(!bound, `io is bound to something other than runRunner's io or runnerIO, so io.fetch is no longer the git helper: line ${code.slice(0, bound?.index).split("\n").length}`);
-  const reaches = bypasses(command);
+  assert.equal(found.filter((r) => r.kind === "property-key").length, 1, "the git fetch helper is declared once, in runRunner's io");
+  const bound = ioBinding(mod("cli/runner.mjs"));
+  assert.ok(!bound, `io is bound to something other than runRunner's io or runnerIO, so io.fetch is no longer the git helper: line ${bound}`);
+  const reaches = bypasses(mod("cli/commands/runner.mjs"));
   assert.ok(reaches.length === 0, `cli/commands/runner.mjs reaches the server outside runnerTransport (a transport bypass): ${reaches.join(", ")}`);
-  const commandCode = codeOnly(command);
-  for (const bypass of [/\bpostAsRunner\b/, /(?<![.\w])call\(/, /(?<![.\w])request\(/, /\bresolveTokenActor\b/]) assert.doesNotMatch(commandCode, bypass, "cli/commands/runner.mjs bypasses runnerTransport through the CLI's own transport");
-  // The CLI's own transport and the owner's raw reads (t478) are not the
-  // runner's: none of them is named by the runner's modules, so an alias
-  // (`import { call as send }`) or a second import of cli/atelier.mjs cannot
-  // reach one either; the names are judged wherever they appear.
-  const OWNER_TRANSPORT = ["call", "request", "postEvidence", "postAsRunner", "requestText", "recordedApproval", "landingLease", "resolveTokenActor", "serverFetch"];
-  for (const [file, text] of [["cli/runner.mjs", runner], ["cli/commands/runner.mjs", command], ["cli/task-refresh.mjs", read("cli/task-refresh.mjs")]]) {
-    const imported = importsOf(text).filter((entry) => /(?:^|\/)atelier\.mjs$/.test(entry.spec));
-    assert.ok(!imported.some((entry) => entry.opaque && !entry.dynamic), `${file} imports cli/atelier.mjs as a namespace or a default`);
-    // A dynamic import (cli/runner.mjs takes `server` that way, to wait out
-    // the module's top level) is read where it destructures its names;
-    // any other form is a namespace and fails.
-    const dynamic = imported.filter((entry) => entry.dynamic).length;
-    const destructured = [...text.matchAll(/\{([^}]*)\}\s*=\s*[^;]*?\bimport\(\s*["'`][^"'`]*atelier\.mjs["'`]\s*\)/g)];
-    assert.equal(destructured.length, dynamic, `${file} imports cli/atelier.mjs dynamically as a namespace, which reaches every helper in it`);
-    const named = [...imported.flatMap((entry) => entry.bound.map((b) => b.imported)), ...destructured.flatMap((m) => m[1].split(",").map((n) => n.trim().split(/\s*:\s*/)[0]).filter(Boolean))].filter((name) => OWNER_TRANSPORT.includes(name));
-    assert.deepEqual(named, [], `${file} imports the CLI's own transport or an owner-only fetching helper from cli/atelier.mjs`);
+  // Every module the runner imports, transitively (any import form, any file
+  // kind, cli/ and src/), is scanned whole: it keeps no reach beyond the
+  // accepted ones, and names no CLI transport from cli/atelier.mjs.
+  const closure = [...new Set(RUNNER_ENTRIES.flatMap((entry) => importClosure(entry, { files, stop: RUNNER_BOUNDARY })))];
+  for (const file of closure) {
+    if (RUNNER_ENTRIES.includes(file)) continue;
+    const own = bypasses(mod(file));
+    assert.ok(JSON.stringify(own) === JSON.stringify(ACCEPTED_REACHES[file] ?? []), `${file}, imported by the runner, reaches the server outside runnerTransport (a transport bypass): ${own.join(", ")}`);
+  }
+  for (const file of [...RUNNER_ENTRIES, ...closure]) {
+    for (const entry of mod(file).imports.filter((e) => e.spec !== null && /(?:^|\/)atelier\.mjs$/.test(e.spec))) {
+      // cli/runner.mjs takes `server` by a dynamic import, destructured, to
+      // wait out the module's top level; a namespace, a default or a
+      // dynamic import taken whole reaches every helper.
+      assert.ok(!entry.opaque, `${file} imports cli/atelier.mjs as a namespace, a default or dynamically as a namespace, which reaches every helper in it`);
+      const named = entry.bound.map((b) => b.imported).filter((name) => OWNER_TRANSPORT.includes(name));
+      assert.deepEqual(named, [], `${file} imports the CLI's own transport or an owner-only fetching helper from cli/atelier.mjs`);
+    }
   }
   // Every name sent is declared as the runner's own, and every such name is sent.
   const sent = new Set([...`${runner}\n${command}`.matchAll(/\bsend\("([a-z-]+)"/g)].map((m) => m[1]));
@@ -262,8 +294,8 @@ function runnerSourceCheck(runner, command) {
   // The task refresh (cli/task-refresh.mjs, t462) spawns its commands through
   // report([...]) and io.cli, and reaches the server in no other way: the
   // only reference its scan finds is the runner's git fetch helper.
-  const refresh = read("cli/task-refresh.mjs");
-  assert.deepEqual([...new Set(bypasses(refresh))], ["io.fetch("], "cli/task-refresh.mjs reaches the server outside the CLI's transport");
+  const refresh = files.read("cli/task-refresh.mjs");
+  assert.deepEqual([...new Set(bypasses(mod("cli/task-refresh.mjs")))], ["io.fetch("], "cli/task-refresh.mjs reaches the server outside the CLI's transport");
   for (const m of refresh.matchAll(/\b(?:report|io\.cli)\(\[\s*(?:argv\[0\]|"([a-z-]+)")/g)) if (m[1]) spawned.add(m[1]);
   for (const name of own) spawned.delete(name);
   assert.deepEqual([...spawned].sort(), [...RUNNER_COMMANDS].sort());
@@ -284,45 +316,56 @@ test("a server reach added to either runner module, in any form, fails the sourc
   const runner = read("cli/runner.mjs"), command = read("cli/commands/runner.mjs");
   const intoRunner = (line) => { assert.ok(runner.includes(`${TRANSPORT_END}argv) {\n`)); return runner.replace(`${TRANSPORT_END}argv) {\n`, `${TRANSPORT_END}argv) {\n  ${line}\n`); };
   const intoCommand = (line) => `${command}\n${line}\n`;
+  // Each form, and the reference the scanner reads it as.
   const FORMS = [
-    ['await fetch(server() + "/api/runners");', /fetch\(/],
-    ['await globalThis.fetch(server() + "/api/runners");', /globalThis\.fetch/],
-    ['await self.fetch(server() + "/api/runners");', /self\.fetch/],
-    ['await window.fetch(server() + "/api/runners");', /window\.fetch/],
-    ['await globalThis?.fetch(server() + "/api/runners");', /globalThis\?\.fetch/],
-    ["const f = fetch;", /fetch;/],
-    ["const { fetch: f } = globalThis;", /fetch:/],
-    ["const f = globalThis.fetch;", /globalThis\.fetch/],
-    ['await globalThis["fetch"](server() + "/api/runners");', /\["fetch"\]/],
-    ["const f = globalThis['fetch'];", /\['fetch'\]/],
-    ['const { request } = await import("node:https");', /import\("node:https"\)/],
-    ['await import("undici");', /import\("undici"\)/],
-    ["https.request(new URL(server()));", /https\.request/],
-    ["http.get(server());", /http\.get/],
-    ["new WebSocket(server());", /new WebSocket/],
-    ["new EventSource(server());", /new EventSource/],
-    ["new XMLHttpRequest();", /new XMLHttpRequest/],
+    ['await fetch(server() + "/api/runners");', "fetch("],
+    ['await globalThis.fetch(server() + "/api/runners");', "globalThis.fetch("],
+    ['await self.fetch(server() + "/api/runners");', "self.fetch("],
+    ['await window.fetch(server() + "/api/runners");', "window.fetch("],
+    ['await globalThis?.fetch(server() + "/api/runners");', "globalThis?.fetch("],
+    ["const f = fetch;", "fetch"],
+    ["const { fetch: f } = globalThis;", "fetch: f"],
+    ["const { fetch } = globalThis;", "fetch:"],
+    ["const f = globalThis.fetch;", "globalThis.fetch"],
+    ['await globalThis["fetch"](server() + "/api/runners");', 'globalThis["fetch"]('],
+    ["const f = globalThis['fetch'];", "globalThis['fetch']"],
+    ['await globalThis["fe" + "tch"](server());', 'globalThis["fe" + "tch"]('],
+    ['const { request } = await import("node:https");', 'import("node:https")'],
+    ['await import("undici");', 'import("undici")'],
+    ["https.request(new URL(server()));", "https.request("],
+    ["http.get(server());", "http.get("],
+    ["new WebSocket(server());", "new WebSocket("],
+    ["new EventSource(server());", "new EventSource("],
+    ["new XMLHttpRequest();", "new XMLHttpRequest("],
     // Modules named where the scan cannot read them (the pre-review of
     // 4d82bf99 reached a server with each, past the runtime fetch guard).
-    ['process.getBuiltinModule("node:https").request(new URL(server()));', /getBuiltinModule/],
-    ['createRequire(import.meta.url)("node:http");', /createRequire\(/],
-    ['require("node:http");', /require\(/],
-    ['await import("node:" + "http");', /import\(<not a literal>\)/],
-    ['const m = "undici"; await import(m);', /import\(<not a literal>\)/],
+    ['process.getBuiltinModule("node:https").request(new URL(server()));', "getBuiltinModule"],
+    ['createRequire(import.meta.url)("node:http");', "createRequire("],
+    ['require("node:http");', "require("],
+    ['await import("node:" + "http");', "import(<not a literal>)"],
+    ['const m = "undici"; await import(m);', "import(<not a literal>)"],
+    // Re-exports of a network module, which bind no name here but give any
+    // importer of this module a way to the network (the fifth-round finding).
+    ['export { request as send } from "node:https";', 'export from "node:https"'],
+    ['export * from "node:http";', 'export from "node:http"'],
+    ['export * as net from "node:https";', 'export from "node:https"'],
+    ['import { serverFetch as send } from "./server-fetch.mjs";', 'import from "./server-fetch.mjs"'],
+    ['export { serverFetch } from "./server-fetch.mjs";', 'export from "./server-fetch.mjs"'],
   ];
+  const mentions = (form) => (error) => error instanceof Error && error.message.includes(form);
   for (const [line, form] of FORMS) {
-    assert.throws(() => runnerSourceCheck(intoRunner(line), command), form, `cli/runner.mjs lets through: ${line}`);
-    assert.throws(() => runnerSourceCheck(runner, intoCommand(line)), form, `cli/commands/runner.mjs lets through: ${line}`);
+    assert.throws(() => runnerSourceCheck(intoRunner(line), command), mentions(form), `cli/runner.mjs lets through: ${line}`);
+    assert.throws(() => runnerSourceCheck(runner, intoCommand(line)), mentions(form), `cli/commands/runner.mjs lets through: ${line}`);
   }
   // A static import of a network module, at the top of either module.
-  assert.throws(() => runnerSourceCheck(`import { request } from "node:http";\n${runner}`, command), /import from "node:http"/);
-  assert.throws(() => runnerSourceCheck(runner, `import { request } from "node:http";\n${command}`), /import from "node:http"/);
+  assert.throws(() => runnerSourceCheck(`import { request } from "node:http";\n${runner}`, command), mentions('import from "node:http"'));
+  assert.throws(() => runnerSourceCheck(runner, `import { request } from "node:http";\n${command}`), mentions('import from "node:http"'));
   // A fetch in a string, a comment or a git argument is not a reach.
   assert.doesNotThrow(() => runnerSourceCheck(intoRunner('const words = ["fetch", `git fetch ${argv[0]}`]; // fetch(url)'), command));
   // The git helper's name, rebound, declared again or bound to a global, is
   // no longer the git helper; a call through it is the one form let through.
-  assert.throws(() => runnerSourceCheck(intoRunner("io.fetch = globalThis.fetch;"), command), /io\.fetch/);
-  assert.throws(() => runnerSourceCheck(intoRunner("const io = { fetch: (url) => fetch(url) };"), command), /fetch/);
+  assert.throws(() => runnerSourceCheck(intoRunner("io.fetch = globalThis.fetch;"), command), mentions("io.fetch"));
+  assert.throws(() => runnerSourceCheck(intoRunner("const io = { fetch: (url) => fetch(url) };"), command), mentions("fetch"));
   assert.throws(() => runnerSourceCheck(intoRunner("const io = globalThis;"), command), /io is bound to something other than/);
   assert.doesNotThrow(() => runnerSourceCheck(intoRunner("await io.fetch(cwd, remote, token, head);"), command));
   // A second fetch inside the transport is caught as well.
@@ -334,13 +377,52 @@ test("a server reach added to either runner module, in any form, fails the sourc
   assert.throws(() => runnerSourceCheck(runner, intoCommand('await transport.send("frobnicate", {}, { actor: OWNER });')), /frobnicate/);
   assert.throws(() => runnerSourceCheck(intoRunner('await api.send("claim", { project, item }, { actor });'), command), /claim/);
   // The CLI's own transport and the owner's raw fetching helpers (t478), by
-  // name or alias, a second import or a namespace, in the command module.
-  for (const line of ['import { call as send } from "../atelier.mjs";\nawait send("GET", "/runners");', "import { requestText } from '../atelier.mjs';", 'import { landingLease as lease } from "../atelier.mjs";', 'import { recordedApproval } from "../atelier.mjs";', 'import { postAsRunner as post } from "../atelier.mjs";']) {
-    assert.throws(() => runnerSourceCheck(runner, `${command}\n${line}`), /imports the CLI's own transport or an owner-only fetching helper|bypasses runnerTransport/, line);
+  // name or alias, a second import, a re-export or a namespace, in the
+  // command module.
+  for (const line of ['import { call as send } from "../atelier.mjs";\nawait send("GET", "/runners");', "import { requestText } from '../atelier.mjs';", 'import { landingLease as lease } from "../atelier.mjs";', 'import { recordedApproval } from "../atelier.mjs";', 'import { postAsRunner as post } from "../atelier.mjs";', 'export { request as ask } from "../atelier.mjs";']) {
+    assert.throws(() => runnerSourceCheck(runner, `${command}\n${line}`), /imports the CLI's own transport or an owner-only fetching helper/, line);
   }
-  assert.throws(() => runnerSourceCheck(runner, `${command}\nimport * as atelier from "../atelier.mjs";`), /as a namespace or a default/);
+  assert.throws(() => runnerSourceCheck(runner, `${command}\nimport * as atelier from "../atelier.mjs";`), /as a namespace, a default/);
+  assert.throws(() => runnerSourceCheck(runner, `${command}\nexport * from "../atelier.mjs";`), /as a namespace, a default/);
   assert.throws(() => runnerSourceCheck(runner, `${command}\nconst { requestText } = await import("../atelier.mjs");`), /imports the CLI's own transport or an owner-only fetching helper/);
   assert.throws(() => runnerSourceCheck(runner, `${command}\nconst atelier = await import("../atelier.mjs");`), /dynamically as a namespace/);
+});
+
+// The fifth-round reviewer's second finding (astra): the runner's modules
+// were scanned, the modules they import were not, so a new helper that the
+// runner imports and calls could use Node's HTTP client outside the shared
+// transport. The scan now walks the runner's imports transitively, in every
+// import form and file kind, and judges each module whole.
+test("a module the runner imports, directly or several hops down, in any form, is scanned for a way to the server", () => {
+  const runner = read("cli/runner.mjs"), command = read("cli/commands/runner.mjs");
+  const probe = (code) => ({ "cli/route-probe.mjs": code });
+  const intoRunner = (line, tree) => runnerSourceCheck(`${line}\n${runner}`, command, tree);
+  const intoCommand = (line, tree) => runnerSourceCheck(runner, `${line}\n${command}`, tree);
+  const clean = probe("export const go = (u) => String(u);");
+  assert.doesNotThrow(() => intoRunner('import { go } from "./route-probe.mjs";\ngo(1);', clean), "a helper with no reach passes");
+  assert.doesNotThrow(() => intoCommand('import { go } from "../route-probe.mjs";\ngo(1);', clean));
+  const http = probe('import { request } from "node:http";\nexport const go = (u) => request(u);');
+  const inRunner = /cli\/route-probe\.mjs, imported by the runner, reaches the server outside runnerTransport/;
+  assert.throws(() => intoRunner('import { go } from "./route-probe.mjs";\ngo(1);', http), inRunner, "the reviewer's case: a new helper imported and called, using node:http");
+  assert.throws(() => intoCommand('import { go } from "../route-probe.mjs";\ngo(1);', http), inRunner);
+  // Each way of importing it.
+  for (const line of ['import "./route-probe.mjs";', 'import * as probe from "./route-probe.mjs";', 'import probe from "./route-probe.mjs";', 'export { go } from "./route-probe.mjs";', 'export * from "./route-probe.mjs";', 'const { go } = await import("./route-probe.mjs");', 'await import("./route-probe");']) {
+    assert.throws(() => intoRunner(line, http), inRunner, line);
+  }
+  // Several hops, a TypeScript module, and a re-export of the network module.
+  assert.throws(() => intoRunner('import "./hop.mjs";', { "cli/hop.mjs": 'import "../src/deep.js";', "src/deep.ts": 'export * from "node:https";' }), /src\/deep\.ts, imported by the runner.*export from "node:https"/);
+  assert.throws(() => intoRunner('import "./route-probe.mjs";', probe('export { request as send } from "node:https";')), /cli\/route-probe\.mjs, imported by the runner.*export from "node:https"/);
+  assert.throws(() => intoRunner('import "./route-probe.mjs";', probe("export const go = (u) => globalThis.fetch(u);")), /route-probe\.mjs.*globalThis\.fetch\(/);
+  assert.throws(() => intoRunner('import "./route-probe.mjs";', probe('import { serverFetch } from "./server-fetch.mjs";')), /route-probe\.mjs.*import from "\.\/server-fetch\.mjs"/);
+  // A helper that takes the CLI's transport from cli/atelier.mjs for the runner.
+  assert.throws(() => intoRunner('import "./route-probe.mjs";', probe('export { call as send } from "./atelier.mjs";')), /cli\/route-probe\.mjs imports the CLI's own transport/);
+  assert.throws(() => intoRunner('import "./route-probe.mjs";', probe('import { postAsRunner as post } from "./atelier.mjs";\nexport const go = post;')), /cli\/route-probe\.mjs imports the CLI's own transport/);
+  // A type-only import is erased at run time and is not followed.
+  assert.doesNotThrow(() => intoRunner('import type { Probe } from "../src/probe.ts";', { "src/probe.ts": 'export type Probe = number; await fetch("x");' }));
+  // The accepted reaches are exact: one more in cli/ship.mjs fails.
+  const ship = read("cli/ship.mjs");
+  assert.doesNotThrow(() => runnerSourceCheck(runner, command, { "cli/ship.mjs": ship }));
+  assert.throws(() => runnerSourceCheck(runner, command, { "cli/ship.mjs": `${ship}\nawait fetch("https://example.test");\n` }), /cli\/ship\.mjs, imported by the runner/);
 });
 
 // ── 3. the gateway ─────────────────────────────────────────────────────────
