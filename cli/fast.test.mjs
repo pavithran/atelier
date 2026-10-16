@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { CLEAN_CLONE_SETUP, fastCommands, fastLand, parsePairs, recordPending, scanBatch, shellQuote, worktreeHolding } from "./fast.mjs";
+import { FAST_CONTRIBUTORS_MAX } from "../src/rules.ts";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 import { privateConfig } from "../test/fixtures/private-config.mjs";
 // No test reads this Mac's own iCloud folder (t645).
@@ -124,6 +125,24 @@ test("the receipt names every agent of the commits the merge brings, not the tip
     assert.deepEqual([...recorded[0][1].contributors].sort(), ["claude-code/opus-5.5", "codex/gpt-6"]);
     // Only the commits this merge brings: the second task's range is its own.
     assert.deepEqual(recorded[1][1].contributors, ["claude-code/opus-5.5"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a range with more distinct agents than a receipt can carry is refused before the merge (t603)", async () => {
+  const { dir } = repo();
+  try {
+    git(dir, "checkout", "-q", "-b", "crowd", "main");
+    for (let i = 0; i <= FAST_CONTRIBUTORS_MAX; i++) {
+      writeFileSync(join(dir, `c${i}.txt`), `${i}\n`); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", `c${i}\n\nAgent: codex/model-${i}`);
+    }
+    const sha = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "main");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: {}, cwd: dir, pairs: [{ id: "t6", sha }], test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false);
+    assert.match(r.failure.detail, new RegExp(`${FAST_CONTRIBUTORS_MAX + 1} distinct agents, more than the ${FAST_CONTRIBUTORS_MAX}`));
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+    assert.equal(git(dir, "status", "--porcelain"), "");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

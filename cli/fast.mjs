@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
-import { agentOfMessage, agentsOfMessages } from "../src/rules.ts";
+import { agentOfMessage, agentsOfMessages, FAST_CONTRIBUTORS_MAX } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { privateGuardFor, privateRefusal } from "./private.mjs";
@@ -626,6 +626,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       // Everyone with a commit in the range this merge brings, not the tip
       // alone (t603): the receipt carries them all for the review gate.
       const contributors = [...new Set([builder, ...rangeAgents(cwd, "HEAD", commit)])];
+      // The server refuses a receipt naming more, after the merge can no longer
+      // be rolled back and with no way to shorten it (review of t603), so a
+      // range with more distinct agents is refused before it is merged.
+      if (contributors.length > FAST_CONTRIBUTORS_MAX) { failure = { step: `merge ${id}`, detail: `${id}'s commits name ${contributors.length} distinct agents, more than the ${FAST_CONTRIBUTORS_MAX} a receipt can carry; land a smaller range` }; break; }
       const message = `Merge ${id}: ${titles[id] ?? id}\n\nLanded fast: ${reason}`;
       // Through the pipeline (t587): a declared generated output both sides
       // changed is regenerated from the merged sources, not merged as text.
