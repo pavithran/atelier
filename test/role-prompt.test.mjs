@@ -72,6 +72,17 @@ test("docs/orchestrating.md states the same standing rules", () => {
   for (const rule of ORCHESTRATE_RULES) assert.match(doc, rule);
 });
 
+// Finding: hqpe-control t54 was filed with "t52's tests pass unchanged" while its
+// own fix falsified one t52 test; only reading the test before dispatch caught it.
+test("the briefing section tells the orchestrator to run 'existing tests pass' criteria against the change, with the t54 example", () => {
+  const doc = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
+  const briefing = doc.slice(doc.indexOf("## Briefing an agent"), doc.indexOf("## Running agents in each harness"));
+  assert.match(briefing, /run each "existing tests pass" criterion against the change/);
+  assert.match(briefing, /name any test the change must rewrite/);
+  assert.match(briefing, /hqpe-control t54/);
+  assert.match(briefing, /t52's tests pass unchanged/);
+});
+
 test("the orchestrate guide names the handbook's public URL, and --full prints the handbook from outside the checkout", () => {
   assert.ok(ROLE_PROMPTS.orchestrate.includes("https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md"));
   const full = run(["guide", "--role", "orchestrate", "--full"]);
