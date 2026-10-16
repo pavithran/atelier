@@ -5172,6 +5172,24 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.landed_fast', 'item.fix_filed') OR (seq >= ? AND kind IN ('review.requested', 'review.approved', 'review.rejected'))) ORDER BY seq DESC`, id, landed).toArray().map(eventOf);
   }
 
+  // The events the task page's other blocks are defined by, newest first,
+  // read by kind outside the window detail().events is (t661, follow-up of
+  // t637's fastLandingEvents): the merge and its plan-branch integration
+  // (the merge receipt, the diff as landed), the submissions (the summary),
+  // the standing fast-ready report with what could make it stale, the defect
+  // links both ways, the merge recorded afterwards and the override with its
+  // reviewer availability. Each is a handful of events however long the
+  // task's record is.
+  definingEvents(id: string): LedgerEvent[] {
+    const ready = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'item.fast_ready'`, id).one().seq;
+    const stale = FAST_READY_STALE.map(() => "?").join(", ");
+    const rows = this.sql.exec(
+      `SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.merged', 'part.integrated', 'item.submitted', 'item.defect_of', 'item.defect', 'item.merge_recorded', 'review.overridden') OR (? IS NOT NULL AND seq >= ? AND (kind = 'item.fast_ready' OR kind IN (${stale})))) ORDER BY seq DESC`,
+      id, ready ?? null, ready ?? 0, ...FAST_READY_STALE,
+    ).toArray();
+    return rows.map(eventOf);
+  }
+
   landedFastReceipt(id: string): FastReceipt | null {
     const e = this.events(id, Number.MAX_SAFE_INTEGER).find((x) => x.kind === "item.landed_fast");
     return e ? e.data as unknown as FastReceipt : null;
@@ -5422,7 +5440,7 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id) };
+    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
