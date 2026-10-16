@@ -69,11 +69,19 @@ function fixture(options = {}) {
     },
     async clone(remote, t, dir) { calls.push({ clone: [remote, t, dir] }); },
     async checkout(dir, head) { calls.push({ checkout: [dir, head] }); },
-    async diff(dir, base, head) { calls.push({ diff: [dir, base, head] }); return DIFF; },
+    async diff(dir, base, head) { calls.push({ diff: [dir, base, head] }); return options.diff ? options.diff(base, head) : DIFF; },
     async brief(workspace, text) { calls.push({ brief: text, workspace }); return { file: "/cache/work/atelier/brief.txt" }; },
     async writeDiff(workspace, text) { calls.push({ writeDiff: text }); return { file: "/cache/work/atelier/diff.txt" }; },
     verdictPath: () => "/cache/work/atelier/verdict.txt",
-    readVerdict: () => verdict,
+    // A rejection's blocking findings are checked by a second run (t717): its
+    // brief is the last one written, and the stand-in answers it, confirming
+    // every finding unless the test says what the verifier answered.
+    readVerdict: () => {
+      const last = calls.filter((c) => c.brief).at(-1)?.brief ?? "";
+      if (!last.includes("# Verification of findings")) return verdict;
+      const n = (last.match(/^Finding \d+, at /gm) ?? []).length;
+      return options.verification ?? Array.from({ length: n }, (_, i) => `FINDING ${i + 1}: CONFIRMED because the lines read show it.`).join("\n");
+    },
     async harness(argv, cwd, env) { calls.push({ harness: argv, cwd, env }); return { code: options.code ?? 0, timedOut: options.timedOut ?? false }; },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
     removeDiff: (diff) => { calls.push({ removedDiff: diff.file }); },
@@ -1832,4 +1840,172 @@ test("runReview names the project's prose standard the claim carries, and none w
   const none = fixture();
   await runReview(assignment, config, "home:studio", none.io);
   assert.ok(!none.calls.find((c) => c.brief).brief.includes("Prose standard"));
+});
+
+// ── review convergence (t717) ────────────────────────────────────────────────
+// A rejection is settled before it is posted: answered findings dropped,
+// findings on code the change did not touch made pre-existing follow-ups, and
+// the rest blocking only when an independent check confirms them.
+
+const PROOF = "CRITERION 1: met — Ran the clone's tests; test 1 fails without the change.";
+const posted = (calls) => calls.find((c) => c.argv?.[0] === "review")?.argv;
+const findingsOf = (argv) => JSON.parse(argv[argv.indexOf("--findings") + 1]);
+const verifierBriefs = (calls) => calls.filter((c) => c.brief?.includes("# Verification of findings"));
+// A diff that changes lines 10 to 12 of src/review/needed.ts.
+const HUNK = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n--- a/src/review/needed.ts\n+++ b/src/review/needed.ts\n@@ -10,1 +10,3 @@\n-old\n+new one\n+new two\n+new three\n";
+const blockingAt = (line, text) => `FINDING: blocking src/review/needed.ts:${line} ${text}`;
+
+test("a blocking finding the independent check confirms still rejects, and the check reads only the blocking findings", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), "FINDING: follow-up README.md Mention it."].join("\n");
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.verdict, "reject");
+  const briefs = verifierBriefs(calls);
+  assert.equal(briefs.length, 1, "one check, of the one blocking finding");
+  assert.ok(briefs[0].brief.includes("A lapsed claim is never retried.") && !briefs[0].brief.includes("Mention it."));
+  const argv = posted(calls);
+  assert.ok(argv.includes("--reject"));
+  assert.deepEqual(findingsOf(argv).map((f) => f.severity), ["blocking", "follow-up"]);
+  assert.ok(!findingsOf(argv).some((f) => f.label), "nothing is labelled when every finding stands");
+});
+
+test("a blocking finding the check does not confirm is recorded as unverified and the rejection becomes an approval with follow-ups", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), PROOF].join("\n");
+  for (const verification of ["FINDING 1: NOT CONFIRMED because the test passes.", "Nothing wrong here.\nFINDING 1: UNSURE"]) {
+    const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification });
+    const state = await runReview(assignment, config, "home:studio", io);
+    assert.equal(state.phase, "reviewed", verification);
+    assert.equal(state.verdict, "approve", "no blocking finding stood");
+    const argv = posted(calls);
+    assert.ok(argv.includes("--approve") && !argv.includes("--reject"));
+    assert.deepEqual(findingsOf(argv), [{ file: "src/review/needed.ts", line: 11, severity: "follow-up", text: "A lapsed claim is never retried.", label: "unverified" }]);
+    const note = argv[argv.indexOf("--note") + 1];
+    assert.match(note, /The reviewer rejected, but no blocking finding stood \(0 already answered, 0 pre-existing, 1 unverified\)/);
+    assert.match(note, /The reviewer's summary: One bug\./);
+  }
+});
+
+test("with two blocking findings, the one the check confirms keeps the rejection and the other is unverified", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: Two bugs.", blockingAt(11, "First."), blockingAt(12, "Second.")].join("\n");
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: NOT CONFIRMED because x.\nFINDING 2: CONFIRMED because y." });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.verdict, "reject");
+  assert.deepEqual(findingsOf(posted(calls)).map((f) => [f.text, f.severity, f.label ?? null]), [["First.", "follow-up", "unverified"], ["Second.", "blocking", null]]);
+});
+
+test("a check that gives no answer, fails or times out releases the request and posts nothing: silence is not a refutation", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const cases = [{ verification: "I could not tell." }, { verification: "" }];
+  for (const options of cases) {
+    const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, ...options });
+    const state = await runReview(assignment, config, "home:studio", io);
+    assert.equal(state.phase, "failed", JSON.stringify(options));
+    assert.match(state.reason, /gave no answer/);
+    assert.ok(!posted(calls), "no review is posted");
+    assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 1);
+  }
+  // A harness that fails on the check, as on the review, releases it.
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
+  let runs = 0;
+  const harness = io.harness;
+  io.harness = async (...a) => { const r = await harness(...a); return ++runs === 2 ? { code: 1, timedOut: false } : r; };
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /exited 1/);
+  assert.ok(!posted(calls));
+});
+
+test("a rejection no blocking finding of which stands cannot be recorded as an approval unless it proves the criteria, and is released with why", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: NOT CONFIRMED because x." });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /no blocking finding stood \(0 already answered, 0 pre-existing, 1 unverified\) and the reply cannot be recorded as an approval: an approval needs a CRITERION line/);
+  assert.ok(!posted(calls));
+});
+
+test("a blocking finding on lines the change did not touch is a pre-existing follow-up that blocks nothing and needs no check", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried."), "FINDING: blocking src/rules.ts:5 Drops a row.", PROOF].join("\n");
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.verdict, "approve");
+  assert.equal(verifierBriefs(calls).length, 0, "nothing blocking is left to check");
+  const found = findingsOf(posted(calls));
+  assert.deepEqual(found.map((f) => [f.file, f.line, f.severity, f.label]), [["src/review/needed.ts", 88, "follow-up", "pre-existing"], ["src/rules.ts", 5, "follow-up", "pre-existing"]]);
+  assert.match(posted(calls)[posted(calls).indexOf("--note") + 1], /2 pre-existing/);
+});
+
+test("a finding a diff cannot place keeps blocking: the stand-in diff has no hunk, and the finding is checked, not waved through", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried.")].join("\n");
+  const { io, calls } = fixture({ verdict: reply });
+  assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
+  assert.equal(verifierBriefs(calls).length, 1);
+});
+
+test("the check is run by another model of another family when the runner has one, and by the reviewer in a fresh run when it has not", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const two = { ...config, agents: [{ ...config.agents[0], models: [model, "gemini-4-argon"] }] };
+  const withOther = fixture({ verdict: reply, diff: () => HUNK, claim: { ...claimed, item: { ...claimed.item, owner: "claude-code/opus-5.5", pushActors: ["claude-code/opus-5.5"] } } });
+  await runReview(assignment, two, "home:studio", withOther.io);
+  const runsOf = (calls) => calls.filter((c) => c.harness).map((c) => c.harness[c.harness.indexOf("--model") + 1]);
+  assert.deepEqual(runsOf(withOther.calls), [model, "gemini-4-argon"]);
+  const alone = fixture({ verdict: reply, diff: () => HUNK });
+  await runReview(assignment, config, "home:studio", alone.io);
+  assert.deepEqual(runsOf(alone.calls), [model, model]);
+  assert.ok(alone.logs.some((l) => l.includes("verifies in a fresh run")), alone.logs.join("\n"));
+});
+
+// The re-review: the diff since the last reviewed head, and no finding the
+// developer already answered.
+const H_EARLIER = "c".repeat(40);
+const earlier = { itemId: "t21", by: "codex/gpt-6-astra", head: H_EARLIER, approve: false, note: "One bug.", at: "2026-10-05T10:00:00.000Z", criteria: "c",
+  findings: [{ file: "src/review/needed.ts", line: 11, severity: "blocking", text: "A lapsed claim is never retried." }] };
+const reReviewClaim = (verdicts = []) => ({ ...claimed, need: { ...claimed.need, kind: "re-review", round: 2, previous: [earlier], previousReviewer: earlier.by },
+  events: verdicts.map((v, i) => ({ seq: 5 + i, itemId: "t21", at: "2026-10-05T11:00:00.000Z", actor: "owner", kind: "review.finding", data: v })) });
+
+test("a re-review reads the diff since the last reviewed head, and the whole change when that is not smaller", async () => {
+  const since = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n@@ -1 +1 @@\n+only what changed since\n";
+  const whole = `${HUNK}${"+more of the whole change\n".repeat(20)}`;
+  const run = async (sinceDiff) => {
+    const f = fixture({ claim: reReviewClaim(), diff: (base) => (base === H_EARLIER ? sinceDiff : whole) });
+    assert.equal((await runReview(assignment, config, "home:studio", f.io)).phase, "reviewed");
+    return f;
+  };
+  const narrow = await run(since);
+  assert.deepEqual(narrow.calls.filter((c) => c.diff).map((c) => c.diff.slice(1)), [[H0, H1], [H_EARLIER, H1]], "both are read, the whole change for placement and the narrow one to review");
+  const text = narrow.calls.find((c) => c.brief).brief;
+  assert.ok(text.includes(`This is the change since ${H_EARLIER}, the last head a review judged`), text);
+  assert.ok(text.includes("only what changed since") && !text.includes("more of the whole change"));
+  assert.equal(narrow.calls.find((c) => c.writeDiff).writeDiff, since, "the reviewer's diff file holds the diff since too");
+  const wide = await run(`${whole}${whole}`);
+  assert.ok(!wide.calls.find((c) => c.brief).brief.includes("the last head a review judged"));
+  // Round one reads the whole change and asks for nothing earlier.
+  const first = fixture({ diff: () => whole });
+  await runReview(assignment, config, "home:studio", first.io);
+  assert.equal(first.calls.filter((c) => c.diff).length, 1);
+  // An earlier head the clone cannot diff from falls back to the whole change.
+  const lost = fixture({ claim: reReviewClaim(), diff: (base) => { if (base === H_EARLIER) throw new Error("bad object"); return whole; } });
+  assert.equal((await runReview(assignment, config, "home:studio", lost.io)).phase, "reviewed");
+  assert.ok(lost.logs.some((l) => l.includes("could not be read, so the whole change is reviewed")));
+  assert.ok(lost.calls.find((c) => c.brief).brief.includes("more of the whole change"));
+});
+
+test("a re-review does not raise again a finding the developer marked fixed or refuted, and its other findings stand", async () => {
+  const answered = (verdict) => ({ head: H_EARLIER, index: 1, verdict, by: earlier.by, finding: earlier.findings[0] });
+  const again = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), blockingAt(12, "A new defect in the retry.")].join("\n");
+  for (const verdict of ["fixed", "refuted"]) {
+    const { io, calls } = fixture({ claim: reReviewClaim([answered(verdict)]), verdict: again, diff: () => HUNK });
+    assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject", verdict);
+    assert.deepEqual(findingsOf(posted(calls)).map((f) => f.text), ["A new defect in the retry."], `${verdict}: the answered finding is not posted`);
+    assert.equal(verifierBriefs(calls)[0].brief.match(/^Finding \d+, at /gm).length, 1, "and not checked");
+  }
+  // A finding the developer confirmed, or never judged, is not an answered one.
+  const confirmed = fixture({ claim: reReviewClaim([answered("confirmed")]), verdict: again, diff: () => HUNK });
+  await runReview(assignment, config, "home:studio", confirmed.io);
+  assert.equal(findingsOf(posted(confirmed.calls)).length, 2);
+  // Every finding answered and the reply proves the criteria: the re-review approves.
+  const only = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), PROOF].join("\n");
+  const done = fixture({ claim: reReviewClaim([answered("refuted")]), verdict: only, diff: () => HUNK });
+  assert.equal((await runReview(assignment, config, "home:studio", done.io)).verdict, "approve");
+  assert.match(posted(done.calls)[posted(done.calls).indexOf("--note") + 1], /1 already answered/);
 });

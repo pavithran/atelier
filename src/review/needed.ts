@@ -16,8 +16,8 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, singleFamily,
-  type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, roundCapHold, singleFamily,
+  type ChangeClass, type Evidence, type EvidenceView, type Finding, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
 
@@ -116,6 +116,15 @@ export function ownerVerdicts(events: readonly LedgerEvent[]): Map<string, Owner
 export function refutedRejection(r: ReviewRecord, verdicts: ReadonlyMap<string, OwnerVerdict>): boolean {
   const blocking = (r.findings ?? []).map((f, i) => ({ f, index: i + 1 })).filter(({ f }) => f.severity === "blocking");
   return blocking.length > 0 && blocking.every(({ f, index }) => verdictOn(verdicts, r, index, f)?.verdict === "refuted");
+}
+
+// The findings of earlier reviews the developer marked fixed or refuted
+// (t717): answered, so a re-review does not raise them again.
+export function settledFindings(previous: readonly ReviewRecord[], verdicts: ReadonlyMap<string, OwnerVerdict>): Finding[] {
+  return previous.flatMap((r) => (r.findings ?? []).filter((f, i) => {
+    const v = verdictOn(verdicts, r, i + 1, f)?.verdict;
+    return v === "fixed" || v === "refuted";
+  }));
 }
 
 export interface NeedInput {
@@ -239,6 +248,11 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const modelRejections = previous.filter((r) => !r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts)));
   const round = new Set(modelRejections.map((r) => r.head)).size + 1;
   const last = modelRejections.at(-1);
+  // After REVIEW_ROUND_CAP rejected rounds no further round starts on its own
+  // (t717): the developer decides, and asks another with a named reviewer
+  // (`wanted`). A post-merge audit is not a round of the change's review.
+  const held = input.wanted || input.postMerge ? null : roundCapHold(rejectedRounds(modelRejections, owner), item.id);
+  if (held) return no(held);
 
   const why = basis === "part"
     ? `every part is reviewed by ${single ? independentReviewerText(single) : "another model family"}, and this ${kind} change has no such approval at ${short(head)}`

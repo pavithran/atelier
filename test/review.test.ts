@@ -6,10 +6,10 @@ import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { routeParts } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
-import { pushActors, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
+import { pushActors, REVIEW_ROUND_CAP, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
 import { BRIEF_LIMITS, criteriaCount, EVIDENCE_OUTPUT_MAX, evidenceGroups, reviewBrief, type BriefInput } from "../src/review/brief.ts";
 import { largeKey } from "../src/large.ts";
-import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
+import { REVIEW_CLAIM_TIMEOUT_MS, reviewNeeded, settledFindings, ownerVerdicts, type NeedInput, type ReviewRecord, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
 import { criteriaAsked, DEFAULT_REVIEW_BAR, parseVerdict, REPLY_FORMAT, replyFormat, VERDICT_LIMITS, type Finding } from "../src/review/verdict.ts";
 
@@ -1251,3 +1251,63 @@ test("reviewBrief evidence: shuffled runs give the same brief and hash, reports 
   for (const order of shuffles(bare)) assert.equal(brief({ evidence: { required: [], runs: order } }), old);
 });
 
+
+// ── review convergence (t717) ────────────────────────────────────────────
+
+const GPT = "codex/gpt-6-astra";
+
+// The finding t363, t478 and t705 each met on 2026-10-15/16: a fourth round
+// asked of a task whose three rounds had each found a narrower variant.
+test("reviewNeeded: no round starts after REVIEW_ROUND_CAP rejected rounds, unless the developer asks for one", () => {
+  const heads = ["1", "2", "3", "4"].map((c) => c.repeat(40));
+  const rounds = (count: number) => heads.slice(0, count).map((h, i) => review(GPT, false, h, { at: `2026-10-05T0${i}:00:00.000Z`, note: `variant ${i + 1}`, findings: [{ file: "src/a.ts", line: i + 1, severity: "blocking", text: `variant ${i + 1}` }] }));
+  assert.ok(need({ reviews: rounds(REVIEW_ROUND_CAP - 1) }).needed, "a task under the cap is reviewed");
+  const held = need({ reviews: rounds(REVIEW_ROUND_CAP) });
+  assert.equal(held.needed, false);
+  assert.ok(!held.needed && held.reason.includes(`${REVIEW_ROUND_CAP} review rounds were rejected`), held.reason);
+  for (let i = 1; i <= REVIEW_ROUND_CAP; i++) assert.ok(!held.needed && held.reason.includes(`round ${i}, ${heads[i - 1].slice(0, 8)}, rejected by ${GPT}: variant ${i}`), held.reason);
+  assert.ok(!held.needed && held.reason.includes("atelier land t21 --reviewer H/M"));
+  // The developer asking for a review by name is the answer; so is a post-merge audit.
+  assert.ok(need({ reviews: rounds(REVIEW_ROUND_CAP), wanted: true }).needed);
+  // The developer's own rejections are no rounds, and a task gets its own count.
+  assert.ok(need({ reviews: [...rounds(REVIEW_ROUND_CAP - 1), review(OWNER, false, heads[3], { at: "2026-10-05T09:00:00.000Z" })], item: item({ head: heads[3] }), evidence: [pass({ head: heads[3] })] }).needed === false, "the developer's rejection of this head still waits for rework");
+});
+
+test("settledFindings: the findings the developer marked fixed or refuted, and none that were confirmed or never judged", () => {
+  const findings: Finding[] = [blocker, { file: "src/b.ts", line: 2, severity: "blocking", text: "Second." }, { file: "src/c.ts", line: 3, severity: "follow-up", text: "Third." }, { file: "src/d.ts", line: 4, severity: "blocking", text: "Fourth." }];
+  const r = review(GPT, false, H1, { findings });
+  const verdict = (seq: number, index: number, v: string) => event(seq, OWNER, "review.finding", { head: H1, index, verdict: v, by: GPT, finding: findings[index - 1] });
+  const settled = settledFindings([r], ownerVerdicts([verdict(1, 1, "fixed"), verdict(2, 2, "refuted"), verdict(3, 3, "confirmed")]));
+  assert.deepEqual(settled.map((f) => f.text), [findings[0].text, "Second."]);
+});
+
+test("reviewBrief: a re-review given the diff since the last reviewed head says so and tells the reviewer not to re-read the rest", () => {
+  const prior = review(GPT, false, H1, { at: "2026-10-05T11:00:00.000Z", note: "One blocker.", findings: [blocker] });
+  const n = required({ reviews: [prior] });
+  const full = brief({ need: n, diff: "diff --git a/src/a.ts b/src/a.ts\n+whole change\n", compare: { from: H0 } });
+  assert.ok(!full.includes("the last head a review judged"), "round one and a whole-change re-review say nothing of a diff since");
+  const text = brief({ need: n, diff: "diff --git a/src/a.ts b/src/a.ts\n+since only\n", compare: { from: H0 }, since: { from: H1 } });
+  assert.ok(text.includes(`This is the change since ${H1}, the last head a review judged, the output of git diff ${H1} ${H2}.`), text);
+  assert.ok(text.includes(`the whole of it is git diff ${H0} ${H2}`));
+  assert.ok(text.includes("+since only") && !text.includes("+whole change"));
+  assert.ok(text.includes("Do not re-read the rest of the change for new faults: a finding on code this diff does not touch is pre-existing, and does not block. Do not repeat a finding the developer marked fixed or refuted."));
+});
+
+test("parseVerdict: settled findings make a rejection with nothing left to block on an approval that must still prove its criteria", () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", "FINDING: blocking src/a.ts:9 A lapsed claim is never retried.", "CRITERION 1: met — Ran the clone's tests; test 1 fails without the change."].join("\n");
+  const original = parseVerdict(reply, 1);
+  assert.ok(original.ok && original.verdict === "reject");
+  const demoted: Finding[] = [{ file: "src/a.ts", line: 9, severity: "follow-up", label: "unverified", text: "A lapsed claim is never retried." }];
+  const settled = parseVerdict(reply, 1, { settled: demoted });
+  assert.ok(settled.ok);
+  assert.equal(settled.verdict, "approve");
+  assert.deepEqual(settled.findings, demoted);
+  // The approval the rejection comes to proves every criterion, as any approval does.
+  const bare = parseVerdict(["VERDICT: REJECT", "SUMMARY: One bug.", "FINDING: blocking src/a.ts:9 A lapsed claim is never retried."].join("\n"), 1, { settled: demoted });
+  assert.ok(!bare.ok && /an approval needs a CRITERION line for each of the 1 acceptance criteria/.test(bare.error), JSON.stringify(bare));
+  // A finding still blocking keeps the rejection; an approval is not touched.
+  const kept = parseVerdict(reply, 1, { settled: [{ ...demoted[0], severity: "blocking", label: undefined }] });
+  assert.ok(kept.ok && kept.verdict === "reject");
+  const approval = parseVerdict(["VERDICT: APPROVE", "SUMMARY: Fine.", "CRITERION 1: met — Ran the clone's tests; test 1 fails without the change."].join("\n"), 1, { settled: [] });
+  assert.ok(approval.ok && approval.verdict === "approve");
+});

@@ -25,7 +25,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, fastFixTask, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
 } from "./rules";
@@ -732,9 +732,9 @@ function reviewFindings(r: Review): ReviewFindings | null {
   const raw = (r as Review & { findings?: unknown }).findings;
   if (!Array.isArray(raw)) return null;
   const findings: Finding[] = raw.flatMap((f): Finding[] => {
-    const v = f as { file?: unknown; line?: unknown; severity?: unknown; text?: unknown };
+    const v = f as { file?: unknown; line?: unknown; severity?: unknown; text?: unknown; label?: FindingLabel };
     return typeof v.file === "string" && typeof v.text === "string" && (v.severity === "blocking" || v.severity === "follow-up")
-      ? [{ file: v.file, line: typeof v.line === "number" ? v.line : null, severity: v.severity, text: v.text }]
+      ? [{ file: v.file, line: typeof v.line === "number" ? v.line : null, severity: v.severity, text: v.text, ...(v.label !== undefined && FINDING_LABELS.includes(v.label) ? { label: v.label } : {}) }]
       : [];
   });
   return { by: r.by, head: r.head, summary: r.note || null, findings };
@@ -3275,7 +3275,7 @@ export class Ledger extends DurableObject<Env> {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertLength(r.note, NOTE_MAX, "the review note");
     if (r.findings !== undefined && !validFindings(r.findings)) {
-      throw new RuleError("bad_findings", "findings must be a list of {file, line, severity, text}, severity blocking or follow-up", 400);
+      throw new RuleError("bad_findings", "findings must be a list of {file, line, severity, text}, severity blocking or follow-up; a label (pre-existing or unverified) is only for a follow-up", 400);
     }
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
@@ -3373,6 +3373,16 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "merged" && item.kind === "part" && !r.approve && (r.findings ?? []).some((f) => f.severity === "blocking")) {
       this.reworkPart(item, r, at, proved);
     }
+    // Findings the reviewer called blocking on code the change did not touch
+    // were made pre-existing follow-ups before the review reached the ledger
+    // (t717); they are filed as a task, so not blocking loses none of them.
+    const preExisting = item.state !== "merged" ? preExistingTask(item.id, item.title, r) : null;
+    if (preExisting) {
+      const made = this.newItem(shortTitle(preExisting.title), item.scope, ORCHESTRATOR, { brief: preExisting.brief, accept: preExisting.accept });
+      this.log(made.id, ORCHESTRATOR, "item.followup_of", { itemId: item.id, head: r.head, by: r.by, request: r.request }, at);
+      this.log(item.id, ORCHESTRATOR, "item.followup_filed", { foundIn: made.id, head: r.head, by: r.by }, at);
+    }
+    if (!r.approve && !r.postMerge && r.by !== this.owner) this.holdAtRoundCap(r.itemId, at, origin);
     // A rejected post-merge review of a fast landing files its fix task
     // (t585), its criteria the review's findings.
     if (fastReceiptOf && !r.approve) {
@@ -3393,6 +3403,37 @@ export class Ledger extends DurableObject<Env> {
     }
     this.notify(r.itemId, origin);
     this.afterPlanChange(r.itemId);
+  }
+
+  // After the REVIEW_ROUND_CAP-th rejected round a task outside a plan is
+  // held for the developer (t717): blocked, with the rounds listed, so it
+  // sits in the inbox as an unblock and no fourth round starts on its own
+  // (reviewNeeded holds the request too). A part is not held here: its plan
+  // blocks it when the builder's attempts run out.
+  private holdAtRoundCap(itemId: string, at: string, origin?: string): void {
+    const item = this.item(itemId);
+    if (item.state !== "submitted" || item.kind === "part") return;
+    const policy = this.project().policy;
+    const rounds = rejectedRounds(this.reviewsFor(itemId).filter((rv) => reviewAuthorized(rv, policy, this.owner)), this.owner);
+    const hold = roundCapHold(rounds, itemId);
+    if (!hold) return;
+    const reason = hold.length > REASON_MAX ? `${hold.slice(0, REASON_MAX - 1)}…` : hold;
+    const record: Block = { reason, by: ORCHESTRATOR, at, from: item.state };
+    this.update(itemId, { state: "blocked", blocked: JSON.stringify(record) }, at);
+    this.log(itemId, ORCHESTRATOR, "item.blocked", { reason, from: item.state }, at);
+    this.log(itemId, ORCHESTRATOR, "review.round_cap", { rounds: rounds.map((rd) => ({ head: rd.head, by: rd.by, note: rd.note.slice(0, 300) })) }, at);
+    // The developer is told, once for the head: notify() speaks of submitted
+    // work only, and this task is blocked now.
+    try {
+      if (origin) this.setNotificationOrigin(itemId, origin);
+      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, itemId).toArray()[0];
+      if (!topic || !saved || !item.head) return;
+      const claimed = this.sql.exec(`INSERT OR IGNORE INTO notifications (item_id, head) VALUES (?, ?) RETURNING item_id`, itemId, `round-cap:${item.head}`).toArray();
+      if (claimed.length) this.deliver(notificationRequest(topic, saved.origin as string, this.project().name, this.detail(itemId)));
+    } catch {
+      console.error("Atelier notification could not be scheduled");
+    }
   }
 
   // Releases a submitted part back to its builder with the reviewer's
@@ -8894,7 +8935,10 @@ function toCriteriaReview(r: Row): CriteriaReview {
 function validFindings(findings: Finding[]): boolean {
   return Array.isArray(findings) && findings.every((f) => f !== null && typeof f === "object"
     && typeof f.file === "string" && (f.line === null || Number.isInteger(f.line))
-    && (f.severity === "blocking" || f.severity === "follow-up") && typeof f.text === "string");
+    && (f.severity === "blocking" || f.severity === "follow-up") && typeof f.text === "string"
+    // A label says why a finding the reviewer called blocking does not block
+    // (t717), so a labelled finding is never itself blocking.
+    && (f.label === undefined || (FINDING_LABELS.includes(f.label) && f.severity === "follow-up")));
 }
 
 // Whether a checks list is the shape parseVerdict produces for a criteria
