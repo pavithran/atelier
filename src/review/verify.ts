@@ -16,7 +16,7 @@
 import { actorFamily, companyRefusal, contributed, type Finding } from "../rules.ts";
 import type { PoolFamily } from "../models/pool.ts";
 import { TEXT_CONTROLS } from "../text.ts";
-import { VERIFY_HEADING } from "./verdict.ts";
+import { VERIFY_BASE_LINE, VERIFY_HEADING } from "./verdict.ts";
 
 export const VERIFY_LIMITS = { reply: 100_000 } as const;
 
@@ -25,7 +25,7 @@ const format = (base: boolean) => [
   "",
   "FINDING 1: CONFIRMED because of the lines you read, or the test you ran and what it printed.",
   "FINDING 2: NOT CONFIRMED because it does not hold, or you could not show it.",
-  ...(base ? ["FINDING 3: PRE-EXISTING because the same defect is in the code at the base, shown by the lines you read there."] : []),
+  ...(base ? [VERIFY_BASE_LINE] : []),
   "",
   "CONFIRMED only when you showed the defect yourself, by reading the code the finding names or by running a test, and the line says how. A finding you cannot show is NOT CONFIRMED, however plausible it reads; so is one that rests on a limit of your environment (a missing dependency, a command you could not run), which is never a defect in the change. Prose around these lines is allowed and is not read.",
 ].join("\n");
