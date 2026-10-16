@@ -37,6 +37,7 @@ import type { PairwiseRecord } from "./models/pairwise.ts";
 import { canonicalName, compareModel, measureRecords, type ModelComparison } from "./models/compare.ts";
 import { addDays, BACKFILL_DAYS, computeSnapshot, dayEnd, daysDue, replayDifferences, SNAPSHOT_SCHEMA, TREND_DAYS, trendOf, utcDay, type ModelTrend, type SnapshotRow, type StoredSnapshot } from "./models/snapshot.ts";
 import type { CardView } from "./models/cards.ts";
+import { reviewModels } from "./models/review.ts";
 import type { PrecisionRecord } from "./models/precision.ts";
 import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -1349,6 +1350,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Older clients keep the list shape, but a failed read is still labelled.
     if (read.unread.length) res.headers.set("x-atelier-incomplete", read.unread.slice().sort().join(","));
     return res;
+  }
+  // The recurring model review (t624, src/models/review.ts): the developer's
+  // alone, read-only. It reads the records as of a time and writes none.
+  if (parts[0] === "model-review" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    const asked = c.url.searchParams.get("as-of");
+    const asOf = asked === null ? new Date().toISOString() : /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2}))?$/.test(asked) && !Number.isNaN(Date.parse(asked)) ? new Date(asked).toISOString() : null;
+    if (!asOf) throw new RuleError("bad_time", "as-of is an ISO date or time, such as 2026-10-14 or 2026-10-14T09:00:00Z", 400);
+    const I = index(env);
+    // Every run report recorded before TIME, page by page (the newest 1,000 that
+    // readSources gives would lose the older ones a past TIME needs); a read that
+    // cannot finish makes the review partial, never a review of what was read.
+    const [read, runs, assignmentEvents, roles] = await Promise.all([readSources(env, false), readRunsThrough(I, null, asOf), I.assignmentEvents(), I.roleAssignments()]);
+    const pool = (await I.models()) as unknown as ModelEntry[];
+    const { takes, rows } = await readModelSnapshots(env, [...new Set(pool.map((e) => canonicalName(`${e.harness}/${e.id}`, pool)))], Date.parse(asOf));
+    return json(reviewModels({
+      asOf, pool, sources: read.sources, runs: runs.reports, assignmentEvents, owner: ownerActor(env), cards: await I.modelCardRecords(),
+      assignments: roles.assignments, projectNames: roles.names, takes, rows, unread: [...read.unread.map((p) => p.name), ...(runs.complete ? [] : ["some run reports"])],
+    }));
   }
   // The model pool requires the owner token. Owner tools may read it and
   // report runner status; changes also require the owner actor.
@@ -3406,9 +3426,9 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
 
 // Every project's events, by its key (so a renamed project keeps its history, as suggestionRecords has it), with the newest RUN_REPORTS run
 // reports and the projects whose Ledger could not be read just then.
-async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
+async function readSources(env: Env, withRuns = true): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
-  const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
+  const [projects, runs] = await Promise.all([I.projects(), withRuns ? I.runs() : []]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
     try { return { project: p.key ?? p.name, events: await allEvents(ledgerOf(env, p)) }; }
@@ -3500,17 +3520,25 @@ export async function replayModelSnapshot(env: Env, day: string, rev?: number): 
   return { stored, replayed: replayed.rows, differences: replayDifferences(stored.rows, replayed.rows) };
 }
 
+// The one reader of stored snapshots for display: the trend span ending the day
+// before `now`, the takes and the rows of the given canonical models. The trend
+// pages and the model review (t624) read through it, and nothing that routes
+// work does (test/model-snapshots.test.ts).
+async function readModelSnapshots(env: Env, models: readonly string[], now: number) {
+  const I = index(env);
+  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
+  const takes = await I.modelSnapshotTakes(from, to);
+  const rows = (await Promise.all(models.map((m) => I.modelSnapshotRows(m, from, to)))).flat();
+  return { takes, rows, to };
+}
+
 // One model's trend over the TREND_DAYS ended days, by its canonical key
 // through the pool now: what GET /api/models/ID/trend answers and the
 // Models page renders.
 async function modelTrends(env: Env, named: readonly string[], pool: readonly ModelEntry[], now = Date.now()): Promise<ModelTrend[]> {
-  const I = index(env);
-  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
-  const takes = await I.modelSnapshotTakes(from, to);
-  return Promise.all(named.map(async (n) => {
-    const model = canonicalName(n, pool);
-    return trendOf(model, takes, await I.modelSnapshotRows(model, from, to), to);
-  }));
+  const models = named.map((n) => canonicalName(n, pool));
+  const { takes, rows, to } = await readModelSnapshots(env, models, now);
+  return models.map((model) => trendOf(model, takes, rows.filter((r) => r.model === model), to));
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -4268,7 +4296,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
   // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
