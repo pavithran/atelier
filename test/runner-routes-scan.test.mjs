@@ -133,3 +133,31 @@ export function references(source) {
 
 // The references as text alone, for a check that expects none.
 export const bypasses = (source) => references(source).map((r) => r.text);
+
+// Every import a source makes, in any form: static (named, default,
+// namespace, type-only), side-effect (`import "./x.mjs"`), re-export
+// (`export { a } from`, `export * from`) and dynamic of a literal path.
+// Read on the original text, so a specifier inside a comment is followed too,
+// which only widens what the check judges. Each entry names the specifier,
+// the names it binds (`imported` as `local`), and whether it binds a
+// namespace, a default or a dynamically imported module, none of which the
+// check can follow member by member.
+export function importsOf(source) {
+  const found = [];
+  const names = (clause) => {
+    const bound = [], braces = /\{([^}]*)\}/.exec(clause);
+    for (const n of (braces?.[1] ?? "").split(",")) {
+      const [imported, local] = n.trim().replace(/^type\s+/, "").split(/\s+as\s+/);
+      if (imported) bound.push({ imported, local: local ?? imported });
+    }
+    const lead = clause.replace(/\{[^}]*\}/, "").replace(/^\s*type\s+/, "");
+    const namespace = lead.includes("*");
+    const def = /^\s*([A-Za-z_$][\w$]*)/.exec(lead.replace(/\*.*$/, ""))?.[1];
+    if (def) bound.push({ imported: "default", local: def });
+    return { bound, opaque: namespace || !!def };
+  };
+  for (const m of source.matchAll(/\b(?:import|export)\s+([^;"'()`]*?)\bfrom\s*["']([^"']+)["']/g)) found.push({ spec: m[2], ...names(m[1]) });
+  for (const m of source.matchAll(/\bimport\s*["']([^"']+)["']/g)) found.push({ spec: m[1], bound: [], opaque: false });
+  for (const m of source.matchAll(/\bimport\s*\(\s*["'`]([^"'`]+)["'`]/g)) found.push({ spec: m[1], bound: [], opaque: true, dynamic: true });
+  return found;
+}

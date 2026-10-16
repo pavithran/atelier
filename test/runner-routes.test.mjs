@@ -45,7 +45,7 @@ import { agentRoute, callParts, callPath, declaredCall, RUNNER_CALLS, RUNNER_COM
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { helperCommand, runnerTransport } from "../cli/runner.mjs";
-import { bypasses, codeOnly, references } from "./runner-routes-scan.test.mjs";
+import { bypasses, codeOnly, importsOf, references } from "./runner-routes-scan.test.mjs";
 
 const read = (path) => readFileSync(resolve(path), "utf8");
 
@@ -233,6 +233,23 @@ function runnerSourceCheck(runner, command) {
   assert.ok(reaches.length === 0, `cli/commands/runner.mjs reaches the server outside runnerTransport (a transport bypass): ${reaches.join(", ")}`);
   const commandCode = codeOnly(command);
   for (const bypass of [/\bpostAsRunner\b/, /(?<![.\w])call\(/, /(?<![.\w])request\(/, /\bresolveTokenActor\b/]) assert.doesNotMatch(commandCode, bypass, "cli/commands/runner.mjs bypasses runnerTransport through the CLI's own transport");
+  // The CLI's own transport and the owner's raw reads (t478) are not the
+  // runner's: none of them is named by the runner's modules, so an alias
+  // (`import { call as send }`) or a second import of cli/atelier.mjs cannot
+  // reach one either; the names are judged wherever they appear.
+  const OWNER_TRANSPORT = ["call", "request", "postEvidence", "postAsRunner", "requestText", "recordedApproval", "landingLease", "resolveTokenActor", "serverFetch"];
+  for (const [file, text] of [["cli/runner.mjs", runner], ["cli/commands/runner.mjs", command], ["cli/task-refresh.mjs", read("cli/task-refresh.mjs")]]) {
+    const imported = importsOf(text).filter((entry) => /(?:^|\/)atelier\.mjs$/.test(entry.spec));
+    assert.ok(!imported.some((entry) => entry.opaque && !entry.dynamic), `${file} imports cli/atelier.mjs as a namespace or a default`);
+    // A dynamic import (cli/runner.mjs takes `server` that way, to wait out
+    // the module's top level) is read where it destructures its names;
+    // any other form is a namespace and fails.
+    const dynamic = imported.filter((entry) => entry.dynamic).length;
+    const destructured = [...text.matchAll(/\{([^}]*)\}\s*=\s*[^;]*?\bimport\(\s*["'`][^"'`]*atelier\.mjs["'`]\s*\)/g)];
+    assert.equal(destructured.length, dynamic, `${file} imports cli/atelier.mjs dynamically as a namespace, which reaches every helper in it`);
+    const named = [...imported.flatMap((entry) => entry.bound.map((b) => b.imported)), ...destructured.flatMap((m) => m[1].split(",").map((n) => n.trim().split(/\s*:\s*/)[0]).filter(Boolean))].filter((name) => OWNER_TRANSPORT.includes(name));
+    assert.deepEqual(named, [], `${file} imports the CLI's own transport or an owner-only fetching helper from cli/atelier.mjs`);
+  }
   // Every name sent is declared as the runner's own, and every such name is sent.
   const sent = new Set([...`${runner}\n${command}`.matchAll(/\bsend\("([a-z-]+)"/g)].map((m) => m[1]));
   const own = new Set(RUNNER_CALLS.filter((c) => c.via === "runner").map((c) => c.name));
@@ -316,6 +333,14 @@ test("a server reach added to either runner module, in any form, fails the sourc
   // declared as a spawned command's (claim).
   assert.throws(() => runnerSourceCheck(runner, intoCommand('await transport.send("frobnicate", {}, { actor: OWNER });')), /frobnicate/);
   assert.throws(() => runnerSourceCheck(intoRunner('await api.send("claim", { project, item }, { actor });'), command), /claim/);
+  // The CLI's own transport and the owner's raw fetching helpers (t478), by
+  // name or alias, a second import or a namespace, in the command module.
+  for (const line of ['import { call as send } from "../atelier.mjs";\nawait send("GET", "/runners");', "import { requestText } from '../atelier.mjs';", 'import { landingLease as lease } from "../atelier.mjs";', 'import { recordedApproval } from "../atelier.mjs";', 'import { postAsRunner as post } from "../atelier.mjs";']) {
+    assert.throws(() => runnerSourceCheck(runner, `${command}\n${line}`), /imports the CLI's own transport or an owner-only fetching helper|bypasses runnerTransport/, line);
+  }
+  assert.throws(() => runnerSourceCheck(runner, `${command}\nimport * as atelier from "../atelier.mjs";`), /as a namespace or a default/);
+  assert.throws(() => runnerSourceCheck(runner, `${command}\nconst { requestText } = await import("../atelier.mjs");`), /imports the CLI's own transport or an owner-only fetching helper/);
+  assert.throws(() => runnerSourceCheck(runner, `${command}\nconst atelier = await import("../atelier.mjs");`), /dynamically as a namespace/);
 });
 
 // ── 3. the gateway ─────────────────────────────────────────────────────────
