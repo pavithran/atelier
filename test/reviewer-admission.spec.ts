@@ -278,8 +278,8 @@ it("binding an admitted request enforces a changed company even before request w
 it("a model admitted in atelier reviews in every project until a project withdraws it; admit takes harness/model", async () => {
   const home = await setup("atelier"), other = await setup("standard-other"), late = await setup("standard-late");
   const sendStandard = async () => {
-    const standard = (await home.reviewerAdmissions()).filter((a) => a.active);
-    for (const L of [other, late]) await L.setStandardReviewers(standard);
+    const { admissions, version } = await home.standardReviewersSnapshot();
+    for (const L of [other, late]) await L.setStandardReviewers(admissions.filter((a) => a.active), version);
   };
   const asked = () => other.requestReview("t1", "owner", REVIEWER, POOL, false, false, undefined, offers());
   await refusal(asked(), "ineligible");
@@ -298,8 +298,26 @@ it("a model admitted in atelier reviews in every project until a project withdra
   expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
   // The harness must be the entry's own.
   await refusal(home.admitReviewer(`codex/${POOL[0].id}`, true, "wrong harness", "owner", POOL), "no_model");
+  // A withdrawal names the registered harness too (astra, t687 finding 2).
+  await refusal(home.admitReviewer(`codex/${POOL[0].id}`, false, "wrong harness", "owner", POOL), "no_model");
+  await refusal(home.admitReviewer(`opencode/${POOL[0].id}`, false, "model gone", "owner", []), "no_model");
   // Atelier withdrawing ends the sharing for projects with no record of their own.
   await home.admitReviewer(POOL[0].id, false, "Retired", "owner", POOL);
   await sendStandard();
   expect(hasRole(REVIEWER, (await late.project()).policy, "assessor")).toBe(false);
+});
+
+// astra, t687 finding 1: a broadcast that captured the model admitted could arrive
+// after the withdrawal's delivery and re-admit it.
+it("a standard set older than the one a project holds is dropped", async () => {
+  const home = await setup("atelier-order"), other = await setup("standard-order");
+  await home.admitReviewer(POOL[0].id, true, "Qualified", "owner", POOL);
+  const older = await home.standardReviewersSnapshot();
+  await home.admitReviewer(POOL[0].id, false, "Retired", "owner", POOL);
+  const newer = await home.standardReviewersSnapshot();
+  expect(newer.version).toBeGreaterThan(older.version);
+  await other.setStandardReviewers(newer.admissions.filter((a) => a.active), newer.version);
+  await other.setStandardReviewers(older.admissions.filter((a) => a.active), older.version);
+  expect(await other.standardReviewers()).toEqual([]);
+  expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
 });

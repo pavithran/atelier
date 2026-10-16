@@ -540,15 +540,19 @@ async function unreachedOf(projects: readonly ProjectRecord[], send: (p: Project
 }
 // The reviewers admitted in the standard project, which every project
 // inherits unless it records its own admission or withdrawal (t687).
-async function standardReviewers(env: Env): Promise<ReviewerAdmission[]> {
+// Read with the version the standard project gave that set, which a ledger
+// uses to drop a delivery older than the one it holds.
+async function standardReviewers(env: Env): Promise<{ admissions: ReviewerAdmission[]; version: number }> {
   const home = (await index(env).projects()).find((p) => p.name === STANDARD_REVIEWER_PROJECT);
-  return home ? standardAdmissions(await ledgerOf(env, home).reviewerAdmissions()) : [];
+  if (!home) return { admissions: [], version: 0 };
+  const snapshot = await ledgerOf(env, home).standardReviewersSnapshot();
+  return { admissions: standardAdmissions(snapshot.admissions), version: snapshot.version };
 }
 // Sends them to every other project's ledger; returns the projects it could
 // not reach, which keep their last copy.
 async function sendStandardReviewers(env: Env): Promise<string[]> {
   const [standard, projects] = await Promise.all([standardReviewers(env), index(env).projects()]);
-  return unreachedOf(projects.filter((p) => p.name !== STANDARD_REVIEWER_PROJECT), async (p) => { await ledgerOf(env, p).setStandardReviewers(standard); });
+  return unreachedOf(projects.filter((p) => p.name !== STANDARD_REVIEWER_PROJECT), async (p) => { await ledgerOf(env, p).setStandardReviewers(standard.admissions, standard.version); });
 }
 // Sends each project's ledger the role assignments bearing on it (its own,
 // by its key, and every project's; src/models/assignments.ts), after one is
@@ -1766,7 +1770,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     await seedProject({
       register: () => index(env).registerProject(record),
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
-      install: async (snapshot) => { await L.poolChanged(models, snapshot); await L.setStandardReviewers(await standardReviewers(env)); },
+      install: async (snapshot) => { await L.poolChanged(models, snapshot); const standard = await standardReviewers(env); await L.setStandardReviewers(standard.admissions, standard.version); },
     });
     return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }
