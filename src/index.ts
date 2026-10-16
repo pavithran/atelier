@@ -36,6 +36,7 @@ import type { PairwiseRecord } from "./models/pairwise.ts";
 import { canonicalName, compareModel, measureRecords, type ModelComparison } from "./models/compare.ts";
 import { addDays, BACKFILL_DAYS, computeSnapshot, dayEnd, daysDue, replayDifferences, SNAPSHOT_SCHEMA, TREND_DAYS, trendOf, utcDay, type ModelTrend, type SnapshotRow, type StoredSnapshot } from "./models/snapshot.ts";
 import type { CardView } from "./models/cards.ts";
+import { reviewModels } from "./models/review.ts";
 import type { PrecisionRecord } from "./models/precision.ts";
 import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -1310,6 +1311,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Older clients keep the list shape, but a failed read is still labelled.
     if (read.unread.length) res.headers.set("x-atelier-incomplete", read.unread.slice().sort().join(","));
     return res;
+  }
+  // The recurring model review (t624, src/models/review.ts): the developer's
+  // alone, read-only. It reads the records as of a time and writes none.
+  if (parts[0] === "model-review" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    const asked = c.url.searchParams.get("as-of");
+    const asOf = asked === null ? new Date().toISOString() : /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2}))?$/.test(asked) && !Number.isNaN(Date.parse(asked)) ? new Date(asked).toISOString() : null;
+    if (!asOf) throw new RuleError("bad_time", "as-of is an ISO date or time, such as 2026-10-14 or 2026-10-14T09:00:00Z", 400);
+    const I = index(env);
+    const [read, assignmentEvents, roles] = await Promise.all([readSources(env), I.assignmentEvents(), I.roleAssignments()]);
+    const pool = (await I.models()) as unknown as ModelEntry[];
+    const to = addDays(utcDay(Date.parse(asOf)), -1), from = addDays(to, -(TREND_DAYS - 1));
+    const rows = (await Promise.all([...new Set(pool.map((e) => canonicalName(`${e.harness}/${e.id}`, pool)))].map((k) => I.modelSnapshotRows(k, from, to)))).flat();
+    return json(reviewModels({
+      asOf, pool, sources: read.sources, runs: read.runs, assignmentEvents, owner: ownerActor(env), cards: await I.modelCardRecords(),
+      assignments: roles.assignments, projectNames: roles.names, takes: await I.modelSnapshotTakes(from, to), rows, unread: read.unread.map((p) => p.name),
+    }));
   }
   // The model pool requires the owner token. Owner tools may read it and
   // report runner status; changes also require the owner actor.
@@ -4229,7 +4247,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
   // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).

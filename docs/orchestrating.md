@@ -1014,6 +1014,55 @@ next session nothing. Each kind of lesson has a place in Atelier:
 - **A decision by the developer**: record it where the project keeps its
   decisions and cite the developer's words; never infer one.
 
+## The weekly model review
+
+Which model takes which role is the developer's judgement, recorded as a
+role assignment (`atelier models assign`). Models change under their names
+and measures accumulate, so the judgement is reviewed once a week by the
+owner. `atelier models review [--as-of TIME]` prints what the records say; it
+is read-only (it fetches nothing and records, assigns and dispatches
+nothing), so running it early or twice costs nothing. The steps:
+
+1. **Cards.** `atelier models show ID` for each model in the pool. Look for
+   cards recorded since the last review, cards read more than 90 days ago,
+   and claims that conflict under the same conditions. A card is the vendor's
+   word: it can prompt a question, and it moves no proposal.
+2. **Sources.** Refresh the sources of cards that are stale or in conflict
+   through t625 once it lands (the Atelier task that adds refreshing a card's
+   sources; until then, read the source again and record a new card with
+   `atelier models card`, naming the one it corrects or supersedes).
+3. **Measures.** Recompute them: `atelier models review` reads the events
+   as of now (or of `--as-of TIME`, which reproduces an earlier review from
+   the records held by then) and prints, for each role, each candidate's
+   quality and speed with its window, sample size and threshold. Cost is
+   unknown: Atelier records none per model and role, and the review says so
+   rather than printing zero.
+4. **Snapshots and decisions.** The review prints, for each model, how many
+   of the last 14 days have a snapshot and where points are not joined, and
+   cites each standing assignment by id (a1, a2, ...) with the earlier ones
+   that were superseded or withdrawn. `atelier models show ID --trend` shows
+   the days themselves; `atelier models roles` lists the decisions.
+5. **Judge.** Read each proposal against its evidence and counterevidence:
+   - *keep*: the first choice's quality figure is usable and no comparable
+     figure beats it by 10 points.
+   - *change*: another model's quality figure is comparable (same window and
+     threshold) and at least 10 points ahead. Speed, cost, cards, notes and
+     history never decide this; they are cited so that you can.
+   - *insufficient-evidence*: the role is not measured (security review,
+     claims review and plan are not), the record is partial, or the first
+     choice's quality figure has too few cases to count. Nothing is proposed
+     from sparse or incompatible figures.
+6. **Record.** Recording the outcome and applying a change are two actions
+   of yours, neither done by the review. For each role, record a dated
+   judgement: `atelier models assign ROLE ... --reason` (with `--replaces aN`
+   for a change), or a note, `atelier models note ID 'text'`, when you keep
+   the assignment. The reason names the evidence it rests on (the tasks, the
+   figures with their sample sizes), how uncertain it is, and the date the
+   next review is due (seven days on). A kept assignment is worth a
+   dated note, so the next review can see that it was looked at.
+
+The rules, thresholds and their reasons are in `src/models/review.ts`.
+
 ## What to record
 
 Atelier records what passes through it: claims, pushes, observed checks,
