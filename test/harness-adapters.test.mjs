@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { runWithLimits } from "../bin/harness/limit.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
@@ -540,6 +541,16 @@ const n = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${J
 fs.writeFileSync(${JSON.stringify(counter)}, String(n + 1));
 const act = ${JSON.stringify(acts)}[n] ?? "ok";
 if (act === "hang") setTimeout(() => {}, 60000);
+else if (act === "hang-child") {
+  const kid = cp.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  fs.writeFileSync(${JSON.stringify(counter + ".kid")}, String(kid.pid));
+  setTimeout(() => {}, 60000);
+} else if (act === "ok-after-child") {
+  let alive = true;
+  try { process.kill(Number(fs.readFileSync(${JSON.stringify(counter + ".kid")}, "utf8")), 0); } catch { alive = false; }
+  fs.writeFileSync(${JSON.stringify(counter + ".alive")}, String(alive));
+  process.exit(0);
+}
 else if (act === "ok") process.exit(0);
 else { if (act === "commit") cp.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "work"]); process.stderr.write("fetch failed: ECONNRESET\\n"); process.exit(1); }
 `);
@@ -578,6 +589,29 @@ test("a MiMo run that hangs past its time limit with no commit is run once more"
   assert.equal(r.status, 0, r.stderr);
   assert.equal(count(), 2);
   assert.match(r.stderr, /no commit and a transport error \(time limit\); running it once more/);
+});
+
+test("a timed-out attempt's whole process group has ended before the retry starts", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["hang-child", "ok-after-child"]);
+  t.after(() => { try { process.kill(Number(readFileSync(join(s.dir, "count.kid"), "utf8")), "SIGKILL"); } catch { /* gone */ } });
+  const r = runRouted(s, "mimo-v2.6-pro");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(count(), 2);
+  assert.equal(readFileSync(join(s.dir, "count.alive"), "utf8"), "false", "the first attempt's child was still running when the retry started");
+});
+
+// The shipped path (bin/harness/atelier-opencode.mjs) runs the adapter through
+// runWithLimits, whose spawn captures stderr on a pipe and returns it.
+test("a MiMo connection drop is retried through the shipped runWithLimits path too", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["reset", "ok"]);
+  const out = [];
+  const status = runWithLimits("opencode", ["--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store, "mimo-v2.6-pro", s.brief, s.ws, "undefined", "undefined", "undefined"],
+    { env: { PATH: process.env.PATH, HOME: s.dir, ATELIER_OPENCODE: s.fake, CF_AIG_METADATA: gatewayMetadata("t9", "build", "home:mbp") }, stderr: (x) => out.push(x), limitMs: 1500 });
+  assert.equal(status, 0, out.join(""));
+  assert.equal(count(), 2);
+  assert.match(out.join(""), /transport error \(stderr\); running it once more/);
 });
 
 test("a MiMo run that drops its connection with no commit is run once more, but only once", (t) => {

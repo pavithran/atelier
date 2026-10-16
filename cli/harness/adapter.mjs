@@ -438,27 +438,50 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
 
 // A run with a time limit (RUN_LIMITS). It is run once more when it ends with
 // no new commit and a transport error: the limit passing, or its exit non-zero
-// with a TRANSPORT_ERROR line on stderr, which is held in a file so the line
-// can be read and is then passed on.
+// with a TRANSPORT_ERROR line on stderr. Each attempt runs in its own process
+// group, and the whole group is ended and confirmed gone before anything else
+// happens, so a shell or test the first attempt started cannot run on into the
+// second in the same workspace. The stderr is read from what the spawn returns
+// (the shipped spawn, limitSpawn, captures it on a pipe) or, when the spawn
+// leaves it to the file given here, from that file, and passed on.
 function runLimited(spawn, exe, argv, options, { ms, err, harness }) {
   const head = () => String(spawn("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? "").trim();
   for (let attempt = 1; ; attempt++) {
     const before = head();
     const dir = mkdtempSync(join(tmpdir(), "atelier-opencode-stderr-"));
     const log = join(dir, "stderr"), fd = openSync(log, "w");
-    let result, text = "";
+    let result, filed = "";
     try {
-      result = spawn(exe, argv, { ...options, timeout: ms, killSignal: "SIGKILL", stdio: [options.stdio[0], options.stdio[1], fd] });
+      result = spawn(exe, argv, { ...options, detached: true, timeout: ms, killSignal: "SIGKILL", stdio: [options.stdio[0], options.stdio[1], fd] });
     } finally {
       closeSync(fd);
-      try { text = readFileSync(log, "utf8"); } catch { /* nothing was written */ }
+      try { filed = readFileSync(log, "utf8"); } catch { /* nothing was written */ }
       rmSync(dir, { recursive: true, force: true });
     }
-    if (text) err(text);
+    if (filed) err(filed);
+    const text = filed || String(result.stderr ?? "");
+    const survivors = endGroup(result.pid);
+    if (survivors) {
+      err(`atelier-${harness}: processes the run started would not end; not running it again\n`);
+      return { ...result, error: result.error ?? new Error("processes the run started would not end") };
+    }
     const transport = result.error?.code === "ETIMEDOUT" || (result.status !== 0 && TRANSPORT_ERROR.test(text));
     if (attempt === 2 || !transport || head() !== before) return result;
     err(`atelier-${harness}: the run ended with no commit and a transport error (${result.error?.code === "ETIMEDOUT" ? "time limit" : "stderr"}); running it once more\n`);
   }
+}
+
+// Ends every process left in the group led by pid (the run's own pid, which
+// detached made a group leader) and waits up to 5 s for them to be gone.
+// Returns true when some remain.
+function endGroup(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  const alive = () => { try { process.kill(-pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+  for (let waited = 0; alive() && waited <= 5000; waited += 50) {
+    try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  return alive();
 }
 
 function noVerdict(answer) {
