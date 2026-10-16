@@ -144,7 +144,12 @@ export default async function pushCommand() {
         // then resume from what the fork holds.
         if (credential || !TOKEN_REFUSED.test(error.message)) throw error;
         await renewWorkspaceToken(name, id, as, "The server refused this workspace's token as expired.");
-        step();
+        // A second refusal is not renewed again: the developer is told how to start over.
+        try { step(); }
+        catch (again) {
+          if (!TOKEN_REFUSED.test(again.message)) throw again;
+          die(`The server still refused this workspace's token after it was renewed. Run atelier start ${id} --as ${as}.`);
+        }
       }
       r = { status: 0 };
     } catch (error) { die(`${id}: ${error.message}`); }
