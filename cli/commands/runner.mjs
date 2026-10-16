@@ -1,18 +1,19 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { P, I, OWNER, apiToken, args, cfg, die, discoverModels, postAsRunner, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
+import { I, OWNER, apiToken, args, cfg, die, discoverModels, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // Queue polling has already resolved the runner's identity. A failed policy
-// read must reach the job's infrastructure handling, never call()'s process.exit.
+// read must reach the job's infrastructure handling, never the process.exit
+// the CLI's own call helper makes of a refusal.
+// The read goes through the runner's transport (t478), as the declared
+// "project" call in RUNNER_CALLS (src/tokens.ts).
 export async function hasPreparation(project, actor) {
   try {
-    const res = await fetch(server() + `/api${P(project)}`, {
-      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, ...(tokenRunner ? { "x-atelier-runner": tokenRunner } : {}) },
-      signal: AbortSignal.timeout(30_000),
-    });
+    const { runnerTransport } = await import("../runner.mjs");
+    const transport = runnerTransport({ server: server(), credential: apiToken(), runner: tokenRunner });
+    const res = await transport.send("project", { project }, { actor });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (!data?.project?.policy) throw new Error("missing project policy");
-    return !!data.project.policy.prepare;
+    if (!res.data?.project?.policy) throw new Error("missing project policy");
+    return !!res.data.project.policy.prepare;
   } catch (error) {
     throw Object.assign(new Error(`the preparation policy could not be read: ${error.message}`), { infrastructure: true });
   }
@@ -24,14 +25,15 @@ export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { reexecSelf, runRunner, runnerCheckout } = await import("../runner.mjs");
-  // The runner's own server calls for plan jobs and parts, as the queue's:
-  // fetches under the runner's token, naming the assignment's actor. They
-  // throw rather than die, so the runner's loop decides what a failure
-  // means; a 422 from posting a plan is a result the runner reports, not an
-  // error thrown here.
-  const auth = (actor) => ({ authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, ...(tokenRunner ? { "x-atelier-runner": tokenRunner } : {}), "content-type": "application/json" });
-  const readJson = async (res) => { try { return await res.json(); } catch { return null; } };
+  const { reexecSelf, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
+  // The runner's own server calls, every one through the transport (t478):
+  // the queue poll, the plan job's brief and document, the run reports and
+  // the review skips, under the runner's token and the name it polls as,
+  // each a call RUNNER_CALLS in src/tokens.ts declares. They throw rather
+  // than die, so the runner's loop decides what a failure means; a 422 from
+  // posting a plan is a result the runner reports, not an error thrown here.
+  const transport = runnerTransport({ server: server(), credential: apiToken(), runner: typeof args.name === "string" ? args.name.toLowerCase() : undefined });
+  const detail = (res) => (res.data?.detail ? ` ${res.data.detail}` : "");
   try {
     await runRunner(args, {
       credential: apiToken(),
@@ -50,9 +52,8 @@ export default async function runnerCommand() {
       // the same "does not answer" message (GET /api/version is public).
       async version(signal) {
         try {
-          const res = await fetch(server() + "/api/version", { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
-          if (!res.ok) return null;
-          return await res.json();
+          const res = await transport.send("version", {}, { signal });
+          return res.ok ? res.data : null;
         } catch {
           return null;
         }
@@ -60,109 +61,118 @@ export default async function runnerCommand() {
       // A poll that times out, cannot reach the server, or meets a 5xx or a
       // 429 throws an error marked transient, which the runner's loop takes
       // as the server being slow rather than a failure (transientQueueError).
+      // The poll goes as the token's actor for an agent token and as the
+      // owner otherwise; a runner token names no actor, and the queue reads
+      // the offer's runner, not the header.
+      // A credential the server refuses on the config read (401, 403) ends
+      // the runner, as `call` ended it before t478; a config read that
+      // cannot reach the server is as transient as a poll that cannot.
       async queue(offer, signal) {
-        await resolveTokenActor();
         let res;
         try {
-          res = await fetch(server() + "/api/queue", {
-            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
-            body: JSON.stringify(offer),
-          });
+          const who = await transport.identity(signal);
+          res = await transport.send("queue", {}, { body: offer, actor: who.actor ?? OWNER, signal });
         } catch (error) {
           if (signal.aborted) throw error;
+          if (error.status) throw Object.assign(new Error(error.message), { transient: error.status >= 500 || error.status === 429 });
           throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
         }
         if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
-        const incomplete = res.headers.get("x-atelier-incomplete");
-        if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
-        return res.json();
+        if (res.incomplete) console.log(`Could not read: ${res.incomplete}. Tasks waiting there are not listed.`);
+        return res.data;
       },
       // A busy runner's heartbeat (t537): its offer, marked as a heartbeat,
       // renews its last poll while a job runs, so the claim it builds under
       // is not taken for one its runner orphaned. Nothing is offered back.
+      // It goes as the poll does, through the transport: the declared
+      // "queue-heartbeat" call, as the token's actor or the owner.
       async heartbeat(offer, signal) {
-        await resolveTokenActor();
-        const res = await fetch(server() + "/api/queue", {
-          method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
-          body: JSON.stringify({ ...offer, heartbeat: true }),
-        });
+        const who = await transport.identity(signal);
+        const res = await transport.send("queue-heartbeat", {}, { body: { ...offer, heartbeat: true }, actor: who.actor ?? OWNER, signal });
         if (!res.ok) throw new Error(`heartbeat: ${res.status}`);
       },
       hasPreparation,
       async jobBrief(project, id, actor) {
-        await resolveTokenActor();
         let res;
-        try {
-          res = await fetch(server() + `/api${I(project, id)}/job-brief`, { headers: auth(actor), signal: AbortSignal.timeout(30_000) });
-        } catch (error) { throw Object.assign(new Error(`the job brief could not be read: ${error.message}`), { infrastructure: true }); }
-        const data = await readJson(res);
-        if (!res.ok) throw Object.assign(new Error(`the job brief could not be read: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
-        return data;
+        try { res = await transport.send("job-brief", { project, item: id }, { actor }); }
+        catch (error) { throw Object.assign(new Error(`the job brief could not be read: ${error.message}`), { infrastructure: true }); }
+        if (!res.ok) throw Object.assign(new Error(`the job brief could not be read: ${res.status}${detail(res)}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
+        return res.data;
       },
       async postPlan(project, id, actor, text) {
-        await resolveTokenActor();
         let res;
-        try {
-          res = await fetch(server() + `/api${I(project, id)}/plan`, { method: "POST", headers: auth(actor), body: text, signal: AbortSignal.timeout(60_000) });
-        } catch (error) { throw Object.assign(new Error(`the plan could not be posted: ${error.message}`), { infrastructure: true }); }
-        const data = await readJson(res);
-        if (res.status === 422 && data && data.valid === false) return data;
-        if (!res.ok) throw Object.assign(new Error(`the plan could not be posted: ${res.status} ${data?.detail ?? ""}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
-        return data;
+        try { res = await transport.send("plan", { project, item: id }, { body: text, actor, timeoutMs: 60_000 }); }
+        catch (error) { throw Object.assign(new Error(`the plan could not be posted: ${error.message}`), { infrastructure: true }); }
+        if (res.status === 422 && res.data && res.data.valid === false) return res.data;
+        if (!res.ok) throw Object.assign(new Error(`the plan could not be posted: ${res.status}${detail(res)}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
+        return res.data;
       },
       // The baseline's head (GET baseline-head, which a runner token may
       // read), for a post-merge review this runner keeps waiting on a merge
       // commit no source held (t591): it is claimed again once the head moves.
+      // The declared "baseline-head" call, through the transport.
       async baselineHead(project, actor, signal) {
-        await resolveTokenActor();
-        const res = await fetch(server() + `/api${P(project)}/baseline-head`, { headers: auth(actor), signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+        const res = await transport.send("baseline-head", { project }, { actor, signal });
         if (!res.ok) throw new Error(`baseline-head: ${res.status}`);
-        return (await res.json())?.head ?? null;
+        return res.data?.head ?? null;
       },
       // A run that stalled, timed out or was refused goes to the run
-      // reports, under the runner's name, as a model's status does.
-      reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
+      // reports, under the runner's name, as a model's status does. A report
+      // the server refuses throws its status and detail, as a skip does.
+      async reportRun(body, _runner, signal) {
+        const res = await transport.send("runs", {}, { body, actor: OWNER, signal });
+        if (!res.ok) throw new Error(`${res.status}${detail(res)}`);
+        return res.data;
+      },
       // Why an idle runner found nothing to claim: its poll asked with
       // `why`, which lists each waiting dispatch of the token's projects
       // with its reason (t420); a runner token may not GET the owner's
       // listing. Asked only when a poll offers nothing, never on the busy
-      // path. A server older than this answers with the tasks offered,
-      // which carry no reason, so the runner says only its own.
-      idleWhy: async (offer, signal) => {
-        await resolveTokenActor();
+      // path, as the poll goes: the declared "queue-why" call, through the
+      // transport, under the token's actor. A server older than this
+      // answers with the tasks offered, which carry no reason, so the
+      // runner says only its own.
+      async idleWhy(offer, signal) {
         let res;
         try {
-          res = await fetch(server() + "/api/queue", {
-            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
-            body: JSON.stringify({ ...offer, why: true }),
-          });
+          const who = await transport.identity(signal);
+          res = await transport.send("queue-why", {}, { body: { ...offer, why: true }, actor: who.actor ?? OWNER, signal });
         } catch (error) {
           if (signal.aborted) throw error;
           throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
         }
         if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
-        return res.json();
+        return res.data;
       },
       // A review this runner will not serve is reported to the project, so
       // the landing waiting on it can say, by runner, when every runner
       // that offers the reviewer has skipped (t353). Under a runner token,
       // which cannot act as the owner, the report goes as the review job's
       // actor, for which the poll was offered the job; under the owner's
-      // token it goes as the owner, as the run reports do.
-      async reportReviewSkip(body, runner, signal) {
-        await resolveTokenActor();
-        return postAsRunner(`${I(body.project, body.item)}/review-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
+      // token it goes as the owner, as the run reports do. The project, the
+      // item and the actor name the path and the header; the body carries
+      // the rest.
+      async reportReviewSkip(body, _runner, signal) {
+        const who = await transport.identity(signal);
+        const { project, item, actor, ...rest } = body;
+        const res = await transport.send("review-skip", { project, item }, { body: rest, actor: who.runner ? actor : OWNER, signal });
+        if (!res.ok) throw new Error(`${res.status}${detail(res)}`);
+        return res.data;
       },
       // A build or plan job this runner gives up under its dispatch, after
       // failed runs or infrastructure failures in a row, is reported the
       // same way (t420), so status and show name this runner as what passes
       // it by.
-      async reportRunSkip(body, runner, signal) {
-        await resolveTokenActor();
-        return postAsRunner(`${I(body.project, body.item)}/run-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
+      // It goes as the review skip does: the declared "run-skip" call, as
+      // the job's actor under a runner token and as the owner otherwise;
+      // the body keeps the actor, which the server reads under the owner's
+      // token alone.
+      async reportRunSkip(body, _runner, signal) {
+        const who = await transport.identity(signal);
+        const { project, item, ...rest } = body;
+        const res = await transport.send("run-skip", { project, item }, { body: rest, actor: who.runner ? body.actor : OWNER, signal });
+        if (!res.ok) throw new Error(`${res.status}${detail(res)}`);
+        return res.data;
       },
     });
   } catch (error) { die(error.message); }

@@ -11,7 +11,7 @@ import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute,
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
-import { terminalTaskExit } from "../src/tokens.ts";
+import { RUNNER_COMMANDS, declaredHelperCall, terminalTaskExit } from "../src/tokens.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -1297,7 +1297,8 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
       // No agent token here: the actor is never looked up.
-      tokenActor: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
+      tokenActor: undefined, tokenRunner: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
+      RUNNER_COMMANDS, declaredHelperCall, commandFor: (name) => name, args: { _: [] },
       server: () => "https://unused", apiToken: () => "unused",
       serverFetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
@@ -1808,7 +1809,8 @@ test("CLI marks network and server failures distinctly from task errors", async 
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
       // No agent token here: the actor is never looked up.
-      tokenActor: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
+      tokenActor: undefined, tokenRunner: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
+      RUNNER_COMMANDS, declaredHelperCall, commandFor: (name) => name, args: { _: [] },
       server: () => "https://unused", apiToken: () => "unused", fetch,
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });

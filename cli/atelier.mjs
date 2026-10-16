@@ -30,7 +30,7 @@ import { cleanSummary } from "../src/brief.ts";
 import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL, capabilityFallback, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
-import { terminalTaskExit } from "../src/tokens.ts";
+import { callPath, declaredCall, declaredHelperCall, RUNNER_COMMANDS, terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
@@ -425,9 +425,11 @@ function checkFlags(cmd) {
 // The server's answer to GET /api/version, which needs no token, or null
 // when it gave none: unreachable, an error status, or a body that is not
 // JSON. checkCapabilities tells that null apart from a malformed answer.
+// Every command the runner spawns makes this read first, so its path is the
+// declared preflight call (RUNNER_CALLS in src/tokens.ts, t478).
 export async function serverVersion() {
   try {
-    const res = await serverFetch(server() + "/api/version", { signal: AbortSignal.timeout(30_000) });
+    const res = await serverFetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal: AbortSignal.timeout(30_000) });
     return res.ok ? await res.json() : null;
   } catch { return null; }
 }
@@ -901,9 +903,32 @@ export class RequestError extends Error {
 
 // `call` without ending the command: a failure throws a RequestError, so a
 // caller can retry it or name the step that failed.
+// Whether this process is a command the runner spawns: one held to the
+// declared helper calls (RUNNER_CALLS, src/tokens.ts). `atelier fast` is also
+// the owner's (status, land, record, close), on routes no runner declares;
+// only fast take and fast ready are the runner's.
+function runnerHelper() {
+  const command = commandFor(args._[0]);
+  return RUNNER_COMMANDS.has(command) && (command !== "fast" || ["take", "ready"].includes(args._[1]));
+}
+
+// The owner's raw fetching helpers (requestText, recordedApproval,
+// landingLease, postAsRunner) send to the server without request(), so no
+// declaration judges them: a spawned helper may not use one, whatever route
+// it names (t478). The refusal precedes the fetch and the identity read.
+function refuseSpawnedHelper(name) {
+  if (runnerHelper()) throw new Error(`${name} is not a call the runner helpers declare: it is an owner-only read or report that fetches outside request() (RUNNER_CALLS in src/tokens.ts)`);
+}
+
 export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
+  // Validate before even the identity read: spelling, aliases and indirect
+  // calls cannot evade this boundary. Ordinary owner commands retain their
+  // wider transport; every command the runner can spawn uses the table.
+  const helper = runnerHelper();
+  if (helper) declaredHelperCall(method, path, body, !!tokenRunner);
   if (path !== "/config") await resolveTokenActor();
+  if (helper && tokenRunner) declaredHelperCall(method, path, body, true);
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
@@ -941,6 +966,9 @@ export async function request(method, path, body, as, extra = {}, signal) {
 // under the name; any other refusal is a RequestError with the server's
 // words.
 export async function requestText(path, as) {
+  // The owner's read: no declared helper call is a text payload, so a
+  // spawned helper is refused here, before it fetches (t478).
+  refuseSpawnedHelper("requestText");
   await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
@@ -972,6 +1000,7 @@ export const logReader = (name, id, as) => (ref) => requestText(`${I(name, id)}/
 // `call`, because a project not yet registered answers 404, and here that is
 // an answer, not a failure.
 export async function recordedApproval(name) {
+  refuseSpawnedHelper("recordedApproval");
   await resolveTokenActor();
   let res, data;
   try {
@@ -1842,6 +1871,7 @@ function landingRunning(name) {
 // token, still gets the rest of the section; the lease is then reported as
 // unreadable. The holder is a person's or agent's name, so it is flattened.
 export async function landingLease(name, as) {
+  refuseSpawnedHelper("landingLease");
   await resolveTokenActor();
   let res, data;
   try {
@@ -1994,6 +2024,7 @@ export function wrapReady(name, cwd, report) {
 // names another actor: a runner token cannot act as the owner, so its
 // review skip goes as the review job's actor (t353).
 export async function postAsRunner(path, body, runner, signal, as = OWNER) {
+  refuseSpawnedHelper("postAsRunner");
   const res = await serverFetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
