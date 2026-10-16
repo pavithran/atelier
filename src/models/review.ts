@@ -67,7 +67,7 @@ import { ASSIGNMENT_ROLES, FALLBACK, POOL_ROLE, type AssignmentRole, type Assign
 import { modelCardView, type CardRecord, type CardView } from "./cards.ts";
 import { canonicalName, compareModel, figureText, measureRecords, ROLE_LABEL, windowText, type Coverage, type Figure, type ModelComparison } from "./compare.ts";
 import type { PoolNames } from "./judgement.ts";
-import { offThePool, type ModelEntry, type ModelNote } from "./pool.ts";
+import { standingRefusal, type ModelEntry, type ModelNote } from "./pool.ts";
 import type { ProjectEvents, RunReport } from "./reliability.ts";
 import { addDays, trendOf, utcDay, type ModelTrend, type SnapshotRow, type SnapshotTake } from "./snapshot.ts";
 import { pace } from "./speed.ts";
@@ -245,7 +245,7 @@ export function reviewModels(input: ReviewInput): ModelReview {
     const standingModels = new Set(standing.flatMap((a) => a.choices.map((c) => keyOf(c.actor))));
     const eligible = (cmp: ModelComparison) => cmp.entries.some((id) => {
       const e = pool.find((x) => `${x.harness}/${x.id}` === id);
-      return !!e && !offThePool(e) && (!e.roles || e.roles.includes(POOL_ROLE[role]));
+      return !!e && standingRefusal(e, POOL_ROLE[role]) === null;
     });
     const candidates = models.filter((m) => standingModels.has(m.cmp.model) || eligible(m.cmp)).map((m): Candidate => {
       const figures = m.cmp.roles.find((r) => r.role === role)?.figures ?? [];

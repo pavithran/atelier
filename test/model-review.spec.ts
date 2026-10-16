@@ -67,3 +67,52 @@ it("the developer reads the review; it is repeatable as of a time, refuses a bad
   expect((await call("POST", "/model-review", {})).status).toBeGreaterThanOrEqual(400);
   expect(await state()).toBe(before);
 });
+
+// t624 review 2 (astra): a review as of TIME reads every run report recorded
+// before TIME, not the newest 1,000 of all. 1,100 later reports must not
+// displace the two old ones the review is as of.
+const run = (actor: string, at: string) => ({ actor, role: "build" as const, outcome: "stalled" as const, project: null, item: null, detail: "", runner: "home:studio", at });
+const OLD = "2020-06-01T12:00:00.000Z";
+
+// The Worker's environment with every run-report read recorded, or failing.
+function watched(fail: boolean) {
+  const seen: { actor: string; at: string }[] = [];
+  const wrapped = { ...testEnv, LEDGER: { ...env.LEDGER, idFromName: (n: string) => env.LEDGER.idFromName(n), get: (id: DurableObjectId) => new Proxy(env.LEDGER.get(id), {
+    get: (t, k) => {
+      if (k === "runsPage") return async (...a: unknown[]) => {
+        if (fail) throw new Error("the page cannot be read");
+        const page = await (t as never as Record<string, (...x: unknown[]) => Promise<{ runs: { actor: string; at: string }[] }>>).runsPage(...a);
+        seen.push(...page.runs);
+        return page;
+      };
+      return (t as never)[k];
+    },
+  }) } } as typeof env;
+  return { wrapped, seen };
+}
+const ask = (e: typeof env, asOf: string) => worker.fetch(new Request(`https://atelier.test/api/model-review?as-of=${asOf}`, { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), e);
+
+it("a review as of a past time reads every run report before it, however many came later", async () => {
+  for (const m of [entry("gpt-6-astra", "codex"), entry("gemini-4-argon", "antigravity")]) await index().putModel(m);
+  for (const actor of ["codex/gpt-6-astra", "elsewhere/gpt-6-astra"]) await index().putRun(run(actor, OLD));
+  for (let i = 0; i < 1100; i++) await index().putRun(run("antigravity/gemini-4-argon", AT));
+  expect((await index().runs()).every((r: { at: string }) => r.at === AT)).toBe(true);
+  const { wrapped, seen } = watched(false);
+  const res = await ask(wrapped, "2020-07-01");
+  expect(res.status, await res.clone().text()).toBe(200);
+  expect(seen.map((r) => r.at)).toEqual([OLD, OLD]);
+  expect(((await res.json()) as ModelReview).partial).toBe(false);
+  // As of now, every report is read, in more than one page.
+  const now = watched(false);
+  expect((await ask(now.wrapped, new Date().toISOString())).status).toBe(200);
+  expect(now.seen.length).toBeGreaterThanOrEqual(1102);
+});
+
+it("a run-report read that cannot finish makes the review partial", async () => {
+  const { wrapped } = watched(true);
+  const res = await ask(wrapped, "2020-07-01");
+  expect(res.status, await res.clone().text()).toBe(200);
+  const r = await res.json() as ModelReview;
+  expect(r.partial).toBe(true);
+  expect(r.coverage.unread).toContain("some run reports");
+});
