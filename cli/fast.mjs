@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { scanTrees } from "../src/secret-scan.ts";
-import { agentOfMessage } from "../src/rules.ts";
+import { agentOfMessage, agentsOfMessages, FAST_CONTRIBUTORS_MAX } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { privateGuardFor, privateRefusal } from "./private.mjs";
@@ -524,6 +524,12 @@ export function readySources(ready, pairs) {
 
 const hasCommit = (cwd, sha) => runGit(cwd, ["cat-file", "-e", `${sha}^{commit}`]).status === 0;
 
+// The agents named by the Agent lines of the commits `from..to` brings (t603).
+function rangeAgents(cwd, from, to) {
+  const out = git(cwd, "log", "--format=%B%x00", `${from}..${to}`);
+  return agentsOfMessages(out.split("\0"));
+}
+
 // `titles` maps each task to its title; `record(id, receipt)` posts one
 // receipt; `log` prints a step; `run` runs a declared generator for the merge
 // pipeline (its default where omitted). `cleanClone`, when given as { setup },
@@ -617,6 +623,13 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const commit = git(cwd, "rev-parse", "--verify", `${sha}^{commit}`);
       const builder = agentOfMessage(git(cwd, "log", "-1", "--format=%B", commit));
       if (!builder) { failure = { step: `merge ${id}`, detail: `${commit.slice(0, 12)} has no Agent: line naming its builder` }; break; }
+      // Everyone with a commit in the range this merge brings, not the tip
+      // alone (t603): the receipt carries them all for the review gate.
+      const contributors = [...new Set([builder, ...rangeAgents(cwd, "HEAD", commit)])];
+      // The server refuses a receipt naming more, after the merge can no longer
+      // be rolled back and with no way to shorten it (review of t603), so a
+      // range with more distinct agents is refused before it is merged.
+      if (contributors.length > FAST_CONTRIBUTORS_MAX) { failure = { step: `merge ${id}`, detail: `${id}'s commits name ${contributors.length} distinct agents, more than the ${FAST_CONTRIBUTORS_MAX} a receipt can carry; land a smaller range` }; break; }
       const message = `Merge ${id}: ${titles[id] ?? id}\n\nLanded fast: ${reason}`;
       // Through the pipeline (t587): a declared generated output both sides
       // changed is regenerated from the merged sources, not merged as text.
@@ -635,7 +648,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         failure = { step: `merge ${id}`, detail: `the merge commit ${mergeCommit.slice(0, 12)} has parents ${parents.map((p) => p.slice(0, 12)).join(", ") || "none"}, not main (${before.slice(0, 12)}) and ${id}'s commit (${commit.slice(0, 12)})` };
         break;
       }
-      merged.push({ id, commit, builder, mergeCommit });
+      merged.push({ id, commit, builder, contributors, mergeCommit });
       log(`merged ${id} (${commit.slice(0, 12)}) as ${merged.at(-1).mergeCommit.slice(0, 12)}`);
       for (const g of r.regenerated ?? []) log(`regenerated ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}`);
     }
@@ -736,13 +749,26 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const lost = merged.filter((m) => !held(m.mergeCommit) || !held(m.commit));
       if (lost.length) failure = { step: "checkout changed", detail: `main moved: ${scanned.slice(0, 12)} does not hold ${lost.map((m) => `${m.id} (its commit ${m.commit.slice(0, 12)} merged as ${m.mergeCommit.slice(0, 12)})`).join(", ")}` };
     }
+    // The contributors are read again now, from each merge's first parent,
+    // after the last history and object check and while rollback is still
+    // possible (review of t603, round 3): the list taken before the merge
+    // could come from a history a graft written by an earlier merge's
+    // generator had shortened, and a typecheck then removed the graft before
+    // the checks above, leaving a receipt that omitted a contributor.
+    if (!failure) {
+      for (const m of merged) {
+        const found = [...new Set([m.builder, ...rangeAgents(cwd, `${m.mergeCommit}^1`, m.commit)])];
+        if (found.length > FAST_CONTRIBUTORS_MAX) { failure = { step: `merge ${m.id}`, detail: `${m.id}'s commits name ${found.length} distinct agents, more than the ${FAST_CONTRIBUTORS_MAX} a receipt can carry; land a smaller range` }; break; }
+        m.contributors = found;
+      }
+    }
     if (failure) return { ok: false, start, ...restore(), landed: [], failure };
     // The receipts are written before any is posted (finding 9); a write
     // that fails rolls the batch back like any other step, as nothing is
     // recorded yet.
     // The shallow boundary (.git/shallow's contents, "" when there is none)
     // is kept too, so the resume sees one written since (re-review of t602).
-    pending = { version: 1, ...note, start, head: scanned, shallow: shallowAtStart, receipts: merged.map((m) => ({ task: m.id, commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests, recorded: false })) };
+    pending = { version: 1, ...note, start, head: scanned, shallow: shallowAtStart, receipts: merged.map((m) => ({ task: m.id, commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, contributors: m.contributors, tests, recorded: false })) };
     file = join(pendingDir(cwd), `${start}..${scanned}.json`);
     writePending(file, pending);
   } catch (err) {
@@ -786,7 +812,7 @@ async function postReceipts(file, data, record) {
   const tally = () => ({ recorded: data.receipts.filter((x) => x.recorded).map((x) => x.task), unrecorded: data.receipts.filter((x) => !x.recorded).map((x) => x.task) });
   for (const x of data.receipts) {
     if (x.recorded) continue;
-    const receipt = { commit: x.commit, mergeCommit: x.mergeCommit, builder: x.builder, tests: x.tests };
+    const receipt = { commit: x.commit, mergeCommit: x.mergeCommit, builder: x.builder, ...(x.contributors ? { contributors: x.contributors } : {}), tests: x.tests };
     let answer;
     try { answer = await record(x.task, receipt); }
     catch (err) { return { ok: false, landed, already, ...tally(), pending: file, failure: { step: `record ${x.task}`, detail: err?.message ?? String(err), merged: true } }; }
@@ -838,6 +864,10 @@ export function readPending(cwd, file) {
     if (parents.length !== 2 || parents[1] !== x.commit) problems.push(`${merge} is not a merge of ${x.task}'s commit ${x.commit.slice(0, 12)}`);
     else if (!git(cwd, "log", "-1", "--format=%s", x.mergeCommit).startsWith(`Merge ${x.task}:`)) problems.push(`${merge} is not the merge of ${x.task}`);
     else if (agentOfMessage(git(cwd, "log", "-1", "--format=%B", x.commit)) !== x.builder) problems.push(`${x.task}'s commit ${x.commit.slice(0, 12)} does not name ${x.builder} as its builder`);
+    else if (x.contributors) {
+      const found = [...new Set([x.builder, ...rangeAgents(cwd, `${x.mergeCommit}^1`, x.commit)])].sort();
+      if (JSON.stringify(found) !== JSON.stringify([...x.contributors].sort())) problems.push(`${x.task}'s receipt names contributors ${x.contributors.join(", ")}, but the Agent lines of its commits name ${found.join(", ")}`);
+    }
   }
   // The batch's history is still whole (review of t602, gpt-6-astra: an
   // object deleted between the failed receipt and the resume had the

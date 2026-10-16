@@ -668,6 +668,12 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     // A task landed in fast mode (t585) names its builder from the merged
     // commit's Agent line: that builder is a contributor, as a pusher is.
     if (event.kind === "item.landed_fast" && typeof event.data.builder === "string" && validActor(event.data.builder)) actors.add(event.data.builder);
+    // So is every agent whose commit is in the range the landing merged (t603):
+    // a model that wrote an earlier commit of the range is a contributor
+    // though the tip's Agent line names another.
+    if (event.kind === "item.landed_fast" && Array.isArray(event.data.contributors)) {
+      for (const c of event.data.contributors) if (typeof c === "string" && validActor(c) && c.includes("/")) actors.add(c);
+    }
     if (event.kind === "push.observed") {
       const by = event.actor === "atelier/events" ? holder : event.actor;
       if (by) actors.add(by);
@@ -2321,6 +2327,9 @@ export interface FastReceipt {
   commit: string;
   mergeCommit: string;
   builder: string;
+  // Every agent whose Agent line is in the commits the landing merged, the
+  // builder among them (t603). A receipt from an older CLI has none.
+  contributors?: string[];
   tests: { command: string; sha256: string; where?: FastTestWhere };
   reason: string;
   at: string;
@@ -2331,6 +2340,7 @@ export interface FastReceipt {
 }
 
 const SHA = /^[a-f0-9]{40,64}$/;
+export const FAST_CONTRIBUTORS_MAX = 50;
 export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, actor: string, at: string): FastReceipt {
   assertFastMode(mode);
   const tests = body.tests as { command?: unknown; sha256?: unknown; where?: unknown } | undefined;
@@ -2341,7 +2351,13 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
   if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
   if (tests.where !== undefined && !FAST_TEST_WHERE.includes(tests.where as FastTestWhere)) throw new RuleError("bad_receipt", `the receipt says where the tests ran: ${FAST_TEST_WHERE.join(" or ")}`, 400);
   const where = tests.where as FastTestWhere | undefined;
-  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
+  let contributors: string[] | undefined;
+  if (body.contributors !== undefined) {
+    const list = body.contributors;
+    if (!Array.isArray(list) || list.length > FAST_CONTRIBUTORS_MAX || !list.every((c) => typeof c === "string" && c.includes("/") && validActor(c))) throw new RuleError("bad_receipt", `the receipt names the contributors as harness/model, from the Agent lines of the commits merged, at most ${FAST_CONTRIBUTORS_MAX}`, 400);
+    contributors = [...new Set([body.builder, ...(list as string[])])];
+  }
+  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, ...(contributors ? { contributors } : {}), tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
 }
 
 // ── merges recorded after the fact (t653) ──────────────────────────────────
@@ -2413,6 +2429,20 @@ export function agentOfMessage(message: string): string | null {
   const lines = message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l));
   const last = lines.at(-1)?.replace(/^Agent:\s*/i, "").trim() ?? "";
   return last.includes("/") && validActor(last) ? last : null;
+}
+
+// Every agent the commit messages of a range name: all their Agent lines,
+// as harness/model, once each (t603). The tip's last line is the builder
+// (agentOfMessage); an earlier commit's agent contributed as well.
+export function agentsOfMessages(messages: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const message of messages) {
+    for (const line of message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l))) {
+      const a = line.replace(/^Agent:\s*/i, "").trim();
+      if (a.includes("/") && validActor(a)) out.add(a);
+    }
+  }
+  return [...out];
 }
 
 // The family rule for a post-merge review. Outside fast mode a reviewer of
