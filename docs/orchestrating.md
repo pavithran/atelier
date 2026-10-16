@@ -230,6 +230,14 @@ misread:
   security among them, were filed with none, so their reviews had nothing to
   judge against. `atelier new` now warns on a task filed without criteria, and
   `atelier init --require-criteria` refuses one for the project.
+- Before dispatch, run each "existing tests pass" criterion against the change
+  the task asks for, and name any test the change must rewrite. The criterion
+  is binding on the builder, so one that the fix itself falsifies sends the
+  builder to choose between the criterion and the fix. hqpe-control t54 was
+  filed with "t52's tests pass unchanged" while its own fix made one t52 test
+  (the 3x ratio, with only the Nx filter) wrong by design; reading the test
+  before dispatch caught it, and nothing else would have. Write "t52's tests
+  pass except the 3x ratio test, which the task rewrites" instead.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the developer's checkout.
 - Point the agent to the project's prose standard, the path `atelier init
