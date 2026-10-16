@@ -371,6 +371,44 @@ test("a landing whose sole review runner has skipped says so by runner name and 
   assert.equal(h.box.states.t1, "merged");
 });
 
+// t613: the plain landing had no stall check, though the Workflow's has had
+// one since t574. t573 at cc688bac waited 62 minutes on opencode/glm-5.3,
+// whose replies had no VERDICT line, and the same wait on a request that no
+// longer existed; the plain landing would have waited its hour likewise. A
+// late reply from a claim that had lapsed released nothing and must not
+// end the wait of the request that replaced it.
+test("the plain landing stops at once on a reply with no readable verdict and on a request that is gone, but not on a late reply that released nothing (t613)", async (t) => {
+  const stalled = async (set) => {
+    const f = await landFixture(t);
+    f.box.review.approveAfter = null;
+    Object.assign(f.box.review, set);
+    return { f, r: await f.run(f.checkout, "land", "t1") };
+  };
+  const live = { request: 1, reviewer: "codex/gpt-6-astra" };
+  const bad = await stalled({ liveReview: live, unparsable: [{ by: "codex/gpt-6-astra", request: 1, released: true }] });
+  assert.equal(bad.r.status, 1, bad.r.output);
+  assert.match(bad.r.output, /codex\/gpt-6-astra replied to the review of t1 at \w+ with no verdict the server could read \(no VERDICT line\)/);
+  assert.equal(bad.f.posts("/land").find((x) => x.body.step === "review")?.body.verdict, "unparsable");
+  assert.equal(bad.f.posts("/accept").length, 0);
+  // A reply kept before the server recorded requests still counts.
+  const old = await stalled({ liveReview: live, unparsable: [{ by: "codex/gpt-6-astra" }] });
+  assert.equal(old.r.status, 1, old.r.output);
+  assert.match(old.r.output, /replied to the review of t1/);
+  const gone = await stalled({ liveReview: null });
+  assert.equal(gone.r.status, 1, gone.r.output);
+  assert.match(gone.r.output, /no review request of t1 at \w+ is open or claimed and no verdict was given, so none will come/);
+  assert.equal(gone.f.posts("/land").find((x) => x.body.step === "review")?.body.verdict, "no-request");
+  // The late reply released nothing: the successor request lives, so the
+  // landing waits on and takes the verdict when it comes.
+  const f = await landFixture(t);
+  f.box.review.approveAfter = 3;
+  f.box.review.liveReview = live;
+  f.box.review.unparsable = [{ by: "codex/gpt-6-astra", request: 0, released: false }];
+  const late = await f.run(f.checkout, "land", "t1");
+  assert.equal(late.status, 0, late.output);
+  assert.equal(f.box.states.t1, "merged");
+});
+
 test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);

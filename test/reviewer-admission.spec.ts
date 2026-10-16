@@ -142,6 +142,19 @@ it("named aliases dispatch the canonical registered model only to a live runner 
   expect((await detail(L)).gate.ready).toBe(true);
 });
 
+it("a hand-served request opens for an admitted reviewer although no live runner offers the review job", async () => {
+  // ikon-weblog t75, round 2: review-request refused no_runner for a review
+  // the developer serves by hand (review-claim --runner home:hand).
+  const L = await setup("admission-hand");
+  await admit(L);
+  await refusal(L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, []), "no_runner");
+  const asked = await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, [], true);
+  expect(asked).toMatchObject({ requested: true, reviewer: REVIEWER });
+  const claim = await L.claimReview("t1", REVIEWER, { runner: "home:hand", kind: "home" }) as unknown as ReviewClaim;
+  await L.addReview({ ...await review(L), request: claim.request }, undefined, false);
+  expect((await detail(L)).gate.ready).toBe(true);
+});
+
 it("withdrawal cancels an outstanding claim and readmission never revives its verdict", async () => {
   const L = await setup("admission-withdraw-claim");
   await admit(L);
@@ -270,4 +283,54 @@ it("binding an admitted request enforces a changed company even before request w
   await L.setProject({ ...project, policy: { ...project.policy, familyMode: { single: "openai", by: "owner", at: new Date().toISOString() } } }, "owner");
   await refusal(L.claimReview("t1", ALIAS, runner), "not_independent");
   expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("open");
+});
+
+// t687: ikon-weblog never admitted gemini-4-argon, so asking antigravity/gemini-4-argon
+// for a review there was refused as ineligible; admit and withdraw refused the form
+// atelier models prints with "not registered".
+it("a model admitted in atelier reviews in every project until a project withdraws it; admit takes harness/model", async () => {
+  const home = await setup("atelier"), other = await setup("standard-other"), late = await setup("standard-late");
+  const sendStandard = async () => {
+    const { admissions, version } = await home.standardReviewersSnapshot();
+    for (const L of [other, late]) await L.setStandardReviewers(admissions.filter((a) => a.active), version);
+  };
+  const asked = () => other.requestReview("t1", "owner", REVIEWER, POOL, false, false, undefined, offers());
+  await refusal(asked(), "ineligible");
+  const admitted = await home.admitReviewer(`opencode/${POOL[0].id}`, true, "Qualified", "owner", POOL);
+  expect(admitted).toMatchObject({ id: POOL[0].id, active: true });
+  await sendStandard();
+  expect(await asked()).toMatchObject({ requested: true, reviewer: REVIEWER });
+  expect((await other.reviewerListing())[0]).toMatchObject({ id: POOL[0].id, inherited: "atelier" });
+  expect((await other.reviewerAdmissions())).toEqual([]);
+  // A project withdraws it for itself alone; the request open there is withdrawn.
+  await other.admitReviewer(`opencode/${POOL[0].id}`, false, "Not for this project", "owner", POOL);
+  expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
+  expect(await other.reviewWaiting()).toEqual([]);
+  expect(hasRole(REVIEWER, (await late.project()).policy, "assessor")).toBe(true);
+  await sendStandard();
+  expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
+  // The harness must be the entry's own.
+  await refusal(home.admitReviewer(`codex/${POOL[0].id}`, true, "wrong harness", "owner", POOL), "no_model");
+  // A withdrawal names the registered harness too (astra, t687 finding 2).
+  await refusal(home.admitReviewer(`codex/${POOL[0].id}`, false, "wrong harness", "owner", POOL), "no_model");
+  await refusal(home.admitReviewer(`opencode/${POOL[0].id}`, false, "model gone", "owner", []), "no_model");
+  // Atelier withdrawing ends the sharing for projects with no record of their own.
+  await home.admitReviewer(POOL[0].id, false, "Retired", "owner", POOL);
+  await sendStandard();
+  expect(hasRole(REVIEWER, (await late.project()).policy, "assessor")).toBe(false);
+});
+
+// astra, t687 finding 1: a broadcast that captured the model admitted could arrive
+// after the withdrawal's delivery and re-admit it.
+it("a standard set older than the one a project holds is dropped", async () => {
+  const home = await setup("atelier-order"), other = await setup("standard-order");
+  await home.admitReviewer(POOL[0].id, true, "Qualified", "owner", POOL);
+  const older = await home.standardReviewersSnapshot();
+  await home.admitReviewer(POOL[0].id, false, "Retired", "owner", POOL);
+  const newer = await home.standardReviewersSnapshot();
+  expect(newer.version).toBeGreaterThan(older.version);
+  await other.setStandardReviewers(newer.admissions.filter((a) => a.active), newer.version);
+  await other.setStandardReviewers(older.admissions.filter((a) => a.active), older.version);
+  expect(await other.standardReviewers()).toEqual([]);
+  expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
 });

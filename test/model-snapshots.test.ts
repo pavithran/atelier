@@ -92,7 +92,7 @@ test("every measure the comparison gives is kept with its version, window, count
     assert.ok("window" in f && "numerator" in f && "denominator" in f && "n" in f && "minSamples" in f && "state" in f, f.measure);
     assert.ok(!("refs" in f), f.measure);
   }
-  assert.deepEqual([...new Set(s.rows.map((r) => r.role))].sort(), ["acting", "build", "review"]);
+  assert.deepEqual([...new Set(s.rows.map((r) => r.role))].sort(), ["acting", "build", "claims-review", "plan", "review", "security-review"]);
   assert.deepEqual([...new Set(s.rows.map((r) => r.model))], ["gemini-4-argon", "gpt-6-astra", "opus-5.5"]);
   assert.deepEqual(figure(s, "gpt-6-astra", "review", "review-precision"), {
     measure: "review-precision", label: "Its blocking findings that held up (confirmed or fixed) of those the developer judged", source: "precision",
@@ -285,7 +285,7 @@ test("no module that routes work imports the snapshots", () => {
   // And the Worker reads them only to take, replay and show them.
   const worker = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   const callers = [...worker.matchAll(/I\.(modelSnapshot\w*|putModelSnapshot)\(/g)].map((m) => /\n(?:export )?(?:async )?function (\w+)[^\n]*\n(?![\s\S]*\n(?:export )?(?:async )?function )/.exec(worker.slice(0, m.index))?.[1]);
-  assert.deepEqual([...new Set(callers)].sort(), ["modelTrends", "replayModelSnapshot", "takeModelSnapshots"]);
+  assert.deepEqual([...new Set(callers)].sort(), ["readModelSnapshots", "replayModelSnapshot", "takeModelSnapshots"]);
 });
 
 // Finding (gpt-6-astra, t623): the first version read the newest 1,000 run

@@ -14,7 +14,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { fenceText, prereviewClause } from "../src/dispatch/prereview.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
-import { landingVerdict, allSkipped, recordedApproval } from "../src/landing-verdict.ts";
+import { landingVerdict, allSkipped, recordedApproval, reviewStall } from "../src/landing-verdict.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
@@ -939,6 +939,9 @@ async function reviewStep(io, { id, name, itemPath, reviewer, head: pushed, reco
     return;
   }
   const head = ask.head ?? pushed, since = ask.at;
+  // When this landing asked (t613): only a reply with no readable verdict
+  // given since then ends its wait, as the Workflow reads it.
+  const askedAt = new Date().toISOString();
   // The named reviewer redirected an unclaimed request for another (t627).
   for (const w of Array.isArray(ask.withdrew) ? ask.withdrew : []) print(`Withdrew the unclaimed review request ${w.request}${w.reviewer ? ` for ${w.reviewer}` : ""}, since --reviewer names ${reviewer}.`);
   print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}. Waiting for the verdict…`);
@@ -1000,6 +1003,18 @@ async function reviewStep(io, { id, name, itemPath, reviewer, head: pushed, reco
       return;
     }
     if (d.item.head !== head) throw new StepError(`${id}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
+    // No verdict: the wait goes on only while one can still come (t613, as
+    // the Workflow's reviewStall, t574). The live request and the verdicts
+    // come in one detail, so a verdict that closed the request is seen
+    // above, never taken for a request gone unanswered. A server that does
+    // not send liveReview is not judged on it.
+    const stall = reviewStall(head, askedAt, ask.reviewer ?? null, "liveReview" in d ? d.liveReview ?? null : { reviewer: "" }, d.unparsable ?? []);
+    if (stall) {
+      await record("review", Date.now() - t0, { verdict: stall.kind === "unparsable" ? "unparsable" : "no-request", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) });
+      const byHand = `review by hand (atelier review ${id} --approve --as H/M --note "…"), then atelier accept ${id} and atelier merge ${id}`;
+      if (stall.kind === "unparsable") throw new StepError(`${stall.by} replied to the review of ${id} at ${short(head)} with no verdict the server could read (${stall.note.slice(0, 300) || "no note"}); the reply is kept on the task (atelier show ${id}). The request stays asked of ${stall.by} and ${id} stays submitted. Run atelier land ${id} --reviewer H/M to ask another reviewer, which replaces that request, or ${byHand}`);
+      throw new StepError(`no review request of ${id} at ${short(head)} is open or claimed and no verdict was given, so none will come; ${id} stays submitted. Run atelier land ${id}${ask.reviewer ? ` --reviewer ${ask.reviewer}` : ""} to ask again, or ${byHand}`);
+    }
     // A review request every runner that offers the reviewer has skipped
     // will never be claimed, however long the wait runs (t353). Read as
     // the Workflow reads it: the skips recorded against this very

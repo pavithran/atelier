@@ -206,7 +206,9 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   // assign and roles record and read role assignments (t622).
   assert.deepEqual(requiredForCommand("models", "assign"), ["models.roles.v1"]);
   assert.deepEqual(requiredForCommand("models", "roles"), ["models.roles.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1", "models.card.v1", "models.standing.v1", "models.roles.v1"]);
+  // review reads the recurring model review (t624).
+  assert.deepEqual(requiredForCommand("models", "review"), ["models.review.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1", "models.card.v1", "models.review.v1", "models.standing.v1", "models.roles.v1"]);
   assert.deepEqual(requiredForCommand("token", "issue"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "store"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "ls"), []);
