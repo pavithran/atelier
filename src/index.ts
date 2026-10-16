@@ -14,7 +14,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -537,6 +537,18 @@ async function sendPool(env: Env): Promise<string[]> {
 async function unreachedOf(projects: readonly ProjectRecord[], send: (p: ProjectRecord) => Promise<void>): Promise<string[]> {
   const results = await Promise.all(projects.map((p) => send(p).then(() => null, () => p.name)));
   return results.filter((name): name is string => name !== null);
+}
+// The reviewers admitted in the standard project, which every project
+// inherits unless it records its own admission or withdrawal (t687).
+async function standardReviewers(env: Env): Promise<ReviewerAdmission[]> {
+  const home = (await index(env).projects()).find((p) => p.name === STANDARD_REVIEWER_PROJECT);
+  return home ? standardAdmissions(await ledgerOf(env, home).reviewerAdmissions()) : [];
+}
+// Sends them to every other project's ledger; returns the projects it could
+// not reach, which keep their last copy.
+async function sendStandardReviewers(env: Env): Promise<string[]> {
+  const [standard, projects] = await Promise.all([standardReviewers(env), index(env).projects()]);
+  return unreachedOf(projects.filter((p) => p.name !== STANDARD_REVIEWER_PROJECT), async (p) => { await ledgerOf(env, p).setStandardReviewers(standard); });
 }
 // Sends each project's ledger the role assignments bearing on it (its own,
 // by its key, and every project's; src/models/assignments.ts), after one is
@@ -1640,9 +1652,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   if (parts[2] === "reviewers") {
     requireOwner(env, actor);
-    if (parts.length === 3 && m === "GET") return json(await L.reviewerAdmissions());
+    if (parts.length === 3 && m === "GET") return json(await L.reviewerListing());
     if (parts.length === 4 && (m === "PUT" || m === "DELETE")) {
-      return json(await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models()));
+      const record = await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models());
+      // The standard project's reviewers are every project's (t687).
+      const unreached = project === STANDARD_REVIEWER_PROJECT ? await sendStandardReviewers(env) : [];
+      return json(unreached.length ? { ...record, unreached } : record);
     }
     throw new RuleError("not_found", "no such reviewer admission route", 404);
   }
@@ -1751,7 +1766,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     await seedProject({
       register: () => index(env).registerProject(record),
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
-      install: (snapshot) => L.poolChanged(models, snapshot),
+      install: async (snapshot) => { await L.poolChanged(models, snapshot); await L.setStandardReviewers(await standardReviewers(env)); },
     });
     return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }

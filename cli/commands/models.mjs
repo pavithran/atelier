@@ -43,7 +43,7 @@ export default async function modelsCommand() {
   if (sub === "reviewers") {
     const name = project();
     const records = await call("GET", `/projects/${encodeURIComponent(name)}/reviewers`, undefined, OWNER);
-    for (const record of records) console.log(`${record.id}: ${record.active ? "admitted" : "withdrawn"} by ${record.by} at ${record.at}: ${record.reason}`);
+    for (const record of records) console.log(`${record.id}: ${record.active ? "admitted" : "withdrawn"}${record.inherited ? ` (standard, from ${record.inherited})` : ""} by ${record.by} at ${record.at}: ${record.reason}`);
     if (!records.length) console.log(`No reviewer admissions in ${name}.`);
     return;
   }
