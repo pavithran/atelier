@@ -281,3 +281,40 @@ it("the hold-only release of a waiting merge-main dispatch keeps merge-main and 
   expect(answer.retainedDispatch).toBe(true);
   expect(answer.dispatch).toEqual({ ...before, overlapOk: true });
 });
+
+// t517 (round 2): the preflight and the route judge a held or submitted task's
+// redispatch as the dispatch itself does, a fresh build, not the earlier offer.
+it("a held task's rework dispatch refused as a fresh build is refused before its token is revoked", async () => {
+  const { L, record, item, path } = await setup("retain-preflight", []);
+  const mint = await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+  await L.setFork(item.id, "retain-preflight--t2", "a".repeat(40), "codex/shared");
+  await L.recordToken(item.id, "codex/shared", mint.generation, mint.replaces, "preflight-token");
+  await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: MAIN_HEAD });
+  await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+  await L.setProject({ ...record, policy: { ...record.policy, refuseOverlap: true } }, "owner");
+  const before = await L.item(item.id);
+  // The inherited agent and model would name the claimant exempt from the
+  // overlap refusal; the fresh build names none.
+  const res = await call("POST", path, { overlapOk: true, note: "address the review" });
+  expect(res.status, await res.clone().text()).toBe(409);
+  expect(await res.text()).toContain("overlaps live");
+  expect(revoked).not.toContain("preflight-token");
+  expect(await L.tokenId(item.id)).toBe("preflight-token");
+  expect(await L.item(item.id)).toEqual(before);
+});
+for (const state of ["held", "submitted"] as const) {
+  it(`a ${state} task redispatched with --overlap-ok and a note still gets a suggested builder`, async () => {
+    const { L, item, path } = await setup(`retain-suggest-${state}`, []);
+    await L.dispatch(item.id, "owner", original);
+    await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+    await L.setFork(item.id, `retain-suggest-${state}--t2`, "a".repeat(40), "codex/shared");
+    if (state === "submitted") { await L.recordPush(item.id, "codex/shared", "c".repeat(40), "c".repeat(40)); await L.submit(item.id, "codex/shared"); }
+    const res = await call("POST", path, { overlapOk: true, suggest: true, note: "address the review" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const answer = await res.json() as Answer;
+    expect(answer.suggestion).toBeTruthy();
+    expect(answer.retainedDispatch).toBeUndefined();
+    expect(answer.dispatch.agent).toBe("codex");
+    expect(answer.dispatch.model).toBeTruthy();
+  });
+}
