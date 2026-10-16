@@ -105,3 +105,42 @@ test("on the runner route, a single commit too large goes once to the fork's own
   assert.equal(s.remoteTip(), last);
   assert.match(said.join("\n"), /answered 413 on its own \(22 objects.*pushing it once to the fork's own URL/);
 });
+
+// t705 (astra's fourth review): a token refusal must reach the caller's
+// renewal even when it came from a read or an upload whose error used to be
+// discarded. The real repository answers everything but the calls named here.
+const REFUSED_403 = "fatal: unable to access 'https://x/': The requested URL returned error: 403";
+const refusing = (s, { reads, forkPush }) => {
+  let lsRemotes = 0;
+  return (args, opts = {}) => {
+    if (args[0] === "ls-remote" && ++lsRemotes > reads) return { status: 128, stdout: "", stderr: REFUSED_403 };
+    if (forkPush && args[0] === "push" && args.includes("fork-url")) return { status: 128, stdout: "", stderr: REFUSED_403 };
+    return s.git(args, opts);
+  };
+};
+
+test("a read of the remote refused after a step answered 413 is carried to the error, not discarded", (t) => {
+  const s = scenario(t, 1);
+  s.commit("base", 1);
+  s.git(["push", "-q", "origin", "HEAD:main"], { cwd: s.work });
+  s.commit("big", 5);
+  assert.throws(() => pushCommitsInTurn(refusing(s, { reads: 1 }), s.work, { remote: "origin", branch: "main" }), (error) => {
+    assert.match(error.message, /HTTP 413/);
+    assert.match(error.message, /error: 403/);
+    return true;
+  });
+});
+
+test("a fallback upload refused for its token is carried to the error, not only printed", (t) => {
+  const s = scenario(t, 1);
+  s.commit("base", 1);
+  s.git(["push", "-q", "origin", "HEAD:main"], { cwd: s.work });
+  s.commit("big", 5);
+  const said = [];
+  assert.throws(() => pushCommitsInTurn(refusing(s, { reads: 2, forkPush: true }), s.work, { remote: "origin", branch: "main", fallback: "fork-url", say: (l) => said.push(l) }), (error) => {
+    assert.match(error.message, /HTTP 413/);
+    assert.match(error.message, /error: 403/);
+    return true;
+  });
+  assert.match(said.join("\n"), /error: 403/);
+});

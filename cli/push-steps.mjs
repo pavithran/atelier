@@ -175,25 +175,33 @@ export function pushCommitsInTurn(git, cwd, { remote, branch, head: pinned = nul
   for (const [i, commit] of steps.entries()) {
     const spec = `${commit}:refs/heads/${branch}`;
     const r = run(["push", "--quiet", "--recurse-submodules=no", remote, spec]);
-    if (r.status !== 0 && tipOf().tip !== commit) {
+    const now = r.status !== 0 ? tipOf() : null;
+    if (now && now.tip !== commit) {
       const why = told(r);
-      if (!refused413(why)) throw new Error(`the push of commit ${i + 1} of ${steps.length} (${SHORT(commit)}) failed; the remote holds ${branch} at ${prev ? SHORT(prev) : "nothing yet"}.\ngit said:\n${indent(why)}`);
+      // What a read or an upload said is never dropped from the error: a
+      // refused token (401/403) in it is what the caller renews on (t705).
+      const afterwards = now.error ? `\nReading ${branch} from the remote afterwards failed too, so it may hold more than this says. git said:\n${indent(now.error)}` : "";
+      if (!refused413(why)) throw new Error(`the push of commit ${i + 1} of ${steps.length} (${SHORT(commit)}) failed; the remote holds ${branch} at ${prev ? SHORT(prev) : "nothing yet"}.\ngit said:\n${indent(why)}${afterwards}`);
       const { objects, bytes } = commitWeight(git, cwd, commit, prev);
       const subject = out(run(["log", "-1", "--format=%s", commit]));
       const weight = `${objects} object${objects === 1 ? "" : "s"}, about ${mb(bytes)} as git stores them`;
-      let viaFork = false;
+      let viaFork = false, forkSaid = "";
       if (fallback) {
         say(`Commit ${SHORT(commit)} ("${subject}") answered 413 on its own (${weight}); pushing it once to the fork's own URL.`);
         const f = run(["push", "--quiet", "--recurse-submodules=no", fallback, spec]);
-        viaFork = f.status === 0 || tipOf().tip === commit;
-        if (!viaFork) say(`The push to the fork's own URL failed too:\n${indent(told(f))}`);
+        const check = f.status === 0 ? null : tipOf();
+        viaFork = f.status === 0 || check.tip === commit;
+        if (!viaFork) {
+          forkSaid = `\nThe push to the fork's own URL failed too. git said:\n${indent(told(f))}${check.error ? `\nReading ${branch} from the remote afterwards failed too. git said:\n${indent(check.error)}` : ""}`;
+          say(forkSaid.trim());
+        }
       }
       if (!viaFork) {
         throw new Error([
           `commit ${SHORT(commit)} ("${subject}") is too large to push on its own: ${weight}. The push answered 413 even for this one commit.`,
           `${i} of ${steps.length} unpushed commit${steps.length === 1 ? "" : "s"} went through; the remote holds ${branch} at ${prev ? SHORT(prev) : "nothing yet"}.`,
           ...(ownerHint ? [ownerHint] : []),
-          `git said:\n${indent(why)}`,
+          `git said:\n${indent(why)}${afterwards}${forkSaid}`,
         ].join("\n"));
       }
     }
