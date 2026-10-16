@@ -107,6 +107,26 @@ test("a passing batch merges in order with --no-ff and records each receipt with
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Finding it would have caught (Astra finding 10, 2026-10-16): the receipt
+// named only the tip commit's agent, so an earlier commit's model could review.
+test("the receipt names every agent of the commits the merge brings, not the tip's alone (t603)", async () => {
+  const { dir, one } = repo();
+  try {
+    git(dir, "checkout", "-q", "-b", "two-agents", "main");
+    writeFileSync(join(dir, "x.txt"), "x\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "first\n\nAgent: codex/gpt-6");
+    writeFileSync(join(dir, "y.txt"), "y\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "second\n\nAgent: claude-code/opus-5.5");
+    const sha = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "main");
+    const recorded = [];
+    const r = await fastLand({ ...base, titles: { t5: "Five", t1: "One" }, cwd: dir, pairs: [{ id: "t5", sha }, { id: "t1", sha: one }], test: "echo ok", record: (id, receipt) => { recorded.push([id, receipt]); return { ok: true }; } });
+    assert.equal(r.ok, true);
+    assert.equal(recorded[0][1].builder, "claude-code/opus-5.5");
+    assert.deepEqual([...recorded[0][1].contributors].sort(), ["claude-code/opus-5.5", "codex/gpt-6"]);
+    // Only the commits this merge brings: the second task's range is its own.
+    assert.deepEqual(recorded[1][1].contributors, ["claude-code/opus-5.5"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a commit without an Agent line is refused before anything lands", async () => {
   const { dir } = repo();
   try {
