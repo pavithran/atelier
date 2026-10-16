@@ -2555,14 +2555,19 @@ export class Ledger extends DurableObject<Env> {
   // the conflicts for it to resolve, where a plain rework would reset the
   // workspace to a head that cannot reach main.
   //
-  // With overlapOk, a task already dispatched keeps its offer: omitted fields
+  // With overlapOk, a task still waiting on its dispatch keeps its offer: omitted fields
   // stay as they were (overrideDispatch in src/dispatch/rules.ts), and the
   // answer names the core-file hold the override released, if one held it.
   // `why`: what chose the builder, the role assignments applied or skipped
   // included, set by the dispatch route and kept on item.dispatched.
   dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
     const item = this.checkDispatch(id, actor);
-    const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, item.dispatch);
+    // Only a dispatch still waiting in the queue is an offer to keep. One a
+    // runner has since claimed is spent: a held or submitted task dispatched
+    // again with an override starts a fresh build, so an earlier merge-main
+    // job and head are not carried over (t517).
+    const waiting = item.state === "open" && !item.owner ? item.dispatch : null;
+    const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waiting);
     // Under single-family mode a dispatch names only the company's models:
     // one for another company's model would hand the work to a builder no
     // reviewer of the company could then be shown independent of (t394).
@@ -2574,7 +2579,7 @@ export class Ledger extends DurableObject<Env> {
     const items = this.items();
     assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
     this.assertCriteriaReviewed(item, d, "dispatched");
-    const retained = input.overlapOk === true && !!item.dispatch;
+    const retained = input.overlapOk === true && !!waiting;
     const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
     if (held) {
