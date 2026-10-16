@@ -13,7 +13,7 @@
 // a name or a specifier assembled at run time) is out of scope.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assignmentsTo, bareCalls, bypasses, callsTo, importClosure, importsOf, namesIn, objectKeys, parseModule, references, resolveImport, staticString, usesOf, withFiles } from "./helpers/source-scan.mjs";
+import { assignmentsTo, bareCalls, bypasses, callsTo, importClosure, importsOf, memberUses, namesIn, objectKeys, parseModule, references, resolveImport, staticString, usesOf, withFiles } from "./helpers/source-scan.mjs";
 
 test("the scan reads code, not strings, templates, regular expressions or comments", () => {
   assert.deepEqual(bypasses('git(["fetch", "--quiet", "origin"]); // a fetch( in a comment\nconsole.log(`run git fetch first, then ${count(n, "fetch")}`); /* fetch( */'), []);
@@ -167,4 +167,13 @@ test("a dynamic or require call that names no literal is unreadable, and a liter
   assert.deepEqual(references('const m = await import(name);').map((r) => [r.kind, r.text]), [["unreadable", "import(<not a literal>)"]]);
   assert.deepEqual(references('await import("./x.mjs");').map((r) => r.text), []);
   assert.deepEqual(references('require("./x.cjs");').map((r) => [r.kind, r.text]), [["unreadable", "require("]]);
+});
+
+// A member called send, on any object, in each form (t478, sixth round).
+test("memberUses reads a call, a value and a destructuring of a member", () => {
+  const kinds = (code) => memberUses(code, "send").map((u) => `${u.kind} ${u.receiver}`);
+  assert.deepEqual(kinds("t.send('a'); t?.send(`b`); t['send']('c'); (t.send)('d');"), ["call t", "call t", "call t", "call t"]);
+  assert.deepEqual(kinds("const s = t.send; go(t.send); const { send } = t; const { send: s2 } = t;"), ["value t", "value t", "destructure t", "destructure t"]);
+  assert.deepEqual(kinds("t.sender('a'); const o = { send: 1 }; const w = 'x.send(';"), []);
+  assert.equal(memberUses("t.send('a', 1);", "send")[0].args.length, 2);
 });

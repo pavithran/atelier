@@ -375,10 +375,35 @@ export function bareCalls(input, names, root) {
   const mod = asModule(input);
   const found = [];
   const visit = (node) => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && names.has(node.expression.text)) found.push({ name: node.expression.text, args: [...node.arguments], text: textOf(mod, node), line: lineOf(mod, node) });
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && names.has(node.expression.text)) found.push({ name: node.expression.text, args: [...node.arguments], text: textOf(mod, node), line: lineOf(mod, node), pos: node.getStart(mod.sf) });
     ts.forEachChild(node, visit);
   };
   for (const r of [].concat(root ?? mod.sf)) visit(r);
+  return found;
+}
+
+// Every use of a member called `name` on any object (`transport.send(`,
+// `t?.send(`, `t["send"](`), in the module: { kind, receiver, args, text,
+// line }. kind "call" for a call; "value" for the member taken without
+// calling it (`const s = transport.send`, `go(transport.send)`), and
+// "destructure" for `const { send } = transport`, which both hand the
+// member on to a name the scan does not follow.
+export function memberUses(input, name) {
+  const mod = asModule(input);
+  const found = [];
+  const note = (kind, node, receiver, args) => found.push({ kind, receiver, args, text: textOf(mod, node), line: lineOf(mod, node) });
+  const visit = (node) => {
+    if (ts.isPropertyAccessExpression(node) && node.name.text === name || ts.isElementAccessExpression(node) && staticString(node.argumentExpression) === name) {
+      let top = node;
+      while (top.parent && (ts.isParenthesizedExpression(top.parent) || ts.isNonNullExpression(top.parent) || ts.isAsExpression(top.parent))) top = top.parent;
+      const call = top.parent && ts.isCallExpression(top.parent) && top.parent.expression === top ? top.parent : null;
+      note(call ? "call" : "value", call ?? node, textOf(mod, node.expression), call ? [...call.arguments] : null);
+    } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent) && (node.propertyName ? staticString(node.propertyName) ?? node.propertyName.text : node.name.text) === name && !ts.isComputedPropertyName(node.propertyName ?? node.name)) {
+      note("destructure", node, textOf(mod, node.parent.parent.initializer ?? node.parent), null);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(mod.sf);
   return found;
 }
 

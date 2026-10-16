@@ -45,7 +45,7 @@ import { agentRoute, callParts, callPath, declaredCall, RUNNER_CALLS, RUNNER_COM
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { helperCommand, runnerTransport } from "../cli/runner.mjs";
-import { assignmentsTo, bypasses, importClosure, parseModule, references, withFiles } from "./helpers/source-scan.mjs";
+import { assignmentsTo, bareCalls, bypasses, importClosure, memberUses, resolveImport, parseModule, references, staticString, withFiles } from "./helpers/source-scan.mjs";
 
 const read = (path) => readFileSync(resolve(path), "utf8");
 
@@ -225,10 +225,15 @@ const RUNNER_ENTRIES = ["cli/runner.mjs", "cli/commands/runner.mjs"];
 const ACCEPTED_REACHES = {
   // The git fetch helper (io.fetch, `git fetch` through checked()), called twice.
   "cli/task-refresh.mjs": ["io.fetch(", "io.fetch("],
-  // runRequest, the HTTP smoke step of `atelier ship`; the runner imports only
-  // runCommand from cli/ship.mjs, through cli/land.mjs.
+  // runRequest, the HTTP smoke step of `atelier ship`; the runner reaches only
+  // runCommand from cli/ship.mjs, through cli/land.mjs (ACCEPTED_IMPORTS).
   "cli/ship.mjs": ["fetch("],
 };
+// The exception for cli/ship.mjs holds only while nothing the runner reaches
+// takes runRequest from it, or anything that calls it: the runner's modules
+// may take these names from a module with an accepted reach, and no module
+// whole (a namespace, a default, a dynamic import or an `export *`).
+const ACCEPTED_IMPORTS = { "cli/ship.mjs": ["runCommand"] };
 // The modules the runner's code stops at: cli/atelier.mjs is judged by the
 // names taken from it, the transport module by every import of it.
 const RUNNER_BOUNDARY = (path) => /(?:^|\/)(?:atelier|server-fetch)\.mjs$/.test(path);
@@ -273,6 +278,15 @@ function runnerSourceCheck(runner, command, tree = {}) {
     assert.ok(JSON.stringify(own) === JSON.stringify(ACCEPTED_REACHES[file] ?? []), `${file}, imported by the runner, reaches the server outside runnerTransport (a transport bypass): ${own.join(", ")}`);
   }
   for (const file of [...RUNNER_ENTRIES, ...closure]) {
+    for (const entry of mod(file).imports) {
+      const target = resolveImport(file, entry.spec, files);
+      if (!target || !(target in ACCEPTED_IMPORTS) || entry.typeOnly) continue;
+      const allowed = ACCEPTED_IMPORTS[target];
+      const taken = entry.opaque ? ["*"] : entry.bound.map((b) => b.imported).filter((name) => !allowed.includes(name));
+      assert.deepEqual(taken, [], `${file} takes ${taken.join(", ")} from ${target}, which keeps a fetch the runner's transport does not declare (only ${allowed.join(", ")} is safe to reach)`);
+    }
+  }
+  for (const file of [...RUNNER_ENTRIES, ...closure]) {
     for (const entry of mod(file).imports.filter((e) => e.spec !== null && /(?:^|\/)atelier\.mjs$/.test(e.spec))) {
       // cli/runner.mjs takes `server` by a dynamic import, destructured, to
       // wait out the module's top level; a namespace, a default or a
@@ -282,10 +296,37 @@ function runnerSourceCheck(runner, command, tree = {}) {
       assert.deepEqual(named, [], `${file} imports the CLI's own transport or an owner-only fetching helper from cli/atelier.mjs`);
     }
   }
-  // Every name sent is declared as the runner's own, and every such name is sent.
-  const sent = new Set([...`${runner}\n${command}`.matchAll(/\bsend\("([a-z-]+)"/g)].map((m) => m[1]));
+  // Every name sent is declared as the runner's own, and every such name is
+  // sent. The names come from parsed call sites of `.send(` on any object, in
+  // every module the runner imports (the entries and the closure), and the
+  // bare send inside runnerTransport. The first argument must be a string
+  // literal (quotes, backticks without substitutions, or literals joined by
+  // +); a computed name, a send handed on as a value or destructured, or an
+  // undeclared name fails. Only the IPC sends of node (process.send,
+  // child.send), tested for or called with an object message, are not
+  // operation names.
+  const sentNames = new Set(), unresolved = [];
+  for (const file of [...RUNNER_ENTRIES, ...closure]) {
+    for (const u of memberUses(mod(file), "send")) {
+      const where = `${file}:${u.line} ${u.text}`;
+      const ipc = /^(?:process|child)$/.test(u.receiver);
+      if (ipc && u.kind === "value") continue;
+      if (u.kind !== "call") { unresolved.push(`${where} (send taken as a value or destructured)`); continue; }
+      if (ipc && u.args[0] && /^\s*\{/.test(u.args[0].getText())) continue;
+      if (u.args[0] === undefined) { unresolved.push(`${where} (no operation name)`); continue; }
+      const name = staticString(u.args[0]);
+      if (name === undefined) unresolved.push(`${where} (not a string literal)`);
+      else sentNames.add(name);
+    }
+  }
+  for (const c of bareCalls(mod("cli/runner.mjs"), new Set(["send"])).filter((c) => c.pos >= start && c.pos < end)) {
+    const name = staticString(c.args[0]);
+    if (name === undefined) unresolved.push(`cli/runner.mjs:${c.line} ${c.text} (not a string literal)`);
+    else sentNames.add(name);
+  }
+  assert.deepEqual(unresolved, [], "a send in the runner's modules names its operation in no string literal the check can read; name it as a literal declared in RUNNER_CALLS");
   const own = new Set(RUNNER_CALLS.filter((c) => c.via === "runner").map((c) => c.name));
-  assert.deepEqual([...sent].sort(), [...own].sort(), "the names the runner sends and the calls RUNNER_CALLS declares as its own (via: \"runner\") disagree");
+  assert.deepEqual([...sentNames].sort(), [...own].sort(), "the names the runner sends and the calls RUNNER_CALLS declares as its own (via: \"runner\") disagree");
   // Every atelier command the runner spawns is declared, and every declared command is spawned.
   const spawned = new Set([...runner.matchAll(/\["([a-z-]+)", (?:item\.(?:plan \?\? )?id|partId)/g)].map((m) => m[1]));
   // A lease call (leaseCall, t351) is the runner's own, sent through the
@@ -386,6 +427,68 @@ test("a server reach added to either runner module, in any form, fails the sourc
   assert.throws(() => runnerSourceCheck(runner, `${command}\nexport * from "../atelier.mjs";`), /as a namespace, a default/);
   assert.throws(() => runnerSourceCheck(runner, `${command}\nconst { requestText } = await import("../atelier.mjs");`), /imports the CLI's own transport or an owner-only fetching helper/);
   assert.throws(() => runnerSourceCheck(runner, `${command}\nconst atelier = await import("../atelier.mjs");`), /dynamically as a namespace/);
+});
+
+// The sixth-round reviewer's first finding (astra): the names the runner sends
+// were collected by a regular expression for send("name") in the two entry
+// modules, so a single-quoted name, or a send in an imported helper, passed.
+// The names now come from parsed call sites in the whole import closure, and a
+// send whose name is not a string literal fails.
+test("a send in any runner module names a declared operation as a string literal, or fails", () => {
+  const runner = read("cli/runner.mjs"), command = read("cli/commands/runner.mjs");
+  const intoCommand = (line, tree) => runnerSourceCheck(runner, `${command}\n${line}`, tree);
+  const helper = (line) => ({ "cli/route-probe.mjs": `export const go = async (transport) => {\n  ${line}\n};` });
+  const inHelper = (line) => runnerSourceCheck(runner, `import { go } from "../route-probe.mjs";\n${command}\nawait go(transport);`, helper(line));
+  const undeclared = /the names the runner sends and the calls RUNNER_CALLS declares/;
+  const unread = /names its operation in no string literal the check can read/;
+  // An undeclared name in each literal spelling, in the command module and in an imported helper.
+  for (const name of ["'undeclared-operation'", '"undeclared-operation"', "`undeclared-operation`", '"undeclared-" + "operation"']) {
+    assert.throws(() => intoCommand(`await transport.send(${name}, {}, { actor: OWNER });`), undeclared, name);
+    assert.throws(() => inHelper(`await transport.send(${name}, {});`), undeclared, `helper: ${name}`);
+  }
+  // An alias of the transport does not matter: the member is what is judged.
+  assert.throws(() => intoCommand("const t = transport;\nawait t.send('undeclared-operation', {});"), undeclared);
+  assert.throws(() => intoCommand("await transport?.send('undeclared-operation', {});"), undeclared);
+  assert.throws(() => intoCommand("await transport['send']('undeclared-operation', {});"), undeclared);
+  // A name built at run time, and a send taken or destructured, cannot be read.
+  for (const line of ["await transport.send(name, {});", "await transport.send(`op-${kind}`, {});", "await transport.send(['a', 'b'].join('-'), {});", "await transport.send();", "const s = transport.send;\nawait s('version');", "const { send } = transport;\nawait send('version');", "go(transport.send);"]) {
+    assert.throws(() => intoCommand(line), unread, line);
+    assert.throws(() => inHelper(line), unread, `helper: ${line}`);
+  }
+  // A declared name in a new spelling is read like the old one.
+  assert.doesNotThrow(() => intoCommand("await transport.send(`version`, {});"));
+  assert.doesNotThrow(() => inHelper("await transport.send('version', {});"));
+  // A name declared for a spawned command (claim) is not the runner's own.
+  assert.throws(() => intoCommand("await transport.send('claim', {});"), undeclared);
+  // Node's IPC sends are not operations: an object message is let through, a name is not.
+  assert.doesNotThrow(() => intoCommand("process.send({ type: 'x' });\nchild.send({ type: 'y' });"));
+  assert.throws(() => intoCommand("process.send('undeclared-operation');"), undeclared);
+});
+
+// The sixth-round reviewer's second finding (astra): cli/ship.mjs's fetch is
+// accepted because the runner never calls runRequest, but nothing checked
+// that. The runner's modules, and the modules they import, may now take only
+// runCommand from it.
+test("no module the runner reaches takes runRequest, or anything but runCommand, from cli/ship.mjs", () => {
+  const runner = read("cli/runner.mjs"), command = read("cli/commands/runner.mjs");
+  const probe = (code) => ({ "cli/route-probe.mjs": code });
+  const intoCommand = (line, tree) => runnerSourceCheck(runner, `${line}\n${command}`, tree);
+  const taken = /takes (?:runRequest|\*) from cli\/ship\.mjs/;
+  assert.doesNotThrow(() => intoCommand('import { runCommand } from "../ship.mjs";\nrunCommand([]);'));
+  assert.doesNotThrow(() => intoCommand('import type { Run } from "../ship.mjs";'));
+  assert.throws(() => intoCommand('import { runRequest } from "../ship.mjs";\nawait runRequest({ request: server() });'), taken, "the reviewer's case: the command imports and calls runRequest");
+  assert.throws(() => intoCommand('import { runRequest as get } from "../ship.mjs";\nawait get({});'), taken);
+  assert.throws(() => intoCommand('import * as ship from "../ship.mjs";\nawait ship.runRequest({});'), taken);
+  assert.throws(() => intoCommand('import ship from "../ship.mjs";'), taken);
+  assert.throws(() => intoCommand('export { runRequest } from "../ship.mjs";'), taken);
+  assert.throws(() => intoCommand('export * from "../ship.mjs";'), taken);
+  assert.throws(() => intoCommand('const { runRequest } = await import("../ship.mjs");'), taken);
+  assert.throws(() => intoCommand('const ship = await import("../ship.mjs");'), taken);
+  // From the runner module, and from a module they import.
+  assert.throws(() => runnerSourceCheck(`import { runRequest } from "./ship.mjs";\n${runner}`, command), taken);
+  assert.throws(() => intoCommand('import { go } from "../route-probe.mjs";\ngo();', probe('import { runRequest } from "./ship.mjs";\nexport const go = () => runRequest({});')), /cli\/route-probe\.mjs takes runRequest from cli\/ship\.mjs/);
+  // A function of ship.mjs that calls runRequest is as good a way in.
+  assert.throws(() => intoCommand('import { ship } from "../ship.mjs";'), /takes ship from cli\/ship\.mjs/);
 });
 
 // The fifth-round reviewer's second finding (astra): the runner's modules
