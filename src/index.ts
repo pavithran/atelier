@@ -940,6 +940,38 @@ async function mint(env: Env, repo: string, scope: "read" | "write", branch: str
 }
 const NOT_FOUND = /NOT_FOUND|not found/i;
 
+// A token minted for a request made with an agent token is recorded against
+// it, so revoking the agent token revokes it too (t598). A token that cannot
+// be recorded, because the agent token was revoked meanwhile or the record
+// failed, is revoked at once and never returned.
+async function mintFor(c: Ctx, repo: string, scope: "read" | "write", branch: string, ttl?: number) {
+  const t = await mint(c.env, repo, scope, branch, ttl);
+  if (!c.token) return t;
+  let kept: boolean;
+  try {
+    kept = await index(c.env).recordArtifactsToken(c.token.id, repo, t.tokenId, t.expiresAt);
+  } catch (err) {
+    await revoke(c.env, repo, t.tokenId).catch((e) => console.error(errorLine(`revoke an unrecorded token for ${repo}`, e)));
+    throw err;
+  }
+  if (!kept) {
+    await revoke(c.env, repo, t.tokenId);
+    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git token was issued", 401);
+  }
+  return t;
+}
+
+// Revokes in Artifacts every token an agent token's requests minted. A row is
+// forgotten only once its token is revoked, so a failure (a 503 from revoke)
+// leaves the rest recorded and a second DELETE finishes the work.
+async function revokeAgentArtifacts(env: Env, agentId: string) {
+  const I = index(env);
+  for (const { repo, tokenId } of await I.agentArtifactsTokens(agentId)) {
+    await revoke(env, repo, tokenId);
+    await I.forgetArtifactsToken(agentId, tokenId);
+  }
+}
+
 // Whether a repository exists; one still being forked counts.
 async function repoExists(env: Env, repo: string): Promise<boolean> {
   return artifactsStep(`look up ${repo}`, async () => {
@@ -1272,7 +1304,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { hash: _, ...publicRecord } = record;
       return json({ ...publicRecord, token }, 201);
     }
-    if (parts.length === 2 && m === "DELETE") return json({ revoked: await I.revokeAgentToken(parts[1]) });
+    if (parts.length === 2 && m === "DELETE") {
+      // The token stops working first, so no new Git token is minted for it
+      // while its recorded ones are revoked (t598).
+      const revoked = await I.revokeAgentToken(parts[1]);
+      if (revoked) await revokeAgentArtifacts(env, parts[1]);
+      return json({ revoked });
+    }
     throw new RuleError("not_found", "no such route", 404);
   }
   // The public showcase setting: which projects the owner shows, and whether
@@ -1753,7 +1791,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
       install: (snapshot) => L.poolChanged(models, snapshot),
     });
-    return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
+    return json({ project: record, baseline: await mintFor(c, repo, "write", await projectBranch(env, record)) });
   }
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
@@ -1904,7 +1942,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
     const p = await L.project();
-    return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
+    return json(await mintFor(c, p.repo, scope, await projectBranch(env, p)));
   }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
   // in progress carried between the developer's Macs, in a repository of
@@ -1930,7 +1968,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const scope = body.scope === "write" ? "write" : "read";
       if (scope === "write") await developerBranchesRepo(env, L, actor, ref.key, p.repo, repo, p.name);
       else if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
-      const minted = await mint(env, repo, scope, await projectBranch(env, p));
+      const minted = await mintFor(c, repo, scope, await projectBranch(env, p));
       return json({ ...minted, repo, prefix: DEVELOPER_BRANCH_PREFIX });
     }
     if (parts.length === 3 && m === "POST") {
@@ -2201,7 +2239,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
           throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
         }
-        const b = await mint(env, p.repo, "read", branch);
+        const b = await mintFor(c, p.repo, "read", branch);
         return json({ item: await L.item(id), workspace: {
           remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
           expiresAt: c.token.expiresAt, defaultBranch: branch,
@@ -2209,7 +2247,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // A runner's claim sets the same identity as any other (t451).
         commitIdentity: p.policy.commitIdentity ?? null });
       }
-      const w = await mint(env, fork!, "write", branch);
+      const w = await mintFor(c, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see
       // recordToken). If it does not, the token is revoked and never
       // returned, so its plaintext reaches no one.
@@ -2217,7 +2255,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         await revoke(env, fork, w.tokenId);
         throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409);
       }
-      const b = await mint(env, p.repo, "read", branch);
+      const b = await mintFor(c, p.repo, "read", branch);
       return json({
         item: await L.item(id),
         workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
@@ -2241,7 +2279,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const p = await L.project();
       const branch = await projectBranch(env, p);
-      const b = await mint(env, p.repo, "read", branch);
+      const b = await mintFor(c, p.repo, "read", branch);
       return json({
         item: await L.item(id), fast: true,
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
@@ -2256,7 +2294,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const { item, generation, replaces } = await L.reserveOwnerPort(id, actor);
       await revoke(env, item.fork, replaces);
-      const t = await mint(env, item.fork!, "write", await projectBranch(env, await L.project()), 300);
+      const t = await mintFor(c, item.fork!, "write", await projectBranch(env, await L.project()), 300);
       try {
         if (!await L.recordOwnerPortToken(id, actor, generation, replaces, t.tokenId, t.expiresAt)) {
           throw new RuleError("claim_superseded", `${id} changed while the port token was made; no token was issued`, 409);
@@ -2270,7 +2308,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "read-token": {
       const item = await L.item(id);
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
-      const t = await mint(env, item.fork, "read", await projectBranch(env, await L.project()));
+      const t = await mintFor(c, item.fork, "read", await projectBranch(env, await L.project()));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
     }
     case "base-token": {
@@ -2281,7 +2319,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       const p = await L.project();
       const repo = await baseRepo(env, L, item, p.repo);
-      const t = await mint(env, repo, "read", await projectBranch(env, p));
+      const t = await mintFor(c, repo, "read", await projectBranch(env, p));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch });
     }
     case "push": {
@@ -2548,8 +2586,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const branch = await projectBranch(env, p);
         const landed = landingOf(claim.item, claim.events);
         const repo = landed?.onPlanBranch ? await baseRepo(env, L, claim.item, p.repo) : p.repo;
-        const t = await mint(env, landed ? repo : claim.item.fork!, "read", branch);
-        const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
+        const t = await mintFor(c, landed ? repo : claim.item.fork!, "read", branch);
+        const b = await mintFor(c, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
           ...(landed ? { landed } : {}),
@@ -2887,12 +2925,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (lapsed) await revoke(env, leased.item.fork, lapsed);
       const p = await L.project();
       const branch = await projectBranch(env, p);
-      const w = await mint(env, leased.item.fork!, "write", branch);
+      const w = await mintFor(c, leased.item.fork!, "write", branch);
       if (!await L.recordRefreshToken(id, leased.lease.id, w.tokenId)) {
         await revoke(env, leased.item.fork, w.tokenId);
         throw new RuleError("lease_lost", `${id}'s refresh lease changed while its token was made; no token was issued`, 409);
       }
-      const b = await mint(env, p.repo, "read", branch);
+      const b = await mintFor(c, p.repo, "read", branch);
       return json({
         ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
