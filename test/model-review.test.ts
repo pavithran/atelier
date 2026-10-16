@@ -298,6 +298,38 @@ test("a model under a pool alias is one model: the aliased actor's work counts w
   assert.equal(proposal(reviewModels(input(mixed, { assignments: [assigned("a1", "review", [GEMINI])] })), "review", "a1").kind, "change");
 });
 
+// t624 round 2 (astra): a standing assignment's choice skipped the eligibility
+// check and could be proposed as the replacement while paused, reserved or
+// without the role. It stays a candidate (its evidence is shown), never a challenger.
+const heldAstra: Array<[string, Partial<ModelEntry>, RegExp]> = [
+  ["paused", { state: "paused" }, /paused/],
+  ["reserved", { state: "reserved", note: "credits spent" }, /reserved/],
+  ["without the role", { roles: ["build"] }, /not a/],
+];
+for (const [label, held, why] of heldAstra) {
+  for (const other of [false, true]) {
+    test(`an assigned alternative that is ${label} is shown but never proposed as the change${other ? " (assigned in another scope)" : ""}`, () => {
+      const pool = POOL().map((e) => e.id === "gpt-6-astra" ? { ...e, ...held } : e);
+      const assignments = other
+        ? [assigned("a1", "review", [GEMINI]), assigned("a2", "review", [GPT], undefined, { scope: "other" })]
+        : [assigned("a1", "review", [GEMINI, GPT])];
+      const r = reviewModels(input(SCENARIO(), { pool, assignments }));
+      const p = proposal(r, "review", "a1");
+      assert.equal(p.kind, "keep");
+      assert.equal(p.to, null);
+      assert.match(p.counterevidence.join("\n"), /gpt-6-astra leads on quality .*cannot replace gemini-4-argon/);
+      assert.match(p.counterevidence.join("\n"), why);
+      assert.match(candidate(r, "review", "gpt-6-astra").quality!.text, /5 of 5/);
+      assert.ok(candidate(r, "review", "gpt-6-astra").assigned.length > 0);
+    });
+  }
+}
+
+test("an eligible assigned alternative still wins the change", () => {
+  const r = reviewModels(input(SCENARIO(), { assignments: [assigned("a1", "review", [GEMINI, GPT])] }));
+  assert.equal(proposal(r, "review", "a1").to, "gpt-6-astra");
+});
+
 // ── no mutation, repeatable ───────────────────────────────────────────────
 
 test("the same records and time give the same review, and the review changes none of them", () => {
