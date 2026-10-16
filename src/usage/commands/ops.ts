@@ -7,7 +7,7 @@ const spec: CommandSpec = {
       group: "Ops", line: 1, slot: 10,
       form: "ops COMMAND [ARGS...]",
       aside: "portfolio operations, run by the private atelier-ops toolkit when installed",
-      about: "Hands everything after `ops` to the private `atelier-ops` toolkit, named by `ATELIER_OPS` or found on `PATH`. Without one it says so and exits 2. The one command Atelier handles itself is `ops token-expiry NAME --on YYYY-MM-DD`, which records a named token's expiry day, never its value, so `atelier status` warns from 14 days before it.",
+      about: "Hands everything after `ops` to the private `atelier-ops` toolkit, named by `ATELIER_OPS`, found on `PATH`, or kept at `~/ai-projects/atelier-ops`. Without one it says so and exits 2. The one command Atelier handles itself is `ops token-expiry NAME --on YYYY-MM-DD`, which records a named token's expiry day, never its value, so `atelier status` warns from 14 days before it.",
     },
   ],
   flags: {},

@@ -1046,6 +1046,41 @@ it("a reply with no readable verdict ends the review wait at once, and another r
   expect(await refused(L.renewReview(id, gpt, again.request))).toBe("resolved");
 });
 
+// t613: an unreadable reply from a claim that had lapsed is kept but releases
+// nothing; the request that replaced the claim is alive, and the reply must
+// not end a landing that waits on it. Only a reply that released its claim
+// stands for a stall.
+it("an unreadable reply that released no claim does not stall the landing waiting on the request that replaced it (t613)", async () => {
+  const project = "wf-late-unparsable", instance = "wf-late-unparsable-1";
+  const { L, id } = await pushedTask(project, instance);
+  const glm = "opencode/glm-5.3";
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.putModel({ id: "glm-5.3", harness: "opencode", where: "home", provider: "subscription", aliases: [], family: familyOf("glm-5.3"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: new Date().toISOString() } as never, new Date().toISOString());
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: H2 });
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer: glm, pollMs: 10, reviewTimeoutMs: 3_600_000 } });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: false });
+  await until(() => L.reviewWaiting(), (rows) => rows.length > 0);
+  const stale = (await L.reviewWaiting())[0].request;
+  // The first request's claim lapsed: the successor is open, and a reply to
+  // the lapsed request arrives late.
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => { state.storage.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, stale); state.storage.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, tier, topTier, criteria, carried) SELECT item, head, dispatch, briefHash, 'open', wanted, tier, topTier, criteria, carried FROM review_requests WHERE id = ?`, stale); });
+  expect(await L.unparsableReview(id, glm, H1, "no VERDICT line", "late", true, stale)).toEqual({ released: false });
+  expect((await L.detail(id) as unknown as { unparsable: { request?: number; released?: boolean }[] }).unparsable).toEqual([expect.objectContaining({ request: stale })]);
+  expect((await L.detail(id) as unknown as { unparsable: { released?: boolean }[] }).unparsable[0].released).toBeUndefined();
+  await new Promise((ok) => setTimeout(ok, 300));
+  expect((await L.landingWorkflowOf(id))?.stage).not.toBe("failed");
+  // A reply that does release its claim ends the wait.
+  const claim = await L.claimReview(id, glm, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  expect(await L.unparsableReview(id, glm, H1, "no VERDICT line", "real", true, claim.request)).toEqual({ released: true });
+  await wf.waitForStatus("errored");
+});
+
 it("a review request withdrawn with no verdict ends the wait at once, naming the command that asks the same reviewer again (t574)", async () => {
   const project = "wf-no-request", instance = "wf-no-request-1";
   const { L, id } = await pushedTask(project, instance);

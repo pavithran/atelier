@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { CLEAN_CLONE_SETUP, fastCommands, fastLand, parsePairs, recordPending, scanBatch, shellQuote, worktreeHolding } from "./fast.mjs";
+import { FAST_CONTRIBUTORS_MAX } from "../src/rules.ts";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 import { privateConfig } from "../test/fixtures/private-config.mjs";
 // No test reads this Mac's own iCloud folder (t645).
@@ -104,6 +105,44 @@ test("a passing batch merges in order with --no-ff and records each receipt with
     assert.match(git(dir, "log", "-1", "--format=%B"), /Landed fast: forks fail/);
     assert.equal(git(dir, "rev-parse", "HEAD^2"), two);
     assert.equal(recorded[1][1].mergeCommit, r.head);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Finding it would have caught (Astra finding 10, 2026-10-16): the receipt
+// named only the tip commit's agent, so an earlier commit's model could review.
+test("the receipt names every agent of the commits the merge brings, not the tip's alone (t603)", async () => {
+  const { dir, one } = repo();
+  try {
+    git(dir, "checkout", "-q", "-b", "two-agents", "main");
+    writeFileSync(join(dir, "x.txt"), "x\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "first\n\nAgent: codex/gpt-6");
+    writeFileSync(join(dir, "y.txt"), "y\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "second\n\nAgent: claude-code/opus-5.5");
+    const sha = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "main");
+    const recorded = [];
+    const r = await fastLand({ ...base, titles: { t5: "Five", t1: "One" }, cwd: dir, pairs: [{ id: "t5", sha }, { id: "t1", sha: one }], test: "echo ok", record: (id, receipt) => { recorded.push([id, receipt]); return { ok: true }; } });
+    assert.equal(r.ok, true);
+    assert.equal(recorded[0][1].builder, "claude-code/opus-5.5");
+    assert.deepEqual([...recorded[0][1].contributors].sort(), ["claude-code/opus-5.5", "codex/gpt-6"]);
+    // Only the commits this merge brings: the second task's range is its own.
+    assert.deepEqual(recorded[1][1].contributors, ["claude-code/opus-5.5"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a range with more distinct agents than a receipt can carry is refused before the merge (t603)", async () => {
+  const { dir } = repo();
+  try {
+    git(dir, "checkout", "-q", "-b", "crowd", "main");
+    for (let i = 0; i <= FAST_CONTRIBUTORS_MAX; i++) {
+      writeFileSync(join(dir, `c${i}.txt`), `${i}\n`); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", `c${i}\n\nAgent: codex/model-${i}`);
+    }
+    const sha = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "main");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: {}, cwd: dir, pairs: [{ id: "t6", sha }], test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false);
+    assert.match(r.failure.detail, new RegExp(`${FAST_CONTRIBUTORS_MAX + 1} distinct agents, more than the ${FAST_CONTRIBUTORS_MAX}`));
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+    assert.equal(git(dir, "status", "--porcelain"), "");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -398,6 +437,40 @@ test("a grafts file a project command writes stops the batch (finding 4)", async
     assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
     assert.match(r.failure.detail, /grafts/);
     assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Finding it would have caught (astra, second review of t603): contributors
+// were taken before the merge, so a graft an earlier merge's generator wrote
+// (hiding a task's first commit) and a typecheck removed before the history
+// checks left a receipt without the hidden commit's agent.
+test("a graft written during an earlier merge and removed before validation does not shrink a receipt's contributors (t603)", async () => {
+  const gen = GENERATOR + `import { existsSync, appendFileSync } from "node:fs";
+if (existsSync("graft.txt")) { mkdirSync(".git/info", { recursive: true }); appendFileSync(".git/info/grafts", readFileSync("graft.txt", "utf8")); }
+`;
+  const { dir } = generatedRepo(gen);
+  try {
+    const startSha = git(dir, "rev-parse", "HEAD");
+    // t2: two commits by two agents, off the start.
+    git(dir, "checkout", "-q", "-b", "x", "main");
+    writeFileSync(join(dir, "x1.txt"), "1\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "x1\n\nAgent: codex/gpt-6");
+    writeFileSync(join(dir, "x2.txt"), "2\n"); git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "x2\n\nAgent: claude-code/opus-5.5");
+    const tip = git(dir, "rev-parse", "HEAD");
+    // t1 conflicts with main on the generated index, so its merge runs the generator, which writes the graft.
+    git(dir, "checkout", "-q", "-b", "p", "main");
+    mkdirSync(join(dir, "cmds"), { recursive: true });
+    writeFileSync(join(dir, "cmds/p.txt"), "name: p\n"); writeFileSync(join(dir, "graft.txt"), `${tip} ${startSha}\n`);
+    execFileSync(process.execPath, ["gen.mjs"], { cwd: dir });
+    git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "p\n\nAgent: gemini/pro-3");
+    const p = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "main");
+    writeFileSync(join(dir, "cmds/m.txt"), "name: m\n");
+    execFileSync(process.execPath, ["gen.mjs"], { cwd: dir });
+    git(dir, "add", "-A"); git(dir, "commit", "-q", "-m", "m");
+    const recorded = [];
+    const r = await fastLand({ ...base, titles: { t1: "P", t2: "X" }, cwd: dir, pairs: [{ id: "t1", sha: p }, { id: "t2", sha: tip }], typecheck: "rm -f .git/info/grafts", test: "true", record: (id, receipt) => { recorded.push([id, receipt]); return { ok: true }; } });
+    assert.equal(r.ok, true, JSON.stringify(r.failure));
+    assert.deepEqual([...recorded[1][1].contributors].sort(), ["claude-code/opus-5.5", "codex/gpt-6"]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
