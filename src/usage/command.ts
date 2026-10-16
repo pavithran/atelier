@@ -126,7 +126,7 @@ export const HELP_GROUP_ORDER: HelpGroupSpec[] = [
   { name: "Setup" },
   { name: "Items" },
   { name: "Agents" },
-  { name: "Owner" },
+  { name: "Developer" },
   { name: "Plans" },
   { name: "Models" },
   { name: "Projects" },

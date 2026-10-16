@@ -16,9 +16,15 @@ function toolkit(dir) {
   return exe;
 }
 
-const run = (argv, env) => spawnSync(process.execPath, [cli, ...argv], {
-  encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, ATELIER_CONFIG_DIR: mkdtempSync(join(tmpdir(), "atelier-ops-cfg-")), ...env },
-});
+// Each run gets a config folder of its own, removed when it ends (t658).
+const run = (argv, env) => {
+  const config = mkdtempSync(join(tmpdir(), "atelier-ops-cfg-"));
+  try {
+    return spawnSync(process.execPath, [cli, ...argv], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, ATELIER_CONFIG_DIR: config, ...env },
+    });
+  } finally { rmSync(config, { recursive: true, force: true }); }
+};
 
 test("atelier ops hands every argument, --help included, to the toolkit and exits with its status", () => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-ops-"));
@@ -34,11 +40,34 @@ test("atelier ops hands every argument, --help included, to the toolkit and exit
 });
 
 test("without the toolkit, atelier ops says what is missing and exits 2", () => {
-  const r = run(["ops", "fleet"], {});
+  const home = mkdtempSync(join(tmpdir(), "atelier-ops-home-"));
+  const r = run(["ops", "fleet"], { HOME: home });
+  rmSync(home, { recursive: true, force: true });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /atelier-ops, which is not installed on this machine/);
   const named = run(["ops", "fleet"], { ATELIER_OPS: "/nonexistent/atelier-ops" });
   assert.equal(named.status, 2);
+});
+
+// t703: after the move to ~/ai-projects nothing put atelier-ops on PATH, so
+// `atelier ops context-budget` in hqpe-control failed as "not installed".
+test("the toolkit kept at ~/ai-projects/atelier-ops is found with no PATH entry and no ATELIER_OPS", () => {
+  const home = mkdtempSync(join(tmpdir(), "atelier-ops-home-"));
+  try {
+    const bin = join(home, "ai-projects", "atelier-ops", "bin");
+    mkdirSync(bin, { recursive: true });
+    toolkit(bin);
+    const r = run(["ops", "context-budget", "--repository", "."], { HOME: home });
+    assert.equal(r.status, 7, r.stderr);
+    assert.deepEqual(r.stdout.trim().split("\n"), ["context-budget", "--repository", "."]);
+    // PATH and ATELIER_OPS still win over the kept copy.
+    const other = mkdtempSync(join(tmpdir(), "atelier-ops-"));
+    try {
+      writeFileSync(join(other, "atelier-ops"), "#!/bin/sh\nexit 9\n"); chmodSync(join(other, "atelier-ops"), 0o755);
+      assert.equal(run(["ops", "fleet"], { HOME: home, PATH: `${other}:/usr/bin:/bin` }).status, 9);
+      assert.equal(run(["ops", "fleet"], { HOME: home, ATELIER_OPS: join(other, "atelier-ops") }).status, 9);
+    } finally { rmSync(other, { recursive: true, force: true }); }
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 // t360: --version is answered here first, like every other command, and never

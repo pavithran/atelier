@@ -41,7 +41,7 @@ test("a claim with no push beyond the limit is stuck; default is six hours", () 
   const late = new Date("2026-10-03T14:01:00.000Z");
   const found = detectStuck([it], events, late);
   assert.deepEqual(found.map((f) => f.reason), ["no push for 6h"]);
-  assert.equal(found[0].suggestion, "check in with the owner");
+  assert.equal(found[0].suggestion, "check in with the holder");
 });
 
 test("a recent push resets the no-push clock; an old push before the claim does not", () => {
@@ -52,7 +52,7 @@ test("a recent push resets the no-push clock; an old push before the claim does 
   const old = [claim("2026-10-03T04:00:00.000Z"), push("2026-10-01T00:00:00.000Z")];
   const found = detectStuck([stale], old, new Date("2026-10-03T11:00:00.000Z"));
   assert.equal(found.length, 1);
-  assert.equal(found[0].suggestion, "check in with the owner");
+  assert.equal(found[0].suggestion, "check in with the holder");
   assert.equal(found[0].since, "2026-10-03T04:00:00.000Z");
 });
 
@@ -102,7 +102,7 @@ test("an old rejection with no push since is stuck, a push after it is not", () 
   const found = detectStuck([it], events, new Date("2026-10-03T01:00:00.000Z"));
   const f = found.find((x) => x.reason.includes("changes requested"))!;
   assert.ok(f);
-  assert.equal(f.suggestion, "check in with the owner");
+  assert.equal(f.suggestion, "check in with the holder");
   assert.equal(f.since, "2026-10-02T00:00:00.000Z");
   const answered = item({ state: "submitted", lastPushAt: "2026-10-02T12:00:00.000Z" });
   const withPush = [claim(T0), reject("2026-10-01T00:00:00.000Z"), push("2026-10-02T12:00:00.000Z")];

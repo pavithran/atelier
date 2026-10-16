@@ -1,29 +1,30 @@
 /* Atelier design mockups (t499). Static, no script, no external requests.
-   Palette B as fixed in docs/design/brief.md §1.1: the tokens of t367's
-   src/theme.css (head 7d64b297), dark by default and light by device, and
-   t367's family colours from src/layout.css. #4d8bff is the one accent;
-   caution is a tint of it; green only for an observed pass or merge, red
-   only for failures. Company (family) colours appear only inside charts
-   (standing decision d9): graph lines and a graph's own legend. */
+   The Night palette as fixed in docs/design/brief.md §1.1: the tokens of
+   src/theme.css, dark by default and light by device, and the family colours
+   of src/layout.css. Gold #ffd166 is for links, primary actions and the
+   owner; orange #ffb547 is for caution; green only for an observed pass or
+   merge, red only for failures. Company (family) colours appear only in
+   charts, lane threads and graph marks (standing decisions d9, d24): graph
+   lines and a graph's own legend. */
 
 :root {
   color-scheme: dark;
-  --shell: #0a0a0f;
-  --surface: #0a0a0f;
-  --surface-raised: #12121a;
-  --inset: #1a1a24;
-  --line: #262633;
-  --line-bright: #3a3a4a;
-  --text: #ececf2;
+  --shell: #0a0e13;
+  --surface: #07090c;
+  --surface-raised: #0c1015;
+  --inset: #121a24;
+  --line: #1c232c;
+  --line-bright: #2c3744;
+  --text: #eef2f5;
   --text-bright: #ffffff;
-  --text-muted: #a0a0b0;
-  --text-dim: #8e8e9e;
-  --signal: #4d8bff;
-  --signal-hot: #7aa8ff;
-  --observed: #4fd18b;
-  --caution: #9cbcff;
-  --fault: #ff5a5f;
-  --on-accent: #0a0a0f;
+  --text-muted: #8f9cab;
+  --text-dim: #7d8a98;
+  --signal: #ffd166;
+  --signal-hot: #ffdf8f;
+  --observed: #5fe08f;
+  --caution: #ffb547;
+  --fault: #ff4d74;
+  --on-accent: #07090c;
   --m-anthropic: #ff8a5b;
   --m-openai: #3fe0b0;
   --m-zai: #6f9bff;
@@ -33,33 +34,33 @@
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --display: "Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif;
-  --mk: #c9dbff;
+  --mk: #fff0c7;
 }
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
-    --shell: #f0f0f5;
-    --surface: #f7f7fa;
-    --surface-raised: #ffffff;
-    --inset: #ececf2;
-    --line: #d6d6e0;
-    --line-bright: #a8a8b8;
-    --text: #14141c;
-    --text-bright: #05050a;
-    --text-muted: #50505f;
-    --text-dim: #5a5a6a;
-    --signal: #1d59c9;
-    --signal-hot: #1a52bd;
-    --observed: #166a3c;
-    --caution: #1a52bd;
-    --fault: #b0222a;
-    --on-accent: #ffffff;
-    --m-anthropic: #a5401a;
-    --m-openai: #0a6e53;
-    --m-zai: #2f56c9;
-    --m-google: #a92e75;
-    --m-qwen: #446b10;
-    --mk: #123d8f;
+    --shell: #ebe8df;
+    --surface: #f6f4ee;
+    --surface-raised: #eeebe2;
+    --inset: #e4e0d5;
+    --line: #cfcabd;
+    --line-bright: #a39d8f;
+    --text: #14181d;
+    --text-bright: #05070a;
+    --text-muted: #4b5562;
+    --text-dim: #55606d;
+    --signal: #735200;
+    --signal-hot: #6b4b00;
+    --observed: #185a33;
+    --caution: #7d4d00;
+    --fault: #9e1539;
+    --on-accent: #fffaf0;
+    --m-anthropic: #983b18;
+    --m-openai: #09654c;
+    --m-zai: #2c50bb;
+    --m-google: #9b2a6c;
+    --m-qwen: #3f620f;
+    --mk: #3d2b00;
   }
 }
 

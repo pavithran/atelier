@@ -174,13 +174,15 @@ test("the CLI still reads an older server's view, which has no p90, a pull recor
 
 test("the log pull, its cron and the gateway token are gone", () => {
   const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*\]\s*\}/);
+  // The one schedule left is the model snapshots' (t623); the list replaces
+  // whatever an earlier deploy left on the Worker.
+  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*"7 \*\/6 \* \* \*"\s*\]\s*\}/);
   assert.doesNotMatch(wrangler, /AI_GATEWAY_TOKEN/);
   // The README quotes t278's receipt, the ledger's own record of the task
   // that built the log pull and lost it; the identifiers it names are quoted
   // history, not live code, so that one fenced block is cut before the scan.
   const cut = (text: string) => text.replace(/```text\natelier\/t278[\s\S]*?\n```/, "");
   const left = ["../src/index.ts", "../src/ledger.ts", "../src/usage/gateway.ts", "../cli/usage.mjs", "../README.md", "../docs/models-and-usage.md"]
-    .flatMap((f) => [...cut(readFileSync(new URL(f, import.meta.url), "utf8")).matchAll(/AI_GATEWAY_TOKEN|fetchNewLogs|pullGateway|claimGatewayPull|gatewayMark|async scheduled\(/g)].map((m) => `${f}: ${m[0]}`));
+    .flatMap((f) => [...cut(readFileSync(new URL(f, import.meta.url), "utf8")).matchAll(/AI_GATEWAY_TOKEN|fetchNewLogs|pullGateway|claimGatewayPull|gatewayMark/g)].map((m) => `${f}: ${m[0]}`));
   assert.deepEqual(left, []);
 });

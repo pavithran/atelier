@@ -144,7 +144,7 @@ test("runIntegrate treats only exit 2 from atelier check as failing checks; anot
 });
 
 test("the runner captures integration-failed's and check's output, as it does the other commands it reads", () => {
-  for (const command of ["integration-failed", "check", "integrated", "read-token", "refreshed", "refresh-failed"]) assert.equal(readsOutput([command]), true, command);
+  for (const command of ["integration-failed", "check", "integrated", "read-token", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.equal(readsOutput([command]), true, command);
   assert.equal(readsOutput(["release"]), false);
 });
 
@@ -265,7 +265,7 @@ test("runRefresh submits the plan item instead of releasing it when the server s
   assert.ok(submit, "the plan item is submitted");
   assert.match(submit.argv[submit.argv.indexOf("--summary") + 1], /^main at cccccccc merged; integrated 2 parts: a, b$/);
   assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the plan item is not released");
-  assert.ok(logs.some((s) => s.includes("submitted for the owner")));
+  assert.ok(logs.some((s) => s.includes("submitted for the developer")));
 });
 
 test("runRefresh posts refreshed with no merge commit when the branch already holds main's head", async () => {
@@ -362,7 +362,7 @@ test("a --integrate runner keeps serving a plan whose refresh conflicts twice", 
     },
   });
   assert.deepEqual(claimed, ["t1", "t1", "t1"], "the integrate job follows two recorded refresh failures");
-  assert.ok(!logs.some((s) => s.includes("needs the owner's attention")), "a recorded refresh-failed asks for no owner's attention");
+  assert.ok(!logs.some((s) => s.includes("needs the developer's attention")), "a recorded refresh-failed asks for no developer's attention");
 });
 
 test("runRefresh skips a refresh job that names no main head", async () => {
@@ -372,7 +372,7 @@ test("runRefresh skips a refresh job that names no main head", async () => {
   assert.equal(calls.filter((c) => c.argv).length, 0);
 });
 
-test("runRunner --integrate offers only the integrate and refresh jobs with no agents", async (t) => {
+test("runRunner --integrate offers only the integrate, refresh and task-refresh jobs with no agents", async (t) => {
   const offers = [];
   const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true };
   await runRunner(args, {
@@ -380,7 +380,7 @@ test("runRunner --integrate offers only the integrate and refresh jobs with no a
     async queue(offer) { offers.push(offer); process.emit("SIGINT"); return []; },
   });
   // The offer also says when the process started (t420).
-  assert.deepEqual(offers.map(({ started, ...offer }) => offer), [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh"] }]);
+  assert.deepEqual(offers.map(({ started, ...offer }) => offer), [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }]);
   assert.ok(Number.isFinite(Date.parse(offers[0].started)));
 });
 

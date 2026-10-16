@@ -33,6 +33,20 @@ test("the text is one line per item under plain headings, and says what each par
   assert.equal(out.filter((l) => /^\s+t\d/.test(l)).length, 5);
 });
 
+// t629: a merge by override on the developer's direction shows their words and the model that relayed them.
+test("a merge by override on the developer's direction says whose words and which model", () => {
+  const out = formatStanding(standing({ overrides: [
+    { id: "t4", title: "Overridden", at: "2026-10-13T12:00:00.000Z", reason: "No other family", quote: "override it", acting: "claude-code/opus-5.5" },
+    { id: "t5", title: "Paged", at: "2026-10-13T12:00:00.000Z", reason: "No other family" },
+  ] }), "PAVI", "https://a.test").split("\n");
+  assert.ok(out.includes("  t4  https://a.test/p/demo/t4  2026-10-13 12:00 UTC  Overridden  reason: No other family  the developer's words: “override it”, relayed by claude-code/opus-5.5"), out.join("\n"));
+  assert.ok(out.includes("  t5  https://a.test/p/demo/t5  2026-10-13 12:00 UTC  Paged  reason: No other family"), out.join("\n"));
+  // Fast mode switched on the developer's direction is the line under the heading.
+  const fast = formatStanding(standing({ mode: "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: \u201cgo fast\u201d, relayed by claude-code/opus-5.5" }), "PAVI").split("\n");
+  assert.equal(fast[1], "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: \u201cgo fast\u201d, relayed by claude-code/opus-5.5");
+  assert.notEqual(formatStanding(standing(), "PAVI").split("\n")[1], fast[1]);
+});
+
 test("a waiting line says what to do and links it; the pipeline and overlapping scopes are counted, not listed", () => {
   const out = formatStanding(standing({
     waiting: [{ id: "t4", title: "Blocked", call: "unblock", sentence: "Settle what blocks it, then unblock it so it goes on.", href: "/p/demo/t4", command: "atelier unblock t4 --project demo", why: "blocked by a/b: keys", brief: null }],
@@ -77,7 +91,7 @@ test("text a person or agent wrote cannot start a line of its own or carry termi
   }));
   assert.ok(!out.includes("\x1b"));
   assert.equal(out.split("\n").filter((l) => l.trim().startsWith("t9")).length, 0);
-  assert.equal(out.split("\n").filter((l) => l === "Waiting on PAVI:" || l === "Waiting on the project owner:").length, 1);
+  assert.equal(out.split("\n").filter((l) => l === "Waiting on PAVI:" || l === "Waiting on the developer:").length, 1);
 });
 
 test("the checkout line is one line whatever the project or branch is called", () => {
@@ -191,8 +205,8 @@ for (const failed of ["tasks", "notices"]) {
       const out = json ? JSON.parse(r.output).brief.join("\n") : r.output;
       assert.ok(out.includes(partial[0]), out);
       assert.match(out, /counts cover only what was read/);
-      assert.match(out, /Waiting on the owner: nothing known; more may be waiting\./);
-      assert.ok(!out.includes("Waiting on the owner: nothing."));
+      assert.match(out, /Waiting on the developer: nothing known; more may be waiting\./);
+      assert.ok(!out.includes("Waiting on the developer: nothing."));
     });
     test(`status --project${json ? " --json" : ""} preserves a failed ${failed} read`, async (t) => {
       const r = await run(t, setup, ["status", "--project", "demo", ...(json ? ["--json"] : [])]);
@@ -215,14 +229,18 @@ test("status --project prints where it stands and says the checkout is in step, 
   assert.match(r.output, /Waiting on /);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   // The baseline's head is read from the server; no read token is minted.
-  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
+  // The developer's branches (t641) are read last; the stand-in has none.
+  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/branches"]);
+  assert.match(r.output, /\n  Developer branches: not read/);
 });
 
 test("status --project with an agent token reads the baseline's head through a route the allowlist admits", async (t) => {
   const r = await run(t, () => null, undefined, { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
+  // An agent is not asked for the developer's branches, which are the developer's alone (t641).
   assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
+  assert.doesNotMatch(r.output, /Developer branches/);
 });
 
 test("status --project says the checkout is out of step when the baseline has moved on", async (t) => {

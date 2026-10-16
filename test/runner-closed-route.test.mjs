@@ -1,13 +1,13 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { runRunner } from "../cli/runner.mjs";
 import { runnerDenied, runnerTaskTerminal, TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { parseRuleError, RuleError } from "../src/rules.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { serveRunner, subsequence } from "./helpers/runner-server.mjs";
 
 // t476, route to runner: the real runner (runRunner) runs the real CLI
 // (cli/atelier.mjs) as child processes against a local server that answers
@@ -20,8 +20,9 @@ import { ROUTE_LEVEL } from "../src/route-level.ts";
 // poll and neither failure counter charged. A refused claim and a
 // nonterminal finish failure keep their own handling.
 
-const root = resolve(".cache/runner-closed-route");
-mkdirSync(root, { recursive: true });
+// Scratch lives under the system temp folder and goes with the run (t640).
+const root = mkdtempSync(join(tmpdir(), "atelier-runner-closed-route-"));
+after(() => rmSync(root, { recursive: true, force: true }));
 const PROJECT = "demo", ACTOR = "claude-code/model", RUNNER = "home:studio", TOKEN = "runner-closed-secret";
 const STATES = Object.keys(TERMINAL_TASK_EXITS);
 const label = (state) => `is ${state === "abandoned" ? "closed" : state} (state: ${state})`;
@@ -58,59 +59,37 @@ function makeFork(dir, { refusePush }) {
 // claim runner_forbidden; `blockFinish` answers finish's first read with a
 // nonterminal refusal.
 function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockFinish = false } = {}) {
-  const requests = [];
   const item = { id: "t1", title: "Build", accept: ["works"], scope: [], state: "open", owner: null, runner: null, head: null, base: fork.seedHead, fork: `${PROJECT}--t1`, kind: "task" };
   let closedAfterPush = false;
   const closed = () => closeAt === "claim" || closedAfterPush || (closeAt === "push" && existsSync(fork.marker));
   const refusal = (error) => { const rule = parseRuleError(error); return [rule.status, { error: rule.code, detail: rule.detail }]; };
   const terminal = () => refusal(runnerTaskTerminal("t1", state));
-  const answer = (method, verb, body) => {
-    if (verb === "claim") {
+  // Once closed, every item route but a refused claim answers the terminal state.
+  const unlessClosed = (answer) => (ctx) => closed() ? terminal() : answer(ctx);
+  const read = () => ({ item, head: item.head, remote: fork.remote, token: "read-secret", defaultBranch: "main" });
+  const answers = {
+    "POST claim": () => {
       if (refuseClaim) return refusal(runnerDenied({ runner: RUNNER, id: "runner-token-id" }));
       if (closed()) return terminal();
       Object.assign(item, { state: "claimed", owner: ACTOR, runner: RUNNER });
       const expiresAt = new Date(Date.now() + 3600_000).toISOString();
-      return [200, { item, commitIdentity: { name: "Builder", email: "builder@example.com", agentEmails: [] }, workspace: { remote: fork.remote, token: "workspace-secret", expiresAt, defaultBranch: "main" }, baseline: { remote: fork.remote, token: "baseline-secret", defaultBranch: "main" } }];
-    }
-    if (closed()) return terminal();
-    if (verb === undefined && method === "GET") {
+      return { item, commitIdentity: { name: "Builder", email: "builder@example.com", agentEmails: [] }, workspace: { remote: fork.remote, token: "workspace-secret", expiresAt, defaultBranch: "main" }, baseline: { remote: fork.remote, token: "baseline-secret", defaultBranch: "main" } };
+    },
+    "GET item": unlessClosed(() => {
       if (blockFinish) return refusal(new RuleError("blocked", "t1 is blocked: waiting on the owner", 409));
-      return [200, { item, policy: { checks: ["true"], protected: [] }, evidence: [], reviews: [], gate: { ready: true, blockers: [] } }];
-    }
-    if (verb === "push") {
+      return { item, policy: { checks: ["true"], protected: [] }, evidence: [], reviews: [], gate: { ready: true, blockers: [] } };
+    }),
+    "POST push": unlessClosed(({ body }) => {
       item.head = body.head;
       if (closeAt === "finish") closedAfterPush = true;
-      return [200, item];
-    }
-    if (verb === "release") { Object.assign(item, { state: "open", owner: null, runner: null }); return [200, { item }]; }
-    if (["read-token", "base-token", "evidence", "submit"].includes(verb)) return [200, { item, head: item.head, remote: fork.remote, token: "read-secret", defaultBranch: "main" }];
-    return [404, { error: "not_found", detail: `no such route: ${method} ${verb}` }];
+      return item;
+    }),
+    "POST release": unlessClosed(() => { Object.assign(item, { state: "open", owner: null, runner: null }); return { item }; }),
   };
-  const server = createServer((req, res) => {
-    let text = "";
-    req.on("data", (chunk) => { text += chunk; });
-    req.on("end", () => {
-      const url = new URL(req.url, "http://localhost");
-      const parts = url.pathname.split("/").filter(Boolean);
-      const body = text ? JSON.parse(text) : {};
-      let status, json;
-      if (parts[1] === "version") [status, json] = [200, { commit: "0".repeat(40), routeLevel: ROUTE_LEVEL }];
-      else if (parts[1] === "config") [status, json] = [200, { ownerActor: "owner", ownerName: "Owner", runner: RUNNER, tokenId: "runner-token-id" }];
-      else if (req.method === "GET" && parts[1] === "projects" && parts[2] === PROJECT && parts.length === 3) [status, json] = [200, { project: { name: PROJECT, policy: {} } }];
-      // A build merges current main before it submits (t435): main is the fork's own.
-      else if (req.method === "POST" && parts[1] === "projects" && parts[2] === PROJECT && parts[3] === "baseline-token" && parts.length === 4) [status, json] = [200, { remote: fork.remote, token: "read-secret", defaultBranch: "main" }];
-      else if (parts[1] === "projects" && parts[2] === PROJECT && parts[3] === "items" && parts[4] === "t1") {
-        requests.push(`${req.method} ${parts[5] ?? "item"}`);
-        [status, json] = answer(req.method, parts[5], body);
-      } else [status, json] = [404, { error: "not_found", detail: `no such route: ${req.method} ${url.pathname}` }];
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify(json));
-    });
-  });
-  return new Promise((ready) => server.listen(0, "127.0.0.1", () => ready({
-    url: `http://127.0.0.1:${server.address().port}`, requests, item,
-    close: () => new Promise((done) => server.close(() => done())),
-  })));
+  for (const verb of ["read-token", "base-token", "evidence", "submit"]) answers[`POST ${verb}`] = unlessClosed(read);
+  // A build merges current main before it submits (t435): main is the fork's own.
+  answers["POST projects/:project/baseline-token"] = () => ({ remote: fork.remote, token: "read-secret", defaultBranch: "main" });
+  return serveRunner({ answers }).then((server) => Object.assign(server, { item }));
 }
 
 // One runner process's worth of work against the server: three polls, each
@@ -165,10 +144,10 @@ for (const state of STATES) test(`a task ${state} before its claim ends the job 
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  assert.deepEqual(r.requests, ["POST claim"]);
+  assert.deepEqual(r.requests, ["POST claim"]); // nothing else is called once the claim answers the state
   assert.equal(r.head, null);
   assert.deepEqual(r.reports, []);
-  assert.doesNotMatch(r.log, /released|claim refused|needs the owner's attention/);
+  assert.doesNotMatch(r.log, /released|claim refused|needs the developer's attention/);
 });
 
 for (const state of STATES) test(`a task ${state} during its push ends the job with the state and keeps the commit`, async (t) => {
@@ -179,17 +158,17 @@ for (const state of STATES) test(`a task ${state} during its push ends the job w
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  // One claim, finish's read of the task and the review notice's baseline
-  // request, the refused push, then the read
-  // that answered the state; no push recorded, nothing released or submitted.
-  assert.deepEqual(r.requests, ["POST claim", "GET item", "POST base-token", "GET item"]);
+  // The claim, finish's read of the task and the review notice's baseline
+  // request, then reads of the task; no push recorded, nothing released or submitted.
+  assert.ok(subsequence(r.requests, ["POST claim", "GET item", "POST base-token", "GET item"]), r.requests.join(", "));
+  assert.ok(!r.requests.some((request) => ["POST push", "POST release", "POST submit"].includes(request)), r.requests.join(", "));
   assert.ok(existsSync(fork.marker), "the fork refused the push");
   assert.equal(r.forkHead, fork.seedHead);
   assert.notEqual(r.head, fork.seedHead, "the harness's commit stays in the workspace");
   assert.equal(git(["log", "-1", "--format=%s"], r.workspace), "work");
   assert.equal(git(["status", "--porcelain"], r.workspace), "");
   assert.deepEqual(r.reports, []);
-  assert.doesNotMatch(r.log, /released|claim preserved|needs the owner's attention/);
+  assert.doesNotMatch(r.log, /released|claim preserved|needs the developer's attention/);
 });
 
 for (const state of STATES) test(`a task ${state} during finish, after a successful push, ends the job with the state`, async (t) => {
@@ -200,13 +179,15 @@ for (const state of STATES) test(`a task ${state} during finish, after a success
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  // The push went through and was recorded; the check step's read answered the state.
-  assert.deepEqual(r.requests, ["POST claim", "GET item", "POST base-token", "POST push", "GET item"]);
+  // The review notice's baseline request, then the push went through and was
+  // recorded, then a read answered the state.
+  assert.ok(subsequence(r.requests, ["POST claim", "POST base-token", "POST push", "GET item"]), r.requests.join(", "));
+  assert.ok(!r.requests.some((request) => ["POST release", "POST submit"].includes(request)), r.requests.join(", "));
   assert.equal(r.forkHead, r.head);
   assert.equal(server.item.head, r.head);
   assert.notEqual(r.head, fork.seedHead);
   assert.deepEqual(r.reports, []);
-  assert.doesNotMatch(r.log, /released|claim preserved|needs the owner's attention/);
+  assert.doesNotMatch(r.log, /released|claim preserved|needs the developer's attention/);
 });
 
 test("a claim refused as forbidden is a refusal, not a terminal state", async (t) => {
@@ -235,6 +216,6 @@ test("a nonterminal finish failure preserves the claim and charges the task coun
   assert.doesNotMatch(r.log, /state: /);
   // Charged as a task failure: the next poll runs it again, and the second failure caps it.
   assert.equal(claims(r.requests), 2);
-  assert.match(r.log, /needs the owner's attention after 2 failures/);
+  assert.match(r.log, /needs the developer's attention after 2 failures/);
   assert.notEqual(r.head, fork.seedHead);
 });

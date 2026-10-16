@@ -5,7 +5,7 @@ board --project NAME` shows the same membership, stage, ledger holder and merged
 counts. `board --json` returns the snapshot. Plans and their parts are separate
 rows, explicitly labelled, and appear exactly once. Empty areas remain visible.
 
-The project owner manages areas with:
+The developer manages areas with:
 
 ```
 atelier area list --project NAME
@@ -29,15 +29,15 @@ atelier edit t12 --clear-area --project NAME
 
 Assignments require an existing area ID, not its name. Omission preserves an
 assignment; the explicit clear operation sends `area: null`. The API accepts the
-same field on task creation and edit. Owners manage areas at
+same field on task creation and edit. Developers manage areas at
 `/api/projects/NAME/areas` (GET/POST) and `/areas/ID` (POST/DELETE).
 
 `taskStage` in `src/board.ts` is pure and exported for other ledger consumers.
 Its precedence is terminal state (merged, abandoned, integrated), an explicit
 block, active landing, passing readiness gates, submitted/accepted state,
-ownership, dispatch, then open. Accepted tasks are rechecked as submitted;
+a holder, dispatch, then open. Accepted tasks are rechecked as submitted;
 plans use their integration gate. A failed gate never becomes ready merely
-because the task was submitted. The ledger holder is the task owner, never a
+because the task was submitted. The holder is the one the ledger records, never a
 dispatch target or inferred runner. Groups sort by name then ID; tasks sort by
 creation time then ID. Counts are calculated from those exact rows.
 

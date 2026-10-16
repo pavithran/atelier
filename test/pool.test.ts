@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, familyOf, hasModelRole, latestNote, LOCAL_BUILD, modelState, noteLine, offThePool, actorStanding, withStanding } from "../src/models/pool.ts";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, familyOf, hasModelRole, latestNote, LOCAL_BUILD, modelState, noteLine, offThePool, actorStanding, withStanding, type ModelEntry } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
 
@@ -147,12 +147,57 @@ test("a saved pool takes the owner's standing now, and a held model or one witho
   assert.equal(withStanding([a], [astra])[0].state, undefined);
   // An entry the pool no longer has keeps what was saved.
   assert.deepEqual(withStanding([luna], []), [luna]);
-  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since 2026-10-09 \(the owner's standing\): credits/);
+  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since 2026-10-09 \(the developer's standing\): credits/);
   assert.match(actorStanding(now, "codex/gpt-6-luna", "review")!, /not a reviewer; its roles are build/);
   assert.equal(actorStanding(now, "codex/gpt-6-luna", "build"), null);
   assert.match(actorStanding(now, "codex/astra", "build")!, /reserved since/);
   assert.equal(actorStanding([astra, luna], "codex/gpt-6-astra", "review"), null);
   assert.equal(actorStanding(now, "claude-code/opus-5.5", "review"), null);
+});
+
+// t649 (found reviewing t622, gemini-4-argon's and gpt-6-astra's ninth and
+// tenth reviews): main read whichever entry under the actor's harness came
+// first in the pool, so another entry listing a model's id as an alias could
+// lend it its standing, freeing a held entry or holding a free one by order.
+test("an entry's own standing is read before any entry that lists it as an alias, in either pool order", () => {
+  const held = { state: "paused" as const, stateAt: "2026-10-09T00:00:00.000Z", note: "AI Studio down" };
+  const luna = cleanEntry({ id: "gpt-6-luna", harness: "codex", where: "cloud" }, "pavi", AT);
+  const astra = cleanEntry({ id: "gpt-6-astra", harness: "codex", where: "cloud", aliases: ["gpt-6-luna"] }, "pavi", AT);
+  const cases: [string, ModelEntry, ModelEntry, boolean][] = [
+    ["held entry, free alias owner", { ...luna, ...held }, astra, true],
+    ["free entry, held alias owner", luna, { ...astra, ...held }, false],
+    ["review-only entry, free alias owner", { ...luna, roles: ["review"] }, astra, true],
+  ];
+  for (const [name, own, owner, refused] of cases) {
+    for (const pool of [[own, owner], [owner, own]]) {
+      const order = pool[0] === own ? "entry first" : "alias owner first";
+      assert.equal(actorStanding(pool, "codex/gpt-6-luna", "build") !== null, refused, `${name}, ${order}`);
+      const [now] = withStanding([luna], pool);
+      assert.equal(offThePool(now) || !hasModelRole(now, "build"), refused, `${name}, ${order}: withStanding`);
+    }
+  }
+});
+
+test("a removed or paused entry is not released through another entry's alias", () => {
+  const held = { state: "paused" as const, stateAt: "2026-10-09T00:00:00.000Z", note: "AI Studio down" };
+  const luna = cleanEntry({ id: "gpt-6-luna", harness: "codex", where: "cloud" }, "pavi", AT);
+  const astra = cleanEntry({ id: "gpt-6-astra", harness: "codex", where: "cloud", aliases: ["gpt-6-luna"] }, "pavi", AT);
+  // Removed from the pool: the plan's saved standing holds, though astra,
+  // free, now lists its id as an alias.
+  const [removed] = withStanding([{ ...luna, ...held }], [astra]);
+  assert.equal(removed.state, "paused");
+  assert.equal(removed.note, "AI Studio down");
+  const [limited] = withStanding([{ ...luna, roles: ["review"] }], [astra]);
+  assert.deepEqual(limited.roles, ["review"]);
+  // Removed, and the alias owner now held or limited: held as actorStanding holds it.
+  const [both] = withStanding([luna], [{ ...astra, ...held }]);
+  assert.equal(both.state, "paused");
+  assert.deepEqual(withStanding([{ ...luna, roles: ["build", "review"] }], [{ ...astra, roles: ["review", "plan"] }])[0].roles, ["review"]);
+  // Paused in the pool: the alias owner, free, does not release it.
+  for (const pool of [[{ ...luna, ...held }, astra], [astra, { ...luna, ...held }]]) {
+    assert.equal(withStanding([luna], pool)[0].state, "paused");
+    assert.match(actorStanding(pool, "codex/gpt-6-luna", "review")!, /^codex\/gpt-6-luna is paused since 2026-10-09/);
+  }
 });
 
 test("a status report is one of four states, with what was served", () => {

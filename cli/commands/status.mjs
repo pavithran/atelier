@@ -1,8 +1,9 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
+import { formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
+import { serverFetch } from "../server-fetch.mjs";
 
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
@@ -17,7 +18,7 @@ export default async function statusCommand() {
     const soft = (promise) => promise.catch(() => null);
     const [standing, version, queue, usage, lease] = await Promise.all([
       call("GET", `${P(name)}/standing`, undefined, as),
-      soft(fetch(server() + "/api/version").then((r) => (r.ok ? r.json() : null))),
+      soft(serverFetch(server() + "/api/version").then((r) => (r.ok ? r.json() : null))),
       soft(request("GET", "/queue", undefined, as)),
       soft(request("GET", "/usage", undefined, as)),
       landingLease(name, as),
@@ -41,8 +42,13 @@ export default async function statusCommand() {
     const mismatches = record?.project?.policy ? reviewDisagreements(record.project.policy, instructions) : [];
     const testSlots = await slotStatus();
     const strays = localStrays();
-    if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, processes: live, ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
-    console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)));
+    // The developer's branches (t641); null when this server keeps none or
+    // could not answer, which the section says. They are the developer's
+    // alone, so an agent is not shown the section and the server is not asked.
+    const mine = as === OWNER;
+    const branches = mine ? await developerBranches(name, as) : null;
+    if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+    console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)));
     pointToGuide([name]);
     return;
   }
@@ -64,17 +70,29 @@ export default async function statusCommand() {
   // as `atelier inbox` lists it, and the others are still shown.
   const views = await Promise.all(chosen.map(async (p) => {
     const read = await request("GET", P(p.name), undefined, OWNER).catch(() => null);
+    // Fast mode's line while it stands (t629), as status --project prints it;
+    // a server without the mode route, or one that cannot answer, leaves none.
+    const mode = await request("GET", `${P(p.name)}/mode`, undefined, OWNER).catch(() => null);
+    const branches = await developerBranches(p.name, OWNER);
     // Where the project's recorded policy and its instructions disagree (t422).
     const path = cfg.projects?.[p.name]?.path;
     const mismatches = read?.project?.policy && path ? reviewDisagreements(read.project.policy, readInstructions(path)) : [];
     // The policy comes along so the listing can say a project runs in
     // single-family mode (formatStatus).
-    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null };
+    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());
-  console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (strays ? "\n\n" + strays : "")));
+  const branches = formatAllDeveloperBranches(views);
+  console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")));
   console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));
   pointToGuide(chosen.map((p) => p.name));
+}
+
+// The developer's branches (t641), or null when the server keeps none (one
+// deployed before them) or could not answer.
+async function developerBranches(name, as) {
+  const read = await request("GET", `${P(name)}/branches`, undefined, as).catch(() => null);
+  return Array.isArray(read?.branches) ? read.branches : null;
 }

@@ -1,9 +1,9 @@
 # Setup in detail
 
-The README's "Setup" section gives the steps that take a fresh clone to a
+The README's "Quickstart" section gives the steps that take a fresh clone to a
 deployed Worker and a registered project. This document holds the rest: how
 the CLI stores its token and talks to the server, what agent tokens may do,
-the owner's settings, notifications, push events and local development.
+the developer's settings, notifications, push events and local development.
 
 ## Signing in
 
@@ -46,24 +46,24 @@ store outright. The `ATELIER_TOKEN` environment variable overrides every
 store. A value is handed to a store on its standard input and never as a
 command line argument, and login prints no token.
 
-## Cloudflare Access in front of the owner's pages
+## Cloudflare Access in front of the developer's pages
 
-The owner's pages can also sit behind Cloudflare Access, so the person
+The developer's pages can also sit behind Cloudflare Access, so the person
 reaching them has signed in with whatever the Zero Trust account asks (a
 one-time code, a passkey, an identity provider) before the Worker is reached
 at all. The domain's root is the public front door (`/` serves the showcase,
-the owner's Home is at `/home`), and Access cannot exempt the root path alone,
+the developer's Home is at `/home`), and Access cannot exempt the root path alone,
 so the arrangement is the other way round: the whole domain is public at the
-edge, and the owner's paths are listed for Access. Access picks the
+edge, and the developer's paths are listed for Access. Access picks the
 application whose path is most specific, and a policy applies to its whole
 application, so this takes two self-hosted applications in the Zero Trust
-dashboard, made before the secrets below so the owner is never locked out:
+dashboard, made before the secrets below so the developer is never locked out:
 
 1. One for the server's domain with no path, covering everything, with a
    single Bypass policy that includes Everyone. The front door, `/how`,
    `/live.js`, the sign-out form and `/api/*` (the CLI and the runners send
    bearer tokens that never pass Access) reach the Worker without a prompt.
-2. One for the owner's pages, with an Allow policy that includes the owner's
+2. One for the developer's pages, with an Allow policy that includes their
    email, whose destinations are these paths (with the server's own domain in
    place of atelier.zone):
 
@@ -88,17 +88,17 @@ dashboard, made before the secrets below so the owner is never locked out:
    atelier.zone/p/*
    ```
 
-   These are every path the Worker serves to the signed-in owner: Home, the
+   These are every path the Worker serves to the signed-in developer: Home, the
    sign-in page, Decisions, Studio, Flow, History, the
    Models and Usage pages and the Models form, the old `/projects` address and
    the showcase form under it, the task forms under `/ui`, and each project's
-   area under `/p`. A new owner page needs its path added here.
+   area under `/p`. A new developer page needs its path added here.
 
 Those paths then meet the sign-in at the edge. A path the list misses is
 still refused by the Worker (below), with a 401 instead of Access's prompt.
 Last, give the Worker the team's URL (`https://TEAM.cloudflareaccess.com`,
 shown under Zero Trust's settings), the second application's audience tag (on
-its overview) and the owner's email as the identity provider reports it, each
+its overview) and the developer's email as the identity provider reports it, each
 pasted at wrangler's prompt:
 
 ```bash
@@ -125,20 +125,55 @@ even if the Access application stops covering the server. `/login` is behind
 the check too, and takes no server token there, which closes the open token
 form the 2026-10-06 audit noted.
 The public pages (`/`, `/showcase`, `/how`, `/live.js`), the sign-out form and
-the `/api` routes stay open in the Worker. Behind Access the owner's verified
-assertion is the sign-in: `/login`, or any owner page opened without a session,
+the `/api` routes stay open in the Worker. Behind Access the developer's verified
+assertion is the sign-in: `/login`, or any developer page opened without a session,
 starts the thirty-day session at once, with no token form. A request from
 another site starts none; the hop back from Access's own prompt gets a page
 that reloads the address from the server's origin, where the session starts.
-Sign out ends the session; the next owner page opened under the same Access
-sign-in starts a new one. With any of the three unset the server stands as
-it always has, without the second check; a value that is set but unusable,
-such as an issuer without `https://`, logs a warning once rather than quietly
-leaving the pages unguarded.
+Sign out ends the session; the next developer page opened under the same Access
+sign-in starts a new one. With none of the three set the server stands as
+it always has, without the second check. Partial configuration is refused:
+with one or two of the three set, or a value the Worker cannot use (an issuer
+that is not the team's `https://` URL, an email with no `@`), every route
+Access would guard answers 503 with a page naming which setting is missing or
+unusable, never its value, until all three are set or all three removed. The
+public pages and the `/api` routes stay open meanwhile, so the CLI still
+works. Before this, a partial configuration turned the check off and left the
+pages to the server token alone (Astra's audit of 2026-10-13, finding 11).
+
+## Confirming an override
+
+When no model qualifies to review a protected change, the developer can accept
+it by overriding that review, with a reason. The override needs the developer's
+own confirmation, a factor no agent holds; the developer token alone does not
+give it, nor the browser session it signs in (`OwnerFactor` and
+`NO_OWNER_FACTOR` in `src/rules.ts`, `ownerFactorOf` in `src/index.ts`).
+The server takes one of two factors:
+
+- **Cloudflare Access.** With `CF_ACCESS_ISS`, `CF_ACCESS_AUD` and
+  `CF_ACCESS_OWNER_EMAIL` all set (above), the developer's verified Access
+  identity is the confirmation, and `OVERRIDE_SECRET` is not read.
+- **A confirmation secret.** Without Access, set `OVERRIDE_SECRET`, a value
+  kept apart from the server token and never given to an agent or a session:
+
+  ```bash
+  openssl rand -hex 32
+  npx wrangler secret put OVERRIDE_SECRET
+  ```
+
+  The developer types it into the task page's override form; the Worker compares
+  it in constant time and refuses a wrong or missing one with a 403.
+
+A server with neither confirms no override, and its refusal says so. To
+override from the command line, the developer presses Allow an override from the
+command line on the task's page with that factor, then runs
+`atelier accept ID --override-review "reason"` within 15 minutes. A project
+registered with `atelier init --no-override` refuses every override either
+way.
 
 ## Agent tokens
 
-Give each agent its own token from an owner session:
+Give each agent its own token from a developer session:
 
 ```sh
 atelier token issue --as codex/gpt-6-astra --project my-project --days 30 --label "Task runner"
@@ -159,20 +194,22 @@ Only the SHA-256 hash and token metadata are stored on the server. Lists
 never contain the token or its hash. Agent tokens can read their projects,
 claim, push, record checks and reports, submit, hand off, release, and review
 as themselves. Handoff targets must be harness/model identities other than
-the project owner. Every actor who held an item counts as a contributor for
+the developer. Every actor who held an item counts as a contributor for
 review independence, even if a Git push was first observed after handoff or
 release. Recorded push contributors also remain; a push first observed while
 nobody holds the item adds no one, since it was made with an earlier holder's
 token. Agent tokens cannot reopen accepted work by reviewing it.
+Independence of review is enforced against agents in this way, not against
+the developer token, which can name any actor, a reviewer included.
 What an agent writes has a stated limit, and text over it is refused whole,
 never cut: a review, handoff or release note 2,000 characters, a submit
 summary 600, a report or a check's command 500, a check's output 4,000. The
 head a push reports must be a commit hash.
-Creating tasks, owner decisions, project settings, model
+Creating tasks, developer decisions, project settings, model
 registry access, dispatch configuration and token management require the
-owner token. Agent tokens cannot sign in to the browser. On a server without
-Cloudflare Access, signing in to the browser means pasting the owner token at
-`/login`; behind Access the owner's Access sign-in starts the session itself
+developer token. Agent tokens cannot sign in to the browser. On a server without
+Cloudflare Access, signing in to the browser means pasting the developer token at
+`/login`; behind Access the developer's Access sign-in starts the session itself
 (above). Either way the session is a random id, sent only in the
 cookie, whose hash the Worker stores with a thirty day expiry it enforces.
 Sign out, in the rail of every page, ends the session at once. The token
@@ -180,9 +217,9 @@ itself is never a cookie. Events from agent
 requests show `token proved` beside the actor; this proves identity, not the
 truth of a reported result.
 
-## The owner's actor, name and time zone
+## The developer's actor, name and time zone
 
-The project owner acts as the actor `owner`, and the inbox asks "What needs
+The developer acts as the actor `owner`, and the inbox asks "What needs
 you now?". To use your own actor and name, set `OWNER_ACTOR` and
 `OWNER_NAME`, either as `vars` in `wrangler.jsonc` or as secrets, which keeps
 them out of the configuration:
@@ -195,14 +232,14 @@ printf jo | npx wrangler secret put OWNER_ACTOR
 printf Jo | npx wrangler secret put OWNER_NAME
 ```
 
-Pages show times in UTC until `TIMEZONE` names the owner's zone, as an IANA
+Pages show times in UTC until `TIMEZONE` names the developer's zone, as an IANA
 name; an unknown name falls back to UTC:
 
 ```bash
 printf America/New_York | npx wrangler secret put TIMEZONE
 ```
 
-`atelier login` asks the server for the owner's actor, so the CLI follows
+`atelier login` asks the server for the developer's actor, so the CLI follows
 whatever the Worker is set to.
 
 ## Registering a project
@@ -232,7 +269,7 @@ code; a breaking change to a command, route or API field without a migration;
 or a visible regression on a user-facing page. A claim in a commit message
 that the code does not support is a correctness defect; a blocking finding
 names the file and line and what breaks, and is never style or naming;
-decisions the project owner made are not defects; anything else is a
+decisions the developer made are not defects; anything else is a
 follow-up.
 
 When the checkout is already registered locally, `init` reuses its registered
@@ -260,20 +297,36 @@ atelier init --commit-name "Project Owner" --commit-email 123+owner@users.norepl
 - `--agent-email`, once per address, lists the addresses agents may commit
   under beside the project's own. Nothing else is allowed by default.
 - `--private-email`, once per address, declares addresses no commit may carry,
-  such as the owner's personal one. Neither the project's address nor an
+  such as the developer's personal one. Neither the project's address nor an
   agent's may be one of them.
 - `--public-mirror`, once per remote, names the checkout's remotes that are
   public mirrors, such as `--public-mirror github`. A project that declares
   one must have a GitHub no-reply `--commit-email`.
+- `--public-mirror-destination REMOTE=URL`, once per mirror, pins the URL
+  `atelier publish REMOTE` pushes to. Every declared mirror needs one;
+  `publish` refuses a mirror without it, and a remote whose URL is not it.
+- `--private-path GLOB`, once per glob, names paths no published commit may
+  touch (`*` within a folder, `**` across folders, a glob without `/` at any
+  depth, a trailing `/` for a folder).
+- `--private-pattern REGEX`, once per expression, adds a JavaScript regular
+  expression no line a published commit adds may match, beside the built-in
+  secret and private-address rules.
 
-Each flag replaces what is recorded; `--agent-email ""`, `--private-email ""`
-or `--public-mirror ""` alone clears the list, and `--reset` drops the
-identity with the rest of the policy. The fields travel in
-`PUT /api/projects/NAME` as `commitName`, `commitEmail`, `agentEmails`,
-`privateEmails` and `publicMirrors`, and are stored as
-`policy.commitIdentity`. They raise the route level to 24
-(`src/route-level.ts`): `atelier land` and the runner refuse a server below
-it, since one would not record or return the identity.
+Each flag replaces what is recorded; `--agent-email ""`, `--private-email ""`,
+`--public-mirror ""`, `--private-path ""` or `--private-pattern ""` alone
+clears the list, and `--reset` drops the identity with the rest of the policy.
+The fields travel in `PUT /api/projects/NAME` as `commitName`, `commitEmail`,
+`agentEmails`, `privateEmails`, `publicMirrors`, `publicMirrorDestinations`,
+`privatePaths` and `privatePatterns`, and are stored as
+`policy.commitIdentity`. The identity fields (`commitName`, `commitEmail`,
+`agentEmails`, `privateEmails`, `publicMirrors`) came with route level 24
+(t451, capability `projects.commit-identity.v1`); `publicMirrorDestinations`,
+`privatePaths` and `privatePatterns` with the named capability
+`projects.publication-policy.v1` (t433, `src/capability-declarations.ts`),
+which has no route level, so a server reporting only a level is refused. `init` requires both
+and `publish REMOTE` the second, so either refuses a server that lacks them,
+since an older server would not record or return these fields; bare
+`publish` needs neither.
 
 Where the identity is enforced:
 
@@ -295,17 +348,20 @@ Where the identity is enforced:
   which it makes under the project's identity whatever the checkout or its
   environment says. Commits the baseline already holds are not read. A
   refusal names the commit and the field.
-- **A public mirror** asks more: `atelier wrap --push` pushes a remote the
-  policy declares in `publicMirrors` only when every commit it lacks carries
-  the project's own no-reply address (`commitEmail`) as author and committer.
-  An agent address allowed for landing is not thereby public, nor is another
-  no-reply address. Remotes not declared are the owner's own and are pushed
-  as before.
+- **A public mirror** asks more: `atelier publish REMOTE` and
+  `atelier wrap --push` push only when every commit the destination lacks
+  carries the project's own no-reply address (`commitEmail`) as author and
+  committer and passes the privacy scan (docs/owner.md). An agent address
+  allowed for landing is not thereby public, nor is another no-reply
+  address. Once `publicMirrors` names any remote, `wrap --push` gives every
+  checkout remote this check, declared or not, since a URL cannot prove a
+  remote is not the mirror under another name; a policy without
+  `publicMirrors` pushes remotes as before.
 
 ### Migrating a project from before t451
 
 A project registered before t451 has no `policy.commitIdentity`. Until the
-owner sets one, a claim warns and copies the registered checkout's identity
+developer sets one, a claim warns and copies the registered checkout's identity
 as before, a runner refuses to start a builder, and `atelier merge` refuses to
 land, each naming the command below. To migrate:
 
@@ -314,20 +370,28 @@ land, each naming the command below. To migrate:
 2. Run `atelier init --commit-name NAME --commit-email EMAIL` there, adding
    `--agent-email` for each address the project's agents commit under, and
    `--private-email` for addresses that must never appear, and
-   `--public-mirror` for each remote that is a public mirror. Until a remote
-   is declared, `atelier wrap --push` checks it as no public mirror.
+   `--public-mirror` for each remote that is a public mirror. Until a mirror
+   is declared, `atelier wrap --push` checks no remote.
+   A mirror declared before `--public-mirror-destination` existed has no
+   destination, and `publish` and `wrap --push` refuse every push until it
+   has one: run `atelier init --public-mirror-destination REMOTE=URL` with
+   the URL `git remote get-url --push REMOTE` prints, once per mirror, adding
+   `--private-path` and `--private-pattern` as the project needs. A project
+   that kept `.atelier/publication.json` moves its `destination`,
+   `privatePaths` and `privatePatterns` into these flags; the file is no
+   longer read and can be deleted.
 3. Claim again (`atelier claim ID`) in any open workspace, so it takes the
    identity; a runner's next claim does this itself.
 
 History already on the baseline is grandfathered: no check reads it. A task
 whose accepted revision holds commits outside the policy is refused at
 landing; its builder rewrites them under an allowed identity and submits again,
-or the owner allows the address with `--agent-email`.
+or the developer allows the address with `--agent-email`.
 
 ## Notifications
 
 Set `NTFY_TOPIC` to receive an ntfy notification when submission, review or
-check results put a submitted task in the owner's inbox:
+check results put a submitted task in the developer's inbox:
 
 ```sh
 printf 'TOPIC' | npx wrangler secret put NTFY_TOPIC
@@ -417,7 +481,7 @@ To move to a newer git, take the size and sha256 from
 snapshot URL from `https://snapshot.debian.org/mr/binary/git/VERSION/binfiles`,
 and change `GIT_DEB` in `src/sandbox/tools.ts` as one.
 
-If the owner later prefers an image with git built in, the documented way is
+If the developer later prefers an image with git built in, the documented way is
 a named image: a Dockerfile of `FROM node:24-trixie-slim` plus
 `apt-get install --no-install-recommends git`, declared under `images` in the
 `containers` entry and started with `this.ctx.container.images.NAME`. Then
@@ -438,8 +502,10 @@ into an iCloud project.
 test pool, against the Ledger Durable Object with its real SQLite storage
 and no network access; `tsc -p test` typechecks them against the types
 `wrangler types` generates. Workerd logs each refusal those tests assert as
-an uncaught promise rejection (`uncaught exception … 409|owned|…`); those
-lines are the refusals under test, not failures.
+an uncaught promise rejection (`uncaught exception … 403`, `… 409`,
+`… owned` and the like); those lines are the refusals under test, not
+failures. The README's Quickstart gives how long the suite took on
+recent landings.
 
 ## Local visual review
 

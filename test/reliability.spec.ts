@@ -58,7 +58,7 @@ it("a runner reports a run under its name; the owner token reads the reports; an
   expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "laptop" })).status).toBe(400);
   const bad = await call("POST", "/runs", "owner", { ...body, outcome: "crashed" }, { "x-atelier-runner": "home:studio" });
   expect(bad.status).toBe(400);
-  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge, validation_blocked" });
+  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge, validation_blocked, infrastructure_miss" });
   const sent = await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" });
   expect(sent.status).toBe(201);
   expect(await sent.json()).toMatchObject({ ...body, runner: "home:studio" });
@@ -146,7 +146,7 @@ it("each model's reliability across projects: the JSON route, the Models page an
   expect(models_).toContain("<code>opus-5.5</code>");
   expect(models_).toContain("&lt;b&gt;needs a test&lt;/b&gt;");
   expect(models_).not.toContain("<b>needs a test</b>");
-  expect(models_).toContain("1 by the owner on the page");
+  expect(models_).toContain("1 by the developer on the page");
   expect(models_).toContain("1 through the API");
   expect(models_).toContain("Its approvals a defect contradicted · 1");
   const usage = await (await worker.fetch(new Request("https://atelier.test/usage", { headers: { cookie } }), testEnv)).text();

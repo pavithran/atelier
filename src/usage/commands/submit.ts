@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 2, slot: 70,
       form: "submit [--summary T]",
-      about: "Marks the task ready for the owner and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission.",
+      about: "Marks the task ready for the developer and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission.",
     },
   ],
   flags: {

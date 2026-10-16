@@ -6,7 +6,8 @@
 // `node --test` as phase.ts's are.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { liveOffers, offeredActors, type SeenOffer } from "../dispatch/rules.ts";
+import { claimants, liveOffers, offeredActors, offering, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
@@ -85,6 +86,9 @@ export interface PlanRecord {
   blocked: string | null;              // why the plan is blocked; null when it is not
   approval: PlanApproval | null;
   reroutes: Record<string, string>;    // part key to the actor the owner rerouted it to
+  // Part key to what the reroute said of the build assignments: each skipped
+  // for the developer's explicit choice (t622). Absent in records made before.
+  rerouteReasons?: Record<string, string[]>;
   // Part key to the reviewer the plan tick picked in place of the routed one,
   // because the routed reviewer had become a contributor or was not of
   // another family than every contributor, or the reviewer the owner named;
@@ -290,6 +294,7 @@ export interface PlannerPick {
 }
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
+const PLAN_JOB: Pick<Dispatch, "to" | "job"> = { to: "home", job: "plan" };
 
 // The default planner: the first pool model in route()'s order for research
 // work that may plan. A refused model is passed over, as routing passes it
@@ -298,13 +303,19 @@ const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 // name one); so is one the project's policy does not let plan; and so is one
 // no live runner offers, since the plan job would wait for a runner that
 // never asks for it.
-export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[]): PlannerPick {
+// A plan assignment (`assignments`, the project's copy: its own and every
+// project's; src/models/assignments.ts) puts its eligible choices first; the
+// developer's --planner names one outright and never comes here.
+export function pickPlanner(pool: readonly ModelEntry[], events: readonly LedgerEvent[], policy: ProjectPolicy, profiles: readonly ModelProfile[] = MODEL_PROFILES, offers?: readonly SeenOffer[], assignments: readonly Assignment[] = []): PlannerPick {
   const entries = new Map(pool.map((entry) => [actorOf(entry), entry]));
   const ranked = route({ kind: "research" }, pool.map((entry) => profileFor(entry, profiles)), recordFor(pool, events), { localOnly: false, allowedWhere: "any" });
   const offered = offers ? offeredActors(liveOffers(offers)) : null;
+  // The plan job goes home (planDispatch in src/ledger.ts): a model a live
+  // runner names only for other work, or only in the cloud, could never
+  // claim it (gpt-6-astra's third review of t622, finding 2).
+  const planOffer = offers ? offering(PLAN_JOB, offers) : null;
   const passedOver: Choice[] = [];
-  for (const [i, candidate] of ranked.entries()) {
-    const entry = entries.get(candidate.actor!)!;
+  const refusalsOf = (entry: ModelEntry): string[] => {
     const actor = actorOf(entry);
     const refusals: string[] = [];
     if (entry.status?.state === "refused") refusals.push(`status refused, reported by ${entry.status.by} at ${entry.status.at}`);
@@ -312,21 +323,30 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     if (held) refusals.push(held);
     if (paidPerToken(entry)) refusals.push(`paid per token (${entry.provider}); name it with --planner to use it`);
     if (offered && !offered.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor}, so no runner could claim the plan job`);
+    else if (planOffer && !claimants({ ...PLAN_JOB, agent: entry.harness, model: entry.id }, offers ?? [])?.length) refusals.push(`no live runner offers ${actor} for the plan job at home: ${planOffer.instead.join("; ")}`);
     try { assertEligible(actor, policy, DEFAULT_OWNER, "planner"); } catch (err) {
       const rule = parseRuleError(err);
       if (!rule) throw err;
       refusals.push(rule.detail);
     }
+    return refusals;
+  };
+  const rows = ranked.map((candidate, i) => ({ candidate, i, entry: entries.get(candidate.actor!)!, refusals: refusalsOf(entries.get(candidate.actor!)!) }));
+  const byAssignment = orderByAssignment(rows, (r) => actorOf(r.entry), applicableAssignments(assignments, null, ["plan"]), (r) => (r.refusals.length ? r.refusals.join("; ") : null), FALLBACK.plan);
+  for (const row of byAssignment.order) {
+    const { candidate, i, entry, refusals } = row;
+    const actor = actorOf(entry);
     if (refusals.length) { passedOver.push({ actor, reasons: refusals }); continue; }
     return {
       actor, passedOver,
-      reasons: [`Rank ${i + 1} of ${ranked.length} in the pool for research work, score ${candidate.score}; equal scores go by model id, then actor name`, ...candidate.reasons],
+      reasons: [...byAssignment.reasons(row), `Rank ${i + 1} of ${ranked.length} in the pool for research work, score ${candidate.score}; equal scores go by model id, then actor name`, ...candidate.reasons],
     };
   }
   const why = pool.length
     ? `no model in the pool may plan: ${passedOver.map((c) => `${c.actor} (${c.reasons.join("; ")})`).join(", ")}`
     : "the model pool is empty";
-  return { actor: null, reasons: [why], passedOver };
+  // What became of the plan assignments, beside why no model may plan.
+  return { actor: null, reasons: [why, ...byAssignment.outcome.lines], passedOver };
 }
 
 // How many times the planner has let the plan go with a proposal the server

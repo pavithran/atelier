@@ -19,7 +19,8 @@
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
 import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
-import { mergedByOverride } from "../src/rules.ts";
+import { stripVTControlCharacters } from "node:util";
+import { directionText, mergedByOverride } from "../src/rules.ts";
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
@@ -75,11 +76,15 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       name: v.name,
       ...(v.title ? { title: v.title } : {}),
       ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
+      // Fast mode's line while it stands (t629: with the developer's words and the acting model).
+      ...(v.mode ? { mode: v.mode } : {}),
       // Each null when not read, which attention.unknown words; never an
       // empty list standing for nothing.
       inbox: v.inbox ? mine : null,
       items: v.items ? v.items.map(itemJson) : null,
       ...(v.mismatches?.length ? { mismatches: v.mismatches } : {}),
+      // The developer's branches (t641), when they were read.
+      ...(Array.isArray(v.branches) ? { branches: v.branches } : {}),
       overlaps: a.overlaps,
       attention: { owner: a.owner.map((t) => ({ ...t, url: absolute(server, t.href) })), pipeline: a.pipeline, unknown: a.unknown },
       // The merges that went in on the owner's override, each with the link
@@ -87,6 +92,15 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       mergedByOverride: mergedByOverride(v.items ?? []).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
     };
   });
+}
+
+// What a merge by override says after its link and title, in `atelier
+// status` and `status --project` alike: the reason, and, for an override on
+// the developer's direction (t629), their words and the model that relayed
+// them. Text a person or agent wrote is flattened to one line.
+const flatText = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
+export function overrideTail(o) {
+  return `  reason: ${flatText(o.reason)}${o.quote ? `  ${flatText(directionText({ quote: o.quote, acting: o.acting }))}` : ""}`;
 }
 
 // A path on the server in use, as a full address where the server is known.
@@ -122,7 +136,7 @@ export function formatLocal(local) {
       : `the server's landing lease is held by ${lease.holder} for ${lease.item} since ${lease.since}`;
   const lockText = local.landing.lock ? "a landing is running on this Mac" : "no landing is running on this Mac";
   const leftover = local.leftover
-    ? [`  ${local.leftover} ${local.leftover === 1 ? "workspace" : "workspaces"} of merged or abandoned tasks left here; atelier gc --project ${local.project} previews removing them`]
+    ? [`  ${local.leftover} ${local.leftover === 1 ? "workspace" : "workspaces"} of merged or abandoned tasks left here; atelier clean --project ${local.project} removes those whose work is in main or the ledger`]
     : [];
   return ["On this Mac:", ...local.tasks.map((t) => `  ${localTaskLine(t)}`), ...leftover, `  Landing: ${lockText}; ${leaseText}.`].join("\n");
 }
@@ -276,6 +290,8 @@ export function formatStatus(views, waiting = {}) {
     const why = whyIn(waiting, v.name, offers);
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
+    // Fast mode, as status --project prints it (t629).
+    if (v.mode) lines.push(`  ${flatText(v.mode)}`);
     if (!a.owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.
@@ -297,7 +313,7 @@ export function formatStatus(views, waiting = {}) {
     const merged = items.filter((i) => i.state === "merged"), byOverride = mergedByOverride(merged);
     if (merged.length) {
       lines.push(`  Merged by override: ${byOverride.length} of ${merged.length} ${merged.length === 1 ? "merge" : "merges"}`);
-      for (const i of byOverride) lines.push(`    ${i.id}  ${taskLink(waiting.server, v.name, i.id)}  ${i.title}`);
+      for (const i of byOverride) lines.push(`    ${i.id}  ${taskLink(waiting.server, v.name, i.id)}  ${i.title}${overrideTail(i.reviewOverride)}`);
     }
     if (queued.length || reviews.length) {
       lines.push("  Waiting for a runner");
@@ -376,7 +392,7 @@ export function formatStatusBrief(b) {
   lines.push(!lease ? "Landing: none running."
     : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`
       : `Landing: ${lease.item} held by ${lease.holder} since ${lease.since}.`);
-  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => { const next = waitingCommand(w, s.project.name); return `${w.id} ${w.call ?? w.kind}${next ? `; next: ${oneLine(next)}` : ""}`; })) : partial.length ? "nothing known" : "nothing"}${partial.length ? "; more may be waiting" : ""}.`);
+  lines.push(`Waiting on the developer: ${s.waiting.length ? named(s.waiting.map((w) => { const next = waitingCommand(w, s.project.name); return `${w.id} ${w.call ?? w.kind}${next ? `; next: ${oneLine(next)}` : ""}`; })) : partial.length ? "nothing known" : "nothing"}${partial.length ? "; more may be waiting" : ""}.`);
   lines.push(spendLine(b.usage));
   return lines.join("\n");
 }
@@ -438,4 +454,30 @@ export function inboxJson(views, waiting = {}) {
 }
 export function inboxNotRead(views, waiting = {}) {
   return views.flatMap((v) => attentionFor(v.name, v.items, v.inbox, waiting.offers ?? null, waiting.now ?? new Date()).unknown.map((x) => `${v.name}: ${x}`));
+}
+
+// The developer's branches (t641): each one's name, its last commit as the
+// branches repository held it after the push, and the Mac it was pushed
+// from, newest push first. `branches` is the list GET branches answers, or
+// null when it was not read (a server without them, or one that could not
+// answer), which is said rather than shown as none.
+const branchTime = (iso) => (typeof iso === "string" && iso.length >= 16 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : "an unrecorded time");
+export function branchLine(b) {
+  const subject = flatText(b.subject ?? "");
+  return `${b.name}  ${String(b.commit).slice(0, 8)}${subject ? `  ${subject.length > 60 ? `${subject.slice(0, 59)}…` : subject}` : ""}  (from ${flatText(b.host)}, ${branchTime(b.pushedAt)})`;
+}
+export function formatDeveloperBranches(branches, indent = "  ") {
+  if (branches === null || branches === undefined) return `${indent}Developer branches: not read (the server keeps none, or could not answer)`;
+  if (!branches.length) return `${indent}Developer branches: none (atelier branch push NAME carries one to your other Macs)`;
+  return [`${indent}Developer branches`, ...branches.map((b) => `${indent}  ${branchLine(b)}`)].join("\n");
+}
+// Every project's branches, for `atelier status`: a section when some
+// project has one or some project's could not be read, each line led by its
+// project, and the projects not read named on one line, so a branch that
+// could not be read is never shown as none (Astra's review of t641).
+export function formatAllDeveloperBranches(views) {
+  const lines = views.flatMap((v) => (Array.isArray(v.branches) ? v.branches.map((b) => `  ${v.name}  ${branchLine(b)}`) : []));
+  const unread = views.filter((v) => !Array.isArray(v.branches)).map((v) => v.name);
+  if (unread.length) lines.push(`  not read for ${unread.join(", ")} (the server keeps none, or could not answer)`);
+  return lines.length ? ["Developer branches", ...lines].join("\n") : "";
 }

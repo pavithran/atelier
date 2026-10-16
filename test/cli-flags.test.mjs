@@ -149,6 +149,9 @@ globalThis.fetch = async (url, options = {}) => {
       // was accepted with the owner's override; t1 and t2 report no change.
       else if (verb === "edit") data = { ...item(id), ...body, ...(CHANGES[id] && body.accept ? { criteriaChange: { from: "a".repeat(64), to: "b".repeat(64), ...CHANGES[id] } } : {}) };
       else if (verb === "brief") data = { decided: "Wait on " + id, summary: null, nonGoals: [], stopWhen: [], nextGate: null, accept: ["Nested lists parse"], partAccept: ["It works"], criteria: "c".repeat(64), evidence: [], recommendation: { verdict: "wait", reason: "In progress." } };
+      // t575: a review claim answers its request, head and criteria binding; a renewal its word.
+      else if (verb === "review-claim") data = { item: item(id), head: HEAD, request: 7, criteria: "c".repeat(64) };
+      else if (verb === "review-renew") data = { renewed: true };
       else data = detail(id);
     }
   }
@@ -377,6 +380,23 @@ test("--version after a command prints the version and contacts no server", (t) 
   assert.deepEqual(f.requests(), []);
 });
 
+// t690: the developer sends accepted work back to building with their own
+// token and no --as; the command used to demand "say who you are" and a
+// model name, which the server then refused as not_project_owner.
+test("handoff with no --as and no workspace acts as the developer, and --as still wins", (t) => {
+  const f = fixture(t);
+  const noActor = { ATELIER_ACTOR: undefined };
+  const r = f.run(f.checkout, ["handoff", "t1", "--to", "codex/test", "--project", "demo"], noActor);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /say who you are/);
+  const sent = f.requests().find((q) => q.path.endsWith("/items/t1/handoff"));
+  assert.equal(sent.actor, "owner");
+  f.clear();
+  const named = f.run(f.checkout, ["handoff", "t1", "--to", "codex/test", "--project", "demo", "--as", "claude-code/opus-5.5"], noActor);
+  assert.equal(named.status, 0, named.stderr);
+  assert.equal(f.requests().find((q) => q.path.endsWith("/items/t1/handoff")).actor, "claude-code/opus-5.5");
+});
+
 test("a flag that needs a value refuses a bare one before any request", (t) => {
   const f = fixture(t);
   for (const [argv, flag] of [
@@ -576,7 +596,7 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   const blocked = f.run(f.checkout, ["block", "t2", "waiting", "on", "the", "keys", "--project", "demo"]);
   assert.equal(blocked.status, 0, blocked.stderr);
   assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/block", { reason: "waiting on the keys" }]]);
-  assert.match(blocked.stdout, /^t2 is blocked: waiting on the keys\. It keeps its owner and workspace; run atelier unblock t2 when it can go on\.\n$/);
+  assert.match(blocked.stdout, /^t2 is blocked: waiting on the keys\. It keeps its holder and workspace; run atelier unblock t2 when it can go on\.\n$/);
   f.clear();
   const here = f.run(f.workspace, ["block", "needs a decision"], { ATELIER_ACTOR: "codex/test" });
   assert.equal(here.status, 0, here.stderr);
@@ -683,6 +703,75 @@ test("review sends the criteria binding and the request only as given, and refus
     assert.match(bad.stderr, message);
   }
   assert.equal(f.requests().filter((q) => q.path.endsWith("/review")).length, 0);
+});
+
+// t575: on 2026-10-13 a hand-served review of t573 lost its claim to the
+// 5-minute lease during a 6-minute run, and its verdict, sent without
+// --request, was refused for "request undefined". The claim now prints the
+// exact verdict command and how to renew; --renew renews through the route a
+// runner uses; review without --request answers the request claimed here.
+test("review-claim prints the verdict command and the lease, --renew renews it, and review remembers the request", (t) => {
+  const f = fixture(t);
+  const C = "c".repeat(64), as = { ATELIER_ACTOR: "opencode/glm-5.3" };
+  const claim = f.run(f.workspace, ["review-claim", "t2", "--runner", "home:hand"], as);
+  assert.equal(claim.status, 0, claim.stderr);
+  // The JSON stays the one line on stdout, which a runner parses.
+  assert.equal(JSON.parse(claim.stdout).request, 7);
+  assert.equal(claim.stdout.trim().split("\n").length, 1);
+  assert.match(claim.stderr, new RegExp(`^Claimed t2's review request 7 at ${f.head} as opencode/glm-5\\.3\\.$`, "m"));
+  assert.match(claim.stderr, new RegExp(`^Criteria binding: ${C}$`, "m"));
+  assert.ok(claim.stderr.includes(`Record the verdict with: atelier review t2 --head ${f.head} --request 7 --criteria ${C} --approve|--reject --note "…" --as opencode/glm-5.3`), claim.stderr);
+  // Astra's review of t575 (2026-10-13): the server skips a renewal within
+  // 30 seconds of its last one (REVIEW_RENEW_MS) and answers only
+  // {renewed: true}, so "five more minutes" after an early renewal was
+  // wrong, and renewing at its last moment lost the claim. The guidance
+  // now renews every 2 minutes, inside the 4 minutes 30 seconds a renewal
+  // is sure of.
+  assert.match(claim.stderr, /lease lasts 5 minutes .*atelier review-claim t2 --renew --request 7 --as opencode\/glm-5\.3 every 2 minutes/);
+  assert.doesNotMatch(claim.stderr, /within every 5 minutes/);
+  f.clear();
+  // --renew without --request renews the request claimed here, by the runner's route.
+  const renew = f.run(f.workspace, ["review-claim", "t2", "--renew"], as);
+  assert.equal(renew.status, 0, renew.stderr);
+  assert.match(renew.stdout, /Renewed the lease on t2's review request 7, the one this machine last claimed, as opencode\/glm-5\.3: it lasts at least 4 minutes 30 seconds from now \(the server skips a renewal within 30 seconds of the last\); renew again within 2 minutes\./);
+  assert.doesNotMatch(renew.stdout, /5 more minutes/);
+  assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t2/review-renew", { request: 7 }, "opencode/glm-5.3"]]);
+  f.clear();
+  const named = f.run(f.workspace, ["review-claim", "t2", "--renew", "--request", "9"], as);
+  assert.equal(named.status, 0, named.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ request: 9 }]);
+  f.clear();
+  // review without --request answers the remembered request and says which.
+  const verdict = f.run(f.workspace, ["review", "t2", "--approve", "--criteria", C, "--note", "fine"], as);
+  assert.equal(verdict.status, 0, verdict.stderr);
+  assert.match(verdict.stdout, /^Answering review request 7, the one this machine last claimed for t2 as opencode\/glm-5\.3/m);
+  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/review")).map((q) => q.body.request), [7]);
+  f.clear();
+  // Another reviewer, or a task never claimed here, sends no request at all.
+  for (const [id, env] of [["t2", { ATELIER_ACTOR: "claude-code/opus" }], ["t4", as]]) {
+    const other = f.run(f.workspace, ["review", id, "--approve", "--criteria", C], env);
+    assert.equal(other.status, 0, other.stderr);
+    assert.doesNotMatch(other.stdout, /Answering/);
+    assert.ok(!("request" in f.requests().find((q) => q.path.endsWith("/review")).body));
+    f.clear();
+  }
+  // Nothing to renew for a task never claimed here; --request without --renew is refused.
+  const none = f.run(f.workspace, ["review-claim", "t4", "--renew"], as);
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /no review request of t4 was claimed on this machine; name it with --request N/);
+  const stray = f.run(f.workspace, ["review-claim", "t2", "--request", "7"], as);
+  assert.equal(stray.status, 1);
+  assert.match(stray.stderr, /--request names the claim --renew renews/);
+  assert.equal(f.requests().length, 0);
+  // Astra's review of t575 (2026-10-13): the remembered claim does not supply
+  // the reviewer, so a renewal without --as fails or is refused by the
+  // server's actor check; the help and the handbook name it.
+  const help = spawnSync(process.execPath, [resolve("cli/atelier.mjs"), "review-claim", "--help"], { encoding: "utf8" });
+  assert.match(help.stdout, /review-claim ID --renew --as H\/M/);
+  assert.match(help.stdout, /renew every 2 minutes/);
+  const handbook = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
+  assert.match(handbook, /`atelier review-claim ID --renew --as HARNESS\/MODEL`/);
+  assert.doesNotMatch(handbook, /`atelier review-claim ID --renew`/);
 });
 
 test("review-release forwards the claim generation and preserves owner recovery without a number", (t) => {

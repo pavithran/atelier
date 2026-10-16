@@ -1,0 +1,918 @@
+import { env } from "cloudflare:workers";
+import { expect, it } from "vitest";
+import worker from "../src/index.ts";
+import type { Assignment, AssignmentView } from "../src/models/assignments.ts";
+import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { signIn } from "./signin.ts";
+
+// Role assignments (t622) through the Worker's routes and the Ledgers'
+// storage: the developer records one with checked evidence, the index keeps
+// it with its history, each project's ledger gets the ones bearing on it,
+// and its review selector reads them; supersession needs the standing one
+// named, a retry is answered once, withdrawal restores the fallback, and a
+// renamed project or a removed model reads as it is now.
+
+const TOKEN = "model-roles-test-token";
+const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
+const AT = new Date().toISOString();
+const entry = (harness: ModelEntry["harness"], id: string): ModelEntry => ({
+  id, harness, where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: AT,
+});
+const POOL = [entry("codex", "gpt-6-astra"), entry("antigravity", "gemini-4-argon"), entry("zcode", "glm-5.3"), entry("claude-code", "opus-5.5")];
+
+// PUT /projects/NAME creates the baseline in Artifacts first; a stand-in
+// answers, as test/model-set.spec.ts does.
+const artifacts = {
+  create: async () => ({}),
+  get: async () => ({
+    info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+    createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+    [Symbol.dispose]() {},
+  }),
+} as unknown as typeof env.ARTIFACTS;
+
+const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
+const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+
+function call(method: string, path: string, body?: unknown, actor = "owner", acting?: string) {
+  return worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method,
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json", ...(acting ? { "x-atelier-acting": acting } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }), testEnv);
+}
+
+async function project(name: string) {
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT };
+  await ledger(name).setProject(record, "owner");
+  await index().registerProject(record);
+  for (const m of POOL) await index().putModel(m);
+  const L = ledger(name);
+  await L.newItem("Fix the lease race", ["src/lease.ts"], "owner", { accept: ["Works"] });
+  await L.claim("t1", "claude-code/opus-5.5");
+  return L;
+}
+
+const body = (change: Record<string, unknown> = {}) => ({
+  request: crypto.randomUUID(), role: "review", choices: ["codex/gpt-6-astra"], reason: "Every blocking finding judged was real.", quote: "astra reviews", evidence: [], ...change,
+});
+
+it("the developer records an assignment with checked evidence; the project's selector reads it, and withdrawal restores the fallback", async () => {
+  const L = await project("roles-alpha");
+  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  for (const [evidence, why] of [
+    [["t1"], /names no project/], [["nowhere/t1"], /no project nowhere/], [["roles-alpha/t9"], /no task t9/], [["roles-alpha/t1#999999"], /no event 999999/],
+  ] as const) {
+    const r = await call("POST", "/model-roles", body({ evidence }));
+    expect(r.status).toBe(400);
+    expect(JSON.stringify(await r.json())).toMatch(why);
+  }
+  expect((await call("POST", "/model-roles", body({ evidence: ["roles-alpha/t1"] }), "codex/gpt-6-astra")).status).toBe(403);
+  expect((await call("GET", "/model-roles", undefined, "codex/gpt-6-astra")).status).toBe(403);
+  expect((await call("POST", "/model-roles", body({ evidence: ["roles-alpha/t1"], choices: ["gpt-6-astra"] }))).status).toBe(400);
+
+  const made = await call("POST", "/model-roles", body({ evidence: ["roles-alpha/t1"], scope: "roles-alpha" }), "owner", "claude-code/opus-5.5");
+  expect(made.status).toBe(201);
+  const a = await made.json() as Assignment;
+  expect(a).toMatchObject({ scope: "roles-alpha", role: "review", choices: [{ actor: "codex/gpt-6-astra", model: "gpt-6-astra" }], evidence: ["roles-alpha/t1"], by: "owner", acting: "claude-code/opus-5.5" });
+  // The project's ledger has it, and its selector puts astra first.
+  expect(await L.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+
+  const out = await call("POST", `/model-roles/${a.id}/withdraw`, { note: "Astra is reserved this week." });
+  expect(out.status).toBe(200);
+  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  const listed = await (await call("GET", "/model-roles")).json() as { assignments: AssignmentView[]; fallback: Record<string, string> };
+  expect(listed.assignments.find((v) => v.id === a.id)).toMatchObject({ status: "withdrawn", evidence: ["roles-alpha/t1"], acting: "claude-code/opus-5.5", withdrawal: { note: "Astra is reserved this week." } });
+  expect(listed.fallback.review).toMatch(/previous round's reviewer/);
+});
+
+it("a second assignment supersedes only by naming the standing one; a retry is answered once; another project's is not sent here", async () => {
+  const L = await project("roles-beta");
+  await project("roles-gamma");
+  const first = await (await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", request: "roles-beta-first" }))).json() as Assignment;
+  const again = await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", request: "roles-beta-first" }));
+  expect(again.status).toBe(200);
+  expect(await again.json()).toMatchObject({ id: first.id, retried: true });
+  const stale = await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", choices: ["zcode/glm-5.3"] }));
+  expect(stale.status).toBe(409);
+  expect(JSON.stringify(await stale.json())).toMatch(new RegExp(`--replaces ${first.id}`));
+  const second = await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", choices: ["zcode/glm-5.3"], replaces: first.id }));
+  expect(second.status).toBe(201);
+  expect(await second.json()).toMatchObject({ supersedes: first.id });
+  expect(await L.availableReviewer("t1", POOL)).toBe("zcode/glm-5.3");
+  // Withdrawing the superseded one is refused; the standing one stays.
+  expect((await call("POST", `/model-roles/${first.id}/withdraw`, { note: "old" })).status).toBe(409);
+  // roles-gamma's ledger never received roles-beta's assignment.
+  expect(await ledger("roles-gamma").availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+});
+
+it("a renamed project keeps its assignments and evidence under its key and lists them by its new name; a removed model is skipped", async () => {
+  await project("roles-old");
+  const a = await (await call("POST", "/model-roles", body({ evidence: ["roles-old/t1"], scope: "roles-old", choices: ["antigravity/gemini-4-argon", "zcode/glm-5.3"] }))).json() as Assignment;
+  expect((await call("POST", "/projects/roles-old/rename", { to: "roles-new" })).status).toBe(200);
+  const listed = await (await call("GET", "/model-roles")).json() as { assignments: AssignmentView[]; names: Record<string, string> };
+  expect(listed.assignments.find((v) => v.id === a.id)?.scope).toBe("roles-old");
+  expect(listed.names["roles-old"]).toBe("roles-new");
+  // Evidence named by the new name resolves to the same key.
+  const b = await call("POST", "/model-roles", body({ evidence: ["roles-new/t1"], scope: "roles-new", role: "build", choices: ["claude-code/opus-5.5"] }));
+  expect(b.status).toBe(201);
+  expect(await b.json()).toMatchObject({ scope: "roles-old", evidence: ["roles-old/t1"] });
+  // Argon gone from the pool: the assignment's next choice reviews.
+  const without = POOL.filter((m) => m.id !== "gemini-4-argon");
+  expect(await ledger("roles-old").availableReviewer("t1", without)).toBe("zcode/glm-5.3");
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 1: broadcasts read at
+// different times can arrive out of order; an older one must not bring back
+// what a newer one withdrew.
+it("a project's copy refuses a snapshot older than the one it holds", async () => {
+  const L = await project("roles-stale");
+  const a = await (await call("POST", "/model-roles", body({ evidence: ["roles-stale/t1"], scope: "roles-stale" }))).json() as Assignment;
+  const stale = await index().assignmentSnapshotFor("roles-stale");
+  expect(stale.assignments.map((x: Assignment) => x.id)).toEqual([a.id]);
+  await call("POST", `/model-roles/${a.id}/withdraw`, { note: "withdrawn" });
+  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  // The older broadcast lands late.
+  expect(await L.assignmentsChanged(stale)).toBe(false);
+  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 3 (and Argon's finding 2):
+// a project initialised after an assignment for every project started with
+// none until the next broadcast.
+it("a project initialised after an assignment for every project reads it from the start", async () => {
+  for (const m of POOL) await index().putModel(m);
+  await project("roles-evidence");
+  const a = await (await call("POST", "/model-roles", body({ evidence: ["roles-evidence/t1"] }))).json() as Assignment;
+  try {
+    const name = "roles-late-init";
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    const L = ledger(name);
+    await L.newItem("Fix the lease race", ["src/lease.ts"], "owner", { accept: ["Works"] });
+    await L.claim("t1", "claude-code/opus-5.5");
+    expect(await L.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+  } finally {
+    await call("POST", `/model-roles/${a.id}/withdraw`, { note: "test over" });
+  }
+});
+
+it("the API answers an unauthenticated model-roles request with 401, as every API path does", async () => {
+  const r = await worker.fetch(new Request("https://atelier.test/api/model-roles"), testEnv);
+  expect(r.status).toBe(401);
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 7: the separate tier
+// request named no reason, so the assignment that chose its reviewer, or why
+// none did, was never recorded where the reviewer is chosen.
+it("a separate tier review request records the assignment that chose its reviewer", async () => {
+  const name = "roles-tier";
+  const pool = [...POOL, entry("claude-code", "sonnet-5.5"), entry("claude-code", "fable-5.1")];
+  for (const m of pool) await index().putModel(m);
+  const policy = { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/sonnet-5.5", "claude-code/fable-5.1"] };
+  const record = { name, repo: name, policy, createdAt: AT };
+  const L = ledger(name);
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  const H = "a".repeat(40);
+  await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
+  await L.claim("t1", "codex/gpt-6-astra");
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush("t1", "codex/gpt-6-astra", H, H);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit("t1", "codex/gpt-6-astra");
+  const a = await (await call("POST", "/model-roles", body({ role: "security-review", choices: ["claude-code/fable-5.1"], evidence: ["roles-tier/t1"], scope: name }))).json() as Assignment;
+  // The task's title and scope say nothing of security; its changed paths do (src/lease.ts),
+  // so the security-review assignment bears (gemini-4-argon's follow-up 4).
+  const asked = await L.requestReview("t1", "owner", "antigravity/gemini-4-argon", pool);
+  expect(asked.requested).toBe(true);
+  const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+  const tier = events.find((e) => e.kind === "review.requested" && e.data.tier === true);
+  expect(tier?.data.reviewer).toBe("claude-code/fable-5.1");
+  expect(String(tier?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id} \\(security-review`));
+});
+
+// gemini-4-argon's review of t622 at 53bf739d, finding 3.
+it("the listing names the pool's models, so a choice the pool lost is marked", async () => {
+  const listed = await (await call("GET", "/model-roles")).json() as { inPool: string[] };
+  expect(listed.inPool).toContain("codex/gpt-6-astra");
+});
+
+// gpt-6-astra's second review of t622, finding 3: the separate tier review
+// checked only the project's policy and the standing, so an assignment
+// promoted a tier model that was refused, paid, out of the pool or unoffered.
+it("an assignment never promotes a tier model that is refused, paid or no longer in the pool", async () => {
+  const H = "a".repeat(40);
+  for (const [name, change] of [
+    ["roles-tier-refused", (e: ModelEntry): ModelEntry => ({ ...e, status: { state: "refused", at: AT, by: "cloud:x", detail: "quota" } })],
+    ["roles-tier-paid", (e: ModelEntry): ModelEntry => ({ ...e, provider: "anthropic" })],
+    ["roles-tier-gone", null],
+  ] as const) {
+    const fable = entry("claude-code", "fable-5.1");
+    const pool = [...POOL, entry("claude-code", "sonnet-5.5"), ...(change ? [change(fable)] : [])];
+    for (const m of [...pool, fable]) await index().putModel(m);
+    const policy = { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/sonnet-5.5", "claude-code/fable-5.1"] };
+    const record = { name, repo: name, policy, createdAt: AT };
+    const L = ledger(name);
+    await L.setProject(record, "owner");
+    await index().registerProject(record);
+    await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
+    await L.claim("t1", "codex/gpt-6-astra");
+    await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+    await L.recordPush("t1", "codex/gpt-6-astra", H, H);
+    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+    await L.submit("t1", "codex/gpt-6-astra");
+    // The assignment puts fable first while it is a sound pool model; then it is refused, made paid or removed.
+    const a = await (await call("POST", "/model-roles", body({ choices: ["claude-code/fable-5.1"], evidence: [`${name}/t1`], scope: name }))).json() as Assignment;
+    if (change) await index().putModel(change(fable));
+    else await index().removeModel("fable-5.1");
+    await L.poolChanged(pool);
+    expect((await L.requestReview("t1", "owner", "antigravity/gemini-4-argon", pool)).requested).toBe(true);
+    const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+    const tier = events.find((e) => e.kind === "review.requested" && e.data.tier === true);
+    expect(tier?.data.reviewer, name).toBe("claude-code/sonnet-5.5");
+    expect(String(tier?.data.reason), name).toMatch(new RegExp(`Role assignment ${a.id} skipped: no choice is eligible here \\(claude-code/fable-5.1: `));
+    await index().putModel(fable);
+  }
+});
+
+// gpt-6-astra's second review of t622, finding 5: a retry was validated
+// against the pool as it is now, so removing the model after the first
+// request made its retry fail instead of returning the record.
+it("a retry is answered from the stored request before anything mutable is checked again", async () => {
+  await project("roles-retry");
+  await index().putModel(entry("codex", "gpt-6-luna"));
+  const first = body({ evidence: ["roles-retry/t1"], scope: "roles-retry", choices: ["codex/gpt-6-luna"], request: "roles-retry-request" });
+  const made = await (await call("POST", "/model-roles", first)).json() as Assignment;
+  await index().removeModel("gpt-6-luna");
+  const again = await call("POST", "/model-roles", first);
+  expect(again.status).toBe(200);
+  expect(await again.json()).toMatchObject({ id: made.id, retried: true });
+  const changed = await call("POST", "/model-roles", { ...first, reason: "Another reason." });
+  expect(changed.status).toBe(409);
+  expect(JSON.stringify(await changed.json())).toMatch(/request_reused/);
+});
+
+// gpt-6-astra's second review of t622, follow-up: without suggestion records
+// the gate's pick kept no reason, so its assignment explanation was lost.
+it("a review requested without suggestion records keeps the selector's reasons", async () => {
+  const L = await project("roles-no-records");
+  const H = "a".repeat(40);
+  await L.setFork("t1", "roles-no-records--t1", "0".repeat(40), "claude-code/opus-5.5");
+  await L.recordPush("t1", "claude-code/opus-5.5", H, H);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit("t1", "claude-code/opus-5.5");
+  const a = await (await call("POST", "/model-roles", body({ evidence: ["roles-no-records/t1"], scope: "roles-no-records" }))).json() as Assignment;
+  expect((await L.requestReview("t1", "owner", null, POOL)).reviewer).toBe("codex/gpt-6-astra");
+  const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+  const asked = events.find((e) => e.kind === "review.requested");
+  expect(String(asked?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id}`));
+});
+
+// gpt-6-astra's third review of t622, finding 3: a retry answered at once,
+// unreached empty, so a first request that stopped between its record and
+// its broadcast left a project on the old routing with nothing said.
+it("a retry sends every project the assignments standing now and says whether its record still stands", async () => {
+  await project("roles-repair-a");
+  const first = body({ evidence: ["roles-repair-a/t1"], request: "roles-repair-request" });
+  const made = await call("POST", "/model-roles", first);
+  expect(made.status).toBe(201);
+  const a = await made.json() as Assignment;
+  try {
+    // A project the first request's broadcast never reached: registered
+    // after it, without the initialisation that seeds a copy.
+    const late = await project("roles-repair-b");
+    expect(await late.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+    const again = await call("POST", "/model-roles", first);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toMatchObject({ id: a.id, retried: true, status: "current", unreached: [] });
+    expect(await late.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+  } finally {
+    await call("POST", `/model-roles/${a.id}/withdraw`, { note: "test over" });
+  }
+  // Withdrawn since: the retry says so, and the withdrawal stands everywhere.
+  const after = await call("POST", "/model-roles", first);
+  expect(await after.json()).toMatchObject({ id: a.id, retried: true, status: "withdrawn" });
+  expect(await ledger("roles-repair-b").availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+});
+
+// gpt-6-astra's third review of t622, finding 4: the acting model was checked
+// against the pool for every route before the retry was matched, so removing
+// it after the first request made the retry fail.
+it("a retry recorded with an acting model the pool has since lost is answered from its record", async () => {
+  await project("roles-acting");
+  const sonnet = entry("claude-code", "sonnet-5.5");
+  await index().putModel(sonnet);
+  const first = body({ evidence: ["roles-acting/t1"], scope: "roles-acting", request: "roles-acting-request" });
+  const made = await (await call("POST", "/model-roles", first, "owner", "claude-code/sonnet-5.5")).json() as Assignment;
+  expect(made.acting).toBe("claude-code/sonnet-5.5");
+  await index().removeModel("sonnet-5.5");
+  try {
+    const again = await call("POST", "/model-roles", first, "owner", "claude-code/sonnet-5.5");
+    expect(again.status, await again.clone().text()).toBe(200);
+    expect(await again.json()).toMatchObject({ id: made.id, retried: true });
+    // Another acting model reusing the id is another request.
+    const other = await call("POST", "/model-roles", first, "owner", "claude-code/opus-5.5");
+    expect(other.status).toBe(409);
+    // A new request is still checked against the pool now.
+    const fresh = await call("POST", "/model-roles", body({ evidence: ["roles-acting/t1"], scope: "roles-acting", replaces: made.id }), "owner", "claude-code/sonnet-5.5");
+    expect(JSON.stringify(await fresh.json())).toMatch(/unregistered_acting/);
+    // So is a withdrawal; its retry is answered from its record.
+    await index().putModel(sonnet);
+    const note = { note: "Sonnet stood in this week." };
+    expect((await call("POST", `/model-roles/${made.id}/withdraw`, note, "owner", "claude-code/sonnet-5.5")).status).toBe(200);
+    await index().removeModel("sonnet-5.5");
+    const retried = await call("POST", `/model-roles/${made.id}/withdraw`, note, "owner", "claude-code/sonnet-5.5");
+    expect(retried.status, await retried.clone().text()).toBe(200);
+    expect(await retried.json()).toMatchObject({ withdraws: made.id, retried: true });
+  } finally {
+    await index().removeModel("sonnet-5.5").catch(() => {});
+  }
+});
+
+// A plan approved over POOL in `name`, its one part's item and routing.
+async function planned(name: string) {
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
+  const planner = "claude-code/opus-5.5", runner = { runner: "home:studio", kind: "home" } as const;
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", planner, []);
+  await L.claim(item.id, planner, runner);
+  const part = { key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" };
+  const post = await L.postPlan(item.id, planner, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, planner, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const route = (await L.planView(item.id)).parts[0].route!;
+  return { L, id: item.id, partId: parts[0].id, route, runner };
+}
+
+// The part worked to submitted by `actor`, checks passing, paths measured.
+async function submitted(L: ReturnType<typeof ledger>, partId: string, actor: string, runner: { runner: string; kind: "home" }) {
+  const H = "a".repeat(40);
+  await L.claim(partId, actor, runner);
+  await L.setFork(partId, `fork-${partId}`, "0".repeat(40), actor);
+  await L.recordPush(partId, actor, H, H);
+  await L.addEvidence({ itemId: partId, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a/x.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(partId, actor);
+}
+
+const assignment = (id: string, role: Assignment["role"], actor: string): Assignment => ({
+  id, kind: "assigned", scope: "*", role, choices: [{ actor, model: actor.slice(actor.indexOf("/") + 1) }], reason: "By judgement.", quote: "PAVI's words", evidence: [], by: "owner", at: AT,
+});
+
+// gpt-6-astra's third review of t622, finding 5: the plan tick's review
+// request kept no reason, so which assignment applied or was skipped, and
+// why, was lost where the reviewer is chosen.
+it("a plan's review request records what the role assignments said of its reviewer", async () => {
+  const { L, partId, route, runner } = await planned("roles-plan-tick");
+  const a = assignment("a900", "review", "zcode/glm-5.3");
+  await L.assignmentsChanged({ version: 900, assignments: [a] });
+  await submitted(L, partId, route.builder!.actor, runner);
+  const asked = (await L.events(partId) as unknown as { kind: string; data: Record<string, any> }[]).find((e) => e.kind === "review.requested")!;
+  expect(asked.data.reviewer).toBe(route.reviewer!.actor);
+  // The routing fixed at approval came first, and the assignment is named as skipped for it.
+  expect(String(asked.data.reason)).toMatch(/Role assignment a900 skipped: the plan's routing comes before role assignments/);
+  expect(asked.data.assignment).toMatchObject({ applied: null, skipped: [{ id: "a900" }] });
+});
+
+// gpt-6-astra's third review of t622, finding 2: the plan tick chose a
+// replacement reviewer with no offers at all, so an assignment promoted a
+// model no runner offers for the review job, whose request nobody could claim.
+it("a plan's replacement reviewer is one a live runner offers for the review job at home", async () => {
+  const { L, partId, route, runner } = await planned("roles-plan-offers");
+  const builder = route.builder!.actor, reviewer = route.reviewer!.actor;
+  // The routed reviewer claims the part and lets it go, so it is a contributor.
+  await L.reroutePlan(partId, "owner", reviewer);
+  await L.claim(partId, reviewer, runner);
+  await L.release(partId, reviewer, "stalled");
+  await L.reroutePlan(partId, "owner", builder);
+  // Of the two models left, the one asked first without offers is assigned
+  // and offered only for builds; the other is offered for review at home.
+  const left = POOL.map((m) => `${m.harness}/${m.id}`).filter((a) => a !== builder && a !== reviewer);
+  const unoffered = route.alternates.map((c) => c.actor).find((a) => left.includes(a)) ?? left[0];
+  const offered = left.find((a) => a !== unoffered)!;
+  await L.assignmentsChanged({ version: 901, assignments: [assignment("a901", "review", unoffered)] });
+  const split = (a: string) => ({ agent: a.slice(0, a.indexOf("/")), models: [a.slice(a.indexOf("/") + 1)] });
+  await L.runnerPoll({ id: "tok-builds", runner: "home:builds" } as never, { runner: "home:builds", kind: "home", jobs: ["build"], agents: [builder, unoffered, offered].map(split) });
+  await L.runnerPoll({ id: "tok-reviews", runner: "home:reviews" } as never, { runner: "home:reviews", kind: "home", jobs: ["review"], agents: [split(offered)] });
+  await submitted(L, partId, builder, runner);
+  const asked = (await L.events(partId) as unknown as { kind: string; data: Record<string, any> }[]).find((e) => e.kind === "review.requested")!;
+  expect(asked.data.reviewer).toBe(offered);
+});
+
+// gpt-6-astra's and gemini-4-argon's fourth reviews of t622 (findings 1 and
+// 2): the separate tier review found a tier name's entry by the first alias
+// that matched and dispatched the tier name as written, so an assignment
+// promoted a paused model whose name another entry lists as an alias, and a
+// tier name written as an alias was dispatched under a name no runner offers.
+it("a separate tier review judges and dispatches the pool entry each tier name is", async () => {
+  const name = "roles-tier-alias";
+  const sonnet = { ...entry("claude-code", "sonnet-5.5"), aliases: ["fable-5.1", "sonnet-alias"] };
+  const fable = { ...entry("claude-code", "fable-5.1"), state: "paused" as const, stateAt: AT, note: "spent" };
+  const pool = [...POOL, sonnet, fable];
+  const policy = { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/fable-5.1", "claude-code/sonnet-alias"] };
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy, createdAt: AT }, "owner");
+  const H = "a".repeat(40);
+  await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
+  await L.claim("t1", "codex/gpt-6-astra");
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush("t1", "codex/gpt-6-astra", H, H);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit("t1", "codex/gpt-6-astra");
+  await L.assignmentsChanged({ version: 950, assignments: [{ id: "a950", kind: "assigned", scope: "*", role: "review", choices: [{ actor: "claude-code/fable-5.1", model: "fable-5.1" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  expect((await L.requestReview("t1", "owner", "antigravity/gemini-4-argon", pool)).requested).toBe(true);
+  const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+  const tier = events.find((e) => e.kind === "review.requested" && e.data.tier === true);
+  // Fable is paused: Sonnet, named in the tier by an alias, is asked under its own id.
+  expect(tier?.data.reviewer).toBe("claude-code/sonnet-5.5");
+  expect(String(tier?.data.reason)).toMatch(/Role assignment a950 skipped: no choice is eligible here \(claude-code\/fable-5.1: paused since/);
+  const waiting = (await L.reviewWaiting()).map((i) => `${i.dispatch?.agent}/${i.dispatch?.model}`);
+  expect(waiting).toContain("claude-code/sonnet-5.5");
+  expect(waiting).not.toContain("claude-code/fable-5.1");
+  expect(waiting).not.toContain("claude-code/sonnet-alias");
+});
+
+// Rule 2 of t622, at every ledger site that records an explicit choice
+// (gpt-6-astra's seventh review, finding 2): the developer's named planner
+// (newPlan, reroutePlan), named builder (reroutePlan, dispatch), named
+// reviewer (requestReview, rerouteReviewer, and the plan tick that asks it)
+// each name every assignment bearing on the job as skipped for it.
+it("rule 2: every ledger site that records an explicit choice names each assignment skipped for it", async () => {
+  type Ev = { kind: string; data: Record<string, any> };
+  const name = "roles-explicit";
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
+  await L.assignmentsChanged({ version: 960, assignments: [assignment("a960", "plan", "codex/gpt-6-astra"), assignment("a961", "build", "codex/gpt-6-astra"), assignment("a962", "review", "codex/gpt-6-astra")] });
+  const skipped = (text: unknown, id: string, ahead: string) => expect(String(text)).toMatch(new RegExp(`Role assignment ${id} skipped: the developer's named ${ahead} comes before role assignments`));
+  const runner = { runner: "home:studio", kind: "home" } as const;
+  // newPlan with a named planner.
+  const made = await L.newPlan("Ship the feature", ["src/**"], "owner", "claude-code/opus-5.5", []);
+  skipped(made.reasons.join(" "), "a960", "planner");
+  // reroutePlan of the planner.
+  await L.reroutePlan(made.item.id, "owner", "antigravity/gemini-4-argon");
+  skipped((await L.events(made.item.id) as unknown as Ev[]).find((e) => e.kind === "plan.rerouted")?.data.reason, "a960", "planner");
+  await L.claim(made.item.id, "antigravity/gemini-4-argon", runner);
+  const part = { key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" };
+  const post = await L.postPlan(made.item.id, "antigravity/gemini-4-argon", { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
+  await L.release(made.item.id, "antigravity/gemini-4-argon", "proposed");
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  const { parts } = await L.approvePlan(made.item.id, "owner", post.hash, false, POOL);
+  const partId = parts[0].id;
+  // reroutePlan of the builder.
+  await L.reroutePlan(partId, "owner", "claude-code/opus-5.5");
+  skipped((await L.events(partId) as unknown as Ev[]).find((e) => e.kind === "plan.rerouted")?.data.reason, "a961", "builder");
+  await submitted(L, partId, "claude-code/opus-5.5", runner);
+  // rerouteReviewer, and the tick's request of the named reviewer: one the
+  // routing did not choose, so the tick asks anew.
+  const routedReviewer = (await L.planView(made.item.id)).parts[0].route!.reviewer!.actor;
+  const named = ["zcode/glm-5.3", "antigravity/gemini-4-argon"].find((a) => a !== routedReviewer)!;
+  await L.reroutePlan(partId, "owner", named);
+  const events = await L.events(partId) as unknown as Ev[];
+  expect(events.find((e) => e.kind === "plan.reviewer_changed")?.data.assignment).toMatchObject({ applied: null, skipped: [{ id: "a962" }] });
+  const asked = events.find((e) => e.kind === "review.requested" && e.data.reviewer === named);
+  skipped(asked?.data.reason, "a962", "reviewer");
+  // requestReview with a named reviewer, outside a plan.
+  const H = "b".repeat(40);
+  const task = await L.newItem("Tidy a helper", ["src/b.ts"], "owner", { accept: ["Works"] });
+  await L.claim(task.id, "claude-code/opus-5.5");
+  await L.setFork(task.id, `${name}--${task.id}`, "0".repeat(40), "claude-code/opus-5.5");
+  await L.recordPush(task.id, "claude-code/opus-5.5", H, H);
+  await L.addEvidence({ itemId: task.id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/b.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(task.id, "claude-code/opus-5.5");
+  expect((await L.requestReview(task.id, "owner", "antigravity/gemini-4-argon", POOL, true)).requested).toBe(true);
+  skipped((await L.events(task.id) as unknown as Ev[]).find((e) => e.kind === "review.requested")?.data.reason, "a962", "reviewer");
+});
+
+// The dispatch route, the one site above that reads the index's
+// assignments, with a builder the developer names.
+it("rule 2: a dispatch to a builder the developer names records each build assignment skipped for it", async () => {
+  const L = await project("roles-explicit-dispatch");
+  const a = await (await call("POST", "/model-roles", body({ role: "build", choices: ["claude-code/opus-5.5"], evidence: ["roles-explicit-dispatch/t1"], scope: "roles-explicit-dispatch" }))).json() as Assignment;
+  const task = await L.newItem("Another task", ["src/c.ts"], "owner", { accept: ["Works"] });
+  const sent = await call("POST", `/projects/roles-explicit-dispatch/items/${task.id}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" });
+  expect(sent.status, await sent.clone().text()).toBe(200);
+  const dispatched = (await L.events(task.id) as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "item.dispatched");
+  expect(String(dispatched?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id} skipped: the developer's named builder comes before role assignments`));
+});
+
+// The eighth review of t622's rule: a name a person types under an alias is
+// converted where it enters, so what is stored is the exact pool id. Here at
+// the dispatch route's --agent/--model and the init's review tier.
+// Since the thirteenth review, an explicit dispatch's builder stays as
+// declared, as on main (a runner's offer must name it); the review tier is
+// stored as the exact id.
+it("a builder typed under an alias is dispatched as declared; a review tier typed under an alias is stored as the entry's exact id", async () => {
+  const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
+  await index().putModel(qwen);
+  try {
+    const L = await project("roles-typed");
+    const task = await L.newItem("A typed task", ["src/d.ts"], "owner", { accept: ["Works"] });
+    const sent = await call("POST", `/projects/roles-typed/items/${task.id}/dispatch`, { to: "home", agent: "opencode", model: "qwen-alias" });
+    expect(sent.status, await sent.clone().text()).toBe(200);
+    expect((await L.item(task.id)).dispatch).toMatchObject({ agent: "opencode", model: "qwen-alias" });
+    const name = "roles-typed-tier";
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/qwen-alias", "codex/gpt-6-astra"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    expect((await ledger(name).project()).policy.reviewTier).toEqual(["opencode/qwen-3", "codex/gpt-6-astra"]);
+  } finally {
+    await index().removeModel("qwen-3");
+  }
+});
+
+// The ninth review of t622: names arriving at entry points that did not
+// convert them passed the exact-only standing check under an alias. Every
+// API entry point that takes a harness/model now converts it at one
+// boundary (canonicalNames in src/index.ts), and the standing check holds
+// an alias as its entry is held. Each entry point is driven here with an
+// alias of a paused model, and is refused or stores the exact id.
+it("every entry point that takes a model name refuses, or stores as its exact id, an alias of a paused model", async () => {
+  const held = { ...entry("opencode", "glm-9"), aliases: ["glm-alias"], state: "paused" as const, stateAt: AT, note: "spent" };
+  const ALIAS = "opencode/glm-alias", EXACT = "opencode/glm-9";
+  await index().putModel(held);
+  try {
+    const name = "roles-boundary", P = `/projects/${name}`;
+    const L = await project(name);
+    await L.poolChanged(await index().models());
+    const refused = async (what: string, r: Response) => {
+      const text = await r.text();
+      expect(r.status, `${what}: ${text}`).toBeGreaterThanOrEqual(400);
+      expect(text, what).toMatch(/opencode\/glm-(9|alias) is paused since/);
+    };
+    const open = async (title: string) => (await L.newItem(title, [`src/${title}.ts`], "owner", { accept: ["Works"] })).id;
+    // dispatch --agent --model, a bare --model, and --overlap-ok's retain.
+    await refused("dispatch", await call("POST", `${P}/items/${await open("d1")}/dispatch`, { to: "home", agent: "opencode", model: "glm-alias" }));
+    // A bare --model is kept as declared, and standing-checked as the bare
+    // model: refused while any entry running it is held (t649; main stored it).
+    const d2 = await open("d2");
+    const bare = await call("POST", `${P}/items/${d2}/dispatch`, { to: "home", model: "glm-alias" });
+    expect(bare.status).toBe(409);
+    expect(await bare.text()).toMatch(/glm-alias is paused since/);
+    expect((await L.item(d2)).dispatch).toBeNull();
+    const d3 = await open("d3");
+    expect((await call("POST", `${P}/items/${d3}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
+    await refused("dispatch --overlap-ok", await call("POST", `${P}/items/${d3}/dispatch`, { retain: true, overlapOk: true, agent: "opencode", model: "glm-alias" }));
+    // claim, as the actor an owner token declares.
+    await refused("claim", await call("POST", `${P}/items/${await open("c1")}/claim`, {}, ALIAS));
+    // handoff --to.
+    await refused("handoff", await call("POST", `${P}/items/t1/handoff`, { to: ALIAS, note: "over to you" }, "claude-code/opus-5.5"));
+    // land --reviewer and review-claim, on a submitted task.
+    const H = "c".repeat(40);
+    await L.setFork("t1", `${name}--t1`, "0".repeat(40), "claude-code/opus-5.5");
+    await L.recordPush("t1", "claude-code/opus-5.5", H, H);
+    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/lease.ts"], by: "owner", at: new Date().toISOString() });
+    await L.submit("t1", "claude-code/opus-5.5");
+    await refused("review-request --reviewer", await call("POST", `${P}/items/t1/review-request`, { reviewer: ALIAS, wanted: true }));
+    // review-claim: a request asked of glm-9 while it was available names
+    // its exact id, so the alias, reaching the ledger unconverted, cannot
+    // claim it; the route converts an owner or runner token's declared actor
+    // (as for claim, above). Once glm-9 is paused the request is withdrawn.
+    await index().putModel({ ...held, state: undefined, stateAt: undefined });
+    await L.poolChanged(await index().models());
+    const asked = await call("POST", `${P}/items/t1/review-request`, { reviewer: EXACT, wanted: true });
+    expect(asked.status, await asked.clone().text()).toBe(200);
+    expect(String(await (L.claimReview("t1", ALIAS, { runner: "home:studio", kind: "home" }) as unknown as Promise<unknown>).then(() => null, (e: unknown) => e))).toMatch(/asks for glm-9|wrong_model/);
+    await index().putModel(held);
+    await L.poolChanged(await index().models());
+    expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("withdrawn");
+    // criteria-review --reviewer.
+    await refused("criteria-review-request --reviewer", await call("POST", `${P}/items/${await open("k1")}/criteria-review-request`, { reviewer: ALIAS }));
+    // plan --planner.
+    await refused("plan --planner", await call("POST", `${P}/items`, { kind: "plan", goal: "Ship it", scope: ["src/**"], planner: ALIAS }));
+    // plan reroute --to, on a plan named to another planner.
+    const plan = await (await call("POST", `${P}/items`, { kind: "plan", goal: "Ship it", scope: ["src/**"], planner: "codex/gpt-6-astra" })).json() as { item: { id: string } };
+    await refused("plan reroute --to", await call("POST", `${P}/items/${plan.item.id}/plan/reroute`, { to: ALIAS }));
+    // A plan document's prefer: stored as the exact id.
+    await L.claim(plan.item.id, "codex/gpt-6-astra", { runner: "home:studio", kind: "home" });
+    const doc = { schema: "atelier.plan.v1", goal: "Ship it", parts: [{ key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S", prefer: { actor: ALIAS, reason: "knows it" } }] };
+    const posted = await call("POST", `${P}/items/${plan.item.id}/plan`, doc, "codex/gpt-6-astra");
+    expect(posted.status, await posted.clone().text()).toBe(200);
+    expect(JSON.stringify(await L.planView(plan.item.id))).toContain(`"actor":"${EXACT}"`);
+    // plan refresh --resolve --to, at the ledger, which a missed boundary reaches unconverted.
+    // On an approved plan, so the refusal is the standing's (gpt-6-astra's
+    // tenth review of t622, follow-up 3).
+    const resolving = await planned("roles-boundary-resolve");
+    await resolving.L.poolChanged(await index().models());
+    expect(String(await (resolving.L.planResolve(resolving.id, "owner", "1".repeat(40), false, ALIAS)).then(() => null, (e: unknown) => e))).toMatch(/model_held\|opencode\/glm-alias is paused since/);
+    // init --review-tier: stored as the exact id, marked so.
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/roles-boundary-init`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: [ALIAS], triage: ALIAS }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    // The tier is converted and marked; the triage model stays as declared,
+    // run by the CLI under that name (the thirteenth review).
+    expect((await ledger("roles-boundary-init").project()).policy).toMatchObject({ reviewTier: [EXACT], triage: ALIAS, exactNames: ["reviewTier"] });
+    // --as: recorded as the exact id, with the declaration kept.
+    await index().putModel({ ...held, state: undefined, stateAt: undefined });
+    const as = await call("POST", `${P}/decisions`, { text: "Ship small", quote: "small" }, "owner", ALIAS);
+    expect(as.status, await as.clone().text()).toBe(201);
+    const recorded = (await L.events() as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "decision.recorded");
+    expect(recorded?.data).toMatchObject({ acting: EXACT, actingExact: true });
+    await index().putModel(held);
+    // The page's dispatch form.
+    const cookie = await signIn(TOKEN, testEnv);
+    const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/${await open("u1")}/dispatch`, {
+      method: "POST", headers: { cookie, origin: "https://atelier.test" }, body: new URLSearchParams({ to: "home", agent: "opencode", model: "glm-alias", note: "" }), redirect: "manual",
+    }), testEnv);
+    await refused("the page's dispatch form", form);
+  } finally {
+    await index().removeModel("glm-9");
+  }
+});
+
+// gpt-6-astra's ninth review of t622, finding 2: the retry compared the --as
+// it was sent with the exact id the first request recorded, so a request
+// whose --as was an alias failed its own retry, and a withdrawal's retry fell
+// through to the pool as it is now.
+it("an assignment and a withdrawal sent with --as under an alias are retried by the declaration they sent", async () => {
+  const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
+  await index().putModel(qwen);
+  await project("roles-as-alias");
+  const first = body({ evidence: ["roles-as-alias/t1"], scope: "roles-as-alias", request: "roles-as-alias-request" });
+  const made = await call("POST", "/model-roles", first, "owner", "opencode/qwen-alias");
+  expect(made.status, await made.clone().text()).toBe(201);
+  const a = await made.json() as Assignment;
+  expect(a).toMatchObject({ acting: "opencode/qwen-3", actingDeclared: "opencode/qwen-alias" });
+  const again = await call("POST", "/model-roles", first, "owner", "opencode/qwen-alias");
+  expect(again.status, await again.clone().text()).toBe(200);
+  expect(await again.json()).toMatchObject({ id: a.id, retried: true });
+  // The exact id is another declaration, so another request.
+  expect((await call("POST", "/model-roles", first, "owner", "opencode/qwen-3")).status).toBe(409);
+  const note = { note: "Qwen stood in." };
+  expect((await call("POST", `/model-roles/${a.id}/withdraw`, note, "owner", "opencode/qwen-alias")).status).toBe(200);
+  await index().removeModel("qwen-3");
+  const retried = await call("POST", `/model-roles/${a.id}/withdraw`, note, "owner", "opencode/qwen-alias");
+  expect(retried.status, await retried.clone().text()).toBe(200);
+  expect(await retried.json()).toMatchObject({ withdraws: a.id, retried: true, actingDeclared: "opencode/qwen-alias" });
+});
+
+// gpt-6-astra's eleventh review of t622: the boundary converted the actor a
+// request declares, so a runner offering a model under its alias claimed as
+// the entry's id, which its offer and the dispatch did not name, and a task
+// held under an alias was no longer its holder's. Identities are kept as
+// declared now; only fields that choose a model are converted. This is
+// main's behaviour, which this test characterizes: it fails only against the
+// round of t622 that converted identities (268d00cb's parent, 06171004).
+it("a runner working under an alias claims, submits and releases as the alias it declares", async () => {
+  const qwen = { ...entry("opencode", "qwen-3"), aliases: ["qwen-alias"] };
+  await index().putModel(qwen);
+  try {
+    const name = "roles-alias-runner", ALIAS = "opencode/qwen-alias", H = "d".repeat(40);
+    const L = await project(name);
+    await L.poolChanged(await index().models());
+    const forkable = {
+      create: async () => ({}),
+      get: async () => ({
+        info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+        createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+        fork: async () => ({}), log: async () => [{ hash: H }],
+        [Symbol.dispose]() {},
+      }),
+    } as unknown as typeof env.ARTIFACTS;
+    const as = (method: string, path: string, body: unknown, actor: string, runner?: string) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
+      method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" }, body: JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS: forkable } as typeof env);
+    // A dispatch recorded under the alias, as main records one, and a runner offering the alias.
+    const task = await L.newItem("Alias task", ["src/e.ts"], "owner", { accept: ["Works"] });
+    await L.dispatch(task.id, "owner", { to: "home", agent: "opencode", model: "qwen-alias" });
+    const claimed = await as("POST", `/projects/${name}/items/${task.id}/claim`, {}, ALIAS, "home:studio");
+    expect(claimed.status, await claimed.clone().text()).toBe(200);
+    expect((await L.item(task.id)).owner).toBe(ALIAS);
+    const pushed = "e".repeat(40);
+    await L.recordPush(task.id, ALIAS, pushed, pushed);
+    await L.addEvidence({ itemId: task.id, claim: "npm test", grade: "observed", passed: true, head: pushed, changedPaths: ["src/e.ts"], by: "owner", at: new Date().toISOString() });
+    const submitted = await as("POST", `/projects/${name}/items/${task.id}/submit`, {}, ALIAS);
+    expect(submitted.status, await submitted.clone().text()).toBe(200);
+    // A task held under the alias before this change is released by its holder.
+    const held = await L.newItem("Held task", ["src/f.ts"], "owner", { accept: ["Works"] });
+    await L.claim(held.id, ALIAS);
+    const released = await as("POST", `/projects/${name}/items/${held.id}/release`, { note: "done for now" }, ALIAS);
+    expect(released.status, await released.clone().text()).toBe(200);
+    expect((await L.item(held.id)).owner).toBeNull();
+  } finally {
+    await index().removeModel("qwen-3");
+  }
+});
+
+// gpt-6-astra's twelfth review of t622, finding 3: a bare --model dispatch,
+// the page's dispatch form and a held dispatch's --overlap-ok recorded no
+// skipped assignment. Every dispatch path asks one call for it now.
+it("every dispatch path that names a builder records each build assignment skipped for it", async () => {
+  const name = "roles-explicit-paths", P = `/projects/${name}`;
+  const L = await project(name);
+  const a = await (await call("POST", "/model-roles", body({ role: "build", choices: ["claude-code/opus-5.5"], evidence: [`${name}/t1`], scope: name }))).json() as Assignment;
+  const reasonOf = async (id: string) => String((await L.events(id) as unknown as { kind: string; data: Record<string, unknown> }[]).filter((e) => e.kind === "item.dispatched").at(-1)?.data.reason);
+  const skipped = (ahead: string) => new RegExp(`Role assignment ${a.id} skipped: the developer's ${ahead} comes before role assignments`);
+  const open = async (title: string) => (await L.newItem(title, [`src/${title}.ts`], "owner", { accept: ["Works"] })).id;
+  // A bare --model.
+  const bare = await open("bare");
+  expect((await call("POST", `${P}/items/${bare}/dispatch`, { to: "home", model: "gpt-6-astra" })).status).toBe(200);
+  expect(await reasonOf(bare)).toMatch(skipped("--model"));
+  // --overlap-ok on a waiting dispatch, naming another builder.
+  const held = await open("held");
+  expect((await call("POST", `${P}/items/${held}/dispatch`, { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
+  const retained = await call("POST", `${P}/items/${held}/dispatch`, { retain: true, overlapOk: true, agent: "antigravity", model: "gemini-4-argon" });
+  expect(retained.status, await retained.clone().text()).toBe(200);
+  expect(await reasonOf(held)).toMatch(skipped("named builder"));
+  // The page's dispatch form.
+  const page = await open("page");
+  const cookie = await signIn(TOKEN, testEnv);
+  const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/${page}/dispatch`, {
+    method: "POST", headers: { cookie, origin: "https://atelier.test" }, body: new URLSearchParams({ to: "home", agent: "codex", model: "gpt-6-astra", note: "" }), redirect: "manual",
+  }), testEnv);
+  expect(form.status, await form.clone().text()).toBeLessThan(400);
+  expect(await reasonOf(page)).toMatch(skipped("named builder"));
+});
+
+// gpt-6-astra's fifteenth review of t622, finding 2: name conversion ran
+// before the token's route and scope checks, so a request an agent or runner
+// token may not make, naming an ambiguous tier, was answered with the pool's
+// entries. Conversion runs only for a request that would otherwise be
+// allowed, and an ambiguity names no entry.
+it("an agent or runner token's init with an ambiguous tier is refused without naming any pool entry", async () => {
+  const one = { ...entry("opencode", "qwen-3:32b"), aliases: ["shared"] }, two = { ...entry("opencode", "qwen-3:72b"), aliases: ["shared"] };
+  await index().putModel(one);
+  await index().putModel(two);
+  try {
+    const name = "roles-scope";
+    await project(name);
+    const issue = async (body: unknown) => (await (await call("POST", "/tokens", body)).json() as { token: string }).token;
+    const agent = await issue({ actor: "codex/gpt-6-astra", projects: [name], label: "agent" });
+    const runner = await issue({ runner: "home:scope", projects: [name] });
+    for (const [who, token, actor] of [["agent", agent, "codex/gpt-6-astra"], ["runner", runner, "codex/gpt-6-astra"]] as const) {
+      const r = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+        method: "PUT", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/shared"] }),
+      }), testEnv);
+      const text = await r.text();
+      expect(r.status, `${who}: ${text}`).toBeGreaterThanOrEqual(400);
+      expect(text, who).not.toMatch(/qwen-3:32b|qwen-3:72b/);
+    }
+    // The owner is told it is ambiguous, still without the entries.
+    const owner = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["opencode/shared"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    const said = await owner.text();
+    expect(owner.status).toBe(400);
+    expect(said).toMatch(/opencode\/shared names more than one model in the pool/);
+    expect(said).not.toMatch(/qwen-3:32b|qwen-3:72b/);
+  } finally {
+    await index().removeModel("qwen-3:32b");
+    await index().removeModel("qwen-3:72b");
+  }
+});
+
+// gpt-6-astra's seventeenth review of t622, finding 2: the tier requests a
+// head move or a criteria change asks again were judged with no offers, so
+// an assignment promoted a tier model no runner offers. Both transitions use
+// the live offers the ledger holds.
+it("a tier review asked again after the head moves or the criteria change is offered, whatever an assignment prefers", async () => {
+  const name = "roles-tier-reask";
+  const sonnet = entry("claude-code", "sonnet-5.5"), fable = entry("claude-code", "fable-5.1");
+  const pool = [...POOL, sonnet, fable];
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/sonnet-5.5", "claude-code/fable-5.1"], exactNames: ["reviewTier"] }, createdAt: AT }, "owner");
+  await L.poolChanged(pool);
+  await L.assignmentsChanged({ version: 970, assignments: [assignment("a970", "review", "claude-code/fable-5.1")] });
+  const offers = [{ runner: "home:tier", kind: "home" as const, jobs: ["review"], agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }, { agent: "antigravity", models: ["gemini-4-argon"] }], at: new Date().toISOString() }];
+  const A = "a".repeat(40), B = "b".repeat(40);
+  const id = (await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] })).id;
+  await L.claim(id, "codex/gpt-6-astra");
+  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
+  const pushed = async (head: string) => {
+    await L.recordPush(id, "codex/gpt-6-astra", head, head);
+    await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+    await L.submit(id, "codex/gpt-6-astra");
+  };
+  await pushed(A);
+  expect((await L.requestReview(id, "owner", "antigravity/gemini-4-argon", pool, true, false, undefined, offers)).requested).toBe(true);
+  // Newest first, as events lists them.
+  const tierAsks = async () => (await L.events(id) as unknown as { kind: string; data: Record<string, any> }[]).filter((e) => e.kind === "review.requested" && e.data.tier === true);
+  expect((await tierAsks()).map((e) => e.data.reviewer)).toEqual(["claude-code/sonnet-5.5"]);
+  // The head moves: the tier is asked again at B, of the offered model.
+  await pushed(B);
+  const afterMove = await tierAsks();
+  expect(afterMove[0]?.data).toMatchObject({ head: B, reviewer: "claude-code/sonnet-5.5" });
+  expect(String(afterMove[0]?.data.reason)).toMatch(/Role assignment a970 skipped: no choice is eligible here \(claude-code\/fable-5.1: no live runner offers/);
+  // The criteria change: asked again at B, of the offered model.
+  const before = (await tierAsks()).length;
+  await L.editItem(id, "owner", { accept: ["Works", "And says so"] });
+  const afterCriteria = await tierAsks();
+  expect(afterCriteria.length).toBeGreaterThan(before);
+  expect(afterCriteria[0]?.data).toMatchObject({ head: B, reviewer: "claude-code/sonnet-5.5" });
+});
+
+// gemini-4-argon's and gpt-6-astra's eighteenth reviews of t622, finding 1:
+// requestReview found the chosen reviewer's destination by sameActor, which
+// strips the profile, so an assignment choosing codex/gpt-6-astra:b (in the
+// cloud) was dispatched home, where :a runs. A reviewer a selector chose is
+// its exact entry; a named one is its exact entry before main's sameActor.
+it("a review asked of the reviewer a selector chose goes where that exact entry runs, profile included", async () => {
+  const name = "roles-review-where";
+  const a = { ...entry("codex", "gpt-6-astra:a"), where: "home" as const }, b = { ...entry("codex", "gpt-6-astra:b"), where: "cloud" as const };
+  const pool = [{ ...entry("claude-code", "opus-5.5") }, a, b];
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT }, "owner");
+  await L.assignmentsChanged({ version: 980, assignments: [assignment("a980", "review", "codex/gpt-6-astra:b")] });
+  const H = "f".repeat(40);
+  const id = (await L.newItem("Tidy a helper", ["src/g.ts"], "owner", { accept: ["Works"] })).id;
+  await L.claim(id, "claude-code/opus-5.5");
+  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "claude-code/opus-5.5");
+  await L.recordPush(id, "claude-code/opus-5.5", H, H);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/g.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(id, "claude-code/opus-5.5");
+  const asked = await L.requestReview(id, "owner", null, pool, false, false, { sources: [], runs: [], project: name });
+  expect(asked).toMatchObject({ requested: true, reviewer: "codex/gpt-6-astra:b" });
+  const waiting = (await L.reviewWaiting()).find((i) => i.id === id);
+  expect(waiting?.dispatch).toMatchObject({ to: "cloud", agent: "codex", model: "gpt-6-astra:b" });
+});
+
+// gpt-6-astra's nineteenth review of t622, findings 1 and 2: the init's tier
+// was deduplicated by sameActor after conversion, so two profiles of one
+// model collapsed into one; and a retry's --as was compared in any letter
+// case, so a retry under one of two case-variant entries was accepted as the
+// other's.
+it("two profiles named in a tier stay two; a retry under another letter case of --as is another request", async () => {
+  const a = { ...entry("codex", "gpt-6-nova:a"), aliases: ["primary"] }, b = { ...entry("codex", "gpt-6-nova:b"), aliases: ["backup"] };
+  const lower = entry("codex", "gpt-6-vega"), upper = entry("codex", "GPT-6-VEGA");
+  for (const m of [a, b, lower, upper]) await index().putModel(m);
+  try {
+    const name = "roles-profiles";
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"], reviewTier: ["codex/primary", "codex/backup"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    expect((await ledger(name).project()).policy.reviewTier).toEqual(["codex/gpt-6-nova:a", "codex/gpt-6-nova:b"]);
+    await project("roles-acting-case");
+    const first = body({ evidence: ["roles-acting-case/t1"], scope: "roles-acting-case", request: "roles-acting-case-request" });
+    const recorded = await call("POST", "/model-roles", first, "owner", "codex/GPT-6-VEGA");
+    expect(recorded.status, await recorded.clone().text()).toBe(201);
+    expect(await recorded.json()).toMatchObject({ acting: "codex/GPT-6-VEGA" });
+    const other = await call("POST", "/model-roles", first, "owner", "codex/gpt-6-vega");
+    expect(other.status).toBe(409);
+    expect(JSON.stringify(await other.json())).toMatch(/request_reused/);
+  } finally {
+    for (const m of [a, b, lower, upper]) await index().removeModel(m.id);
+  }
+});
+
+// The audit of t622's nineteenth review: a separate tier review that finds no
+// tier model asked nothing and recorded nothing, so the assignments it read
+// went unexplained. It records what became of them now.
+it("a tier review that finds no tier model records the assignment it skipped", async () => {
+  const name = "roles-tier-unasked";
+  const fable = { ...entry("claude-code", "fable-5.1"), state: "paused" as const, stateAt: AT, note: "spent" };
+  const pool = [...POOL, fable];
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/fable-5.1"], exactNames: ["reviewTier"] }, createdAt: AT }, "owner");
+  await L.poolChanged(pool);
+  await L.assignmentsChanged({ version: 991, assignments: [assignment("a991", "review", "claude-code/fable-5.1")] });
+  const H = "9".repeat(40);
+  const id = (await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] })).id;
+  await L.claim(id, "codex/gpt-6-astra");
+  await L.setFork(id, `${name}--${id}`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush(id, "codex/gpt-6-astra", H, H);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(id, "codex/gpt-6-astra");
+  expect((await L.requestReview(id, "owner", "antigravity/gemini-4-argon", pool)).requested).toBe(true);
+  const unasked = (await L.events(id) as unknown as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "review.tier_unasked");
+  expect(String(unasked?.data.reason)).toMatch(/Role assignment a991 skipped: no choice is eligible here \(claude-code\/fable-5.1: paused since/);
+});
+
+// gpt-6-astra's twenty-second review of t622, finding 1: the reviewer
+// suggestion decided the review roles from paths alone, so a docs part over
+// src/** read the general review assignment where plan routing read
+// claims-review. The ledger's reviewAssigned decides the roles once, from the
+// part's kind, and the suggestion takes its result.
+it("a docs part's suggested reviewer reads its claims-review assignment, as plan routing does", async () => {
+  const name = "roles-docs-part";
+  const sonnet = entry("claude-code", "sonnet-5.5");
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
+  await L.assignmentsChanged({ version: 1001, assignments: [assignment("a2", "claims-review", "antigravity/gemini-4-argon"), assignment("a3", "review", "codex/gpt-6-astra")] });
+  const runner = { runner: "home:studio", kind: "home" } as const;
+  const { item } = await L.newPlan("Write the docs", ["src/**"], "owner", "claude-code/opus-5.5", []);
+  await L.claim(item.id, "claude-code/opus-5.5", runner);
+  const part = { key: "d", title: "Document the module", kind: "docs", taskKind: "docs", scope: ["src/**"], dependsOn: [], provides: [], uses: [], brief: "Write it up", acceptance: ["It reads"], tests: [], size: "S" };
+  const post = await L.postPlan(item.id, "claude-code/opus-5.5", { schema: "atelier.plan.v1", goal: "Write the docs", parts: [part] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, "claude-code/opus-5.5", "proposed");
+  const pool = [...POOL, sonnet];
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
+  const partId = parts[0].id;
+  // Every model of another family is paused when the part is submitted, so
+  // the plan's tick finds no reviewer and blocks the part; the review is then
+  // asked through the suggestion, with the pool as it is again.
+  const paused = pool.map((m) => (familyOf(m.id) === "anthropic" ? m : { ...m, state: "paused" as const, stateAt: AT }));
+  await L.poolChanged(paused);
+  const d = (await L.item(partId)).dispatch!;
+  await submitted(L, partId, `${d.agent}/${d.model}`, runner);
+  await L.poolChanged(pool);
+  if ((await L.item(partId)).state === "blocked") await L.unblock(partId, "owner");
+  const asked = await L.requestReview(partId, "owner", null, POOL, false, false, { sources: [], runs: [], project: name });
+  expect(asked).toMatchObject({ reviewer: "antigravity/gemini-4-argon" });
+  expect(String(asked.reason)).toMatch(/Role assignment a2 \(claims-review/);
+});

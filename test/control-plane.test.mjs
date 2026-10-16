@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { controlPlaneChanges, mergePolicyDecision, readControlPlane, refreshControlPlane } from "../cli/atelier.mjs";
 import { acceptancePolicy, mergeContext } from "../src/control-plane.ts";
@@ -11,8 +12,7 @@ const agents = { codex: { available: true, eligible_roles: ["executor"], preferr
 const execution = { allowed_classes: ["direct", "protected"], direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: ["src/security/**"] };
 
 test("CLI reads roles, preferences and classes without losing protected surfaces", () => {
-  mkdirSync(".cache", { recursive: true });
-  const top = mkdtempSync(resolve(".cache/control-plane-"));
+  const top = mkdtempSync(join(tmpdir(), "atelier-control-plane-"));
   const dir = join(top, "docs/control-plane");
   try {
     assert.equal(readControlPlane(top), null);
@@ -35,8 +35,7 @@ test("CLI reads roles, preferences and classes without losing protected surfaces
 
 
 function fixture(run) {
-  mkdirSync(".cache", { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/control-plane-"));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-control-plane-"));
   const cp = join(dir, "docs/control-plane");
   mkdirSync(cp, { recursive: true });
   const write = (name, data) => writeFileSync(join(cp, `${name}.v1.json`), JSON.stringify(data));
@@ -215,10 +214,17 @@ function commandFixture(run) {
     writeFileSync(gitLog, "");
     writeFileSync(join(dir, "config.json"), JSON.stringify({ projects: { example: { path: dir, branch: "main" } } }));
     writeFileSync(join(dir, "git"), `#!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(gitLog)}, JSON.stringify(args) + '\\n');
-if (args.includes('--show-toplevel')) console.log(${JSON.stringify(dir)});
+// Settings are kept in a file of their own, so the merge configuration the
+// merge installs (cli/merge-pipeline.mjs) reads back as written.
+const settings = ${JSON.stringify(join(gitDir, "settings.json"))};
+const held = existsSync(settings) ? JSON.parse(readFileSync(settings, 'utf8')) : {};
+if (args[0] === 'config' && args.includes('--get')) { if (args.at(-1) in held) console.log(held[args.at(-1)]); else process.exit(1); }
+else if (args[0] === 'config' && args[1] === '--local') writeFileSync(settings, JSON.stringify({ ...held, [args.at(-2)]: args.at(-1) }));
+else if (args.includes('--git-common-dir')) console.log(${JSON.stringify(gitDir)});
+else if (args.includes('--show-toplevel')) console.log(${JSON.stringify(dir)});
 else if (args.includes('status') && process.env.TEST_DIRTY) console.log(' M file');
 else if (args.includes('--absolute-git-dir')) console.log(${JSON.stringify(gitDir)});
 else if (args.includes('--abbrev-ref')) console.log('main');
@@ -279,11 +285,15 @@ globalThis.fetch = async (url, options) => {
   });
 }
 
-test("sync refreshes a full-history project without Git work", () => commandFixture(({ command, calls, gitCalls }) => {
+// A full-history project's sync checks first that main holds the baseline's
+// main (t644), with a read token and Git commands that only read, then
+// refreshes the policy; it changes nothing in the checkout.
+test("sync checks the baseline, then refreshes a full-history project without changing the checkout", () => commandFixture(({ command, calls, gitCalls }) => {
   const result = command(["sync"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(calls().map((c) => c.method), ["GET", "PUT"]);
-  assert.deepEqual(gitCalls(), []);
+  assert.deepEqual(calls().map((c) => [c.method, new URL(c.url).pathname]), [["POST", "/api/projects/example/baseline-token"], ["GET", "/api/projects/example"], ["PUT", "/api/projects/example"]]);
+  assert.deepEqual(JSON.parse(calls()[0].body), { scope: "read" });
+  assert.deepEqual([...new Set(gitCalls().map((args) => args.find((a) => !a.startsWith("-"))))].sort(), ["config", "fetch", "rev-parse"]);
 }));
 
 test("merge refreshes first and refuses before Git merge", () => commandFixture(({ command, calls, gitCalls }) => {
@@ -316,7 +326,7 @@ test("merge in a project with no commit identity refuses before Git merge, namin
   rmSync(join(dir, "docs/control-plane"), { recursive: true });
   const result = command(["merge", "t1"], { TEST_NO_IDENTITY: "1" });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /example has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL .*\. Nothing was merged\./);
+  assert.match(result.stderr, /example has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL .*\. Nothing was merged\./);
   assert.ok(!gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
 }));
 

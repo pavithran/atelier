@@ -229,13 +229,27 @@ function helperCalls(name, body) {
   const found = bypasses(body);
   if (name === "serverVersion") {
     preflightFetches(body);
-    const others = found.filter((b) => b !== "fetch(");
+    const others = found.filter((b) => b !== "fetch(" && b !== "serverFetch(");
     assert.deepEqual(others, [], `${where} reaches the server outside the CLI's transport: ${others.join(", ")}`);
   } else {
     assert.deepEqual(found, [], `${where} reaches the server outside the CLI's transport: ${found.join(", ")}`);
   }
   const sites = /(?<![.\w])(call|request|postEvidence)\(/.test(codeOnly(body)) ? callSites(body, where) : [];
   return name === "resolveTokenActor" ? identityRead(sites, where) : sites;
+}
+
+// A command module that holds more than the runner's part: atelier fast also
+// lands and records (the developer's, under the owner's token, on routes no
+// runner token may call), and the runner spawns only fast take and fast
+// ready. The calls judged are those of the named top-level functions; the
+// whole module is still scanned for a bypass of the transport, and
+// helperCommand (cli/runner.mjs) refuses any other form of fast at run time.
+const RUNNER_PART = { fast: ["fastTake", "fastReadyReport"] };
+function functionSource(source, name) {
+  const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));
+  assert.ok(start >= 0, `${name} is gone from the command module; update RUNNER_PART`);
+  const end = source.indexOf("\n}\n", start);
+  return source.slice(start, end < 0 ? undefined : end + 2);
 }
 
 // The calls a command makes: its module's own, and those of every helper of
@@ -246,9 +260,10 @@ function commandCalls(command, decls = DECLS) {
   const source = read(file);
   const own = bypasses(source);
   assert.deepEqual(own, [], `${file} reaches the server outside the CLI's transport: ${own.join(", ")}`);
-  const sites = callSites(source, file);
+  const judged = RUNNER_PART[command] ? RUNNER_PART[command].map((name) => functionSource(source, name)).join("\n") : source;
+  const sites = callSites(judged, file);
   const imports = /import \{([^}]*)\} from "\.\.\/atelier\.mjs"/.exec(source);
-  const names = (imports?.[1] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const names = (imports?.[1] ?? "").split(",").map((s) => s.trim()).filter(Boolean).filter((name) => !RUNNER_PART[command] || new RegExp(`(?<![.\\w$])${name.replace(/\$/g, "\\$")}\\b`).test(codeOnly(judged)));
   for (const name of reachable(names, decls)) sites.push(...helperCalls(name, decls.get(name)));
   return sites;
 }
@@ -260,7 +275,9 @@ test("the commands the runner spawns reach the server through the CLI's transpor
   const made = new Set();
   for (const command of RUNNER_COMMANDS) {
     const mine = CLI_CALLS.filter((c) => c.command === command);
-    const credential = new Set(mine.map((c) => c.credential));
+    // An owner call (atelier push --owner-port) is the developer's own and
+    // is judged by the gateway case that refuses it to every other token.
+    const credential = new Set(mine.filter((c) => c.credential !== "owner").map((c) => c.credential));
     assert.equal(credential.size, 1, `${command} is declared under more than one credential kind`);
     const allowed = [...credential][0] === "agent" ? agentRoute : runnerRoute;
     const sites = commandCalls(command);
@@ -276,6 +293,10 @@ test("the commands the runner spawns reach the server through the CLI's transpor
       // read the item, declared under finish) is judged by this command's
       // credential; base-token asks for a read scope, never a write one.
       const body = site.keys.includes("scope") ? { scope: "read" } : {};
+      if (declared.every((c) => c.credential === "owner")) {
+        assert.deepEqual([runnerRoute(site.method, callParts(declared[0]), body), agentRoute(site.method, callParts(declared[0]), body)], [false, false], `${site.where}: ${site.text} is an owner call a runner or agent token may make`);
+        continue;
+      }
       assert.equal(allowed(site.method, callParts(declared[0]), body), true, `${site.where}: ${site.text} is not allowed for a ${[...credential][0]} token`);
     }
     for (const c of mine) assert.ok(sites.some((s) => s.method === c.method && s.path === c.path), `${c.name} is declared as atelier ${command}'s call, which does not make it`);
@@ -316,7 +337,7 @@ test("the source check reads call sites as the commands write them", () => {
 const PREFLIGHT = RUNNER_CALLS.filter((c) => c.via === "preflight");
 function preflightFetches(source) {
   const names = [];
-  for (const m of source.matchAll(/(?<![.\w])fetch\(/g)) {
+  for (const m of source.matchAll(/(?<![.\w])(?:serverFetch|fetch)\(/g)) {
     const [url] = argumentsOf(source, m.index + m[0].length - 1);
     const named = /^server\(\) \+ "\/api" \+ callPath\(declaredCall\("([a-z-]+)"\)\)$/.exec(url.trim());
     assert.ok(named, `serverVersion fetches ${url.trim()}, not a declared call's path`);
@@ -332,15 +353,15 @@ test("the capability check every spawned command makes reads only a declared pub
   const version = exported("serverVersion"), check = exported("requireCapabilities");
   assert.ok(version && check, "serverVersion or requireCapabilities is gone from cli/atelier.mjs; update this check");
   assert.match(check, /(?<![.\w])serverVersion\(\)/, "requireCapabilities no longer reads the version through serverVersion");
-  for (const bypass of [/(?<![.\w])fetch\(/, /(?<![.\w])(call|request)\(/]) assert.doesNotMatch(check, bypass, "requireCapabilities reaches the server outside serverVersion");
+  for (const bypass of [/(?<![.\w])(?:serverFetch|fetch)\(/, /(?<![.\w])(call|request)\(/]) assert.doesNotMatch(check, bypass, "requireCapabilities reaches the server outside serverVersion");
   assert.doesNotMatch(version, /(?<![.\w])(call|request)\(/, "serverVersion makes a call through the authenticated transport");
   const made = preflightFetches(version);
   assert.ok(made.length, "serverVersion makes no fetch this check can see");
   assert.deepEqual([...new Set(made)].sort(), PREFLIGHT.map((c) => c.name).sort(), "a declared preflight call is made by no capability check");
   // A literal URL, or a name nobody declared, fails the check.
-  assert.throws(() => preflightFetches('await fetch(server() + "/api/version", { signal });'), /not a declared call's path/);
-  assert.throws(() => preflightFetches('await fetch(server() + "/api" + callPath(declaredCall("frobnicate")));'), /frobnicate, which is not a declared preflight call/);
-  assert.deepEqual(preflightFetches('await fetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal });'), ["capabilities"]);
+  assert.throws(() => preflightFetches('await serverFetch(server() + "/api/version", { signal });'), /not a declared call's path/);
+  assert.throws(() => preflightFetches('await serverFetch(server() + "/api" + callPath(declaredCall("frobnicate")));'), /frobnicate, which is not a declared preflight call/);
+  assert.deepEqual(preflightFetches('await serverFetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal });'), ["capabilities"]);
 });
 
 // A helper the runner's commands reach is scanned for a bypass as the
@@ -365,6 +386,7 @@ test("a helper a spawned command reaches fails the check when it bypasses the tr
   }
   assert.throws(() => commandCalls("claim", injected("claimWorkspace", '  const { request: send } = await import("node:https"); send(server());')), /import\("node:https"\)/);
   assert.throws(() => commandCalls("claim", injected("claimWorkspace", "  const get = globalThis.fetch;")), /globalThis\.fetch/);
+  assert.throws(() => commandCalls("claim", injected("claimWorkspace", '  await serverFetch(server() + "/api/runners");')), /claimWorkspace\(\) reaches the server outside the CLI's transport: serverFetch\(/);
   assert.throws(() => commandCalls("claim", injected("claimWorkspace", "  https.request(new URL(server()));")), /https\.request/);
   // A call through the transport from a helper reached only through another
   // is the command's own call, judged against the table like the rest.
@@ -379,6 +401,8 @@ test("the bypass scan reads code, not strings or comments", () => {
   assert.deepEqual(bypasses('console.log(`${await fetch(url)}`);'), ["fetch("]);
   assert.deepEqual(bypasses('import { request } from "node:http";'), ['import from "node:http"']);
   assert.deepEqual(bypasses("const go = fetch;"), ["fetch;"]);
+  assert.deepEqual(bypasses("await serverFetch(url);"), ["serverFetch("]);
+  assert.deepEqual(bypasses("const go = serverFetch;"), ["serverFetch;"]);
   assert.deepEqual(bypasses("new WebSocket(url);"), ["new WebSocket("]);
   // serverVersion keeps its declared preflight read, and nothing else.
   assert.deepEqual(helperCalls("serverVersion", DECLS.get("serverVersion")), []);

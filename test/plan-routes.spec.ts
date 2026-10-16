@@ -92,6 +92,19 @@ it("the owner starts a plan through POST items, and the queue offers its plan jo
   expect(all.some((q) => q.project === name && q.item.id === started.item.id)).toBe(true);
 });
 
+// t675: `atelier show` on a plan item printed the plan's brief with no
+// prose standard, though the handbook says show names it.
+it("a plan item's brief names the project's prose standard, and none when the project has none", async () => {
+  const name = "plan-routes-prose";
+  const id = await started(name);
+  const planner = await agentToken("claude-code/opus-5.5");
+  const brief = async () => (await (await call("GET", `/projects/${name}/items/${id}/brief`, null, undefined, planner)).json()) as { proseStandard?: string | null };
+  expect((await brief()).proseStandard).toBeNull();
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], proseStandard: "../ai-projects-house-style/house-style.md" }, createdAt: new Date().toISOString() };
+  await ledger(name).setProject(record, "owner");
+  expect((await brief()).proseStandard).toBe("../ai-projects-house-style/house-style.md");
+});
+
 it("the holder posts its plan through the route, and an invalid one is a 422 that lists every error", async () => {
   const name = "plan-routes-post";
   const id = await started(name);
@@ -130,16 +143,15 @@ it("the holder posts its plan through the route, and an invalid one is a 422 tha
   expect(brief).toMatchObject({ title: "Ship the feature", decided: `Approve plan ${id}'s split of: Ship the feature`, recommendation: { verdict: "decide" } });
   const inbox = await (await call("GET", "/inbox", "owner")).json() as { project: string; itemId: string; kind: string }[];
   expect(inbox.filter((e) => e.project === name).map((e) => `${e.itemId}:${e.kind}`)).toEqual([`${id}:approve-plan`]);
-  // The Decisions page draws the entry with its label, and its card gives the entry's reason, not a task's brief.
+  // The Decisions page draws the entry with its state, and its detail gives the entry's reason, not a task's brief.
   const cookie = await signIn(TOKEN, testEnv);
   const page = await worker.fetch(new Request(`https://atelier.test/decisions?project=${name}&task=${id}`, { headers: { cookie } }), testEnv);
   expect(page.status).toBe(200);
   const html = await page.text();
-  expect(html).toContain("Approve plan");
+  expect(html).toContain('<p class="dec-word signal">Plan to approve</p>');
   expect(html).toContain("Read the planner&#39;s split, then approve it by its hash or send it back with a note.");
-  const card = /<p class="card-brief">(.*?)<\/p>/s.exec(html)?.[1] ?? "";
-  expect(card).toContain("decide");
-  expect(card).toContain(`atelier plan show ${id} --project ${name}`);
+  const because = /<p class="dec-because">(.*?)<\/p>/s.exec(html)?.[1] ?? "";
+  expect(because).toContain(`atelier plan show ${id} --project ${name}`);
 });
 
 // The reviewer an approval routes counts only when a live runner offers it

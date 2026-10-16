@@ -33,6 +33,11 @@ export interface Item {
   lastPushAt: string | null;
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
+  // How many reviews of the item's acceptance criteria reached a verdict or
+  // failed (t438), set on every build item the queue offers (Ledger.waiting
+  // and Ledger.heldJobs), so the server's brief, which carries their
+  // findings, is known to hold something before the build starts.
+  criteriaReviews?: number;
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
   // The owner's standing permission for an override from the command line
   // (t371): given on the task's page under the owner's own sign-in, for one
@@ -153,11 +158,19 @@ export function samePlan(a: Pick<Item, "id" | "kind" | "plan">, b: Pick<Item, "i
 }
 
 // The project owner's override of the independent review a change needs,
-// for when no reviewer qualifies. It is not a review: it approves nothing,
+// for when no reviewer qualifies or the developer overrules a rejection.
+// It is not a review: it approves nothing,
 // it is recorded as an event of its own (review.overridden) with a required
 // reason, and the gate counts it in place of the missing review only at the
 // head it names. The owner records it while accepting (Ledger.accept).
 export interface ReviewOverride {
+  // Only the rejections present when the developer explicitly overrode them.
+  rejections?: { by: string; at: string }[];
+  // Set when an independent approval stood at the head as this was recorded,
+  // so it waived only the rejections above and never the review. If that
+  // approval is later withdrawn, the review is missing again and this does
+  // not stand in for it (t693).
+  rejectionsOnly?: true;
   head: string;
   by: string;
   reason: string;
@@ -166,7 +179,43 @@ export interface ReviewOverride {
   // time of the page's own override form, or of the standing permission an
   // `atelier accept --override-review` then used.
   confirmedAt?: string;
+  // An override on the developer's direction (t629): the developer's own
+  // words the command carried, and the harness/model that sent them.
+  quote?: string;
+  acting?: string;
 }
+
+// The developer's direction (t629): their own words, quoted by the session
+// acting on them, and the harness/model that session is (X-Atelier-Acting,
+// atelier --as). PAVI decided on 2026-10-13 that it suffices, on every
+// project, for the developer token to switch to fast mode or override a
+// missing independent review: "even touch id is too much. why isn't my
+// direction sufficient?" This reverses t596 and the command-line half of
+// t371, which Astra's audit of 2026-10-13 (finding 3) had led to: an agent
+// session holding the developer token, acting on a mistaken or injected
+// instruction, can now lower a gate. That risk is accepted on one condition,
+// that every such switch says afterwards who asked and why: the words and
+// the acting model are required and recorded on the event, the override or
+// the mode, and shown on the task page, the status and the receipt. A
+// project set up with --no-override still refuses both.
+export interface OwnerDirection { quote: string; acting: string }
+export const DIRECTION_QUOTE_MAX = 2000;
+
+// The direction a request carries, or null when it carries no words (then
+// the page's permission is needed, as before). Words that are blank, not
+// text or too long, or words with no acting model, are refused.
+export function ownerDirection(quote: unknown, acting: string | null | undefined, what: string): OwnerDirection | null {
+  if (quote === undefined) return null;
+  const words = typeof quote === "string" ? quote.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
+  if (!words) throw new RuleError("bad_quote", `${what} on the developer's direction needs the developer's words: --quote "what the developer said"`, 400);
+  if (words.length > DIRECTION_QUOTE_MAX) throw new RuleError("too_long", `the developer's words are at most ${DIRECTION_QUOTE_MAX} characters`, 400);
+  if (!acting) throw new RuleError("no_acting", `${what} on the developer's direction names the model acting on it: --as H/M or ATELIER_ACTOR, such as claude-code/opus-5.5`, 400);
+  return { quote: words, acting };
+}
+
+// What every refusal for want of a confirmation adds: the direction is the
+// other way, from the command line itself.
+const DIRECTION_HINT = `or run it again with --quote "the developer's words" and --as H/M naming the model acting on them`;
 
 // The owner's permission for an override made with the owner token (t371).
 // An agent session acting with that token recorded every override on ourAI,
@@ -208,7 +257,7 @@ export function confirmationAt(item: Pick<Item, "head" | "overrideConfirmation">
 export function ownerFactorText(factor: OwnerFactor | null | undefined): string {
   if (factor === "access") return "under your Cloudflare Access sign-in, which is the confirmation";
   if (factor === "secret") return "giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given)";
-  return "confirming as the owner";
+  return "confirming as the developer";
 }
 
 // What a server with no factor must do before any override can be confirmed.
@@ -219,8 +268,8 @@ export const NO_OWNER_FACTOR = "this server can take no confirmation: put its pa
 // server takes (`factor`: undefined where the caller does not know, as the
 // Ledger does not; null for a server that takes none).
 export function overrideConfirmationHint(project: string, id: string, origin = "", factor?: OwnerFactor | null): string {
-  const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the owner, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
-  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the owner token alone does not confirm it`;
+  const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the developer, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
+  return `${page}; ${DIRECTION_HINT}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
 }
 
 // The merged items that went in on the owner's override: those whose override
@@ -245,6 +294,10 @@ export interface Evidence {
   at: string;
   changedPaths?: string[] | null;  // observed checks record what the item actually changes
   outputTail?: string;
+  // The lines naming the failure, read by `atelier check` from the whole
+  // output of a failed run on a machine whose tail was cut (t569,
+  // collectFailureLines in src/check-failure.ts), kept beside the tail.
+  failureLines?: string;
   // The whole output of an observed check, kept in R2 by reference (src/large.ts)
   // when it is longer than the tail kept inline; `outputTail` is its end. Only
   // Atelier's own runs record one: the sandbox runner stores the log as it
@@ -289,6 +342,21 @@ export interface Finding {
   text: string;
 }
 
+// A criterion the builder cannot verify in its workspace (t457): one that
+// needs a signed-in browser, production data, a deployed service or a human
+// step. A criteria review (src/review/criteria.ts) flags it as a check after
+// deploy, the project owner's (a human step) or the orchestrator's (a check a
+// script runs against the deployed project), rather than rejecting it; the
+// build brief tells the builder not to claim it verified, and the code
+// review marks it deferred rather than unmet. `criterion` numbers it as the
+// briefs do: the task's own criteria first, then the plan's for the part.
+export interface PostDeployCheck {
+  criterion: number;
+  by: "owner" | "orchestrator";
+  text: string;
+}
+export const CHECK_BY: readonly PostDeployCheck["by"][] = ["owner", "orchestrator"];
+
 export interface Review {
   itemId: string;
   by: string;
@@ -321,6 +389,9 @@ export interface Review {
   // the gate as any review does.
   topTier?: boolean;
   postMerge?: boolean; // an audit of the recorded landing, preserving its state
+  // Set on a post-merge review of a task landed in fast mode whose reviewer
+  // shares a contributor's family (t585): "same-family (fast mode)".
+  independence?: string;
   // The binding of the acceptance criteria the reviewer was given
   // (src/criteria.ts): the hash its review claim captured, or that the
   // reviewer read with the task. A review counts only while it is the
@@ -444,6 +515,10 @@ export interface ProjectPolicy {
   // What may block a review, as every review brief states it; absent, the
   // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
   reviewBar?: string;
+  // The path of the document the project's prose follows (`atelier init
+  // --prose-standard`), which every build, plan and review brief names
+  // (src/prose-standard.ts); absent, no brief names one.
+  proseStandard?: string;
   // The model, harness/model, that triages a landing's diff against the
   // task's criteria before its review is asked for (`atelier init
   // --triage`, src/review/triage.ts); `atelier land --triage` names another
@@ -457,6 +532,15 @@ export interface ProjectPolicy {
   // for a tier model that did not build the change, whatever its family.
   // Absent or empty, no tier review is asked for.
   reviewTier?: string[];
+  // The frontier models, as harness/model actors in the owner's order, that
+  // may resolve a refresh's mechanical conflicts (`atelier init --resolver`,
+  // src/refresh/resolver.ts). Absent or empty, such a conflict waits.
+  resolvers?: string[];
+  // The review tier, when written since its names are converted where typed
+  // (t622): it holds exact pool ids, read as they are. Unlisted, it was
+  // written before and may hold an alias, read once through the aliases
+  // (storedActor in src/models/identity.ts).
+  exactNames?: "reviewTier"[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
@@ -464,6 +548,13 @@ export interface ProjectPolicy {
   // --require-criteria`): a review judges a change against them, so a task
   // without them has nothing to bind its review to.
   requireCriteria?: boolean;
+  // Every build is dispatched and claimed only while a criteria review
+  // approves the task's acceptance criteria as they are now (`atelier init
+  // --require-criteria-review`, src/review/criteria.ts): a model of another
+  // family than every model that wrote them judges them before the build.
+  // Planner and review jobs are exempt; merge, integrate and refresh jobs
+  // keep their own gates.
+  requireCriteriaReview?: boolean;
   // Globs of the files only one live item at a time may change: the queue
   // holds a dispatch whose scope overlaps a live item's within one of them
   // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
@@ -568,6 +659,9 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     // contributor: it counts as the holder's. Seen while nobody holds the
     // item, it was made with a write token an earlier holder had before the
     // release revoked it, and every holder is listed already, so it adds no one.
+    // A task landed in fast mode (t585) names its builder from the merged
+    // commit's Agent line: that builder is a contributor, as a pusher is.
+    if (event.kind === "item.landed_fast" && typeof event.data.builder === "string" && validActor(event.data.builder)) actors.add(event.data.builder);
     if (event.kind === "push.observed") {
       const by = event.actor === "atelier/events" ? holder : event.actor;
       if (by) actors.add(by);
@@ -576,6 +670,11 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
       // actor's work: it joins the contributors the gate compares.
       for (const a of pushAuthors(event.data)) actors.add(a.actor);
     }
+    // A refresh whose conflicts a resolver resolved (t462) is that
+    // resolver's work too: it joins the contributors, under the identity
+    // its merge commit's Agent line names. A clean refresh, a merge with no
+    // model in it, adds no one.
+    if (event.kind === "item.refreshed" && typeof event.data.resolver === "string" && validActor(event.data.resolver) && event.data.resolver.includes("/")) actors.add(event.data.resolver);
   }
   return [...actors];
 }
@@ -601,12 +700,12 @@ export function agentLine(message: string): string | null {
 
 export function assertHandoffTarget(actor: string, owner: string): void {
   if (!validActor(actor) || !actor.includes("/") || actor === owner) {
-    throw new RuleError("bad_actor", "handoff needs harness/model and cannot name the project owner", 400);
+    throw new RuleError("bad_actor", "handoff needs harness/model and cannot name the developer", 400);
   }
 }
 
 export function assertReviewAllowed(item: Item, proved: boolean): void {
-  if (proved && item.state === "accepted") throw new RuleError("accepted", "only the owner token may reopen accepted work by reviewing", 403);
+  if (proved && item.state === "accepted") throw new RuleError("accepted", "only the developer token may reopen accepted work by reviewing", 403);
 }
 
 // "claude-code/opus-5.5" → "opus-5.5". The model, not the harness, is what
@@ -624,13 +723,17 @@ export function modelOf(actor: string): string {
 // model registry knows, as a model's id or one of its aliases, becomes that
 // model's id: "claude-code/Opus-5.5:fast" and "antigravity/claude-opus-5-5"
 // both give "opus-5.5". A name the registry does not know is compared as it
-// is after lowercasing and cutting.
+// is after lowercasing and cutting. The registry is asked with dots read as
+// dashes, so a harness that spells a registered model's alias with a dot
+// (Antigravity's "claude-opus-5.5" for "claude-opus-5-5") names that model:
+// one model under several harnesses is one model (t622).
 const bareModel = (model: string) => model.toLowerCase().split(":")[0];
-const REGISTERED = new Map(MODEL_PROFILES.flatMap((p) => [p.id, ...(p.aliases ?? [])].map((name) => [bareModel(name), bareModel(p.id)] as const)));
+const dashed = (model: string) => model.replaceAll(".", "-");
+const REGISTERED = new Map(MODEL_PROFILES.flatMap((p) => [p.id, ...(p.aliases ?? [])].map((name) => [dashed(bareModel(name)), bareModel(p.id)] as const)));
 
 export function modelKey(actor: string): string {
   const model = bareModel(modelOf(actor));
-  return REGISTERED.get(model) ?? model;
+  return REGISTERED.get(dashed(model)) ?? model;
 }
 
 // Whether two actor names stand for one agent: the same harness, in any
@@ -828,7 +931,7 @@ export function assertClaimable(item: Item, actor: string): void {
     throw new RuleError("closed", `${item.id} is ${item.state}`);
   }
   if (item.owner && item.owner !== actor) {
-    throw new RuleError("owned", `${item.id} is owned by ${item.owner}; ask for a handoff`);
+    throw new RuleError("owned", `${item.id} is held by ${item.owner}; ask for a handoff`);
   }
 }
 
@@ -1075,14 +1178,14 @@ export function unprovedReview(r: Review): boolean {
 export function recordedText(r: Review, owner = DEFAULT_OWNER): string | null {
   if (r.recordedBy === undefined) return null;
   if (r.proved) return `recorded by ${r.recordedBy ?? r.by} with its own token`;
-  const who = r.recordedBy === owner ? "the project owner" : r.recordedBy;
+  const who = r.recordedBy === owner ? "the developer" : r.recordedBy;
   if (sameActor(r.by, owner)) return `recorded by ${who}`;
-  return `recorded by ${who} with the owner token${r.claimed ? ", answering a review request it claimed" : ""}`;
+  return `recorded by ${who} with the developer token${r.claimed ? ", answering a review request it claimed" : ""}`;
 }
 
 // The gate's words for an approval unprovedReview sets aside.
 export function unprovedBlocker(r: Review): string {
-  return `the approval by ${r.by} was recorded by ${r.recordedBy ?? "the project owner"} with the owner token and answers no review request ${r.by} claimed at this head, so it is not the independent review`;
+  return `the approval by ${r.by} was recorded by ${r.recordedBy ?? "the developer"} with the developer token and answers no review request ${r.by} claimed at this head, so it is not the independent review`;
 }
 
 // The owner's override that stands at the item's current head, if any. One
@@ -1278,7 +1381,7 @@ export function overrideReason(value: unknown): string {
 
 // The override the owner may record at an item's head, and what it waives.
 // It is refused when the gate at that head is not missing an independent
-// review, as when one has been given or the change needs none: an override
+// review and has no agent rejection, as when an approval has been given: an override
 // there would waive nothing, and recording one would blur what the owner
 // decided. Whatever else the gate asks still applies once it is recorded.
 export function reviewOverrideFor(
@@ -1287,11 +1390,16 @@ export function reviewOverrideFor(
   assertOverridesAllowed(policy);
   const text = overrideReason(reason);
   const g = gate({ ...item, reviewOverride: null }, policy, evidence, reviews, owner);
-  if (!item.head || !g.needsAssessor) {
+  const rejections = countingReviews(reviews, bindingOf(item), policy, owner).filter((r) => r.head === item.head && !r.approve && r.by !== owner).map(({ by, at }) => ({ by, at }));
+  if (!item.head || (!g.needsAssessor && !rejections.length)) {
     const where = item.head ? ` at ${item.head.slice(0, 8)}` : "";
     throw new RuleError("override_unneeded", `${item.id}${where} is not missing an independent review, so there is nothing to override${g.ready ? "; accept it without an override" : `: ${g.blockers.join("; ")}`}`);
   }
-  return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? protectedNeed(singleFamily(policy)), contributors: contributorsOf(item) };
+  const requirement = g.requirement ?? protectedNeed(singleFamily(policy));
+  const waived = rejections.length
+    ? `Recorded rejections by ${rejections.map((r) => r.by).join(", ")}${g.needsAssessor ? `; ${requirement}` : ""}`
+    : requirement;
+  return { override: { head: item.head, by: owner, reason: text, at, ...(rejections.length ? { rejections } : {}), ...(!g.needsAssessor ? { rejectionsOnly: true as const } : {}) }, waived, contributors: contributorsOf(item) };
 }
 
 // An item holds its scope against other claims while it is claimed,
@@ -1329,7 +1437,7 @@ export function overlappingRefusal(item: Item, items: readonly Item[], actor: st
   const clash = overlappingLive(item, items, actor);
   if (!clash.length) return null;
   const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
+  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The developer can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
 }
 
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
@@ -1351,7 +1459,7 @@ export function assertCriteriaAllowed(policy: Pick<ProjectPolicy, "requireCriter
 
 export function assertOwner(item: Item, actor: string): void {
   if (item.owner !== actor) {
-    throw new RuleError("not_owner", `${actor} does not own ${item.id} (owner: ${item.owner ?? "nobody"})`, 403);
+    throw new RuleError("not_owner", `${actor} does not hold ${item.id} (holder: ${item.owner ?? "nobody"})`, 403);
   }
 }
 
@@ -1689,6 +1797,29 @@ export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan"
 // blocker stands, a rejection at the head among them.
 export interface GateOptions { reviewHeld?: boolean }
 
+// The approvals the gate counts as a change's independent review: of the
+// reviews standing at the item's head and criteria (countingReviews, the
+// latest per reviewer), each one independentApproval admits for a change
+// whose class needs a review. None for a change that needs no review, one
+// whose review is held outside the item, or one with no measured paths. The
+// gate reads this and so does a landing (recordedApproval in
+// src/landing-verdict.ts, t628), so a landing never takes an approval the
+// gate sets aside (an unproved one, a same-family one, a contributor's) for
+// the review it needs.
+export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Review[] {
+  const view = evidenceAt(policy, evidence, item.head);
+  const kind = view.changedPaths === null ? null : changeClass(view.changedPaths, policy);
+  return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, owner, options);
+}
+
+// gateApprovals over reviews already counted, for the gate that has them.
+function approvalsCounted(item: Item, policy: ProjectPolicy, counting: Review[], kind: ChangeClass | null, owner: string, options: GateOptions): Review[] {
+  if (options.reviewHeld || !(kind === "protected" || (policy.execution !== undefined && kind === "coordinated"))) return [];
+  const contributors = contributorsOf(item);
+  const single = singleFamily(policy);
+  return counting.filter((r) => independentApproval(r, kind, contributors, owner, single));
+}
+
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {
   reviews = countingReviews(reviews, bindingOf(item), policy, owner);
   const blockers: string[] = [];
@@ -1720,11 +1851,14 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
     const single = singleFamily(policy);
-    if (!reviews.some((r) => independentApproval(r, kind, contributors, owner, single))) {
+    if (!approvalsCounted(item, policy, reviews, kind, owner, options).length) {
       // A project that forbids overrides (t371) counts none, an override
       // recorded before the prohibition included: the change waits for its
       // review as if the override had never been made.
-      overridden = policy.noOverride ? null : overrideAt(item, owner);
+      // An override recorded beside an approval waived only the rejections it
+      // named (rejectionsOnly), so it never stands in for the review.
+      const forReview = policy.noOverride ? null : overrideAt(item, owner);
+      overridden = forReview?.rejectionsOnly ? null : forReview;
       if (!overridden) {
         needsAssessor = true;
         blockers.push(governed ? requirement : protectedNeed(single));
@@ -1736,7 +1870,10 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       }
     }
   }
-  const rejected = reviews.filter((r) => r.head === item.head && !r.approve);
+  const rejectionOverride = policy.noOverride ? null : overrideAt(item, owner);
+  const rejected = reviews.filter((r) => r.head === item.head && !r.approve &&
+    !rejectionOverride?.rejections?.some((saved) => saved.by === r.by && saved.at === r.at));
+  if (rejectionOverride?.rejections?.length) overridden = rejectionOverride;
   for (const r of rejected) blockers.push(`rejected by ${r.by}${r.tier ? " (tier review)" : r.topTier ? " (gate review, top tier)" : ""}: ${r.note || "no note"}`);
   // Scope is matched as written: a path in another letter case is reported
   // outside it, which shows the variant rather than hiding it.
@@ -1793,7 +1930,7 @@ export function inboxFor(
     // Where the owner's override stands in for the independent review, the
     // entry says so and gives its reason. An accepted item is read as
     // accept() reads it, as if still submitted.
-    const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the project owner: ${g.overridden.reason}` : "");
+    const overrode = (g: Gate) => (g.overridden ? `, with the independent review overridden by the developer: ${g.overridden.reason}` : "");
     // A part is reported through its plan (the Ledger's planView), so it
     // never appears as an accept, assess, failing, scope or stale entry. An
     // accepted part still asks to be merged.
@@ -1815,7 +1952,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? protectedNeed(singleFamily(policy))}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the owner's last resort"}`, weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? protectedNeed(singleFamily(policy))}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the developer's last resort"}`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
@@ -1852,20 +1989,110 @@ export function repoName(project: string, itemId?: string): string {
   return name;
 }
 
-// Local cache cleanup requires proof that no unpublished work will be lost.
-// A merged item's proof is its accepted head; an abandoned item, which never
-// merges, is proved by the last head Atelier recorded for it, so its workspace
-// goes only when it still sits at that head with nothing else in it.
-export function gcWorkspaceReason(
-  item: Pick<Item, "state" | "head" | "acceptedHead"> | undefined,
-  head: string, dirty: boolean, extraCommits: boolean,
+// The developer's branches (t641): work in progress that travels between
+// the developer's Macs. They live in a repository of their own beside the
+// baseline, branchesRepoName(key), which only the developer is given a token
+// for: Artifacts scopes a token to a whole repository, read or write, never
+// to refs, so a branch kept in the baseline would be readable with every
+// agent's and runner's read token, and a token that could push it could push
+// main as well. In a repository of their own, no push of a branch can reach
+// the baseline's main, which still moves only through landing and sync.
+//
+// The branches repository's name is BRANCHES_REPO_PREFIX and the first 32
+// hex digits of the SHA-256 of the project's key: a fixed form whose length
+// never depends on the key, so a key of any length a baseline takes has one
+// (Astra's review of t641, finding 2). A name derived from the key by adding
+// to it met other names: demo--branches is a baseline name, and
+// branches--t1 is project branches's fork of t1 (the reviews of t641).
+// BRANCHES_REPO_NAME matches the form, and assertBaselineName refuses it to
+// any baseline a project would be registered with; a task fork, KEY--tN,
+// never has the form. Every place that finds a repository already under the
+// name it would make checks it was made for that purpose before any token
+// is minted for it (src/index.ts), so even a name a project registered
+// before this change holds is never taken for another's.
+//
+// Every developer branch is under DEVELOPER_BRANCH_PREFIX. A NAME given
+// without it is taken under it (`atelier branch push idea` pushes
+// wip/idea), except a name that is the project's branch, main, HEAD or a
+// task's id, which is refused rather than quietly renamed, and a name with
+// another prefix (feature/x, refs/heads/x), which is outside the prefix.
+// The rest of the name keeps to what git check-ref-format takes, more
+// strictly: letters, digits, . _ - and / between parts.
+export const BRANCHES_REPO_PREFIX = "devbr-";
+export const BRANCHES_REPO_NAME = /^devbr-[0-9a-f]{32}$/;
+export const DEVELOPER_BRANCH_PREFIX = "wip/";
+export async function branchesRepoName(key: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
+  return `${BRANCHES_REPO_PREFIX}${[...digest].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32)}`;
+}
+export function assertBaselineName(repo: string): void {
+  if (BRANCHES_REPO_NAME.test(repo)) throw new RuleError("repo_reserved", `a baseline cannot be named ${repo}: names of the form ${BRANCHES_REPO_PREFIX} and 32 hex digits are kept for the developer's branches repositories`, 409);
+}
+
+// What Atelier writes as the description of each repository it makes, and
+// reads back before it takes one it finds already under the name it would
+// make: an earlier attempt's, whose answer was lost (t349), is taken; one
+// made for any other purpose is refused (the reviews of t641).
+export const baselineMark = (project: string) => `Atelier baseline for ${project}`;
+export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
+export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
+const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+export function developerBranch(name: unknown, defaultBranch = "main"): string {
+  const refuse = (why: string) => { throw new RuleError("bad_branch", `${typeof name === "string" ? JSON.stringify(name) : "the branch"} ${why}; a developer branch is ${DEVELOPER_BRANCH_PREFIX}NAME, such as ${DEVELOPER_BRANCH_PREFIX}idea`, 400); };
+  if (typeof name !== "string" || !name) return refuse("is not a branch name");
+  const reserved = new Set(["main", "master", "HEAD", defaultBranch]);
+  if (reserved.has(name) || /^t[0-9]+$/.test(name)) return refuse("is the project's branch or a task's; main changes only through landing or sync, and a task's work only through its workspace");
+  if (name.startsWith("refs/")) return refuse(`is a full ref; name the branch under ${DEVELOPER_BRANCH_PREFIX} alone`);
+  const full = name.startsWith(DEVELOPER_BRANCH_PREFIX) ? name : name.includes("/") ? refuse(`is outside ${DEVELOPER_BRANCH_PREFIX}`) : `${DEVELOPER_BRANCH_PREFIX}${name}`;
+  if (full.length > 200) return refuse("is longer than 200 characters");
+  const parts = full.slice(DEVELOPER_BRANCH_PREFIX.length).split("/");
+  if (parts.some((p) => !BRANCH_PART.test(p) || p.endsWith(".lock") || p.endsWith(".") || p.includes(".."))) return refuse("is not a name Git takes for a branch here: use letters, digits, . _ - and / between parts");
+  return full;
+}
+
+// Where a developer branch was last pushed from: the Mac's name as
+// os.hostname() gives it, less a trailing .local, one line of at most 100
+// characters.
+export function branchHost(host: unknown): string {
+  const clean = typeof host === "string" ? host.trim().replace(/\.local$/i, "") : "";
+  if (!clean || clean.length > 100 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(clean)) throw new RuleError("bad_host", "the Mac a branch was pushed from is named on one line of at most 100 characters", 400);
+  return clean;
+}
+
+// Files Git ignores that a build or install makes again, so a finished
+// workspace holding them loses nothing when it goes: dependencies, build
+// output, caches and generated types. Any other ignored file (a harness's
+// logs under .scratch/, a .env, renders) is work Git would not keep (t561).
+const REBUILDABLE_DIRS = new Set(["node_modules", "dist", "build", ".build", "DerivedData", ".cache", "coverage", ".next", ".turbo", "__pycache__", ".pytest_cache"]);
+const REBUILDABLE_FILES = new Set(["worker-configuration.d.ts", ".DS_Store"]);
+
+// The ignored paths (as `git status --ignored=matching` names them, a
+// directory with its trailing slash) that are not rebuildable output.
+export function unkeptIgnored(paths: string[]): string[] {
+  return paths.filter((path) => {
+    const parts = path.replace(/\/$/, "").split("/");
+    const base = parts[parts.length - 1];
+    if (parts.some((part) => REBUILDABLE_DIRS.has(part))) return false;
+    return !REBUILDABLE_FILES.has(base) && !base.endsWith(".tsbuildinfo") && !base.endsWith(".pyc");
+  });
+}
+
+// Whether a finished task's workspace may go (t561), or why it stays.
+// Removal is permanent, so it goes only against proof that nothing is lost:
+// the item merged or was abandoned; its HEAD is a head Atelier recorded (the
+// fork's last head or the merge's accepted head) or is in main; it has no
+// changed or untracked files; the ignored files it holds are all rebuildable
+// output (`ignored` lists the others); and every commit it reaches is under
+// a recorded head or in main.
+export function finishedWorkspaceReason(
+  item: Pick<Item, "state"> | undefined,
+  { atLedgerHead, headInMain, dirty, ignored, extraCommits }: { atLedgerHead: boolean; headInMain: boolean; dirty: boolean; ignored: string[]; extraCommits: boolean },
 ): string | null {
   if (item?.state !== "merged" && item?.state !== "abandoned") return "item is neither merged nor abandoned";
-  const abandoned = item!.state === "abandoned";
-  const proof = abandoned ? item!.head : item!.acceptedHead;
-  if (!proof || head !== proof) return abandoned ? "HEAD is not the last head Atelier recorded" : "HEAD is not the merged head";
+  if (!atLedgerHead && !headInMain) return "HEAD is neither the head Atelier recorded nor in main";
   if (dirty) return "contains changed or untracked files";
-  if (extraCommits) return abandoned ? "contains commits outside the recorded history" : "contains commits outside the merged history";
+  if (ignored.length) return `holds ignored files that are not rebuildable output: ${ignored.slice(0, 5).join(", ")}${ignored.length > 5 ? ` and ${ignored.length - 5} more` : ""}`;
+  if (extraCommits) return "contains commits neither Atelier's record nor main holds";
   return null;
 }
 
@@ -1900,6 +2127,11 @@ export function assertCriteria(item: Item, expected: unknown): void {
   }
 }
 
+// Porting to a released fork does not take its claim or dispatch.
+export function ownerPortAllowed(item: Pick<Item, "owner" | "state">, actor: string, owner = DEFAULT_OWNER): boolean {
+  return actor === owner && item.owner === null && item.state === "open";
+}
+
 export function assertLive(item: Item): void {
   assertNotBlocked(item);
   if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
@@ -1929,7 +2161,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   if (item.state === "abandoned") return { title: "Task closed", detail: "The history and evidence remain available.", action: "none", tone: "", passed };
   if (item.state === "blocked") {
     const b = item.blocked;
-    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its owner and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
+    return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its holder and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
   }
   if (item.state === "accepted") {
     const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner).overridden;
@@ -1938,8 +2170,8 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
       : "Approval is recorded. Run the revision-bound command below in your local checkout.";
     return { title: "Ready to merge", detail, action: "merge", tone: "go", passed };
   }
-  if (failed) return { title: "Checks need attention", detail: "The task owner must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
-  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The task owner must bring main into the workspace, fix the result and finish again; running the revision's own checks again does not clear it, only a passing merged run or a new revision.", action: "none", tone: "bad", passed };
+  if (failed) return { title: "Checks need attention", detail: "The holder must fix the failing checks and finish again.", action: "none", tone: "bad", passed };
+  if (item.state === "submitted" && mergedBlockers(policy, evidence, item.head).length) return { title: "Checks need attention", detail: "Main has moved since this revision's checks passed, and the required checks fail on its merge with main. The holder must bring main into the workspace, fix the result and finish again; running the revision's own checks again does not clear it, only a passing merged run or a new revision.", action: "none", tone: "bad", passed };
   // The owner's approval is recorded but is not the independent review, so
   // the page asks for a qualifying reviewer, and offers the override only
   // when the missing review is all that blocks, since it waives nothing else.
@@ -1954,8 +2186,8 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
       : "Required checks passed for this revision. Accept it to prepare the local merge.";
     return { title: "Ready to accept", detail, action: "accept", tone: "go", passed };
   }
-  if (countingReviews(reviews, bindingOf(item), policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The task owner must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
-  return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The task owner is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
+  if (countingReviews(reviews, bindingOf(item), policy, owner).some((r) => !r.approve)) return { title: "Changes requested", detail: "The holder must address the review. The reviewer can approve the revision after the concern is resolved.", action: "none", tone: "ask", passed };
+  return { title: stateLabel[item.state], detail: item.state === "open" ? "An agent can claim this task to start work." : "The holder is preparing the work and its evidence. No decision is needed yet.", action: "none", tone: "", passed };
 }
 
 export interface PushNotice { repo: string; ref: string; after: string }
@@ -1974,4 +2206,438 @@ export const REVIEW_RENEW_MS = 30_000;
 export const REVIEW_LEASE_MS = 5 * 60_000;
 export function reviewLeaseExpired(renewedAt: string | null | undefined, now: number): boolean {
   return !renewedAt || !Number.isFinite(Date.parse(renewedAt)) || now - Date.parse(renewedAt) >= REVIEW_LEASE_MS;
+}
+
+// ── modes (t585) ─────────────────────────────────────────────────────────────
+// Atelier has two modes. Full mode is the default: every change goes through
+// the gate. Fast mode is the owner's: switched on with a reason when the
+// gated path cannot run (on 2026-10-13 Artifacts failed every new fork, so
+// no task could be claimed and four finished tasks were merged by hand,
+// outside the record), it lets the owner land finished work in batches from
+// a local checkout, each landing recorded with a receipt and audited by a
+// post-merge review. It has no end time; the owner switches back to full.
+export type ProjectMode =
+  | { mode: "full" }
+  | { mode: "fast"; since: string; reason: string; by: string; decision: string | null; quote?: string; acting?: string };
+
+export const MODE_REASON_MAX = 500;
+
+// The mode a stored record says, full for anything else: a project that
+// never switched, or a record that cannot be read, is in full mode.
+export function projectMode(record: unknown): ProjectMode {
+  const r = record as Record<string, unknown> | null | undefined;
+  if (!r || r.mode !== "fast" || typeof r.since !== "string" || typeof r.reason !== "string" || typeof r.by !== "string") return { mode: "full" };
+  const direction = typeof r.quote === "string" && typeof r.acting === "string" ? { quote: r.quote, acting: r.acting } : {};
+  return { mode: "fast", since: r.since, reason: r.reason, by: r.by, decision: typeof r.decision === "string" ? r.decision : null, ...direction };
+}
+
+const utcMinute = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+
+// The one line every surface prints: "Mode: full" or
+// "Mode: fast since 2026-10-13 14:05 UTC (reason)", and, for a switch on the
+// developer's direction (t629), whose words and which model relayed them.
+export function modeLine(mode: ProjectMode): string {
+  if (mode.mode !== "fast") return "Mode: full";
+  const direction = mode.quote ? `; ${directionText(mode)}` : "";
+  return `Mode: fast since ${utcMinute(mode.since)} (${mode.reason})${direction}`;
+}
+
+// How a record made on the developer's direction says so, everywhere it is shown.
+export function directionText(d: { quote?: string; acting?: string }): string {
+  return `the developer's words: \u201c${d.quote ?? ""}\u201d, relayed by ${d.acting ?? "an unnamed model"}`;
+}
+
+// The switch the owner asks for, checked before anything is written.
+export function modeSwitch(current: ProjectMode, actor: string, owner: string, to: unknown, reason: unknown, at: string): ProjectMode {
+  if (actor !== owner) throw new RuleError("not_project_owner", "only the developer switches the project's mode", 403);
+  if (to !== "fast" && to !== "full") throw new RuleError("bad_mode", "the mode is fast or full", 400);
+  if (to === "full") {
+    if (current.mode === "full") throw new RuleError("already_full", "the project is already in full mode", 409);
+    return { mode: "full" };
+  }
+  const why = typeof reason === "string" ? reason.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
+  if (!why) throw new RuleError("bad_reason", "fast mode needs a reason: atelier mode fast --reason TEXT", 400);
+  if (why.length > MODE_REASON_MAX) throw new RuleError("too_long", `the reason is at most ${MODE_REASON_MAX} characters`, 400);
+  if (current.mode === "fast") throw new RuleError("already_fast", `the project is already in fast mode (${modeLine(current)}); switch to full first`, 409);
+  return { mode: "fast", since: at, reason: why, by: actor, decision: null };
+}
+
+export function assertFastMode(mode: ProjectMode): asserts mode is Extract<ProjectMode, { mode: "fast" }> {
+  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", "the project is in full mode; the developer switches with atelier mode fast --reason TEXT before landing fast", 409);
+}
+
+// Fast mode lands without the gate, so it is held to what an override of the
+// independent review is (Astra's audit of 2026-10-13, finding 3): a project
+// that forbids overrides (`atelier init --no-override`) refuses the switch
+// to fast mode and every fast landing, and the switch to fast mode needs the
+// developer's confirmation. Since t629 that is either the developer's
+// direction (ownerDirection: their quoted words and the acting model, with
+// the developer token) or, as t596 made it, a permission given on the
+// project's Settings page with the factor no agent holds, good for
+// OVERRIDE_CONFIRMATION_MS and one switch. Switching back to full needs none.
+export interface FastModeConfirmation { by: string; at: string; until: string; factor: OwnerFactor }
+
+export function assertFastModeAllowed(policy: Pick<ProjectPolicy, "noOverride">): void {
+  if (policy.noOverride) throw new RuleError("fast_mode_forbidden", "this project forbids overrides of the independent review (atelier init --no-override), and fast mode lands without that review, so fast mode is refused", 403);
+}
+
+export function fastModeConfirmationHint(project: string, origin = "", factor?: OwnerFactor | null): string {
+  const page = `open ${origin}/p/${encodeURIComponent(project)}/settings as the developer, press "Allow fast mode from the command line" ${ownerFactorText(factor)}, then run atelier mode fast again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
+  return `${page}; ${DIRECTION_HINT}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
+}
+
+export function assertFastModeConfirmed(c: FastModeConfirmation | null | undefined, now: number, owner: string, project: string): void {
+  if (c && c.by === owner && Date.parse(c.until) > now && (c.factor === "access" || c.factor === "secret")) return;
+  throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, 403);
+}
+
+// What a landing in fast mode records: the commit merged, the merge commit,
+// the builder its Agent line names, the test command and the sha256 of its
+// output, and the mode's reason. Since t588 the tests also say where they
+// ran: "clean clone" for the default run in a temporary clone of the
+// batch's head, "checkout" for a --test the owner gave, which runs in the
+// owner's checkout. A receipt from an older CLI says neither.
+export const FAST_TEST_WHERE = ["clean clone", "checkout"] as const;
+export type FastTestWhere = (typeof FAST_TEST_WHERE)[number];
+export interface FastReceipt {
+  commit: string;
+  mergeCommit: string;
+  builder: string;
+  tests: { command: string; sha256: string; where?: FastTestWhere };
+  reason: string;
+  at: string;
+  by: string;
+  // The developer's words fast mode was switched on, and the model that relayed them (t629).
+  quote?: string;
+  acting?: string;
+}
+
+const SHA = /^[a-f0-9]{40,64}$/;
+export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, actor: string, at: string): FastReceipt {
+  assertFastMode(mode);
+  const tests = body.tests as { command?: unknown; sha256?: unknown; where?: unknown } | undefined;
+  if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw new RuleError("bad_receipt", "the receipt names the commit merged, a full SHA", 400);
+  if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw new RuleError("bad_receipt", "the receipt names the merge commit, a full SHA", 400);
+  if (typeof body.builder !== "string" || !body.builder.includes("/") || !validActor(body.builder)) throw new RuleError("bad_receipt", "the receipt names the builder as harness/model, from the commit's Agent line", 400);
+  if (!tests || typeof tests.command !== "string" || !tests.command.trim() || tests.command.length > 2000) throw new RuleError("bad_receipt", "the receipt names the test command the batch ran", 400);
+  if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
+  if (tests.where !== undefined && !FAST_TEST_WHERE.includes(tests.where as FastTestWhere)) throw new RuleError("bad_receipt", `the receipt says where the tests ran: ${FAST_TEST_WHERE.join(" or ")}`, 400);
+  const where = tests.where as FastTestWhere | undefined;
+  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
+}
+
+// ── merges recorded after the fact (t653) ──────────────────────────────────
+// A task merged into main outside Atelier (the 2026-10-13 freeze merged
+// t590-t651 by hand, with no land or accept) is recorded afterwards by the
+// developer: the merge commit main holds, the commit it merged (its second
+// parent), and the reviews that approved it as the developer gives them. The
+// record says it was made outside Atelier and carries no checks or test
+// receipt, since none was run through Atelier; it is never a gated landing.
+export const REVIEW_VERDICTS = ["approve", "reject"] as const;
+export type RecordedReviewVerdict = (typeof REVIEW_VERDICTS)[number];
+export interface RecordedReview { by: string; verdict: RecordedReviewVerdict; head: string; at?: string }
+export interface RecordedMerge {
+  mergeCommit: string;
+  commit: string;
+  reviews: RecordedReview[];
+  note?: string;
+  outside: true;
+  at: string;
+  by: string;
+}
+const RECORDED_REVIEWS_MAX = 20;
+// A review's date as given: a day (2026-10-13) or an ISO time.
+const REVIEW_WHEN = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2}))?$/;
+
+// The request's shape: both commits as full SHAs, one review or more, each
+// with its reviewer as harness/model, approve or reject, the full head it
+// read and, when given, the day or time. At least one review approves the
+// commit merged, since the record is of the reviews that approved it.
+export function recordedMerge(body: Record<string, unknown>, actor: string, at: string): RecordedMerge {
+  const bad = (detail: string) => new RuleError("bad_record", detail, 400);
+  if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw bad("the record names the merge commit on main, a full SHA (--merge)");
+  if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw bad("the record names the commit merged, a full SHA (--head, or the task's recorded head)");
+  if (!Array.isArray(body.reviews) || !body.reviews.length) throw bad("the record names the reviews that approved the merge, one --review H/M=VERDICT@HEAD or more");
+  if (body.reviews.length > RECORDED_REVIEWS_MAX) throw bad(`the record names at most ${RECORDED_REVIEWS_MAX} reviews`);
+  const reviews = body.reviews.map((raw, n): RecordedReview => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    const which = `review ${n + 1}`;
+    if (typeof r.by !== "string" || !r.by.includes("/") || !validActor(r.by)) throw bad(`${which} names its reviewer as harness/model`);
+    if (!REVIEW_VERDICTS.includes(r.verdict as RecordedReviewVerdict)) throw bad(`${which}'s verdict is ${REVIEW_VERDICTS.join(" or ")}`);
+    if (typeof r.head !== "string" || !SHA.test(r.head)) throw bad(`${which} names the head it read, a full SHA`);
+    if (r.at !== undefined && (typeof r.at !== "string" || !REVIEW_WHEN.test(r.at) || Number.isNaN(Date.parse(r.at)))) throw bad(`${which}'s date is a day (2026-10-13) or an ISO time`);
+    return { by: r.by, verdict: r.verdict as RecordedReviewVerdict, head: r.head, ...(typeof r.at === "string" ? { at: r.at } : {}) };
+  });
+  if (!reviews.some((r) => r.verdict === "approve" && r.head === body.commit)) {
+    throw new RuleError("no_approval", `no review given approves ${body.commit.slice(0, 8)}, the commit merged; name the review that approved it at that head`, 400);
+  }
+  if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) throw bad("the note is text, at most 2000 characters");
+  const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
+  return { mergeCommit: body.mergeCommit, commit: body.commit, reviews, ...(note ? { note } : {}), outside: true, at, by: actor };
+}
+
+// What the baseline says of the merge: whether main holds it (null when its
+// history could not be read far enough to say) and the merge commit's
+// parents (null when the baseline has no such commit). The merge is recorded
+// only when main holds it and its second parent is the commit merged.
+export function recordedMergeRefusal(record: { mergeCommit: string; commit: string }, baseline: { parents: readonly string[] | null; holds: boolean | null }): RuleError | null {
+  const m = record.mergeCommit.slice(0, 8);
+  if (baseline.parents === null) return new RuleError("merge_not_on_main", `the baseline has no commit ${m}; bring main in first (atelier sync) and record again`, 409);
+  if (baseline.holds === null) return new RuleError("merge_unconfirmed", `main's history could not be read far enough to find ${m}, so the merge is not recorded`, 409);
+  if (!baseline.holds) return new RuleError("merge_not_on_main", `main does not hold ${m}; bring main in first (atelier sync) and record again`, 409);
+  if (baseline.parents.length < 2) return new RuleError("not_a_merge", `${m} has ${baseline.parents.length} parent${baseline.parents.length === 1 ? "" : "s"}, so it is not a merge`, 409);
+  if (baseline.parents[1] !== record.commit) return new RuleError("second_parent_differs", `${m}'s second parent is ${baseline.parents[1].slice(0, 8)}, not ${record.commit.slice(0, 8)}, the commit named as the task's head`, 409);
+  return null;
+}
+
+// The builder a commit's message names: its last Agent: line, as harness/model.
+export function agentOfMessage(message: string): string | null {
+  const lines = message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l));
+  const last = lines.at(-1)?.replace(/^Agent:\s*/i, "").trim() ?? "";
+  return last.includes("/") && validActor(last) ? last : null;
+}
+
+// The family rule for a post-merge review. Outside fast mode a reviewer of
+// the same family as a contributor is refused; a task landed in fast mode
+// may be reviewed by one (PAVI, 2026-10-13: fast mode permits single-family
+// models), and the review record says so. The same model is never its own
+// reviewer, in either mode (contributed, checked by the callers).
+export const SAME_FAMILY_FAST = "same-family (fast mode)";
+export function postMergeIndependence(reviewer: string, contributors: readonly string[], single: PoolFamily | null, landedFast: boolean): { refusal: string | null; independence: string | null } {
+  const refusal = familyRefusal(reviewer, contributors, single);
+  if (!refusal) return { refusal: null, independence: null };
+  return landedFast ? { refusal: null, independence: SAME_FAMILY_FAST } : { refusal, independence: null };
+}
+
+// The fix task a rejected post-merge review of a fast landing files: its
+// criteria are the review's findings, or the note when it gave none.
+export function fastFixTask(itemId: string, title: string, review: { by: string; head: string; note: string; request?: number; findings?: Finding[] }): { title: string; brief: string; accept: string[] } {
+  const findings = review.findings ?? [];
+  const accept = findings.length
+    ? findings.map((f) => `${f.file}${f.line === null ? "" : `:${f.line}`}: ${f.text}`.slice(0, 1000))
+    : [`Resolve the post-merge review's rejection of ${itemId}: ${review.note}`.slice(0, 1000)];
+  return {
+    title: `Fix after fast landing of ${itemId}: ${title}`,
+    brief: `${itemId} landed in fast mode and its post-merge review by ${review.by} at ${review.head.slice(0, 12)} rejected it${review.request !== undefined ? ` (review request ${review.request})` : ""}. Note: ${review.note}`.slice(0, 3000),
+    accept,
+  };
+}
+
+// ── fast builds (t589) ───────────────────────────────────────────────────────
+// On 2026-10-13, in fast mode (decision d14), every runner build still began
+// with a claim that forks main, and the forks failed (Artifacts
+// INTERNAL_ERROR), so the builds were run by hand in local clones. While the
+// project is in fast mode a runner takes a dispatched build without a fork:
+// it builds in a clean clone of main on its machine, commits, and reports
+// the commit as ready for the owner's batch (atelier fast land). Back in full
+// mode runners claim with forks as before.
+
+type FastBuildItem = Pick<Item, "kind" | "plan" | "dispatch"> & Partial<Pick<Item, "fork" | "base" | "head">>;
+
+// Why a dispatched job is not one a fast build takes, whatever the mode, or
+// null when it is: a plain task's build. A plan job writes a plan, a part
+// builds on its plan's fork, and a merge-main job resolves a fork's landing,
+// so each keeps the claim. So does a task whose fork already holds work from
+// an earlier claim: that claim needs no new fork, and the work is there.
+export function fastJobRefusal(item: FastBuildItem): string | null {
+  if (item.kind === "plan" || item.kind === "part" || item.plan) return "a plan or a part keeps its claim and its plan's fork in fast mode too";
+  const job = item.dispatch?.job ?? "build";
+  if (job !== "build") return `a ${job} job keeps its claim with a fork in fast mode too`;
+  if (item.fork && item.head && item.base && item.head !== item.base) return `its fork holds work from an earlier claim (head ${item.head.slice(0, 12)}), so it is built there; claiming it makes no new fork`;
+  return null;
+}
+
+// Why a dispatched job is not built fast now, or null when it is.
+export function fastBuildRefusal(mode: ProjectMode, item: FastBuildItem): string | null {
+  if (mode.mode !== "fast") return "the project is in full mode, so a build claims with a fork";
+  return fastJobRefusal(item);
+}
+
+export function assertFastBuild(mode: ProjectMode, item: FastBuildItem & Pick<Item, "id">): void {
+  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", `the project is in full mode; ${item.id} is claimed with a fork (atelier claim)`, 409);
+  if (!item.dispatch) throw new RuleError("not_dispatched", `${item.id} is not dispatched; a fast take is a runner's, for a dispatched build`, 409);
+  const why = fastJobRefusal(item);
+  if (why) throw new RuleError("not_fast_build", `${item.id} is not built fast: ${why}`, 409);
+}
+
+// What a fast build reports: the commit, the main it was built on, the
+// builder its Agent line names, and where it is, so the owner's checkout can
+// fetch it. The runner is the server's record of the claim, not the report's.
+export interface FastReady {
+  commit: string;
+  base: string;
+  builder: string;
+  runner: string | null;
+  workspace: string | null;
+}
+export const FAST_READY_PATH_MAX = 1000;
+
+export function fastReady(body: Record<string, unknown>, mode: ProjectMode, item: Pick<Item, "id" | "state" | "owner"> & { runner?: string | null }, actor: string): FastReady {
+  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", `the project is in full mode; push ${item.id} and submit it instead`, 409);
+  if (item.state !== "claimed" || !item.owner || !sameActor(item.owner, actor)) throw new RuleError("not_holder", `${item.id} is not held by ${actor}; a fast take comes before its report`, 409);
+  if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw new RuleError("bad_ready", "the report names the commit built, a full SHA", 400);
+  if (typeof body.base !== "string" || !SHA.test(body.base)) throw new RuleError("bad_ready", "the report names the main it was built on, a full SHA", 400);
+  if (body.commit === body.base) throw new RuleError("nothing_built", `${item.id}'s commit is the main it started from; the build committed nothing`, 409);
+  if (typeof body.builder !== "string" || !body.builder.includes("/") || !validActor(body.builder)) throw new RuleError("bad_ready", "the report names the builder as harness/model, from the commit's Agent line", 400);
+  if (!sameActor(body.builder, actor)) throw new RuleError("bad_ready", `the commit's Agent line names ${body.builder}, not ${actor}, who holds ${item.id}`, 400);
+  const workspace = body.workspace;
+  if (workspace !== undefined && workspace !== null && (typeof workspace !== "string" || !workspace.startsWith("/") || workspace.length > FAST_READY_PATH_MAX || /[\u0000-\u001f\u007f]/.test(workspace))) {
+    throw new RuleError("bad_ready", `the workspace is an absolute path of at most ${FAST_READY_PATH_MAX} characters`, 400);
+  }
+  return { commit: body.commit, base: body.base, builder: body.builder, runner: item.runner ?? null, workspace: typeof workspace === "string" ? workspace : null };
+}
+
+// A later claim, release, handoff, dispatch or close makes a report stale.
+export const FAST_READY_STALE = ["item.claimed", "item.released", "item.handoff", "item.dispatched", "item.merged", "item.abandoned"] as const;
+
+// The report that stands among a task's events, in any order: the last
+// item.fast_ready with nothing after it that makes it stale; null otherwise.
+export function standingFastReady(events: readonly { seq: number; kind: string; data: Record<string, unknown>; at: string; actor: string }[]): FastReady & { at: string; by: string } | null {
+  let ready: (typeof events)[number] | null = null;
+  for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (e.kind === "item.fast_ready") ready = e;
+    else if (ready && (FAST_READY_STALE as readonly string[]).includes(e.kind)) ready = null;
+  }
+  if (!ready) return null;
+  const d = ready.data;
+  return { commit: String(d.commit), base: String(d.base), builder: String(d.builder), runner: typeof d.runner === "string" ? d.runner : null, workspace: typeof d.workspace === "string" ? d.workspace : null, at: ready.at, by: ready.actor };
+}
+
+// What atelier fast status prints of the ready commits: one tN=SHA line
+// each, which atelier fast land takes as it stands, and the command that
+// lands them all.
+export function fastReadyLines(ready: readonly { item: string; commit: string; builder: string; runner: string | null; at: string }[]): string[] {
+  if (!ready.length) return ["Nothing is ready for fast land."];
+  return [
+    `Ready for fast land (${ready.length}):`,
+    ...ready.map((r) => `${r.item}=${r.commit}  built by ${r.builder}${r.runner ? ` on ${r.runner}` : ""} at ${utcMinute(r.at)}`),
+    `Land them: atelier fast land ${ready.map((r) => `${r.item}=${r.commit}`).join(" ")}`,
+  ];
+}
+
+// A Ledger left on older code after a deploy (t586). A Durable Object that
+// is busy keeps running the code it started with, so a deploy that adds a
+// Ledger method leaves the Worker calling a method the Ledger lacks, and
+// the call fails with the runtime's "The RPC receiver does not implement
+// the method" until the Ledger goes idle. The caller answers
+// UPDATING_DETAIL with status 503 instead of a 500, and the Ledger is asked
+// to restart (ledgerRestart says when it may).
+export const UPDATING_DETAIL = "the server is updating; try again in a minute";
+export const LEDGER_RESTART_GAP_MS = 60_000;
+
+// The method a stale Ledger said it lacks, or null when the error is
+// anything else. Production says "does not implement the method NAME"; the
+// Workers test pool says "does not implement \"NAME\"".
+export function missingLedgerMethod(err: unknown): string | null {
+  const text = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  const m = /The RPC receiver does not implement (?:the method\s*)?["'`]?([A-Za-z_$][\w$]*)/.exec(text);
+  return m ? m[1] : null;
+}
+
+// The last restart a Ledger made for an update: when, the DEPLOYED_MAIN its
+// code was built for, and the one the Worker that asked runs.
+export type LedgerRestart = { at: number; from: string | null; for: string | null };
+
+// Whether a Ledger restarts. `ledger` is the DEPLOYED_MAIN its own code was
+// built for, `worker` the one the asking Worker runs (null when unset, as in
+// local development); `missing` says the Worker saw a method missing. A
+// Ledger restarts when the two differ or a method was missing, at most once
+// a minute, and not again for the same Worker once a restart for it brought
+// the same code back (the asker was the older one, as an old Worker isolate
+// may be for a moment after a deploy).
+export function ledgerRestart(o: { ledger: string | null; worker: string | null; last: LedgerRestart | null; now: number; missing?: boolean }): { restart: boolean; why: string } {
+  if (!o.missing) {
+    if (!o.ledger || !o.worker) return { restart: false, why: "unknown" };
+    if (o.ledger === o.worker) return { restart: false, why: "current" };
+  }
+  if (o.last && o.now - o.last.at < LEDGER_RESTART_GAP_MS) return { restart: false, why: "too_soon" };
+  if (o.last && o.worker && o.last.for === o.worker && o.last.from === o.ledger) return { restart: false, why: "no_change" };
+  return { restart: true, why: o.missing ? "missing_method" : "stale" };
+}
+
+// The stored last restart, or null when there is none or it cannot be read.
+export function parseLedgerRestart(raw: unknown): LedgerRestart | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const v = JSON.parse(raw) as Partial<LedgerRestart>;
+    if (typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+    const str = (x: unknown) => (typeof x === "string" && x ? x : null);
+    return { at: v.at, from: str(v.from), for: str(v.for) };
+  } catch { return null; }
+}
+
+// Private files (t645): files a project keeps on the developer's Macs and
+// never pushes, such as PROJECT.md. Each is named by its path in the
+// checkout, kept in the project's iCloud folder and linked into the checkout.
+
+// A private path as the developer typed it, made plain: relative to the
+// checkout, no "." or ".." part, no empty part, nothing in .git. A trailing
+// slash names a folder and is dropped.
+export function privatePath(input: string): { path: string } | { error: string } {
+  const raw = String(input ?? "");
+  const shown = JSON.stringify(raw);
+  if (!raw.trim()) return { error: "a private path is empty" };
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return { error: `${shown} holds a control character` };
+  if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw)) return { error: `${shown} is absolute; name it relative to the checkout` };
+  const path = raw.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  // The name as it will be kept is what must come back the same from the
+  // list in iCloud (parsePrivateList): one name per line, # opening a
+  // comment, so it has no space or tab at either end and no leading #
+  // (Astra's second review of t645: ./#plan was kept as #plan).
+  if (path !== path.trim()) return { error: `${shown} begins or ends with a space` };
+  if (path.startsWith("#")) return { error: `${shown} begins with #, which the list of private files reads as a comment` };
+  const parts = path.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return { error: `${shown} has an empty, "." or ".." part; name the file as it sits in the checkout` };
+  if (foldPath(parts[0]) === ".git") return { error: `${shown} is inside .git` };
+  if (foldPath(path) === PRIVATE_LIST) return { error: `${shown} is the list of private files itself, which stays in the folder that keeps them` };
+  return { path };
+}
+
+// The list of a project's private files, kept beside them in the project's
+// iCloud folder so it follows the developer between Macs: one path per line,
+// relative to the checkout; # starts a comment. It is data from iCloud, so
+// every line is read as `private add` reads what the developer types.
+export const PRIVATE_LIST = ".atelier-private";
+
+export function parsePrivateList(text: string): { paths: string[]; refused: { line: number; text: string; error: string }[] } {
+  const paths: string[] = [], refused: { line: number; text: string; error: string }[] = [];
+  String(text ?? "").split("\n").forEach((raw, i) => {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim() || line.trimStart().startsWith("#")) return;
+    const r = privatePath(line);
+    if ("error" in r) refused.push({ line: i + 1, text: line, error: r.error });
+    else if (!paths.includes(r.path)) paths.push(r.path);
+  });
+  return { paths, refused };
+}
+
+// The list's text: a comment saying what it is, then each path once, sorted.
+export function privateListText(paths: string[]): string {
+  const sorted = [...new Set(paths)].sort();
+  return `# Private files of this project (atelier private add): one path per line, relative to the checkout.\n# Atelier links each into the checkout on every Mac and never pushes them.\n${sorted.map((p) => `${p}\n`).join("")}`;
+}
+
+// The paths among `paths` that are private or inside a private folder,
+// compared as a Mac compares names: letter case and Unicode form aside.
+export function privatePathsAmong(paths: string[], privates: string[]): string[] {
+  const folded = privates.map(foldPath);
+  return paths.filter((path) => {
+    const f = foldPath(path);
+    return folded.some((p) => f === p || f.startsWith(`${p}/`));
+  });
+}
+
+// Whether an iCloud folder is a project's: its name, with letter case,
+// spaces, hyphens and underscores set aside, is the project's ("ikon weblog"
+// for ikon-weblog, "AssetsApp" for assetsapp).
+export function privateFolderMatches(project: string, folder: string): boolean {
+  const plain = (s: string) => foldPath(s).replace(/[\s_-]+/g, "");
+  return !!plain(project) && plain(project) === plain(folder);
+}
+
+// The line of .git/info/exclude that ignores one private path: anchored at
+// the checkout's root, so a leading # or ! is plain, with the characters a
+// pattern reads specially escaped, trailing spaces included.
+export function privateExcludeLine(path: string): string {
+  return `/${path.replace(/[\\*?[\]]/g, "\\$&").replace(/ +$/, (spaces) => "\\ ".repeat(spaces.length))}`;
 }

@@ -1,16 +1,10 @@
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
-import { WORKSPACE_REASON_MAX } from "../src/check-failure.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
-import { tmpdir } from "node:os";
-
-import { ROUTE_LEVEL } from "../src/route-level.ts";
-import { runLand } from "../cli/land.mjs";
-import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, landingLeasePollMs } from "../src/landing-lease.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { git, landFixture, grantedTo, recordedAt, mainMovesDuringReview } from "./land-fixture.mjs";
+import { criteriaOf } from "../src/criteria.ts";
 
 // atelier land (t187) against a stand-in server and local bare repositories,
 // as the other CLI tests run merge: the landing lease refuses a second
@@ -44,214 +38,14 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, landin
 // repo with no route-level file, lands as it is, the comparison skipped
 // and the landing going on.
 
-const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+// Split (t550) to stay well under test/guard.mjs's per-file limit: this file
+// holds the clean landing, its review and the lease for the merge alone;
+// test/land-wait-merge.test.mjs the --wait queue, conflicts and route levels;
+// test/land-lease-workflow.test.mjs signals, the heartbeat, takeovers, the
+// landing Workflow and the write token. The fixture and helpers are in
+// test/land-fixture.mjs.
 
-function root(t) { const p = mkdtempSync(join(tmpdir(), "atelier-landcmd-")); t.after(() => rmSync(p, { recursive: true, force: true })); return p; }
-
-// The owner's checkout, the baseline, and each task's fork and workspace,
-// served by a stand-in ledger that answers from `box`: the items' states, the
-// landing lease, the server's version (route level and commit), whether the
-// gate needs a review (the reviewer approves, or rejects when `approve` is
-// false, on the first poll after the request; a request naming a reviewer
-// with `wanted` is made even where the gate needs none, as the server does),
-// and every request made, so a test can say what a landing
-// changed.
-async function landFixture(t, { mainChange = null, taskChange = "task\n", conflict = false, seedRouteLevel = null } = {}) {
-  const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), checkout = join(p, "checkout"), config = join(p, "config"), cache = join(p, "cache");
-  mkdirSync(seed); mkdirSync(config);
-  git(seed, "init", "-b", "main"); git(seed, "config", "user.name", "Fixture"); git(seed, "config", "user.email", "fixture@example.invalid");
-  writeFileSync(join(seed, "work.txt"), "base\n");
-  // A seed route level, from which a test can raise it on the task's side,
-  // on main's, or both, and see what the landing's merge makes of that.
-  if (seedRouteLevel !== null) {
-    mkdirSync(join(seed, "src"), { recursive: true });
-    writeFileSync(join(seed, "src", "route-level.ts"), `export const ROUTE_LEVEL = ${seedRouteLevel};\n`);
-  }
-  git(seed, "add", "."); git(seed, "commit", "-m", "Initial");
-  git(p, "clone", "--bare", seed, baseline); git(p, "clone", baseline, checkout);
-  for (const dir of [checkout]) { git(dir, "config", "user.name", "Fixture"); git(dir, "config", "user.email", "fixture@example.invalid"); }
-  const forkHead = (id) => { try { return git(p, "--git-dir", join(p, `fork-${id}.git`), "rev-parse", "main"); } catch { return null; } };
-  // `review.approveAfter` is how many polls of the task pass before the
-  // reviewer answers (never, when null); `review.claimed` makes the request
-  // claimed as soon as it is made, as a review.claimed event. `items` and `queue` answer
-  // the project's items and the runner queue, which the wait explains from.
-  const box = {
-    states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL, policy: {},
-    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] },
-    requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
-    // The evidence each check posts, as the server records it (t436): the
-    // landing's failure summary reads the failed checks from it.
-    evidence: { t1: [], t2: [] }, evidenceId: 0,
-    wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
-  };
-  // The tasks fork from the baseline before main moves, so a landing has
-  // main's commits to merge; each has a workspace in the cache's layout.
-  for (const id of ["t1", "t2"]) {
-    const fork = join(p, `fork-${id}.git`), workspace = join(cache, "work", "proj", id);
-    git(p, "clone", "--bare", baseline, fork); mkdirSync(dirname(workspace), { recursive: true }); git(p, "clone", fork, workspace);
-    for (const dir of [workspace]) { git(dir, "config", "user.name", "Fixture"); git(dir, "config", "user.email", "fixture@example.invalid"); }
-    // A claim records its write token's expiry (t275); these are far off, so
-    // no landing here refreshes them.
-    for (const [key, value] of Object.entries({ project: "proj", item: id, actor: "codex/test", branch: "main", "write-token-expires-at": "2999-01-01T00:00:00.000Z" })) git(workspace, "config", `atelier.${key}`, value);
-    writeFileSync(join(workspace, "work.txt"), taskChange); git(workspace, "add", "."); git(workspace, "commit", "-m", `Task ${id}`); git(workspace, "push", "-q", "origin", "main");
-    box.states[id] = "submitted";
-  }
-  // A commit on main after the tasks forked, so a landing has main to merge.
-  let mainCommit = null;
-  if (mainChange) {
-    writeFileSync(join(checkout, mainChange.file), mainChange.text); git(checkout, "add", "."); git(checkout, "commit", "-m", mainChange.message);
-    git(checkout, "push", "-q", "origin", "main");
-    mainCommit = git(checkout, "rev-parse", "HEAD");
-  }
-  const repoHead = git(resolve("."), "rev-parse", "HEAD");
-  const detail = (id) => {
-    const head = forkHead(id);
-    // A tier review (`box.tier`) answers on the first poll after the request, before the gate's reviewer.
-    if (id === "t1" && box.review.pending && box.tier && !box.tier.given) { box.tier.given = true; box.reviews.t1.push({ by: box.tier.by, approve: box.tier.approve, tier: true, head, note: "Tier fixture.", at: new Date().toISOString() }); }
-    const due = id === "t1" && box.review.pending && box.review.approveAfter !== null && box.review.approveAfter-- <= 0;
-    const reviews = due ? (box.reviews.t1.push({ by: box.review.reviewer, approve: box.review.approve, head, note: box.review.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString() }), box.review.pending = false, box.reviews.t1) : box.reviews[id];
-    const state = box.states[id];
-    const events = [
-      ...(id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : []),
-      // A skip names the request it refused (t353); the fixture's open
-      // request is number 1 unless a test asks for another.
-      ...(box.review.skips ?? []).map((s, i) => ({ seq: 100 + i, itemId: id, at: new Date().toISOString(), actor: s.runner, kind: "review.skipped", data: { head, runner: s.runner, request: s.request ?? 1 } })),
-    ];
-    return {
-      item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}), ...box.policy },
-      gate: { ready: true, outOfScope: [], blockers: [] }, evidence: box.evidence[id] ?? [], reviews, events,
-    };
-  };
-  const server = createServer(async (req, res) => {
-    let raw = ""; for await (const chunk of req) raw += chunk;
-    const body = raw ? JSON.parse(raw) : {};
-    const url = req.url;
-    box.requests.push({ method: req.method, path: url, body });
-    const item = /\/items\/(t\d+)/.exec(url)?.[1];
-    const head = item ? forkHead(item) : null;
-    let answer = item ? detail(item) : {};
-    const fail = (status, error, detailText) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ error, detail: detailText })); };
-    if (url === "/api/version") answer = { commit: box.version ?? repoHead, ...(box.routeLevel === null ? {} : { routeLevel: box.routeLevel }) };
-    else if (url.endsWith("/landing-workflow")) {
-      // A stand-in for the landing Workflow (t280): the instance the route
-      // remembers, its stage and round, and its status. A test moves it on
-      // through `wf.tick` (after each read) and `wf.onEvent` (each event).
-      const wf = box.wf;
-      const view = () => ({ ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
-      if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
-      else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
-      else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status) && !wf.replace) answer = { ...view(), created: false, ...(wf.attach ?? {}) };
-      // A live instance the server replaces (t430): `wf.replace` names why.
-      else if (wf.instance && wf.replace) { const from = wf.instance; Object.assign(wf, { instance: `land-${item}-r1`, stage: "lease", round: 0, checks: body.checks ?? "container", status: "running" }); wf.started.push(body); answer = { ...view(), created: true, replaced: { from, to: wf.instance, ...wf.replace } }; wf.replace = null; }
-      // The checks mode is recorded as the server records it (t305):
-      // container where the start names none; `wf.noChecksMode` stands in
-      // for a server older than the modes, which records none.
-      else { Object.assign(wf, { instance: `land-${item}-${wf.started.length + 1}`, stage: "lease", round: 0, checks: wf.noChecksMode ? null : body.checks ?? "container", status: "running", files: null, error: null }); wf.started.push(body); answer = { ...view(), created: true }; }
-      res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
-      if (req.method === "GET") wf.tick?.(box);
-      return;
-    }
-    else if (url === "/api/projects/proj/landing-lease") {
-      // The lease and the queue of waiting landings as the server keeps
-      // them (t249): a renewal moves renewedAt on, a lease not renewed for
-      // the expiry is taken over and named as expired, a waiting landing's
-      // ask refreshes its place in the queue (kept, when it had one, so the
-      // order is the order the landings queued) and never takes, and the
-      // lease is handed to the landing that queued first once it is free.
-      const now = new Date().toISOString();
-      // The rows that still count: fresh (their landing keeps asking) and
-      // for a task that could still land.
-      const rows = () => (box.waiting ?? []).filter((w) => !waitingLandingGone(w, Date.now()) && !["merged", "abandoned"].includes(box.states[w.item]));
-      if (req.method === "GET") answer = { lease: box.lease, waiting: rows() };
-      else if (body.cancel === true) {
-        if (!body.item) return fail(400, "bad_item", "a cancel names the task whose landing lease it releases");
-        if (box.lease && box.lease.item !== body.item) return fail(409, "landing_lease", `the landing lease is held for ${box.lease.item}, not ${body.item}: ${box.lease.holder} has been landing ${box.lease.item} since ${box.lease.at.slice(0, 16).replace("T", " ")} UTC, and its lease is left alone. Free it with atelier land ${box.lease.item} --release-lease`);
-        answer = { held: !!box.lease, lease: box.lease }; box.lease = null;
-      }
-      else if (body.renew === true) {
-        if (box.renewFails) return fail(503, "unavailable", "the ledger could not be reached");
-        if (!box.lease || box.lease.item !== body.item) return fail(409, "no_lease", `the landing lease is held for ${box.lease?.item ?? "nobody"}, not ${body.item}`);
-        box.lease = { ...box.lease, renewedAt: now }; answer = { lease: box.lease };
-      }
-      else if (body.queued === true) {
-        // A waiting landing asks again, or leaves the queue.
-        const kept = rows();
-        const mine = kept.findIndex((w) => w.item === body.item);
-        if (body.leave === true) { if (mine >= 0) kept.splice(mine, 1); }
-        else if (mine >= 0) kept[mine] = { ...kept[mine], renewedAt: now };
-        else kept.push({ item: body.item, holder: "owner", at: now, renewedAt: now });
-        box.waiting = kept;
-        answer = { lease: box.lease, waiting: kept };
-      } else {
-        // Another queued landing takes the lease first, once, when a test asks.
-        if (box.takenFirst) { box.lease = box.takenFirst; box.takenFirst = null; }
-        let expired = null;
-        // A lease held for a task that has closed guards nothing, as the
-        // server hands it over; one that lapsed is taken over and named.
-        if (box.lease && box.lease.item !== body.item && !["merged", "abandoned"].includes(box.states[box.lease.item])) {
-          if (!landingLeaseLapsed(box.lease, Date.now())) return fail(409, "landing_lease", `${box.lease.holder} has been landing ${box.lease.item} since ${box.lease.at.slice(0, 16).replace("T", " ")} UTC; one landing runs at a time in this project. Wait for it to finish, run atelier land ${box.lease.item} again to finish or release that landing, or atelier land ${box.lease.item} --release-lease to free the lease`);
-          expired = box.lease;
-        }
-        // A landing that queued earlier still waits: the lease is not this
-        // take's, however its poll landed, and the landings queued behind
-        // the taker are not in its way (t249).
-        const kept = rows();
-        const mine = kept.findIndex((w) => w.item === body.item);
-        const ahead = mine === -1 ? kept : kept.slice(0, mine);
-        if (box.lease?.item !== body.item && ahead.length) {
-          const head = ahead[0];
-          return fail(409, "landing_lease", `${head.holder}'s landing of ${head.item} has been waiting for the lease since ${head.at.slice(0, 16).replace("T", " ")} UTC, first of ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued for it; landings take the lease in the order they queued, so ${body.item} cannot take it ahead of them`);
-        }
-        box.waiting = rows().filter((w) => w.item !== body.item);
-        box.lease = { item: body.item, holder: "owner", at: now, renewedAt: now };
-        answer = { item: { id: body.item, state: box.states[body.item] }, expired };
-      }
-    } else if (url === "/api/projects/proj/items") answer = box.items;
-    else if (url === "/api/queue") answer = box.queue;
-    else if (url === "/api/runners") answer = box.runners;
-    else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") (box.wf.baseTokenAt.push(box.wf.stage), answer = { remote: baseline, token: "fixture", defaultBranch: "main" });
-    else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
-    else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
-    else if (url.endsWith("/evidence")) {
-      if (item) (box.evidence[item] ??= []).push({ itemId: item, claim: body.claim, grade: body.kind === "check" ? "observed" : "reported", head: body.head, passed: body.kind === "check" ? body.passed === true : null, by: "codex/test", at: new Date().toISOString(), where: "runner", changedPaths: body.changedPaths ?? null, outputTail: body.outputTail ?? "", id: ++box.evidenceId });
-      answer = item ? detail(item) : {};
-    }
-    else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
-    else if (url.endsWith("/review-request")) {
-      if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
-      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer, request: box.review.request ?? 1 }; }
-    }     else if (url.endsWith("/accept")) {
-      assert.equal(body.head, head);
-      box.states[item] = "accepted"; answer = detail(item).item;
-    } else if (url.endsWith("/landing")) answer = {};
-    else if (url.endsWith("/merged")) {
-      box.states[item] = "merged"; answer = { ...answer.item, state: "merged" };
-      // The moment the server records the merge it treats the merged task's
-      // lease as free (landingLive), so a landing queued with --wait takes
-      // it — before the landing that finished releases it. A test asks for
-      // that take by naming the queued task here.
-      if (box.takeOverOnMerged) box.lease = { item: box.takeOverOnMerged, holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
-    }
-    else if (url.endsWith("/land")) answer = { item: { id: item, state: box.states[item] } };
-    else if (req.method === "POST") answer = {};
-    res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
-  });
-  await new Promise((ok) => server.listen(0, "127.0.0.1", ok)); t.after(() => server.close());
-  const url = `http://127.0.0.1:${server.address().port}`;
-  writeFileSync(join(config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: { proj: { path: checkout, branch: "main" } } }));
-  const run = async (cwd, ...args) => {
-    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ATELIER_LAND_POLL_MS: "50", ...fx.env } });
-    t.after(() => child.kill("SIGKILL"));
-    let output = ""; child.stdout.on("data", (s) => { output += s; fx.onOutput?.(output); }); child.stderr.on("data", (s) => output += s);
-    const status = await new Promise((ok) => child.on("close", ok));
-    return { status, output };
-  };
-  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
-  return fx;
-}
-
-test("a clean landing takes the lease, merges main, regenerates, checks, waits for the review, accepts and merges", async (t) => {
+test("a clean landing merges main, checks and is reviewed without the lease, then takes it for the merge alone (t550)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const before = { fork: f.forkHead("t1"), checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
@@ -270,22 +64,249 @@ test("a clean landing takes the lease, merges main, regenerates, checks, waits f
   assert.equal(parents[1], before.checkout); assert.equal(parents[2], head);
   assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), merged);
   assert.equal(f.box.states.t1, "merged");
-  // The lease was taken for t1 and released at the end.
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.item === "t1"));
+  // The lease was taken for t1 once, and released at the end.
+  assert.equal(grantedTo(f).length, 1);
   assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
   assert.equal(f.box.lease, null);
   // The review was requested and the verdict waited for.
   const ask = f.posts("/review-request").at(-1);
   assert.equal(ask.body.reviewer, undefined); assert.equal(ask.path, "/api/projects/proj/items/t1/review-request");
-  // Each step is recorded, in order, with its duration and the commits from main.
+  // Each step is recorded, in order, with its duration and the commits from
+  // main: the lease comes after the checks and the review, before the
+  // acceptance and the merge alone.
   const steps = f.posts("/land").map((x) => x.body.step);
-  assert.deepEqual(steps, ["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
+  assert.deepEqual(steps, ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  // Nothing asked the lease route before the review was decided: no take,
+  // no renewal, no queue.
+  const firstLease = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.method === "POST");
+  assert.ok(firstLease > recordedAt(f, "review"), "the lease was asked for before the review was decided");
+  assert.ok(firstLease > f.box.requests.findIndex((x) => x.path.endsWith("/review-request")));
   const events = f.posts("/land");
   for (const e of events) assert.ok(Number.isFinite(e.body.ms) && e.body.ms >= 0, `${e.body.step} records no duration`);
   assert.deepEqual(events.find((e) => e.body.step === "merge").body.fromMain, [f.mainCommit]);
   assert.deepEqual(events.find((e) => e.body.step === "regenerate").body, { step: "regenerate", ms: events.find((e) => e.body.step === "regenerate").body.ms, command: f.box.regen, changed: true });
   assert.equal(events.find((e) => e.body.step === "review").body.verdict, "approve");
   assert.equal(events.find((e) => e.body.step === "merged").body.mergeCommit, merged);
+  // Under the lease, main was read again and found where the head was merged with it.
+  assert.match(r.output, new RegExp(`main is still at ${f.mainCommit.slice(0, 8)}, the commit ${head.slice(0, 8)} was checked and reviewed against\\.`));
+  assert.match(r.output, /Landing lease taken for t1 \(submitted\) for its merge alone/);
+});
+
+// t550 pre-review finding: nothing on the server held a head to the main it
+// was checked against, so a landing that lost its lease before it merged
+// could merge into a main another landing had moved. The landing records
+// the main it confirmed under the lease, and the server checks it itself.
+test("under the lease the landing records the main it confirmed, before it accepts (t550)", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const main = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(f.box.confirmed, [{ item: "t1", main }]);
+  const confirm = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.body.confirm === true);
+  assert.ok(confirm > recordedAt(f, "lease") && confirm < recordedAt(f, "accept"), "main is confirmed under the lease, before the acceptance");
+});
+
+test("a server that reads main elsewhere than this machine fetched it stops the landing unaccepted (t550)", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.serverMain = "f".repeat(40);
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the server reads main at ffffffff, not [a-f0-9]{8} as this machine fetched it, so t1 is not accepted or merged/);
+  assert.equal(f.posts("/accept").length, 0);
+  assert.notEqual(f.box.states.t1, "merged");
+  assert.equal(f.box.lease, null);
+});
+
+test("a server that records the landing's timing gets the time before the lease and the time holding it (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  const events = f.posts("/land");
+  assert.deepEqual(events.map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  const lease = events.find((e) => e.body.step === "lease").body;
+  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
+  assert.equal(lease.head, head);
+  assert.equal(lease.main, f.mainCommit);
+  assert.ok(Number.isFinite(lease.beforeLease) && lease.beforeLease > 0, "no time before the lease");
+  assert.ok(Number.isFinite(lease.waited) && lease.waited >= 0);
+  const release = events.find((e) => e.body.step === "release").body;
+  assert.ok(Number.isFinite(release.ms) && release.ms >= 0);
+  assert.equal(release.reason, "merged");
+  assert.match(r.output, /t1 spent \d+ (s|min) landing without the lease and held it \d+ s\./);
+});
+
+test("a server from before t550 lands the same way, the timing said rather than recorded, and refuses --workflow saying to deploy", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.capabilities = null;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged"]);
+  assert.deepEqual(Object.keys(f.posts("/land").find((x) => x.body.step === "lease").body).sort(), ["head", "ms", "step"]);
+  assert.match(r.output, /t1 spent \d+ (s|min) landing without the lease and held it \d+ s\./);
+  assert.doesNotMatch(r.output, /could not be recorded/);
+  const wf = await f.run(f.checkout, "land", "t2", "--workflow");
+  assert.equal(wf.status, 1, wf.output);
+  assert.match(wf.output, /lacks capabilities land\.review-first\.v1.*then run atelier land t2 --workflow again \(or land without --workflow, which needs no deploy\)/s);
+  assert.deepEqual(f.posts("/landing-workflow"), []);
+});
+
+test("a rejection before the lease ends the landing with the lease never asked for (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.review.approve = false;
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /codex\/gpt-6-astra rejected t1 at \w+: Land fixture rejects\.+ The task goes back to its holder with the findings; the merge of main stays in its workspace, and the landing lease was never taken/);
+  assert.deepEqual(f.posts("/landing-lease"), []);
+  assert.deepEqual(f.box.leaseLog, []);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review"]);
+  assert.equal(f.posts("/accept").length, 0);
+});
+
+test("a failed check before the lease ends the landing with no review asked and the lease never asked for (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.checks = ["exit 3"];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /atelier check failed/);
+  assert.deepEqual(f.posts("/landing-lease"), []);
+  assert.deepEqual(f.posts("/review-request"), []);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check"]);
+});
+
+test("a gate that does not hold the reviewed head ready stops the landing before the lease (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  f.box.gate = { ready: false, outOfScope: [], blockers: ["npm test has no observed passing result at the head"] };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /t1 at \w+ is not ready to accept, so the landing stops before taking the lease: npm test has no observed passing result at the head\. Nothing was merged/);
+  assert.deepEqual(f.posts("/landing-lease"), []);
+  assert.equal(f.posts("/accept").length, 0);
+});
+
+test("main moved before the lease and merges clean: the lease is released unmerged, main merged again and the new head reviewed again (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  const moved = await mainMovesDuringReview(f);
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.ok(moved());
+  const main2 = git(f.p, "--git-dir", f.baseline, "rev-parse", "main~1");
+  assert.match(r.output, /main moved from \w{8} to \w{8} while t1 was checked and reviewed, so \w{8} is not what main would become: released the lease without accepting or merging, and merging main again\./);
+  // Two rounds, two heads reviewed; the lease taken twice and released once
+  // between, with nothing accepted until the second take.
+  const asks = f.box.reviewAsks.filter((x) => x.item === "t1");
+  assert.equal(asks.length, 2);
+  assert.notEqual(asks[0].head, asks[1].head);
+  assert.deepEqual(f.box.leaseLog.map((x) => `${x.item} ${x.kind}`), ["t1 take", "t1 release", "t1 take", "t1 release"]);
+  const accepted = f.box.requests.findIndex((x) => x.method === "POST" && x.path.endsWith("/accept"));
+  assert.ok(accepted > f.box.leaseLog[2].i, "accepted before the lease of the second round");
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), [
+    "merge", "regenerate", "push", "check", "submit", "review", "lease", "release",
+    "merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release",
+  ]);
+  assert.match(f.posts("/land").find((x) => x.body.step === "release").body.reason, /^main moved from [a-f0-9]{40} to [a-f0-9]{40}$/);
+  // The merged head holds both main's new commit and the task.
+  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
+  assert.equal(asks[1].head, head);
+  git(f.workspace("t1"), "merge-base", "--is-ancestor", main2, head);
+  assert.equal(readFileSync(join(f.checkout, "other.txt"), "utf8"), "another task\n");
+  assert.equal(readFileSync(join(f.checkout, "work.txt"), "utf8"), "task\n");
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("main moved before the lease: an approval the server carries over the clean merge needs no second review (t550, t459 where deployed)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  await mainMovesDuringReview(f);
+  // The server answers the second round's ask as a server with t459's
+  // approval carry would: the approval covers the clean merge of main.
+  const ask = f.box.review;
+  let asked = 0;
+  Object.defineProperty(ask, "needed", { get: () => ++asked === 1, configurable: true });
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /main moved from/);
+  assert.match(r.output, /No review request was needed: an independent approval already covers this change\./);
+  assert.deepEqual(f.posts("/land").filter((x) => x.body.step === "review").map((x) => x.body.verdict), ["approve", "none-needed"]);
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("main moved before the lease and conflicts: the lease is released unmerged and the landing stops on the conflict (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  await mainMovesDuringReview(f, { file: "work.txt", text: "main's own line\n" });
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /main moved from/);
+  assert.match(r.output, /stops on conflicts; nothing was regenerated\.\nSource conflicts to resolve:\n  work\.txt\n/);
+  assert.deepEqual(f.box.leaseLog.map((x) => `${x.item} ${x.kind}`), ["t1 take", "t1 release"]);
+  assert.equal(f.box.lease, null);
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+});
+
+test("main that keeps moving under the lease stops the landing after its limit, unmerged (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.env = { ATELIER_LAND_MAIN_MOVED_ROUNDS: "1" };
+  await mainMovesDuringReview(f);
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /main moved under the lease 1 times .* so the landing stops without merging t1; t1 stays submitted/);
+  assert.equal(f.box.lease, null);
+  assert.equal(f.posts("/accept").length, 0);
+});
+
+// Criterion 3 of t550: two landings of different tasks check and review at
+// the same time, and only their merges take turns.
+test("two landings check and review at the same time, and only their merges take turns (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.reviewOf = { t2: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, approveAfter: null } };
+  // Neither reviewer answers until both reviews are open at once.
+  f.box.review.approveAfter = null;
+  let together = false, leaseAsks = null;
+  const both = setInterval(() => {
+    if (together || !f.box.review.pending || !f.box.reviewOf.t2.pending) return;
+    together = true;
+    // No lease was asked for by either landing while both were in review.
+    leaseAsks = f.posts("/landing-lease").length;
+    f.box.review.approveAfter = 0;
+    f.box.reviewOf.t2.approveAfter = 0;
+  }, 20);
+  t.after(() => clearInterval(both));
+  const [one, two] = await Promise.all([f.run(f.checkout, "land", "t1"), f.run(f.checkout, "land", "t2")]);
+  assert.equal(one.status, 0, one.output);
+  assert.equal(two.status, 0, two.output);
+  assert.ok(together, "the two reviews were never open at the same time");
+  assert.equal(leaseAsks, 0, "a landing asked for the lease while both were in review");
+  assert.equal(f.box.states.t1, "merged");
+  assert.equal(f.box.states.t2, "merged");
+  // The lease went to one landing at a time: every take follows the end of
+  // the holding before it — its release, or its task's merge, after which
+  // the server treats the lease as free (t237).
+  const log = f.box.leaseLog;
+  const mergedAt = (id) => f.box.requests.findIndex((x) => x.method === "POST" && x.path === `/api/projects/proj/items/${id}/merged`);
+  let holder = null;
+  for (const e of log) {
+    if (e.kind === "release") { if (holder?.item === e.item) holder = null; continue; }
+    if (holder && holder.item !== e.item) {
+      const merged = mergedAt(holder.item);
+      assert.ok(merged >= 0 && merged < e.i, `${e.item} took the lease while ${holder.item} held it: ${JSON.stringify(log)}`);
+    }
+    holder = e;
+  }
+  // Whichever merged second found main moved by the first, merged main again
+  // and was reviewed again before it merged.
+  const second = one.output.includes("main moved from") ? "t1" : "t2";
+  assert.match((second === "t1" ? one : two).output, /main moved from/);
+  assert.ok(f.box.reviewAsks.filter((x) => x.item === second).length >= 2);
 });
 
 // With no --reviewer the server suggests the reviewer (t370): the landing
@@ -310,6 +331,20 @@ test("--reviewer waits for that review and lands on approval even where the gate
   assert.match(r.output, /Review requested for antigravity\/gemini-3\.1-pro/);
   assert.match(r.output, /antigravity\/gemini-3\.1-pro approved t1/);
   assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "approve");
+  assert.equal(f.box.states.t1, "merged");
+});
+
+// micahapp t9 (t627): --reviewer naming another reviewer while an earlier
+// request is unclaimed redirects it on the server, and the landing says which
+// request it withdrew before it waits on the new one.
+test("--reviewer says which unclaimed request for another reviewer it withdrew (t627)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.review.withdrew = [{ request: 7, reviewer: "codex/gpt-6-astra" }];
+  f.box.review.request = 8;
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "antigravity/gemini-3.1-pro");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Withdrew the unclaimed review request 7 for codex\/gpt-6-astra, since --reviewer names antigravity\/gemini-3\.1-pro\.\nReview requested for antigravity\/gemini-3\.1-pro/);
   assert.equal(f.box.states.t1, "merged");
 });
 
@@ -459,20 +494,22 @@ test("a needed:false answer for failing checks prints the server's reason, never
   assert.doesNotMatch(r.output.slice(r.output.indexOf("No review request was needed")), /protected path|touched no/);
 });
 
-test("--no-review leaves the task submitted, accepts and merges nothing, and releases the lease", async (t) => {
+test("--no-review leaves the task submitted, accepts and merges nothing, and never takes the lease", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const before = git(f.checkout, "rev-parse", "HEAD");
   const r = await f.run(f.checkout, "land", "t1", "--no-review");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /left for you to settle the review by hand/);
+  assert.match(r.output, /The landing lease was never taken\./);
   assert.equal(f.box.states.t1, "submitted");
   assert.equal(f.posts("/accept").length, 0);
   assert.equal(f.posts("/merged").length, 0);
   assert.equal(f.posts("/review-request").length, 0);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
+  assert.deepEqual(f.posts("/landing-lease"), []);
   assert.equal(f.box.lease, null);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review"]);
   const dry = await f.run(f.checkout, "land", "t2", "--no-review", "--dry-run");
   assert.doesNotMatch(dry.output, /accept t2 at the pushed head/);
 });
@@ -496,1623 +533,116 @@ test("a plan item is refused before the lease, pointing at atelier merge and ate
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
 });
 
-test("the lease refuses a second landing with who holds it and since when", async (t) => {
+test("the lease held by another landing does not hold up the checks and the review; the landing waits its turn for the merge alone (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const since = "2026-10-06T09:30:00.000Z";
   // Taken this morning and renewed just now: live.
   f.box.lease = { item: "t2", holder: "owner", at: since, renewedAt: new Date().toISOString() };
-  const before = git(f.workspace("t1"), "rev-parse", "HEAD");
-  f.box.requests.length = 0;
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /owner has been landing t2 since 2026-10-06 09:30 UTC/);
-  assert.match(r.output, /atelier land t2 --release-lease/);
-  assert.match(r.output, /atelier land t1 --wait queues behind it/);
-  // The server decided: the one request for the lease was refused, nothing
-  // was released, the lease stands, and the workspace did not move.
-  assert.deepEqual(f.posts("/landing-lease").map((x) => x.body), [{ item: "t1" }]);
-  assert.equal(f.box.lease.item, "t2");
-  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
-  assert.ok(!existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
-  assert.deepEqual(f.posts("/land"), []);
-});
-
-// --wait (t223): the landing queues for the lease instead of refusing. Each
-// lease here is renewed just now, so it is live under t214's expiry: only
-// its task's state, or its holder letting it go, frees it.
-const WAITING = /Waiting behind (\S+)'s landing of (t\d) \(since ([^)]+)\); t1 starts as soon as the lease is free\./g;
-
-test("a lease held for a task that has closed guards nothing, so the landing starts without --wait", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
-  f.box.states.t2 = "merged";
-  const r = await f.run(f.checkout, "land", "t1", "--no-review");
-  assert.equal(r.status, 0, r.output);
-  assert.doesNotMatch(r.output, /already in progress|Waiting behind/);
-  assert.equal(f.box.lease, null);
-});
-
-test("--wait queues behind another landing, says whose each time it changes, and starts once the lease is free", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
   f.env = { ATELIER_LAND_POLL_MS: "40" };
-  let freedAt = null;
-  f.onOutput = (out) => {
-    const seen = [...out.matchAll(WAITING)].length;
-    // The landing of t2 is started again (the lease moves to a new time), then ends.
-    if (seen === 1 && f.box.lease?.at === "2026-10-06T09:30:00.000Z") setTimeout(() => { f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T10:05:00.000Z", renewedAt: new Date().toISOString() }; }, 120);
-    if (seen === 2 && freedAt === null) { freedAt = -1; setTimeout(() => { f.box.lease = null; freedAt = f.box.requests.length; }, 120); }
-  };
-  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
-  assert.equal(r.status, 0, r.output);
-  const waits = [...r.output.matchAll(WAITING)].map((m) => m.slice(1));
-  assert.deepEqual(waits, [["owner", "t2", "2026-10-06 09:30 UTC"], ["owner", "t2", "2026-10-06 10:05 UTC"]]);
-  // It polled while it waited (each poll an ask that refreshed its place in
-  // the server's queue) and took the lease only once it was free (the
-  // release at the end names t1 too, t214, and is not a take).
-  const takes = f.box.requests.map((x, i) => ({ ...x, i })).filter((x) => x.method === "POST" && x.path.endsWith("/landing-lease") && x.body.item === "t1" && !x.body.cancel && !x.body.renew && x.body.queued !== true);
-  assert.equal(takes.length, 1);
-  assert.ok(freedAt > 0 && takes[0].i >= freedAt, "the lease was taken before it was free");
-  assert.ok(f.posts("/landing-lease").filter((x) => x.body.queued === true).length > 3, "the landing asked again while it waited");
-  assert.match(r.output, /Landing lease taken for t1/);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review"]);
-  assert.equal(f.box.lease, null);
-});
-
-test("--wait queues again when another queued landing takes the lease first", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.takenFirst = { item: "t2", holder: "owner", at: "2026-10-06T11:00:00.000Z", renewedAt: new Date().toISOString() };
-  f.env = { ATELIER_LAND_POLL_MS: "40" };
-  let freeing = false;
-  f.onOutput = (out) => {
-    if (!freeing && [...out.matchAll(WAITING)].length === 1) { freeing = true; setTimeout(() => { f.box.lease = null; }, 120); }
-  };
-  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-06 11:00 UTC\)/);
-  assert.equal(f.posts("/landing-lease").filter((x) => x.body.item === "t1" && !x.body.cancel && !x.body.renew && x.body.queued !== true).length, 2);
-  assert.equal(f.posts("/land").filter((x) => x.body.step === "lease").length, 1);
-  assert.equal(f.box.lease, null);
-});
-
-// The queue's order (t249): a landing queued with --wait takes the lease in
-// its turn, not whenever its poll happens to land on a free lease. t247 once
-// took it ahead of t245, which had waited longer and was the one its plan
-// needed (2026-10-07); the server now keeps the waiting landings in the
-// order they queued and hands the lease down that order.
-test("--wait keeps the queue's order: the landing that queued first takes the lease first, however the polls land", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
-  // t2's landing queued for the lease at 09:14; t1 queues behind it now, and
-  // once the lease frees t1's polls land while t2's row still waits.
-  const queuedAt = "2026-10-07T09:14:00.000Z";
-  f.box.waiting = [{ item: "t2", holder: "owner", at: queuedAt, renewedAt: new Date().toISOString() }];
-  f.env = { ATELIER_LAND_POLL_MS: "40" };
-  const takes = () => f.posts("/landing-lease").filter((x) => x.body.item === "t1" && !x.body.cancel && !x.body.renew && x.body.queued !== true);
-  let tookEarly = false;
-  let phase = 0;
-  f.onOutput = (out) => {
-    if (phase === 0 && out.includes("Waiting behind owner's landing of t2 (since 2026-10-07 09:00 UTC)")) {
-      phase = 1;
-      setTimeout(() => { f.box.lease = null; }, 120);
-    } else if (phase === 1 && out.includes("Waiting for the lease behind 1 landing queued ahead of t1")) {
-      phase = 2;
-      // The lease is free and this landing's poll has landed: it must not
-      // have taken the lease ahead of the landing that queued first.
-      tookEarly = takes().length > 0;
-      // The landing that queued first takes it (its poll lands now) and
-      // finishes, releasing the lease.
-      setTimeout(() => {
-        f.box.waiting = f.box.waiting.filter((w) => w.item !== "t2");
-        f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:31:00.000Z", renewedAt: new Date().toISOString() };
-        setTimeout(() => { f.box.lease = null; }, 150);
-      }, 120);
-    }
-  };
-  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
-  assert.equal(r.status, 0, r.output);
-  assert.equal(tookEarly, false, "t1 took the free lease ahead of the landing that queued first");
-  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-07 09:00 UTC\), with 1 landing queued ahead of t1: t2 \(queued 2026-10-07 09:14 UTC\); t1 starts when its turn comes, in the order the landings queued\./);
-  assert.match(r.output, /Waiting for the lease behind 1 landing queued ahead of t1: t2 \(queued 2026-10-07 09:14 UTC\); t1 takes the lease when its turn comes, in the order the landings queued\./);
-  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-07 09:31 UTC\); t1 starts as soon as the lease is free\./);
-  // It asked again while it waited, took the lease once, in its turn, and
-  // ran its landing to the submitted step (--no-review leaves the rest).
-  assert.ok(f.posts("/landing-lease").filter((x) => x.body.queued === true && x.body.item === "t1").length > 2, "the landing asked again while it waited");
-  assert.equal(takes().length, 1);
-  assert.match(r.output, /Landing lease taken for t1/);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review"]);
-  assert.equal(f.box.states.t1, "submitted");
-  assert.equal(f.box.lease, null);
-});
-
-test("a landing without --wait cannot take the lease ahead of one that queued for it, and is told to queue", async (t) => {
-  const f = await landFixture(t);
-  f.box.waiting = [{ item: "t2", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /owner's landing of t2 has been waiting for the lease since 2026-10-07 09:14 UTC, first of 1 landing queued for it; landings take the lease in the order they queued, so t1 cannot take it ahead of them; or atelier land t1 --wait queues behind it and starts when its turn comes/);
-  // One take was asked for and refused; nothing was landed or recorded.
-  assert.deepEqual(f.posts("/landing-lease").map((x) => x.body), [{ item: "t1" }]);
-  assert.deepEqual(f.posts("/land"), []);
-  assert.equal(f.box.lease, null);
-  assert.equal(f.box.states.t1, "submitted");
-});
-
-// The queue a landing reads is the server's answer already pruned (a row
-// whose landing stopped asking for the expiry's span no longer counts), so
-// the CLI judges no row by its own machine's clock — a clock ahead of the
-// server's would drop a live row and jump the queue.
-test("a row whose landing stopped asking no longer counts: the landing reads the queue as the server pruned it", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
-  // t3 queued ahead of this landing but stopped asking more than the expiry
-  // ago; the server drops its row before answering, so t1 waits behind the
-  // holder alone and never names t3.
-  const gone = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS - 60_000).toISOString();
-  f.box.waiting = [{ item: "t3", holder: "owner", at: "2026-10-07T08:00:00.000Z", renewedAt: gone }];
-  f.env = { ATELIER_LAND_POLL_MS: "40" };
-  let freeing = false;
-  f.onOutput = (out) => {
-    if (freeing) return;
-    if (out.includes("Waiting behind owner's landing of t2 (since 2026-10-07 09:00 UTC)")) { freeing = true; setTimeout(() => { f.box.lease = null; }, 120); }
-  };
-  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-07 09:00 UTC\); t1 starts as soon as the lease is free\./);
-  assert.doesNotMatch(r.output, /queued ahead/);
-  assert.doesNotMatch(r.output, /t3/);
-  // The lease was taken once it freed, not held up behind the stale row, and
-  // the landing ran to its end.
-  assert.equal(f.posts("/landing-lease").filter((x) => x.body.item === "t1" && !x.body.cancel && !x.body.renew && x.body.queued !== true).length, 1);
-  assert.match(r.output, /Landing lease taken for t1/);
-  assert.equal(f.box.states.t1, "submitted");
-  assert.equal(f.box.lease, null);
-});
-
-test("--wait gives up behind the landing that queued first, saying it is still first, and leaves the queue", async (t) => {
-  const f = await landFixture(t);
-  f.box.waiting = [{ item: "t2", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
-  f.env = { ATELIER_LAND_POLL_MS: "40", ATELIER_LAND_WAIT_TIMEOUT: "1500" };
-  const r = await f.run(f.checkout, "land", "t1", "--wait");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /Waiting for the lease behind 1 landing queued ahead of t1: t2 \(queued 2026-10-07 09:14 UTC\); t1 takes the lease when its turn comes, in the order the landings queued\./);
-  assert.match(r.output, /the landing lease was not t1's within 2 seconds: owner's landing of t2 is still first in the queue for it\. Nothing was changed; run atelier land t1 --wait again to queue once more, or wait for t2's landing to take the lease and finish/);
-  // It asked again while it waited and left the queue when it gave up,
-  // taking nothing: the landing that queued first still waits alone.
-  const asked = f.posts("/landing-lease").filter((x) => x.body.queued === true);
-  assert.ok(asked.length > 2);
-  assert.deepEqual(f.posts("/landing-lease").at(-1).body, { item: "t1", queued: true, leave: true });
-  // One take was asked for, at the start, and refused; none followed.
-  assert.equal(f.posts("/landing-lease").filter((x) => x.body.item === "t1" && !x.body.cancel && !x.body.renew && x.body.queued !== true).length, 1);
-  assert.deepEqual(f.box.waiting.map((w) => w.item), ["t2"]);
-  assert.deepEqual(f.posts("/land"), []);
-});
-
-test("a signal ends a queued landing, leaving the queue and taking no lease", async (t) => {
-  const f = await landFixture(t);
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
-  const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "land", "t1", "--wait", "--no-review", "--project", "proj"], {
-    cwd: f.checkout,
-    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30" },
-  });
-  t.after(() => child.kill("SIGKILL"));
-  let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
-  const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
-  await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), CEILING_MS, "the queued ask");
-  child.kill("SIGTERM");
-  const ended = await done;
-  assert.equal(ended.status, 143, output);
-  assert.match(output, /SIGTERM received; releasing the landing lease of proj/);
-  // It left the queue it held a place in and took no lease.
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.leave === true && x.body.item === "t1"));
-  assert.ok(!f.posts("/landing-lease").some((x) => x.body.item === "t1" && !x.body.cancel && !x.body.renew && x.body.queued !== true), "a take was made");
-  assert.equal(f.box.lease?.item, "t2");
-  assert.deepEqual(f.box.waiting.filter((w) => w.item === "t1"), []);
-  assert.equal(f.box.states.t1, "submitted");
-});
-
-test("--wait asks the refusals again once the lease is free, so a workspace changed while it queued is not landed", async (t) => {
-  const f = await landFixture(t);
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
-  f.env = { ATELIER_LAND_POLL_MS: "40" };
-  let freeing = false;
-  f.onOutput = () => {
-    if (freeing) return;
-    freeing = true;
-    writeFileSync(join(f.workspace("t1"), "stray.txt"), "uncommitted\n");
-    setTimeout(() => { f.box.lease = null; }, 120);
-  };
-  const r = await f.run(f.checkout, "land", "t1", "--wait");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /Waiting behind owner's landing of t2/);
-  assert.match(r.output, /t1's workspace has uncommitted changes/);
-  // While it queued it only asked (never took), and its end left the queue.
-  const asked = f.posts("/landing-lease");
-  assert.ok(asked.length > 1);
-  for (const x of asked.slice(0, -1)) assert.deepEqual(x.body, { item: "t1", queued: true });
-  assert.deepEqual(asked.at(-1).body, { item: "t1", queued: true, leave: true });
-  assert.deepEqual(f.posts("/land"), []);
-});
-
-test("--wait gives up after its limit with nothing changed, and --dry-run says it would wait", async (t) => {
-  const f = await landFixture(t);
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
-  const dry = await f.run(f.checkout, "land", "t1", "--wait", "--dry-run");
-  assert.equal(dry.status, 0, dry.output);
-  assert.match(dry.output, /1\. wait behind owner's landing of t2 \(since 2026-10-06 09:30 UTC\), then take the project's landing lease for t1/);
-  const before = git(f.workspace("t1"), "rev-parse", "HEAD");
-  f.env = { ATELIER_LAND_POLL_MS: "40", ATELIER_LAND_WAIT_TIMEOUT: "2000" };
-  const r = await f.run(f.checkout, "land", "t1", "--wait");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /the landing lease was not free within 2 seconds: owner still holds it for t2\. Nothing was changed/);
-  // While it queued it only asked (never took), and giving up left the queue.
-  const asked = f.posts("/landing-lease");
-  assert.ok(asked.length > 1);
-  for (const x of asked.slice(0, -1)) assert.deepEqual(x.body, { item: "t1", queued: true });
-  assert.deepEqual(asked.at(-1).body, { item: "t1", queued: true, leave: true });
-  assert.deepEqual(f.posts("/land"), []);
-  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
-});
-
-test("a conflict stops the landing with the files named and the merge left for the owner", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits the same file" } });
-  const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
-  assert.match(r.output, /The merge is left in the workspace for you to resolve/);
-  // The conflict can also go back to the task's builder (t243): the message
-  // names the holder and the dispatch that sends the work there.
-  assert.match(r.output, new RegExp(`Or send them back to the task's builder, codex/test, to resolve in this workspace: atelier dispatch t1 --job merge-main --agent codex --model test; its runner merges main at ${f.mainCommit.slice(0, 8)} into the workspace again`));
-  assert.match(r.output, /and then atelier land t1 again\.$/m);
-  // The regeneration was tried and could not settle the conflict, and says so.
-  assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it/);
-  // The merge is in progress in the workspace, nothing was pushed or merged.
-  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
-  assert.equal(f.forkHead("t1"), before.fork);
-  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
-  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.baseline);
-  assert.equal(f.box.states.t1, "submitted");
-  assert.deepEqual(f.posts("/push"), []); assert.deepEqual(f.posts("/merged"), []);
-  // The step that stopped is recorded, with the file and who resolves it.
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.failed, true); assert.deepEqual(merge.body.conflicts, ["work.txt"]);
-  assert.equal(merge.body.resolvedBy, "the project owner, by hand");
-  assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
-  // The lease was taken and released.
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.item === "t1"));
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
-});
-
-test("a conflict only in files the regenerate command rewrites is settled by taking either side and regenerating, and the landing goes on", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
-  // The task's own regeneration of the same file, so the two sides conflict in it.
-  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
-  const before = { fork: f.forkHead("t1"), checkout: git(f.checkout, "rev-parse", "HEAD") };
+  let freed = false;
+  f.onOutput = (out) => { if (!freed && out.includes("Waiting behind owner's landing of t2")) { freed = true; setTimeout(() => { f.box.lease = null; }, 150); } };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /taking either side and regenerating with `echo generated > gen-fixtures\.txt`/);
-  assert.match(r.output, /took either side and let the command write them again/);
-  // The workspace holds the merge, with what the command wrote as the resolution.
-  assert.match(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Merge main into t1/);
-  assert.equal(readFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "utf8"), "generated\n");
-  // The registered checkout and the baseline hold a merge of the task's head.
-  const merged = git(f.checkout, "rev-parse", "HEAD");
-  const parents = git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ");
-  assert.equal(parents[1], before.checkout);
-  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), merged);
+  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-06 09:30 UTC\); t1 takes the lease for its merge as soon as the lease is free\./);
+  // The merge of main, the checks and the review ran while t2 held the
+  // lease; the first ask of the lease came once the review was decided.
+  const firstLease = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.method === "POST");
+  assert.ok(firstLease > recordedAt(f, "review"));
+  assert.equal(grantedTo(f).length, 1);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
   assert.equal(f.box.states.t1, "merged");
-  assert.equal(f.box.lease, null);
-  // The whole landing ran, and the merge step records the conflicts it settled and how.
-  const events = f.posts("/land");
-  assert.deepEqual(events.map((x) => x.body.step), ["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
-  const merge = events.find((x) => x.body.step === "merge");
-  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
-  assert.equal(merge.body.resolvedBy, "atelier land, taking either side and regenerating");
-  assert.equal(merge.body.failed, undefined);
-  // The regeneration had already settled the file, so the second run changed nothing.
-  assert.equal(events.find((x) => x.body.step === "regenerate").body.changed, false);
 });
 
-test("a conflict that also touches a file the regenerate command does not rewrite still stops, naming what regeneration left", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
-  // Both sides also regenerate the fixture, so one conflict is generated and one is not.
-  writeFileSync(join(f.checkout, "gen-fixtures.txt"), "from main\n");
-  git(f.checkout, "add", "."); git(f.checkout, "commit", "-m", "Main regenerates the fixture"); git(f.checkout, "push", "-q", "origin", "main");
-  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
-  const before = { fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt/);
-  assert.match(r.output, /the regenerate command left work\.txt as either side had it/);
-  // The conflicted merge is back in the workspace, markers and all; nothing moved on.
-  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
-  assert.match(readFileSync(join(f.workspace("t1"), "work.txt"), "utf8"), /^<{7} /m);
-  assert.equal(f.forkHead("t1"), before.fork);
-  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
-  assert.equal(f.box.states.t1, "submitted");
-  assert.deepEqual(f.posts("/push"), []); assert.deepEqual(f.posts("/merged"), []);
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.failed, true);
-  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt", "work.txt"]);
-  assert.equal(merge.body.resolvedBy, "the project owner, by hand");
-  assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
+test("another landing's post-merge work holds the lease back: the landing waits and merges after it (t550 review)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.postMergeBlocked = 2;
+  f.env = { ATELIER_LAND_POLL_MS: "20" };
+  const r = await f.run(f.checkout, "land", "t1", "--wait");
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.box.postMergeBlocked, 0);
+  assert.equal(grantedTo(f).length, 1);
+  assert.equal(f.box.states.t1, "merged");
 });
 
-test("a regenerate command that fails while settling conflicts stops the landing with the failure named", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
-  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
-  f.box.regen = "echo boom >&2; exit 3";
-  const before = f.forkHead("t1");
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /Taking either side and regenerating did not settle them: the regenerate command `echo boom >&2; exit 3` failed \(exit 3\)/);
-  assert.match(r.output, /boom/);
-  // The merge is left in the workspace, still conflicted, and nothing landed.
-  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
-  assert.equal(f.forkHead("t1"), before);
-  assert.equal(f.box.states.t1, "submitted");
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.failed, true);
-  assert.deepEqual(merge.body.conflicts, ["gen-fixtures.txt"]);
-  assert.equal(merge.body.reason, "the regenerate command `echo boom >&2; exit 3` failed (exit 3)");
+// t628: a fixture task whose push measured work.txt changed (it is
+// protected), so the gate needs an independent review of it; codex/gpt-6-astra
+// (an openai model, so its family is known) holds it. Each review given stands at the head and the
+// task's criteria, as the server records it, with the fields it is given.
+async function recordedFixture(t, { reviews = [], gate } = {}) {
+  const f = await landFixture(t);
+  f.box.holder = "codex/gpt-6-astra";
+  f.box.regen = null;
+  f.box.review.approveAfter = null;   // no runner ever answers a new request
+  if (gate) f.box.gate = gate;
+  f.env = { ATELIER_LAND_POLL_MS: "30", ATELIER_LAND_REVIEW_TIMEOUT: "150" };
+  const head = f.forkHead("t1");
+  f.box.evidence.t1.push({ itemId: "t1", claim: "changed paths", grade: "observed", head, passed: true, by: "codex/test", at: "2026-10-13T09:00:00.000Z", where: "runner", changedPaths: ["work.txt"] });
+  for (const r of reviews) f.box.reviews.t1.push({ approve: true, head, criteria: criteriaOf({}), recordedBy: "owner", proved: false, claimed: true, note: "Recorded earlier.", at: "2026-10-13T10:00:00.000Z", ...r });
+  return f;
+}
+
+test("an approval already recorded at the head, which the gate counts, lands without a new review request or wait (t628)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  // micahapp t6 and t7 held approvals recorded by hand against claimed
+  // review requests, and atelier show recommended accept; the landing asked
+  // for a new review, counted only verdicts after that ask, and waited its
+  // hour. With no reviewer named and with the one who approved named alike,
+  // the recorded approval settles the review.
+  for (const extra of [[], ["--reviewer", "antigravity/gemini-3.1-pro"]]) {
+    const f = await recordedFixture(t, { reviews: [{ by: "antigravity/gemini-3.1-pro", request: 1, note: "Approved by hand against claimed request 1." }] });
+    const r = await f.run(f.checkout, "land", "t1", ...extra);
+    assert.equal(r.status, 0, r.output);
+    assert.match(r.output, /antigravity\/gemini-3\.1-pro already approved t1 at \w{8}, and the gate counts it: no review request was needed\./);
+    assert.equal(f.posts("/review-request").length, 0);
+    const review = f.posts("/land").find((x) => x.body.step === "review").body;
+    assert.equal(review.verdict, "approve");
+    assert.equal(review.reviewer, "antigravity/gemini-3.1-pro");
+    assert.equal(f.box.states.t1, "merged");
+  }
 });
 
-// Raises the route level in one of the fixture's checkouts — the task's
-// workspace or main's — and pushes it, so a test can raise it on either
-// side of a landing's merge.
-const raiseRouteLevel = (dir, level, message) => {
-  writeFileSync(join(dir, "src", "route-level.ts"), `export const ROUTE_LEVEL = ${level};\n`);
-  git(dir, "add", "."); git(dir, "commit", "-m", message); git(dir, "push", "-q", "origin", "main");
+// Each case here an approval the gate sets aside, at a head the gate holds
+// ready for another reason; the landing asks for the review as before.
+const asksStill = async (t, cases) => {
+  for (const c of cases) {
+    const f = await recordedFixture(t, c);
+    const r = await f.run(f.checkout, "land", "t1", ...(c.extra ?? []));
+    assert.notEqual(r.status, 0, `${JSON.stringify(c)}\n${r.output}`);
+    assert.equal(f.posts("/review-request").length, 1, JSON.stringify(c));
+    if (c.extra) assert.deepEqual(f.posts("/review-request")[0].body, { reviewer: c.extra[1], wanted: true });
+    assert.doesNotMatch(r.output, /already approved/);
+    assert.match(r.output, /no verdict( from [^ ]+)? within 0 minutes/);
+    assert.notEqual(f.box.states.t1, "merged");
+  }
 };
 
-test("where main and the task each raised the route level from one base, the landing raises the merged level past both", async (t) => {
+test("a recorded approval the gate does not count is never taken for the review, though the gate is ready for another reason (t628 review)", async (t) => {
   if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6 });
-  // Both sides raise 6 to 7, so the merge is clean at the number they share.
-  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
-  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 7, t1 to 7\), and the merge left it at 7: the merged CLI calls both sides' routes, so the level is raised to 8\. Deploy the server from a checkout at route level 8 or newer/);
-  // The raise is its own commit in the workspace, and it is what lands.
-  assert.match(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging main into t1/);
-  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
-  assert.match(readFileSync(join(f.checkout, "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 8;/);
-  assert.equal(f.box.states.t1, "merged");
-  // The merge step records the levels it compared and the one it set.
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
+  // gpt-6-astra's and gemini-3.1-pro-argon's reviews of t628: readiness alone
+  // took any approval at the head. Each case fails if it does.
+  await asksStill(t, [
+    // A's claimed approval makes the gate ready; B's, recorded with the
+    // developer token answering no claimed request, is not B's review.
+    { extra: ["--reviewer", "claude-code/opus-5.5"], reviews: [{ by: "antigravity/gemini-3.1-pro" }, { by: "claude-code/opus-5.5", claimed: false }] },
+    // Of the holder's family (openai), so never independent of it.
+    { reviews: [{ by: "codex/gpt-5.5" }] },
+    // The holder's own approval.
+    { reviews: [{ by: "codex/gpt-6-astra" }] },
+    // The reviewer's latest verdict at the head is a rejection.
+    { reviews: [{ by: "antigravity/gemini-3.1-pro" }, { by: "antigravity/gemini-3.1-pro", approve: false, at: "2026-10-13T11:00:00.000Z" }], gate: { ready: true, outOfScope: [], blockers: [] } },
+  ]);
 });
 
-test("named legacy mappings stop automatic renumbering until the builder resolves them", async (t) => {
+test("guard: another reviewer named, a withdrawn or tier approval, or a gate not ready still asks for the review (t628)", async (t) => {
   if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6 });
-  for (const dir of [f.workspace("t1"), f.checkout]) {
-    writeFileSync(join(dir, "src", "route-level.ts"), 'export const CAPABILITIES = buildCapabilities(CAPABILITY_DECLARATIONS);\nexport const ROUTE_LEVEL = 7;\n');
-    git(dir, "add", "."); git(dir, "commit", "-m", "Raise with a named declaration"); git(dir, "push", "-q", "origin", "main");
-  }
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.notEqual(r.status, 0, r.output);
-  assert.match(r.output, /named capability legacy mappings need manual resolution/);
-  assert.match(r.output, /Move the task's new capability declaration levels above main's 7, set ROUTE_LEVEL to 8/);
-  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
-  assert.notEqual(f.box.states.t1, "merged");
-  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging/);
-});
-
-test("where only main raised the route level, the merge takes main's number and nothing is raised past it", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6 });
-  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.doesNotMatch(r.output, /raised the route level/);
-  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 7;/);
-  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level/);
-  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
-  assert.equal(f.box.states.t1, "merged");
-});
-
-test("where only the task raised the route level, the merge keeps the task's number", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6, mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.doesNotMatch(r.output, /raised the route level/);
-  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 7;/);
-  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
-  assert.equal(f.box.states.t1, "merged");
-});
-
-test("a rerun of a conflicted merge resolved by hand still compares and raises the route level", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6 });
-  // Both sides raise, to different numbers, so the merge stops on the
-  // conflict and is left for the owner to resolve.
-  raiseRouteLevel(f.workspace("t1"), 8, "Task raises the route level");
-  raiseRouteLevel(f.checkout, 9, "Main raises the route level");
-  const stopped = await f.run(f.checkout, "land", "t1");
-  assert.equal(stopped.status, 1, stopped.output);
-  assert.match(stopped.output, /stops on conflicts in:\nsrc\/route-level\.ts/);
-  assert.match(stopped.output, /The merge is left in the workspace for you to resolve/);
-  // The owner resolves it by hand, writing main's number — one side's
-  // alone, as a hand resolution does — and reruns the landing, which now
-  // finds main already merged and would else skip the comparison.
-  writeFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "export const ROUTE_LEVEL = 9;\n");
-  git(f.workspace("t1"), "add", ".");
-  git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
-  f.box.requests.length = 0;
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
-  assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 9, t1 to 8\), and the merge left it at 9: the merged CLI calls both sides' routes, so the level is raised to 11\. Deploy the server from a checkout at route level 11 or newer/);
-  // The raise is its own commit above the hand-resolved merge, measured
-  // from the task's head before that merge, and it is what lands.
-  assert.match(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging main into t1/);
-  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 11;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 11;/);
-  assert.equal(f.box.states.t1, "merged");
-  // The merge step records the skipped merge beside the levels it compared and set.
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.skipped, true);
-  assert.deepEqual(merge.body.routeLevel, { base: 6, main: 9, task: 8, was: 9, set: 11 });
-});
-
-test("a rerun after the route level was raised compares the same levels and raises nothing further", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6 });
-  raiseRouteLevel(f.workspace("t1"), 8, "Task raises the route level");
-  raiseRouteLevel(f.checkout, 9, "Main raises the route level");
-  const stopped = await f.run(f.checkout, "land", "t1");
-  assert.equal(stopped.status, 1, stopped.output);
-  writeFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "export const ROUTE_LEVEL = 9;\n");
-  git(f.workspace("t1"), "add", ".");
-  git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
-  const raised = await f.run(f.checkout, "land", "t1", "--no-review");
-  assert.equal(raised.status, 0, raised.output);
-  assert.match(raised.output, /so the level is raised to 11\./);
-  // The task is still submitted (--no-review), so the landing can run
-  // once more: the same fork point, task head and main head give the same
-  // right level, which the tree already reports, so nothing is raised.
-  f.box.requests.length = 0;
-  const again = await f.run(f.checkout, "land", "t1", "--no-review");
-  assert.equal(again.status, 0, again.output);
-  assert.match(again.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
-  assert.doesNotMatch(again.output, /each raised the route level/);
-  assert.equal(git(f.workspace("t1"), "log", "--format=%s").split("\n").filter((s) => /^Raise the route level/.test(s)).length, 1);
-  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 11;/);
-  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
-});
-
-test("a merge that brought main in through a side branch still compares and raises the route level", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6 });
-  // Both sides raise 6 to 7, so every merge below is clean at 7.
-  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
-  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
-  // Main reaches the task's head through a side branch: main merged into
-  // the side branch, the side branch into the task's line. The merge that
-  // brought main in is no merge of HEAD's first-parent line at all, so a
-  // --first-parent rev-list finds nothing and the comparison would be
-  // skipped exactly where both sides raised the level.
-  const w = f.workspace("t1");
-  git(w, "checkout", "-q", "-b", "side");
-  git(w, "fetch", "-q", f.baseline, "main");
-  git(w, "merge", "-q", "--no-ff", "-m", "Merge main into the side branch", "FETCH_HEAD");
-  git(w, "checkout", "-q", "main");
-  git(w, "merge", "-q", "--no-ff", "-m", "Merge the side branch into the task", "side");
-  git(w, "push", "-q", "origin", "main");
-  // The premise of the regression: this topology leaves the --first-parent
-  // rev-list empty, so the merge that brought main in must be found another way.
-  const mainHead = git(f.checkout, "rev-parse", "HEAD");
-  assert.equal(git(w, "rev-list", "--first-parent", "--ancestry-path", `${mainHead}..HEAD`), "");
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /main at [0-9a-f]{8} is already merged into t1's workspace\./);
-  assert.match(r.output, /main and t1 each raised the route level from 6 \(main to 7, t1 to 7\), and the merge left it at 7: the merged CLI calls both sides' routes, so the level is raised to 8\. Deploy the server from a checkout at route level 8 or newer/);
-  // The raise is its own commit above the side branch's merge, measured
-  // from the task's head before that merge, and it is what lands.
-  const subjects = git(w, "log", "--format=%s").split("\n");
-  assert.ok(subjects.includes("Merge the side branch into the task"));
-  assert.equal(subjects.filter((s) => /^Raise the route level/.test(s)).length, 1);
-  assert.match(readFileSync(join(w, "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 8;/);
-  assert.match(git(f.p, "--git-dir", f.baseline, "show", "main:src/route-level.ts"), /ROUTE_LEVEL = 8;/);
-  assert.equal(f.box.states.t1, "merged");
-  // The merge step records the skipped merge beside the levels it compared and set.
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.skipped, true);
-  assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
-});
-
-test("a repo with no route-level file skips the comparison and the landing goes on", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.doesNotMatch(r.output, /route level/);
-  assert.ok(!existsSync(join(f.workspace("t1"), "src", "route-level.ts")));
-  assert.equal(f.posts("/land").find((x) => x.body.step === "merge").body.routeLevel, undefined);
-  assert.equal(f.box.states.t1, "merged");
-});
-
-test("--dry-run says a merge that finds both sides raised the route level raises it past both", async (t) => {
-  const f = await landFixture(t, { seedRouteLevel: 6 });
-  raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
-  raiseRouteLevel(f.checkout, 7, "Main raises the route level");
-  const before = git(f.workspace("t1"), "rev-parse", "HEAD");
-  const r = await f.run(f.checkout, "land", "t1", "--dry-run");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /2\. merge main into t1's workspace \(.*\); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch t1 --job merge-main; where main and the task each raised the route level \(src\/route-level\.ts\) from one base, raise the merged level past both/);
-  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
-});
-
-test("--dry-run prints the steps and the refusals without changing anything", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  const before = { workspace: git(f.workspace("t1"), "rev-parse", "HEAD"), fork: f.forkHead("t1"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
-  f.box.requests.length = 0;
-  const r = await f.run(f.checkout, "land", "t1", "--dry-run");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Dry run: atelier land t1 in proj would:/);
-  assert.match(r.output, /merge main into t1's workspace/);
-  assert.match(r.output, /regenerate the project's fixtures with `echo generated > gen-fixtures\.txt`/);
-  assert.match(r.output, /Nothing was changed\./);
-  // The default review wait outlasts the runner's 45 minute build timeout.
-  assert.match(r.output, /for up to 60 minutes/);
-  // Reads only: the lease is read, never taken, and nothing that changes state was posted.
-  assert.ok(f.box.requests.some((x) => x.method === "GET" && x.path.endsWith("/landing-lease")));
-  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
-  assert.equal(f.box.lease, null);
-  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
-  assert.equal(f.forkHead("t1"), before.fork);
-  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
-  // A dry run still refuses a held lease.
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
-  const held = await f.run(f.checkout, "land", "t1", "--dry-run");
-  assert.equal(held.status, 1, held.output); assert.match(held.output, /has been landing t2 since/);
-});
-
-test("a server at the CLI's route level passes whatever commit it runs", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  f.box.version = "f".repeat(40);
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.equal(f.box.states.t1, "merged");
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
-});
-
-test("a server a route level lower than the CLI's refuses, naming both levels and saying to deploy", async (t) => {
-  const f = await landFixture(t);
-  f.box.routeLevel = 13;
-  const before = git(f.workspace("t1"), "rev-parse", "HEAD");
-  f.box.requests.length = 0;
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
-  assert.match(r.output, /route level 13/);
-  assert.match(r.output, /Deploy the server/);
-  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
-  assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
-  assert.equal(f.box.lease, null);
-});
-
-// The queued ask is the route whose meaning changed (t249), so --wait is
-// where an older server would bite: a level 9 server, which lacks the
-// queue, would read `{ item, queued: true }` as a take and refuse it, so
-// the wait would crash on the 409 instead of waiting. The start refusal
-// above must reach --wait too, before any queued ask is made of it.
-test("a server a route level lower than the CLI's refuses --wait at start, saying to deploy, before any queued ask", async (t) => {
-  const f = await landFixture(t);
-  f.box.routeLevel = 13;
-  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
-  f.box.waiting = [{ item: "t3", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
-  f.box.requests.length = 0;
-  const r = await f.run(f.checkout, "land", "t1", "--wait");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
-  assert.match(r.output, /Deploy the server/);
-  // Nothing was asked of the lease — no queued ask, no take — and the lease
-  // and the queue stand exactly as they were.
-  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
-  assert.equal(f.box.lease?.item, "t2");
-  assert.deepEqual(f.box.waiting.map((w) => w.item), ["t3"]);
-});
-
-test("a server that reports no route level refuses, saying to deploy", async (t) => {
-  const f = await landFixture(t);
-  f.box.routeLevel = null;
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /neither capabilities nor a route level/);
-  assert.match(r.output, /Deploy the server/);
-  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
-  assert.equal(f.box.lease, null);
-});
-
-// Waits until `ready()` holds, polling, or fails after `ms`.
-// The deadline is only a ceiling for a machine under load (a landing spawns
-// node and runs git, which took over 15 s at load ~20); the wait ends as soon
-// as the event happens, so a quiet machine never waits for it.
-// The expiry landing exceeded the runner's 180 s default under load (t389).
-// These two tests override that default as well as their event-wait deadlines.
-const CEILING_MS = 300_000;
-async function until(ready, ms = CEILING_MS, what = "the condition") {
-  for (const t0 = Date.now(); !ready();) {
-    if (Date.now() - t0 > ms) throw new Error(`${what} did not come within ${ms}ms`);
-    await new Promise((ok) => setTimeout(ok, 25));
-  }
-}
-
-// Waits until `count()` has gone quiet — unchanged for `quiet` ms, several
-// of the heartbeat's beats — and returns what it settled on. A stream that
-// keeps coming never settles, so this waits on the renewal calls themselves
-// rather than proving they stopped with a fixed sleep on the clock.
-async function settled(count, quiet, ms = CEILING_MS, what = "the count") {
-  let last = count(), at = Date.now();
-  for (const t0 = Date.now();;) {
-    if (Date.now() - t0 > ms) throw new Error(`${what} did not settle within ${ms}ms`);
-    await new Promise((ok) => setTimeout(ok, 10));
-    const now = count();
-    if (now !== last) { last = now; at = Date.now(); }
-    else if (Date.now() - at >= quiet) return last;
-  }
-}
-
-// A landing that is waiting for a review verdict that never comes, spawned
-// rather than awaited, so a test can signal it or watch its heartbeat.
-function waitingLanding(f, env = {}) {
-  f.box.review.approveAfter = null;
-  const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "land", "t1", "--project", "proj"], {
-    cwd: f.checkout,
-    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ...env },
-  });
-  // Ended however the test ends, so a failed wait leaves no landing polling.
-  f.after(() => child.kill("SIGKILL"));
-  let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
-  const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
-  return { child, done, output: () => output };
-}
-
-test("SIGINT and SIGTERM release the lease before the landing ends, with the signal's status", async (t) => {
-  if (!canInspectSlots(t)) return;
-  for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) {
-    const f = await landFixture(t);
-    const landing = waitingLanding(f);
-    await until(() => f.box.review.pending, CEILING_MS, "the review request");
-    assert.equal(f.box.lease?.item, "t1");
-    landing.child.kill(signal);
-    const ended = await landing.done;
-    assert.equal(ended.status, status, landing.output());
-    assert.match(landing.output(), new RegExp(`${signal} received; releasing the landing lease of proj`));
-    assert.equal(f.box.lease, null);
-    assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
-    assert.equal(f.box.states.t1, "submitted");
-  }
-});
-
-// t419: a landing signalled while its regenerate command runs ends that
-// command's process group, and what it started, as it releases the lease.
-test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
-  for (const [signal, status] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
-    const f = await landFixture(t);
-    const pidFile = join(f.p, "regen-sleeper.pid");
-    f.box.regen = `sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`;
-    const landing = waitingLanding(f);
-    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), 15_000, "the regenerate command's sleeper");
-    const sleeper = Number(readFileSync(pidFile, "utf8"));
-    landing.child.kill(signal);
-    const ended = await landing.done;
-    assert.equal(ended.status, status, landing.output());
-    assert.equal(f.box.lease, null, landing.output());
-    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
-    await until(() => !alive(), 2000, `the end of the regenerate sleeper ${sleeper} after ${signal}`);
-  }
-});
-
-test("the landing renews the lease while it waits, and the renewal moves renewedAt on", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 3, CEILING_MS, "three renewals");
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.item === "t1" && x.body.renew !== true), "the lease was taken before it was renewed");
-  for (const renew of f.posts("/landing-lease").filter((x) => x.body.renew === true)) assert.equal(renew.body.item, "t1");
-  assert.equal(f.box.lease.item, "t1");
-  assert.ok(Date.parse(f.box.lease.renewedAt) > Date.parse(f.box.lease.at), "renewedAt moved past the time the lease was taken");
-  // Nothing was approved; the landing is still waiting.
-  assert.equal(f.box.states.t1, "submitted");
-  landing.child.kill("SIGTERM");
-  await landing.done;
-  assert.equal(f.box.lease, null);
-});
-
-test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", { timeout: CEILING_MS }, async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  // Seed an already expired lease; do not wait for fifteen minutes to elapse.
-  // run() resolves on CLI close, after the observed takeover and merge.
-  const at = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS - 5 * 60_000).toISOString();
-  f.box.lease = { item: "t2", holder: "owner", at, renewedAt: at };
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Took over the landing lease of proj from owner, which had been landing t2 since .* and stopped renewing it 20 minutes ago; that landing is treated as ended/);
-  assert.equal(f.box.states.t1, "merged");
-  assert.ok(f.posts("/landing-lease").some((r) => r.body.item === "t1" && !r.body.cancel && !r.body.renew));
-  assert.equal(f.box.lease, null);
-});
-
-test("--release-lease frees the lease and says which task held it since when; none held, or another task's, is said", async (t) => {
-  const f = await landFixture(t);
-  const none = await f.run(f.checkout, "land", "t1", "--release-lease");
-  assert.equal(none.status, 0, none.output);
-  assert.match(none.output, /No landing lease is held in proj; nothing to release/);
-  f.box.lease = { item: "t1", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: "2026-10-06T09:31:00.000Z" };
-  const other = await f.run(f.checkout, "land", "t2", "--release-lease");
-  assert.equal(other.status, 1, other.output);
-  assert.match(other.output, /held for t1, not t2: owner has been landing t1 since 2026-10-06 09:30 UTC\. Free it with atelier land t1 --release-lease/);
-  assert.equal(f.box.lease?.item, "t1");
-  f.box.requests.length = 0;
-  const freed = await f.run(f.checkout, "land", "t1", "--release-lease");
-  assert.equal(freed.status, 0, freed.output);
-  assert.match(freed.output, /Released the landing lease of proj: owner held it for t1 since 2026-10-06 09:30 UTC/);
-  assert.equal(f.box.lease, null);
-  // The lease alone was touched: no version check, no step recorded, nothing landed.
-  assert.deepEqual(f.box.requests.map((x) => [x.method, x.path, x.body]), [["GET", "/api/projects/proj/landing-lease", {}], ["POST", "/api/projects/proj/landing-lease", { cancel: true, item: "t1" }]]);
-  const mixed = await f.run(f.checkout, "land", "t1", "--release-lease", "--dry-run");
-  assert.equal(mixed.status, 1); assert.match(mixed.output, /does nothing else; give it alone/);
-});
-
-test("re-running land on the task holding the lease reaches the release from every early refusal", async (t) => {
-  const f = await landFixture(t);
-  const lease = { item: "t1", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
-  const offer = /The landing lease of proj is still held for t1 since 2026-10-06 09:30 UTC, from an earlier landing; atelier land t1 --release-lease frees it\./;
-  // Accepted: the next step is the merge, and the lease is still offered.
-  f.box.lease = { ...lease }; f.box.states.t1 = "accepted";
-  const accepted = await f.run(f.checkout, "land", "t1");
-  assert.equal(accepted.status, 1, accepted.output);
-  assert.match(accepted.output, /t1 is accepted at [0-9a-f]{8}; merge it with: atelier merge t1\./); assert.match(accepted.output, offer);
-  // Merged: nothing to land, the lease still offered.
-  f.box.states.t1 = "merged";
-  const merged = await f.run(f.checkout, "land", "t1");
-  assert.equal(merged.status, 1, merged.output); assert.match(merged.output, /t1 is merged; there is nothing to land\./); assert.match(merged.output, offer);
-  f.box.states.t1 = "submitted";
-  // A merge in progress in the workspace.
-  writeFileSync(join(f.workspace("t1"), ".git", "MERGE_HEAD"), `${f.forkHead("t1")}\n`);
-  const midMerge = await f.run(f.checkout, "land", "t1");
-  assert.equal(midMerge.status, 1, midMerge.output); assert.match(midMerge.output, /a Git merge is already in progress/); assert.match(midMerge.output, offer);
-  rmSync(join(f.workspace("t1"), ".git", "MERGE_HEAD"));
-  // Uncommitted changes.
-  writeFileSync(join(f.workspace("t1"), "draft.txt"), "draft\n");
-  const dirty = await f.run(f.checkout, "land", "t1");
-  assert.equal(dirty.status, 1, dirty.output); assert.match(dirty.output, /uncommitted changes/); assert.match(dirty.output, offer);
-  rmSync(join(f.workspace("t1"), "draft.txt"));
-  assert.equal(f.box.lease?.item, "t1");
-  // Without a held lease the refusals carry no offer.
-  f.box.lease = null; f.box.states.t1 = "accepted";
-  const plain = await f.run(f.checkout, "land", "t1");
-  assert.equal(plain.status, 1); assert.doesNotMatch(plain.output, /--release-lease/);
-  f.box.states.t1 = "submitted";
-  // And the offered command frees it.
-  f.box.lease = { ...lease };
-  const freed = await f.run(f.checkout, "land", "t1", "--release-lease");
-  assert.equal(freed.status, 0, freed.output); assert.equal(f.box.lease, null);
-});
-
-test("while the review request is unclaimed, the landing names the runner's job and what is queued ahead", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.review.approveAfter = 4;
-  f.box.items = [
-    { id: "t2", title: "Fixture t2", state: "claimed", owner: "opencode/glm-5.3", runner: "home:mbp", dispatch: { job: "build", at: "2026-10-06T08:00:00.000Z" }, updatedAt: "2026-10-06T08:05:00.000Z" },
-    { id: "t3", title: "Fixture t3", state: "open", owner: null, runner: null, dispatch: { job: "build", at: "2026-10-06T08:10:00.000Z" } },
-  ];
-  f.box.queue = [
-    { project: "proj", item: { id: "t3", title: "Fixture t3", dispatch: { job: "build", at: "2026-10-06T08:10:00.000Z" } } },
-    { project: "other", item: { id: "t9", title: "Elsewhere", dispatch: { job: "review", at: "2026-10-06T08:20:00.000Z" } } },
-  ];
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /The review request is not claimed yet\. home:mbp is busy with t2 \(build, opencode\/glm-5\.3\) since 2026-10-06 08:05 UTC; 2 jobs queued ahead of it: proj\/t3 \(build\), other\/t9 \(review\)\./);
-  // Said once, not on every poll.
-  assert.equal(r.output.split("The review request is not claimed yet").length - 1, 1);
-  assert.equal(f.box.states.t1, "merged");
-  // A claimed request is waited for without the explanation.
-  const g = await landFixture(t);
-  g.box.review.approveAfter = 3; g.box.review.claimed = true;
-  const claimed = await g.run(g.checkout, "land", "t1");
-  assert.equal(claimed.status, 0, claimed.output);
-  assert.doesNotMatch(claimed.output, /not claimed yet/);
-  assert.equal(g.box.states.t1, "merged");
-});
-
-test("while the review request is unclaimed and no live runner offers the reviewer, the landing says it can never be claimed", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.review.approveAfter = 4;
-  // No runner offers the review job for the routed reviewer: one offers the
-  // job under another model, one offers no review job, one is the wrong kind.
-  f.box.runners = [
-    { runner: "cloud:far", kind: "cloud", jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
-    { runner: "home:mbp", kind: "home", jobs: ["build", "plan"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
-    { runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: new Date().toISOString() },
-  ];
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /The review request is not claimed yet, and no live runner can take it: cloud:far is a cloud runner, not a home one; home:mbp offers no review job; home:studio offers review as opencode\/glm-5\.3\. It will not be claimed until a runner that offers codex\/gpt-6-astra for the review job asks the server for work\. Review it by hand \(atelier review t1 --approve --as codex\/gpt-6-astra --note "…"\), then atelier accept t1 and atelier merge t1, or run atelier land t1 again with --reviewer H\/M to ask a model a live runner offers\./);
-  // Said once, not on every poll, and the landing still lands on approval.
-  assert.equal(r.output.split("The review request is not claimed yet").length - 1, 1);
-  assert.equal(f.box.states.t1, "merged");
-  // A runner that offers the reviewer reads as an ordinary wait again.
-  const g = await landFixture(t);
-  g.box.review.approveAfter = 3;
-  g.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
-  const offered = await g.run(g.checkout, "land", "t1");
-  assert.equal(offered.status, 0, offered.output);
-  assert.doesNotMatch(offered.output, /no live runner/);
-  assert.equal(g.box.states.t1, "merged");
-  // No runner has ever asked: said as that, not as a mismatch.
-  const h = await landFixture(t);
-  h.box.review.approveAfter = 3;
-  h.box.runners = [];
-  const none = await h.run(h.checkout, "land", "t1");
-  assert.equal(none.status, 0, none.output);
-  assert.match(none.output, /The review request is not claimed yet, and no runner has asked the server for work\. It will not be claimed until a runner that offers codex\/gpt-6-astra for the review job asks the server for work\./);
-  assert.equal(h.box.states.t1, "merged");
-});
-
-test("a landing whose sole review runner has skipped says so by runner name and stops, instead of waiting out the hour", async (t) => {
-  const f = await landFixture(t);
-  // No verdict will ever arrive: the landing must say the skip, not time out.
-  f.box.review.approveAfter = null;
-  f.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
-  f.box.review.skips = [{ runner: "home:studio" }];
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /every runner that offers codex\/gpt-6-astra for the review of t1 at \w+ has skipped it: home:studio\./);
-  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.verdict, "skipped");
-  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.reviewer, "codex/gpt-6-astra");
-  assert.equal(f.posts("/accept").length, 0);
-  assert.equal(f.posts("/merged").length, 0);
-  assert.equal(f.box.states.t1, "submitted");
-  // A second runner offering the reviewer, still live, leaves one that has not
-  // skipped: the landing keeps waiting instead of naming a partial skip.
-  const g = await landFixture(t);
-  g.box.review.approveAfter = 3;
-  g.box.runners = [
-    { runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
-    { runner: "home:desk", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
-  ];
-  g.box.review.skips = [{ runner: "home:studio" }];
-  const offered = await g.run(g.checkout, "land", "t1");
-  assert.equal(offered.status, 0, offered.output);
-  assert.doesNotMatch(offered.output, /has skipped it/);
-  assert.equal(g.box.states.t1, "merged");
-  // A skip of an earlier review request at the same head — an earlier
-  // landing's — does not count against the request this landing made: the
-  // landing waits for the verdict as before.
-  const h = await landFixture(t);
-  h.box.review.approveAfter = 3;
-  h.box.review.request = 2;
-  h.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
-  h.box.review.skips = [{ runner: "home:studio", request: 1 }];
-  const earlier = await h.run(h.checkout, "land", "t1");
-  assert.equal(earlier.status, 0, earlier.output);
-  assert.doesNotMatch(earlier.output, /has skipped it/);
-  assert.equal(h.box.states.t1, "merged");
-});
-
-test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  const beatMs = 40;
-  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: String(beatMs) });
-  const renewals = () => f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
-  await until(() => renewals() >= 2, CEILING_MS, "two renewals");
-  // The server cannot be reached for a while: one warning, renewals go on.
-  f.box.renewFails = true;
-  await until(() => landing.output().includes("could not be renewed"), CEILING_MS, "the warning");
-  const failed = renewals();
-  await until(() => renewals() >= failed + 3, CEILING_MS, "three more renewals");
-  assert.equal(landing.output().split("could not be renewed").length - 1, 1);
-  f.box.renewFails = false;
-  await until(() => landing.output().includes("renewed again"), CEILING_MS, "the recovery");
-  // Another landing took the lease over: the renewal is refused, said once,
-  // and no renewal follows — the renewal calls themselves must settle, quiet
-  // for several beats, at the count the refusal left them at.
-  f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
-  await until(() => landing.output().includes("no longer t1's"), CEILING_MS, "the loss");
-  const after = renewals();
-  // The landing stops on its own — every step, and each poll of the review
-  // wait, asks the guard — so its end is waited for, not raced with a sleep.
-  const ended = await landing.done;
-  assert.equal(ended.status, 1, landing.output());
-  assert.match(landing.output(), /run atelier land t1 again once the other landing ends/);
-  assert.equal(await settled(renewals, beatMs * 5, CEILING_MS, "the renewals"), after, "renewals continued after the refusal");
-  assert.equal(landing.output().split("no longer t1's").length - 1, 1);
-  // The landing's end leaves t2's lease where it is.
-  assert.equal(f.box.lease?.item, "t2");
-  assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
-});
-
-test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", { timeout: CEILING_MS }, async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.box.review.pending, CEILING_MS, "the review request");
-  const before = { checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
-  // The Mac sleeps (t232): the renewals pause, the lease lapses, and t2's
-  // landing, queued with --wait, takes it over.
-  const taken = new Date().toISOString();
-  f.box.lease = { item: "t2", holder: "owner", at: taken, renewedAt: taken };
-  const ended = await landing.done;
-  assert.equal(ended.status, 1, landing.output());
-  assert.match(landing.output(), /no longer t1's/);
-  assert.match(landing.output(), /another landing took the landing lease of proj over, so this landing stops without accepting or merging t1/);
-  assert.match(landing.output(), /Nothing was merged; run atelier land t1 again once the other landing ends/);
-  // Nothing was accepted or merged, and main did not move.
-  assert.equal(f.posts("/accept").length, 0);
-  assert.equal(f.posts("/merged").length, 0);
-  assert.equal(f.box.states.t1, "submitted");
-  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.checkout);
-  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
-  // The lease the other landing took stands, and the landing that lost it
-  // did not try to free it.
-  assert.equal(f.box.lease?.item, "t2");
-  assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
-});
-
-test("before accepting, the landing asks for the lease again, so a takeover its heartbeat has not reported stops it", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  // The heartbeat is slow, so the takeover (the Mac slept and woke at the
-  // verdict) must be caught by the renewal the landing asks for itself
-  // before the steps that publish.
-  f.env = { ATELIER_LAND_RENEW_MS: "3600000", ATELIER_LAND_POLL_MS: "40" };
-  f.onOutput = (out) => {
-    if (out.includes("Review requested")) f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
-  };
-  const before = { checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /the landing lease is no longer t1's \(no_lease: the landing lease is held for t2, not t1\); this landing stops before accepting or merging t1\. Nothing was merged/);
-  // The verdict came and was recorded, but nothing was accepted or merged.
-  assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "approve");
-  assert.equal(f.posts("/accept").length, 0);
-  assert.equal(f.posts("/merged").length, 0);
-  assert.equal(f.box.states.t1, "submitted");
-  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before.checkout);
-  assert.equal(git(f.p, "--git-dir", f.baseline, "rev-parse", "main"), before.baseline);
-  // The lease the other landing took stands.
-  assert.equal(f.box.lease?.item, "t2");
-  assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
-});
-
-test("a landing whose lease lapsed and was taken over releases nothing of the landing that took it", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  // t1's landing waits for a review while its lease is renewed; then its
-  // renewals stop reaching the server and t2's landing takes the lease over.
-  const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.box.review.pending, CEILING_MS, "the review request");
-  f.box.renewFails = true;
-  const taken = new Date().toISOString();
-  f.box.lease = { item: "t2", holder: "owner", at: taken, renewedAt: taken };
-  // t1's landing ends on a signal, as a killed one would: its release names
-  // t1, so the server leaves t2's lease where it is.
-  landing.child.kill("SIGTERM");
-  await landing.done;
-  assert.deepEqual(f.posts("/landing-lease").filter((x) => x.body.cancel === true).map((x) => x.body), [{ cancel: true, item: "t1" }]);
-  assert.deepEqual(f.box.lease, { item: "t2", holder: "owner", at: taken, renewedAt: taken });
-  // The refusal names the landing that holds the lease now, as the handover
-  // it is, not a warning about a lease left stranded (t237).
-  assert.match(landing.output(), /The landing lease of proj is held for t2's landing now, so this release left it alone/);
-  assert.doesNotMatch(landing.output(), /could not be released/);
-  // --release-lease aimed at t1 refuses too, naming t2's landing, and leaves the lease.
-  const r = await f.run(f.checkout, "land", "t1", "--release-lease");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /held for t2, not t1: owner has been landing t2 since .*atelier land t2 --release-lease/);
-  assert.deepEqual(f.box.lease, { item: "t2", holder: "owner", at: taken, renewedAt: taken });
-});
-
-test("a landing that merged says the handover, not a warning, when a queued landing takes the lease in the moment after the merge", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  // The server treats a merged task's lease as free (landingLive), so t2's
-  // landing, queued with --wait, takes it the moment t1's merge is recorded,
-  // before t1's landing releases it (t237): the release's cancel is refused
-  // naming t2, which is the handover working, not a failure.
-  f.box.takeOverOnMerged = "t2";
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /t1 landed:/);
-  assert.match(r.output, /The landing lease of proj is held for t2's landing now, so this release left it alone: the server treats a merged task's lease \(a lapsed one the same way\) as free, so a landing queued with --wait takes it in the moment after the merge, and that landing holds and renews it\. Nothing of t1's landing is stranded\./);
-  // No warning of a lease that could not be released, and no claim that it
-  // was released: another landing holds it now.
-  assert.doesNotMatch(r.output, /could not be released/);
-  assert.doesNotMatch(r.output, /The landing lease for proj is released/);
-  // The cancel still named t1, and the lease is left with t2's landing.
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true && x.body.item === "t1"));
-  assert.equal(f.box.lease?.item, "t2");
-  assert.equal(f.box.states.t1, "merged");
-});
-
-// ── atelier land --workflow (t280) ──────────────────────────────────────────
-
-// The stand-in landing Workflow as the real one moves (src/landing-workflow.ts):
-// it queues for the lease, then holds it and asks for the workspace (on its
-// second read, so the executor sees the queueing first); a report of the
-// round's pushed head makes it accept (as the review and the checks would on
-// the server) and ask for the merge; a report of conflicts pauses it with the
-// lease released; a resume starts the next round; the recorded merge
-// completes it.
-function scriptWorkflow(f) {
-  const wf = f.box.wf;
-  let leaseReads = 0;
-  wf.tick = (box) => {
-    if (wf.stage === "lease" && ++leaseReads >= 2) {
-      const now = new Date().toISOString();
-      wf.stage = "workspace"; box.lease = { item: "t1", holder: "owner", at: now, renewedAt: now };
-    }
-    if (wf.stage === "merge" && box.states.t1 === "merged") { wf.stage = "done"; wf.status = "complete"; wf.output = { landed: true }; box.lease = null; }
-  };
-  wf.onEvent = (event, box) => {
-    if (event.type === "workspace" && event.payload.round !== wf.round) return;
-    if (event.type === "workspace" && event.payload.conflict) { wf.stage = "conflict"; wf.files = event.payload.files; box.lease = null; }
-    else if (event.type === "workspace" && event.payload.failed) { wf.stage = "failed"; wf.status = "errored"; wf.error = event.payload.reason; box.lease = null; }
-    else if (event.type === "workspace") { wf.stage = "merge"; box.states.t1 = "accepted"; }
-    else if (event.type === "resume" && event.payload.round === wf.round) { wf.stage = "lease"; wf.round++; leaseReads = 0; }
-  };
-  return wf;
-}
-
-test("land --workflow starts the Workflow, merges main and pushes only once the Workflow holds the lease, reports the head, and merges when it accepts", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  const wf = scriptWorkflow(f);
-  const before = git(f.checkout, "rev-parse", "HEAD");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Landing t1 as a Cloudflare Workflow \(instance land-t1-1\)/);
-  assert.equal(wf.started[0].checks, "container");
-  assert.match(r.output, /runs the checks \(in a Cloudflare container\)/);
-  assert.match(r.output, /The landing Workflow queues for the landing lease\./);
-  assert.match(r.output, /The landing Workflow holds the lease and waits for this machine to merge main and push\./);
-  assert.match(r.output, /t1 landed through the landing Workflow/);
-  // The merge of main began only when the Workflow held the lease (the
-  // merge in the checkout reads the baseline's token later, at `merge`).
-  // (The early review notice reads the baseline before any Workflow
-  // exists, so that read has no stage: t422.)
-  const staged = wf.baseTokenAt.filter((stage) => stage !== null);
-  assert.equal(staged[0], "workspace");
-  assert.ok(!wf.baseTokenAt.includes("lease"));
-  // The workspace report names the round, the pushed head and main's head.
-  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
-  assert.equal(f.forkHead("t1"), head);
-  assert.deepEqual(wf.events, [{ type: "workspace", payload: { round: 0, head, mainHead: f.mainCommit, mergedIn: true } }]);
-  // The server's steps are the Workflow's: this machine ran no check and
-  // made no submission, review request or acceptance of its own.
-  for (const route of ["/submit", "/review-request", "/accept", "/sandbox"]) assert.deepEqual(f.posts(route), [], route);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "merged"]);
-  // The merge in the registered checkout holds the pushed head.
-  assert.equal(f.box.states.t1, "merged");
-  assert.deepEqual(git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [before, head]);
-});
-
-test("land --workflow pauses the Workflow on a conflict, and the rerun after the owner resolves it resumes the landing in a new round", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits the same file" } });
-  const wf = scriptWorkflow(f);
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
-  assert.match(r.output, /The landing Workflow is paused at its conflict stage and has released the lease\. Once the conflicts are resolved and committed, run atelier land t1 --workflow again: it resumes this landing\./);
-  assert.equal(wf.events.length, 1);
-  assert.deepEqual({ ...wf.events[0].payload, reason: undefined }, { round: 0, conflict: true, files: ["work.txt"], reason: undefined });
-  assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
-  assert.deepEqual(f.posts("/push"), []);
-  assert.equal(wf.stage, "conflict");
-  // The owner resolves and commits; the rerun attaches, resumes round 0's
-  // pause, and does the workspace steps of round 1 when the Workflow asks.
-  writeFileSync(join(f.workspace("t1"), "work.txt"), "task and main\n");
-  git(f.workspace("t1"), "add", "-A"); git(f.workspace("t1"), "commit", "--no-edit", "-q");
-  const again = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(again.status, 0, again.output);
-  assert.match(again.output, /Attached to t1's landing Workflow \(instance land-t1-1, at conflict\)/);
-  assert.match(again.output, /Resumed the landing after the conflicts of round 1/);
-  assert.equal(wf.started.length, 1);
-  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
-  assert.deepEqual(wf.events.slice(1), [{ type: "resume", payload: { round: 0 } }, { type: "workspace", payload: { round: 1, head, mainHead: f.mainCommit, mergedIn: false } }]);
-  assert.equal(f.box.states.t1, "merged");
-});
-
-test("land --workflow tells the Workflow a conflict regeneration did not settle by its whole message, not the merge step's note", async (t) => {
-  if (!canInspectSlots(t)) return;
-  // The same conflict as the plain landing's: one file the regenerate
-  // command rewrites, one it does not, so taking either side and
-  // regenerating leaves work.txt and the merge stops. That stop's error
-  // data carries the note the ledger's merge step records (`reason`); the
-  // Workflow's conflict record gets the message the owner read.
-  const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
-  const wf = scriptWorkflow(f);
-  writeFileSync(join(f.checkout, "gen-fixtures.txt"), "from main\n");
-  git(f.checkout, "add", "."); git(f.checkout, "commit", "-m", "Main regenerates the fixture"); git(f.checkout, "push", "-q", "origin", "main");
-  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
-  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt/);
-  assert.equal(wf.events.length, 1);
-  const { payload } = wf.events[0];
-  assert.deepEqual({ ...payload, reason: undefined }, { round: 0, conflict: true, files: ["gen-fixtures.txt", "work.txt"], reason: undefined });
-  assert.match(payload.reason, /^the merge of main at [0-9a-f]{8} into t1's workspace stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt\nTaking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it\. /);
-  const merge = f.posts("/land").find((x) => x.body.step === "merge");
-  assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
-});
-
-test("land --workflow ends with the Workflow's own reason when the Workflow fails", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
-  wf.onEvent = (event, box) => { wf.stage = "failed"; wf.status = "errored"; wf.error = "the required checks failed at abcdef12 in the Cloudflare container: npm test"; box.lease = null; };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /the landing Workflow land-t1-1 failed: the required checks failed at abcdef12 in the Cloudflare container: npm test/);
-  assert.deepEqual(f.posts("/merged"), []);
-});
-
-test("land --workflow says when the server replaced an hours-old instance, and names the replacement on every event and renewal", async (t) => {
-  const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
-  Object.assign(wf, { instance: "land-t1-old", stage: "lease", round: 0, checks: "local", status: "waiting", replace: { reason: "lease-wait", detail: "instance land-t1-old has waited for the landing lease since 2026-10-10T08:00:00.000Z (3.5 hours), at or past the 3 hours limit" } });
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Replaced t1's landing Workflow land-t1-old with land-t1-r1 \(lease-wait\): instance land-t1-old has waited for the landing lease since .* at or past the 3 hours limit\./);
-  assert.match(r.output, /Landing t1 as a Cloudflare Workflow \(instance land-t1-r1\)/);
-  assert.doesNotMatch(r.output, /Attached to/);
-  const events = f.posts("/landing-workflow").filter((x) => x.body.event);
-  assert.ok(events.length > 0);
-  for (const e of events) assert.equal(e.body.instance, "land-t1-r1");
-  for (const renew of f.posts("/landing-lease").filter((x) => x.body.renew === true)) assert.equal(renew.body.instance, "land-t1-r1");
-});
-
-test("land --workflow reports a named reviewer the server refused to put in place of the live instance's", async (t) => {
-  const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
-  Object.assign(wf, { instance: "land-t1-1", stage: "lease", round: 0, checks: "local", status: "running" });
-  wf.attach = { reviewer: "claude-code/opus-5.5", reviewerRefused: "claude-code/sonnet-5.5 cannot replace the remembered reviewer claude-code/opus-5.5: claude-code/sonnet-5.5 is not of another family than every contributor" };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--reviewer", "claude-code/sonnet-5.5");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Warning: claude-code\/sonnet-5\.5 cannot replace the remembered reviewer claude-code\/opus-5\.5: .*; the live instance keeps its reviewer\./);
-  assert.match(r.output, /Attached to t1's landing Workflow \(instance land-t1-1/);
-  // Said once: the generic note on kept options is not repeated.
-  assert.doesNotMatch(r.output, /keeps the review options it was started with/);
-});
-
-test("land --workflow refuses an accepted task with no live Workflow, as the plain landing does, and starts nothing", async (t) => {
-  const f = await landFixture(t);
-  scriptWorkflow(f);
-  f.box.states.t1 = "accepted";
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /t1 is accepted at \w+; merge it with: atelier merge t1\./);
-  assert.deepEqual(f.posts("/landing-workflow"), []);
-});
-
-test("land without --workflow never reaches the landing Workflow, and --dry-run with --workflow is refused", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  assert.doesNotMatch(r.output, /Merge it with: atelier merge t1/);
-  assert.equal((r.output.match(/The project branch was not pushed to its own remotes\. Nothing was deployed\./g) ?? []).length, 1);
-  assert.match(r.output, /t1 landed: merged as [0-9a-f]{8}\.\n/);
-  assert.ok(f.box.requests.every((x) => !x.path.includes("landing-workflow")));
-  assert.equal(f.box.states.t1, "merged");
-  const both = await f.run(f.checkout, "land", "t2", "--workflow", "--dry-run");
-  assert.equal(both.status, 1, both.output);
-  assert.match(both.output, /--dry-run and --workflow together say two things/);
-});
-
-// ── the local checks mode (t305) ────────────────────────────────────────────
-
-test("land --workflow runs the required checks here in a clean clone after the push, by default, and reports the head only once they pass", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  const wf = scriptWorkflow(f);
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 0, r.output);
-  // The mode is local without --checks, sent to the server and said.
-  assert.equal(wf.started[0].checks, "local");
-  assert.match(r.output, /runs the required checks in a clean clone \(checks mode local\)/);
-  assert.match(r.output, /Pushed \w+ to t1's fork; running the required checks in a clean clone\./);
-  assert.match(r.output, /The required checks pass at \w+; reporting the head to the landing Workflow\./);
-  // The check ran through atelier check (its observed result posted to the
-  // server at the pushed head) after the push and before the report.
-  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
-  const at = (pred) => f.box.requests.findIndex(pred);
-  const pushed = at((x) => x.method === "POST" && x.path.endsWith("/t1/push"));
-  const checked = at((x) => x.method === "POST" && x.path.endsWith("/t1/evidence") && x.body.kind === "check");
-  const reported = at((x) => x.method === "POST" && x.path.endsWith("/landing-workflow") && x.body.event?.type === "workspace");
-  assert.ok(pushed >= 0 && checked > pushed && reported > checked, `push ${pushed}, check ${checked}, report ${reported}`);
-  const evidence = f.box.requests[checked].body;
-  assert.equal(evidence.claim, "exit 0"); assert.equal(evidence.passed, true); assert.equal(evidence.head, head);
-  assert.deepEqual(wf.events, [{ type: "workspace", payload: { round: 0, head, mainHead: f.mainCommit, mergedIn: true } }]);
-  // The executor records the check step it ran, as the plain landing does;
-  // the submission, the review and the acceptance stay the Workflow's.
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "merged"]);
-  for (const route of ["/submit", "/review-request", "/accept", "/sandbox"]) assert.deepEqual(f.posts(route), [], route);
-  assert.equal(f.box.states.t1, "merged");
-});
-
-test("a landing whose check fails ends with the failure summary every landing prints: the run the gate reads, its tests and its log tail", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  f.box.checks = ["printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3"];
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 1, r.output);
-  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
-  assert.ok(r.output.includes(`atelier check failed (exit 2):\nFailed checks at ${head.slice(0, 8)}, as the gate reads them (the latest counting run of each required check at this head):`), r.output);
-  assert.match(r.output, /\n {2}`printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3` failed on a runner, in a clean clone at \d{4}-\d\d-\d\d \d\d:\d\d UTC: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap\): the cap is enforced\n {4}log: whole output, inline; 3 lines, whole:\n {6}not ok 1 - the cap is enforced\n/, r.output);
-  assert.match(r.output, /\n {2}Whole logs of every attempt at this head: atelier check-log t1\n/);
-  // The step is recorded as failed, nothing is submitted, and the lease is released.
-  assert.equal(f.posts("/land").find((x) => x.body.step === "check")?.body.failed, true);
-  assert.deepEqual(f.posts("/submit"), []);
-  assert.equal(f.box.lease, null);
-});
-
-test("land --workflow with a failing local check reports the workspace failed, never the head, and ends with the check's failure summary", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
-  f.box.checks = ["exit 3"];
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /atelier check failed/);
-  // The same summary as the plain landing's; a check that names no test says so.
-  assert.match(r.output, /atelier check failed \(exit 2\):\nFailed checks at [0-9a-f]{8}, as the gate reads them/);
-  assert.match(r.output, /`exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests: names unavailable \(no test reporter format this summary reads was recognised in the output\)\n {4}log: whole output, inline; 1 line, whole:\n {6}\[sha256 of full output: [0-9a-f]{64}\]/, r.output);
-  assert.equal(wf.events.length, 1);
-  assert.equal(wf.events[0].payload.failed, true);
-  assert.equal(wf.events[0].payload.head, undefined);
-  assert.match(wf.events[0].payload.reason, /atelier check failed/);
-  assert.match(wf.events[0].payload.reason, /Failed checks at [0-9a-f]{8}, as the gate reads them/);
-  const check = f.posts("/land").find((x) => x.body.step === "check");
-  assert.equal(check?.body.failed, true);
-  assert.deepEqual(f.posts("/merged"), []);
-});
-
-test("land --workflow fits a long local-check failure to what the Workflow records, keeping every failed check and the check-log line", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
-  // The first check's output runs long (60 lines of some 100 characters,
-  // past what the summary shows and what the recorder keeps inline), and
-  // the second check fails after it.
-  const line = `not ok 1 - the long check ${"x".repeat(70)}`;
-  f.box.checks = [`yes '${line}' | head -n 60; exit 3`, "exit 4"];
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  const pointer = "  Whole logs of every attempt at this head: atelier check-log t1";
-  // The terminal prints the summary whole: both checks, the first's 20-line tail, then the pointer.
-  const printed = r.output.slice(r.output.indexOf("Failed checks at"), r.output.indexOf(pointer) + pointer.length);
-  assert.ok(printed.length > WORKSPACE_REASON_MAX, String(printed.length));
-  assert.match(printed, /\n {2}`yes 'not ok 1 - the long check x+' \| head -n 60; exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap, read from a tail of the output, so names cut with the rest are not listed\): the long check x+\n {4}log: inline tail only \(a check run on a machine keeps its last 3,500 characters inline, and this output was longer\); last 20 of \d+ lines:\n/, printed);
-  assert.match(printed, /\n {2}`exit 4` failed on a runner, in a clean clone at .*: evidence #2, attempt 1 of 1 at this head\n/, printed);
-  // The 20-line tail: 19 of the output's lines, then the sha256 line the recorder appends.
-  assert.equal(printed.split("\n").filter((l) => l.startsWith(`      ${line}`)).length, 19, printed);
-  // The Workflow is sent the same failure fitted to its record's size, not
-  // cut at it: the first line, both checks, and the check-log line survive.
-  assert.equal(wf.events.length, 1);
-  assert.equal(wf.events[0].payload.failed, true);
-  const reason = wf.events[0].payload.reason;
-  assert.ok(reason.length <= WORKSPACE_REASON_MAX, String(reason.length));
-  assert.ok(reason.startsWith("atelier check failed (exit 2):\nFailed checks at "), reason);
-  assert.ok(reason.includes("`exit 4`"), reason);
-  assert.ok(reason.endsWith(`\n${pointer}`), reason);
-  assert.ok(!reason.includes("…\n" + pointer), reason);
-});
-
-test("land --workflow --checks container runs no check here; --checks is refused without --workflow or with another mode; a server with no modes is warned of", async (t) => {
-  const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
-  const alone = await f.run(f.checkout, "land", "t1", "--checks", "local");
-  assert.equal(alone.status, 1, alone.output);
-  assert.match(alone.output, /--checks says where a Workflow landing runs the required checks; give it with --workflow/);
-  const bogus = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "laptop");
-  assert.equal(bogus.status, 1, bogus.output);
-  assert.match(bogus.output, /--checks takes local or container: atelier land t1 --workflow --checks local\|container/);
-  assert.deepEqual(f.posts("/landing-workflow"), []);
-  // A server older than the modes records none and runs the checks in the
-  // container: this machine runs none and says so.
-  wf.noChecksMode = true;
-  const old = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(old.status, 0, old.output);
-  assert.match(old.output, /Warning: the server recorded no checks mode for this landing/);
-  assert.deepEqual(f.posts("/evidence"), []);
-  assert.ok(!f.posts("/land").some((x) => x.body.step === "check"));
-});
-
-test("land --workflow reports a finished landing, not a lost one, when the merged task no longer names its Workflow (t308)", async (t) => {
-  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
-  const wf = scriptWorkflow(f);
-  // As in production on 2026-10-08: once the task is merged, the route
-  // answers with no instance instead of a completed one.
-  const tick = wf.tick;
-  wf.tick = (box) => { tick(box); if (box.states.t1 === "merged") wf.instance = null; };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /t1 landed through the landing Workflow; the lease is released\./);
-  assert.doesNotMatch(r.output, /can no longer be read/);
-  assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true && x.body.item === "t1"));
-});
-
-// The workspace's write token (t275), against runLand with injected fakes:
-// the server's answers, Git's (a real repository only where the preflight
-// reads one from disk, under .scratch/) and the CLI's own steps. The task is
-// held by codex/test, the owner is "owner", and the workspace records
-// `expiresAt` as its token's expiry (none when null).
-function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, dispatch = null, actor = "codex/test", committed = true, workflow = false, push = [] } = {}) {
-  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
-  const dir = mkdtempSync(join(scratch, "land-token-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  execFileSync("git", ["init", "-q", dir]);
-  const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": actor, ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
-  const calls = [], lines = [], adopted = [], commands = [];
-  const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease";
-  const fresh = new Date(Date.now() + 8 * 3600_000).toISOString();
-  const request = async (method, path, body, as, extra) => {
-    calls.push({ method, path, body, as, extra });
-    if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
-    if (path === leasePath && method === "GET") return { lease: null, waiting: [] };
-    if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state: "submitted" } };
-    if (path === itemPath) return { item: { id: "t1", state: holder ? "submitted" : "open", owner: holder, runner, dispatch }, policy: { checks: [] } };
-    if (path === `${itemPath}/undispatch`) { dispatch = null; return {}; }
-    if (path === `${itemPath}/claim`) {
-      if (dispatch && !holder) throw new Error("dispatched: withdraw the dispatch to claim it by hand");
-      if (claim !== "ok") throw Object.assign(new Error(claim), { status: 409 });
-      holder = as;
-      return { item: { id: "t1" }, workspace: { remote: "https://fork.invalid/t1.git", token: "fresh-token", expiresAt: fresh, defaultBranch: "main" } };
-    }
-    if (path === `${itemPath}/base-token`) return { remote: "https://base.invalid/main.git", token: "read", defaultBranch: "main" };
-    if (path === `${itemPath}/landing-workflow`) return method === "GET" && calls.some((c) => c.method === "POST" && c.path === path)
-      ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
-      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, checks: "local", stage: "lease" };
-    return {};
-  };
-  // Git as a landing asks it: main already merged, nothing to compare or
-  // regenerate, the config above.
-  const fakeGit = (args, o = {}) => {
-    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? committed ? "a".repeat(40) : null : "";
-    if (o.allowFail) return { status: out === null ? 1 : 0, stdout: out ?? "", stderr: "" };
-    return out ?? "";
-  };
-  // Each `atelier push` answers the next of `push` (true passes, a string
-  // fails with that output); every other step passes.
-  const pushes = [...push];
-  const runCommand = async (argv) => {
-    commands.push(argv[2]);
-    const next = argv[2] === "push" ? pushes.shift() ?? true : true;
-    return next === true ? { passed: true, status: 0, output: "ok\n", durationMs: 1 } : { passed: false, status: 1, output: `${next}\n`, durationMs: 1 };
-  };
-  const io = {
-    args: { _: ["land", "t1"], ...(workflow ? { workflow: true } : { "no-review": true }) }, name: "proj", id: "t1", p: { path: dir, branch: "main" },
-    request, git: fakeGit, print: (line) => lines.push(line), die: (message) => { throw new Error(message); },
-    workspacePath: () => dir, atelier: "atelier.mjs", env: {}, redact: (text) => text, secrets: () => [], runCommand,
-    adoptWorkspaceToken: (where, w) => { adopted.push({ where, ...w }); config["atelier.write-token-expires-at"] = w.expiresAt; },
-  };
-  const leaseTaken = () => calls.some((c) => c.method === "POST" && c.path === leasePath && !c.body.cancel);
-  const claims = () => calls.filter((c) => c.path === `${itemPath}/claim`);
-  return { io, dir, calls, lines, adopted, commands, leaseTaken, claims, fresh };
-}
-
-test("a write token expiring within the window is refreshed for the holder before the lease is taken (t275)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), runner: "home:mbp" });
-  await runLand(l.io);
-  assert.equal(l.claims().length, 1);
-  // The re-claim is made as the holder, with the runner holding the task, never as the owner.
-  assert.equal(l.claims()[0].as, "codex/test");
-  assert.notEqual(l.claims()[0].as, "owner");
-  assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
-  assert.deepEqual(l.adopted.map((a) => [a.where, a.token, a.expiresAt]), [[l.dir, "fresh-token", l.fresh]]);
-  const claimAt = l.calls.findIndex((c) => c.path.endsWith("/claim"));
-  const leaseAt = l.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-lease") && !c.body.cancel);
-  assert.ok(claimAt >= 0 && leaseAt > claimAt, "the refresh comes before the lease");
-  assert.ok(l.lines.some((x) => /write token expires .*refreshing it for its holder before the landing takes the lease/.test(x)), l.lines.join("\n"));
-  assert.deepEqual(l.commands, ["push", "check", "submit"]);
-});
-
-test("a write token far from expiry is not refreshed, and an unknown expiry is refreshed once and recorded (t275)", async (t) => {
-  const far = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString() });
-  await runLand(far.io);
-  assert.equal(far.claims().length, 0);
-  assert.ok(far.leaseTaken());
-  const unknown = tokenLanding(t, { expiresAt: null });
-  await runLand(unknown.io);
-  assert.equal(unknown.claims().length, 1);
-  assert.equal(unknown.claims()[0].as, "codex/test");
-  assert.ok(unknown.lines.some((x) => /records no write token expiry/.test(x)), unknown.lines.join("\n"));
-  // The refresh recorded the expiry, so the next landing reads it and claims nothing.
-  await runLand(unknown.io);
-  assert.equal(unknown.claims().length, 1);
-});
-
-test("a refresh the server refuses stops the landing before the lease, naming atelier claim (t275)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: new Date(Date.now() - 60_000).toISOString(), claim: "owned: t1 is held by codex/test on home:mbp, not a claim made without a runner" });
-  await assert.rejects(runLand(l.io), (error) => {
-    assert.match(error.message, /could not be refreshed, so the landing stops before taking the lease/);
-    assert.match(error.message, /atelier claim t1/);
-    return true;
-  });
-  assert.equal(l.claims().length, 1);
-  assert.equal(l.leaseTaken(), false);
-  assert.deepEqual(l.commands, []);
-  assert.deepEqual(l.adopted, []);
-});
-
-test("a workspace whose recorded actor is not the task's holder is not refreshed: nothing is claimed, as the owner or anyone (t275)", async (t) => {
-  for (const holder of ["owner", "claude-code/opus-5.5"]) {
-    const l = tokenLanding(t, { expiresAt: null, holder });
-    await assert.rejects(runLand(l.io), /atelier claim t1/);
-    assert.equal(l.claims().length, 0, `held by ${holder}`);
-    assert.equal(l.leaseTaken(), false);
-  }
-});
-
-test("land claims a released committed workspace as its builder and refreshes its token (t414)", async (t) => {
-  for (const expiresAt of [new Date(Date.now() - 60_000).toISOString(), new Date(Date.now() + 4 * 3600_000).toISOString()]) {
-    const l = tokenLanding(t, { holder: null, expiresAt });
-    await runLand(l.io);
-    assert.equal(l.claims().length, 1);
-    assert.equal(l.claims()[0].as, "codex/test");
-    assert.deepEqual(l.claims()[0].extra, {});
-    assert.equal(l.adopted[0].token, "fresh-token");
-    assert.deepEqual(l.commands, ["push", "check", "submit"]);
-    assert.ok(l.lines.some((x) => /Claiming t1 for its workspace's builder codex\/test/.test(x)));
-    assert.ok(l.calls.findIndex((c) => c.path.endsWith("/claim")) < l.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-lease")));
-    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
-  }
-});
-
-test("land withdraws a waiting dispatch before claiming the committed workspace for its builder (t414)", async (t) => {
-  const l = tokenLanding(t, { holder: null, expiresAt: new Date(Date.now() - 60_000).toISOString(), dispatch: { to: "home" } });
-  await runLand(l.io);
-  const withdrawn = l.calls.findIndex((c) => c.path.endsWith("/undispatch"));
-  const claimed = l.calls.findIndex((c) => c.path.endsWith("/claim"));
-  assert.ok(withdrawn >= 0 && claimed > withdrawn);
-  assert.equal(l.claims()[0].as, "codex/test");
-  assert.equal(l.calls[withdrawn].as, undefined, "withdrawal uses the project owner's default identity");
-  assert.ok(l.lines.some((x) => /Withdrew t1's waiting dispatch/.test(x)));
-  assert.equal(l.adopted[0].token, "fresh-token");
-  assert.deepEqual(l.commands, ["push", "check", "submit"]);
-});
-
-test("land leaves an unheld dispatch alone without a recorded builder or committed head (t414)", async (t) => {
-  for (const missing of [{ actor: null }, { committed: false }]) {
-    const l = tokenLanding(t, { holder: null, dispatch: { to: "home" }, ...missing });
-    await assert.rejects(runLand(l.io), /no recorded actor|no committed head/);
-    assert.equal(l.claims().length, 0);
-    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
-    assert.equal(l.leaseTaken(), false);
-  }
-});
-
-test("land --workflow refreshes the write token before starting the Workflow, and starts none when the refresh fails (t275)", async (t) => {
-  const ok = tokenLanding(t, { expiresAt: new Date(Date.now() + 60_000).toISOString(), workflow: true });
-  await runLand(ok.io);
-  const started = ok.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-workflow"));
-  assert.equal(ok.claims().length, 1);
-  assert.equal(ok.claims()[0].as, "codex/test");
-  assert.ok(started > ok.calls.findIndex((c) => c.path.endsWith("/claim")));
-  const refused = tokenLanding(t, { expiresAt: new Date(Date.now() + 60_000).toISOString(), workflow: true, claim: "not_owner: refused" });
-  await assert.rejects(runLand(refused.io), /atelier claim t1/);
-  assert.equal(refused.calls.filter((c) => c.method === "POST" && c.path.endsWith("/landing-workflow")).length, 0);
-});
-
-test("a push refused for an expired token is refreshed for the holder and tried exactly once more (t275)", async (t) => {
-  const once = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["remote: Invalid or expired token\nfatal: unable to access the fork"] });
-  await runLand(once.io);
-  assert.deepEqual(once.commands, ["push", "push", "check", "submit"]);
-  assert.equal(once.claims().length, 1);
-  assert.equal(once.claims()[0].as, "codex/test");
-  assert.equal(once.adopted.length, 1);
-  // Refused again after the refresh: no third push, and the landing ends.
-  const twice = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["Invalid or expired token", "Invalid or expired token"] });
-  await assert.rejects(runLand(twice.io), /atelier push failed[\s\S]*Invalid or expired token/);
-  assert.deepEqual(twice.commands, ["push", "push"]);
-  assert.equal(twice.claims().length, 1);
-  // The lease is released either way.
-  assert.ok(twice.calls.some((c) => c.method === "POST" && c.path.endsWith("/landing-lease") && c.body.cancel === true));
-});
-
-test("a push that fails for any other reason is not refreshed or retried (t275)", async (t) => {
-  const l = tokenLanding(t, { expiresAt: new Date(Date.now() + 4 * 3600_000).toISOString(), push: ["error: failed to push some refs (non-fast-forward)"] });
-  await assert.rejects(runLand(l.io), /non-fast-forward/);
-  assert.deepEqual(l.commands, ["push"]);
-  assert.equal(l.claims().length, 0);
-});
-
-// The early review notice (t422): land says which policy requires a review
-// before it takes the lease or runs a check, though the task's fork already
-// holds the head, and says nothing under --no-review.
-for (const postMerge of [false, true]) test(`land prints the review notice before it takes the lease or runs a check (post-merge policy: ${postMerge})`, async (t) => {
-  const f = await landFixture(t);
-  if (postMerge) f.box.policy = {
-    protected: [],
-    postMerge: {
-      version: 1,
-      approval: { by: "owner", at: "2026-10-09T00:00:00Z", reason: "run checks after landing" },
-      steps: [{ name: "check", command: "node scripts/check.mjs", class: "check", when: "always", protect: ["scripts/**"], timeoutMs: 1000 }],
-    },
-  };
-  f.box.checks = ["echo CHECK-RAN"];
-  const r = await f.run(f.checkout, "land", "t1");
-  assert.equal(r.status, 0, r.output);
-  const notice = r.output.indexOf("A review will be needed before this lands");
-  assert.ok(notice >= 0, r.output);
-  assert.match(r.output, postMerge
-    ? /work\.txt matches the protected glob \*\*, from the post-merge policy/
-    : /work\.txt matches the protected glob work\.txt/);
-  if (postMerge) assert.match(r.output, /Controlling policy:.*post-merge policy/);
-  const ran = r.output.indexOf("CHECK-RAN");
-  assert.ok(ran > notice, r.output);
-  const firstLease = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.method === "POST");
-  const baseToken = f.box.requests.findIndex((x) => x.path.endsWith("/base-token"));
-  assert.ok(baseToken >= 0 && baseToken < firstLease, "the baseline was read before the lease was taken");
-  const quiet = await (await landFixture(t)).run(f.checkout, "land", "t1", "--no-review", "--dry-run");
-  assert.doesNotMatch(quiet.output, /A review will be needed/);
-});
-
-for (const queued of [true, false]) test(`land --workflow exits non-zero on losing a queued instance and reports queue membership (${queued})`, async (t) => {
-  const f = await landFixture(t);
-  const wf = f.box.wf;
-  wf.tick = () => {
-    if (!wf.instance) return;
-    wf.unreadable = true;
-    wf.readError = "Workflow instance not found";
-    wf.lastStatus = { status: "errored", error: { message: "internal error" } };
-    f.box.waiting = queued ? [{ item: "t1", holder: "owner", at: new Date().toISOString() }] : [];
-  };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /instance land-t1-1/);
-  assert.match(r.output, /last status: errored; last error: internal error; read error: Workflow instance not found/);
-  assert.match(r.output, queued ? /t1 is still queued/ : /t1 is not queued/);
-  assert.match(r.output, /atelier land t1 --workflow/);
-  assert.match(r.output, /a missing instance is cleared automatically/);
-  assert.match(r.output, /npx wrangler workflows instances describe landing/);
-  assert.deepEqual(wf.events, []);
-  assert.deepEqual(f.posts("/merged"), []);
-});
-
-test("Workflow lease polling bounds a three-hour queue's steps and refreshes even a slow poll before queue expiry", () => {
-  const wait = 3 * 60 * 60_000;
-  assert.ok(Math.ceil(wait / landingLeasePollMs(wait, 15_000)) <= 256);
-  for (const duration of [wait, 30 * 24 * 60 * 60_000]) {
-    for (const requested of [15_000, 30 * 24 * 60 * 60_000]) {
-      assert.ok(landingLeasePollMs(duration, requested) <= LANDING_LEASE_EXPIRY_MS / 3);
-      assert.ok(Math.ceil(duration / landingLeasePollMs(duration, requested)) < 9000);
-    }
-  }
-  assert.equal(landingLeasePollMs(30, 10), 10);
-});
-
-
-test("land accepts a project-admitted reviewer alias despite its harness lacking the assessor role", async (t) => {
-  const f = await landFixture(t);
-  f.box.agents = { claude: { available: true, eligible_roles: ["assessor"] } };
-  f.box.reviewerAdmissions = [{ id: "Qwen3-Coder-Next", aliases: ["studio-review"], active: true, by: "owner", reason: "Qualified", at: new Date().toISOString() }];
-  const result = await f.run(f.checkout, "land", "t1", "--reviewer", "opencode/studio-review");
-  assert.equal(result.status, 0, result.output);
-  assert.equal(f.posts("/review-request")[0].body.reviewer, "opencode/studio-review");
+  // A guard against a looser shortcut; the landing before t628 asked in
+  // every one of these cases too.
+  await asksStill(t, [
+    { extra: ["--reviewer", "claude-code/opus-5.5"], reviews: [{ by: "antigravity/gemini-3.1-pro" }] },
+    { reviews: [{ by: "antigravity/gemini-3.1-pro", withdrawn: { at: "2026-10-13T11:00:00.000Z" } }] },
+    { reviews: [{ by: "claude-code/sonnet-5.5", tier: true }] },
+    { reviews: [{ by: "antigravity/gemini-3.1-pro" }], gate: { ready: false, needsAssessor: true, outOfScope: [], blockers: ["needs an independent approval"] } },
+  ]);
 });

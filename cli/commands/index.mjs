@@ -9,9 +9,18 @@ import command_base_token from "./base-token.mjs";
 import command_baseline_token from "./baseline-token.mjs";
 import command_block from "./block.mjs";
 import command_board from "./board.mjs";
+import command_branch from "./branch.mjs";
 import command_check from "./check.mjs";
 import command_check_log from "./check-log.mjs";
 import command_claim from "./claim.mjs";
+import command_clean from "./clean.mjs";
+import command_clear_secret from "./clear-secret.mjs";
+import command_clone from "./clone.mjs";
+import command_criteria_finding from "./criteria-finding.mjs";
+import command_criteria_review from "./criteria-review.mjs";
+import command_criteria_review_claim from "./criteria-review-claim.mjs";
+import command_criteria_review_failed from "./criteria-review-failed.mjs";
+import command_criteria_verdict from "./criteria-verdict.mjs";
 import command_decide from "./decide.mjs";
 import command_decisions from "./decisions.mjs";
 import command_defect from "./defect.mjs";
@@ -19,6 +28,7 @@ import command_diff from "./diff.mjs";
 import command_dispatch from "./dispatch.mjs";
 import command_done from "./done.mjs";
 import command_edit from "./edit.mjs";
+import command_fast from "./fast.mjs";
 import command_finding from "./finding.mjs";
 import command_finish from "./finish.mjs";
 import command_gc from "./gc.mjs";
@@ -33,6 +43,7 @@ import command_land from "./land.mjs";
 import command_login from "./login.mjs";
 import command_ls from "./ls.mjs";
 import command_merge from "./merge.mjs";
+import command_mode from "./mode.mjs";
 import command_models from "./models.mjs";
 import command_new from "./new.mjs";
 import command_notes_remote from "./notes-remote.mjs";
@@ -40,14 +51,21 @@ import command_open from "./open.mjs";
 import command_ops from "./ops.mjs";
 import command_owners from "./owners.mjs";
 import command_plan from "./plan.mjs";
+import command_private from "./private.mjs";
 import command_projects from "./projects.mjs";
 import command_publish from "./publish.mjs";
+import command_pull from "./pull.mjs";
 import command_push from "./push.mjs";
 import command_queue from "./queue.mjs";
 import command_read_token from "./read-token.mjs";
 import command_receipt from "./receipt.mjs";
+import command_record_merge from "./record-merge.mjs";
+import command_refresh_checked from "./refresh-checked.mjs";
 import command_refresh_failed from "./refresh-failed.mjs";
+import command_refresh_lease from "./refresh-lease.mjs";
+import command_refresh_pushing from "./refresh-pushing.mjs";
 import command_refreshed from "./refreshed.mjs";
+import command_refreshes from "./refreshes.mjs";
 import command_release from "./release.mjs";
 import command_report from "./report.mjs";
 import command_revert from "./revert.mjs";
@@ -56,6 +74,7 @@ import command_review_claim from "./review-claim.mjs";
 import command_review_release from "./review-release.mjs";
 import command_review_request from "./review-request.mjs";
 import command_review_unparsable from "./review-unparsable.mjs";
+import command_review_withdraw from "./review-withdraw.mjs";
 import command_run_report from "./run-report.mjs";
 import command_runner from "./runner.mjs";
 import command_served from "./served.mjs";
@@ -87,9 +106,18 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/baseline-token.mjs", run: command_baseline_token },
   { path: "cli/commands/block.mjs", run: command_block },
   { path: "cli/commands/board.mjs", run: command_board },
+  { path: "cli/commands/branch.mjs", run: command_branch },
   { path: "cli/commands/check.mjs", run: command_check },
   { path: "cli/commands/check-log.mjs", run: command_check_log },
   { path: "cli/commands/claim.mjs", run: command_claim },
+  { path: "cli/commands/clean.mjs", run: command_clean },
+  { path: "cli/commands/clear-secret.mjs", run: command_clear_secret },
+  { path: "cli/commands/clone.mjs", run: command_clone },
+  { path: "cli/commands/criteria-finding.mjs", run: command_criteria_finding },
+  { path: "cli/commands/criteria-review.mjs", run: command_criteria_review },
+  { path: "cli/commands/criteria-review-claim.mjs", run: command_criteria_review_claim },
+  { path: "cli/commands/criteria-review-failed.mjs", run: command_criteria_review_failed },
+  { path: "cli/commands/criteria-verdict.mjs", run: command_criteria_verdict },
   { path: "cli/commands/decide.mjs", run: command_decide },
   { path: "cli/commands/decisions.mjs", run: command_decisions },
   { path: "cli/commands/defect.mjs", run: command_defect },
@@ -97,6 +125,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/dispatch.mjs", run: command_dispatch },
   { path: "cli/commands/done.mjs", run: command_done },
   { path: "cli/commands/edit.mjs", run: command_edit },
+  { path: "cli/commands/fast.mjs", run: command_fast },
   { path: "cli/commands/finding.mjs", run: command_finding },
   { path: "cli/commands/finish.mjs", run: command_finish },
   { path: "cli/commands/gc.mjs", run: command_gc },
@@ -111,6 +140,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/login.mjs", run: command_login },
   { path: "cli/commands/ls.mjs", run: command_ls },
   { path: "cli/commands/merge.mjs", run: command_merge },
+  { path: "cli/commands/mode.mjs", run: command_mode },
   { path: "cli/commands/models.mjs", run: command_models },
   { path: "cli/commands/new.mjs", run: command_new },
   { path: "cli/commands/notes-remote.mjs", run: command_notes_remote },
@@ -118,14 +148,21 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/ops.mjs", run: command_ops },
   { path: "cli/commands/owners.mjs", run: command_owners },
   { path: "cli/commands/plan.mjs", run: command_plan },
+  { path: "cli/commands/private.mjs", run: command_private },
   { path: "cli/commands/projects.mjs", run: command_projects },
   { path: "cli/commands/publish.mjs", run: command_publish },
+  { path: "cli/commands/pull.mjs", run: command_pull },
   { path: "cli/commands/push.mjs", run: command_push },
   { path: "cli/commands/queue.mjs", run: command_queue },
   { path: "cli/commands/read-token.mjs", run: command_read_token },
   { path: "cli/commands/receipt.mjs", run: command_receipt },
+  { path: "cli/commands/record-merge.mjs", run: command_record_merge },
+  { path: "cli/commands/refresh-checked.mjs", run: command_refresh_checked },
   { path: "cli/commands/refresh-failed.mjs", run: command_refresh_failed },
+  { path: "cli/commands/refresh-lease.mjs", run: command_refresh_lease },
+  { path: "cli/commands/refresh-pushing.mjs", run: command_refresh_pushing },
   { path: "cli/commands/refreshed.mjs", run: command_refreshed },
+  { path: "cli/commands/refreshes.mjs", run: command_refreshes },
   { path: "cli/commands/release.mjs", run: command_release },
   { path: "cli/commands/report.mjs", run: command_report },
   { path: "cli/commands/revert.mjs", run: command_revert },
@@ -134,6 +171,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/review-release.mjs", run: command_review_release },
   { path: "cli/commands/review-request.mjs", run: command_review_request },
   { path: "cli/commands/review-unparsable.mjs", run: command_review_unparsable },
+  { path: "cli/commands/review-withdraw.mjs", run: command_review_withdraw },
   { path: "cli/commands/run-report.mjs", run: command_run_report },
   { path: "cli/commands/runner.mjs", run: command_runner },
   { path: "cli/commands/served.mjs", run: command_served },

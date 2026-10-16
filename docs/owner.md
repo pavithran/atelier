@@ -1,6 +1,6 @@
-# The project owner's reference
+# The developer's reference
 
-What only the project owner does, or sees: sessions of direct work in the
+What only the developer does, or sees: sessions of direct work in the
 registered checkout, the signed-in pages, projects that need special care
 when they join (Git LFS, a history too large for Artifacts), removing and
 renaming projects, the operations toolkit, and cleaning the local cache.
@@ -16,7 +16,7 @@ The words after `wrap` that no flag has taken are joined into one summary, quote
 or not. Give the summary first: a flag takes the word after it as its value.
 It runs the registered checks, warns about an unchanged state file and records a
 `session.wrapped` ledger event. Results are Reported because they ran in the
-owner's checkout. A failing check refuses the commit: wrap names each failed
+developer's checkout. A failing check refuses the commit: wrap names each failed
 check with how it ended (its exit status, the signal that ended it, or a
 timeout), stages nothing, records no note and pushes nothing, so the checkout
 is as the checks left it. `--allow-failing` commits anyway, and the note
@@ -31,18 +31,55 @@ changes and new files included. A clean checkout still gets a note. Wrap refuses
 before staging on a detached HEAD, on a merge, cherry-pick, revert, rebase or
 landing in progress, on unmerged files in the index (a squash merge or a stash
 pop leaves them with nothing else to show), and on a branch other than the
-registered branch. Only the project owner records a session: the server
+registered branch. Only the developer records a session: the server
 refuses one from any other actor or any agent token.
 
 Wrap then updates the Atelier baseline through `sync` for fresh history or
 `publish` for full history. `--push` also pushes the checkout branch to every
 configured checkout remote, without force, continuing after a remote fails.
-These are the owner's own remotes, so each is a normal push that uploads the
+These are the developer's own remotes, so each is a normal push that uploads the
 project's Git LFS objects; only pushes to Atelier skip the upload, because
 Artifacts holds pointer files. Without `--push`, checkout remotes are not
 pushed. Wrap never deploys or publishes a release. The note records the commit
 and each remote result. A remote that fails is named in the relay line, and
 wrap exits 1 once the note and the baseline are recorded.
+
+`atelier publish REMOTE` publishes the registered branch to a public mirror
+the registered project's commit identity declares (there is no file in the
+checkout): `--public-mirror REMOTE` names the remote,
+`--public-mirror-destination REMOTE=URL` pins where it pushes, `--commit-email`
+is the GitHub no-reply address every published commit must carry, and
+`--private-email`, `--private-path GLOB` and `--private-pattern REGEX` add to
+the built-in rules (docs/setup.md, "Commit identity").
+Bare `publish` still pushes the baseline only. It fetches the mirror's branch,
+then checks every commit the mirror lacks (all history when it is empty,
+merged ancestry included, content deleted later included): author and committer
+email must equal `commitEmail`; no added line, no line of the commit object
+(author and committer names, every header and the whole message) and no path
+name a commit adds, renames or deletes may match the push scan's secret rules, a
+private address (RFC 1918, carrier-grade NAT, link-local, unique-local and
+link-local IPv6 including compressed endings such as `fe80::`, `.internal`,
+`.local`, `.lan`, `.corp`, `.intranet`, `.home.arpa` hosts), a declared private
+email or a `privatePatterns` regex; no path may match a `privatePaths` glob (a
+glob with no `/` matches a name at any depth). Replace refs and grafts
+(`refs/replace/*`, `info/grafts`) are ignored, as the push ignores them, and
+`diff.ignoreSubmodules` or `submodule.*.ignore` cannot hide a submodule. A Git LFS pointer publishes its
+object, so the object is read from the checkout's LFS storage and scanned, or
+the commit is refused. Findings name commit, path and line, never the matched
+text; a path whose name matches is given by its place in the commit's file list
+(`git diff-tree -r -c --root --no-renames COMMIT`), not by name. Binary, oversized, unreadable or submodule content is refused with its
+path and reason. A missing or invalid policy, a remote whose URL is not the
+declared destination, and a diverged or ahead mirror are refused before any
+push. The push sends only the scanned commit to the branch at the declared
+destination, never forced; tags, notes and rescue refs are not pushed.
+
+Once any public mirror is declared, `wrap --push` trusts no remote by its URL:
+every checkout remote, declared or not, gets the same check of the commits it
+lacks before it is pushed, and any refusal (including an invalid policy) fails
+that remote. Each of a remote's push URLs is fetched, checked and pushed by
+that URL. A project that pushes agent commits to a private remote as well
+declares no public mirror, and publishes with `publish REMOTE` from a checkout
+whose history is clean.
 
 When `docs/control-plane/context-budget.v1.json` is committed at HEAD, wrap
 counts lines in its named surfaces. Any absolute ceiling exceeded refuses the
@@ -64,7 +101,7 @@ check output. Summary, next text and check names are cleaned and capped at
 2000 characters each. Remote names are capped at 200 characters; checks,
 remote results and filed task IDs are limited to 100 each.
 `GET /api/projects/NAME/sessions` reads the newest five notes;
-`POST /api/projects/NAME/sessions` records one, for the project owner only.
+`POST /api/projects/NAME/sessions` records one, for the developer only.
 
 ## Where a project stands
 
@@ -74,7 +111,7 @@ waiting, what merged and what each handoff said, so the summary is generated
 from that record and cannot go stale or be written wrongly by hand.
 
 - The project page leads with "Where it stands": the tasks held (claimed,
-  submitted or accepted) and since when, what waits on the owner with each
+  submitted or accepted) and since when, what waits on the developer with each
   task's one-line brief, the tasks queued for a runner, the last five merges
   with the agent's summary and the date, the latest handoff note on each live
   task, and, for a project with ControlPlane policy, its protected areas,
@@ -89,39 +126,39 @@ from that record and cannot go stale or be written wrongly by hand.
   what is read of it, the page and the text say what is not shown rather than
   guess.
 - `GET /api/projects/NAME/standing` returns the same as JSON to any signed-in
-  caller, the owner or an agent.
+  caller, the developer or an agent.
 - `atelier status --project NAME` prints it as plain text, one line per item,
   ready to paste into a chat. Text a person or agent wrote is flattened to one
   line. It ends by saying whether this machine's checkout is in step with
   Atelier: for a project set up with `--history-since`, whether the checkout's
   head is the commit the baseline's head is paired with; otherwise whether the
   baseline's head is in the checkout. `atelier status` with no project keeps
-  its owner's queue output.
+  its developer's queue output.
 
-## What waits on the owner
+## What waits on the developer
 
 Home, a project's Overview, the Decisions page, `atelier status` and
 `atelier inbox` read one rule, `attentionFor` in `src/attention.ts`. From a
 project's items, its notices (the server's inbox), the runner offers and
-the time, it places each live task once: under the owner's call, when one
+the time, it places each live task once: under the developer's call, when one
 applies, or else at its pipeline stage (`taskStage` in `src/board.ts`).
 The views count tasks, never notices, so they give the same number per
 project. A merged or abandoned task is placed nowhere, unless its merge has
 protected actions still to ship.
 
-The owner's calls, in precedence: a task that qualifies for two is placed
+The developer's calls, in precedence: a task that qualifies for two is placed
 under the first.
 
-| Order | Situation | Placed | What the owner is asked to do | Where |
+| Order | Situation | Placed | What the developer is asked to do | Where |
 | --- | --- | --- | --- | --- |
-| 1 | Secret flag standing at the task's head | Owner: clear secret flag | Check the flagged line and clear the flag with a reason, or send the task back | Task page |
-| 2 | Block (`atelier block`, any holder) | Owner: unblock | Settle what blocks it, then unblock it | Task page, `atelier unblock` |
-| 3 | Plan blocked | Owner: decide plan | Read the blocked plan and decide how it goes on | Task page, `atelier plan show` |
-| 4 | Plan approval (a proposal waits) | Owner: approve plan | Read the split, approve it by its hash or send it back | Task page, `atelier plan show` |
-| 5 | Acceptance (every required check passed at the head) | Owner: accept | Accept the revision | Task page, `atelier accept` |
-| 6 | Protected change needing an independent review that no reviewer in the pool qualifies for | Owner: no reviewer | Start a runner offering a reviewer that qualifies, or allow an override and accept with a reason (where overrides are allowed) | Task page, `atelier accept --override-review` |
-| 7 | Merged with declared protected actions not yet run | Owner: ship | Dry run, then approve and ship | Ship tab, `atelier ship --dry-run` |
-| 8 | Unavailable runner: queued, and no live runner can take it | Owner: no runner | Start a runner that offers it, or send the task elsewhere | Task page |
+| 1 | Secret flag standing at the task's head | Developer: clear secret flag | Check the flagged line and clear the flag with a reason, or send the task back | Task page |
+| 2 | Block (`atelier block`, any holder) | Developer: unblock | Settle what blocks it, then unblock it | Task page, `atelier unblock` |
+| 3 | Plan blocked | Developer: decide plan | Read the blocked plan and decide how it goes on | Task page, `atelier plan show` |
+| 4 | Plan approval (a proposal waits) | Developer: approve plan | Read the split, approve it by its hash or send it back | Task page, `atelier plan show` |
+| 5 | Acceptance (every required check passed at the head) | Developer: accept | Accept the revision | Task page, `atelier accept` |
+| 6 | Protected change needing an independent review that no reviewer in the pool qualifies for | Developer: no reviewer | Start a runner offering a reviewer that qualifies, or allow an override and accept with a reason (where overrides are allowed) | Task page, `atelier accept --override-review` |
+| 7 | Merged with declared protected actions not yet run | Developer: ship | Dry run, then approve and ship | Ship tab, `atelier ship --dry-run` |
+| 8 | Unavailable runner: queued, and no live runner can take it | Developer: no runner | Start a runner that offers it, or send the task elsewhere | Task page |
 
 What stays with the pipeline, at its stage, for the orchestrator, runners
 and reviewers:
@@ -140,14 +177,14 @@ whose tasks were not read shows its count as unknown, notices not read
 leave acceptance and plan decisions unshown and say so, and runner offers
 not read leave queued tasks at their stage with the doubt stated; a model
 pool not read leaves a protected change in review, saying that whether it
-needs the owner's override is unknown.
+needs the developer's override is unknown.
 
 `GET /api/projects/NAME/standing` keeps, on each waiting task, the fields
 older clients read beside the call: `kind` (the notice kind the call
 answers), `kinds` (the task's notice kinds) and `reason` (the notice's
 words, the same as `why`). `atelier inbox --json` prints, as before, a list
 of entries with `project`, `itemId`, `title`, `kind`, `kinds`, `reason`
-and `weight`, now one per task that waits on the owner, each with its
+and `weight`, now one per task that waits on the developer, each with its
 `call`, `sentence`, `url`, `command` and `why`; what could not be read is
 said on standard error and in each of that project's entries as `unknown`.
 `atelier status --json` carries the whole placement, pipeline and
@@ -158,7 +195,7 @@ overlaps included.
 The Decisions page puts reviews and blockers across projects beside the
 selected task. Passing output stays collapsed; failed checks show their
 output. Projects contains active work and task creation. History retains
-merged and closed tasks with their evidence. Ownership and Git details
+merged and closed tasks with their evidence. Holders and Git details
 remain available inside each task.
 
 Approval, acceptance and override forms carry the revision displayed on the page.
@@ -183,9 +220,9 @@ describes the marks.
 Artifacts has no Git LFS. The `atelier` command pushes to Atelier with LFS uploads
 turned off, so the baseline and every workspace hold LFS pointer files, and
 clones a workspace or a check run without downloading what they point to. A
-merge into the owner's checkout writes real LFS files, as git-lfs would. A project whose required
+merge into the developer's checkout writes real LFS files, as git-lfs would. A project whose required
 checks need those files must fetch them itself; a build that only compiles
-around them, as many do, works as it is. The owner's own remotes do hold the
+around them, as many do, works as it is. The developer's own remotes do hold the
 objects: `atelier wrap --push` pushes to them with LFS uploads on, even when
 `GIT_LFS_SKIP_PUSH` is set in the environment, and a remote whose upload fails
 is reported as failed, never as pushed.
@@ -225,17 +262,17 @@ holds the pairs.
 
 ## Removing a project
 
-The owner can run `atelier projects remove NAME` to remove a project from
+The developer can run `atelier projects remove NAME` to remove a project from
 the index and from the local config. It disappears from Projects, Flow,
 Decisions and the public showcase. Claimed, submitted or accepted items, and
-open items queued for a runner, block removal unless the owner adds `--force`.
+open items queued for a runner, block removal unless the developer adds `--force`.
 The local config entry is deleted whole, and the command lists what it held,
 such as the checkout path, branch and `notesRemote`, so a setting made by hand
 can be restored.
 
 Removal retains the Artifacts repository and all project Ledger data,
 including items, evidence and history. Deleting a repository requires a
-separate, deliberate action by the owner. Reinitialising the same project,
+separate, deliberate action by the developer. Reinitialising the same project,
 under any name it has had, registers its retained Ledger again.
 
 ## Renaming a project
@@ -266,10 +303,10 @@ one.
 `atelier ops COMMAND [ARGS...]` runs an operations toolkit kept outside this
 repository: work on the machines and services around the projects, such as
 surveys of every project, devices, backups and archives, which belongs to
-one owner's setup rather than to the Git platform. `ops` comes first:
+one developer's setup rather than to the Git platform. `ops` comes first:
 Atelier hands everything after it, unchanged and before reading anything
-itself, to the executable `ATELIER_OPS` names or to `atelier-ops` on `PATH`,
-and exits as it exits. Without one, `atelier ops` says so and exits 2.
+itself, to the executable `ATELIER_OPS` names, to `atelier-ops` on `PATH`, or
+else to `~/ai-projects/atelier-ops/bin/atelier-ops`, and exits as it exits. Without one, `atelier ops` says so and exits 2.
 
 `atelier ops token-expiry NAME --on YYYY-MM-DD` is the one `ops` command
 Atelier handles itself. It records the day a named token expires — the deploy
@@ -277,7 +314,7 @@ and ops Cloudflare tokens, for one — in a local file
 (`~/.config/atelier/token-expiries.json`, or `ATELIER_CONFIG_DIR`) that holds
 only each name and its day, never a token's value. `atelier status` then warns
 from 14 days before each recorded expiry, naming the token and the date, so
-the owner's calendar is not the only reminder. Record the next expiry again
+the developer's calendar is not the only reminder. Record the next expiry again
 with the same command once a token is rotated.
 
 ## Test processes left running
@@ -294,20 +331,37 @@ left its group or ran before that held.
 
 ## Local cache cleanup
 
-`atelier gc --project NAME` previews local directories eligible for removal.
-Add `--apply` to remove them. `--dry-run` explicitly requests the preview.
+`atelier merge` (and so `atelier land`) removes the merged task's workspace on
+this Mac once it is eligible, and otherwise prints `Kept ID's workspace PATH:`
+and the reason; a removal that fails never fails the merge. For workspaces
+left from before, or abandoned tasks, `atelier clean --project NAME` removes
+every eligible one and names each it keeps, with a count of finished tasks'
+workspaces kept; `--dry-run` previews. `atelier gc --project NAME` is the same
+pass previewing by default: add `--apply` to remove.
 The command uses the configured cache (`ATELIER_CACHE` when set) and never
 deletes Artifacts repositories or changes the project's checkout.
 
-A workspace is eligible only when the server confirms that its item merged or
-was abandoned, its HEAD equals the accepted head of the merge or, for an
-abandoned item, the last head Atelier recorded, and it has no changed or
-untracked files (files git ignores do not count as unpublished work), extra
-commits in refs or reflogs, linked worktrees, initialized
-submodules, or a Git operation in progress. Cleanup checks
-its recorded project and item identity and refreshes the item's state before
-removal. The current directory and its ancestors are preserved. Symlinked
-directories are not followed. Stop editing a candidate before applying cleanup.
+Removal is permanent: the folder is deleted, not moved to the Trash. A
+workspace is eligible only when the server confirms that its item merged or
+was abandoned, its HEAD is a head Atelier recorded (the fork's last head or
+the accepted head of the merge) or is in main (an ancestor of the registered
+branch in the project's checkout), and it has no changed or untracked files,
+no commit in refs or reflogs that neither a recorded head nor main holds, no
+linked worktrees, initialized submodules, or a Git operation in progress.
+
+Files Git ignores are kept too, unless a build or install makes them again:
+`node_modules`, `dist`, `build`, `.build`, `DerivedData`, `.cache`,
+`coverage`, `.next`, `.turbo`, Python caches, `worker-configuration.d.ts`,
+`.DS_Store` and `*.tsbuildinfo` (`unkeptIgnored` in src/rules.ts). Any other
+ignored file holds the workspace, and its KEEP line names it: a harness's
+logs and an agent's notes under `.scratch/`, a `.env`, renders. Copy out what
+you want, delete the rest, and run `atelier clean` again; an empty
+`.scratch/` holds nothing.
+
+Cleanup checks its recorded project and item identity and refreshes the
+item's state before removal. The current directory and its ancestors are
+preserved. Symlinked directories are not followed. Stop editing a candidate
+before applying cleanup.
 
 Check and diff clones carry a local record of their project, creation time,
 and process. A recorded clone is eligible after 24 hours only when its process

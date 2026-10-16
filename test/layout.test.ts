@@ -18,6 +18,16 @@ test("a phone shows the Decisions list and the selected decision as separate vie
   assert.match(css, /\.desk:not\(\.has-selection\) \.review-sheet \{\s*display:\s*none\s*;\s*\}/);
 });
 
+// t545: /decisions selects the first decision itself for the desktop's
+// detail and marks it `auto-selected`; at phone width only a decision the
+// owner picked (`has-selection`) hides the list, so every row stays in reach.
+test("a phone hides the Decisions list only for a decision the owner picked", () => {
+  const phone = css.slice(css.indexOf("@media (max-width: 700px) {\n  .desk"));
+  const hides = [...phone.matchAll(/([^{}]*\.queue[^{}]*)\{\s*display:\s*none/g)].map((m) => m[1].trim());
+  assert.deepEqual(hides, [".desk.has-selection .queue"]);
+  assert.doesNotMatch(css, /auto-selected[^{}]*\.queue/);
+});
+
 test("the back link is hidden on the desktop and shown only with a selection", () => {
   assert.match(css, /\.review-back \{\s*display:\s*none/);
   assert.match(css, /\.desk\.has-selection \.review-back \{\s*display:\s*inline-flex/);
@@ -57,4 +67,16 @@ test("an owner item's action paragraph on the Overview spans the text columns, n
   const phone = css.split("\n").find((l) => l.startsWith("@media (max-width: 720px)") && l.includes(".standing-list")) ?? "";
   assert.match(phone, /grid-template-columns:\s*3em minmax\(0, 1fr\)/);
   assert.doesNotMatch(phone, /li > p \{[^}]*grid-column:\s*(1|auto)/);
+});
+
+// t560: a board row's link is a `.task-list a`, whose phone rule is a two-column
+// grid (content, arrow). With two spans inside, the title fell into the 20px
+// arrow column and wrapped a letter per line. The board link keeps one full-width
+// column, so the id line and the title stack and the title wraps by word.
+test("the tasks board title link is one full-width column that wraps by word", () => {
+  const rule = css.match(/\.area-board \.task-list a\.area-task-title \{([^}]*)\}/);
+  assert.ok(rule, "a rule scoped above `.task-list a` exists");
+  assert.match(rule[1], /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/);
+  assert.match(rule[1], /overflow-wrap:\s*break-word/);
+  assert.doesNotMatch(rule[1], /overflow-wrap:\s*anywhere|word-break:\s*break-all/);
 });

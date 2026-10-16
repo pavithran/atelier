@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 3, slot: 10,
       form: "handoff ID --to H/M [--note TEXT]",
-      about: "Moves ownership to another agent, with `--note` saying why. The old write token is revoked; the workspace and its history carry over. The project owner can hand an accepted task back to building: it becomes claimed, with its earlier reviews and acceptance kept in the history, and must be submitted and accepted again. A merge holding its landing lease must finish or be cancelled first.",
+      about: "Makes another agent the task's holder, with `--note` saying why. The old write token is revoked; the workspace and its history carry over. The developer can hand an accepted task back to building: it becomes claimed, with its earlier reviews and acceptance kept in the history, and must be submitted and accepted again. A merge holding its landing lease must finish or be cancelled first.",
     },
   ],
   flags: { to: false, note: false },

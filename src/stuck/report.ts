@@ -1,12 +1,13 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
-import { coreHold, OFFER_REFRESH_MS, type SeenOffer } from "../dispatch/rules.ts";
+import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
+import { inScope } from "../tokens.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
-export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: 5, reviewAnswerHours: 2 };
+export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
 export type ReportLimits = typeof REPORT_DEFAULTS;
 export function reportLimits(values: Record<string, unknown> = {}): ReportLimits {
   const limits = { ...REPORT_DEFAULTS };
@@ -26,14 +27,15 @@ export interface Snapshot {
 }
 export interface Entry { kind: string; subject: string; reason: string; since: string; ageMs: number; evidence: string; recovery: string }
 export function stuckReport(project: string, origin: string, now: Date, limits: ReportLimits, snapshot: Snapshot | null,
-  offers: SeenOffer[] | null, runs: RunReport[] | null, activeRunners: string[] | null, unavailable: string[] = []) {
+  offers: SeenOffer[] | null, runs: RunReport[] | null, activeRunners: string[] | null, unavailable: string[] = [], names: string[] = [project]) {
   const entries: Entry[] = [], checks: Entry[] = [];
   const time = now.getTime(), age = (at: string) => time - Date.parse(at);
   const base = `${origin}/p/${encodeURIComponent(project)}`;
   // Recovery is shell text: preserve literal notes, including quotes and $.
   const quote = (value: string) => /^[a-zA-Z0-9_./:@+-]+$/.test(value) ? value : "'" + value.replaceAll("'", "'\"'\"'") + "'";
-  const heldDispatch = (item: Item) => {
-    const d = item.dispatch!;
+  const redispatch = (item: Item, overlapOk: boolean) => {
+    const d = item.dispatch;
+    if (!d) return `dispatch ${item.id}`;
     const flags = [`dispatch ${item.id}`, `--to ${quote(d.to)}`];
     if (d.agent !== null) flags.push(`--agent ${quote(d.agent)}`);
     if (d.model !== null) flags.push(`--model ${quote(d.model)}`);
@@ -42,13 +44,21 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       flags.push("--job merge-main");
       if (d.head) flags.push(`--head ${quote(d.head)}`);
     }
-    return `${flags.join(" ")} --overlap-ok`;
+    return `${flags.join(" ")}${overlapOk ? " --overlap-ok" : ""}`;
   };
-  const projectFlag = `--project ${JSON.stringify(project)}`;
+  const heldDispatch = (item: Item) => redispatch(item, true);
+  const projectFlag = `--project ${shellWord(project)}`;
   const command = (cmd: string) => `atelier ${cmd} ${projectFlag}`;
   const add = (kind: string, subject: string, reason: string, since: string, recovery: string, evidence = `${base}/${subject}`) => {
     entries.push({ kind, subject, reason, since, ageMs: age(since), evidence, recovery });
   };
+  // The runners' last polls, as /api/runners records them, judge a claim
+  // orphaned by its runner (t537): it holds no dispatch, so no core hold is
+  // reported against it, and it is reported itself. The judgement is the
+  // ledger's own, at RUNNER_GONE_MS: --runner-poll-minutes sets only the
+  // idle-runner limit, so the report never calls a claim orphaned that
+  // still holds, or the reverse.
+  const runners: RunnerPolls | null = offers ? { polls: offers } : null;
   if (snapshot) {
     const { items, events, lease, workflows, reviews } = snapshot;
     const live = items.filter((i) => i.state !== "blocked");
@@ -66,7 +76,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     for (const f of detectStuck(live, events, now, limits))
       add("task", f.itemId, f.reason, f.since, f.suggestion === "hand off"
         ? `hand off: choose the next agent H/M, then ${command(`handoff ${f.itemId} --to H/M`)}`
-        : `check in with the owner${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact the holder before changing ownership`);
+        : `check in with the holder${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact them before handing the task to another agent`);
     for (const w of workflows) {
       if (!live.some((i) => i.id === w.item && i.state !== "merged" && i.state !== "abandoned")) continue;
       if (w.record.stage === "conflict" && !["complete", "errored", "terminated", "absent"].includes(w.status ?? "") && age(w.record.stageAt) > limits.conflictWaitMinutes * 60_000)
@@ -98,7 +108,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     }
     for (const item of live.filter((i) => i.state === "open" && i.dispatch)) {
       // Since t473 a submitted blocker holds only while the landing lease names it.
-      const held = coreHold(item, live, snapshot.coreFiles, lease, time);
+      const held = coreHold(item, live, snapshot.coreFiles, lease, time, runners);
       const blocker = held && live.find((i) => i.id === held.id);
       if (!blocker) continue;
       const hold = holdStart(blocker, events), push = pushObservedAt(blocker, events);
@@ -107,6 +117,15 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       const landing = command(`${blocker.state === "accepted" ? "merge" : "land"} ${blocker.id}`);
       if (age(since) > limits.coreHoldMinutes * 60_000)
         add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, `Land the blocker with ${landing}; or, if the overlap is harmless, ${command(heldDispatch(item))}`, `${base}/${blocker.id}`);
+    }
+    const waiting = live.filter((i) => i.state === "open" && i.dispatch);
+    for (const item of live) {
+      const gone = orphanedBy(item, runners, time);
+      if (!gone) continue;
+      const freed = waiting.filter((w) => coreOrphans(w, [item], snapshot.coreFiles, lease, time, runners).length).map((w) => w.id);
+      // Dispatching it again releases the claim; a part is the plan's to route.
+      const recovery = item.kind ? requeue(item.id) : command(redispatch(item, false));
+      add("orphaned-claim", item.id, `claim by ${item.owner ?? "no one"} orphaned by its runner ${gone.runner}, which last polled at ${gone.lastPoll}${freed.length ? `; it no longer holds ${freed.join(", ")}` : ""}`, gone.lastPoll, recovery, `${origin}/api/runners`);
     }
     const ordered = [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.seq - b.seq);
     for (const e of ordered) {
@@ -133,7 +152,10 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     }
   }
   // Active jobs across projects are required before concluding a runner is idle.
+  // A runner whose token serves other projects is no idle runner of this one (t669).
   if (offers && activeRunners) for (const offer of offers) {
+    // An offer lists a project by the name it had when the runner last polled.
+    if (!inScope({ projects: offer.projects }, names)) continue;
     if (activeRunners.includes(offer.runner)) continue;
     if (age(offer.at) - OFFER_REFRESH_MS > limits.runnerPollMinutes * 60_000)
       add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);

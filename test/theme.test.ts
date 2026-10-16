@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // The Night palette (PAVI, d24; t367): near-black ground, white text, a
 // muted grey that still reads, gold for links, primary actions and the
@@ -301,4 +304,82 @@ test("the page styles set no colour of their own; only the agents' colours carry
         assert.ok(chroma(hex) < NEUTRAL, `${file}: ${hex} sets a colour outside the theme: ${line.trim()}`);
     }
   }
+});
+
+// Gate finding 4: the owner's pages are Night only, as the re-imagined canvas
+// draws them (d24). Every light block, theme.css's from bin/sync-theme and
+// layout.css's own, keeps away from a page marked data-scheme="night", which
+// every owner page is (test/ui.spec.ts); the public pages still follow the
+// device.
+test("no light block reaches a page marked Night only", () => {
+  for (const [file, sheet] of [["theme.css", theme], ["layout.css", layout]] as const) {
+    const blocks = [...sheet.matchAll(/@media \(prefers-color-scheme: light\) \{([\s\S]*?)\n\}\n/g)];
+    assert.ok(blocks.length > 0, `${file} has no light block`);
+    for (const [, inner] of blocks) {
+      for (const [, sel] of css(inner).matchAll(/([^{}]+)\{[^{}]*\}/g)) {
+        for (const one of selectors(sel)) assert.match(one, /^:root(\[data-theme="[a-z]+"\])?:not\(\[data-scheme="night"\]\)/, `${file}: ${one} reaches a Night-only page`);
+      }
+    }
+  }
+});
+
+test("theme.css is exactly what bin/sync-theme makes of the portfolio's copy, and the sync is idempotent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sync-theme-"));
+  try {
+    mkdirSync(join(dir, "bin"));
+    mkdirSync(join(dir, "src"));
+    copyFileSync("bin/sync-theme", join(dir, "bin/sync-theme"));
+    // The portfolio's copy is theme.css without the sync's header and the Night-only guard it adds.
+    const upstream = theme.split("\n").slice(1).join("\n").replaceAll(':not([data-scheme="night"])', "");
+    assert.match(upstream, /@media \(prefers-color-scheme: light\) \{\n  :root \{/);
+    writeFileSync(join(dir, "themes.css"), upstream);
+    execFileSync("sh", [join(dir, "bin/sync-theme"), join(dir, "themes.css")], { stdio: "ignore" });
+    assert.equal(readFileSync(join(dir, "src/theme.css"), "utf8"), theme);
+    writeFileSync(join(dir, "themes.css"), theme.split("\n").slice(1).join("\n"));
+    execFileSync("sh", [join(dir, "bin/sync-theme"), join(dir, "themes.css")], { stdio: "ignore" });
+    assert.equal(readFileSync(join(dir, "src/theme.css"), "utf8"), theme, "a second pass adds no second guard");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// t673: .show-stack painted with var(--accent), which no sheet defines (added
+// in e5036b32), so the Cloudflare line silently took its parent's colour.
+// Every var() in layout.css and how.css must name a property theme.css or
+// layout.css defines, or one of the per-element properties listed in
+// INLINE_SET below. A fallback never excuses an undefined name:
+// var(--accent, red) fails like var(--accent).
+// The custom properties the markup sets per element in a style attribute,
+// named here rather than inferred, each with where it is set.
+const INLINE_SET: Record<string, string> = {
+  // An agent's or a company's colour, per mark: graph.ts (cards, threads,
+  // beads, edges) and ui.ts (the tally bars, legend keys and holder spans).
+  "--c": "graph.ts, ui.ts",
+  // An animation's delay, per drawn path or bead: graph.ts.
+  "--d": "graph.ts",
+  // A drawn path's animation length: graph.ts.
+  "--l": "graph.ts",
+};
+test("every custom property the page styles use is one the sheets define or the markup sets by name", () => {
+  const defined = new Set<string>();
+  for (const sheet of [theme, layout]) for (const m of css(sheet).matchAll(/(--[\w-]+)\s*:/g)) defined.add(m[1]);
+  assert.ok(defined.has("--text-muted") && defined.has("--signal"), "the theme's tokens were not found");
+  // Each listed property is in fact set in a style attribute in src/*.ts, in
+  // the files named, and the markup sets no property the list leaves out.
+  const setIn = new Map<string, Set<string>>();
+  for (const f of readdirSync("src").filter((f) => f.endsWith(".ts")))
+    for (const m of readFileSync(`src/${f}`, "utf8").matchAll(/(?:style="|;)(--[a-z][\w-]*):/g)) setIn.set(m[1], (setIn.get(m[1]) ?? new Set()).add(f));
+  for (const [name, files] of Object.entries(INLINE_SET))
+    for (const f of files.split(", ")) assert.ok(setIn.get(name)?.has(f), `${name} is listed as set in ${f}, which sets no ${name}`);
+  assert.deepEqual([...setIn.keys()].filter((n) => !(n in INLINE_SET)).sort(), [], "the markup sets a custom property INLINE_SET does not name");
+  // Each var( call with its arguments, balancing parentheses so a nested
+  // fallback such as var(--c, var(--text)) is read whole; the names inside a
+  // fallback are checked as uses in their own right.
+  const names = (s: string) => {
+    const out: string[] = [];
+    for (let at = s.indexOf("var("); at >= 0; at = s.indexOf("var(", at + 4)) out.push(s.slice(at + 4).split(/[,)]/)[0].trim());
+    return out;
+  };
+  const undefinedUses: string[] = [];
+  for (const [file, sheet] of [["src/layout.css", layout], ["src/how.css", how]] as const)
+    for (const name of names(css(sheet))) if (!defined.has(name) && !(name in INLINE_SET)) undefinedUses.push(`${file}: var(${name})`);
+  assert.deepEqual(undefinedUses, [], "a page style uses a custom property nothing defines");
 });

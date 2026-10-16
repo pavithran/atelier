@@ -30,8 +30,10 @@
 // warning.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
+import { claimants, liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, reviewRolesFor, type Assignment } from "../models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { exactEntry, storedActor } from "../models/identity.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -52,6 +54,17 @@ export type Availability =
 
 export interface RouteInput {
   pool: readonly ModelEntry[];
+  // The plan document's names (a part's prefer) were converted to exact pool
+  // ids where it was posted (Ledger.postPlan's mark): read as they are.
+  // Unmarked, a prefer from before is read through the aliases once
+  // (storedActor in src/models/identity.ts).
+  namesExact?: boolean;
+  // The job a part's build dispatch carries: none for a plain build,
+  // "merge-main" for the part that merges main into the plan's branch
+  // (dispatchPart in src/ledger.ts). The offer check asks for that job, so
+  // a builder is routed only to a model a runner would claim the part as
+  // (gpt-6-astra's twenty-first review of t622).
+  buildJob?: Dispatch["job"];
   events: readonly LedgerEvent[];         // the project's ledger; buildRecord() makes the track record
   policy: ProjectPolicy;                  // governed when it names agents
   allowPaid: boolean;                     // the owner's approval of paid-per-token models
@@ -77,6 +90,13 @@ export interface RouteInput {
   // src/dispatch/rules.ts): whether a runner runs the review job a review
   // dispatch names is judged there, not here.
   offers?: readonly SeenOffer[] | null;
+  // The role assignments of this project and of every project
+  // (src/models/assignments.ts). A build assignment picks a part's builder
+  // ahead of the spread, and a review one its reviewer (claims-review for a
+  // docs part, then review), from the models that pass every rule; a part's
+  // prefer comes first. Read when the plan is previewed, approved or
+  // rerouted: an approved plan keeps the routing it was approved with.
+  assignments?: readonly Assignment[];
 }
 
 export interface Choice { actor: string; reasons: string[] }
@@ -219,6 +239,21 @@ function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   }
 }
 
+// The rule a review applies outside a governed policy, so routing never
+// names a reviewer whose review the ledger would refuse: the eligible
+// harnesses and the reviewer admissions. Single-family mode is judged in
+// judge() in its own words.
+function assessorRefusal(actor: string, policy: ProjectPolicy): string | null {
+  try {
+    assertEligible(actor, policy, undefined, "assessor");
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.code === "single_family" ? null : rule.detail;
+  }
+}
+
 // The gate counts a review as cross-family only when both families are
 // recognised and differ (gate() in src/rules.ts); routing picks by the same rule.
 const crossFamily = (a: PoolFamily, b: PoolFamily) => a !== "other" && b !== "other" && a !== b;
@@ -234,6 +269,7 @@ interface Context {
   offered: Map<string, string[]> | null;   // actors live runners offer, whatever job; null when the offers were not read or none is live, and routing restricts nothing
   governed: boolean;
   reviewOffered: Offering | null;          // what the live runners offer for the review job; null when none were read or no runner is live
+  buildOffered: Offering | null;           // the same for a part's build, home
   offersRead: boolean;                     // whether the caller read runner offers at all
   single: PoolFamily | null;               // the company the project runs on alone (single-family mode, t394), or null under the default
 }
@@ -265,7 +301,7 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // a builder and a build-only one never a reviewer.
   const heldBuild = standingRefusal(entry, "build");
   const heldReview = standingRefusal(entry, "review");
-  if (!heldBuild && !heldReview) passed.push("The owner's standing is available");
+  if (!heldBuild && !heldReview) passed.push("The developer's standing is available");
 
   const { allowPaid, spend } = ctx.input;
   if (!paidPerToken(entry)) passed.push(`No per-token cost (${entry.provider})`);
@@ -313,8 +349,22 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
 
   const refusal = claimRefusal(actor, ctx.input.policy);
   const build = refusal ? [...both, refusal] : [...both];
+  // The build job a part's dispatch asks of a runner (dispatchPart in
+  // src/ledger.ts: home, a build): a model a live runner names only for
+  // review or planning, or only in the cloud, could never claim it, so no
+  // build assignment promotes it (gpt-6-astra's third review of t622,
+  // finding 2). A model no live runner offers at all is excluded above.
+  // Offered as assign() hands the part's build out, by the entry's own agent
+  // and model (claimants in src/dispatch/rules.ts).
+  if (ctx.buildOffered && ctx.offered?.has(actor.toLowerCase()) && !claimants({ to: "home", job: ctx.input.buildJob, agent: entry.harness, model: entry.id }, ctx.input.offers ?? [])?.length)
+    build.push(`no live runner offers ${actor} for ${ctx.input.buildJob ? `the ${ctx.input.buildJob} job` : "a build"} at home: ${ctx.buildOffered.instead.join("; ")}`);
   if (heldBuild) build.push(heldBuild);
-  const review = ctx.governed && !hasRole(actor, ctx.input.policy, "assessor") ? [...both, `${actor} needs an available agent with the assessor role`] : [...both];
+  // The reviewer's eligibility as pickReviewer judges it: under a governed
+  // policy the assessor role; otherwise the project's eligible harnesses and
+  // its reviewer admissions, so a model whose admission was withdrawn is
+  // never routed to review (gpt-6-astra's review of t622, finding 5).
+  const reviewerRefusal = ctx.governed ? (hasRole(actor, ctx.input.policy, "assessor") ? null : `${actor} needs an available agent with the assessor role`) : assessorRefusal(actor, ctx.input.policy);
+  const review = reviewerRefusal ? [...both, reviewerRefusal] : [...both];
   if (heldReview) review.push(heldReview);
   // The offer the review job asks of a runner: a review is claimed only by
   // a runner that offers the job and can claim as the model, so a reviewer
@@ -327,8 +377,8 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   // what that runner lacks for the review job.
   let reviewOffer: string | null = null;
   if (ctx.reviewOffered) {
-    const runners = ctx.reviewOffered.actors.get(actor.toLowerCase());
-    if (runners) reviewOffer = `Offered for the review job by ${[...new Set(runners)].join(", ")}`;
+    const runners = claimants({ ...REVIEW_JOB, agent: entry.harness, model: entry.id }, ctx.input.offers ?? []);
+    if (runners?.length) reviewOffer = `Offered for the review job by ${[...new Set(runners)].join(", ")}`;
     else if (ctx.offered?.has(actor.toLowerCase()))
       review.push(`no live runner offers ${actor} for the review job: ${ctx.reviewOffered.instead.join("; ")}`);
   }
@@ -395,7 +445,9 @@ function spread(ranked: readonly Verdict[], load: Load, role: "builds" | "review
 
 function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): PartRoute {
   const none = (unrouted: string, excluded: Choice[] = []): PartRoute => ({ key: part.key, builder: null, alternates: [], reviewer: null, excluded, unrouted });
-  if (!ctx.profiles.length) return none("no models in the pool");
+  // No candidate at all: the build assignments bearing on the part are named
+  // as skipped too.
+  if (!ctx.profiles.length) return none(["no models in the pool", ...orderByAssignment<string>([], (c) => c, applicableAssignments(ctx.input.assignments ?? [], null, ["build"]), () => null, FALLBACK.build).outcome.lines].join(" "));
   // route() ranks by score, then the reliability tie-breaker, then model id,
   // then actor name, so the order is the same whatever order the pool is given in.
   const ranked = route({ kind: part.taskKind }, ctx.profiles, ctx.record, { localOnly: false, allowedWhere: "any" }, ctx.tiebreaks);
@@ -412,10 +464,13 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   let builder: Verdict | undefined;
   if (part.prefer) {
     const { actor, reason } = part.prefer;
-    const wanted = verdicts.find((v) => {
-      const entry = ctx.entries.get(v.actor)!;
-      return [entry.id, ...entry.aliases].some((id) => `${entry.harness}/${id}`.toLowerCase() === actor.toLowerCase());
-    });
+    // The prefer is converted to an exact id where the plan document is
+    // posted (canonicalNames in src/index.ts) and the proposal marked so,
+    // and is then matched exactly. One posted before (unmarked) may name an
+    // alias, read once through storedActor, as main honoured it
+    // (gpt-6-astra's twelfth review of t622, finding 2).
+    const named = exactEntry(ctx.input.pool, ctx.input.namesExact ? actor : storedActor(ctx.input.pool, actor));
+    const wanted = named ? verdicts.find((v) => ctx.entries.get(v.actor) === named) : undefined;
     if (!wanted) lead.push(`The plan preferred ${actor} (${reason}); it is not in the pool`);
     else if (wanted.build.length) lead.push(`The plan preferred ${wanted.actor} (${reason}); not chosen: ${wanted.build.join("; ")}`);
     else {
@@ -423,14 +478,29 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
       lead.push(`Preferred by the plan (${reason}); passes every rule`);
     }
   }
+  // A build assignment orders the eligible builders; its first eligible
+  // choice builds, ahead of the spread, which still orders the rest.
+  const assignments = ctx.input.assignments ?? [];
+  // Every verdict is a candidate, with the rules it failed as its refusal,
+  // so an assigned model that may not build is passed over with its reason.
+  // With the plan's preference chosen, no assignment reorders anything, and
+  // the same call names each as skipped for it (orderByAssignment's
+  // explicit); otherwise the one applied, or those skipped and the fallback.
+  const buildOrder = assignments.length ? orderByAssignment([...able, ...verdicts.filter((v) => v.build.length)], (v) => v.actor, applicableAssignments(assignments, null, ["build"]), (v) => (v.build.length ? v.build.join("; ") : null), FALLBACK.build, builder ? "the plan's preference" : null) : null;
+  if (builder && buildOrder) lead.push(...buildOrder.outcome.lines);
+  else if (!builder && buildOrder?.outcome.applied) {
+    builder = buildOrder.order[0];
+    lead.push(...buildOrder.reasons(builder));
+  } else if (!builder && buildOrder) lead.push(...buildOrder.outcome.lines);
   if (!builder && able.length) {
     const picked = spread(able, builds, "builds", ctx);
     builder = picked.pick;
     if (picked.lead) lead.push(picked.lead);
   }
-  if (!builder) return none(`no eligible builder: ${excluded.map((e) => `${e.actor} (${e.reasons.join("; ")})`).join(", ")}`, excluded);
+  // A failure says what became of the build assignments too.
+  if (!builder) return none([`no eligible builder: ${excluded.map((e) => `${e.actor} (${e.reasons.join("; ")})`).join(", ")}`, ...(buildOrder?.outcome.lines ?? [])].join(" "), excluded);
   builds.add(builder);
-  const alternates = able.filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
+  const alternates = (buildOrder?.outcome.applied ? buildOrder.order.filter((v) => !v.build.length) : able).filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
   const chosen = choice(builder, [...lead, rank(builder)], "executor", ctx);
 
   const others = verdicts.filter((v) => v !== builder);
@@ -448,21 +518,33 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const single = ctx.single;
   const independent = (v: Verdict) => (single ? modelKey(v.actor) !== modelKey(builder.actor) : crossFamily(v.family, builder.family));
   const reviewers = byPrecision(byPace(others.filter((v) => !v.review.length && independent(v)), ctx, "review"), namesOfVerdict, precision);
-  const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
+  // A review assignment (claims-review for a docs part, then review) picks
+  // the first of its choices that qualifies, ahead of the spread.
+  // A security, concurrency or gate part reads security-review first, as a
+  // task's review does (gpt-6-astra's review of t622, finding 4). Every other
+  // model is a candidate with the rule it failed as its refusal.
+  // The roles as the ledger decides them for the part's review
+  // (reviewRolesFor), the part's paths standing for the change to come.
+  const roles = reviewRolesFor(part, [], part);
+  const reviewRefusal = (v: Verdict) => (v.review.length ? v.review.join("; ")
+    : independent(v) ? null : single ? "the same model as the builder" : `same family as the builder (${v.family})`);
+  const reviewOrder = assignments.length ? orderByAssignment([...reviewers, ...others.filter((v) => !reviewers.includes(v))], (v) => v.actor, applicableAssignments(assignments, null, roles), reviewRefusal, FALLBACK.review) : null;
+  const reviewer = reviewOrder?.outcome.applied ? { pick: reviewOrder.order[0], lead: null }
+    : reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
   if (!reviewer) {
     const why = single
       ? `no different ${single} model from ${builder.actor} to review (single-family mode): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : "the same model as the builder"})`).join(", ") : "no other model in the pool"}`
       : builder.family === "other"
         ? `no reviewer can be of another family than ${builder.actor}, whose family is not recognised from its name`
         : `no reviewer of another family than ${builder.family} (${builder.actor}): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : v.family === "other" ? "family not recognised from its name" : `same family, ${v.family}`})`).join(", ") : "no other model in the pool"}`;
-    return { key: part.key, builder: chosen, alternates, reviewer: null, excluded, unrouted: why };
+    return { key: part.key, builder: chosen, alternates, reviewer: null, excluded, unrouted: [why, ...(reviewOrder?.outcome.lines ?? [])].join(" ") };
   }
   reviews.add(reviewer.pick);
   const family = single
     ? `A different ${single} model (${reviewer.pick.actor}) from the builder (${builder.actor}), as single-family mode asks`
     : `Another family (${reviewer.pick.family}) than the builder's (${builder.family})`;
   const first = precision ? "the first such model by review precision, then rank order" : "the first such model in rank order";
-  const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; ${first}`];
+  const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; ${first}`, ...(reviewOrder ? reviewOrder.reasons(reviewer.pick) : [])];
   if (precision) said.push(precisionLine(precisionOf(precision, namesOfVerdict(reviewer.pick)), precision.window));
   // What the runner offers said of the reviewer: the runners that offer it
   // for the review job, or, offers read but no runner live, the warning
@@ -479,6 +561,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
 // such a runner would take, so a reviewer is routed only to a model one
 // lists, which is the claim's own rule applied ahead of the claim.
 const REVIEW_JOB: Pick<Dispatch, "to" | "job"> = { to: "home", job: "review" };
+const BUILD_JOB: Pick<Dispatch, "to" | "job"> = { to: "home" };
 
 export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
   const pool = [...input.pool];
@@ -499,6 +582,7 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     offered: live.length ? offeredActors(live) : null,
     governed: input.policy.agents !== undefined,
     reviewOffered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
+    buildOffered: input.offers != null ? offering({ ...BUILD_JOB, job: input.buildJob }, input.offers) : null,
     offersRead: input.offers != null,
     single: singleFamily(input.policy),
   };

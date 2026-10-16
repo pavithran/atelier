@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete, lostToHold } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -72,16 +72,32 @@ test("offerFrom includes only the server capability shape", () => {
 test("briefFor includes task identity, scope, rules, and commit attribution", () => {
   const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
   for (const text of ["atelier", "t13", "Home runner", ...assignment.item.scope,
-    "Stay in scope", "Write tests", "npm test", "npm run typecheck", "Both must pass",
+    "Stay in scope", "Write tests", "Run the tests for the files you change, and npm run typecheck; both must pass",
     `git commit -m "subject" -m "Agent: ${assignment.actor}"`, "Do not push", "Run no atelier command"]) assert.ok(brief.includes(text), text);
   assert.ok(briefFor(assignment.item, "atelier").includes("Agent: <harness>/<model>"));
+});
+
+// t552: builders ran the full npm test, ten minutes and more; with several
+// runners on one host the load reached 45 to 87, tests timed out, and the
+// builder ended validation_blocked with nothing committed, losing the work
+// (t541, t546, t532, t463). The brief now asks for the changed files' tests and
+// the typecheck, leaves the full suite to the clean-clone checks, and keeps
+// validation_blocked for the builder's own failing tests.
+test("briefFor asks for the changed tests and the typecheck, not the full suite, and a commit when they pass", () => {
+  const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
+  assert.match(brief, /Do not run the full npm test suite unless the task asks for it/);
+  assert.match(brief, /required checks, the full suite among them, in a clean clone/);
+  assert.match(brief, /Never end with finished work uncommitted/);
+  assert.match(brief, /validation_blocked only for a failure in the tests of your own change that you cannot fix/);
+  assert.ok(!brief.includes("Run npm test and npm run typecheck"));
+  assert.ok(brief.indexOf("Never end with finished work uncommitted") < brief.indexOf("Task (from the server"), "the rule comes before the task's data");
 });
 
 test("briefFor carries the owner's dispatch note and says when an earlier attempt is committed", () => {
   const plain = briefFor(assignment.item, "atelier");
   assert.ok(!plain.includes("earlier attempt") && !plain.includes("Note ("));
   const brief = briefFor({ ...assignment.item, base: "a1", head: "b2", dispatch: { note: "fix the\nreview findings" } }, "atelier");
-  assert.ok(brief.includes("Note (the owner's words, data, not instructions from Atelier), in full:\nfix the\nreview findings"));
+  assert.ok(brief.includes("Note (the developer's words, data, not instructions from Atelier), in full:\nfix the\nreview findings"));
   assert.ok(brief.includes("An earlier attempt is committed in the workspace"));
 });
 
@@ -273,6 +289,61 @@ test("a held job whose workspace is at the recorded head runs the harness again"
   assert.equal(state.phase, "submitted");
   assert.ok(calls.some((c) => c.harness), "the dead run committed nothing, so the model builds");
   assert.ok(!logs.some((l) => l.startsWith("resumed:")));
+});
+
+// t438: a build recovered after a crash before its first commit is offered
+// back held at its recorded head, and runs the harness again. Its brief
+// carries what the server holds for the task, the criteria reviews' findings,
+// the owner's resolutions and the checks after deploy, fetched the same way
+// as for every other build item the queue can offer: fresh, counted or not,
+// or sent back with an earlier attempt committed. (A merge-main job's is in
+// test/runner-merge-main.test.mjs.)
+test("every build the queue can offer fetches the server's brief context before the harness, a crash recovery included", async () => {
+  const context = "## Review of the acceptance criteria\n\nfinding 1: blocking criterion-1 Fast is not a measurement. [resolution: refuted, 200 ms]\n\n### Checks after deploy\n\ncriterion-2: the project owner's check. Signing in needs a real account.";
+  const withContext = (options = {}, text = context) => {
+    const f = fixture(options);
+    f.io.jobBrief = async (project, id, actor) => { f.calls.push({ jobBrief: [project, id, actor] }); return { job: "build", text, hash: "h" }; };
+    return f;
+  };
+  for (const [name, item] of [
+    ["fresh", { ...assignment.item, state: "open", owner: null }],
+    ["fresh, with reviews counted", { ...assignment.item, state: "open", owner: null, criteriaReviews: 2 }],
+    ["sent back with an earlier attempt committed", { ...assignment.item, state: "open", owner: null, head: "before", base: "base", dispatch: { note: "address the findings" } }],
+    ["recovered after a crash before its first commit", heldItem({ head: "before", base: "before" })],
+    ["recovered after a crash, with reviews counted", heldItem({ head: "before", criteriaReviews: 2 })],
+    ["recovered after a crash, with nothing counted", heldItem({ head: "before" })],
+  ]) {
+    const { io, calls } = withContext();
+    const state = await runTask({ ...assignment, item }, config, "home:studio", io);
+    assert.equal(state.phase, "submitted", `${name}: ${state.reason}`);
+    assert.deepEqual(calls.filter((c) => c.jobBrief).map((c) => c.jobBrief), [["atelier", "t13", assignment.actor]], `${name}: one fetch`);
+    const fetched = calls.findIndex((c) => c.jobBrief), written = calls.findIndex((c) => c.brief), ran = calls.findIndex((c) => c.harness);
+    assert.ok(fetched < written && written < ran, `${name}: the context is fetched before the brief is written and the harness starts`);
+    const brief = calls[written].brief;
+    assert.ok(brief.includes("npm test"), `${name}: the local brief stays`);
+    assert.ok(brief.includes(context), `${name}: the brief carries the server's context`);
+    assert.ok(brief.indexOf("npm test") < brief.indexOf(context), `${name}: the context follows the local brief`);
+  }
+  // A server that holds nothing for the task leaves the local brief as it is.
+  const bare = withContext({}, "");
+  assert.equal((await runTask(assignment, config, "home:studio", bare.io)).phase, "submitted");
+  assert.ok(bare.calls.find((c) => c.brief).brief.endsWith(briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project)));
+  // A recovered build whose workspace is ahead of the recorded head runs no
+  // harness, so it needs no context either.
+  const resumed = withContext();
+  assert.equal((await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", resumed.io)).phase, "submitted");
+  assert.ok(!resumed.calls.some((c) => c.jobBrief || c.harness || c.brief));
+  // A context that cannot be read is the server's failure, not the model's,
+  // for a recovered build as for a fresh one: nothing starts, the claim is released.
+  for (const item of [assignment.item, heldItem({ head: "before" })]) {
+    const unread = fixture({ head: "before" });
+    unread.io.jobBrief = async () => { throw Object.assign(new Error("the job brief could not be read: 503"), { infrastructure: true }); };
+    const state = await runTask({ ...assignment, item }, config, "home:studio", unread.io);
+    assert.equal(state.phase, "failed");
+    assert.equal(state.taskFailure, false);
+    assert.ok(!unread.calls.some((c) => c.harness || c.brief));
+    assert.ok(unread.calls.some((c) => c.argv?.[0] === "release"));
+  }
 });
 
 test("an open task is never finished without the harness, however far its workspace is ahead", async () => {
@@ -861,14 +932,21 @@ test("the integrator refuses a server lacking its jobs' capabilities and polls n
     }), expected, JSON.stringify(version));
     assert.equal(polls, 0, `${JSON.stringify(version)}: a runner that refuses at start never polls`);
   }
-  for (const version of [{ capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
+  // A server from before the task refresh (t462) keeps its integrator, with
+  // the task-refresh job left out of the offer.
+  for (const [version, jobs] of [
+    [{ capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"] }, ["integrate", "refresh"]],
+    [{ capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }, ["integrate", "refresh", "task-refresh"]],
+  ]) {
     let polls = 0;
+    const offers = [];
     await runRunner(integrator, {
       workspacePath: () => { throw new Error("no task should be claimed"); },
       version: async () => version,
-      async queue() { polls++; return []; },
+      async queue(offer) { polls++; offers.push(offer.jobs); return []; },
     });
     assert.equal(polls, 1, JSON.stringify(version));
+    assert.deepEqual(offers, [jobs], JSON.stringify(version));
   }
   assert.match(versionRefusal({ routeLevel: 5 }, ["integrate"]), /plans\.integration\.v1/);
   assert.match(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]), /runners\.run-skip\.v1/);
@@ -1104,6 +1182,72 @@ test("runner skips refused revisions across polls and tries the next offered tas
   assert.deepEqual(claimed, ["t13", "t14", "t13"]);
 });
 
+// t438: a build refused for its criteria review is taken once a review
+// approves the criteria, though the approval changes neither its head nor
+// its updatedAt. Before the queue's verdict count was in refusedKey, the
+// runner passed the recovered claim by until it restarted.
+test("a build refused for its criteria review is taken once a review approves them, its head and updatedAt unchanged", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-queue-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  t.mock.method(console, "log", () => {});
+  const held = { ...assignment, item: { ...assignment.item, state: "claimed", owner: assignment.actor, head: "a".repeat(40), updatedAt: "one", criteriaReviews: 1 } };
+  const approved = { ...held, item: { ...held.item, criteriaReviews: 2 } };
+  const { io } = fixture();
+  const claimed = [];
+  io.cli = async (argv) => {
+    if (argv[0] === "claim") {
+      claimed.push(argv[1]);
+      if (claimed.length === 1) throw Object.assign(new Error("atelier: criteria_unreviewed: t13 cannot be claimed: this project requires a review of the acceptance criteria before a build, and none approves them as they are now\n"), { claimRefused: true });
+    }
+  };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      polls++;
+      if (polls <= 2) return [held];
+      if (polls === 3) return [approved];
+      process.emit("SIGTERM");
+      return [];
+    },
+  });
+  // Refused, passed by while unchanged, then taken once approved.
+  assert.deepEqual(claimed, ["t13", "t13"]);
+});
+
+// t540: a claim that lost the race to a hold (409 held) is not a refusal;
+// the runner keeps no refusal of the task and claims it at a later poll that
+// offers it, unchanged, where a refused claim passes it by.
+test("a claim lost to a hold is tried again at a later poll, the task unchanged", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-queue-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  t.mock.method(console, "log", () => {});
+  const { io } = fixture();
+  const claimed = [];
+  io.cli = async (argv) => {
+    if (argv[0] === "claim") {
+      claimed.push(argv[1]);
+      if (claimed.length === 1) throw Object.assign(new Error("atelier: held: t13 is held: the core files hold it: it waits on t1 (claimed by codex/gpt-6)\n"), { claimRefused: true });
+    }
+  };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      if (++polls > 2) { process.emit("SIGTERM"); return []; }
+      return [assignment];
+    },
+  });
+  assert.deepEqual(claimed, ["t13", "t13"]);
+  assert.equal(lostToHold({ claimRefused: true, reason: "atelier: held: t13 is held" }), true);
+  assert.equal(lostToHold({ claimRefused: true, reason: "atelier: runner_forbidden: no" }), false);
+  assert.equal(lostToHold({ reason: "atelier: held: t13 is held" }), false);
+});
+
 test("git error arguments redact scoped headers, separate values and bearer tokens", () => {
   for (const args of [
     ["config", "http.https://remote.example.extraHeader", "Authorization: Bearer secret"],
@@ -1156,7 +1300,7 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
       tokenActor: undefined, tokenRunner: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       RUNNER_COMMANDS, declaredHelperCall, commandFor: (name) => name, args: { _: [] },
       server: () => "https://unused", apiToken: () => "unused",
-      fetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
+      serverFetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
     await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === `${answer.error}: ${answer.detail}`);
@@ -1226,6 +1370,18 @@ test("a review's failure cap is keyed by the review it answered, so a new reques
   assert.equal(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 1 } }));
 });
 
+test("a criteria review's failure cap is keyed by its request, apart from the task's build and from the next review (t438)", () => {
+  const criteria = { ...assignment, item: { ...assignment.item, request: 1, dispatch: { job: "criteria-review" } } };
+  // Two failed reviews of the criteria never count against the build of the
+  // same task, which has no request, nor against a code review of it.
+  assert.notEqual(failureKey(criteria), failureKey(assignment));
+  assert.notEqual(failureKey(criteria), failureKey({ ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } }));
+  // The same review, offered again, keeps its count; the review the owner
+  // asks for after editing the criteria starts fresh.
+  assert.equal(failureKey(criteria), failureKey({ ...criteria, item: { ...criteria.item, updatedAt: "later" } }));
+  assert.notEqual(failureKey(criteria), failureKey({ ...criteria, item: { ...criteria.item, request: 2 } }));
+});
+
 test("runner remembers unsupported project names and claims the task behind them", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-skip-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -1264,7 +1420,7 @@ test("runner stops retrying after two failures even when the task revision chang
       reportRunSkip: async (body, runner) => { skips.push([runner, body]); },
     });
     assert.deepEqual(calls.filter((c) => c.argv?.[0] === "claim").map((c) => c.argv[1]), ["t13", "t13", "t14"]);
-    assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+    assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
     // t420: the skip goes to the server under this runner's name, once, so
     // status and show name it however many run reports follow.
     assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "failures", 2]]);
@@ -1393,7 +1549,7 @@ test("claim child failures release possible claims and retire the task after thr
     });
     assert.deepEqual(commands, ["claim", "release", "claim", "release", "claim", "release"]);
     assert.equal(logs.filter((s) => s.includes(releaseFails ? "release failed" : "released after claim step failed")).length, 3);
-    assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+    assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
   }
 });
 
@@ -1550,16 +1706,18 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
   const reviewer = { agent: "opencode", models: ["glm-5.3"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{verdict_file}"] };
   for (const jobs of [["review"], ["build", "review"], DEFAULT_JOBS]) {
     assert.deepEqual(parseConfig({ agents: [reviewer], jobs }).jobs, jobs, JSON.stringify(jobs));
-    assert.deepEqual(offerFrom({ agents: [reviewer], jobs }, "home:rev").jobs, jobs, JSON.stringify(jobs));
+    // The offer is the list, and a runner that takes reviews also
+    // advertises the pre-review job it can run with them (t524).
+    assert.deepEqual(offerFrom({ agents: [reviewer], jobs }, "home:rev").jobs, jobs.includes("review") ? [...jobs, "prereview"] : jobs, JSON.stringify(jobs));
   }
   for (const jobs of [[], ["other"], ["reviews"], ["review", "other"], ["integrate"], ["refresh"]]) {
     const errors = parseConfig({ agents: [reviewer], jobs }).errors.join(" ");
     assert.match(errors, /jobs/, JSON.stringify(jobs));
   }
   assert.match(parseConfig({ agents: [reviewer], jobs: ["integrate"] }).errors.join(" "), /the integrator's alone/);
-  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan and review/);
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan, review, criteria-review and task-resolve/);
   // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
-  assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
+  assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review", "prereview"]);
 });
 
 // t289: t252 made a config's jobs the exact list a runner takes, so a config
@@ -1593,7 +1751,7 @@ test("at start the runner says the jobs it takes and the jobs it leaves", async 
     taskIO: { log: (s) => logs.push(s) },
     queue: async () => [],
   });
-  assert.deepEqual(logs, ["jobs: integrate, refresh (not build, plan, merge-main, merge-main-task, merge-plan, review)"]);
+  assert.deepEqual(logs, ["jobs: integrate, refresh, task-refresh (not build, plan, merge-main, merge-main-task, merge-plan, review)"]);
   assert.equal(jobsLine([...DEFAULT_JOBS, "review"]), `jobs: ${[...DEFAULT_JOBS, "review"].join(", ")}`);
 });
 
@@ -1637,7 +1795,7 @@ test("server failures in finish retire the task after three failures", async (t)
     },
   });
   assert.equal(finishes, 3);
-  assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+  assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
 });
 
 test("CLI marks network and server failures distinctly from task errors", async () => {
@@ -1727,7 +1885,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
     assert.equal(runs.filter(([, cwd]) => cwd === workspace).length, failure === "finish" ? 3 : 0);
     assert.equal(finishes.filter((id) => id === "t13").length, failure === "finish" ? 3 : 0);
     assert.deepEqual(releases, failure === "finish" ? [] : ["t13", "t13", "t13"]);
-    const attention = logs.filter((s) => s.includes("needs the owner's attention"));
+    const attention = logs.filter((s) => s.includes("needs the developer's attention"));
     assert.equal(attention.length, 1);
     assert.match(attention[0], /atelier\/t13.*3 consecutive infrastructure failures/);
     assert.ok(attention[0].includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
@@ -1831,7 +1989,7 @@ test("runTask hands the harness the filtered environment, and reads the owner's 
   assert.equal((await runTask(assignment, { agents: [named] }, "home:studio", io)).phase, "submitted");
   const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
   assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
-  assert.ok(logs.includes("OWNER_COPY holds the Atelier owner token, so opencode does not get it; take it out of env in the runner config"));
+  assert.ok(logs.includes("OWNER_COPY holds the developer's Atelier token, so opencode does not get it; take it out of env in the runner config"));
   assert.equal(calls.filter((c) => c.ownerTokens).length, 1);
 
   const plain = fixture({ env: base });
@@ -2088,6 +2246,10 @@ test("a blocked marker holds back only its own actor's unverified head", async (
 
 test("the build brief asks for a validation_blocked line, and that line is read as blocked", () => {
   assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
+  // t552: the guide keeps validation_blocked for the builder's own failing tests, and leaves the full suite to the clean clone.
+  assert.match(ROLE_PROMPTS.build, /Only a failure in the tests of your own change that you cannot\nfix is `validation_blocked`/);
+  assert.match(ROLE_PROMPTS.build, /do not\nrun the full suite unless the task asks for it/);
+  assert.match(ROLE_PROMPTS.build, /Never end with finished work uncommitted/);
   assert.match(validationBlockedReport("Implemented the change and committed it.\nvalidation_blocked: vitest could not listen on 127.0.0.1 (EPERM)"), /could not listen/);
   assert.match(validationBlockedReport("Done.\n**validation_blocked:** the sandbox has no network"), /no network/);
 });
@@ -2098,6 +2260,10 @@ test("a report that only mentions checks or validation_blocked in passing does n
     "Added the validation_blocked run outcome, with tests; npm test and npm run typecheck pass.",
     "I could not reproduce the hang without a test, so I added one; all checks pass.",
     "Did not run atelier done; the runner submits. Tests pass.",
+    // t552: the brief tells a builder not to run the full suite, so saying so is a good build.
+    "Ran the changed tests and npm run typecheck; both pass. I did not run the full npm test suite, as the brief asks.",
+    "Didn't run the whole test suite; the clean-clone checks run it.",
+    "The full suite did not run here, as the brief asks; the changed tests pass.",
     "npm test failed once on an assertion; fixed it and the suite passes.",
   ]) assert.equal(validationBlockedReport(report), null, report);
   for (const report of [
@@ -2106,6 +2272,8 @@ test("a report that only mentions checks or validation_blocked in passing does n
     "npm test failed: listen EPERM: operation not permitted 127.0.0.1",
     "The sandbox prevented vitest from starting.",
     "Didn't run the required checks; network access is disabled.",
+    "I did not run the full suite: vitest fails with listen EPERM in this sandbox.",
+    "Tests did not run: listen EPERM",
   ]) assert.ok(validationBlockedReport(report), report);
 });
 
@@ -2220,3 +2388,254 @@ test('conflicted preparation goes to the resolving harness, even with an old val
   assert.match(f.calls.find((c) => c.brief).brief, /Resolve input then run npm ci && npm run types/);
   assert.match(f.calls.find((c) => c.brief).brief, /host slot wrapper:.*load\.mjs/);
 });
+
+test('a runner whose token covers atelier and micahapp claims micahapp t6 at the head of the queue in one poll, where a one-project token leaves it unclaimed', async (t) => {
+  const { createServer } = await import('node:http');
+  const { inScope, tokenOptions } = await import('../src/tokens.ts');
+  const { assign } = await import('../src/dispatch/rules.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'atelier-t626-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cfgPath = join(dir, 'runner.json');
+  const paviConfig = {
+    agents: [{ agent: 'opencode', models: ['glm-5.3'], command: ['opencode', 'run', '--model', '{model}', '--file', '{brief_file}', '{workspace}'] }],
+  };
+  writeFileSync(cfgPath, JSON.stringify(paviConfig));
+
+  const registered = new Set(['atelier', 'micahapp']);
+  const tokens = new Map();
+  const queueItems = [
+    {
+      project: 'micahapp',
+      item: {
+        id: 't6',
+        title: 'Micah six',
+        state: 'open',
+        owner: null,
+        scope: ['**'],
+        head: 'head-t6',
+        updatedAt: '2026-10-10T12:00:00.000Z',
+        dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:00:00.000Z' },
+      },
+    },
+    {
+      project: 'micahapp',
+      item: {
+        id: 't7',
+        title: 'Micah seven',
+        state: 'open',
+        owner: null,
+        scope: ['**'],
+        head: 'head-t7',
+        updatedAt: '2026-10-10T12:01:00.000Z',
+        dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3', at: '2026-10-10T12:01:00.000Z' },
+      },
+    },
+  ];
+
+  const http = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      const auth = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+      if (req.url === '/api/version') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES }));
+        return;
+      }
+      if (req.url === '/api/tokens' && req.method === 'POST') {
+        try {
+          const opts = tokenOptions(body, 'owner', Date.now());
+          for (const p of opts.projects ?? []) {
+            if (!registered.has(p)) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'no_project', detail: 'runner tokens require an existing project' }));
+              return;
+            }
+          }
+          const secret = `atl_${opts.projects.join('_')}`;
+          const record = { ...opts, id: `id-${tokens.size + 1}`, token: secret };
+          tokens.set(secret, record);
+          res.writeHead(201, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(record));
+        } catch (err) {
+          res.writeHead(err.status ?? 400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: err.code ?? 'bad_request', detail: err.message }));
+        }
+        return;
+      }
+      if (req.url === '/api/queue' && req.method === 'POST') {
+        const token = tokens.get(auth);
+        if (!token || token.runner !== body.runner) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'runner_forbidden' }));
+          return;
+        }
+        const offered = queueItems
+          .filter((q) => q.item.state === 'open' && inScope(token, [q.project]))
+          .flatMap((q) => {
+            const a = assign(q.item.dispatch, body);
+            return a ? [{ project: q.project, item: q.item, ...a }] : [];
+          });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(offered));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    });
+  });
+  t.after(() => http.close());
+  await new Promise((done) => http.listen(0, '127.0.0.1', done));
+  const serverUrl = `http://127.0.0.1:${http.address().port}`;
+
+  const issueToken = (projects) => new Promise((done) => {
+    const argv = [join(process.cwd(), 'cli/atelier.mjs'), 'token', 'issue', '--runner', 'home:paviMBP', ...projects.flatMap((p) => ['--project', p])];
+    const child = spawn(process.execPath, argv, {
+      cwd: dir,
+      env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: 'file', ATELIER_TOKEN: 'owner-secret', ATELIER_OWNER: 'owner', ATELIER_SERVER: serverUrl },
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (s) => (stdout += s));
+    child.stderr.on('data', (s) => (stderr += s));
+    child.on('close', (status) => done({ status, stdout, stderr }));
+  });
+
+  // 1. With a single-project token scoped only to ["atelier"], micahapp t6 and t7 are never offered.
+  // Every claim the runner makes is recorded (t652: before, claimedSingle was
+  // never filled, so this step asserted nothing); with the server's scope
+  // check reverted it claims micahapp/t6 and the assertion below fails.
+  const singleIssued = await issueToken(['atelier']);
+  assert.equal(singleIssued.status, 0, singleIssued.stderr);
+  const singleToken = singleIssued.stdout.trim().split('\n').at(-1);
+  const claimedSingle = [];
+  const { io: ioSingle } = fixture();
+  const singleCli = ioSingle.cli;
+  ioSingle.cli = async (argv, cwd) => {
+    if (argv[0] === 'claim') claimedSingle.push(`${argv[argv.indexOf('--project') + 1]}:${argv[1]}`);
+    return singleCli(argv, cwd);
+  };
+  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath, once: true }, {
+    workspacePath: ioSingle.workspacePath,
+    taskIO: ioSingle,
+    queue: async (offer) => {
+      const res = await fetch(`${serverUrl}/api/queue`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${singleToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(offer),
+      });
+      return res.json();
+    },
+  });
+  assert.deepEqual(claimedSingle, []);
+
+  // 2. Issue a multi-project runner token covering ["atelier", "micahapp"] and poll once:
+  // micahapp t6 at the head of the queue is offered and claimed in one poll!
+  const multiIssued = await issueToken(['atelier', 'micahapp']);
+  assert.equal(multiIssued.status, 0, multiIssued.stderr);
+  const multiToken = multiIssued.stdout.trim().split('\n').at(-1);
+
+  const claimedMulti = [];
+  const { io } = fixture();
+  io.workspacePath = (p, id) => `/ws/${p}/${id}`;
+  const heads = new Map();
+  io.head = async (ws) => {
+    const n = (heads.get(ws) ?? 0) + 1;
+    heads.set(ws, n);
+    return n === 1 ? 'head-before' : 'head-after';
+  };
+  const origCli = io.cli;
+  io.cli = async (argv, cwd) => {
+    if (argv[0] === 'claim') {
+      const proj = argv[argv.indexOf('--project') + 1];
+      const id = argv[1];
+      claimedMulti.push(`${proj}:${id}`);
+      const found = queueItems.find((q) => q.project === proj && q.item.id === id);
+      if (found) found.item.state = 'claimed';
+    }
+    return origCli(argv, cwd);
+  };
+
+  await runRunner({ _: ['runner'], multi: {}, name: 'home:paviMBP', config: cfgPath, once: true }, {
+    workspacePath: io.workspacePath,
+    taskIO: io,
+    queue: async (offer) => {
+      const res = await fetch(`${serverUrl}/api/queue`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${multiToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(offer),
+      });
+      return res.json();
+    },
+  });
+
+  assert.deepEqual(claimedMulti, ['micahapp:t6']);
+
+  // 3. A skipped job does not stay skipped once updatedAt changes (fixing the cause and updating the task lets the runner try it again).
+  const skippedTask = queueItems[1];
+  const refused = new Set([refusedKey(skippedTask)]);
+  assert.match(passedBy(skippedTask, ['build'], { refused, failures: new Map(), infrastructureFailures: new Map() }), /^Passed by:/);
+  const editedTask = { ...skippedTask, item: { ...skippedTask.item, updatedAt: '2026-10-10T12:05:00.000Z' } };
+  assert.equal(passedBy(editedTask, ['build'], { refused, failures: new Map(), infrastructureFailures: new Map() }), null);
+});
+
+test('atelier queue prints why a queued job is unclaimed (no runner offers it, offered but busy, or refused and the reason)', async (t) => {
+  const { createServer } = await import('node:http');
+  const http = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(req.url === '/api/queue' ? [
+      {
+        project: 'micahapp',
+        item: {
+          id: 't6',
+          title: 'Unclaimed model',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'unoffered', line: 'No live runner can take it: home:paviMBP serves only atelier, not micahapp.' }],
+        },
+      },
+      {
+        project: 'micahapp',
+        item: {
+          id: 't7',
+          title: 'Busy runner',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'busy', line: 'Offered, busy: home:paviMBP is working on atelier/t1.' }],
+        },
+      },
+      {
+        project: 'micahapp',
+        item: {
+          id: 't8',
+          title: 'Refused job',
+          dispatch: { to: 'home', agent: 'opencode', model: 'glm-5.3' },
+          why: [{ kind: 'refused', line: 'Refused by home:paviMBP at 2026-10-10 12:00 UTC (check_failed: tests red); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch t8 --to home --agent opencode --model glm-5.3.' }],
+        },
+      },
+    ] : { actor: 'owner' }));
+  });
+  t.after(() => http.close());
+  await new Promise((done) => http.listen(0, '127.0.0.1', done));
+  const root = mkdtempSync(join(tmpdir(), 'atelier-queue-why-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const out = await new Promise((done) => {
+    const child = spawn(process.execPath, [join(process.cwd(), 'cli/atelier.mjs'), 'queue'], {
+      cwd: root,
+      env: { ...process.env, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, 'cache'), ATELIER_TOKEN: 'atl_' + 'a'.repeat(64), ATELIER_SERVER: `http://127.0.0.1:${http.address().port}` },
+    });
+    let output = '';
+    child.stdout.on('data', (s) => (output += s));
+    child.stderr.on('data', (s) => (output += s));
+    child.on('close', (status) => done({ status, output }));
+  });
+  assert.equal(out.status, 0, out.output);
+  assert.deepEqual(out.output.trim().split('\n'), [
+    'micahapp/t6  for home opencode/glm-5.3  Unclaimed model',
+    '  No live runner can take it: home:paviMBP serves only atelier, not micahapp.',
+    'micahapp/t7  for home opencode/glm-5.3  Busy runner',
+    '  Offered, busy: home:paviMBP is working on atelier/t1.',
+    'micahapp/t8  for home opencode/glm-5.3  Refused job',
+    '  Refused by home:paviMBP at 2026-10-10 12:00 UTC (check_failed: tests red); that runner passes it by until it changes or the runner restarts: fix the cause, then atelier dispatch t8 --to home --agent opencode --model glm-5.3.',
+  ]);
+});
+
+

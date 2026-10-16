@@ -14,12 +14,13 @@
 // and gives them to opencode alone; the others use their harness's own login.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
+import { NO_VERDICT, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
-import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, metadataEscaped } from "./providers.mjs";
+import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, RUN_LIMITS, TRANSPORT_ERROR, metadataEscaped, openRouterRefusal } from "./providers.mjs";
 
 const UNSET = "undefined";
 
@@ -79,9 +80,43 @@ export function reviewPrompt(brief, diff) {
     diff.replace(/\n+$/, ""),
     fence,
     "",
-    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it. End with a VERDICT: APPROVE or VERDICT: REJECT line, a SUMMARY: line and one FINDING: blocking|follow-up PATH:LINE text line per finding.",
+    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it.",
+    VERDICT_DEMAND,
   ].join("\n");
 }
+
+// What every review prompt ends with. GLM 5.3 under opencode answered
+// review after review in prose with no VERDICT line, 48 replies released
+// overnight on 2026-10-13 ("the reply states no verdict"), yet answered at
+// once when the brief ended by demanding the line as the reply's last (t576).
+export const VERDICT_DEMAND = "Your reply MUST end with exactly one line, the last line of your reply, either VERDICT: APPROVE or VERDICT: REJECT, preceded by a SUMMARY: line on what you checked and one FINDING: blocking|follow-up PATH:LINE text line per finding.";
+
+// The second ask, in the same opencode session, when the first reply states
+// no verdict: the lines alone, no new review (t576). A change with
+// acceptance criteria is asked for one CRITERION line per criterion as well,
+// as many as the brief's reply format asks for (criteriaAsked): an approval
+// without them is refused by parseVerdict, given the task's criterion count
+// by the runner, and the review released (Astra's review of t576,
+// 2026-10-13). The ask ends with the lines themselves, one per criterion, so
+// a reviewer who copies them and fills them in gives a complete reply.
+export function verdictFollowUp(criteria) {
+  const count = Number.isSafeInteger(criteria) && criteria > 0 ? criteria : 0;
+  if (!count) return VERDICT_FOLLOW_UP;
+  return [
+    VERDICT_FOLLOW_UP_HEAD,
+    `Reply with only these lines: a SUMMARY: line on what you checked, one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), one CRITERION line for each of the ${count} acceptance criteria, numbered as the brief's reply format numbers them, saying met or unmet (or deferred, only where the brief allows it) and then how you proved it: what you did and what you saw, from your review above (an approval needs every criterion met), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.`,
+    "In this shape, with your own words after each colon and dash:",
+    "SUMMARY: What you checked, in one sentence.",
+    ...Array.from({ length: count }, (_, i) => `CRITERION ${i + 1}: met — What you did to prove criterion ${i + 1} met, and what you saw.`),
+    "VERDICT: APPROVE",
+  ].join("\n");
+}
+
+const VERDICT_FOLLOW_UP_HEAD = "Your reply above states no verdict, so Atelier cannot read it. Do not review again and run nothing.";
+export const VERDICT_FOLLOW_UP = [
+  VERDICT_FOLLOW_UP_HEAD,
+  "Reply with only these lines: a SUMMARY: line on what you checked, one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.",
+].join("\n");
 
 // The prompt for the job, which goes to the harness on standard input.
 export function promptFor(harness, args, read = (f) => readFileSync(f, "utf8")) {
@@ -106,7 +141,8 @@ const CLAUDE_REVIEW_TOOLS = ["Read", "Glob", "Grep", "Bash(git diff:*)", "Bash(g
 const CLAUDE_DENIED = ["Bash(git push:*)", "Bash(atelier:*)", "WebFetch", "WebSearch"];
 
 // Antigravity's model ids for Atelier's; any other id passes through.
-export const AGY_MODELS = { "gemini-3.1-pro": "gemini-3.1-pro-high", "gpt-oss-120b": "gpt-oss-120b-medium" };
+// The review adapter (cli/agy-review.mjs) reads this table too (t573).
+export const AGY_MODELS = { "gemini-4-argon": "gemini-4-argon-high", "gemini-3.1-pro": "gemini-3.1-pro-high", "gemini-3.8-flash": "gemini-3.8-flash-high", "claude-opus-5.5": "claude-opus-5-5-high", "claude-sonnet-5.5": "claude-sonnet-5-5-high", "gpt-oss-120b": "gpt-oss-120b-medium" };
 
 // For each harness, the command for a job: { argv, verdictFrom } where
 // verdictFrom says how the review's answer is read: "stdout", "file" (the
@@ -138,16 +174,46 @@ export const HARNESSES = {
   opencode: {
     executable: "opencode",
     command(args, kind, setup) {
-      return { argv: ["run", "--model", `${setup.provider}/${setup.providerModel}`], verdictFrom: "stdout" };
+      return { argv: ["run", ...standalone(setup), "--model", `${setup.provider}/${setup.providerModel}`], verdictFrom: "stdout" };
+    },
+    // The same session again: the run's own data folder (runHome) holds this
+    // job's session alone, so --continue resumes the review just answered.
+    followUp(args, kind, setup) {
+      return ["run", ...standalone(setup), "--model", `${setup.provider}/${setup.providerModel}`, "--continue"];
     },
   },
   antigravity: {
     executable: "agy",
-    command(args) {
-      return { argv: ["--model", AGY_MODELS[args.model] ?? args.model, "--dangerously-skip-permissions", "--sandbox", "--output-format", "json", "--print-timeout", "2400s"], verdictFrom: "agy-json" };
+    // Reviews keep the terminal sandbox; builds run without it (d14, PAVI
+    // 2026-10-13: with skip-permissions the sandbox only blocked the build's
+    // own installs, tests and commit, then let them through outside it).
+    command(args, kind) {
+      return { argv: ["--model", AGY_MODELS[args.model] ?? args.model, "--dangerously-skip-permissions", ...(kind === "review" ? ["--sandbox"] : []), "--output-format", "json", "--print-timeout", "2400s"], verdictFrom: "agy-json" };
     },
   },
 };
+
+// opencode 2's `run` connects to a background service shared by every run
+// unless it is given --standalone, and the service keeps its own data folder,
+// which undoes the run's (runHome, XDG_DATA_HOME); opencode 1 has no such
+// service and may reject the flag (t683). So the flag follows the major
+// version, which runAdapter reads into setup.major.
+function standalone(setup) {
+  return setup.major >= 2 ? ["--standalone"] : [];
+}
+
+// The major version of the opencode at `exe`, from `exe --version` ("1.18.34",
+// "opencode v2.0.29"), asked once per executable and kept. null when it
+// cannot be read; runAdapter then refuses the run.
+const majors = new Map();
+export function opencodeMajor(exe, env, spawn = spawnSync) {
+  if (majors.has(exe)) return majors.get(exe);
+  const r = spawn(exe, ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+  const found = r.error || r.status !== 0 ? null : /(\d+)\.\d+\.\d+/.exec(String(r.stdout ?? ""));
+  const major = found ? Number(found[1]) : null;
+  if (major !== null) majors.set(exe, major);
+  return major;
+}
 
 // The executable for a harness: its name on the PATH, or the variable that
 // names a stand-in (ATELIER_CLAUDE, ATELIER_CODEX, ATELIER_OPENCODE,
@@ -216,6 +282,8 @@ export function opencodeSetup(model, dir) {
   if (!existsSync(index)) throw new Error(`no provider configs in ${dir}; run atelier runner setup`);
   const entry = JSON.parse(readFileSync(index, "utf8")).models?.[model];
   if (!entry) throw new Error(`${model} is not in ${index}; run atelier runner setup after adding it to the pool`);
+  const claude = entry.provider === "openrouter-api" ? openRouterRefusal(entry.providerModel) : null;
+  if (claude) throw new Error(`${model} is refused: ${claude}`);
   return { ...entry, config: join(dir, entry.config) };
 }
 
@@ -303,6 +371,14 @@ export function runAdapter(harness, argv, io = {}) {
       // Outside the workspace, so nothing opencode leaves in it is committed.
       runDir = mkdtempSync(join(tmpdir(), "atelier-opencode-run-"));
       Object.assign(childEnv, runHome(env, runDir));
+      const major = opencodeMajor(executableFor(harness, env), childEnv, io.spawn);
+      // Fail closed: an opencode whose version cannot be read might be
+      // opencode 2, which needs --standalone and the deny rule, and opencode 1
+      // rejects both, so no run starts on a guess (the finding on t683).
+      if (major === null) throw new Error(`could not read the version of ${executableFor(harness, env)} (\`--version\` failed or printed no version), so it is not known whether it needs --standalone and the external_directory deny; no run was started`);
+      setup.major = major;
+      // opencode 2 gets the deny at every run, over whatever config was stored.
+      if (major >= 2) childEnv.OPENCODE_CONFIG_CONTENT = OPENCODE2_CONFIG_CONTENT;
     }
     if (harness === "codex") setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
   } catch (error) {
@@ -320,15 +396,21 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   const env = io.env ?? process.env;
   const spawn = io.spawn ?? spawnSync;
   const { argv: harnessArgv, verdictFrom } = HARNESSES[harness].command(args, kind, setup);
-  let prompt;
-  try { prompt = promptFor(harness, args); } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
+  let prompt, brief = "";
+  try {
+    prompt = promptFor(harness, args);
+    if (kind === "review" && HARNESSES[harness].followUp) brief = readFileSync(args.brief, "utf8");
+  } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
-  const result = spawn(exe, harnessArgv, {
+  const options = {
     cwd: args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     stdio: ["pipe", capture ? "pipe" : "inherit", "inherit"],
-  });
-  if (result.error) return fail(`could not run ${exe}: ${result.error.message}`);
+  };
+  const limit = harness === "opencode" && kind === "build" ? RUN_LIMITS[setup.providerModel] : null;
+  const err = io.stderr ?? ((text) => process.stderr.write(text));
+  const result = limit ? runLimited(spawn, exe, harnessArgv, options, { ms: io.limitMs ?? limit.ms, err, harness }) : spawn(exe, harnessArgv, options);
+  if (result.error) return fail(result.error.code === "ETIMEDOUT" && limit ? `${exe} was stopped after its time limit of ${Math.round((io.limitMs ?? limit.ms) / 1000)} s` : `could not run ${exe}: ${result.error.message}`);
   if (result.status !== 0) return result.status ?? 1;
   if (!capture) return 0;
   let answer = result.stdout ?? "";
@@ -336,6 +418,73 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
     try { answer = JSON.parse(answer.trim()).response; } catch { return fail(`${exe} printed no JSON`); }
   }
   if (typeof answer !== "string" || !answer.trim()) return fail(`${exe} gave an empty answer`);
+  // A reply with no verdict at all is asked once more, in the same session,
+  // for the verdict lines alone (t576); the kept reply is both answers, so
+  // findings the first gave as lines still count. Any failure of the second
+  // ask leaves the first reply, which the runner records as unparsable.
+  const followUp = HARNESSES[harness].followUp;
+  if (followUp && noVerdict(answer)) {
+    const again = spawn(exe, followUp(args, kind, setup), {
+      cwd: args.workspace, env: childEnv, input: verdictFollowUp(criteriaAsked(brief)), encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    const more = !again.error && again.status === 0 && typeof again.stdout === "string" ? again.stdout.trim() : "";
+    if (more) answer = `${answer.replace(/\n+$/, "")}\n\n${more}\n`;
+    else (io.stderr ?? ((text) => process.stderr.write(text)))(`atelier-${harness}: the reply states no verdict and asking again for it failed${again.error ? `: ${again.error.message}` : ` (exit ${again.status})`}\n`);
+  }
   writeFileSync(args.verdict, answer, "utf8");
   return 0;
+}
+
+// A run with a time limit (RUN_LIMITS). It is run once more when it ends with
+// no new commit and a transport error: the limit passing, or its exit non-zero
+// with a TRANSPORT_ERROR line on stderr. Each attempt runs in its own process
+// group, and the whole group is ended and confirmed gone before anything else
+// happens, so a shell or test the first attempt started cannot run on into the
+// second in the same workspace. The stderr is read from what the spawn returns
+// (the shipped spawn, limitSpawn, captures it on a pipe) or, when the spawn
+// leaves it to the file given here, from that file, and passed on.
+function runLimited(spawn, exe, argv, options, { ms, err, harness }) {
+  const head = () => String(spawn("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? "").trim();
+  for (let attempt = 1; ; attempt++) {
+    const before = head();
+    const dir = mkdtempSync(join(tmpdir(), "atelier-opencode-stderr-"));
+    const log = join(dir, "stderr"), fd = openSync(log, "w");
+    let result, filed = "";
+    try {
+      result = spawn(exe, argv, { ...options, detached: true, timeout: ms, killSignal: "SIGKILL", stdio: [options.stdio[0], options.stdio[1], fd] });
+    } finally {
+      closeSync(fd);
+      try { filed = readFileSync(log, "utf8"); } catch { /* nothing was written */ }
+      rmSync(dir, { recursive: true, force: true });
+    }
+    if (filed) err(filed);
+    const text = filed || String(result.stderr ?? "");
+    const survivors = endGroup(result.pid);
+    if (survivors) {
+      err(`atelier-${harness}: processes the run started would not end; not running it again\n`);
+      return { ...result, error: result.error ?? new Error("processes the run started would not end") };
+    }
+    const transport = result.error?.code === "ETIMEDOUT" || (result.status !== 0 && TRANSPORT_ERROR.test(text));
+    if (attempt === 2 || !transport || head() !== before) return result;
+    err(`atelier-${harness}: the run ended with no commit and a transport error (${result.error?.code === "ETIMEDOUT" ? "time limit" : "stderr"}); running it once more\n`);
+  }
+}
+
+// Ends every process left in the group led by pid (the run's own pid, which
+// detached made a group leader) and waits up to 5 s for them to be gone.
+// Returns true when some remain.
+function endGroup(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  const alive = () => { try { process.kill(-pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+  for (let waited = 0; alive() && waited <= 5000; waited += 50) {
+    try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  return alive();
+}
+
+function noVerdict(answer) {
+  const parsed = parseVerdict(answer);
+  return !parsed.ok && parsed.error === NO_VERDICT;
 }

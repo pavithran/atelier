@@ -27,8 +27,18 @@ export interface Dispatch {
   // (section 4): it is stored with the request, not on the item, and offered
   // to a runner whose offer lists the job. Absent for ordinary work. The
   // owner writes none of these by hand but merge-main (t243): the plan's own
-  // jobs are the plan's.
-  job?: "plan" | "review" | "integrate" | "refresh" | "merge-main";
+  // jobs are the plan's. "criteria-review" is the review of a task's
+  // acceptance criteria before its build (t438, src/review/criteria.ts),
+  // stored with that review and offered like a review.
+  // "prereview" is a pre-review's dispatch (t524,
+  // src/dispatch/prereview.ts), stored with the pre-review like a review's
+  // and offered only to a runner whose offer lists the job.
+  // "task-refresh" and "task-resolve" are the task refresh's jobs (t462,
+  // src/refresh/): the integrator merges main into a task's head in a
+  // workspace of its own, and a resolver resolves the mechanical conflicts
+  // that merge left. Neither is stored on the item: the queue makes them
+  // from the refresh targets, and the lease they run under is the Ledger's.
+  job?: "plan" | "review" | "prereview" | "criteria-review" | "integrate" | "refresh" | "merge-main" | "task-refresh" | "task-resolve";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
   // refresh job, `head` is the main head to merge. For merge-main it is
@@ -42,6 +52,9 @@ export interface Dispatch {
   // workspace before the builder starts. Only a runner that offers the
   // "merge-plan" job takes such a dispatch.
   planHead?: string;
+  // For a task-refresh or task-resolve job: the task's head the refresh
+  // starts from, which its lease must still find (`head` is main's).
+  expectedHead?: string;
   // Set on a merge-main job the owner dispatched for a task outside a plan
   // (t243), whose runner reads main through the task's own base token rather
   // than a plan's. A runner from before t243 offers merge-main but refuses
@@ -65,6 +78,13 @@ export interface RunnerOffer {
   kind: RunnerKind;
   agents: { agent: string; models: string[] }[];
   jobs?: string[];
+  // The projects a runner token lets it serve (t626), by current name; an
+  // offer naming none serves every project.
+  projects?: string[];
+  // The project these offers were read for (offersFor), when a project's
+  // routing reads them: an offer whose `projects` leave that project out
+  // offers it nothing, though its runner still counts as live.
+  forProject?: string;
   // When the runner's process started, as it says: what it passes by after
   // failures or a refused claim it forgets on a restart, so the reasons
   // that name it count only from then (skippedBy, refusedBy).
@@ -171,7 +191,7 @@ export function overrideDispatch(input: Record<string, unknown>, previous: Dispa
 // written. Releasing a dispatch already released changes nothing.
 export function retainDispatch(item: Item, input: { agent?: unknown; model?: unknown; retainAt?: unknown }, items: readonly Item[], policy: ProjectPolicy, owner = DEFAULT_OWNER): Dispatch {
   if (item.owner || item.state !== "open") {
-    throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
   }
   const d = item.dispatch;
   if (!d) throw new RuleError("not_dispatched", `${item.id} is not queued for a runner, so there is no dispatch to release`, 409);
@@ -214,13 +234,56 @@ export interface CoreHold extends CoreBlocker {
   warning?: boolean;
   chains?: { path: string[]; deadlock: boolean }[];
   claimRefusal?: string;
+  orphaned?: OrphanedClaim[];
 }
 export const CORE_HOLD_WARNING_MS = 30 * 60_000;
 
+// A claim whose claiming runner stopped polling (t537): the claim names the
+// runner (item.runner) and the runner's last poll is the one /api/runners
+// records (SeenOffer.at, putRunnerOffer on the index). Past RUNNER_GONE_MS,
+// with the minute of timestamp coarsening (OFFER_REFRESH_MS) the idle-runner
+// check allows, the claim is orphaned and holds no other dispatch; atelier
+// dispatch ID gives it to a live runner. A claim made by hand names no
+// runner and holds as before, and so does one whose runner the polls do not
+// list, since an absent record never shows a runner gone. A poll after the
+// limit restores the hold. A runner mid-job polls nothing, so it sends a
+// heartbeat while the job runs (cli/runner.mjs), which records its offer as
+// a poll does: a long build keeps its claim's hold.
+export interface RunnerPolls {
+  polls: readonly { runner: string; at: string }[];
+}
+
+// The one limit both the hold (the ledger) and atelier stuck judge an
+// orphaned claim by, whatever --runner-poll-minutes the stuck report is
+// asked with: the stuck report's default runnerPollMinutes is this.
+export const RUNNER_GONE_MS = 5 * 60_000;
+
+export interface OrphanedClaim extends CoreBlocker {
+  runner: string;
+  lastPoll: string;
+  // A plan's part is recovered through its plan, never by dispatch.
+  kind?: Item["kind"];
+  // The project the claim is in, set by the ledger that found it, so its
+  // recovery names that project wherever the hold is printed (a listing of
+  // every project's queue or status included).
+  project?: string;
+}
+
+export function orphanedBy(o: Pick<Item, "state" | "runner">, runners: RunnerPolls | null | undefined, now = Date.now()): { runner: string; lastPoll: string } | null {
+  if (!runners || o.state !== "claimed" || !o.runner) return null;
+  const runner = o.runner.toLowerCase();
+  const last = runners.polls.filter((p) => p.runner.toLowerCase() === runner && Number.isFinite(Date.parse(p.at))).map((p) => p.at).sort().at(-1);
+  if (!last || now - Date.parse(last) - OFFER_REFRESH_MS <= RUNNER_GONE_MS) return null;
+  return { runner: o.runner, lastPoll: last };
+}
+
 // Claimed builders and the holder of a live landing lease serialize core
 // edits. Submission alone holds nothing. Plan jobs, same-plan work and the
-// owner's overlap override keep their existing exemptions.
-export function coreBlockers(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreBlocker[] {
+// owner's overlap override keep their existing exemptions. A claim its
+// runner orphaned holds nothing (coreOrphans names it instead), though the
+// holder of a live landing lease holds whatever its runner does.
+type Overlap = CoreBlocker & { item: Item; landing: boolean };
+function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now: number): Overlap[] {
   const d = item.dispatch;
   if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return [];
   if (d.job !== undefined && d.job !== "merge-main") return [];
@@ -230,22 +293,39 @@ export function coreBlockers(item: Item, items: readonly Item[], coreFiles: read
     if (o.state !== "claimed" && !landing) return [];
     if (o.kind === "plan" && o.state === "claimed") return [];
     const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
-    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core }] : [];
+    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core, item: o, landing }] : [];
   });
 }
 
-export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreHold | null {
-  return coreBlockers(item, items, coreFiles, lease, now)[0] ?? null;
+const blockerOf = ({ item: _, landing: __, ...b }: Overlap): CoreBlocker => b;
+const orphan = (b: Overlap, runners: RunnerPolls | null, now: number) => b.landing ? null : orphanedBy(b.item, runners, now);
+
+export function coreBlockers(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now(), runners: RunnerPolls | null = null): CoreBlocker[] {
+  return coreOverlaps(item, items, coreFiles, lease, now).filter((b) => !orphan(b, runners, now)).map(blockerOf);
+}
+
+// The claims that would hold the dispatch but for their runner having
+// stopped polling, each with the runner and its last poll.
+export function coreOrphans(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now(), runners: RunnerPolls | null = null): OrphanedClaim[] {
+  if (!runners) return [];
+  return coreOverlaps(item, items, coreFiles, lease, now).flatMap((b) => {
+    const gone = orphan(b, runners, now);
+    return gone ? [{ ...blockerOf(b), ...gone, ...(b.item.kind ? { kind: b.item.kind } : {}) }] : [];
+  });
+}
+
+export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now(), runners: RunnerPolls | null = null): CoreHold | null {
+  return coreBlockers(item, items, coreFiles, lease, now, runners)[0] ?? null;
 }
 
 // Active builders do not wait on other builders merely because their scopes
 // intersect. Follow their declared part dependencies; queued work also waits
 // on its core blockers. Completed dependencies no longer obstruct a path.
-export function holdGraph(items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now = Date.now()): Map<string, string[]> {
+export function holdGraph(items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now = Date.now(), runners: RunnerPolls | null = null): Map<string, string[]> {
   const done = (i: Item) => ["integrated", "merged", "abandoned"].includes(i.state);
   return new Map(items.filter((i) => !done(i)).map((i) => {
     const deps = i.plan ? items.filter((p) => p.plan === i.plan && p.partKey && i.deps?.includes(p.partKey) && !done(p)).map((p) => p.id) : [];
-    const core = i.state === "open" && !i.owner ? coreBlockers(i, items, coreFiles, lease, now).map((b) => b.id) : [];
+    const core = i.state === "open" && !i.owner ? coreBlockers(i, items, coreFiles, lease, now, runners).map((b) => b.id) : [];
     return [i.id, [...new Set([...core, ...deps])]];
   }));
 }
@@ -265,11 +345,32 @@ export function blockerChains(id: string, graph: ReadonlyMap<string, readonly st
   return paths;
 }
 
-export function holdText(h: CoreHold): string {
+export function holdText(h: CoreHold, project?: string): string {
   const blockers = (h.blockers ?? [h]).map((b) => `${b.id} (${b.state}${b.owner ? ` by ${b.owner}` : ""}): both scopes reach core file ${b.core}`).join("; ");
   const age = h.elapsedMs === undefined ? "" : `; held for ${Math.floor(h.elapsedMs / 60_000)}m ${Math.floor(h.elapsedMs / 1000) % 60}s`;
   const chains = (h.chains ?? []).filter((c) => c.deadlock || c.path.length > 2).map((c) => `; ${c.deadlock ? "deadlock" : "blocked chain"}: ${c.path.join(" -> ")}`).join("");
-  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}`;
+  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}${h.orphaned?.length ? `; ${orphanText(h.orphaned, project)}` : ""}`;
+}
+
+// The claims a dispatch no longer waits on because their runners stopped
+// polling, in words, each with its recovery: dispatching the orphaned task
+// again releases the claim and offers it to a live runner; a plan's part,
+// which ordinary dispatch refuses, is released and retried through its plan,
+// as the stuck report recovers one. A listing of several projects names the
+// orphan's own, so the command never acts on a task of the same id elsewhere.
+// One shell word: bare when it holds only safe characters, else single-quoted
+// (a quote inside closed, escaped and reopened), so a project name with a
+// space or a shell metacharacter is passed whole and never run.
+export const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+export function orphanRecovery(o: Pick<OrphanedClaim, "id" | "kind" | "project">, project?: string): string {
+  const name = o.project ?? project;
+  const flag = name ? ` --project ${shellWord(name)}` : "";
+  return o.kind
+    ? `atelier release ${o.id}${flag} --note "Requeue work its runner orphaned"; atelier plan retry ${o.id}${flag}`
+    : `atelier dispatch ${o.id}${flag}`;
+}
+export function orphanText(orphaned: readonly OrphanedClaim[], project?: string): string {
+  return orphaned.map((o) => `${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) is orphaned, not a blocker: its runner ${o.runner} last polled at ${o.lastPoll.slice(0, 16).replace("T", " ")} UTC, so its claim on core file ${o.core} holds nothing; recover it with ${orphanRecovery(o, project)}`).join("; ");
 }
 
 // When the hold lifts: once every blocker stops holding. A claimed item stops
@@ -362,7 +463,35 @@ export function skippedBy(runs: readonly RunSeen[], project: string, item: strin
 // skippedBy never sees them. Kept on the task, it outlasts the index's
 // window of recent run reports. It counts under the dispatch it was
 // reported for, and only from a live runner since its process started.
-export type RunSkipKind = "failures" | "infrastructure";
+export type RunSkipKind = "failures" | "infrastructure" | "skipped";
+
+// The kinds a runner reports, and the only ones the ledger keeps (t652). The
+// runner sends one place (gaveUp in cli/runner.mjs): `failures` after
+// SKIP_AFTER failed runs, `infrastructure` after three infrastructure
+// failures in a row, and `skipped` for a job it passes by, as when the
+// validation-blocked marker stops it. Each may follow a run that kept its
+// claim, since a run that committed before failing keeps it ("claim
+// preserved"), so each is taken for a task the reporting runner holds as
+// well as for an open one. recordRunSkip took any kind for a held task, so
+// a caller past the route's check could keep a kind no reason line knows.
+export const RUN_SKIP_KINDS: readonly RunSkipKind[] = ["failures", "infrastructure", "skipped"];
+
+export function isRunSkipKind(kind: unknown): kind is RunSkipKind {
+  return typeof kind === "string" && (RUN_SKIP_KINDS as readonly string[]).includes(kind);
+}
+
+// How long a runner's idle mark (an idle poll asked with `why`, which says
+// it has a free slot) counts. An idle runner polls every 30 seconds
+// (cli/runner.mjs) and renews the mark each time, so a mark older than three
+// of its polls says it has stopped asking idle: it took a job elsewhere, its
+// polls are backing off, or it stopped. Before t652 the mark never lapsed,
+// so a runner that went on to claim another project's job was never said to
+// be busy again.
+export const RUNNER_IDLE_MS = 90_000;
+
+export function idleMarked(at: string | null | undefined, now: number): boolean {
+  return typeof at === "string" && Number.isFinite(Date.parse(at)) && now - Date.parse(at) < RUNNER_IDLE_MS;
+}
 
 export interface RunSkip {
   runner: string;
@@ -371,13 +500,17 @@ export interface RunSkip {
   failures: number;
   note: string;         // the last failure's reason, as the runner said it
   dispatchAt: string;
+  head?: string | null;
+  updatedAt?: string;
   at: string;
 }
 
 export function reportedSkips(skips: readonly RunSkip[], item: Item, offers?: readonly SeenOffer[] | null, now = new Date()): RunSkip[] {
   const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
   const started = startedOf(offers);
-  return skips.filter((s) => s.dispatchAt === item.dispatch?.at && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
+  return skips.filter((s) => s.dispatchAt === item.dispatch?.at
+    && (s.kind !== "skipped" || !s.updatedAt || sameRevision({ dispatchAt: s.dispatchAt, head: s.head ?? null, updatedAt: s.updatedAt }, item))
+    && (!live || live.has(s.runner)) && s.at >= (started.get(s.runner) ?? ""))
     .sort((a, b) => a.runner.localeCompare(b.runner));
 }
 
@@ -421,7 +554,7 @@ export function sameRevision(r: Pick<ClaimRefusal, "dispatchAt" | "head" | "upda
 // `why`), a dispatch no other reason holds that this runner is not offered
 // says so: it is for another runner. A task may carry several; `atelier
 // status`, `atelier show` and an idle runner print one line each.
-export type UnclaimedKind = "held" | "overlap" | "refused" | "skipped" | "unoffered" | "elsewhere";
+export type UnclaimedKind = "held" | "overlap" | "refused" | "skipped" | "unoffered" | "busy" | "elsewhere";
 
 export interface UnclaimedReason {
   kind: UnclaimedKind;
@@ -439,6 +572,7 @@ export function unclaimed(
     runs?: readonly RunSeen[] | null;
     project?: string;
     offer?: RunnerOffer | null;
+    busy?: ReadonlyMap<string, string> | null;
     now?: Date;
   },
 ): UnclaimedReason[] {
@@ -455,10 +589,17 @@ export function unclaimed(
     ...counted.filter((s) => !reported.some((r) => r.runner === s.runner)).map((s) => ({ runner: s.runner, line: skippedReasonLine(s, item) }))];
   for (const s of skips.sort((a, b) => a.runner.localeCompare(b.runner))) out.push({ kind: "skipped", line: s.line });
   if (item.dispatch && input.offers) {
-    const dead = unoffered(item.dispatch, input.offers, input.now);
+    const dead = unoffered(item.dispatch, input.offers, input.now, input.project);
     if (dead) out.push({ kind: "unoffered", line: unofferedReasonLine(dead, item) });
+    else if (!out.length && input.busy?.size) {
+      const idleRunner = input.offer?.runner.toLowerCase();
+      const matching = liveOffers(input.offers, input.now).filter((o) => assign(item.dispatch!, o, input.project) !== null);
+      if (matching.length && matching.every((o) => o.runner.toLowerCase() !== idleRunner && input.busy!.has(o.runner.toLowerCase()))) {
+        out.push({ kind: "busy", line: `Offered, busy: ${matching.map((o) => `${o.runner} is working on ${input.busy!.get(o.runner.toLowerCase())}`).join("; ")}.` });
+      }
+    }
   }
-  if (item.dispatch && input.offer && !out.length && !assign(item.dispatch, input.offer)) {
+  if (item.dispatch && input.offer && !out.length && !assign(item.dispatch, input.offer, input.project)) {
     out.push({ kind: "elsewhere", line: `Not for ${input.offer.runner}: it is dispatched to ${describe(item.dispatch)}${item.dispatch.job ? ` (a ${item.dispatch.job} job)` : ""}, which this runner does not offer, and a live runner that does will take it.` });
   }
   return out;
@@ -484,7 +625,7 @@ function heldReasonLine(item: Item, h: CoreHold): string {
 }
 
 function overlapReasonLine(o: OverlapRefusal, item: Item): string {
-  return `Overlap refused: ${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the owner narrows a scope with atelier edit ${item.id} --scope GLOB (or atelier edit ${o.id} --scope GLOB), or allows overlaps with atelier init --refuse-overlap=false.`;
+  return `Overlap refused: ${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the developer narrows a scope with atelier edit ${item.id} --scope GLOB (or atelier edit ${o.id} --scope GLOB), or allows overlaps with atelier init --refuse-overlap=false.`;
 }
 
 function skippedReasonLine(s: SkippedBy, item: Item): string {
@@ -492,6 +633,9 @@ function skippedReasonLine(s: SkippedBy, item: Item): string {
 }
 
 function reportedSkipLine(s: RunSkip, item: Item): string {
+  if (s.kind === "skipped") {
+    return `Skipped by ${s.runner}${s.note ? ` (${s.note})` : ""}; that runner passes it by until it changes or the runner restarts: fix the cause, then ${redispatch(item)}.`;
+  }
   const why = s.note ? ` (the last: ${s.note})` : "";
   return s.kind === "infrastructure"
     ? `Skipped by ${s.runner} after ${s.failures} infrastructure failures in a row under this dispatch${why}; that runner passes it by until it is dispatched again or the runner restarts: fix the runner's workspace, git or harness, then ${redispatch(item)}.`
@@ -499,12 +643,13 @@ function reportedSkipLine(s: RunSkip, item: Item): string {
 }
 
 function unofferedReasonLine(dead: string, item: Item): string {
+  if (dead.includes(" serves only ")) return `${dead[0].toUpperCase()}${dead.slice(1)}.`;
   return `${dead[0].toUpperCase()}${dead.slice(1)}. Dispatch it to a model a live runner offers (atelier dispatch ${item.id} --agent H --model M), or start a runner that offers it.`;
 }
 
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
-    throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `held by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
   }
 }
 
@@ -559,11 +704,29 @@ function missingJob(d: Pick<Dispatch, "job" | "planHead" | "task">, offer: Runne
   return needs.find((job): job is string => !!job && !jobs.includes(job) && !(job === "build" && !jobs.length)) ?? null;
 }
 
+// Whether a runner serves a project: the one named, else the one its offer
+// was read for (offersFor). An offer naming no projects serves them all.
+export function servesProject(offer: RunnerOffer, project = offer.forProject): boolean {
+  return !project || !offer.projects || offer.projects.includes(project);
+}
+
+// Offers as a project's routing reads them (t652). A model only a runner
+// scoped to another project offers was available to this project's plan,
+// review and dispatch routing, which read every runner's offer: each offer
+// is marked with the project, so assign, offeredActors and offering pass by
+// a runner that does not serve it. The runner stays in the list, so a live
+// runner scoped elsewhere is no reason to fall back to the whole pool, and
+// the lines that name what each runner offers say it serves other projects.
+export function offersFor<T extends RunnerOffer>(offers: readonly T[], project: string): T[] {
+  return offers.map((o) => ({ ...o, forProject: project }));
+}
+
 // The agent and model a runner should use for a dispatch, or null if it cannot.
-export function assign(d: Dispatch, offer: RunnerOffer): Assignment | null {
+export function assign(d: Dispatch, offer: RunnerOffer, project?: string): Assignment | null {
+  if (!servesProject(offer, project)) return null;
   // The integrate and refresh jobs always run as the reserved integrator,
   // which the queue returns to a runner that offers the job.
-  if (d.job === "integrate" || d.job === "refresh") {
+  if (d.job === "integrate" || d.job === "refresh" || d.job === "task-refresh") {
     if (!(offer.jobs ?? []).includes(d.job)) return null;
     if (d.to !== "any" && d.to !== offer.kind) return null;
     return { agent: "atelier", model: "integrator", actor: "atelier/integrator" };
@@ -602,6 +765,17 @@ export function describe(d: Dispatch): string {
   return `${where}, ${what}`;
 }
 
+// The live runners that would be handed a dispatch, by assign() itself, so a
+// selector's offer check and the claim it leads to cannot disagree: the job,
+// the destination and the agent and model exactly as the dispatch will name
+// them (gemini-4-argon's and gpt-6-astra's eighteenth reviews of t622). Null
+// when no runner is live, and then nothing is restricted.
+export function claimants(d: OfferAsk & Pick<Dispatch, "agent" | "model">, offers: readonly SeenOffer[], now = new Date()): string[] | null {
+  const live = liveOffers(offers, now);
+  if (!live.length) return null;
+  return live.filter((offer) => assign(d as Dispatch, offer) !== null).map((offer) => offer.runner);
+}
+
 // An offer as the server holds it (putRunnerOffer): what a runner can run
 // and when it last asked for work with that offer.
 export interface SeenOffer extends RunnerOffer {
@@ -637,7 +811,7 @@ export function liveOffers(offers: readonly SeenOffer[], now = new Date()): Seen
 // offering's question, below.
 export function offeredActors(offers: readonly SeenOffer[]): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  for (const offer of offers) {
+  for (const offer of offers.filter((o) => servesProject(o))) {
     for (const { agent, models } of offer.agents) {
       for (const model of models.filter((m) => claimable(agent, m))) {
         const actor = `${agent}/${model}`.toLowerCase();
@@ -653,7 +827,8 @@ export function offeredActors(offers: readonly SeenOffer[]): Map<string, string[
 // no such job. The names are the claimable agent/model pairs assign() could
 // hand the job to under this offer, whatever harness was asked — the useful
 // fact is what could take the job instead, not which harness is missing.
-function offeredNames(d: OfferAsk, offer: RunnerOffer): string[] | null {
+function offeredNames(d: OfferAsk, offer: RunnerOffer, project?: string): string[] | null {
+  if (!servesProject(offer, project)) return null;
   if (d.to !== "any" && d.to !== offer.kind) return null;
   if (missingJob(d, offer)) return null;
   const names: string[] = [];
@@ -665,10 +840,12 @@ function offeredNames(d: OfferAsk, offer: RunnerOffer): string[] | null {
 
 // One line per live runner naming what it offers for a dispatch's job
 // instead of taking it, in the order the server lists the runners.
-function insteadLines(d: OfferAsk, live: readonly SeenOffer[]): string[] {
+function insteadLines(d: OfferAsk, live: readonly SeenOffer[], project?: string): string[] {
   return live.map((offer) => {
-    const names = offeredNames(d, offer);
+    const names = offeredNames(d, offer, project);
     if (names === null) {
+      const asked = project ?? offer.forProject;
+      if (!servesProject(offer, asked)) return `${offer.runner} serves only ${offer.projects!.join(", ") || "no projects"}, not ${asked}`;
       if (d.to !== "any" && d.to !== offer.kind) return `${offer.runner} is a ${offer.kind} runner, not a ${d.to} one`;
       return `${offer.runner} offers no ${missingJob(d, offer)} job`;
     }
@@ -682,16 +859,16 @@ function insteadLines(d: OfferAsk, live: readonly SeenOffer[]): string[] {
 // config lists — or a dispatch for a job none offers — sits unclaimed however
 // long it waits, and this says so: each live runner is named with what it
 // offers instead, or that no runner is live at all.
-export function unoffered(d: Dispatch, offers: readonly SeenOffer[], now = new Date()): string | null {
+export function unoffered(d: Dispatch, offers: readonly SeenOffer[], now = new Date(), project?: string): string | null {
   const live = liveOffers(offers, now);
-  if (live.some((offer) => assign(d, offer) !== null)) return null;
+  if (live.some((offer) => assign(d, offer, project) !== null)) return null;
   if (!live.length) {
     const last = offers.map((o) => o.at).sort().at(-1);
     return last
       ? `no runner is live; the last to ask for work did so at ${last.slice(0, 16).replace("T", " ")} UTC`
       : "no runner has asked the server for work";
   }
-  return `no live runner can take it: ${insteadLines(d, live).join("; ")}`;
+  return `no live runner can take it: ${insteadLines(d, live, project).join("; ")}`;
 }
 
 // What the live runners offer for a dispatch's job: every claimable actor a

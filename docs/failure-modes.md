@@ -101,14 +101,14 @@ declaring no release, which broke the seal's current-handoff gate. The break
 was missed for a day because only the fast suite ran after the wrap, and the
 fast suite cannot see the seal.
 
-In Atelier the gate is not a suite the owner chooses whether to run; it is
+In Atelier the gate is not a suite the developer chooses whether to run; it is
 derived from the record at the moment of decision. `Ledger.accept` runs `gate`
 and refuses with every blocker (src/ledger.ts, src/rules.ts), and the inbox,
 briefs and pages recompute it on every request (`inboxFor` in src/rules.ts,
 `Ledger.inbox`). Skipping the checks does not skip the gate; the item blocks
 with "not yet observed at this head". A session wrap runs its checks in the
-owner's checkout at the weaker Reported grade, and a failing one still stops
-wrap before anything is staged, unless the owner allows it and the note names
+developer's checkout at the weaker Reported grade, and a failing one still stops
+wrap before anything is staged, unless the developer allows it and the note names
 what was allowed (`wrap` and `wrapReady` in cli/atelier.mjs,
 `failingChecksRefusal` in src/sessions.ts). Tests: test/ledger.spec.ts, "an
 item moves from creation to merge, gated by observed evidence";
@@ -150,15 +150,20 @@ committed in the tree: `wrapReady` in cli/atelier.mjs reads the context budget
 at HEAD (docs/control-plane/context-budget.v1.json, `evaluateCeilings` in
 src/context-budget.ts) and refuses wrap when a surface passes its ceiling, and
 a working copy of the policy that differs from HEAD's is named. Accumulated
-workspaces are retired only against proof: `gcWorkspaceReason` in src/rules.ts
-refuses removal unless the item is merged or abandoned, the head is the
-accepted head of the merge or the last head Atelier recorded for the abandoned
-item, the tree is clean and no extra commits exist. Tests: test/context-budget.test.ts,
+workspaces are retired only against proof, after each merge and by `atelier
+clean`: `finishedWorkspaceReason` in src/rules.ts refuses removal unless the
+item is merged or abandoned, the head is a head Atelier recorded or in main,
+the tree is clean, every ignored file is rebuildable output, and every commit
+the workspace reaches is under a recorded head or in main (t561). Tests: test/context-budget.test.ts,
 the generated case "ceiling at 5 lines" (refused) and "a working copy that
 differs from HEAD's policy is named, and HEAD's is the one applied";
-test/rules.test.ts, "gc removes clean workspaces at a head that proves nothing
-is unpublished"; test/gc.test.mjs, "gc previews, then removes only clean closed
-clones; preserves all local work". The remaining halves, fixing a shape rather
+test/gc.test.mjs, "gc previews, then removes only clean closed
+clones; preserves all local work" and "a finished workspace goes once its
+HEAD is in main or the recorded head, and one holding work main lacks is kept
+and named (t561)" and "a finished workspace holding ignored files other than
+rebuildable output is kept and named"; test/rules.test.ts, "a finished
+workspace goes only against proof that nothing is lost, ignored work included
+(t561)". The remaining halves, fixing a shape rather
 than an instance and counting facts rather than files, have no mechanism; the
 second is A11's question.
 
@@ -174,7 +179,7 @@ later run from the same side.
 
 Partly prevented. The CLI's usage text is data in src/usage.ts that the CLI
 imports, so help and parser share one source. The handoff routes return the exact next command
-for the new owner ("${to} runs: atelier claim ${id} --project ${project}", the
+for the new holder ("${to} runs: atelier claim ${id} --project ${project}", the
 handoff cases in src/index.ts), built in the Worker apart from the CLI that
 parses it, and the real binary is tested to print its usage, so a command
 named in help is a command that exists and prints its usage without contacting a

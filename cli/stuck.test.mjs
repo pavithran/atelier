@@ -180,7 +180,7 @@ test('plan parts receive their documented retry recovery instead of ordinary dis
   assert.match(report(s).entries[0].recovery, /plan retry t1/);
   s.items[0].state = 'claimed';
   s.events = [event(1, 'item.claimed', 21600001)];
-  assert.match(report(s).entries[0].recovery, /check in with the owner/);
+  assert.match(report(s).entries[0].recovery, /check in with the holder/);
 });
 
 
@@ -190,7 +190,7 @@ test('core holds have an independent limit and recover the held dispatch without
   const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)], lease: { item: 't1', holder: 'owner', at: at(1000) } });
   const entry = report(s).entries[0];
   assert.equal(entry.kind, 'core-hold');
-  assert.equal(entry.recovery, 'Land the blocker with atelier land t1 --project "demo"; or, if the overlap is harmless, atelier dispatch t2 --to home --note \'\' --overlap-ok --project "demo"');
+  assert.equal(entry.recovery, 'Land the blocker with atelier land t1 --project demo; or, if the overlap is harmless, atelier dispatch t2 --to home --note \'\' --overlap-ok --project demo');
   assert.equal(entry.evidence, 'https://example.org/p/demo/t1');
   assert.deepEqual(stuckReport('demo', 'https://example.org', now, reportLimits({ coreHoldMinutes: 31, noPushHours: 0.01 }), s, [], [], []).entries, []);
   s.events.push(event(2, 'item.handoff', 1800000));
@@ -199,7 +199,7 @@ test('core holds have an independent limit and recover the held dispatch without
   assert.deepEqual(kinds(report(s)), ['core-hold']);
   s.items[0].state = 'accepted';
   const accepted = report(s).entries[0];
-  assert.equal(accepted.recovery, 'Land the blocker with atelier merge t1 --project "demo"; or, if the overlap is harmless, atelier dispatch t2 --to home --note \'\' --overlap-ok --project "demo"');
+  assert.equal(accepted.recovery, 'Land the blocker with atelier merge t1 --project demo; or, if the overlap is harmless, atelier dispatch t2 --to home --note \'\' --overlap-ok --project demo');
   assert.equal(accepted.since, s.events[1].at);
   assert.equal(accepted.evidence, entry.evidence);
   assert.match(commandUsage('stuck'), /merge if already accepted/);
@@ -209,10 +209,10 @@ test('core holds have an independent limit and recover the held dispatch without
 });
 test('each task rule preserves its suggestion without dispatching or releasing the task', () => {
   const s = snapshot({ events: [event(1, 'item.claimed', 21600001)] });
-  assert.match(report(s).entries[0].recovery, /check in with the owner \(codex\/model\).*show t1 --reviews/);
+  assert.match(report(s).entries[0].recovery, /check in with the holder \(codex\/model\).*show t1 --reviews/);
   s.items[0].state = 'submitted';
   s.events = [event(1, 'review.rejected', 86400001)];
-  assert.match(report(s).entries[0].recovery, /check in with the owner/);
+  assert.match(report(s).entries[0].recovery, /check in with the holder/);
   s.events = [event(1, 'evidence.observed', 2, { passed: false, head: 'a' }), event(2, 'evidence.observed', 1, { passed: false, head: 'b' })];
   assert.match(report(s).entries[0].recovery, /hand off:.*handoff t1 --to H\/M/);
   assert.doesNotMatch(report(s).entries[0].recovery, /dispatch|release/);
@@ -249,7 +249,7 @@ test('conflict pauses use a strict independent stage-age limit and documented re
   assert.equal(entry.kind, 'workflow-conflict');
   assert.equal(entry.ageMs, 1800001);
   assert.match(entry.reason, /conflicted.*src\/index.ts/);
-  assert.equal(entry.recovery, 'Resolve and commit the conflicts in the task workspace, then atelier land t1 --workflow --project "demo"');
+  assert.equal(entry.recovery, 'Resolve and commit the conflicts in the task workspace, then atelier land t1 --workflow --project demo');
   assert.deepEqual(stuckReport('demo', 'https://example.org', now, reportLimits({ conflictWaitMinutes: 31 }), s, [], [], []).entries, []);
   for (const status of ['complete', 'errored', 'terminated', 'absent']) {
     s.workflows[0].status = status;
@@ -274,5 +274,19 @@ test('new limits default to thirty minutes and reject invalid values', () => {
     assert.equal(reportLimits()[key], 30);
     for (const value of [0, -1, NaN, Infinity, '', 'invalid']) assert.throws(() => reportLimits({ [key]: value }));
     assert.equal(reportLimits({ [key]: '2.5' })[key], 2.5);
+  }
+});
+
+// gpt-6-astra's review of t537 at bbc55485: every recovery the stuck report
+// prints names the project as one shell word, so a name with a space or a
+// metacharacter selects that project and runs nothing.
+test('stuck recoveries quote the project as one shell word', () => {
+  const waiting = item({ id: 't2', state: 'open', owner: null, dispatch: { to: 'home', agent: null, model: null, by: 'owner', at: at(99999999), note: '' } });
+  const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)], lease: { item: 't1', holder: 'owner', at: at(1000) } });
+  for (const name of ['my project', 'a;exit 3', "it's $(printf x)"]) {
+    const entry = stuckReport(name, 'https://example.org', now, reportLimits(), s, [], [], []).entries.find((e) => e.kind === 'core-hold');
+    const land = entry.recovery.replace(/^Land the blocker with atelier /, '').replace(/; or, .*$/, '');
+    const words = execFileSync('/bin/sh', ['-c', `set -- ${land}; printf '%s\\n' "$@"`], { encoding: 'utf8' }).trimEnd().split('\n');
+    assert.deepEqual(words, ['land', 't1', '--project', name]);
   }
 });

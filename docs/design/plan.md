@@ -256,8 +256,8 @@ has no cycle).
 ## 7. Mockups
 
 [mockups/index.html](mockups/index.html) lists them. Each file is static HTML
-with one shared stylesheet (`mockups/mockup.css`, palette B as fixed in
-brief.md §1.1, from t367's
+with one shared stylesheet (`mockups/mockup.css`, the Night palette as fixed in
+brief.md §1.1, from
 `src/theme.css`), no script, desktop and phone frames side by side, and
 numbered notes citing F and P numbers. They are drawn at the fixture's
 numbers, so each can be compared with its capture.

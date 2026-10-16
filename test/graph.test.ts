@@ -380,3 +380,41 @@ test("every mark carries its position and its event, and each segment its span, 
   const quoted = buildStory("demo", [{ id: "t1", title: 'A "quoted" <b>task</b>', state: "claimed" } as never], [night()[14]], OWNER);
   assert.doesNotMatch(drawStory(quoted, OWNER), /<b>task<\/b>/);
 });
+
+// t578: the showcase counts the whole record from the Ledger's SQL counts.
+// Counted the same way the Ledger groups them, the counts give the tally
+// buildStory gives over the same events, served annotations included.
+test("tallyFromCounts gives buildStory's tally from per-actor counts, served annotations included", async () => {
+  const { tallyFromCounts, applyServed } = await import("../src/graph.ts");
+  const { pulseFromCounts, buildPulse } = await import("../src/pulse.ts");
+  const { dayOf } = await import("../src/time.ts");
+  const evs = night().map((e) => ({ ...e }));
+  const claim = evs.find((e) => e.kind === "item.claimed")!;
+  const servedTo = `${claim.actor.split("/")[0]}/deepseek-flash`;
+  evs.push({ seq: 99, itemId: null as never, at: "2026-10-04T11:00:00.000Z", actor: OWNER, kind: "event.served", data: { seq: claim.seq, served: "deepseek-flash" } });
+  const plain = evs.filter((e) => e.kind !== "event.served");
+  // Counted as the Ledger's queries count them.
+  const kinds = new Map<string, { actor: string; kind: string; n: number; first: number; cloud: number }>();
+  const days = new Map<string, { actor: string; kind: string; day: string; n: number }>();
+  for (const e of plain) {
+    const k = kinds.get(`${e.actor}|${e.kind}`) ?? { actor: e.actor, kind: e.kind, n: 0, first: e.seq, cloud: 0 };
+    k.n++; k.first = Math.min(k.first, e.seq); if (e.kind === "evidence.observed" && e.data.where === "sandbox") k.cloud++;
+    kinds.set(`${e.actor}|${e.kind}`, k);
+    const r = days.get(`${e.actor}|${e.kind}|${dayOf(e.at)}`) ?? { actor: e.actor, kind: e.kind, day: dayOf(e.at), n: 0 };
+    r.n++;
+    days.set(`${e.actor}|${e.kind}|${dayOf(e.at)}`, r);
+  }
+  const story = buildStory("p", [item("t1", "merged"), item("t2", "open")], evs as never, OWNER);
+  const counts = {
+    ...applyServed([...kinds.values()], [...days.values()], [{ seq: claim.seq, actor: claim.actor, to: servedTo, kind: claim.kind, cloud: false, day: dayOf(claim.at) }]),
+    merges: story.tally.merges, taken: new Set(plain.filter((e) => e.kind === "item.claimed").map((e) => e.itemId)).size,
+    first: plain[0].at, last: plain.at(-1)!.at, story: "t1",
+  };
+  const t = tallyFromCounts(counts, OWNER);
+  assert.deepEqual({ ...t, agents: [...t.agents].sort() }, { ...story.tally, agents: [...story.tally.agents].sort() });
+  assert.ok(t.agents.includes(servedTo));
+  const now = new Date("2026-10-05T12:00:00.000Z");
+  const fromCounts = pulseFromCounts(counts, OWNER, now);
+  const fromEvents = buildPulse(plain.map((e) => (e.seq === claim.seq ? { ...e, actor: servedTo } : e)) as never, OWNER, now);
+  assert.deepEqual({ ...fromCounts, agents: [...fromCounts.agents].sort(), lastAt: null }, { ...fromEvents, agents: [...fromEvents.agents].sort(), lastAt: null });
+});

@@ -16,7 +16,7 @@ export default async function decisionsCommand() {
   const shown = args.all ? decisions : decisions.filter((d) => d.status === "standing");
   if (!shown.length) {
     return console.log(args.all || !decisions.length
-      ? `No standing decision is recorded for ${name}. The owner records one with: atelier decide "text" --quote "the owner's words"`
+      ? `No standing decision is recorded for ${name}. The developer records one with: atelier decide "text" --quote "the developer's words"`
       : `No decision stands for ${name}; atelier decisions --all lists the withdrawn ones.`);
   }
   console.log(formatDecisions(shown));

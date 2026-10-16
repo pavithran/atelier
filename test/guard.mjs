@@ -36,9 +36,26 @@
 //   waits on among them), then this process. (SIGSTOP first would stop the
 //   watchdog's thread with the rest.)
 import childProcess from "node:child_process";
+import { rmSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { after } from "node:test";
 import { Worker } from "node:worker_threads";
+
+// No test reads this Mac's own iCloud ai-projects folder (t645): the
+// private-file guard looks there for an opted-in project with no folder
+// named, and here it finds a folder that does not exist. A test that wants
+// one names its own.
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
+// Nor this Mac's own ~/.config/atelier (t645): real runners keep their
+// config and locks there. Every test process gets a config folder of its
+// own under the temporary folder, removed when it exits; a test that wants
+// a config writes one there or names another. The private-file locks are
+// made beside the config, so they follow it.
+{
+  const dir = `${process.env.TMPDIR || "/tmp"}/atelier-tests-config-${process.pid}`;
+  process.env.ATELIER_CONFIG_DIR = dir;
+  process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
+}
 
 const FILE_LIMIT_MS = Number(process.env.ATELIER_TEST_FILE_LIMIT_MS ?? 10 * 60_000);
 const SYNC_TIMEOUT_MS = Number(process.env.ATELIER_TEST_SYNC_TIMEOUT_MS ?? 5 * 60_000);

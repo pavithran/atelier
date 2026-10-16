@@ -1,10 +1,103 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { foldPath } from '../src/rules.ts';
+
+// Prepare off to the side. Neither a failed fetch nor failed configuration
+// may disturb the old repository (including its index and unfinished merge).
+export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryRun = false }) {
+  const { git, request, name, id, p, print } = io;
+  const head = detail.item.head;
+  if (!head) return false;
+  if (!/^[a-f0-9]{40,64}$/.test(head)) throw new Error(`${id} has an invalid recorded head`);
+  const local = existsSync(join(dir, '.git'))
+    ? git(['rev-parse', '--verify', 'HEAD'], { cwd: dir, allowFail: true }).stdout?.trim() : null;
+  const configured = local === head && ['project', 'item', 'actor'].every(key => {
+    const value = git(['config', '--local', `atelier.${key}`], { cwd: dir, allowFail: true }).stdout?.trim();
+    return key === 'actor' ? !!value : value === (key === 'project' ? name : id);
+  });
+  if (configured) return false;
+  // A workspace that descends from the recorded head holds work the ledger
+  // has not seen (an orchestrator's fix committed in it, t549): replacing it
+  // would land, and review, the change without that work. Landing stops
+  // before the lease and asks for the push instead. A workspace without the
+  // recorded object cannot descend from it.
+  if (local && local !== head && git(['merge-base', '--is-ancestor', head, local], { cwd: dir, allowFail: true }).status === 0) {
+    const commits = git(['log', '--format=%h %s', `${head}..${local}`], { cwd: dir, allowFail: true }).stdout?.trim() ?? '';
+    throw new Error(`${id}'s workspace ${dir} holds ${countCommits(commits)} the recorded head ${head} lacks:\n${indent(commits)}\nPush them with atelier push (in ${dir}), then run atelier land ${id} again; landing stopped with the workspace untouched.`);
+  }
+  if (dryRun) {
+    print(`Would prepare ${id} from recorded source ${head}, preserving any existing workspace beside ${dir}.`);
+    return true;
+  }
+  mkdirSync(dirname(dir), { recursive: true });
+  const staging = mkdtempSync(`${dir}.prepare-`);
+  let backup = null;
+  try {
+    const read = await request('POST', `${itemPath}/read-token`, { scope: 'read' });
+    // Do not allow credentials embedded in a URL to reach saved config.
+    if (!read.remote || /[\r\n\0]/.test(read.remote) || /:\/\/[^/]*@/.test(read.remote)) throw new Error('invalid fork remote');
+    git(['init', '--quiet', staging]);
+    try {
+      git(['fetch', '--quiet', '--no-tags', read.remote, head], { cwd: staging, token: read.token });
+      const fetched = git(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { cwd: staging });
+      if (fetched !== head) throw new Error('wrong commit');
+    } catch {
+      // Git and network errors can echo authentication headers; report only
+      // the public revision, never the credential-bearing diagnostic.
+      throw new Error(`${id}'s recorded commit ${head} is unavailable; the original workspace is untouched`);
+    }
+    const branch = read.defaultBranch ?? p.branch;
+    git(['checkout', '--quiet', '-b', branch, head], { cwd: staging });
+    git(['remote', 'add', 'origin', read.remote], { cwd: staging });
+    const actor = detail.item.owner || io.owner;
+    if (!actor) throw new Error(`${id} has no actor for the prepared workspace`);
+    const config = { 'atelier.project': name, 'atelier.item': id, 'atelier.actor': actor, 'atelier.branch': branch,
+      'atelier.prepare': JSON.stringify(detail.policy?.prepare ?? null) };
+    const identity = detail.policy?.commitIdentity;
+    for (const key of ['name', 'email']) {
+      const value = identity?.[key] ?? git(['config', '--local', `user.${key}`], { cwd: p.path, allowFail: true }).stdout?.trim();
+      if (value) config[`user.${key}`] = value;
+    }
+    for (const [key, value] of Object.entries(config)) git(['config', '--local', key, value], { cwd: staging });
+    if (identity) writeFileSync(join(staging, '.git', 'atelier-identity.json'), `${JSON.stringify(identity)}\n`);
+    const current = (await request('GET', itemPath)).item;
+    if (current.head !== head || current.owner !== detail.item.owner || current.state !== detail.item.state) throw new Error(`${id} changed while preparing recorded head ${head}; retry landing`);
+    // The commits a diverged workspace holds that the recorded head lacks,
+    // read in the staging repository (fetching the workspace's HEAD there)
+    // so the original gains no objects; the backup is named with them.
+    let held = '';
+    if (local) {
+      const from = git(['fetch', '--quiet', '--no-tags', dir, local], { cwd: staging, allowFail: true });
+      if (from.status === 0) held = git(['log', '--format=%h %s', local, '--not', head], { cwd: staging, allowFail: true }).stdout?.trim() ?? '';
+    }
+    if (existsSync(dir)) {
+      // A same-volume rename preserves every byte, even ignored files,
+      // local-only objects and the merge index. A failed rename leaves the
+      // original untouched; no copying or deletion fallback is safe here.
+      const slot = mkdtempSync(`${dir}.backup-`);
+      backup = join(slot, 'workspace');
+      try { (io.renameWorkspace ?? renameSync)(dir, backup); }
+      catch { rmSync(slot, { recursive: true, force: true }); throw new Error(`could not preserve ${dir}; landing stopped with the original untouched`); }
+      print(`Preserved ${id}'s previous workspace at ${backup}.`);
+      if (held) print(`It has diverged from the recorded head ${head} and holds ${countCommits(held)} the recorded head lacks:\n${indent(held)}\nRecover them from ${backup} if they belong to ${id}.`);
+    }
+    try { (io.renameWorkspace ?? renameSync)(staging, dir); }
+    catch {
+      throw new Error(`could not install the prepared workspace${backup ? `; the original is preserved at ${backup}` : ''}`);
+    }
+    print(`Prepared ${id} at recorded source ${head} in ${dir}.`);
+    return true;
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+const countCommits = (log) => { const n = log.split('\n').length; return `${n} commit${n === 1 ? '' : 's'}`; };
+const indent = (log) => log.split('\n').map(line => `  ${line}`).join('\n');
 
 // A landing's lock and journal live under the CLI's cache, in a directory per
 // checkout, never inside the checkout's Git directory. The owner's checkout
@@ -262,6 +355,14 @@ export function executablePaths(cwd, env = process.env) {
     const origin = listed[i], newline = listed[i + 1].indexOf('\n');
     const key = newline < 0 ? listed[i + 1] : listed[i + 1].slice(0, newline), value = newline < 0 ? '' : listed[i + 1].slice(newline + 1);
     if (origin.startsWith('file:')) add(origin.slice('file:'.length), 'a Git configuration file this checkout includes');
+    // The file an include.path or includeIf.*.path names, whether or not it
+    // exists yet or its condition holds: a change that adds it there would
+    // define any of the settings below (Astra's fourth review of t644). A
+    // relative path is read from the folder of the file that names it.
+    if (/^include(if\..+)?\.path$/.test(key) && value) {
+      const from = origin.startsWith('file:') ? dirname(resolve(top, origin.slice('file:'.length))) : top;
+      add(value === '~' || value.startsWith('~/') ? join(homedir(), value.slice(1)) : resolve(from, value), 'a Git configuration file this checkout includes');
+    }
     if (key === 'core.hookspath') hooksPathSet = true;
     if (COMMAND_SETTING.test(key)) for (const word of commandWords(value)) add(fromTop(word), `named by ${key}`);
   }
@@ -288,6 +389,10 @@ export function touchedExecutables(changed, executables) {
     return by.length ? [{ path, setting, changed: by }] : [];
   });
 }
+
+// The executable paths a change reaches, as a refusal names them: each path
+// and the setting that runs it, or the changed paths that reach it.
+export const describeTouched = (runs) => runs.map((r) => r.changed.length === 1 && r.changed[0] === r.path ? `${r.path}, ${r.setting}` : `${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ');
 
 // The paths a landing reads or writes in the ControlPlane folder: its policy
 // files, read at every merge and sync; the receipt template; the receipts

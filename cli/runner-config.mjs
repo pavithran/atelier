@@ -17,7 +17,11 @@ export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 // for reviews alone (t252) and a config that wants both lists "build" and its
 // kin beside "review".
 export const DEFAULT_JOBS = ["build", "plan", "merge-main", "merge-main-task", "merge-plan"];
-const JOB_NAMES = new Set([...DEFAULT_JOBS, "review"]);
+// task-resolve, a resolver's job on a refresh's mechanical conflicts (t462),
+// is taken only by a runner whose config names it, as review is.
+// The criteria-review job (t438) reviews a task's acceptance criteria before
+// its build, through the same {verdict_file} a review writes.
+const JOB_NAMES = new Set([...DEFAULT_JOBS, "review", "criteria-review", "task-resolve"]);
 
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
@@ -137,7 +141,7 @@ export function parseConfig(json, { configPath, env } = {}) {
         // The owner's own credential (API_TOKEN, or a name the store reads
         // from ATELIER_TOKEN) is not a reviewer's token: naming it would have
         // the owner record the review, which is what `tokens` exists to prevent.
-        else if (isOwnerSecretName(where)) errors.push(`tokens.${model} must not name the owner's token (${where.toUpperCase()}): a review is recorded only by the reviewer's own agent token (atelier token issue --as AGENT/${model}, then store that token under a name of its own)`);
+        else if (isOwnerSecretName(where)) errors.push(`tokens.${model} must not name the developer's token (${where.toUpperCase()}): a review is recorded only by the reviewer's own agent token (atelier token issue --as AGENT/${model}, then store that token under a name of its own)`);
         else tokens[model] = where;
       }
     }
@@ -159,8 +163,8 @@ export function parseConfig(json, { configPath, env } = {}) {
     else {
       jobs = [...new Set(value.jobs.map((j) => j.trim()))];
       for (const job of jobs) {
-        if (job === "integrate" || job === "refresh") errors.push(`jobs cannot list "${job}": the integrate and refresh jobs are the integrator's alone (atelier runner --integrate, which takes no config)`);
-        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan and review`);
+        if (job === "integrate" || job === "refresh" || job === "task-refresh") errors.push(`jobs cannot list "${job}": the integrate, refresh and task-refresh jobs are the integrator's alone (atelier runner --integrate, which takes no config)`);
+        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan, review, criteria-review and task-resolve`);
       }
     }
   }
@@ -191,7 +195,8 @@ export function parseConfig(json, { configPath, env } = {}) {
       if (/[{}]/.test(entry.command[0])) bad("the executable must not contain placeholders");
       // A runner that offers reviews may be given one for any of its agents,
       // and a reviewer's verdict is read from the {verdict_file} it writes.
-      if (jobs?.includes("review") && !placeholders.includes("verdict_file")) bad(`jobs include "review", but ${entry.agent}'s command has no {verdict_file} placeholder, so it could not write a verdict; add one, or take "review" out of jobs`);
+      const verdictJob = ["review", "criteria-review"].find((job) => jobs?.includes(job));
+      if (verdictJob && !placeholders.includes("verdict_file")) bad(`jobs include "${verdictJob}", but ${entry.agent}'s command has no {verdict_file} placeholder, so it could not write a verdict; add one, or take "${verdictJob}" out of jobs`);
     }
     // Optional: the variables of the runner's environment this harness also
     // gets, such as the provider key opencode reads. Atelier's own never.

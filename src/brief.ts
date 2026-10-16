@@ -5,6 +5,7 @@
 
 import { bindingOf, DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, independentReviewerText, mergedBlockers, modelOf, recordedText, singleFamily, stateLabel, type Review } from "./rules.ts";
 import { assertLength } from "./text.ts";
+import { readyToAccept } from "./landing-verdict.ts";
 import { criteriaOf } from "./criteria.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import type { Detail } from "./ui.ts";
@@ -25,8 +26,29 @@ export interface Brief {
   accept: string[];
   partAccept: string[] | null;
   criteria: string;
+  // Where the review of the criteria themselves stands (t438): one line,
+  // from the detail's criteriaReview, or null when the server sends none.
+  criteriaReview: string | null;
   evidence: string[];
   recommendation: { verdict: Verdict; reason: string };
+  // The project's prose standard (src/prose-standard.ts, t675), which
+  // `atelier show` names for the agent that reads the brief before building;
+  // null, or absent from an older server, when the project has none.
+  proseStandard?: string | null;
+}
+
+// One line on the criteria review (t438): whether the project requires it,
+// and where it stands, as criteriaStatus words it.
+export function criteriaReviewLine(view: Detail["criteriaReview"] | undefined): string | null {
+  if (!view) return null;
+  const standing = view.status.approved ? `approved: ${view.status.reason}` : view.status.reason;
+  // The criteria the review flagged as checks after deploy (t457): the
+  // builder cannot verify them in its workspace, and is told so here.
+  const checks = view.checks ?? [];
+  const flagged = checks.length
+    ? `; checks after deploy, not verified in the builder's workspace: ${checks.map((c) => `criterion ${c.criterion} (${c.by === "owner" ? "the developer's" : "the orchestrator's"}: ${c.text})`).join("; ")}`
+    : "";
+  return `${view.required ? "required before a build is dispatched or claimed; " : "not required by the project; "}${standing}${flagged}`;
 }
 
 export const SUMMARY_MAX = 600;
@@ -43,6 +65,15 @@ export function cleanSummary(v: unknown): string | undefined {
 
 // The latest submission for this head decides the summary: a later submit
 // without one leaves none. Events arrive newest first, but order by seq anyway.
+// The events a task page block is defined by: `defining` (read by kind, any
+// age) with the recent window, newest first; the window alone where a page is
+// drawn without a ledger (t661).
+export function definingOf(d: { events: LedgerEvent[]; defining?: LedgerEvent[] }): LedgerEvent[] {
+  if (!d.defining) return d.events;
+  const seen = new Set<number>();
+  return [...d.defining, ...d.events].filter((ev) => !seen.has(ev.seq) && !!seen.add(ev.seq)).sort((a, b) => b.seq - a.seq);
+}
+
 export function submission(events: LedgerEvent[], itemId: string, head: string | null): { summary: string; by: string } | null {
   if (!head) return null;
   const last = events
@@ -56,12 +87,12 @@ export function submission(events: LedgerEvent[], itemId: string, head: string |
 const WHERE_LABEL = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" } as const;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 // The project owner is not a model; the gate keeps them apart, and so do these lines.
-const reviewer = (d: Detail, by: string) => (by === (d.ownerActor ?? DEFAULT_OWNER) ? "the project owner" : modelOf(by));
+const reviewer = (d: Detail, by: string) => (by === (d.ownerActor ?? DEFAULT_OWNER) ? "the developer" : modelOf(by));
 // Only "the project owner" opens a sentence in capitals; a model keeps its own spelling.
 const upper = (s: string) => (s.startsWith("the ") ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events): Brief {
+export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(detail)): Brief {
   const { item, policy, gate } = detail;
   const view = evidenceAt(policy, detail.evidence, item.head);
   const reviews = countingReviews(detail.reviews, bindingOf(item), policy, detail.ownerActor ?? DEFAULT_OWNER);
@@ -108,9 +139,9 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     .pop() ?? item.lastPushAt;
   const unanswered = rejections.filter((r) => !(pushed && pushed > r.at));
   if (unanswered.length) {
-    const models = [...new Set(unanswered.filter((r) => reviewer(detail, r.by) !== "the project owner").map((r) => modelOf(r.by)))];
+    const models = [...new Set(unanswered.filter((r) => reviewer(detail, r.by) !== "the developer").map((r) => modelOf(r.by)))];
     const asked = [
-      ...(unanswered.some((r) => reviewer(detail, r.by) === "the project owner") ? ["the project owner"] : []),
+      ...(unanswered.some((r) => reviewer(detail, r.by) === "the developer") ? ["the developer"] : []),
       ...(models.length > 1 ? [`${models.length} models (${models.join(", ")})`] : models),
     ];
     const who = upper(asked.join(" and "));
@@ -121,11 +152,11 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     const shown = gate.outOfScope.slice(0, 3).join(", ");
     lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
-  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Project owner acceptance is required.` });
+  if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Developer acceptance is required.` });
   const single = singleFamily(policy);
   if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
   const overridden = overrideOf(detail);
-  if (overridden) lines.push({ rank: -1, text: `The project owner overrode the independent review at this revision: ${clip(overridden.reason, 200).replace(/[.\s]*$/, "")}.` });
+  if (overridden) lines.push({ rank: -1, text: `The developer overrode the independent review at this revision: ${clip(overridden.reason, 200).replace(/[.\s]*$/, "")}.` });
   if (view.reports.length) lines.push({ rank: 3, text: `${plural(view.reports.length, "report")} recorded, not verified.` });
   while (lines.length > 5) {
     let drop = 0;
@@ -157,8 +188,10 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     accept: item.accept ?? [],
     partAccept: item.partAccept ?? null,
     criteria: criteriaOf(item),
+    criteriaReview: criteriaReviewLine(detail.criteriaReview),
     evidence: lines.map((l) => l.text),
     recommendation,
+    proseStandard: policy.proseStandard ?? null,
   };
 }
 
@@ -196,12 +229,12 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   }
   if (item.state === "merged" || item.state === "abandoned") {
     // A merged task's own event carries the merge commit, when the record has it.
-    const merge = d.events.find((ev) => ev.itemId === item.id && ev.kind === "item.merged");
+    const merge = definingOf(d).find((ev) => ev.itemId === item.id && ev.kind === "item.merged");
     const commit = typeof merge?.data.mergeCommit === "string" ? merge.data.mergeCommit : "";
     const closed = item.state === "abandoned" ? "abandoned" : commit ? `merged as ${commit.slice(0, 8)}` : "merged";
     return { verdict: "none", reason: `The task is closed (${closed}), so nothing is waiting on you.` };
   }
-  if (item.state === "submitted" && gate.ready) {
+  if (readyToAccept(d)) {
     return {
       verdict: "accept",
       reason: p.total ? `${p.passed} of ${p.total} required checks passed at this revision and nothing blocks it.`

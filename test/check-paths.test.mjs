@@ -7,11 +7,14 @@ import { runInNewContext } from "node:vm";
 // of them runs here as a script, so without the keyword.
 const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8").replace(/^export (?=(async )?function |const |let )/gm, "");
 const mergeSource = readFileSync(new URL("../cli/commands/merge.mjs", import.meta.url), "utf8");
+// Each clone gets its merge configuration (t463) before anything merges in it.
+const installed = [];
 function cleanClone(git) {
   const code = source.slice(source.indexOf("function cleanClone("), source.indexOf("async function runCheck("));
   return runInNewContext(`${code}; cleanClone`, {
     git, CACHE: "cache", mkdirSync() {}, mkdtempSync: () => "clone", writeFileSync() {},
     join: (...parts) => parts.join("/"), markerPath: (dir) => dir, process: { pid: 1 }, auth: () => [],
+    installMergeConfig: (dir) => { installed.push(dir); return []; },
   });
 }
 
@@ -24,6 +27,7 @@ test("check measures both sides of a protected rename", () => {
     }
   });
   assert.deepEqual(Array.from(clone("remote", "token", "head", { remote: "base" }, "project").changed), ["AGENTS.md", "docs/agents.md"]);
+  assert.equal(installed.at(-1), "clone");
 });
 
 test("failed or unavailable path measurements send no list", () => {

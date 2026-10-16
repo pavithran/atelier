@@ -1,15 +1,17 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { runnerCredential, runnerChildEnv, storeRunnerCredential } from "./credentials.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { runRunner, planFilePath } from "./runner.mjs";
 import { readMovedCodeRecords } from "./landing.mjs";
 
-const root = resolve(".cache/runner-token-tests");
-mkdirSync(root, { recursive: true });
+// Scratch lives under the system temp folder and goes with the run (t640).
+const root = mkdtempSync(join(tmpdir(), "atelier-runner-token-tests-"));
+after(() => rmSync(root, { recursive: true, force: true }));
 function fixture(t) {
   const dir = mkdtempSync(join(root, "test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -77,7 +79,7 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
   const actor = "claude-code/gpt-6-astra";
   const assignment = { project: "demo", actor, agent: "claude-code", model: "gpt-6-astra", item: { id: "t1", title: "Change", scope: ["src/**"], accept: ["works"], ...(job === "plan" ? { kind: "plan", dispatch: { job: "plan" } } : {}) } };
-  const calls = [], gitCalls = [], logs = [];
+  const calls = [], gitCalls = [], logs = [], settings = new Map();
   let headReads = 0, posted = false, harness = false, finish = null;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config, once: true }, {
     credential: token, workspacePath: () => workspace, load: () => 0, cores: () => 4,
@@ -114,9 +116,15 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
         if (argv[1] === "rev-list") return { code: 0, output: argv.includes("--first-parent") ? `${mainHead}\n` : "", stderr: "" };
         if (argv[1] === "diff-tree") assert.equal(options.env.GIT_CONFIG_COUNT, "0", "the comparison reads the trees with git's diff output pinned (DETECTOR_ENV)");
         if (argv[1] === "rev-parse" && argv.includes("--absolute-git-dir")) return { code: 0, output: `${gitDir}\n`, stderr: "" };
+        // The merge pipeline (t463) installs the clone's merge drivers
+        // through the same git: the common dir holds the driver's copy, and
+        // the settings it writes are read back.
+        if (argv[1] === "rev-parse" && argv.includes("--git-common-dir")) return { code: 0, output: `${gitDir}\n`, stderr: "" };
+        if (argv[1] === "config" && argv[3] === "--get") return settings.has(argv[4]) ? { code: 0, output: `${settings.get(argv[4])}\n`, stderr: "" } : { code: 1, output: "", stderr: "" };
+        if (argv[1] === "config") { settings.set(argv[3], argv[4]); return { code: 0, output: "", stderr: "" }; }
         if (argv[1] === "rev-parse" && argv.includes("MERGE_HEAD")) return { code: 1, output: "", stderr: "" };
         if (argv[1] === "rev-parse") return { code: 0, output: `${mainHead}\n`, stderr: "" };
-        if (argv[1] === "merge") assert.deepEqual(argv.slice(2), ["--no-ff", "--no-edit", "-m", `Merge main at ${mainHead.slice(0, 8)} into t1\n\nAgent: ${actor}`, "FETCH_HEAD"]);
+        if (argv[1] === "merge") assert.deepEqual(argv.slice(2), ["--no-ff", "--no-commit", "--no-edit", "-m", `Merge main at ${mainHead.slice(0, 8)} into t1\n\nAgent: ${actor}`, "FETCH_HEAD"]);
       } else {
         harness = true;
         assert.equal(argv[0], "stub-harness");
@@ -128,14 +136,16 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
     },
   });
   assert.ok(harness);
-  assert.deepEqual(calls, job === "plan" ? ["claim", "release"] : ["claim", "baseline-token", "finish"]);
+  assert.deepEqual(calls, job === "plan" ? ["claim", "release"] : ["claim", "baseline-token", "finish"], logs.join("\n"));
   // The landing's merge (fetch, main's head, whether HEAD holds it; the
   // moved-code comparison: the build's head, the merge base, main's and the
   // build's trees, the git dir its log goes to; the fork point and the
-  // commits from main, the no-ff merge, the route-level comparison, the
+  // commits from main; the merge pipeline's (t463): its drivers' settings
+  // read, written and read back in the common Git dir, the two heads, the
+  // no-ff merge and the Git dir it looks for a merge in; the route-level comparison, the
   // merged head), then the runner's own checks of the result (no conflict,
   // no merge pending, main's head and the build's head both in HEAD's history).
-  assert.deepEqual(gitCalls, job === "plan" ? [] : ["fetch", "rev-parse", "merge-base", "rev-parse", "merge-base", "diff-tree", "diff-tree", "rev-parse", "merge-base", "rev-list", "merge", "rev-list", "merge-base", "rev-parse", "diff", "rev-parse", "merge-base", "merge-base"]);
+  assert.deepEqual(gitCalls, job === "plan" ? [] : ["fetch", "rev-parse", "merge-base", "rev-parse", "merge-base", "diff-tree", "diff-tree", "rev-parse", "merge-base", "rev-list", "rev-parse", ...Array(12).fill("config"), "rev-parse", "rev-parse", "merge", "rev-parse", "rev-list", "merge-base", "rev-parse", "diff", "rev-parse", "merge-base", "merge-base"]);
   assert.deepEqual(readMovedCodeRecords(gitDir).map((r) => r.kind), job === "plan" ? [] : ["compared"], "the comparison is logged in the workspace, as a landing's is");
   assert.deepEqual(finish, job === "plan" ? null : ["finish", "t1", "--project", "demo", "--as", actor, "--summary", `Built t1 with main at ${mainHead} merged`]);
   assert.equal(posted, job === "plan");

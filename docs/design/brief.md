@@ -11,50 +11,39 @@ seeded fixture (`test/fixtures/design/`) by `npm run design:capture`.
 
 ## 1. Constraints a redesign keeps
 
-1. **One vocabulary and palette B (t367).** A task state has one name
-   everywhere it is shown, and the redesign uses palette B, not today's
-   tokens. Palette B is fixed here at
-   the values of t367's `src/theme.css` (t367 read with `atelier show` on
-   2026-10-11: submitted at head 7d64b297, not yet merged; its criterion 3:
-   "near-black ground, #4d8bff the only accent, company colours only inside
-   charts and the ledger chart's legend; no copper or brown remains"). t367's
-   vocabulary is the five steps (Claim, Fork, Prove, Review, Land); the
-   plan names task states as section 5 below says. The mockups
-   (`mockups/mockup.css`) already draw palette B. Today's tokens in
-   `src/theme.css` (Night: gold accent, orange caution) are the "before",
-   measured in [contrast.md](contrast.md); production CSS is not changed by
-   this task. Colour never carries a state alone: each state has a word, and
-   on graphs a shape (DESIGN.md, "Marks on a lane").
+1. **One vocabulary and the Night palette (t367, d24).** A task state has
+   one name everywhere it is shown, and the redesign keeps the Night palette
+   of `src/theme.css` and `src/layout.css`, as the owner decided on
+   2026-10-11 (d24: keep Night; the blue "palette B" an earlier draft of
+   this brief proposed is dropped). The values below are those files'
+   as they are, and the mockups (`mockups/mockup.css`) draw them. t367's
+   vocabulary is the five steps (Claim, Fork, Prove, Review, Land); the plan
+   names task states as section 5 below says. Production CSS is not changed
+   by this task. Colour never carries a state alone: each state has a word,
+   and on graphs a shape (DESIGN.md, "Marks on a lane").
 
    | Role | Token | Dark (default) | Light (`prefers-color-scheme: light`) |
    |---|---|---|---|
-   | Page ground | `--surface`, `--shell` | `#0a0a0f` | `#f7f7fa`, `#f0f0f5` |
-   | Sheet, card | `--surface-raised` | `#12121a` | `#ffffff` |
-   | Selected row, tag | `--inset` | `#1a1a24` | `#ececf2` |
-   | Rules | `--line`, `--line-bright` | `#262633`, `#3a3a4a` | `#d6d6e0`, `#a8a8b8` |
-   | Body text | `--text` | `#ececf2` | `#14141c` |
-   | Headings | `--text-bright` | `#ffffff` | `#05050a` |
-   | Secondary, meta | `--text-muted`, `--text-dim` | `#a0a0b0`, `#8e8e9e` | `#50505f`, `#5a5a6a` |
-   | **The one accent** (links, primary action, owner, "ask") | `--signal` | **`#4d8bff`** | `#1d59c9` |
-   | Focus ring, hover | `--signal-hot` | `#7aa8ff` | `#1a52bd` |
-   | Caution (waiting, stale): a tint of the accent, no second hue | `--caution` | `#9cbcff` | `#1a52bd` |
-   | Observed pass, merged, diff addition (green, only these) | `--observed` | `#4fd18b` | `#166a3c` |
-   | Failure, rejection, diff deletion, destructive action (red, only these) | `--fault` | `#ff5a5f` | `#b0222a` |
-   | Text on the accent | `--on-accent` | `#0a0a0f` | `#ffffff` |
-   | Company colours, inside charts and the chart legend only | `--m-anthropic`, `--m-openai`, `--m-zai`, `--m-google`, `--m-qwen` | `#ff8a5b`, `#3fe0b0`, `#6f9bff`, `#ff8fcf`, `#b5e55c` | `#a5401a`, `#0a6e53`, `#2f56c9`, `#a92e75`, `#446b10` |
+   | Page ground | `--surface`, `--shell` | `#07090c`, `#0a0e13` | `#f6f4ee`, `#ebe8df` |
+   | Sheet, card | `--surface-raised` | `#0c1015` | `#eeebe2` |
+   | Selected row, tag | `--inset` | `#121a24` | `#e4e0d5` |
+   | Rules | `--line`, `--line-bright` | `#1c232c`, `#2c3744` | `#cfcabd`, `#a39d8f` |
+   | Body text | `--text` | `#eef2f5` | `#14181d` |
+   | Headings | `--text-bright` | `#ffffff` | `#05070a` |
+   | Secondary, meta | `--text-muted`, `--text-dim` | `#8f9cab`, `#7d8a98` | `#4b5562`, `#55606d` |
+   | **Gold**: links, primary action, owner, "ask" | `--signal` | **`#ffd166`** | `#735200` |
+   | Focus ring, hover | `--signal-hot` | `#ffdf8f` | `#6b4b00` |
+   | **Orange**: caution (waiting, stale, warning) | `--caution` | **`#ffb547`** | `#7d4d00` |
+   | Observed pass, merged, diff addition (green, only these) | `--observed` | `#5fe08f` | `#185a33` |
+   | Failure, rejection, diff deletion, destructive action (red, only these) | `--fault` | `#ff4d74` | `#9e1539` |
+   | Text on the accent | `--on-accent` | `#07090c` | `#fffaf0` |
+   | Company colours, in charts, lane threads and graph marks only | `--m-anthropic`, `--m-openai`, `--m-zai`, `--m-google`, `--m-qwen` | `#ff8a5b`, `#3fe0b0`, `#6f9bff`, `#ff8fcf`, `#b5e55c` | `#983b18`, `#09654c`, `#2c50bb`, `#9b2a6c`, `#3f620f` |
 
-   No gold, orange, copper or brown is used. Contrast of palette B's text
-   roles, computed for this brief with the WCAG 2.2 formula (normal text
-   needs 4.5:1), on page / sheet / inset: dark `--text-dim` 6.13 / 5.78 /
-   5.35, `--signal` 6.07 / 5.72 / 5.30, `--fault` 6.47 / 6.10 / 5.65,
-   `--observed` 10.18 / 9.60 / 8.89, `--caution` 10.39 / 9.80 / 9.08; light
-   `--text-dim` 6.32 / 6.76 / 5.75, `--signal` 5.91 / 6.32 / 5.37, `--fault`
-   6.32 / 6.76 / 5.74, `--observed` 6.21 / 6.64 / 5.65, `--caution` 6.58 /
-   7.03 / 5.98; text on the accent 6.07 (dark) and 6.32 (light). The five
-   light company colours are 5.30 or more on every light surface, so F17
-   does not recur under palette B. Because `--caution` and `--signal` are
-   both blue, the "ask" and "caution" tags differ by word and shape (◆, ▲),
-   never by hue alone.
+   The measured contrast of every role on each surface is in
+   [contrast.md](contrast.md), generated from the tokens. Every text role
+   passes 4.5:1 in both schemes. Because gold and orange are both warm, the
+   "ask" and "caution" tags differ by word and shape (◆, ▲), never by hue
+   alone.
 2. **Server rendering.** Every page is HTML from the Worker, complete without
    script. Every action is a form post bound to the revision on screen. The
    only script is `/live.js`, first party, under a per-request nonce, on the

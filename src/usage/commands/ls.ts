@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Items", line: 2, slot: 10,
       form: "ls [--all] [--json]",
-      about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them.",
+      about: "Lists the project's tasks with state, holder and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them.",
     },
   ],
   flags: { all: true, json: true },

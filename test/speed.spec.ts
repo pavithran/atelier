@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { SpeedRecord } from "../src/models/speed.ts";
+import type { ModelSpeed, SpeedRecord } from "../src/models/speed.ts";
 import { renderModels, speedSection } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 
@@ -53,10 +53,11 @@ it("GET /api/reliability carries each model's speed over the stated window, and 
   expect(page).toContain("1 of 2 runs stalled (50%)");
 });
 
+const NO_ROLES = Object.fromEntries(["review", "security-review", "claims-review", "plan"].map((r) => [r, { n: 0, median: null, runs: 0, stalled: 0 }])) as ModelSpeed["byRole"];
 const SAMPLE: SpeedRecord = {
   days: 14, since: "2026-09-23T12:00:00.000Z", until: "2026-10-07T12:00:00.000Z", minSamples: 3, models: [
-    { model: "gpt-6-astra", actors: [GPT], build: { n: 0, median: null, runs: 0, stalled: 0 }, review: { n: 1, median: null, runs: 1, stalled: 0 }, task: { n: 0, median: null } },
-    { model: "opus-5.5", actors: [OPUS], build: { n: 3, median: 1200, runs: 4, stalled: 1 }, review: { n: 0, median: null, runs: 0, stalled: 0 }, task: { n: 3, median: 5400 } },
+    { model: "gpt-6-astra", actors: [GPT], build: { n: 0, median: null, runs: 0, stalled: 0 }, review: { n: 1, median: null, runs: 1, stalled: 0 }, task: { n: 0, median: null }, byRole: NO_ROLES },
+    { model: "opus-5.5", actors: [OPUS], build: { n: 3, median: 1200, runs: 4, stalled: 1 }, review: { n: 0, median: null, runs: 0, stalled: 0 }, task: { n: 3, median: 5400 }, byRole: NO_ROLES },
   ],
 };
 

@@ -8,7 +8,7 @@ import { OWNER, P, actingHeaders, args, at, call, die, project } from "../atelie
 export default async function decideCommand() {
   const text = args._[1];
   if (args._.length !== 2 || !text?.trim()) die(COMMAND_USAGE.decide);
-  if (typeof args.quote !== "string" || !args.quote.trim()) die(`a decision needs the owner's words: atelier decide "text" --quote "what the owner said"`);
+  if (typeof args.quote !== "string" || !args.quote.trim()) die(`a decision needs the developer's words: atelier decide "text" --quote "what the developer said"`);
   const name = project();
   const d = await call("POST", `${P(name)}/decisions`, { text, quote: args.quote }, OWNER, actingHeaders());
   console.log(`${d.id}: recorded ${d.at.slice(0, 10)} for ${name}. Every review brief of ${name} and atelier guide --role orchestrate --project ${name} carry it. To withdraw it: atelier decisions withdraw ${d.id} --note "why"`);

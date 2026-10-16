@@ -11,6 +11,10 @@
 //   atelier decisions withdraw dN --as H/M   decision.withdrawn
 //   atelier accept|merge ID --override-review "..." --as H/M
 //                                            review.overridden
+//   atelier models assign ROLE H/M... --as H/M
+//                                            assignment.recorded (t622)
+//   atelier models roles withdraw aN --as H/M
+//                                            assignment.withdrawn
 //
 // The CLI sends the name in X-Atelier-Acting (ACTING_HEADER), and the Worker
 // checks it with cleanActing and registeredActing before any route runs: it
@@ -41,6 +45,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { modelKey, RuleError, sameActor, validActor } from "../rules.ts";
+import { entryNamed, storedActor } from "./identity.ts";
 import type { ModelEntry } from "./pool.ts";
 import { SERVED } from "./served.ts";
 
@@ -48,7 +53,7 @@ export const ACTING_HEADER = "x-atelier-acting";
 export const JUDGEMENT_WINDOW_DAYS = 90;
 
 // The events an acting model is recorded on, and the commands that write them.
-export const ACTING_EVENTS = ["review.finding", "decision.recorded", "decision.withdrawn", "review.overridden"] as const;
+export const ACTING_EVENTS = ["review.finding", "decision.recorded", "decision.withdrawn", "review.overridden", "assignment.recorded", "assignment.withdrawn"] as const;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const isModel = (a: string, owner: string) => a !== owner && a.includes("/") && !a.startsWith("atelier/") && validActor(a);
@@ -60,33 +65,42 @@ const isModel = (a: string, owner: string) => a !== owner && a.includes("/") && 
 // than recorded as unknown, so a typo never hides who acted.
 export function cleanActing(header: string | null, owner: string, agentToken: boolean): string | null {
   if (header === null) return null;
-  if (agentToken) throw new RuleError("acting_owner_only", "X-Atelier-Acting is for the owner token; an agent token already names its actor", 403);
+  if (agentToken) throw new RuleError("acting_owner_only", "X-Atelier-Acting is for the developer token; an agent token already names its actor", 403);
   const acting = header.trim();
-  if (!isModel(acting, owner)) throw new RuleError("bad_acting", "X-Atelier-Acting (atelier --as) must name the harness/model acting for the owner, such as claude-code/opus-5.5", 400);
+  if (!isModel(acting, owner)) throw new RuleError("bad_acting", "X-Atelier-Acting (atelier --as) must name the harness/model acting for the developer, such as claude-code/opus-5.5", 400);
   return acting;
 }
 
-// The declared acting model must name a model registered in the owner's pool,
-// by its harness and its id or an alias (sameActor: letter case and a
-// ":profile" suffix make no other model). It is kept as declared.
+// The declared acting model (--as) is a name a person types, so it is
+// converted here, where it enters, to the exact pool entry it names: by its
+// id, or the one entry listing it as an alias (entryNamed), or the one entry
+// whose id is the same model in its harness (a ":profile" or letter case).
+// Two entries answering to it are ambiguous and refused, as an ambiguous
+// assignment choice is (gpt-6-astra's sixth review of t622, finding 1); a
+// name no entry answers to is refused. What is recorded is the entry's
+// exact harness/id (the eighth review's rule, src/models/pool.ts).
 export function registeredActing(acting: string, pool: PoolNames): string {
-  if (pool.some((m) => [m.id, ...m.aliases].some((id) => sameActor(acting, `${m.harness}/${id}`)))) return acting;
+  let named;
+  try { named = entryNamed(pool, acting); } catch (err) {
+    if (err instanceof RuleError) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}: ${err.detail}`, 400);
+    throw err;
+  }
+  if (named) return `${named.harness}/${named.id}`;
+  const found = pool.filter((m) => sameActor(acting, `${m.harness}/${m.id}`));
+  if (found.length > 1) throw new RuleError("ambiguous_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which names more than one model in the pool; use its exact harness/id`, 400);
+  if (found.length === 1) return `${found[0].harness}/${found[0].id}`;
   throw new RuleError("unregistered_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which is not a model in the pool; add it on the Models page, or name the harness/model you are`, 400);
 }
 
-// The model an acting name counts as: the registered pool entry it names, by
-// its id or one of its aliases, so a model declared under an alias the owner
-// registered is the same model as under its id, in one row and never another
-// hand agreeing with itself. The entry in the declared harness is preferred;
-// a name no entry knows is read by modelKey alone. The declared name is kept
-// in the row's actors; only counting and agreement use this.
+// The model a legacy acting name counts as: one recorded before names were
+// converted where typed may hold an alias, read through storedActor. An
+// event recorded since is marked actingExact and is read by modelKey alone
+// (buildJudgement), never through the aliases. The declared name is kept in the row's actors; only
+// counting and agreement use this.
 export type PoolNames = readonly Pick<ModelEntry, "id" | "harness" | "aliases">[];
 
 export function canonicalModel(acting: string, pool: PoolNames): string {
-  const names = (m: PoolNames[number]) => [m.id, ...m.aliases];
-  const entry = pool.find((m) => names(m).some((id) => sameActor(acting, `${m.harness}/${id}`)))
-    ?? pool.find((m) => names(m).some((id) => modelKey(`${m.harness}/${id}`) === modelKey(acting)));
-  return entry ? modelKey(`${entry.harness}/${entry.id}`) : modelKey(acting);
+  return modelKey(storedActor(pool, acting));
 }
 
 // The acting model an event records, or null: unknown for an event recorded
@@ -177,8 +191,8 @@ export interface ActingJudgement {
   contradicted: number;          // a later verdict disagreed, or a defect named it
   unresolved: number;            // neither: no outcome is known
   contradictions: Contradiction[];
-  decisionsRecorded: number;     // standing decisions it recorded for the owner
-  decisionsWithdrawn: number;
+  decisionsRecorded: number;     // standing decisions and role assignments it recorded for the owner
+  decisionsWithdrawn: number;    // and withdrew
   overrides: number;             // reviews it overrode for the owner
 }
 
@@ -195,9 +209,14 @@ const blank = (model: string | null): ActingJudgement => ({ model, actors: [], v
 export function buildJudgement(projects: readonly { project: string; events: readonly LedgerEvent[] }[], window: JudgementWindow, owner: string, pool: PoolNames = []): JudgementRecord {
   const models = new Map<string, ActingJudgement>();
   const unknown = blank(null);
-  const of = (acting: string | null): ActingJudgement => {
+  // An acting name marked exact (actingExact, recorded since names are
+  // converted where typed) is read as it is; only an unmarked one, from
+  // before, goes through the aliases (canonicalModel).
+  const keyOf = (e: Pick<LedgerEvent, "data">, acting: string) => (e.data.actingExact === true ? modelKey(acting) : canonicalModel(acting, pool));
+  const of = (e: Pick<LedgerEvent, "data">): ActingJudgement => {
+    const acting = actingOf(e, owner);
     if (acting === null) return unknown;
-    const key = canonicalModel(acting, pool);
+    const key = keyOf(e, acting);
     let r = models.get(key);
     if (!r) models.set(key, (r = blank(key)));
     if (!r.actors.some((a) => a.toLowerCase() === acting.toLowerCase())) r.actors.push(acting);
@@ -233,7 +252,7 @@ export function buildJudgement(projects: readonly { project: string; events: rea
       list.forEach((v, i) => {
         if (!inWindow(v.at)) return;
         const acting = actingOf(v, owner);
-        const r = of(acting);
+        const r = of(v);
         r.verdicts++;
         const later = list.slice(i + 1).filter((w) => sameReview(v, w));
         const correction = later.find((w) => verdictSide(w) !== verdictSide(v));
@@ -252,7 +271,7 @@ export function buildJudgement(projects: readonly { project: string; events: rea
         // upholds nothing, and an unknown verdict is upheld by no one.
         const other = (w: LedgerEvent) => {
           const a = actingOf(w, owner);
-          return acting !== null && a !== null && canonicalModel(a, pool) !== canonicalModel(acting, pool);
+          return acting !== null && a !== null && keyOf(w, a) !== keyOf(v, acting);
         };
         if (later.some((w) => verdictSide(w) === verdictSide(v) && other(w))) r.upheld++;
         else r.unresolved++;
@@ -260,9 +279,12 @@ export function buildJudgement(projects: readonly { project: string; events: rea
     }
     for (const e of sorted) {
       if (!inWindow(e.at)) continue;
-      if (e.kind === "decision.recorded") of(actingOf(e, owner)).decisionsRecorded++;
-      else if (e.kind === "decision.withdrawn") of(actingOf(e, owner)).decisionsWithdrawn++;
-      else if (e.kind === "review.overridden") of(actingOf(e, owner)).overrides++;
+      // A role assignment (src/models/assignments.ts) is a decision with
+      // structure, logged on the index ledger, which the caller adds as one
+      // more source.
+      if (e.kind === "decision.recorded" || e.kind === "assignment.recorded") of(e).decisionsRecorded++;
+      else if (e.kind === "decision.withdrawn" || e.kind === "assignment.withdrawn") of(e).decisionsWithdrawn++;
+      else if (e.kind === "review.overridden") of(e).overrides++;
     }
   }
   for (const r of [...models.values(), unknown]) {

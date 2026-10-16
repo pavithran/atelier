@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Projects", line: 1, slot: 30,
       form: "showcase set NAME [--named|--anonymous]",
-      about: "The project owner adds a project to the public showcase. Anonymous is the default: the project's card and its task stories carry a neutral label from the project's kind, never its name, a task title, a path, a commit message or an address. `--named` shows the project by name. Nothing is public until this is run.",
+      about: "The developer adds a project to the public showcase. Anonymous is the default: the project's card and its task stories carry a neutral label from the project's kind, never its name, a task title, a path, a commit message or an address. `--named` shows the project by name. Nothing is public until this is run.",
     },
     {
       group: "Projects", line: 1, slot: 40,

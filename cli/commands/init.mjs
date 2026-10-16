@@ -6,6 +6,7 @@ import { checkFiles, preparationPaths } from "../../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
+import { discoverPrivate, guardedPush, moveProjectEntryOnDisk, privateGuardFor, remoteBases } from "../private.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
@@ -26,9 +27,11 @@ export default async function initCommand() {
   try { ({ name, existing } = initName(cfg.projects, top, args.name, args["rename-local"] === true)); }
   catch (err) { die(err.message); }
   if (args["rename-local"] === true) {
-    cfg.projects[name] = cfg.projects[existing];
-    if (name !== existing) delete cfg.projects[existing];
-    saveConfig(cfg);
+    // The old name stays with the entry as a former name, so a task
+    // workspace still named it stays guarded (t645).
+    // Made in config.json under its lock, and followed in memory.
+    const moved = moveProjectEntryOnDisk(cfg.projects, existing, name);
+    if (moved.error) die(moved.error);
     console.log(`Local registration changed from ${existing} to ${name}. No server project or repository was changed.`);
     return;
   }
@@ -45,7 +48,7 @@ export default async function initCommand() {
     const replaced = args.reset === true ? "--reset starts the policy over" : args["history-since"] !== undefined ? "--history-since replaces the baseline" : null;
     const recorded = replaced ? null : await recordedApproval(name);
     if (!recorded) {
-      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the project owner's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
+      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the developer's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
     }
   }
   // Only what this command names is sent; the server keeps everything else
@@ -144,6 +147,7 @@ export default async function initCommand() {
   // setting on; given as --sandbox-only=false or --sandbox-only false, off.
   if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
   if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
+  if (args["require-criteria-review"] !== undefined || reset) policy.requireCriteriaReview = args["require-criteria-review"] === true;
   if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
   // --no-override is a switch too (t371): given, overrides of the
   // independent review are refused in the project; --no-override=false
@@ -165,9 +169,17 @@ export default async function initCommand() {
   // flag given once as "" clears its list.
   if (args["commit-name"] !== undefined) policy.commitName = args["commit-name"];
   if (args["commit-email"] !== undefined) policy.commitEmail = args["commit-email"];
-  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"], ["public-mirror", "publicMirrors"]]) {
+  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"], ["public-mirror", "publicMirrors"], ["private-path", "privatePaths"], ["private-pattern", "privatePatterns"]]) {
     const values = args.multi[flag];
     if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
+  }
+  if (args.multi["public-mirror-destination"]) {
+    policy.publicMirrorDestinations = {};
+    for (const value of args.multi["public-mirror-destination"]) {
+      const split = value.indexOf("=");
+      if (split < 1) die("--public-mirror-destination needs REMOTE=URL");
+      policy.publicMirrorDestinations[value.slice(0, split)] = value.slice(split + 1);
+    }
   }
   const r = await call("PUT", P(name), {
     ...policy,
@@ -178,6 +190,9 @@ export default async function initCommand() {
     // What may block a review, stated in every review brief; omitted keeps
     // it, "" restores the default bar.
     ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
+    // The path of the document the project's prose follows, named in every
+    // build, plan and review brief (t675); omitted keeps it, "" clears it.
+    ...(args["prose-standard"] !== undefined ? { proseStandard: args["prose-standard"] } : {}),
     // The model that triages a landing's diff against the task's criteria
     // before its review (t475), harness/model; omitted keeps it, "" clears it.
     ...(args.triage !== undefined ? { triage: args.triage } : {}),
@@ -185,6 +200,10 @@ export default async function initCommand() {
     // reviewing every protected change beside the gate's review; omitted
     // keeps it, "" clears it.
     ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
+    // The frontier models that may resolve a refresh's mechanical conflicts
+    // (t462), harness/model actors separated by commas; omitted keeps
+    // them, "" clears them.
+    ...(args.resolver !== undefined ? { resolvers: args.resolver } : {}),
     ...(singleFamily !== undefined ? { singleFamily } : {}),
     approval: args.approval,
     // Omitted keeps the current title; --title "" clears it.
@@ -198,6 +217,17 @@ export default async function initCommand() {
   const since = typeof args["history-since"] === "string" ? args["history-since"] : null;
   if (args["history-since"] === "") die("give the day the baseline's history starts: --history-since YYYY-MM-DD");
   let pushed = "HEAD";
+  // No commit the baseline lacks may carry a private file (t645), whether
+  // the history goes whole, in steps or rebuilt. A list in iCloud opts a
+  // registered project in first.
+  if (cfg.projects?.[name]) privateGuardFor(name, { discover: true });
+  // A first init, of a project this Mac does not register yet, finds its
+  // iCloud folder as clone does and reads its list before the first push,
+  // so that push is guarded like later ones; the copy is kept once the
+  // project is registered below.
+  const pending = cfg.projects?.[name] ? null : {};
+  if (pending) discoverPrivate(name, pending);
+  const baselineBases = () => remoteBases({ git, cwd: top, remote: r.baseline.remote, ref: `refs/heads/${branch}`, opts: { token: r.baseline.token, ownerRemote: false } });
   if (fresh) {
     if (since) die(`${name} already has a baseline from part of its history; use atelier sync to carry new commits`);
   } else if (since) {
@@ -220,20 +250,26 @@ export default async function initCommand() {
       const held = listed.status === 0 ? /^([0-9a-f]{40,64})\s/.exec(listed.stdout)?.[1] ?? null : null;
       if (held && holds(held, head, top)) lease.push(`--force-with-lease=${branch}:${held}`);
     }
-    git(["push", "--quiet", "--recurse-submodules=no", ...lease, r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token });
+    guardedPush({ project: name, pending, cwd: top, tip: built.head, bases: baselineBases, what: `The baseline history of ${name}`, fail: die },
+      () => git(["push", "--quiet", "--recurse-submodules=no", ...lease, r.baseline.remote, `${built.head}:refs/heads/${branch}`], { cwd: top, token: r.baseline.token }));
     savePairs(gitDir, name, { ...loadPairs(gitDir, name), ...built.pairs });
     pushed = built.head;
     console.log(`Baseline history starts at ${short(start)} (${since}): ${Object.keys(built.pairs).length - 1} commits on ${branch}'s first-parent line rebuilt with the same trees, authors, dates and messages.`);
   } else {
-    try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log }); }
-    catch (err) { die(err.message); }
+    guardedPush({ project: name, pending, cwd: top, tip: `refs/heads/${branch}`, bases: baselineBases, what: `${branch}'s history for ${name}'s baseline`, fail: die }, (sha) => {
+      try { pushHistory(git, top, { remote: r.baseline.remote, token: r.baseline.token, branch, say: console.log, head: sha }); }
+      catch (err) { die(err.message); }
+    });
   }
   cfg.projects ??= {};
-  cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
+  cfg.projects[name] = { ...pending, ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
   saveConfig(cfg);
+  // Now that the project is registered here, the copy of its list of
+  // private files is kept with it (Argon's second review of t645).
+  privateGuardFor(name);
   const pol = r.project.policy;
   if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
-  if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; owner approval recorded`);
+  if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; developer approval recorded`);
   console.log(fresh
     ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
     : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
@@ -247,11 +283,16 @@ export default async function initCommand() {
   console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
   // A server older than the review bar ignores it and answers without one.
   if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
+  console.log(`Prose:      ${pol.proseStandard ? `${pol.proseStandard}, which every build, plan and review brief names for the agent to load before it writes prose` : "no prose standard; no brief names one (atelier init --prose-standard PATH)"}`);
+  // A server older than the prose standard ignores it and answers without one.
+  if (typeof args["prose-standard"] === "string" && args["prose-standard"].trim() && !pol.proseStandard) console.log("Warning: the server did not record the prose standard; deploy the server, then run atelier init --prose-standard again.");
   console.log(`Triage:     ${pol.triage ? `${pol.triage}, which triages each landing's diff against the task's acceptance criteria before the review is asked for (atelier land --triage H/M names another, --no-triage REASON skips it)` : "none, unless a landing names a model with atelier land --triage H/M"}`);
   // A server older than the triage setting ignores it and answers without one.
   if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");
   console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
   if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
+  console.log(`Resolvers:  ${pol.resolvers?.length ? `${pol.resolvers.join(", ")}, the first eligible of which resolves a refresh's mechanical conflicts` : "none; a refresh's mechanical conflict waits for one (atelier init --resolver H/M)"}`);
+  if (typeof args.resolver === "string" && args.resolver.trim() && !pol.resolvers?.length) console.log("Warning: the server did not record the resolvers; deploy the server, then run atelier init --resolver again.");
   console.log(`Models:     ${familyModeText(pol)}`);
   // A server older than single-family mode ignores it and answers without one.
   if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
@@ -259,12 +300,14 @@ export default async function initCommand() {
   console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
   console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
   console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
-  console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the owner confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
+  console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the developer confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
   // A server older than --no-override ignores it and answers without it.
   if (args["no-override"] === true && !pol.noOverride) console.log("Warning: the server did not record --no-override; deploy the server, then run atelier init --no-override again.");
   console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);
   // A server older than the criteria requirement ignores it and answers without one.
   if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
+  console.log(`Criteria review: ${pol.requireCriteriaReview ? "required before a build is dispatched or claimed" : "not required"}`);
+  if (args["require-criteria-review"] === true && !pol.requireCriteriaReview) console.log("Warning: the server did not record the criteria review requirement; deploy the server, then run atelier init --require-criteria-review again.");
   console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a claimed or landing item's in one` : "none; the queue holds no dispatch for its scope"}`);
   // A server older than core files ignores them and answers without any.
   if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");

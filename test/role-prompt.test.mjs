@@ -48,7 +48,7 @@ test("atelier guide --role ROLE prints the default text, and the plain guide is 
 const ORCHESTRATE_RULES = [
   /builders from several companies, chosen by tier/,
   /reviewed by a model from another\s+company/,
-  /Never override[^.]*except on the owner's own\s+confirmation/,
+  /Never override[^.]*except on the developer's own\s+confirmation/,
   /Judge each review finding against the code[^.]*record every\s+verdict/,
   /`atelier finding \.\.\. --as H\/M`, naming yourself/,
   /Land one task at a time[^.]*--reviewer H\/M/,
@@ -70,6 +70,17 @@ test("the orchestrate guide states each standing rule and names docs/orchestrati
 test("docs/orchestrating.md states the same standing rules", () => {
   const doc = readFileSync("docs/orchestrating.md", "utf8");
   for (const rule of ORCHESTRATE_RULES) assert.match(doc, rule);
+});
+
+// Finding: hqpe-control t54 was filed with "t52's tests pass unchanged" while its
+// own fix falsified one t52 test; only reading the test before dispatch caught it.
+test("the briefing section tells the orchestrator to run 'existing tests pass' criteria against the change, with the t54 example", () => {
+  const doc = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
+  const briefing = doc.slice(doc.indexOf("## Briefing an agent"), doc.indexOf("## Running agents in each harness"));
+  assert.match(briefing, /run each "existing tests pass" criterion against the change/);
+  assert.match(briefing, /name any test the change must rewrite/);
+  assert.match(briefing, /hqpe-control t54/);
+  assert.match(briefing, /t52's tests pass unchanged/);
 });
 
 test("the orchestrate guide names the handbook's public URL, and --full prints the handbook from outside the checkout", () => {

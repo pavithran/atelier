@@ -262,7 +262,7 @@ it("agent reviews cannot reopen accepted work but the owner can", async () => {
   await L(name).accept("t1", "owner", head);
   for (const approve of [true, false]) {
     expect((await call("POST", `/projects/${name}/items/t1/review`, token, undefined, { head, criteria: NO_CRITERIA, approve })).status).toBe(403);
-    await refusal(L(name).addReview({ itemId: "t1", criteria: await L(name).criteria("t1"), by: ACTOR, head, approve, note: "", at: new Date().toISOString() }, undefined, true), "accepted", /only the owner token may reopen/);
+    await refusal(L(name).addReview({ itemId: "t1", criteria: await L(name).criteria("t1"), by: ACTOR, head, approve, note: "", at: new Date().toISOString() }, undefined, true), "accepted", /only the developer token may reopen/);
     expect((await L(name).item("t1")).state).toBe("accepted");
     expect(await L(name).reviewsFor("t1")).toEqual([]);
   }

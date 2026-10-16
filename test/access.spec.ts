@@ -222,6 +222,44 @@ it("an unconfigured server sends a visitor to sign in for Home, and signing in l
   expect(login.headers.get("location")).toBe("/home");
 });
 
+// Astra's audit of 2026-10-13, finding 11: Access set in part, or with a
+// value it cannot use, used to turn the check off, and the developer's pages
+// fell back to the token and the session. Now every route Access guards is
+// refused, naming what is wrong and no value, while the public pages and the
+// API stand as before.
+it("with Access set in part or unusably, the developer's routes are refused, naming what is wrong", async () => {
+  const partial = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: ISS, CF_ACCESS_OWNER_EMAIL: OWNER } as typeof env;
+  const invalid = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: "http://atelier-test.cloudflareaccess.com", CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER } as typeof env;
+  // URL parsing would normalise this one to the team URL (review of t597).
+  const dotted = { ...env, ATELIER_TOKEN: TOKEN, CF_ACCESS_ISS: `${ISS}/path/..`, CF_ACCESS_AUD: AUD, CF_ACCESS_OWNER_EMAIL: OWNER } as typeof env;
+  const send = serveKeys();
+  try {
+    for (const [bindings, problem] of [[partial, "CF_ACCESS_AUD is not set"], [invalid, "CF_ACCESS_ISS is not the team"], [dotted, "CF_ACCESS_ISS is not the team"]] as const) {
+      const fetchWith = (path: string, init: RequestInit = {}) => worker.fetch(new Request(`https://atelier.test${path}`, { redirect: "manual", ...init }), bindings);
+      const jwt = await assertion();
+      for (const res of [
+        await fetchWith("/home"),
+        await fetchWith("/home", { headers: { "cf-access-jwt-assertion": jwt } }),
+        await fetchWith("/login"),
+        // The right server token buys no session either: the token alone is
+        // exactly the fallback the finding names.
+        await fetchWith("/login", { method: "POST", headers: { origin: "https://atelier.test" }, body: new URLSearchParams({ token: TOKEN }) }),
+        await fetchWith("/p/atelier"),
+      ]) {
+        expect(res.status).toBe(503);
+        expect(res.headers.get("set-cookie")).toBeNull();
+        const text = await res.text();
+        expect(text).toContain(problem);
+        for (const value of [ISS, AUD, OWNER, TOKEN, "http://atelier-test"]) expect(text).not.toContain(value);
+      }
+      expect((await fetchWith("/how")).status).toBe(200);
+      expect((await fetchWith("/api/version")).status).toBe(200);
+      const projects = await fetchWith("/api/projects", { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } });
+      expect(projects.status).toBe(200);
+    }
+  } finally { send.mockRestore(); }
+});
+
 // The front door (t314): the whole domain is public at the edge, so the
 // Worker's own check is the guard. / is the showcase for anyone, with no
 // assertion and no session; every owner route, each method its forms use,
@@ -245,7 +283,7 @@ it("with Access on, / is the public showcase to anyone, and every owner route st
     const page = await (await at("/")).text();
     expect(page).toContain("<title>Atelier · public showcase</title>");
     expect(page).toContain('<a href="/login">Sign in</a>');
-    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="rail"', 'href="/home"']) expect(page).not.toContain(secret);
+    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="owner-bar"', 'href="/home"']) expect(page).not.toContain(secret);
     expect((await at("/showcase")).status).toBe(200);
     const cookie = await signIn(TOKEN, shown, { "cf-access-jwt-assertion": await assertion() });
     const form = { origin: "https://atelier.test", cookie };
@@ -296,7 +334,7 @@ it("behind Access, the owner's Access sign-in confirms an override, and the reco
       method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
     }), on);
     expect(api.status).toBe(403);
-    expect((await api.json() as { detail: string }).detail).toContain(`open https://atelier.test/p/${name}/t1 as the owner, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation`);
+    expect((await api.json() as { detail: string }).detail).toContain(`open https://atelier.test/p/${name}/t1 as the developer, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation`);
     // The page's forms ask for no secret: the sign-in is the factor.
     const task = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie, "cf-access-jwt-assertion": jwt } }), on)).text();
     expect(task).toContain("Your Cloudflare Access sign-in is the confirmation an override needs");

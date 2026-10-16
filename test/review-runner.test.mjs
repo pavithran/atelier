@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
+import { runReview, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 
@@ -379,7 +379,8 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
     workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async (offer) => { offers.push(offer.jobs); return [...builds, assignment]; },
   });
-  assert.deepEqual(offers, [["review"]], "the offer names reviews alone");
+  // A runner that takes reviews also advertises pre-review (t524).
+  assert.deepEqual(offers, [["review", "prereview"]], "the offer names reviews alone, and the pre-review they bring");
   assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]), ["review-claim", "review"], "the review runs and no build is claimed");
 });
 
@@ -639,7 +640,7 @@ function reviewRepos(t) {
 
 // Serves one review through the runner with the real git helpers, answering
 // the claim with `claim`, and returns the diff the reviewer read and its brief.
-async function serveReview(t, dir, claim) {
+async function serveReview(t, dir, claim, answers = {}) {
   const reviewer = { agent: "codex", models: ["gpt-6-astra"], command: ["reviewer", "{brief_file}", "{diff_file}", "{verdict_file}", "{model}"] };
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify({ agents: [reviewer], jobs: ["review"], tokens: { "gpt-6-astra": "agent.gpt-6-astra" } }));
@@ -664,6 +665,8 @@ async function serveReview(t, dir, claim) {
         return { code: 0 };
       }
       posted.push(argv[2]);
+      (seen.calls ??= []).push(argv.slice(2));
+      if (argv[2] in answers) return { code: 0, output: JSON.stringify(answers[argv[2]]) };
       return { code: 0, output: argv[2] === "review-claim" ? JSON.stringify(claim) : "{}" };
     },
   });
@@ -917,6 +920,734 @@ test("real Git post-merge review checks out the merge, excluding later main comm
   assert.match(seen.brief, /Post-merge audit/);
 });
 
+// t591: a task landed in fast mode is merged on the developer's own main,
+// and the merge reaches the baseline only when the developer publishes main.
+// The claim's clone (the task's fork, or a baseline read before the publish)
+// may not hold that merge, and every review runner failed with "fatal:
+// unable to read tree (<merge>)" on the checkout. The review fetches the
+// merge from the baseline, through its read token, and reviews it against
+// its first parent: the change the batch added to main for this task.
+test("a fast landing's post-merge review fetches the merge from the baseline and reviews it against its first parent", async (t) => {
+  const { dir, git, commit, target, fork, work } = reviewRepos(t);
+  const base = commit(work, "base.txt", "base\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  git(work, "checkout", "--quiet", "-b", "task");
+  const head = commit(work, "task.txt", "the fast build's change\n");
+  // The task's fork holds its commit, never the merge of it.
+  git(work, "push", "--quiet", fork, "HEAD:main");
+  git(work, "checkout", "--quiet", "main");
+  const parent = commit(work, "main.txt", "main before the batch\n");
+  // atelier fast land: one merge per task on the developer's main; then
+  // atelier publish carries main to the baseline.
+  git(work, "merge", "--quiet", "--no-ff", head, "-m", "Merge t21");
+  const merge = git(work, "rev-parse", "HEAD");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  const claim = { ...claimFor({ base, fork, state: "merged", accept: ["Keeps data"] }, merge), landed: { commit: merge, head, base } };
+  const seen = await serveReview(t, dir, claim, { "baseline-token": { remote: target, token: "baseline-read", defaultBranch: "main" } });
+  assert.equal(seen.head, merge, "the reviewer reads the merge itself");
+  assert.deepEqual(changed(seen.diff), ["task.txt"], "the diff is the merge against its first parent");
+  assert.match(seen.brief, new RegExp(`git diff ${parent} ${merge}`));
+  assert.match(seen.brief, /Keeps data/);
+  const verdict = seen.calls.find((c) => c[0] === "review");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge, "the verdict is recorded at the merge commit");
+  assert.ok(verdict.includes("--approve"));
+});
+
+// t591: a post-merge review whose merge commit no source holds was released
+// and claimed again on every poll, under the new request number each release
+// makes, for hours (13 requests, both review runners, 2026-10-13). It is
+// released once, with a note naming the missing commit, reported once as this
+// runner's skip naming it, and not claimed again by this runner until the
+// baseline's head moves.
+test("a post-merge review whose merge commit no source holds is released once and not claimed again until the baseline moves", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const merge = "e".repeat(40), B1 = "1".repeat(40), B2 = "2".repeat(40);
+  const claim = { ...claimed, plan: null, item: { ...claimed.item, state: "merged", head: merge, accept: ["Keeps data"] }, head: merge,
+    need: { ...claimed.need, head: merge }, landed: { commit: merge, head: H1, base: H0 } };
+  const { io, calls, logs } = fixture({ claim });
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    if (argv[0] !== "baseline-token") return cli(argv, cwd, options);
+    calls.push({ argv, token: options?.token });
+    return JSON.stringify({ remote: "https://artifacts.example/baseline", token: "baseline-read", defaultBranch: "main" });
+  };
+  io.hasCommit = async () => false;
+  io.fetch = async (_dir, remote, _token, ref) => { calls.push({ fetch: [remote, ref] }); if (ref === merge) throw new Error("fatal: remote error: upload-pack: not our ref"); };
+  io.revParse = async (_dir, ref) => { if (ref === "FETCH_HEAD") return baseline; throw new Error(`unexpected rev-parse ${ref}`); };
+  io.checkout = async () => assert.fail("a commit the clone lacks is never checked out");
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const reports = [], heads = [];
+  let polls = 0, baseline = B1, clock = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    async reportReviewSkip(body) { reports.push(body); },
+    async baselineHead(project) { heads.push([polls, project]); return baseline; },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      // The baseline moves (the developer publishes) on poll 13.
+      if (polls === 13) baseline = B2;
+      if (polls > 20) { process.emit("SIGINT"); return []; }
+      // Each release makes the request anew under the next number.
+      const released = calls.filter((c) => c.argv?.[0] === "review-release").length;
+      return [{ ...assignment, item: { ...assignment.item, head: merge, request: 50 + released, dispatch: { job: "review" } } }];
+    },
+  });
+  const claims = calls.filter((c) => c.argv?.[0] === "review-claim");
+  const releases = calls.filter((c) => c.argv?.[0] === "review-release");
+  // Claimed on poll 1, then not again until the baseline moved: once more.
+  assert.equal(claims.length, 2, JSON.stringify(calls.filter((c) => c.argv).map((c) => c.argv[0])));
+  assert.equal(releases.length, 2);
+  for (const r of releases) assert.match(r.argv[r.argv.indexOf("--note") + 1], new RegExp(`merge commit ${merge}`));
+  assert.ok(!calls.some((c) => c.harness), "no reviewer runs without the commit");
+  // The baseline was asked for the merge, by its branch and by the commit.
+  assert.ok(calls.some((c) => c.fetch?.[0] === "https://artifacts.example/baseline" && c.fetch[1] === "main"));
+  assert.ok(calls.some((c) => c.fetch?.[0] === "https://artifacts.example/baseline" && c.fetch[1] === merge));
+  // One skip report per failure, under the request claimed, naming the commit.
+  assert.deepEqual(reports.map((r) => r.request), [50, 51]);
+  for (const r of reports) assert.match(r.note, new RegExp(merge));
+  // The baseline's head is read at most every five minutes, not each poll;
+  // each miss is kept against the head its Git fetch saw.
+  assert.deepEqual(heads.map(([poll]) => poll), [6, 11, 16]);
+  assert.ok(logs.some((l) => /baseline moved/.test(l)), logs.join("\n"));
+});
+
+// The stand-in io of a post-merge review whose merge commit no source holds
+// (t591): `fetch` answers the baseline's branch unless `branchFails`, and
+// never the commit; FETCH_HEAD reads `state.baseline`.
+function missingMergeFixture({ branchFails = false } = {}) {
+  const merge = "e".repeat(40);
+  const claim = { ...claimed, plan: null, item: { ...claimed.item, state: "merged", head: merge, accept: ["Keeps data"] }, head: merge,
+    need: { ...claimed.need, head: merge }, landed: { commit: merge, head: H1, base: H0 } };
+  const { io, calls, logs } = fixture({ claim });
+  const state = { baseline: "1".repeat(40) };
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    if (argv[0] !== "baseline-token") return cli(argv, cwd, options);
+    calls.push({ argv, token: options?.token });
+    return JSON.stringify({ remote: "https://artifacts.example/baseline", token: "baseline-read", defaultBranch: "main" });
+  };
+  io.hasCommit = async () => false;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (ref === merge || branchFails) throw new Error("fatal: unable to access the repository");
+  };
+  io.revParse = async (_dir, ref) => { if (ref === "FETCH_HEAD") return state.baseline; throw new Error(`unexpected rev-parse ${ref}`); };
+  io.checkout = async () => assert.fail("a commit the clone lacks is never checked out");
+  const task = (request) => ({ ...assignment, item: { ...assignment.item, head: merge, request, dispatch: { job: "review" } } });
+  return { merge, io, calls, logs, state, task };
+}
+
+// t591 (codex/gpt-6-astra's third review): a fetch that fails (the network,
+// a token, Git) read nothing, so it is no evidence the merge is missing. It
+// is an ordinary failure, released and served again on the next poll, never
+// kept as a missing commit; only a baseline that was read and lacks the
+// merge is. Here the baseline's fetch fails twice, then reads the merge,
+// and the review records its verdict.
+test("a baseline fetch that fails transiently is retried, not kept as a missing merge, and the review records its verdict", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task } = missingMergeFixture();
+  let held = false, branchFetches = 0;
+  io.hasCommit = async () => held;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (ref === merge) throw new Error("fatal: unable to access the repository");
+    if (++branchFetches <= 2) throw new Error("fatal: unable to access 'https://artifacts.example/baseline/': Could not resolve host");
+    held = true;
+  };
+  io.checkout = async (_dir, head) => { assert.ok(held); assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : ref === "FETCH_HEAD" ? merge : assert.fail(`unexpected rev-parse ${ref}`);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [], runs = [], heads = [];
+  let polls = 0, reviewed = false;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { skips.push(body); },
+    async reportRun(body) { runs.push(body); },
+    async baselineHead() { heads.push(polls); return "1".repeat(40); },
+    async queue() {
+      reviewed = calls.some((c) => c.argv?.[0] === "review");
+      if (++polls > 6 || reviewed) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 3, "served on each of three polls");
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 2);
+  const verdict = calls.find((c) => c.argv?.[0] === "review").argv;
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+  assert.ok(verdict.includes("--approve"));
+  assert.deepEqual([skips.length, runs.length, heads.length], [0, 0, 0], "no miss was kept, reported or checked");
+});
+
+// t591 (codex/gpt-6-astra's review, finding 1): a server with the
+// runs.infrastructure-miss.v1 capability takes a run report of the miss,
+// naming the missing commit, which counts against no model; one without it
+// (the live server until its deploy) takes today's review-skip report.
+test("a missing merge is reported as an infrastructure_miss run where the server has the capability, and as a review skip where it does not", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  for (const capable of [true, false]) {
+    const args = { ...runnerConfig(t), once: undefined };
+    const { merge, io, calls, task } = missingMergeFixture();
+    const previous = process.exitCode;
+    t.after(() => { process.exitCode = previous; });
+    const runs = [], skips = [];
+    let polls = 0;
+    const capabilities = SERVER_CAPABILITIES.filter((name) => capable || name !== "runs.infrastructure-miss.v1");
+    await runRunner(args, {
+      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      version: async () => ({ capabilities }),
+      async reportRun(body) { runs.push(body); },
+      async reportReviewSkip(body) { skips.push(body); },
+      async baselineHead() { return "1".repeat(40); },
+      async queue() {
+        if (++polls > 3) { process.emit("SIGINT"); return []; }
+        return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+      },
+    });
+    assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+    if (capable) {
+      assert.deepEqual(runs.map((r) => [r.role, r.outcome, r.item, r.actor]), [["review", "infrastructure_miss", "t21", assignment.actor]]);
+      assert.match(runs[0].detail, new RegExp(`merge commit ${merge}`));
+      assert.equal(skips.length, 0);
+    } else {
+      assert.equal(runs.length, 0);
+      assert.equal(skips.length, 1);
+      assert.match(skips[0].note, new RegExp(merge));
+    }
+  }
+});
+
+// t591 (codex/gpt-6-astra's second review, finding 1): the developer
+// publishes the merge between the job's Git fetch (baseline at B1) and the
+// runner's next read of the head (B2). The miss is kept against B1, the head
+// the fetch saw, so B2 is a move and the review is claimed again.
+test("a missing merge published between the fetch and the head read is claimed again at the next check", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, state, task } = missingMergeFixture();
+  const B2 = "2".repeat(40);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  let polls = 0, clock = 0;
+  const claim = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    const answer = await claim(argv, cwd, options);
+    // The publish lands just after the first job's fetch saw B1.
+    if (argv[0] === "review-release") state.baseline = B2;
+    return answer;
+  };
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    async reportReviewSkip() {},
+    async baselineHead() { return state.baseline === B2 ? B2 : "1".repeat(40); },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls > 20) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  // Claimed on poll 1, again at the first check (poll 6), then kept at B2.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+});
+
+// t657 (t638's follow-up): recheckMissing's own catch of a baseline head
+// read had no test. Finding: removing it, or making it rethrow, left the
+// suite green, since the poll's outer catch takes the error as a failed
+// poll and the next check reads the head as before. Here the miss is kept
+// at B1 on poll 1; the head read at the first check (poll 6) fails, which
+// is logged through the runner's log and changes nothing: the review is
+// neither claimed nor taken as moved, and the miss keeps B1. The next
+// read (poll 11) is B1 again, still no move; the one after (poll 16) is
+// B2, and the review is claimed again.
+test("a baseline head read that fails at a later check is logged, keeps the missing merge as it was, and the next read recovers", async (t) => {
+  const { MISSING_RECHECK_MS } = await import("../cli/runner.mjs");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, logs, task } = missingMergeFixture();
+  const B1 = "1".repeat(40), B2 = "2".repeat(40);
+  const every = MISSING_RECHECK_MS / 60_000;
+  const claimPolls = [], heads = [], idlePolls = [];
+  let polls = 0, clock = 0;
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => { if (argv[0] === "review-claim") claimPolls.push(polls); return cli(argv, cwd, options); };
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    async reportReviewSkip(body) { skips.push(body); },
+    // Called at the end of each poll that claimed nothing.
+    async idleWhy() { idlePolls.push(polls); return []; },
+    async baselineHead(project, actor) {
+      heads.push(polls);
+      assert.deepEqual([project, actor], [task(50).project, task(50).actor]);
+      if (polls === 1 + every) throw new Error("baseline-head: 503 Service Unavailable");
+      return polls < 1 + 3 * every ? B1 : B2;
+    },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls > 1 + 3 * every + 2) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  // Read at each check: the failed one, B1 (no move), then B2.
+  assert.deepEqual(heads, [1 + every, 1 + 2 * every, 1 + 3 * every]);
+  // Claimed on the miss and again only once the head moved: the failed
+  // read claimed nothing and moved nothing.
+  assert.deepEqual(claimPolls, [1, 1 + 3 * every], JSON.stringify(claimPolls));
+  // The failed read ends nothing: the poll it came in passes the review by
+  // and ends as an idle poll does, not as a failed one.
+  assert.ok(idlePolls.includes(1 + every), `idle on polls ${idlePolls.join(", ")}`);
+  // The failure is logged once, through the runner's log, naming the
+  // project, the task and the error; never as a failed poll.
+  const read = logs.filter((l) => /baseline head/.test(l));
+  assert.deepEqual(read, [`could not read ${task(50).project}'s baseline head for ${task(50).item.id}'s review: baseline-head: 503 Service Unavailable`]);
+  // Only B2 is taken as a move, from the B1 the miss kept.
+  const moved = logs.filter((l) => /baseline moved to/.test(l));
+  assert.deepEqual(moved, [`${task(50).project}'s baseline moved to ${B2.slice(0, 8)}; ${task(50).item.id}'s post-merge review of ${merge.slice(0, 8)} is tried again`]);
+  // One review skip per claim that missed (polls 1 and 16), none for the
+  // failed read.
+  assert.equal(skips.length, claimPolls.length);
+});
+
+// t591 (after the third review): a baseline that cannot be fetched at all
+// fails the job as an ordinary failure, but each failure releases the
+// review under a new request number, so a count by request never reaches
+// its cap and the review was served on every poll. Fetch failures are
+// counted by task and head, served again after 1 and then 2 polls, and
+// after the third the review is passed by, with one report naming the
+// commit and the fetch error, until the baseline's head moves.
+test("a baseline that cannot be fetched is served with backoff, given up after three tries with one report, and served again once the baseline moves", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task } = missingMergeFixture();
+  const B1 = "1".repeat(40), B2 = "2".repeat(40);
+  let held = false, broken = true, polls = 0, clock = 0;
+  const claimPolls = [];
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => { if (argv[0] === "review-claim") claimPolls.push(polls); return cli(argv, cwd, options); };
+  io.hasCommit = async () => held;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (broken) throw new Error("fatal: unable to access 'https://artifacts.example/baseline/': Could not resolve host");
+    if (ref === merge) throw new Error("not our ref");
+    held = true;
+  };
+  io.checkout = async (_dir, head) => { assert.ok(held); assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : ref === "FETCH_HEAD" ? B2 : assert.fail(`unexpected rev-parse ${ref}`);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const runs = [], skips = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    version: async () => ({ capabilities: SERVER_CAPABILITIES }),
+    async reportRun(body) { runs.push(body); },
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return polls > 30 ? B2 : B1; },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      // The developer publishes after poll 30, and the baseline answers again.
+      if (polls === 31) broken = false;
+      if (polls > 45 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  // Served on polls 1, 2 (one poll on) and 4 (two on), then given up until
+  // the baseline moved; served again at the first check after poll 31.
+  assert.deepEqual(claimPolls.slice(0, 3), [1, 2, 4]);
+  assert.equal(claimPolls.length, 4, JSON.stringify(claimPolls));
+  assert.ok(claimPolls[3] > 30, JSON.stringify(claimPolls));
+  // One report, the infrastructure_miss run report, naming the commit and the error.
+  assert.equal(runs.length, 1, JSON.stringify(runs));
+  assert.equal(runs[0].outcome, "infrastructure_miss");
+  assert.match(runs[0].detail, new RegExp(merge));
+  assert.match(runs[0].detail, /Could not resolve host/);
+  assert.equal(skips.length, 0);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict once the baseline answers");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+});
+
+// t591 (fourth review): when the baseline's Git endpoint is down the clone
+// fails before the merge is looked for, and that failure released the
+// review under a new number each poll, as the fetch's did before it. Every
+// failure of a post-merge review's job after its claim is counted by task
+// and head with the same backoff, cap and single report.
+test("a post-merge review whose clone fails is served with backoff, given up after three tries with one report, and served again once the baseline moves", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task } = missingMergeFixture();
+  const B1 = "1".repeat(40), B2 = "2".repeat(40);
+  let broken = true, polls = 0, clock = 0;
+  const claimPolls = [];
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => { if (argv[0] === "review-claim") claimPolls.push(polls); return cli(argv, cwd, options); };
+  io.clone = async () => { if (broken) throw new Error("git clone: fatal: unable to access 'https://artifacts.example/p--t21/': The requested URL returned error: 503"); };
+  io.hasCommit = async () => !broken;
+  io.checkout = async (_dir, head) => { assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : assert.fail(`unexpected rev-parse ${ref}`);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const runs = [], skips = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    version: async () => ({ capabilities: SERVER_CAPABILITIES }),
+    async reportRun(body) { runs.push(body); },
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return polls > 30 ? B2 : B1; },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls === 31) broken = false;
+      if (polls > 45 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.deepEqual(claimPolls.slice(0, 3), [1, 2, 4]);
+  assert.equal(claimPolls.length, 4, JSON.stringify(claimPolls));
+  assert.ok(claimPolls[3] > 30, JSON.stringify(claimPolls));
+  assert.equal(runs.length, 1, JSON.stringify(runs));
+  assert.equal(runs[0].outcome, "infrastructure_miss");
+  assert.match(runs[0].detail, new RegExp(merge));
+  assert.match(runs[0].detail, /returned error: 503/);
+  assert.equal(skips.length, 0);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict once the clone works");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+});
+
+// t591 (fourth review): a post-merge review's failed runs that end without
+// throwing (the reviewer's harness exits, times out or replies without a
+// verdict) are counted by task and head too, so the two-failure cap holds
+// across the new number each release gives the request; a review of a task
+// not yet merged keeps its count by request (t353).
+test("a post-merge review's failures count by task and head, not by request", async () => {
+  const { failureKey } = await import("../cli/runner.mjs");
+  const merged = (request) => ({ project: "atelier", item: { id: "t21", state: "merged", head: "e".repeat(40), request, dispatch: { job: "review" } } });
+  const open = (request) => ({ project: "atelier", item: { id: "t21", state: "open", head: "e".repeat(40), request, dispatch: { job: "review" } } });
+  assert.equal(failureKey(merged(50)), failureKey(merged(51)));
+  assert.notEqual(failureKey(open(50)), failureKey(open(51)));
+});
+
+// t591 (fifth review): the baseline is read and lacks the merge, but the
+// branch the claim's target names (a plan's, in another repository) could
+// not be fetched (a 503). That source was never read, so the merge is not
+// known to be missing: the job fails as a fetch failure, served again with
+// backoff, and once the target answers the review records its verdict,
+// though the baseline's head never moved.
+test("a target branch that fails transiently is retried, not taken as a missing merge, and recovers with the baseline unchanged", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task } = missingMergeFixture();
+  const B1 = "1".repeat(40), TARGET = "https://artifacts.example/plan";
+  const fixtureCli = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    const answer = await fixtureCli(argv, cwd, options);
+    if (argv[0] !== "review-claim") return answer;
+    const claim = JSON.parse(answer);
+    return JSON.stringify({ ...claim, target: { remote: TARGET, token: "plan-read", branch: "plan" } });
+  };
+  let held = false, targetFetches = 0, polls = 0;
+  const claimPolls = [];
+  io.hasCommit = async () => held;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (ref === merge) throw new Error("fatal: remote error: upload-pack: not our ref");
+    if (remote !== TARGET) return; // the baseline answers, without the merge
+    if (++targetFetches <= 2) throw new Error("fatal: unable to access 'https://artifacts.example/plan/': The requested URL returned error: 503");
+    held = true;
+  };
+  io.checkout = async (_dir, head) => { assert.ok(held); assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : ref === "FETCH_HEAD" ? B1 : assert.fail(`unexpected rev-parse ${ref}`);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [], runs = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { skips.push(body); },
+    async reportRun(body) { runs.push(body); },
+    async baselineHead() { return B1; },
+    async queue() {
+      if (++polls > 12 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      claimPolls.push(polls);
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  const claims = calls.filter((c) => c.argv?.[0] === "review-claim").length;
+  assert.equal(claims, 3, `claimed ${claims} times`);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict once the target answers");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+  assert.deepEqual([skips.length, runs.length], [0, 0], "nothing was reported as missing");
+});
+
+// t638: the stand-in io of a post-merge review whose claim names a target
+// branch (a plan's, in another repository) beside the baseline. The
+// baseline's read token answers only while `state.baselineReadable`; the
+// target is always read and holds the merge only while `state.targetHolds`;
+// the baseline's branch holds it only while `state.baselineHolds`.
+function unknownBaselineFixture() {
+  const { merge, io, calls, logs, task } = missingMergeFixture();
+  const TARGET = "https://artifacts.example/plan", B1 = "1".repeat(40);
+  const state = { baselineReadable: false, targetHolds: false, baselineHolds: false, held: false };
+  const fixtureCli = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    if (argv[0] === "baseline-token" && !state.baselineReadable) {
+      calls.push({ argv });
+      throw new Error("baseline-token: 503 Service Unavailable");
+    }
+    const answer = await fixtureCli(argv, cwd, options);
+    if (argv[0] !== "review-claim") return answer;
+    return JSON.stringify({ ...JSON.parse(answer), target: { remote: TARGET, token: "plan-read", branch: "plan" } });
+  };
+  io.hasCommit = async () => state.held;
+  io.fetch = async (_dir, remote, _token, ref) => {
+    calls.push({ fetch: [remote, ref] });
+    if (ref === merge) throw new Error("fatal: remote error: upload-pack: not our ref");
+    if (remote === TARGET ? state.targetHolds : state.baselineHolds) state.held = true;
+  };
+  io.checkout = async (_dir, head) => { assert.ok(state.held); assert.equal(head, merge); };
+  io.revParse = async (_dir, ref) => ref === `${merge}^@` ? `${"c".repeat(40)}\n${H1}` : ref === "FETCH_HEAD" ? B1 : assert.fail(`unexpected rev-parse ${ref}`);
+  return { merge, io, calls, logs, task, state, TARGET, B1 };
+}
+
+// t638 (t591's untested path): the baseline's read token cannot be read, so
+// the baseline is unknown, yet the target branch the claim names holds the
+// merge. The review reads it from there and records its verdict at once,
+// released never: an unknown baseline does not stop the other sources.
+test("a post-merge review whose baseline is unknown reads the merge from the target branch and records its verdict", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task, state, TARGET } = unknownBaselineFixture();
+  state.targetHolds = true;
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [], runs = [];
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { skips.push(body); },
+    async reportRun(body) { runs.push(body); },
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      if (++polls > 3 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      return [task(50)];
+    },
+  });
+  assert.ok(calls.some((c) => c.argv?.[0] === "baseline-token"), "the baseline was asked for");
+  assert.ok(calls.some((c) => c.fetch?.[0] === TARGET && c.fetch[1] === "plan"), "the target branch was fetched");
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 0);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+  assert.deepEqual([skips.length, runs.length], [0, 0]);
+});
+
+// t638 (t591's untested path): the baseline's read token fails on the first
+// two attempts, and the target branch is read but lacks the merge. With the
+// baseline unknown the merge is not known to be missing, so each attempt is
+// a fetch failure served again with backoff (polls 1, 2, 4), never a
+// missing commit kept until the baseline moves. On the third attempt the
+// baseline answers with the merge and the review records its verdict.
+test("a post-merge review whose baseline is unknown at first is a fetch failure, served again, and records its verdict once the baseline is read", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task, state, TARGET } = unknownBaselineFixture();
+  const claimPolls = [];
+  let polls = 0, clock = 0;
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => {
+    if (argv[0] === "review-claim") {
+      claimPolls.push(polls);
+      // The baseline's token answers, and its branch holds the merge, from the third claim on.
+      state.baselineReadable = state.baselineHolds = claimPolls.length >= 3;
+    }
+    return cli(argv, cwd, options);
+  };
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [], runs = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    async reportReviewSkip(body) { skips.push(body); },
+    async reportRun(body) { runs.push(body); },
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls > 12 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.deepEqual(claimPolls, [1, 2, 4], "served with the fetch failures' backoff");
+  // Each attempt while the baseline was unknown still read the target.
+  assert.equal(calls.filter((c) => c.fetch?.[0] === TARGET && c.fetch[1] === "plan").length, 2);
+  const releases = calls.filter((c) => c.argv?.[0] === "review-release");
+  assert.equal(releases.length, 2);
+  for (const r of releases) assert.match(r.argv[r.argv.indexOf("--note") + 1], /could not read the baseline/);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict once the baseline is read");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+  assert.deepEqual([skips.length, runs.length], [0, 0], "nothing was reported as missing");
+});
+
+// t638 (t591's untested path): the baseline is never read (its read token
+// fails on every attempt), and neither is its head at the give-up, so the
+// review is passed by against an unknown head. The report names the right
+// failure kind, a baseline that could not be read, not a merge missing from
+// it. The first head read later is kept as the baseline, not taken as a
+// move; only a head that differs from it serves the review again.
+test("a post-merge review whose baseline is never read is given up as a fetch failure, and an unknown head is not taken as a move", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  const { MISSING_RECHECK_MS } = await import("../cli/runner.mjs");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, task, state } = unknownBaselineFixture();
+  const B1 = "1".repeat(40), B2 = "2".repeat(40);
+  const claimPolls = [], heads = [];
+  let polls = 0, clock = 0;
+  const cli = io.cli;
+  io.cli = async (argv, cwd, options) => { if (argv[0] === "review-claim") claimPolls.push(polls); return cli(argv, cwd, options); };
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [], runs = [];
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, now: () => clock,
+    version: async () => ({ capabilities: SERVER_CAPABILITIES }),
+    async reportReviewSkip(body) { skips.push(body); },
+    async reportRun(body) { runs.push(body); },
+    async baselineHead() {
+      heads.push(polls);
+      // Unreadable at the give-up (poll 4); B1 at the next checks; B2 after
+      // the developer publishes on poll 20.
+      if (polls <= 4) throw new Error("baseline-head: 503");
+      return polls < 20 ? B1 : B2;
+    },
+    async queue() {
+      polls++;
+      clock = polls * 60_000;
+      if (polls === 20) state.baselineReadable = state.baselineHolds = true;
+      if (polls > 40 || calls.some((c) => c.argv?.[0] === "review")) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  // Three tries (polls 1, 2, 4), then passed by; the head is read at the
+  // give-up (unknown), then every MISSING_RECHECK_MS (a poll is a minute
+  // here): B1 is kept as the baseline, and B2 serves the review again.
+  const every = MISSING_RECHECK_MS / 60_000;
+  assert.deepEqual(heads, [4, 4 + every, 4 + 2 * every, 4 + 3 * every, 4 + 4 * every]);
+  assert.deepEqual(claimPolls, [1, 2, 4, 4 + 4 * every], JSON.stringify(claimPolls));
+  // One report, of a baseline that could not be read, naming the commit.
+  assert.equal(runs.length, 1, JSON.stringify(runs));
+  assert.equal(runs[0].outcome, "infrastructure_miss");
+  assert.match(runs[0].detail, new RegExp(`could not read the baseline for the merge commit ${merge}`));
+  assert.doesNotMatch(runs[0].detail, /publish main/);
+  assert.equal(skips.length, 0);
+  const verdict = calls.find((c) => c.argv?.[0] === "review")?.argv;
+  assert.ok(verdict, "the review records its verdict once the baseline moves and is read");
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+});
+
+// t638 (t591's untested path): an infrastructure_miss report the server
+// never takes is sent MISS_REPORT_TRIES times, with the skip reports'
+// backoff between tries, then given up and said so once; it is neither sent
+// again nor traded for a review skip, and the review is not claimed again.
+test("an infrastructure_miss report that fails on every attempt is given up after MISS_REPORT_TRIES tries, not looped", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  const { MISS_REPORT_TRIES, skipRetryPolls } = await import("../cli/runner.mjs");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, logs, task } = missingMergeFixture();
+  // The polls the tries are due on: the first on the miss's poll, then each
+  // skipRetryPolls(misses) after the one before.
+  const due = [1];
+  while (due.length < MISS_REPORT_TRIES) due.push(due.at(-1) + skipRetryPolls(due.length));
+  const last = due.at(-1);
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const attempts = [], skips = [];
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    version: async () => ({ capabilities: SERVER_CAPABILITIES }),
+    async reportRun(body) {
+      attempts.push(polls);
+      assert.equal(body.outcome, "infrastructure_miss");
+      assert.match(body.detail, new RegExp(merge));
+      throw new Error("503 Service Unavailable");
+    },
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      // Well past the last try's due poll and the backoff after it.
+      if (++polls > last + 3 * skipRetryPolls(MISS_REPORT_TRIES)) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.deepEqual(attempts, due, `tried on polls ${attempts.join(", ")}`);
+  const givenUp = logs.filter((l) => /could not report atelier\/t21 as infrastructure_miss.*given up after/.test(l));
+  assert.deepEqual(givenUp, [`could not report atelier/t21 as infrastructure_miss: 503 Service Unavailable; given up after ${MISS_REPORT_TRIES} tries`]);
+  assert.equal(skips.length, 0, "the run report is not traded for a review skip");
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1, "the missing merge is not claimed again");
+});
+
+// t591 (second review, finding 2): one poll may list several requests for
+// the same task and head; after the first misses, the rest are passed by
+// within the same batch.
+test("several requests for one missing merge in one poll are claimed and reported once", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, task } = missingMergeFixture();
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const skips = [];
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      if (++polls > 3) { process.emit("SIGINT"); return []; }
+      return [task(50), task(51), task(52)];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+  assert.equal(skips.length, 1);
+});
+
+// t591 (second review, finding 3): an infrastructure_miss report the server
+// did not take is kept and sent again on a later poll, with the skip
+// reports' backoff, until it lands; it is not traded for a review skip.
+test("an infrastructure_miss report that meets a transient failure is sent again and lands", async (t) => {
+  const { SERVER_CAPABILITIES } = await import("../src/route-level.ts");
+  const args = { ...runnerConfig(t), once: undefined };
+  const { merge, io, calls, logs, task } = missingMergeFixture();
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const attempts = [], landed = [], skips = [];
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    version: async () => ({ capabilities: SERVER_CAPABILITIES }),
+    async reportRun(body) {
+      attempts.push(polls);
+      if (attempts.length === 1) throw new Error("503");
+      landed.push(body);
+    },
+    async reportReviewSkip(body) { skips.push(body); },
+    async baselineHead() { return "1".repeat(40); },
+    async queue() {
+      if (++polls > 6) { process.emit("SIGINT"); return []; }
+      return [task(50 + calls.filter((c) => c.argv?.[0] === "review-release").length)];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 1);
+  assert.deepEqual(attempts, [1, 2]);
+  assert.equal(landed.length, 1);
+  assert.equal(landed[0].outcome, "infrastructure_miss");
+  assert.match(landed[0].detail, new RegExp(merge));
+  assert.equal(skips.length, 0, "the run report is not traded for a review skip");
+  assert.ok(logs.some((l) => /infrastructure_miss.*503.*again next poll/.test(l)), logs.join("\n"));
+});
+
 // t490: the claim's evidence at the head reaches the brief the reviewer
 // reads, ad-hoc runs apart from the required checks; a claim from an older
 // server that sends none says so.
@@ -1030,4 +1761,75 @@ test("a renewal refused as stale prevents a late verdict from the review child",
   assert.equal(calls.some((c) => c.argv?.[0] === "review"), false);
   const release = calls.find((c) => c.argv?.[0] === "review-release");
   assert.equal(release.argv[release.argv.indexOf("--request") + 1], String(claimed.request));
+});
+
+
+test("review dependencies are available in root and nested packages before the reviewer starts", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), ".review-deps-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, "task"), clone = join(root, "clone");
+  for (const part of ["", "relay"]) {
+    mkdirSync(join(source, part, "node_modules", "fixture-dependency"), { recursive: true });
+    mkdirSync(join(clone, part), { recursive: true });
+    writeFileSync(join(clone, part, "package.json"), JSON.stringify({ dependencies: { "fixture-dependency": "1" } }));
+    writeFileSync(join(source, part, "node_modules", "fixture-dependency", "index.js"), "module.exports = 42;");
+  }
+  const { io } = fixture();
+  io.workspacePath = () => source;
+  io.clone = async (_remote, _token, target) => {
+    const { cpSync } = await import("node:fs");
+    cpSync(clone, target, { recursive: true });
+  };
+  io.prepareReview = prepareReviewDependencies;
+  io.harness = async (_argv, cwd) => {
+    for (const part of ["", "relay"]) {
+      assert.equal(execFileSync(process.execPath, ["-e", "console.log(require('fixture-dependency'))"], { cwd: join(cwd, part), encoding: "utf8" }).trim(), "42");
+    }
+    return { code: 0 };
+  };
+  assert.equal((await runReview(assignment, config, "home:test", io)).phase, "reviewed");
+});
+
+test("review dependency preparation installs from the lockfile and propagates failures", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), ".review-install-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ devDependencies: { example: "1" } }));
+  writeFileSync(join(root, "package-lock.json"), "{}");
+  let installed = false;
+  await prepareReviewDependencies(root, join(root, "absent"), { executeChild: async (argv, options) => {
+    assert.deepEqual(argv, ["npm", "ci", "--no-audit", "--no-fund"]);
+    assert.equal(options.cwd, root);
+    installed = true;
+    return { code: 0 };
+  } });
+  assert.equal(installed, true);
+  await assert.rejects(prepareReviewDependencies(root, join(root, "absent"), { executeChild: async () => ({ code: 1, stderr: "install failed" }) }), /install failed/);
+});
+
+test("review brief carries required check commands, Observed results and the exact head", async () => {
+  const { io, calls } = fixture({ claim: { ...claimed, need: { ...claimed.need,
+    checks: [...claimed.need.checks, { claim: "npm run typecheck", grade: "observed", passed: true, where: "runner" }],
+  } } });
+  await runReview(assignment, config, "home:test", io);
+  const brief = calls.find((c) => c.brief).brief;
+  assert.ok(brief.includes(`- \`npm test\`: Observed passed, head \`${H1}\``), brief);
+  assert.ok(brief.includes(`- \`npm run typecheck\`: Observed passed, head \`${H1}\``), brief);
+});
+
+test("review brief never treats inability to run commands in the reviewer environment as blocking", async () => {
+  const { io, calls } = fixture();
+  await runReview(assignment, config, "home:test", io);
+  assert.match(calls.find((c) => c.brief).brief, /Inability to run a command in the reviewer’s environment is never blocking/);
+});
+
+// t675: the prose assessment of 2026-10-14 found no review brief named the
+// project's prose standard; the claim carries it and the brief names it.
+test("runReview names the project's prose standard the claim carries, and none when the claim carries none", async () => {
+  const path = "../ai-projects-house-style/house-style.md";
+  const { io, calls } = fixture({ claim: { ...claimed, proseStandard: path } });
+  await runReview(assignment, config, "home:studio", io);
+  assert.match(calls.find((c) => c.brief).brief, /## Prose standard\n\nProse standard: this project's prose follows `\.\.\/ai-projects-house-style\/house-style\.md`/);
+  const none = fixture();
+  await runReview(assignment, config, "home:studio", none.io);
+  assert.ok(!none.calls.find((c) => c.brief).brief.includes("Prose standard"));
 });

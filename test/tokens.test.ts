@@ -23,6 +23,16 @@ test("issuance validates identity, expiry and metadata", () => {
   for (const projects of [null, "p", [1], [""], [" p"], ["p/q"]]) assert.throws(() => tokenOptions({ ...input, projects }, "owner", now));
   assert.throws(() => tokenOptions({ ...input, label: false }, "owner", now));
   assert.deepEqual(tokenOptions({ ...input, projects: ["p", "p"] }, "owner", now).projects, ["p"]);
+  assert.deepEqual(tokenOptions({ runner: "HOME:Studio", projects: ["atelier", "micahapp", "atelier"] }, "owner", now), {
+    actor: "runner/studio",
+    runner: "home:studio",
+    projects: ["atelier", "micahapp"],
+    createdAt: "2026-10-05T00:00:00.000Z",
+    expiresAt: "2026-11-04T00:00:00.000Z",
+  });
+  for (const bad of [{ runner: "studio" }, { runner: "studio", projects: [] }, { runner: "studio", actor: input.actor, projects: ["p"] }]) {
+    assert.throws(() => tokenOptions(bad, "owner", now), /at least one project/);
+  }
 });
 
 test("scope is exact, absent means all and empty means none", () => {

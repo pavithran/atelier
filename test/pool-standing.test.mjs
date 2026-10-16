@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { suggestBuilder } from '../src/models/suggest.ts';
+import { typedModel } from '../src/models/identity.ts';
 import { suggestReviewer } from '../src/review/suggest.ts';
 import { actorStanding, cleanEntry, standingRefusal } from '../src/models/pool.ts';
 import { standingRoute } from '../src/plans/route.ts';
@@ -21,8 +22,8 @@ const item = { id: 't1', title: 'Improve formatting', scope: ['docs/**'], owner:
 const policy = { eligible: ['codex', 'claude-code', 'gemini-cli'], checks: [], protected: [] };
 const input = (pool) => ({ item, project: 'p', pool, policy, sources: [], runs: [] });
 const HELD = [
-  ['paused', { state: 'paused', stateAt: AT, note: 'AI Studio down' }, /paused since 2026-10-09 \(the owner's standing\): AI Studio down/],
-  ['reserved', { state: 'reserved', stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-09 \(the owner's standing\): astra's credits/],
+  ['paused', { state: 'paused', stateAt: AT, note: 'AI Studio down' }, /paused since 2026-10-09 \(the developer's standing\): AI Studio down/],
+  ['reserved', { state: 'reserved', stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-09 \(the developer's standing\): astra's credits/],
   ['review-only', { roles: ['review'] }, /not a builder; its roles are review/],
 ];
 
@@ -68,7 +69,9 @@ test('an actor named with a profile, another letter case or another harness is h
   assert.match(actorStanding(pool, 'codex/gpt-6-astra:high', 'build'), /not a builder/);
   assert.equal(actorStanding(pool, 'opencode/gpt-6-astra:high', 'build'), null);
   // A dispatch suggestion named by a profile is refused as the plain name is.
-  assert.throws(() => suggestBuilder(input([entry('opus-5.5', 'claude-code', { state: 'paused', stateAt: AT })]), { model: 'opus-5.5:high' }), /paused since/);
+  // The profile is resolved where it is typed (t622's boundary, typedModel), and the selector reads the id it became.
+  const pausedOpus = [entry('opus-5.5', 'claude-code', { state: 'paused', stateAt: AT })];
+  assert.throws(() => suggestBuilder(input(pausedOpus), { model: typedModel(pausedOpus, 'opus-5.5:high') }), /paused since/);
 });
 
 // A plan's tick dispatches from the routes saved at approval, read through
@@ -131,12 +134,16 @@ const PATHS = [
   ['src/review/reviewer.ts', 'judge', 'standingRefusal(', 'pickReviewer: plan reviews, landing reviews, reviewer suggestions'],
   ['src/review/suggest.ts', 'suggestReviewer', 'pickReviewer(', 'reviewer suggestions, through pickReviewer'],
   ['src/ledger.ts', 'assertStanding', 'actorStanding(', 'every model the owner names'],
-  ['src/ledger.ts', 'requestReview', 'this.assertStanding(', 'a named reviewer (atelier land --reviewer)'],
+  ['src/ledger.ts', 'askReview', 'this.assertStanding(', 'a named reviewer (atelier land --reviewer)'],
   ['src/ledger.ts', 'newPlan', 'this.assertStanding(', 'a named planner (atelier plan --planner)'],
   ['src/ledger.ts', 'reroutePlan', 'this.assertStanding(', 'a named planner or builder (atelier plan reroute)'],
   ['src/ledger.ts', 'rerouteReviewer', 'this.assertStanding(', "a named reviewer of a plan's part"],
   ['src/ledger.ts', 'reviewTick', 'actorStanding(', "a plan's reviews and their open requests"],
-  ['src/ledger.ts', 'askTierReview', 'actorStanding(', 'tier reviews'],
+  // Tier reviews judge each tier name by tierEligible, which calls the
+  // standing check (t622), and their dispatch by the standing check.
+  ['src/ledger.ts', 'askTierReview', 'tierEligible(', 'tier reviews'],
+  ['src/ledger.ts', 'askTierReview', 'this.standingDispatch(', 'tier reviews'],
+  ['src/review/tier.ts', 'tierEligible', 'actorStanding(', 'tier reviews, through the standing check'],
   ['src/ledger.ts', 'reaskReview', 'actorStanding(', 'a request carried when the head moves'],
   ['src/ledger.ts', 'reaskForCriteria', 'actorStanding(', 'a request carried when the criteria change'],
   ['src/ledger.ts', 'claim', 'actorStanding(', 'a task claimed by an actor'],
@@ -144,6 +151,10 @@ const PATHS = [
   ['src/ledger.ts', 'bindReview', 'actorStanding(', 'a review bound to a reviewer'],
   ['src/ledger.ts', 'poolChanged', 'actorStanding(', 'a change in the pool standing'],
   ['src/ledger.ts', 'handoffAllowed', 'this.assertStanding(', 'a task handed off to a new owner'],
+  ['src/review/criteria.ts', 'pickCriteriaReviewer', 'standingRefusal(', "a criteria review's reviewer, picked from the pool (t438)"],
+  ['src/ledger.ts', 'askCriteriaReview', 'this.standingDispatch(', "a criteria review's reviewer, named or picked (t438)"],
+  ['src/ledger.ts', 'claimCriteriaReview', 'actorStanding(', 'a criteria review claimed by the reviewer asked (t438)'],
+  ['src/ledger.ts', 'addCriteriaReview', 'actorStanding(', "a criteria reviewer's verdict (t438)"],
 ];
 
 // The body of a top-level function or a class method, up to the next one.

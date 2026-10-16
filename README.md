@@ -1,20 +1,15 @@
 # Atelier
 
-The cross-company rules below describe the default policy. With
-`atelier init --single-family COMPANY`, building and reviewing use only that
-company's models: a reviewer must be a different model from every contributor,
-never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
-`atelier init --cross-family` restores the default; both switches record who
-made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
+**Git keeps the code. Atelier brings the receipts.**
+
+A Git platform for multiple coding agents, built on Cloudflare.
 
 Atelier is a multi-agent system for software work, built on Git: a planner
 splits a goal into parts, builders of several model families work them at
 the same time, each in its own fork, reviewers of another family check each
-change, an integrator assembles the parts, and the one person who owns the
-project decides what merges. None of them can trample another's work or the
-owner's. It runs on Cloudflare Workers, Durable Objects and Artifacts, and is
+change, an integrator assembles the parts, and the developer, the one person the
+project belongs to, decides what merges. None of them can trample another's work or
+theirs. It runs on Cloudflare Workers, Durable Objects and Artifacts, and is
 driven by a dependency-free command, `atelier`, that any agent able to run a
 shell command can use.
 
@@ -34,22 +29,28 @@ and each has its rule.
 
 ### Claim
 
-**One holder per task.** A task (an *item* in the API) has exactly one owner
+**One holder per task.** A task (an *item* in the API) has exactly one holder
 at a time, granted atomically by the project's Durable Object when an agent
-runs `atelier start`, so a second claimant is refused. Ownership moves only
+runs `atelier start`, so a second claimant is refused. A task changes holder only
 by a recorded handoff, which revokes the old token.
 
 ### Fork
 
 **Every task its own fork.** The project's main branch is copied into an
 Artifacts repository, the *baseline*. Each task works in a fork of the
-baseline, its *workspace*, and its owner holds the only write token for it,
+baseline, its *workspace*, and its holder has the only write token for it,
 so multiple agents work concurrently without touching each other's files.
 
 ### Prove
 
-**Atelier runs the tests.** A check that Atelier ran itself, in a clean
-clone of exactly the head it reads from Artifacts, is *Observed*. Anything
+**The checks run on the exact head.** `atelier check` runs each required
+check in a clean clone of exactly the head Atelier reads from Artifacts, on
+the machine that asks (an agent's or a runner's), or with `--sandbox` in a
+Cloudflare container. Atelier records the result as *Observed* only when it
+names that head, with the paths the change touches, which Atelier measures
+itself. The pass or fail of a local run is the word of the machine that ran
+it; a project that wants results no agent can forge is registered with
+`atelier init --sandbox-only`, and then only container runs count. Anything
 an agent says it did is *Reported*: shown, never counted. A required check
 with no observed result at the current head is *Pending*. Only Observed
 passes count.
@@ -59,20 +60,32 @@ passes count.
 **Another company reviews, or in single-family mode another model.** A
 change to a protected path needs approval from a model of another family than
 every recorded contributor by default; in single-family mode, a different
-model of the project's one company from every contributor. The project
-owner's approval is not that review; without one, the owner can accept only
-by recording an override with its reason.
+model of the project's one company from every contributor. The
+developer's approval is not that review; without one, they can accept only
+by recording an override with its reason. Independence is enforced against
+agents, whose tokens are bound to their own actor. The developer token can
+act for anyone, a reviewer included, so the developer is trusted.
+
+The cross-company rule above is the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
 
 ### Land
 
-**One landing at a time, with a receipt.** The project owner is the person
+**One merge at a time, with a receipt.** The developer is the person
 the project belongs to; in the API they act as a reserved actor, `owner`
 unless the deployment names another. Work reaches the project only when the
-owner accepts one exact head through the gate and it merges, one landing per
-project at a time (`atelier land` holds the project's landing lease), with
+developer accepts one exact head through the gate and it merges, one merge per
+project at a time (`atelier land` holds the project's landing lease for the
+merge), with
 the task's record attached to the merge as a git note: its receipt. A goal
 too large for one task is split by a planner model into parts; once the
-owner approves the split, each part is claimed, forked, proven and reviewed
+developer approves the split, each part is claimed, forked, proven and reviewed
 by a model of another family the same way, and an integrator merges it onto
 the plan's own branch, which lands as one task.
 
@@ -81,7 +94,7 @@ passing at its exact head, an independent review where the change needs
 one, and its whole history in the ledger. Git keeps the code. Atelier brings
 the receipts.
 
-The web inbox answers one question, *what needs the project owner now?*, and
+The web inbox answers one question, *what needs the developer now?*, and
 ranks the things a person must decide above the things an agent must fix.
 
 ## Git alone, and with Atelier
@@ -92,28 +105,37 @@ the commit when multiple agents work at once, and that is what Atelier adds.
 
 | The question | With Git and a forge alone | With Atelier |
 | --- | --- | --- |
-| Who owns this work? | Commits record authors, not ownership; two agents can take the same task, and a crashed one leaves its branch half done. | One exact owner per task, holding the only write token for its workspace; a handoff is recorded and revokes the old token; a restarted runner takes back the jobs a dead run left. |
-| Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | Atelier runs the required checks itself, in a clean clone of the exact head; a merge is refused until every required check is observed passing there. |
-| Who checked it independently? | A model can review, and approve, its own work. | A change to a protected path needs approval from a model of another family than every contributor. |
-| Is main still sound after the merge? | Branches drift from main, and what merges may not be what was reviewed. | One landing at a time under a lease: main is merged in, checks run again, and the exact head that was reviewed is the one merged. A plan's parts are integrated on the plan's own branch first. |
-| What needs the owner now? | A stream of pull requests and notifications. | A decision inbox, ranked, each entry with a recommendation; `atelier land` takes a task from review to merge in one command. |
+| Who holds this work? | Commits record authors, not who holds the work; two agents can take the same task, and a crashed one leaves its branch half done. | One holder per task, holding the only write token for its workspace; a handoff is recorded and revokes the old token; a restarted runner takes back the jobs a dead run left. |
+| Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | The required checks run in a clean clone of the exact head Atelier reads, and a merge is refused until every one is observed passing there; with `--sandbox-only`, only runs in a Cloudflare container count. |
+| Who checked it independently? | A model can review, and approve, its own work. | A change to a protected path needs approval from a model of another family than every contributor, and an agent's token speaks only for that agent. |
+| Is main still sound after the merge? | Branches drift from main, and what merges may not be what was reviewed. | One merge at a time under a lease: main is merged in, checks run again, and the exact head that was reviewed is the one merged. A plan's parts are integrated on the plan's own branch first. |
+| What needs the developer now? | A stream of pull requests and notifications. | A decision inbox, ranked, each entry with a recommendation; `atelier land` takes a task from review to merge in one command. |
 | Which model is worth it? | Nothing records it. | Each model's track record and reliability from the ledger, and its calls, cost and latency from AI Gateway. |
 | Who did what? | Commit metadata, which an agent writes itself. | Every claim, push, check, review, decision and merge is an event in the ledger, and each merge's builder, reviewer and head go into Git as provenance notes. |
 
-The record shows what this catches. In Atelier's own project, as of
-2026-10-07 23:00 UTC, models recorded 303 reviews; 91 sent the work back,
-with 57 findings marked blocking, each found before the change merged. Of the
-205 merged tasks, 157 carry an approval from another model family at the
-revision that merged, and every task merged since 22:11 UTC on 2026-10-06
-does (68 in a row), since the project owner extended the rule to every
-path in the project that day.
+The record shows what this catches. Atelier's own project was read from its
+ledger at 2026-10-12 23:03 UTC with `atelier ls --all --json` and then
+`atelier receipt ID --json` for each of the 568 items listed, counted the way
+`video/scripts/derive.mjs` counts them. Models recorded 681 reviews; 268 sent
+the work back, with 360 findings marked blocking, each found before the
+change merged. Of the 365 merged by then (364 tasks and one plan), 317 carry
+an approval from another model family at the revision that merged, and every
+task merged from 22:11 UTC on 2026-10-06 to that reading does (228 tasks),
+since the project developer extended the rule to every path in the project
+that day. The public showcase at [atelier.zone](https://atelier.zone) counts
+live, so its figures have moved on since: read on 2026-10-13 for Gemini 4
+Argon's claims audit, it showed 379 merged, all time, and, counted apart, 13
+landed in fast mode. Those 13 landed on 2026-10-13, when the developer had
+switched the project to fast mode while Artifacts failed to create forks; a
+task landed in fast mode is reviewed, when the developer asks for a review, after
+the merge, not before it.
 
 ## Built on Cloudflare
 
 | Product | What it does in Atelier | State |
 | --- | --- | --- |
 | Workers | One Worker (`src/index.ts`) serves the API the CLI calls, the signed-in pages and the public pages, on the custom domain atelier.zone. | Live |
-| Durable Objects | The `Ledger` class, with SQLite storage. One instance per project handles one request at a time, which is what makes one owner per task hold; it keeps the project's tasks, events, evidence and reviews. One index instance keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live |
+| Durable Objects | The `Ledger` class, with SQLite storage. One instance per project checks and records a claim in one synchronous step (`claim` in `src/ledger.ts`), which is what makes one holder per task hold; it keeps the project's tasks, events, evidence and reviews. One index instance keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live |
 | Artifacts | Git repositories: each project's baseline, and a fork for every task and every plan. The Worker reads commits, trees and diffs through the binding to measure what a change touches and to preview its merge. Writes come only through a `git push` with a write token minted for one workspace. | Live (Artifacts is in open beta) |
 | Containers | `CheckRunner`, a Durable Object with a container from the Cloudflare-managed `cloudflare/debian-trixie` image, runs a task's required checks with `--sandbox`. The container holds no credential and its Internet is off, except GET and HEAD requests to the npm registry. The image has no git; the Worker streams Debian's git package, pinned by sha256, into each container (docs/setup.md). | Built and configured in `wrangler.jsonc`; a successful run in production has not been established |
 | Workers Analytics Engine | The `atelier_metrics` dataset (binding `METRICS`), with `src/metrics.ts` to write one typed data point (`writeMetric`) and read rows back through the Analytics Engine SQL API (`query`). Model speed (`src/models/speed.ts`) and reviewer precision (`src/models/precision.ts`) are computed from the ledger's own events, not written here. | Bound; nothing writes to it yet |
@@ -121,16 +143,32 @@ path in the project that day.
 | GraphQL Analytics API | The Models page and `atelier runner --usage` read the gateway's calls from it (`src/usage/gateway.ts`): each model's calls, failures, tokens, cost, and median and p90 duration over the last 7 days. | Live: the Models page shows each model's calls, failures, cost and durations |
 | Workers Logs | `observability` is enabled in `wrangler.jsonc`, so the Worker's logs are kept. | Live |
 | Queues | A consumer for Artifacts push notices (`cf.artifacts.repo.pushed`) is written in `src/index.ts`, but `wrangler.jsonc` declares no consumer, so no notice is delivered; the CLI reports each push to the Worker instead. | Written, not configured |
-| Cloudflare Access | In front of the owner's pages: the Worker verifies the Access assertion and the owner's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-owners-pages)). | Live: five Access applications on atelier.zone, with the Worker's own check on |
+| Cloudflare Access | In front of the developer's pages: the Worker verifies the Access assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). | Live: Access applications on atelier.zone, with the Worker's own check on |
 | Browser Rendering | A render check (`src/render-check.ts`, `test/render-check.test.mjs`) builds `/how` and the showcase from the pushed tree, posts each page to the reserved host `render.atelier.test`, and the Worker's `BROWSER` binding renders it in Cloudflare's headless browser and reports the laid-out geometry; a label wider than its box, overlapping boxes or a figure that shrinks instead of scrolling fails the check. | Built and configured in `wrangler.jsonc` |
 | R2 | Large check logs and review diffs (`src/large.ts`), kept in the bucket `atelier-large` (binding `LARGE`) and named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. The same bucket caches the pinned Debian git package the check container installs (`fetchPinned` in `src/sandbox/runner.ts`). | Live: the bucket `atelier-large` exists and is bound |
-| Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` runs the lease, the checks, the submission, the review wait and the acceptance as durable steps with retries, and waits for the owner's machine to merge main, push and merge. | Live behind `atelier land --workflow` (local checks by default) |
+| Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` runs the checks (in a container with `--checks container`), the submission and the review wait without the landing lease, then takes the lease for the acceptance and the merge alone, as durable steps with retries, and waits for the developer's machine to merge main, push, run the checks (by default) and merge. | Live behind `atelier land --workflow` (local checks by default) |
 
 ## Quickstart
 
-From a clone to a first task landed. It needs Node 24 or later, git, a
-Cloudflare account on the Workers Paid plan (Artifacts is in open beta
-there), and `wrangler` logged in.
+From a clone to a first task landed. It needs Node 24 or later (`engines`
+in package.json; runners reload themselves after a deploy on all supported
+Node versions, see docs/runners.md), git, a Cloudflare account on the Workers
+Paid plan (Artifacts is in open beta there), and `wrangler` logged in.
+
+**Try it without an account.** Nothing below needs a Cloudflare account
+until step 2. The live server is at [atelier.zone](https://atelier.zone): its
+root is the public showcase, and [atelier.zone/how](https://atelier.zone/how)
+states each rule the code enforces and lists every command. On your own
+machine, step 1 builds and tests everything, and
+
+```sh
+node test/preview.mjs
+```
+
+serves a read-only preview of the pages with illustrative content, with no
+account or token and no call to any Atelier server (the pages load their
+fonts from Google Fonts); it prints its address
+([Local visual review](docs/setup.md#local-visual-review)).
 
 **1. Build and test.**
 
@@ -140,15 +178,27 @@ cd atelier
 npm ci && npm run types && npm test
 ```
 
+`npm test` runs the whole suite. On the developer's Mac, the 143 landing check
+runs that passed from 2026-10-11 to 2026-10-12 (each `npm ci`, this suite
+and the typecheck, in a clean clone) took 4.4 to 10.6 minutes, median 6.0
+(the `land.check` events in the ledger). Among the suite's output are lines
+such as `uncaught exception … 403` or `… 409`: workerd logs each refusal the
+Workers runtime tests assert as an uncaught rejection, so those lines are the
+refusals under test, not failures; the summary at the end says whether
+anything failed ([Local development](docs/setup.md#local-development)).
+
 **2. Deploy the Worker.** `wrangler.jsonc` routes the Worker to atelier.zone
 as a custom domain and turns `workers.dev` off. In your copy, replace the
 route with a domain on your own account, or remove `routes` and set
-`workers_dev` to `true`. Choose a server token (a random one is fine, kept
-where you can paste it from), deploy, and give the Worker the token as a
-secret; wrangler reads it from the prompt, so it is not written on a command
-line:
+`workers_dev` to `true`. The Worker binds the R2 bucket `atelier-large`
+(`r2_buckets` in `wrangler.jsonc`), and a deploy whose bucket does not exist
+fails, so the first command creates it, once. Then choose a server token (a
+random one is fine, kept where you can paste it from), deploy, and give the
+Worker the token as a secret; wrangler reads it from the prompt, so it is not
+written on a command line:
 
 ```sh
+npx wrangler r2 bucket create atelier-large
 openssl rand -hex 32
 npm run deploy
 npx wrangler secret put ATELIER_TOKEN
@@ -157,6 +207,14 @@ npx wrangler secret put ATELIER_TOKEN
 `npm run deploy` runs `wrangler deploy` and records the commit it deployed,
 which `GET /api/version` reports with the server's route level. `atelier
 land` refuses to run against a server whose route level is below the CLI's.
+
+The server token is not enough for everything. Overriding a review that no
+model qualified to give needs the developer's own confirmation, a factor no agent
+session holds: either the developer's pages behind Cloudflare Access, or a
+confirmation secret, `OVERRIDE_SECRET`, given to the Worker as a second
+secret. A server with neither confirms no override (`NO_OWNER_FACTOR` in
+`src/rules.ts`). [Confirming an override](docs/setup.md#confirming-an-override)
+sets up either.
 
 **3. Install the CLI and sign in.** `login` asks for the token, checks it
 against the server, and only then stores it (in the macOS Keychain, the
@@ -198,8 +256,8 @@ atelier done "Fix the off-by-one in pagination"
 
 `done` pushes, runs the required checks in a clean clone of the pushed head,
 and submits only when they pass and the head has not moved. Its last line
-says `Ready for the owner` or names what still blocks the task. Here the
-owner's token acts for the agent named by `--as`; a real agent gets a token
+says `Ready for the developer` or names what still blocks the task. Here the
+developer's token acts for the agent named by `--as`; a real agent gets a token
 of its own (see [Further setup](#further-setup)).
 
 **6. Land it.** Back in the project checkout:
@@ -208,10 +266,10 @@ of its own (see [Further setup](#further-setup)).
 atelier land t1
 ```
 
-`land` takes the project's landing lease, merges main into the workspace,
-pushes, runs the required checks and submits, then accepts the task and
-merges it into the checkout with `--no-ff`, and publishes the merge to the
-baseline. The merge commit carries
+`land` merges main into the workspace, pushes, runs the required checks
+and submits, all without the project's landing lease; it takes the lease
+for the merge alone, then accepts the task and merges it into the checkout
+with `--no-ff`, and publishes the merge to the baseline. The merge commit carries
 the task's provenance as a git note on `refs/notes/atelier`, and the command
 prints how to read it. A change to a protected path also waits for a review
 from another model family, which a runner serves; see [Review](#review) and
@@ -224,21 +282,21 @@ with what each command prints.
 
 In outline: the project's main branch is copied into the baseline. Each
 task is a fork of the baseline, its workspace. Agents work in their
-workspace, push to it, and run checks against it. The project owner merges
+workspace, push to it, and run checks against it. The developer merges
 accepted work into the real checkout, and the baseline follows.
 
 | Step | Who | What happens |
 | --- | --- | --- |
-| `atelier init` | the project owner, in the project checkout | Creates the baseline and records the project's branch, required checks and protected paths. Every check must be read-only. |
-| `atelier new "title" --scope GLOB` | the project owner | Creates a task. The scope is what it intends to touch; overlapping live scopes are flagged. |
-| `atelier claim t3 --as H/M` | an agent | Grants ownership atomically, forks the baseline, mints an eight-hour write token for the owner alone, and clones the workspace. |
-| `atelier push` | the task's owner | Pushes, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | the task's owner; anyone with `--sandbox` | Runs each required check in a fresh clone of that head, or in a container, and records the results as Observed with the paths the change touches, which the Worker measures itself. |
-| `atelier submit` | the task's owner | Marks the task ready; the gate states what still blocks it. |
-| `atelier handoff t3 --to H/M` | the task's owner or the project owner | Moves ownership and revokes the old write token; the workspace carries over. |
+| `atelier init` | the developer, in the project checkout | Creates the baseline and records the project's branch, required checks and protected paths. Every check must be read-only. |
+| `atelier new "title" --scope GLOB` | the developer | Creates a task. The scope is what it intends to touch; overlapping live scopes are flagged. |
+| `atelier claim t3 --as H/M` | an agent | Grants the task atomically, forks the baseline, mints an eight-hour write token for the holder alone, and clones the workspace. |
+| `atelier push` | the task's holder | Pushes, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
+| `atelier check` | the task's holder; anyone with `--sandbox` | Runs each required check in a fresh clone of that head on the caller's machine, or in a container, and records the results as Observed with the paths the change touches, which the Worker measures itself. |
+| `atelier submit` | the task's holder | Marks the task ready; the gate states what still blocks it. |
+| `atelier handoff t3 --to H/M` | the task's holder or the developer | Moves the task to a new holder and revokes the old write token; the workspace carries over. |
 | `atelier review t3 --approve` | a model that did not work on the task | Required when the change touches a protected path, from another family than every contributor. |
-| `atelier accept t3` | the project owner | Allowed only when the gate is clear; pins the accepted head. |
-| `atelier merge t3` | the project owner, in the project checkout | Merges exactly the accepted head with `--no-ff`, attaches the provenance note and publishes the new main to the baseline. |
+| `atelier accept t3` | the developer | Allowed only when the gate is clear; pins the accepted head. |
+| `atelier merge t3` | the developer, in the project checkout | Merges exactly the accepted head with `--no-ff`, attaches the provenance note and publishes the new main to the baseline. |
 
 The **gate** for acceptance is a pure function in
 [`src/rules.ts`](src/rules.ts). It requires every required check that
@@ -246,7 +304,7 @@ applies to the change observed passing at the current head; the changed
 paths observed; no required check failing on the merge with a main that
 moved after the head's own checks passed; no rejection at that head; and, if
 a protected path changed, an approval at that head from a model of another
-family than every recorded contributor's, or the owner's override of that
+family than every recorded contributor's, or the developer's override of that
 review. A model's family is read from its name
 ([`src/models/pool.ts`](src/models/pool.ts)); a family no name pattern
 recognises never qualifies.
@@ -272,8 +330,8 @@ gate, check classes and checks that apply to some paths.
   my-project --days 30 --label "Task runner"`, then `atelier token ls` and
   `atelier token revoke ID`. Set `ATELIER_TOKEN` to it in the agent's
   session. Agent tokens can claim, push, record checks and reports, submit,
-  hand off, release and review as themselves; creating tasks, owner
-  decisions, project settings and token management need the owner token.
+  hand off, release and review as themselves; creating tasks, developer
+  decisions, project settings and token management need the developer token.
   A home runner records each review with the reviewing model's own token,
   named per model in its config (`tokens`, [Runners](docs/runners.md)), so
   the task page shows the reviewer itself as the recorder; a model without
@@ -292,7 +350,7 @@ gate, check classes and checks that apply to some paths.
   reviewer's runner reads `.atelier/prompts/review.md` from the accepted
   branch, never from the change under review, so a change cannot author its
   own reviewer's instructions.
-- **The owner's actor and name.** Set `OWNER_ACTOR` and `OWNER_NAME` as
+- **The developer's actor and name.** Set `OWNER_ACTOR` and `OWNER_NAME` as
   secrets or `vars`, and `TIMEZONE` to an IANA zone for the pages' times.
 - **Project policy.** `atelier init` again changes only what it names.
   `--protect GLOB` sets the protected paths, `--sandbox-only` counts only
@@ -301,13 +359,13 @@ gate, check classes and checks that apply to some paths.
   regenerates fixtures during a landing, and `--review-bar TEXT` states what
   may block a review.
 - **Notifications.** Set `NTFY_TOPIC` to have an ntfy message sent when a
-  submitted task reaches the owner's inbox.
+  submitted task reaches the developer's inbox.
 
 ## Daily use
 
 ### Tasks
 
-The project owner files a task with `atelier new "title" --scope GLOB`, and
+The developer files a task with `atelier new "title" --scope GLOB`, and
 may frame it with `--non-goal`, `--stop-when` and `--next-gate`; `atelier
 edit` changes that framing later. An agent then needs two commands:
 
@@ -323,23 +381,23 @@ outside a registered checkout. `done` runs inside the task workspace. It
 pushes, runs the required checks and submits the summary only after checks
 pass and the revision remains unchanged. It stops at the first failed step
 and names that step. The individual steps remain available: `claim`,
-`push`, `update` (rebase onto the baseline), `check [--sandbox] [--merged]`,
+`push`, `update` (take the baseline: a merge that regenerates declared outputs, or a rebase), `check [--sandbox] [--merged]`,
 `report` (a Reported claim), `submit`, `handoff`, `release`, and `block`
 with `unblock` for a task waiting on something outside it.
 
-`atelier inbox` prints each task that waits on the owner, one per task with
-what to do and the link to do it (docs/owner.md, "What waits on the owner").
+`atelier inbox` prints each task that waits on the developer, one per task with
+what to do and the link to do it (docs/owner.md, "What waits on the developer").
 `atelier show ID` prints a task's decision brief with
 the recorded evidence, a recommendation and the task's address; an agent
 can relay that text unchanged. Both accept `--json`; the same brief is
-`GET /api/projects/NAME/items/ID/brief`, which requires sign-in. The owner
+`GET /api/projects/NAME/items/ID/brief`, which requires sign-in. The developer
 still decides whether to accept and merge. `atelier ls` lists the
-project's tasks, and `atelier status` prints what waits for the owner across
+project's tasks, and `atelier status` prints what waits for the developer across
 every project.
 
 ### Plans
 
-A plan turns one goal into several tasks that merge together. The owner
+A plan turns one goal into several tasks that merge together. The developer
 states the goal with `atelier plan "goal" [--scope GLOB]... [--planner
 H/M]`. Atelier creates the plan item and queues it as a plan job for the
 planner named, or else for the first model in the pool for research work
@@ -376,10 +434,10 @@ runner started with `--integrate`, merges the part onto the plan's branch
 with `--no-ff`, runs the plan's checks and reports `atelier integrated ID
 --part KEY --merge-commit SHA`. When main moves, a `refresh` job merges it
 into the plan's branch so later parts fork from an updated basis. Once every
-part integrates, the integrator submits the plan item, and the owner lands
+part integrates, the integrator submits the plan item, and the developer lands
 it whole: `atelier merge ID --head SHA`.
 
-A plan that reaches a limit blocks and appears in the inbox; the owner
+A plan that reaches a limit blocks and appears in the inbox; the developer
 decides with `atelier plan retry ID`, `atelier plan reroute ID --to H/M`,
 `atelier abandon ID` or `atelier plan stop ID [--note TEXT]`, which closes
 the plan and its open parts and revokes their write tokens. History and
@@ -388,14 +446,18 @@ evidence stay. [docs/orchestrator.md](docs/orchestrator.md) is the design.
 ### Landing
 
 `atelier land ID` runs the whole second half of a single task, for the
-project owner in the registered checkout. It takes the project's landing
-lease on the server, so two landings never race main; merges main into the
-task's workspace, stopping on conflicts and naming the files; runs the
-project's regenerate command when one is declared; pushes, runs the required
-checks and submits; requests the independent review the gate needs and waits
-for the verdict; then accepts and merges. `--reviewer H/M` names the
-reviewer, `--wait` queues behind a landing that holds the lease, `--no-review`
-leaves the task submitted for the owner to settle, and `--dry-run` prints
+developer in the registered checkout. It merges main into the task's
+workspace, stopping on conflicts and naming the files; runs the project's
+regenerate command when one is declared; pushes, runs the required checks
+and submits; and requests the independent review the gate needs and waits
+for the verdict. None of this holds the project's landing lease, so several
+landings check and review at once. Once the head is checked and approved,
+the landing queues for the lease on the server, so two merges never race
+main, confirms under it that main has not moved, then accepts and merges;
+where main moved, it releases the lease and goes again from the merge of
+main. `--reviewer H/M` names the reviewer; every landing queues for the
+lease, so `--wait` is kept for compatibility and changes nothing; `--no-review`
+leaves the task submitted for the developer to settle, and `--dry-run` prints
 the steps and the refusals without changing anything. A landing stopped
 partway resumes when the same command runs again, and each step is recorded
 on the task as a `land.*` event; a merge that brings more commits from main
@@ -404,7 +466,7 @@ of them.
 
 The same can be done in steps: `atelier accept ID` then `atelier merge ID`,
 or `atelier merge ID --head FULL_SHA`, which accepts a submitted task at
-that exact revision first. `--approve` on that merge records the owner's own
+that exact revision first. `--approve` on that merge records the developer's own
 review, which is not the independent review. When no reviewer qualifies,
 because no model of another family is available or a contributor's family
 is not recognised, `accept` and `merge` take `--override-review "reason"`.
@@ -424,11 +486,11 @@ push contributors Atelier recorded. A model's family is read from its name;
 models are compared without letter case or a `:profile` suffix, and a name
 the model registry ([`src/models/registry.ts`](src/models/registry.ts))
 lists for a model, such as `claude-opus-5-5` for `opus-5.5`, is that model.
-The project owner may review too, and the owner's rejection blocks, but the
-owner's approval never counts as this review.
+The developer may review too, and their rejection blocks, but their approval
+never counts as this review.
 
 A plan's part gets its review request automatically on submission. A single
-task gets one when the owner lands it. A runner that offers review jobs
+task gets one when the developer lands it. A runner that offers review jobs
 claims the request with `atelier review-claim ID [--runner home:NAME]`,
 reads the diff, writes a verdict and findings, and records them with
 `atelier review ID --approve|--reject --head SHA --criteria BINDING
@@ -446,9 +508,9 @@ command, route or API field without a migration, or a visible regression on a
 user-facing page; anything else is a follow-up. `atelier init --review-tier
 H/M,H/M` names a top tier of reviewers that reviews protected changes when a tier model qualifies under the family policy.
 
-The owner records a verdict on each finding with `atelier finding ID --head
+The developer records a verdict on each finding with `atelier finding ID --head
 SHA --index N --verdict confirmed|refuted|fixed`. A later review of the task
-shows the reviewer each earlier finding with the owner's verdict, and the
+shows the reviewer each earlier finding with the developer's verdict, and the
 record counts each reviewer's precision.
 
 ### The receipt of a task
@@ -456,7 +518,7 @@ record counts each reviewer's precision.
 `atelier receipt ID` prints one task's whole story from the ledger, in the
 order it was recorded: created, claimed, each handoff and release, each pushed
 head as Artifacts answered it, each observed check at each head, each review
-with its verdict and every finding, each finding judged by the owner
+with its verdict and every finding, each finding judged by the developer
 (confirmed, refuted or fixed), then the submission, acceptance and merge or
 abandonment that ended it. `--json` carries the task's events as the ledger
 holds them, in order. This is t278's receipt:
@@ -496,7 +558,7 @@ https://atelier.zone/p/atelier/t278
 
 Every line is an event the ledger recorded. Opus 5.5 built the change, so no
 Claude agent could approve it: Gemini 3.1 Pro, of another family, reviewed it
-and rejected it twice, each time for a real data-loss defect, and the owner
+and rejected it twice, each time for a real data-loss defect, and the developer
 judged every finding fixed. The third head was approved at 21:28:33 and
 merged at 21:28:44, eleven seconds later: strict where it matters, no wait
 once the proof is in.
@@ -512,7 +574,7 @@ model. It offers `build`, `plan` and the merge jobs (`merge-main`,
 the runner runs `finish`. A runner with `--integrate`
 runs no harness and takes only the plans' `integrate` and `refresh` jobs.
 
-The owner sends a task to a kind of runner with `atelier dispatch ID --to
+The developer sends a task to a kind of runner with `atelier dispatch ID --to
 home|cloud|any [--agent A] [--model M]`, or "Send to an agent" on its page.
 A runner's config, at `~/.config/atelier/runner.json` or `--config PATH`,
 lists each harness as an argv array with placeholders:
@@ -537,7 +599,7 @@ variables and the ones its entry names in `env`, never a variable named
 job authenticates with the reviewing model's own agent token, which `tokens`
 in the config locates (a Keychain entry name or a file under
 `~/.config/atelier/`, never the value); without one the review is refused,
-naming the token to store, and never recorded by the owner token. The
+naming the token to store, and never recorded by the developer token. The
 harness leads a process group of its own, and every process left in it is
 ended when the harness ends. No cloud runner ships: a task sent to `cloud`
 waits for a runner named `cloud:NAME`, any program that speaks the queue's
@@ -551,7 +613,7 @@ placeholder and setting, the failure counters, `atelier runner --discover`
 
 **Where a project stands.** `atelier status --project NAME` prints the
 project's standing as plain text: who holds each task and since when, what
-waits on the owner, what is queued for a runner, the last five merges and
+waits on the developer, what is queued for a runner, the last five merges and
 the latest handoff notes. It ends with whether this machine's checkout is in
 step with the baseline and, for tasks with a workspace on this machine, what
 each holds locally. The project page and `GET
@@ -562,8 +624,8 @@ beside the selected task; Flow draws each task as a thread from main and
 back; History keeps merged and closed tasks with their evidence; Studio
 draws one lane per live task, banded by who held it; Models and Usage show
 the pool, each model's record and spend. On a server without Cloudflare
-Access, only the owner token signs in to the browser; behind Access, the
-owner's Access sign-in starts the session with no token to paste
+Access, only the developer token signs in to the browser; behind Access, the
+developer's Access sign-in starts the session with no token to paste
 (docs/setup.md).
 
 **The public pages.** `/how` explains what Atelier is, draws the loop from
@@ -572,12 +634,12 @@ orchestrator are built, and lists every command. It reads no project and no
 setting, and its command reference is drawn from `src/usage.ts`, the table
 `atelier help` prints from; `test/how.test.ts` checks that the rules and
 labels it names still match the code. `/showcase` shows the projects the
-owner names, as the Flow page draws them, to anyone without signing in. It
+developer names, as the Flow page draws them, to anyone without signing in. It
 leaves out what anyone wrote (review notes, reports, check commands and
 closing notes), the diffs, every form and every link into the signed-in
 pages. Every email address goes too: from task and project titles, and from
 the agent names read from commit trailers in the history before Atelier,
-where a name that is only an address is not taken. The owner adds a project
+where a name that is only an address is not taken. The developer adds a project
 with `atelier showcase set NAME [--named|--anonymous]` or the form on the
 signed-in Home page, and takes it off with `atelier showcase remove NAME`.
 Anonymous is the default: the project's card and stories carry a neutral
@@ -588,13 +650,13 @@ seeds the same setting and overrides it for the names it lists. Nothing is
 public until a project is named, and the page is cached for a minute. The
 showcase is the front door: `/` serves it to everyone, signed in or not
 (`/showcase` serves the same page), and its header's Sign in leads to
-`/login`, which opens the owner's Home at `/home`.
+`/login`, which opens the developer's Home at `/home`.
 
 **Protected actions.** An action whose effect reaches beyond the repository
 and cannot be taken back by a revert (a deploy, a device install, a push of
 the project's branch to its own remotes, a paid model run, a Photos
 writeback, or a kind the project's ship files name) runs only with the
-owner's approval for one exact revision of the main line, and each approval
+developer's approval for one exact revision of the main line, and each approval
 is used by one run:
 
 ```sh
@@ -609,19 +671,21 @@ running anything when a protected step lacks its approval, stops at the
 first failure, never forces a push, and records every step on the ledger.
 The ship files and what they run are protected like check scripts. The
 design is [docs/ship.md](docs/ship.md); the local harness that runs a task
-is the owner's own user, which no server rule confines, and the design for
+is the developer's own user, which no server rule confines, and the design for
 confining it is [docs/harness-confinement.md](docs/harness-confinement.md).
 
-**The owner's own work.** Sessions of direct work in the registered checkout
+**The developer's own work.** Sessions of direct work in the registered checkout
 (`atelier unwrap` and `atelier wrap`), projects that use Git LFS or have a
 history too large for Artifacts, removing and renaming projects, the private
 operations toolkit behind `atelier ops`, and cleaning finished workspaces
-with `atelier gc` are in [docs/owner.md](docs/owner.md). Projects governed by
+with `atelier clean` are in [docs/owner.md](docs/owner.md). Projects governed by
 ControlPlane, and moving one to Atelier with `atelier adopt`, are in
 [docs/control-plane.md](docs/control-plane.md).
-[docs/using-atelier.md](docs/using-atelier.md) is the owner's guide to using
+[docs/using-atelier.md](docs/using-atelier.md) is the developer's guide to using
 Atelier well, and [docs/orchestrating.md](docs/orchestrating.md) the
 handbook for a session that runs Atelier for a project.
+[docs/multi-mac.md](docs/multi-mac.md) covers working on one project from
+several Macs: `atelier clone`, `pull`, `branch` and private files.
 
 ## Costs and usage
 
@@ -636,7 +700,7 @@ estimate from the operations the CLI performs, not a measurement.
 harnesses, reports Codex's 5-hour and weekly windows, the requests, tokens
 and cost that zcode and opencode recorded by served model, and the DeepSeek
 balance. The Usage page shows the last report of each tool, and the Worker
-sends an ntfy alert once when a figure crosses the owner's threshold.
+sends an ntfy alert once when a figure crosses the developer's threshold.
 Claude's plan limits and Gemini's spend have no record on the machine and
 are not reported.
 
@@ -686,9 +750,9 @@ in
 
 Enforced by construction:
 
-- one owner per item, because the project's Durable Object handles one
-  request at a time;
-- one live write token per workspace, minted for the owner and revoked on
+- one holder per item, because the project's Durable Object checks and
+  records a claim in one synchronous step;
+- one live write token per workspace, minted for the holder and revoked on
   handoff, release or abandonment;
 - observed evidence tied to the head Atelier reads from Artifacts, not the
   head an agent reports;
@@ -697,8 +761,12 @@ Enforced by construction:
 Trusted, and stated here so nobody assumes otherwise:
 
 - **Agent tokens prove identity.** An agent token binds requests to one actor
-  and optionally to projects. The owner token still permits declared actors
-  for orchestration. Keep it with the owner's tools. A workspace write token
+  and optionally to projects. The developer token still permits declared actors
+  for orchestration, a reviewer included: a review it records in a model's
+  name counts as that model's (for a protected change, only when it answers
+  a review request that model claimed for that head). Independence of review is therefore
+  guaranteed against agents, not against whoever holds the developer token.
+  Keep it with the developer's tools. A workspace write token
   controls Git pushes and is separate from an API token.
 - **Git credentials stay off the command line.** The CLI hands every
   Artifacts token to git through git's environment (`GIT_CONFIG_COUNT`,
@@ -713,8 +781,9 @@ Trusted, and stated here so nobody assumes otherwise:
   touches: the changed paths are measured by the Worker from Artifacts for
   every check, so a protected change always needs its independent review,
   whatever a local result says. Cloudflare container checks execute on the
-  server and are available with `--sandbox`; `sandboxOnly` policy requires
-  that evidence.
+  server and are available with `--sandbox`; a project that wants results no
+  agent can forge is registered with `atelier init --sandbox-only`, whose
+  `sandboxOnly` policy counts only that evidence.
   The container integration still needs deployment and a live runtime check.
 - **A local check runs with the caller's file access.** `atelier check`,
   `finish` and `done` run the item's check code on the caller's machine as
@@ -735,7 +804,7 @@ Trusted, and stated here so nobody assumes otherwise:
 - **Merging happens locally.** The Artifacts binding and REST API can read
   repositories (commits, trees, blobs, files, a first-parent log) but cannot
   write. The only way to write is a git push with a write token, so Atelier
-  merges in git on the owner's machine and pushes. The iCloud checkout is the
+  merges in git on the developer's machine and pushes. The iCloud checkout is the
   source of truth.
 
 ## Development
@@ -752,15 +821,15 @@ read-only preview of the pages with illustrative content.
 
 `bin/concurrency-proof.mjs` drives N simulated agents (N up to 1,000,
 configurable) against a throwaway project over the CLI's own request protocol
-(the owner token as a bearer header, `x-atelier-actor` naming the agent) and
+(the developer token as a bearer header, `x-atelier-actor` naming the agent) and
 reports what the run measured. It proves three things, and asserts each before
 exiting cleanly:
 
-- **claim spread** — N agents claim N tasks at once; all N succeed and each
+- **claim spread**: N agents claim N tasks at once; all N succeed and each
   gets its own fork;
-- **claim race** — N agents race for one task; exactly one wins and the other
+- **claim race**: N agents race for one task; exactly one wins and the other
   N-1 are refused, each refusal naming the holder;
-- **pushes** — with `--push`, each agent makes a tiny commit and pushes it to
+- **pushes**: with `--push`, each agent makes a tiny commit and pushes it to
   its own fork, and the push is observed at that fork's head (without
   `--push` no push is made and the phase is skipped, so the run stays cheap).
 
@@ -773,10 +842,10 @@ bin/concurrency-proof.mjs --project throwaway --agents 1000 --push
 ```
 
 The tests run it against a stand-in server on localhost
-(`test/concurrency-proof.test.mjs`); the proof is never run against the live
-server. The figures below are one measured run against that stand-in, a single
-Node process on this machine, included because the brief asks for measured
-numbers rather than claims — they are not the live server's latency:
+(`test/concurrency-proof.test.mjs`). The figures below are one measured run
+against that stand-in, a single Node process on this machine, included
+because the brief asks for measured numbers rather than claims; they are not
+the live server's latency:
 
 ```
 N=1000: claim spread 1000/1000 ok with 1000 distinct forks, median 77.3ms,
@@ -784,14 +853,23 @@ p90 78.1ms; claim race 1 winner, 999 refused each naming the holder, median
 47.8ms, p90 48.6ms; cleanup 1001/1001; ~9172 req/s over 0.436s, 4002 requests.
 ```
 
-The request count is every request the run sent — the 1001 that created the
+The request count is every request the run sent: the 1001 that created the
 tasks and the race, the 2000 claims, and the 1001 abandons. With `--push`, the
 proof also reports how many of the git pushes ran at once (its peak live git
 subprocesses): the pushes are concurrent, so all N overlap, and that figure is
 asserted in the tests.
 
-A run against the live server prints the live numbers; this README reports
-only what a run measured.
+On 2026-10-09 the claim race ran once against the live server (deploy
+3cad79b5): 1,000 agents raced for one task on atelier.zone. One agent got the
+task, 976 were refused with a refusal naming the holder, and 23 were answered
+with a retryable 503, the server saying it was busy. No second agent was
+granted the task. These figures are as the orchestrating session reported
+the run, and the run was not repeated. The ledger keeps them in the brief of
+t364, the task filed that day to fix how the proof read the holder
+(`atelier receipt t364 --json`; its page,
+[atelier.zone/p/atelier/t364](https://atelier.zone/p/atelier/t364), is behind
+the developer's sign-in), all but the count of 503s, which only that report
+gives.
 
 ## Licence
 

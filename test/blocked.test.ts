@@ -39,7 +39,7 @@ test("a blocked task refuses claims and every live move with its reason and the 
   assert.doesNotThrow(() => assertLive(item({ state: "claimed", blocked: undefined })));
   // Dispatch takes only an open task, so a blocked one is left out, owned or not.
   assert.throws(() => assertDispatchable(item({ owner: null })), /t5 is blocked; only an open task can be sent to a runner/);
-  assert.throws(() => assertDispatchable(item()), /t5 is owned by claude-code\/opus-5.5; only an open task/);
+  assert.throws(() => assertDispatchable(item()), /t5 is held by claude-code\/opus-5.5; only an open task/);
 });
 
 test("only an open, claimed or submitted task can be blocked, and not twice", () => {
@@ -80,7 +80,7 @@ test("the decision and the brief name who blocked the task, why, and the way on"
   const d = decisionFor(item(), policy, [], []);
   assert.equal(d.title, "Blocked");
   assert.equal(d.action, "none");
-  assert.equal(d.detail, "claude-code/opus-5.5 blocked it: waiting on the API key. It keeps its owner and workspace, and nothing moves until it is unblocked.");
+  assert.equal(d.detail, "claude-code/opus-5.5 blocked it: waiting on the API key. It keeps its holder and workspace, and nothing moves until it is unblocked.");
   const i = item();
   const b = briefFor({ item: i, policy, evidence: [], reviews: [], gate: gate(i, policy, [], []), events: [], ownerActor: "owner" });
   assert.equal(b.decided, "Decide t5 at aaaaaaaa: Wire the keys.");
@@ -101,6 +101,6 @@ test("stuck detection skips a blocked task, however long it has been silent or f
   ];
   // The same record, unblocked, is stuck twice over: silent for days, and failing on two heads.
   const silent = item({ state: "claimed", blocked: undefined, lastPushAt: null });
-  assert.deepEqual(detectStuck([silent], events, NOW).map((f) => f.suggestion), ["check in with the owner", "hand off"]);
+  assert.deepEqual(detectStuck([silent], events, NOW).map((f) => f.suggestion), ["check in with the holder", "hand off"]);
   assert.deepEqual(detectStuck([item({ lastPushAt: null })], events, NOW), []);
 });

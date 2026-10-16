@@ -4,17 +4,33 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { acceptancePolicy, mergeContext, mergePolicyDecision } from "../../src/control-plane.ts";
 import { pathCollisions } from "../../src/rules.ts";
-import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
-import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
+import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
+import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
+import { guardedPush, privateGuardFor, privateRefusal } from "../private.mjs";
+import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
+import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, saveConfig, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
 export default async function mergeCommand() {
   const git = landingGit;
+  // A merged task's workspace on this Mac goes once its work is in main or
+  // the head Atelier recorded (t561); one holding more is kept and named.
+  // Its removal never fails the merge.
+  const cleanWorkspace = async (name, id, branch, cwd) => {
+    if (!existsSync(join(CACHE, "work", name, id))) return;
+    try {
+      // request throws where call would end the command: a ledger that
+      // fails after the merge must not fail it or skip what follows.
+      const getItem = async () => (await request("GET", I(name, id), undefined, OWNER)).item;
+      await collectCache({ cache: CACHE, name, items: [await getItem()], getItem, apply: true, only: id, main: { dir: cwd, branch },
+        log: (line) => console.log(line.replace(/^REMOVED /, `Removed ${id}'s workspace `).replace(/^KEEP +(.*?): /, `Kept ${id}'s workspace $1: `)) });
+    } catch (error) { console.log(`${id}'s workspace was left in place: ${error.message}`); }
+  };
   const postMerge = (name, id) => executePostMerge({ name, id, request: (method, path, body) => request(method, path, body, OWNER) });
   // A plan's branch is updated only by its integrator, which merges
   // recorded parts, so an accepted plan that conflicts with main would stay
@@ -30,7 +46,7 @@ export default async function mergeCommand() {
     die(`merge conflicts: ${id}'s branch does not merge with main, so nothing was merged. Its acceptance at ${short(item.acceptedHead)} is withdrawn and the plan is building again: a refresh from main at ${short(main)} is queued for atelier/integrator, and if it conflicts the plan adds a merge-main part whose builder resolves it. The integrator submits the plan again once every part is integrated; then merge it with atelier merge ${id} --head H, H being the integration head atelier plan show ${id} prints`);
   };
   // An override is recorded only while accepting, which needs the revision.
-  if (args["override-review"] !== undefined && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
+  if ((args["override-review"] !== undefined || args.quote !== undefined) && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
   const name = project(), id = itemArg();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
   // Ends a landing. It holds the landing lock throughout, as merge does, so
@@ -115,7 +131,7 @@ export default async function mergeCommand() {
       }
       journal.clear();
       if (landed) return console.log(`${id}: the landing in this checkout is cancelled. ${id} at ${short(head)} is already on the baseline through another merge commit, so its landing lease is left for that merge to be recorded.`);
-      if (ours) return console.log(`${id}: the merge is cancelled; its owner can push a new revision.`);
+      if (ours) return console.log(`${id}: the merge is cancelled; its holder can push a new revision.`);
       return console.log(`${id}: the landing in this checkout is cancelled. ${id} is ${now}, and nothing changed on the server${item.state === "accepted" ? `; merge its accepted revision with: atelier merge ${id}` : ""}.`);
     } finally { unlock(); }
   }
@@ -126,12 +142,14 @@ export default async function mergeCommand() {
   if (args.head !== undefined) {
     if (!/^[a-f0-9]{40,64}$/.test(args.head)) die(COMMAND_USAGE.merge);
     const reason=overrideArg("merge ID --head FULL_REVISION");
+    // The developer's words, with the acting model, confirm the override without the page (t629).
+    const direction=reason!==undefined?directionArg("merge ID --head FULL_REVISION --override-review REASON"):{};
     const d=await call("GET",I(name,id),undefined,OWNER);
     if (d.item.state==="submitted") {
       if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
       // The owner approves here the criteria this command read with the head.
       if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
-      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER,reason!==undefined?actingHeaders():{});
+      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason,...direction}:{})},OWNER,reason!==undefined?actingHeaders():{});
     }
   }
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
@@ -151,7 +169,7 @@ export default async function mergeCommand() {
     if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
     if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
     const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
-    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
+    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); await cleanWorkspace(name, id, p.branch, cwd); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
     const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
     if (refreshed?.policy) {
       const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
@@ -170,7 +188,12 @@ export default async function mergeCommand() {
     // baseline already holds is not read.
     const identity=d.policy?.commitIdentity ?? die(`${NO_IDENTITY(name)}. Nothing was merged.`);
     const taskRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,item.acceptedHead);
-    if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's owner rewrites those commits under an allowed identity and submits a new revision, or the owner allows the address with atelier init --agent-email EMAIL.`);
+    if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's holder rewrites those commits under an allowed identity and submits a new revision, or the developer allows the address with atelier init --agent-email EMAIL.`);
+    // The project's private files (t645) reach the baseline through no task.
+    const guard=privateGuardFor(name);
+    if (guard.refusal) die(`${id} was not merged: ${guard.refusal}`);
+    const taskPrivate=privateRefusal(cwd,guard.paths,item.acceptedHead,[baselineHead],`${id}'s accepted revision`);
+    if (taskPrivate) die(`${taskPrivate} Nothing was merged.`);
     if (refreshed?.policy) {
       if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
       // The accepted revision's own changes: those since the newest baseline
@@ -188,13 +211,16 @@ export default async function mergeCommand() {
     // A project whose baseline holds part of its history (cli/fresh.mjs)
     // merges the task's commits rebuilt onto the paired project commit.
     const fresh=p.fresh===true, pairs=fresh?loadPairs(gitDir,name):null;
+    // Another checkout has carried commits to the baseline (t644): pull
+    // brings them in before this checkout lands anything on top.
+    const behind=()=>`${p.branch} does not hold the baseline's ${p.branch} (${short(baselineHead)}): another checkout has carried commits to the baseline since this one last matched it. Nothing was merged. Run atelier pull --project ${name} to bring them into this checkout, then atelier merge ${id} again.`;
     if (!journal.state) {
       if (fresh) {
         const paired=pairs[baselineHead];
-        if (!paired) die(`the baseline's head ${short(baselineHead)} has no pair in this checkout; it was set up or synced from another machine`);
+        if (!paired) die(behind());
         if (local!==paired) die(`${p.branch} has moved since the baseline last matched it (${short(paired)}); run atelier sync --project ${name}, then merge`);
       }
-      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true}).status!==0) die('the baseline has commits missing locally; reconcile the checkout before merging');
+      else if (git(['merge-base','--is-ancestor',baselineHead,'HEAD'],{cwd,allowFail:true,env:REAL_HISTORY_ENV}).status!==0) die(behind());
       journal.save({start:local,phase:'prepared',baselineStart:baselineHead});
     }
     if (!journal.state.mergeCommit) {
@@ -222,12 +248,12 @@ export default async function mergeCommand() {
         const tree=/^[0-9a-f]{40,64}$/.test(mergedTree)?mergedTree:target;
         const entries=treeEntries(git(['ls-tree','-r','-z','--full-tree',tree],{cwd,raw:true}));
         const clashes=pathCollisions(entries.map(e=>e.path));
-        if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's owner must rename or remove all but one of each and submit a new revision`);}
+        if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's holder must rename or remove all but one of each and submit a new revision`);}
         // The landing reads the ControlPlane policy and receipt template
         // and writes the receipt; a symlink on one of those paths would
         // take the read or the write outside the checkout.
         const links=landingSymlinks(entries);
-        if(links.length){journal.clear();die(`the merge would put a symlink where the landing reads or writes its ControlPlane files: ${links.join(', ')}. The landing would follow it out of the checkout. Nothing was merged; the task's owner must replace each with the file or folder itself and submit a new revision`);}
+        if(links.length){journal.clear();die(`the merge would put a symlink where the landing reads or writes its ControlPlane files: ${links.join(', ')}. The landing would follow it out of the checkout. Nothing was merged; the task's holder must replace each with the file or folder itself and submit a new revision`);}
         // A file that this checkout's Git configuration runs (a hook, a
         // filter or merge driver script, an included configuration file)
         // and that the merge would change would run during the merge, or
@@ -236,15 +262,29 @@ export default async function mergeCommand() {
         let runs;
         try{runs=touchedExecutables(git(['diff','--name-only','--no-renames','-z',local,tree],{cwd,raw:true}).split('\0').filter(Boolean),executablePaths(cwd,gitEnv()));}
         catch(error){journal.clear();die(error.message);}
-        if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
-        const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
-        if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted. The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
+        if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${describeTouched(runs)}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's holder submit a revision that leaves them alone`);}
+        // The merge onto the baseline goes through the merge pipeline
+        // (cli/merge-pipeline.mjs) and runs no generator here: outputs the
+        // baseline would hold that neither the accepted revision nor the
+        // baseline held were never checked or reviewed, so a merge that
+        // needs them regenerated is refused and goes back to its builder
+        // (atelier land refuses an accepted task): a merge-main job or a
+        // handoff merges main into the workspace through the pipeline,
+        // regenerates them there, and the new head is checked, reviewed and
+        // accepted again. The approval stays
+        // bound to the accepted head and never carries over to outputs
+        // generated after it.
+        const preview=previewMerge(cwd,local,target,{git});
+        if(!preview.error&&(preview.regenerate.length||preview.generated.length)){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}). The regenerated outputs were never checked or reviewed, so nothing was merged and ${id} stays accepted. The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}
+        const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false});
+        if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
         if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
         const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
         if(receipt)git(['add',receipt],{cwd});
         // The merge commit is the landing's own, made under the project's
-        // identity whatever this checkout or its environment would give.
-        git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd,env:identityEnv(identity)});
+        // identity whatever this checkout or its environment would give,
+        // with the pipeline's provenance in its trailers.
+        git(['commit','--quiet','-m',[`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`,...result.provenance].join('\n')],{cwd,env:identityEnv(identity)});
         journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});
       }
     }
@@ -295,7 +335,9 @@ export default async function mergeCommand() {
     const notesRefusals=identity?notesRangeRefusals(remoteNotes.split(/\s/)[0]||null):[];
     if(notesRefusals.length)die(`the landing would push provenance notes whose identity the project's policy refuses:\n  ${notesRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, fix refs/notes/atelier, then merge again.`);
     const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
-    git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token});
+    // Nor through the checkout's own commits the push carries with it (t645).
+    guardedPush({project:name,cwd,tip:published,base:[baselineHead],what:'The landing',fail:(m)=>die(`${m} Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`)},
+      ()=>git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token}));
     journal.save({phase:'published'});
     const recorded = await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
     journal.clear();
@@ -314,6 +356,7 @@ export default async function mergeCommand() {
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
     else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
+    await cleanWorkspace(name, id, p.branch, cwd);
     if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
     else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
   } finally { unlock(); }

@@ -15,7 +15,7 @@
 // A reference is read on code only, with strings, template text, regular
 // expressions and comments blanked, so `git fetch` in a message or a git
 // argument is not a bypass. Every form of fetch counts: a bare call or read
-// (fetch(, const f = fetch, { fetch } = globalThis), a property on any
+// (fetch(, serverFetch(, const f = fetch, { fetch } = globalThis), a property on any
 // object (globalThis.fetch, self.fetch, window.fetch, io.fetch, x?.fetch), a
 // computed member (globalThis["fetch"]), with node's http and https clients,
 // the network modules that hold them (static or dynamic import), undici, a
@@ -78,6 +78,9 @@ export const BYPASSES = [
   /(?<![.\w$])fetch\b/g,
   /(?<![\w$])[\w$]*\s*\??\.\s*fetch\b/g,
   /\[\s*["'`][^"'`\n]*["'`]\s*\]/g, // a computed member, judged below: ["fetch"]
+  // serverFetch (cli/server-fetch.mjs, t568) is fetch after the event loop
+  // has caught up: a way to the server like fetch itself.
+  /(?<![.\w$])serverFetch\b/g,
   /(?<![.\w$])https?\s*\.\s*(?:request|get)\b/g,
   /\bimport\s*\(\s*["'`]\s*["'`]\s*\)/g, // a dynamic import, whose specifier is blanked: judged below
   /\bnew\s+(?:WebSocket|EventSource|XMLHttpRequest)\b/g,

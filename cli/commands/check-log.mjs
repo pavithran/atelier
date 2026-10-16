@@ -28,7 +28,11 @@ export default async function checkLogCommand() {
   console.log(`${name}/${id} at ${head}${head === d.item.head ? " (the ledger head)" : " (an earlier head)"}: ${count(attempts.length, "check attempt")} recorded for ${count(new Set(attempts.map((a) => a.claim)).size, "check")}.`);
   for (const a of attempts) {
     const log = await readCheckLog(a.evidence, logReader(name, id, as));
-    console.log(`\n${attemptHeader(a)}\n   log: ${log.label}`);
+    console.log(`\n${attemptHeader(a)}`);
+    // The lines naming the failure, read from the whole output, come first
+    // where the run kept them beside a tail (t569).
+    if (log.failureLines) console.log(`   failure lines, read from the whole output:\n${log.failureLines.join("\n")}`);
+    console.log(`   log: ${log.label}`);
     const text = plainLines(log.text).join("\n").replace(/\n+$/, "");
     console.log(text || "   (no output retained)");
   }

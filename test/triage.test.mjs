@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import {
   decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageFormat, triageModelRefusal, triageRecord, triageSettingRefusal, triageStandsRefusal,
@@ -17,7 +17,7 @@ import {
 // unsure, no criteria, a malformed reply, a harness that fails or never
 // answers, and a model the pool refuses each stop the landing before the
 // task is submitted, with the findings and the command to run again, the
-// lease released and nothing asked of a reviewer. The owner's bypass and
+// lease never taken (t550) and nothing asked of a reviewer. The owner's bypass and
 // override are recorded, with the head and the criteria binding, before the
 // landing goes on, and a record the server refuses stops it. Triage results
 // are bound to the head, its merge base and the criteria, and run again when
@@ -56,8 +56,7 @@ const POOL = [
 // evidence at the pushed head asks for it again while the task is submitted
 // (Ledger.reaskReview), which `reasked` counts.
 function landing(t, { submitted = false, args = {}, answers = [allMet()], criteria = CRITERIA, events = [], review = { needed: false, reason: "a direct change needs no review" }, landFails = () => false, pool = POOL, policy = { checks: [] }, project = {}, workflow = false } = {}) {
-  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
-  const dir = mkdtempSync(join(scratch, "triage-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = mkdtempSync(join(tmpdir(), "atelier-triage-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
   const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": "claude-code/opus-5.5", "atelier.write-token-expires-at": new Date(Date.now() + 6 * 3600_000).toISOString() };
   const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease", wfPath = `${itemPath}/landing-workflow`;
@@ -68,7 +67,7 @@ function landing(t, { submitted = false, args = {}, answers = [allMet()], criter
   const item = () => ({ id: "t1", title: "Widget", brief: "Render the widget.", state, owner: "claude-code/opus-5.5", head: HEAD, accept: accept(), scope: [] });
   const request = async (method, path, body) => {
     log.push({ method, path, body });
-    if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
+    if (path === "/version") return { capabilities: SERVER_CAPABILITIES, commit: "c0ffee" };
     if (path === "/models") return pool;
     if (path === leasePath && method === "GET") return { lease: null, waiting: [] };
     if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state } };
@@ -134,6 +133,9 @@ function landing(t, { submitted = false, args = {}, answers = [allMet()], criter
     triages: () => recorded.filter((e) => e.kind === "land.triage").map((e) => e.data),
     reviewAsked: () => log.some((c) => c.path === `${itemPath}/review-request`),
     released: () => log.some((c) => c.path === leasePath && c.body?.cancel === true),
+    // Whether the landing asked for the lease at all: since t550 a triage
+    // that stops ends the landing before it ever does.
+    leased: () => log.some((c) => c.path === leasePath && c.method === "POST" && !c.body?.cancel),
     at, output: () => lines.join("\n"),
     reviewRouteTouched: () => log.some((c) => typeof c.path === "string" && /\/(review|reviews|review-claim|approve|reject)(\/|$)/.test(c.path)),
   };
@@ -270,7 +272,7 @@ for (const [what, answers, pattern] of [
   ["a harness that fails", [new Error("could not run codex: ENOENT")], /triage is unavailable: codex\/gpt-6-astra could not be run \(could not run codex: ENOENT\)/],
   ["a harness that never answers", ["hang"], /triage timed out: codex\/gpt-6-astra gave no answer within 200 ms/],
 ]) {
-  test(`plain land stops before the review request on ${what}, shows the findings and the retry, releases the lease and leaves the task claimed (t475)`, async (t) => {
+  test(`plain land stops before the review request on ${what}, shows the findings and the retry, never takes the lease and leaves the task claimed (t475)`, async (t) => {
     const l = landing(t, { args: { triage: "codex/gpt-6-astra" }, answers });
     await assert.rejects(runLand(l.io), (error) => {
       assert.match(error.message, pattern);
@@ -281,7 +283,7 @@ for (const [what, answers, pattern] of [
     });
     assert.deepEqual(l.commands(), ["push"], "nothing submitted");
     assert.equal(l.reviewAsked(), false, "no review request");
-    assert.ok(l.released(), "the lease is released");
+    assert.equal(l.leased(), false, "the lease is never taken");
     assert.deepEqual(l.triages().map((d) => [d.outcome, d.head, d.base, d.triager]), [["stopped", HEAD, BASE, "codex/gpt-6-astra"]]);
   });
 }
@@ -338,10 +340,12 @@ test("a triage model the pool refuses, or a task with no criteria, stops before 
 });
 
 test("criteria that change while the model triages are triaged again before the submission, and a change after the submission stops before the review request, saying the task is submitted (t475)", async (t) => {
-  // The item is read once as the landing starts (the post-merge resume
-  // check, t477), then before the triage, after it (changed: triage again),
-  // before the second, after it, and so on.
-  const during = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, criteria: (reads) => (reads < 4 ? CRITERIA : [...CRITERIA, "A third"]), answers: [allMet(2), allMet(3)] });
+  // Change the criteria as the first model answers, independently of the
+  // workspace and lease revalidation reads that precede the triage.
+  let changed = false;
+  const during = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, criteria: () => (changed ? [...CRITERIA, "A third"] : CRITERIA), answers: [allMet(2), allMet(3)] });
+  const answer = during.io.triage;
+  during.io.triage = async ask => { const result = await answer(ask); changed = true; return result; };
   await runLand(during.io);
   assert.equal(during.asked.length, 2);
   assert.match(during.asked[1].brief, /3\. A third/);
@@ -382,7 +386,7 @@ test("criteria that change while the model triages are triaged again before the 
   });
   assert.equal(after.asked.length, 1);
   assert.equal(after.reviewAsked(), false);
-  assert.ok(after.released());
+  assert.equal(after.leased(), false);
 
   // Criteria that never settle stop the landing rather than triage for ever.
   let n = 0;
@@ -409,10 +413,9 @@ test("a pass recorded at the same head, merge base and criteria stands without a
 test("without an injected harness the triage runs through the harness's own adapter, read-only, and its answer is read (t475)", async (t) => {
   // A stand-in for claude, as ATELIER_CLAUDE names one for the adapter: it
   // keeps the prompt it was given and answers every criterion met, or fails.
-  const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
-  const bin = mkdtempSync(join(scratch, "triage-claude-")); t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const bin = mkdtempSync(join(tmpdir(), "atelier-triage-claude-")); t.after(() => rmSync(bin, { recursive: true, force: true }));
   const fake = (name, body) => { const file = join(bin, name); writeFileSync(file, `#!/bin/sh\n${body}\n`); chmodSync(file, 0o755); return file; };
-  const answering = fake("claude-ok", `cat > "${join(bin, "prompt.txt")}"\nprintf '%s\\n' "$*" > "${join(bin, "argv.txt")}"\necho '${allMet().replace(/\n/g, " ")}'`);
+  const answering = fake("claude-ok", `cat > "${join(bin, "prompt.txt")}"\nprintf '%s\\n' "$*" > "${join(bin, "argv.txt")}"\nprintf '%s\\n' '${JSON.stringify({ type: "result", is_error: false, result: allMet() })}'`);
   const l = landing(t, { args: { triage: "claude-code/opus-5.5", "no-review": true } });
   delete l.io.triage;
   l.io.triageTimeoutMs = 60_000;
@@ -441,7 +444,7 @@ test("--no-triage records the owner's reason with the head and the criteria bind
   assert.equal(l.asked.length, 0);
   assert.deepEqual(l.triages().map((d) => [d.outcome, d.reason, d.head, d.base, d.criteria]), [["bypassed", "hotfix for the outage", HEAD, BASE, criteriaOf({ accept: CRITERIA })]]);
   assert.ok(l.at((c) => c.path?.endsWith("/land") && c.body.step === "triage") < l.at((c) => c.command === "submit"));
-  assert.match(l.output(), /Triage bypassed by the project owner \(--no-triage: hotfix for the outage\)/);
+  assert.match(l.output(), /Triage bypassed by the developer \(--no-triage: hotfix for the outage\)/);
 });
 
 test("a bypass or an override the server does not record stops the landing before the submission (t475)", async (t) => {
@@ -449,7 +452,7 @@ test("a bypass or an override the server does not record stops the landing befor
   await assert.rejects(runLand(bypass.io), /The bypass of the triage \(--no-triage\) could not be recorded on the ledger, so the landing stops before the review request: not_project_owner/);
   assert.deepEqual(bypass.commands(), ["push"]);
   assert.equal(bypass.reviewAsked(), false);
-  assert.ok(bypass.released());
+  assert.equal(bypass.leased(), false);
 
   const override = landing(t, { args: { triage: "codex/gpt-6-astra", "override-triage": "the route is checked by hand" }, answers: [reply([met(1), met(2, { status: "not-met" })])], landFails: (b) => b.outcome === "overridden" });
   await assert.rejects(runLand(override.io), /The override of the stopped triage \(--override-triage\) could not be recorded on the ledger/);
@@ -515,13 +518,13 @@ test("conflicting triage flags are refused before the lease is taken or anything
 test("--dry-run reports the triage choice and its source without calling a model or recording anything (t475)", async (t) => {
   const flag = landing(t, { args: { "dry-run": true, triage: "codex/gpt-6-astra" } });
   await runLand(flag.io);
-  assert.match(flag.output(), /5\. triage the pushed head's diff against its merge base with main and t1's 2 acceptance criteria with codex\/gpt-6-astra \(from --triage\), going on only when every criterion is met/);
+  assert.match(flag.output(), /4\. triage the pushed head's diff against its merge base with main and t1's 2 acceptance criteria with codex\/gpt-6-astra \(from --triage\), going on only when every criterion is met/);
   const project = landing(t, { args: { "dry-run": true }, project: { triage: "codex/gpt-7" } });
   await runLand(project.io);
   assert.match(project.output(), /with codex\/gpt-7 \(from project\.triage\); as the pool stands it would stop: codex\/gpt-7 is not in the model pool/);
   const off = landing(t, { args: { "dry-run": true } });
   await runLand(off.io);
-  assert.match(off.output(), /5\. run no triage \(no --triage, and the project sets no triage\), then run the required checks/);
+  assert.match(off.output(), /4\. run no triage \(no --triage, and the project sets no triage\), then run the required checks/);
   const bypass = landing(t, { args: { "dry-run": true, "no-triage": "hotfix" }, project: { triage: "codex/gpt-6-astra" } });
   await runLand(bypass.io);
   assert.match(bypass.output(), /record your bypass of the triage \(--no-triage: "hotfix"\)/);
@@ -559,7 +562,7 @@ test("a Workflow landing triages before the local checks and reports the head on
   assert.equal(off.log.find((c) => c.body?.event?.type === "workspace")?.body.event.payload.triage, undefined);
 });
 
-test("a Workflow landing whose triage stops reports a failed workspace, so the Workflow submits nothing, asks for no review and releases the lease (t475)", async (t) => {
+test("a Workflow landing whose triage stops reports a failed workspace, so the Workflow submits nothing, asks for no review and never takes the lease (t475)", async (t) => {
   for (const answers of [[reply([met(1), met(2, { status: "unsure" })])], [new Error("codex is down")], ["hang"]]) {
     const l = landing(t, { workflow: true, args: { triage: "codex/gpt-6-astra" }, answers });
     await assert.rejects(runLand(l.io), (error) => {

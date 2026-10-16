@@ -45,6 +45,157 @@ endpoint or Keychain entry) clears its status until it is checked again.
 An endpoint carrying a query string, or a Keychain entry name that looks
 like a key, is refused.
 
+## Vendor model cards
+
+Atelier keeps what each vendor claims about a model beside its own record
+of the model's work, so the two can be compared. `atelier models card`
+records a card read from a JSON file or standard input: the source's https
+URL, the day it was read, its publication date when it gives one, and its
+claims, each a benchmark (with its version or subset), a score and its unit,
+and the conditions it was measured under: the harness or scaffold, the
+effort, and any other details. The card's limitations are kept apart from
+its claims.
+
+```text
+atelier models card opus-5.5 --file card.json
+atelier models card --file docs/model-cards/2026-10-13.json
+atelier models card opus-5.5 --withdraw c12 --reason "The vendor withdrew the page."
+atelier models show opus-5.5
+```
+
+A list of cards names each card's model in `"model"`. Every card in a list
+is checked before any is sent, and a card sent again is answered with the
+one already recorded, so a list can be sent again after a failure. Cards are
+the developer's alone, are never changed once recorded, and carry an id and
+the server's time. A card that corrects a misreading names the card it
+corrects (`"corrects": "c12"`), and one that replaces it with a newer source
+names the card it supersedes (`"supersedes": "c12"`); both keep the old card
+in the history, as a withdrawal does.
+
+A card is filed under the key its model's name gives, from the name alone:
+the harness is cut off, letter case is ignored, and a name the registry
+knows (such as `claude-opus-5-5`) is its registry model (`opus-5.5`). So
+`claude-code/opus-5.5` and `antigravity/opus-5.5` share one set of cards.
+Pool aliases are not read: adding, moving or removing an alias, or taking a
+model out of the pool and adding it back, never moves a card. A name neither
+the registry nor the pool knows is kept as it is, and `atelier models card`
+says so. Only cards of the same model can correct, supersede or withdraw a
+card. `atelier models show` prints the cards oldest first, then the active
+claims that give one benchmark different scores under the same conditions
+(a conflict, with both sources) and those that differ only under different
+conditions, which are not conflicts. The registry's static priors are
+printed after them as priors. A card is the vendor's word, not a
+measurement Atelier made: nothing that routes or suggests a model reads it.
+`docs/model-cards/2026-10-13.json` holds the cards read on 2026-10-13.
+
+## Which model does what: role assignments
+
+The developer's judgement of which model is best at a job is kept as a role
+assignment, a dated record on the index beside the pool (t622). Each names a
+role (build, review, security-review, claims-review or plan), its scope
+(every project, or one with `--scope`), the models in order as harness/model,
+the reason, the developer's own words and the evidence it rests on, each a
+task or one of its events as `PROJECT/tN` or `PROJECT/tN#SEQ`. A bare `tN` is
+refused, since task ids repeat across projects, and each reference is checked
+to exist. Only the developer's token records or withdraws one, and `--as`
+names the harness/model that did it for them.
+
+```text
+atelier models assign security-review codex/gpt-6-astra --reason "Every blocking finding judged was real" --quote "astra does security reviews" --evidence atelier/t592 --evidence atelier/t593 --as claude-code/opus-5.5
+atelier models roles
+atelier models roles withdraw a1 --note "why"
+```
+
+Records are never changed. A new assignment for the same role and scope
+supersedes the standing one and must name it with `--replaces aN`, so two
+sessions that both saw it cannot both replace it; the same request sent again
+is answered with its own record. Withdrawing the standing one returns the role
+to its fallback, never to an assignment it had superseded. `atelier models
+roles` lists what stands, the history with its evidence and authors, and each
+role's fallback.
+
+Who decides, strongest first:
+
+1. The rules. A model paused, reserved or without the pool role, refused,
+   not offered by a live runner, paid when paid models are not allowed, outside
+   the project's policy or single-family mode, not admitted as a reviewer, of a
+   contributor's family, or too small for the part is never chosen. An
+   assignment orders only what passes.
+2. An explicit choice for the one job: `atelier dispatch --model` or `--to`,
+   a reviewer the developer names, a plan part's `prefer`, and the previous
+   round's reviewer on a re-review.
+3. The project's review tier (`atelier init --review-tier`). Its models
+   review a protected change before the rest of the pool; an assignment orders
+   the tier's models among themselves and adds none to it. A tier model
+   outside the pool is still asked in the tier's order, but no assignment
+   moves it ahead.
+4. Assignments, most specific first: a role's own (security-review for
+   security, concurrency or gate work, claims-review for docs) before review,
+   and this project's before every project's. The first with an eligible
+   choice is applied; one with none is skipped and the reasons say why.
+5. The fallback: outcomes, review precision, reliability, speed and the
+   spread across a plan, as before.
+
+The pool's roles (build, review, plan) are eligibility; an assignment's roles
+are judgement. The pool's tier (frontier, execution, budget) is informational
+and no selector reads it. A plan keeps the routing it was approved with; an
+assignment applies when a plan is previewed, approved or rerouted, and when
+its tick picks a reviewer the routing no longer gives. Each project's ledger
+holds a copy of the assignments that bear on it, sent when one changes and
+with the pool. `src/models/assignments.ts` holds the rules.
+
+## Vendor claims beside Atelier's record
+
+The Models page and `atelier models show ID` (GET /api/models/ID/compare,
+capability `models.compare.v1`) show one projection per model
+(`src/models/compare.ts`): the claims of its cards in force, with their
+sources and conditions, and then each role (build, review, security review,
+claims review, plan, and acting for the developer) with the developer's
+standing assignments of the model to it and Atelier's figures. Each figure
+names its reader, its window, its numerator and denominator or its samples,
+and the threshold under which no share or median is given: the readers' own
+(five judged findings for precision, three samples for a median) and five
+for the shares that had none. A vendor's score is never placed in a figure.
+Claims are not sorted into roles, since a card names the kind of task a
+claim is about and not a role; security review, claims review and planning
+have no figure of their own yet, and say why.
+
+Pairwise catches (`src/models/pairwise.ts`) count, over review precision's
+window, the revisions one model approved in which another model, reviewing
+the same task, head, criteria and scope, raised a blocking finding whose
+latest verdict is confirmed or fixed. A pair with an unjudged finding is
+pending, and one resting on a verdict from before t486 that cannot be placed
+on one review is ambiguous; neither is in the denominator. The comparison,
+the cards and the evidence it shows are the developer's alone, as the cards
+and the role assignments are.
+
+## Atelier's record over time
+
+Every six hours the Worker's scheduled handler (`takeModelSnapshots` in
+`src/index.ts`, the cron in `wrangler.jsonc`) takes each ended UTC day of
+the last `BACKFILL_DAYS` that has no complete snapshot, and keeps on the
+index Ledger the figures the comparison above gives each pool model, role by
+role, as of the end of that day (`src/models/snapshot.ts`, t623). A snapshot
+keeps the cutoffs it was read at: each project Ledger's last event sequence,
+the index's last assignment event and the last run report, with the pool's
+names, each project's name and the developer's actor as they stood. Only
+events at or under a cutoff and recorded before the day ended count, so a
+replay (`replayModelSnapshot`) gives the stored figures however many
+verdicts, served annotations, renames or aliases come later. A day is stored
+once: a repeated or concurrent run stores nothing, a project that could not
+be read leaves the day partial, and a later run that reads it adds a revision
+while keeping the partial one. A day taken after the day following it had
+ended is labelled a reconstruction.
+
+The Models page and `atelier models show ID --trend` (GET
+/api/models/ID/trend, capability `models.trend.v1`) show the last
+`TREND_DAYS` days of each figure: its value, what it is over, its window,
+its measure version and how its snapshot was taken. A day with no snapshot,
+a partial record, too few samples or none is a labelled gap, never a zero.
+Points under another measure version, window, threshold or set of names are
+not joined, and each figure says how far consecutive windows overlap.
+Routing reads none of this: it reads the events and run reports themselves.
+
 ## Each model's reliability
 
 The Models page and the Usage page show each model's record across every
@@ -53,17 +204,17 @@ independence names it, so the same model under two harnesses or a
 registered alias is one record. Its work is what it held: how much was
 approved at its first review by another model, how many review rounds a
 merged item went through, every rejection with the note that gave its
-cause, and every defect the owner traced to its accepted work. Its verdicts
+cause, and every defect the developer traced to its accepted work. Its verdicts
 are its own reviews: an approval of a revision a defect was later traced to
 is contradicted, and so is a review run that never reached a verdict. Its
-runs are those that failed, as the runners and the owner reported them. The
-owner's approvals of its work are counted apart and are never a model's
-verdict: those made on the task page, which only the signed-in owner
-reaches, apart from those recorded through the API with the owner token, as
+runs are those that failed, as the runners and the developer reported them. The
+developer's approvals of its work are counted apart and are never a model's
+verdict: those made on the task page, which only the signed-in developer
+reaches, apart from those recorded through the API with the developer token, as
 the orchestrator records them. An approval recorded before Atelier kept the
 two apart is counted as unrecorded.
 
-The record also holds the measures a comparison of models needs. The owner
+The record also holds the measures a comparison of models needs. The developer
 adjudicates each finding of a review and records a verdict on it, which
 counts the reviewer's precision: a finding confirmed or marked fixed is
 kept, a refuted one was wrong, and the record shows how many of each a
@@ -79,7 +230,7 @@ its plan part when there is one, else unknown.
 
 Review precision is shown in a section of its own on the Models page, over
 the last 30 days with the dates stated: for each reviewer model, the
-blocking findings the owner judged (n), those confirmed or fixed, those
+blocking findings the developer judged (n), those confirmed or fixed, those
 refuted, and the share confirmed or fixed. Each finding counts once, by its
 newest verdict (`src/models/precision.ts`). Under 5 judged findings the row
 shows n and says it is too few to rank. Routing reads the same figure, from
@@ -106,15 +257,15 @@ the item itself does not change. `atelier finding` records a verdict on one
 finding of a review, at the head the review was made at and the finding's
 position in its findings, one based. A later review of the task shows the
 reviewer each earlier finding, numbered as `--index` counts it, with the
-owner's verdict and note, and says that a refuted finding is repeated only
-with new evidence that the owner's answer is wrong, quoting the code. A run ends without a result the ledger
+developer's verdict and note, and says that a refuted finding is repeated only
+with new evidence that the developer's answer is wrong, quoting the code. A run ends without a result the ledger
 saw when it stalls, times out or is refused, or when the harness stops
 early, stops at a permission, designs something a task already had, or
 leaves a merge incomplete. The runner reports a run through `POST /api/runs`
-with the owner token and its name in `X-Atelier-Runner`, as it reports
+with the developer token and its name in `X-Atelier-Runner`, as it reports
 usage: the agent it ran, the role (`build` or `review`), the outcome, the
 project and task when there is one, and a detail. `atelier run-report` lets
-the owner record a run by hand for a run outside the runner. `bin/seed-2026-10-06`
+the developer record a run by hand for a run outside the runner. `bin/seed-2026-10-06`
 prints the `atelier finding` and `atelier run-report` commands that record
 the 2026-10-06 adjudications in `docs/data/adjudications-2026-10-06.json`;
 it records the run reports only with `--apply`, since a finding's head and
@@ -129,7 +280,7 @@ evidence still decide the score.
 
 A harness can serve another model than the one its events name: zcode
 follows its app's provider settings, and served deepseek-flash while its
-events said glm-5.3. The owner records what served them:
+events said glm-5.3. The developer records what served them:
 
 ```text
 atelier served deepseek-flash --recorded zcode/glm-5.3 --from 2026-10-04T16:00Z --to 2026-10-05T20:17Z --item t2 --project atelier
@@ -144,7 +295,7 @@ counts, so a mistaken one is corrected by another. The track record, the
 reliability record, the Models page and the graph count an annotated event
 under the served model in the recorded harness, here `zcode/deepseek-flash`.
 `bin/annotate-t95` holds the commands that correct the record for task t95;
-the owner runs it, first without `--apply`.
+the developer runs it, first without `--apply`.
 
 ## Usage, limits and balances
 
@@ -156,7 +307,7 @@ served with requests, tokens and cost over the last 5 hours, 24 hours and
 and when; a report older than three hours is marked stale, and a figure
 past a threshold is tagged. `GET /api/usage` returns the same reports with
 the thresholds and the alerts in force. A report is a status like a
-model's: `POST /api/usage/TOOL` takes the owner token and the runner's
+model's: `POST /api/usage/TOOL` takes the developer token and the runner's
 name in `X-Atelier-Runner`, and keeps one report per tool and runner.
 
 Alerts go through the `NTFY_TOPIC` notification already used for decisions,
@@ -290,7 +441,7 @@ reliability tie-breaker does.
 
 ## Admitting an outside reviewer
 
-The project owner can admit a registered model as a reviewer in one project:
+The developer can admit a registered model as a reviewer in one project:
 
 ```text
 atelier models add Qwen3-Coder-Next --harness opencode --where home --endpoint http://ai-server:8000/v1 --alias studio-review
@@ -302,7 +453,7 @@ atelier models withdraw Qwen3-Coder-Next --project weblog --reason "Retiring thi
 
 Admissions use the registered canonical id and its aliases, irrespective of
 harness. They grant the assessor role only in that project; they grant no
-builder role. Admit and withdraw both record the owner, reason and server time
+builder role. Admit and withdraw both record the developer, reason and server time
 in the project event history. Repeat `models admit` to readmit a model.
 An unknown family or an alias that disguises another family is refused.
 
@@ -310,7 +461,7 @@ Each new admitted review must be from another family than **every** contributor
 by default. In single-family mode it must instead come from a different model
 of the selected company from every contributor; no other company qualifies.
 Every admitted review must name the current head and acceptance-criteria binding. Admission does
-not turn an owner-token assertion into a proved review: the model must use its
+not turn a developer-token assertion into a proved review: the model must use its
 own actor token or answer a review request it claimed, as before. A recorded
 review retains its admission snapshot. Withdrawal cancels outstanding requests
 and refuses new verdicts; it preserves past approvals at their original head

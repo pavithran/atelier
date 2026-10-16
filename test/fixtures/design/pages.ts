@@ -94,7 +94,7 @@ export function pageStates(s: Seeded): PageState[] {
     { id: "signin", path: "/login", audience: "token", status: 200, marker: "Sign in to Atelier", state: "Sign-in over the anonymised backdrop" },
     // Cross-project
     { id: "home", path: "/home", audience: "owner", status: 200, marker: "Ledger Core", state: "Portfolio: dense, empty and unavailable projects" },
-    { id: "decisions", path: "/decisions", audience: "owner", status: 200, marker: "Needs your attention", state: "Inbox with the first decision selected" },
+    { id: "decisions", path: "/decisions", audience: "owner", status: 200, marker: "aria-labelledby=\"sel-h\"", state: "Inbox with the first decision selected" },
     { id: "decisions-sent-back", path: `/decisions?project=ledger-core&task=${lc("sentBack")}`, audience: "owner", status: 200, marker: "Changes requested", state: "A sent-back task selected" },
     { id: "decisions-blocked", path: `/decisions?project=ledger-core&task=${lc("blocked")}`, audience: "owner", status: 200, marker: "Blocked", state: "A blocked task selected" },
     { id: "studio", path: "/studio", audience: "owner", status: 200, marker: "at work", state: "The floor with live, stale and overlapping work" },
@@ -104,8 +104,8 @@ export function pageStates(s: Seeded): PageState[] {
     { id: "models", path: "/models", audience: "owner", status: 200, marker: "Models", state: "Empty pool, track record from the seeded events, Gateway off" },
     { id: "usage", path: "/usage", audience: "owner", status: 200, marker: "Usage", state: "Two runners' reports, one stale, one alert" },
     // A project's area
-    { id: "project", path: "/p/ledger-core", audience: "owner", status: 200, marker: "Where it stands", state: "Dense project overview (200 tasks)" },
-    { id: "project-empty", path: `/p/${EMPTY_PROJECT}`, audience: "owner", status: 200, marker: "Nothing is waiting", state: "Project with no tasks" },
+    { id: "project", path: "/p/ledger-core", audience: "owner", status: 200, marker: "Tasks by state", state: "Dense project overview (200 tasks)" },
+    { id: "project-empty", path: `/p/${EMPTY_PROJECT}`, audience: "owner", status: 200, marker: "Nothing waits on you here", state: "Project with no tasks" },
     { id: "project-unavailable", path: `/p/${UNAVAILABLE_PROJECT}`, audience: "owner", status: 503, marker: "unable to reach its records", state: "Project whose Ledger cannot be read" },
     { id: "tasks", path: "/p/ledger-core/tasks", audience: "owner", status: 200, marker: "Create a task", state: "All 200 tasks in one list" },
     { id: "tasks-empty", path: `/p/${EMPTY_PROJECT}/tasks`, audience: "owner", status: 200, marker: "No tasks.", state: "Task board with no tasks: one empty Unsorted area" },

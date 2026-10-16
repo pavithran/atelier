@@ -112,12 +112,12 @@ test("a token file resolves under the Atelier config directory, is read by its f
   assert.deepEqual(names, ["agent.glm"]);
 });
 
-test("reviewToken refuses a model the config names no token for, naming the entry to add, and never answers with the owner token", () => {
+test("reviewToken refuses a model the config names no token for, naming the entry to add, and never answers with the developer token", () => {
   const refused = reviewToken({ agents }, model, actor);
   assert.match(refused.refused, /no agent token for opencode\/glm-5\.3/);
   assert.match(refused.refused, /tokens\["glm-5\.3"\]/);
   assert.match(refused.refused, /atelier token issue --as opencode\/glm-5\.3/);
-  assert.match(refused.refused, /never the owner's/);
+  assert.match(refused.refused, /never the developer's/);
   assert.ok(!refused.refused.includes("ownerRecordsReviews"), "the refusal names no opt-in; there is none");
   assert.equal("owner" in refused, false);
   // A stale opt-in that got past parseConfig changes nothing: still refused.
@@ -290,7 +290,7 @@ const OWNER = "atl_owner_" + "0".repeat(60);
 test("parseConfig refuses a tokens entry that names the owner's credential", () => {
   for (const where of ["API_TOKEN", "api_token", "TOKEN", "token"]) {
     const result = parseConfig({ agents, jobs: ["review"], tokens: { [model]: where } });
-    assert.match(result.errors.join(" "), /tokens\.glm-5\.3 must not name the owner's token \((API_TOKEN|TOKEN)\): a review is recorded only by the reviewer's own agent token/, where);
+    assert.match(result.errors.join(" "), /tokens\.glm-5\.3 must not name the developer's token \((API_TOKEN|TOKEN)\): a review is recorded only by the reviewer's own agent token/, where);
     assert.equal(result.tokens?.[model], undefined, `${where}: the entry is not kept`);
   }
   // Another entry name is still taken.
@@ -308,21 +308,21 @@ test("readAgentToken reads no Keychain name from the owner's ATELIER_TOKEN, and 
   assert.equal(readAgentToken("TOKEN", { env }), null);
   for (const where of ["API_TOKEN", "TOKEN"]) {
     const refused = reviewToken({ agents, tokens: { [model]: where } }, model, actor, { env, readSecret: () => { throw new Error("must not be read"); }, ownerTokens: () => [OWNER] });
-    assert.match(refused.refused, new RegExp(`tokens\\["glm-5\\.3"\\] names the owner's token \\(${where}\\): a review must not use the owner's token`));
+    assert.match(refused.refused, new RegExp(`tokens\\["glm-5\\.3"\\] names the developer's token \\(${where}\\): a review must not use the developer's token`));
     assert.ok(!refused.refused.includes(OWNER));
     assert.equal("token" in refused, false);
   }
   // An entry of another name that holds the owner's value is the owner's too.
   const same = reviewToken({ agents, tokens: { [model]: "agent.glm" } }, model, actor, { env, readSecret: () => OWNER, ownerTokens: () => [OWNER] });
-  assert.match(same.refused, /the agent token under tokens\["glm-5\.3"\] \(agent\.glm\) is the owner's token: a review must not use the owner's token/);
+  assert.match(same.refused, /the agent token under tokens\["glm-5\.3"\] \(agent\.glm\) is the developer's token: a review must not use the developer's token/);
   assert.ok(!same.refused.includes(OWNER));
   assert.equal("token" in same, false);
 });
 
 test("a runner whose reviewer token is the owner's refuses the job before any claim, naming the entry and never the value", async () => {
   for (const [where, pattern] of [
-    ["agent.glm", /the agent token under tokens\["glm-5\.3"\] \(agent\.glm\) is the owner's token: a review must not use the owner's token/],
-    ["API_TOKEN", /tokens\["glm-5\.3"\] names the owner's token \(API_TOKEN\): a review must not use the owner's token/],
+    ["agent.glm", /the agent token under tokens\["glm-5\.3"\] \(agent\.glm\) is the developer's token: a review must not use the developer's token/],
+    ["API_TOKEN", /tokens\["glm-5\.3"\] names the developer's token \(API_TOKEN\): a review must not use the developer's token/],
   ]) {
     const { io, calls, logs } = fixture({ stored: OWNER });
     io.env = { ...io.env, ATELIER_TOKEN: OWNER };
