@@ -29,12 +29,12 @@ const real = (cwd, ...args) => execFileSync(REAL_GIT, args, { cwd, encoding: "ut
 // git http-backend as a CGI program behind a Node server. A request to a
 // repository is served only when every Authorization header it carries holds
 // a token valid for that repository, and at least one does.
-function serveGit(req, res, repos, valid, seen) {
+function serveGit(req, res, repos, valid, seen, refuse = { status: 401 }) {
   const url = new URL(req.url, "http://localhost");
   const repo = url.pathname.split("/")[1];
   const tokens = (req.headersDistinct.authorization ?? []).map((h) => h.replace(/^Bearer /, ""));
   seen.push({ repo, tokens });
-  if (!tokens.length || tokens.some((token) => !valid[repo]?.has(token))) { res.writeHead(401); res.end(); return; }
+  if (!tokens.length || tokens.some((token) => !valid[repo]?.has(token))) { res.writeHead(refuse.status); res.end(); return; }
   const child = spawn(REAL_GIT, ["http-backend"], { env: {
     PATH: process.env.PATH, HOME: repos, GIT_CONFIG_NOSYSTEM: "1", GIT_PROJECT_ROOT: repos, GIT_HTTP_EXPORT_ALL: "1", REMOTE_USER: "agent", REMOTE_ADDR: "127.0.0.1",
     REQUEST_METHOD: req.method, PATH_INFO: decodeURIComponent(url.pathname), QUERY_STRING: url.search.slice(1),
@@ -89,15 +89,18 @@ process.exit(r.status ?? 1);
   chmodSync(join(bin, "git"), 0o755);
 
   const valid = { "fork.git": new Set([WRITE, READ]), "base.git": new Set([BASE]) };
-  const seen = [], claim = { token: WRITE };
+  const seen = [], claim = { token: WRITE, expiresAt: "tomorrow", owner: actor }, refuse = { status: 401 };
   const item = { id: "t1", title: "Edit", scope: [], owner: actor, state: "claimed" };
+  const claims = [];
   const server = createServer(async (req, res) => {
-    if (!req.url.startsWith("/api/")) return serveGit(req, res, repos, valid, seen);
+    if (!req.url.startsWith("/api/")) return serveGit(req, res, repos, valid, seen, refuse);
     for await (const chunk of req) void chunk;
+    item.owner = claim.owner;
+    if (req.url.endsWith("/claim")) claims.push(req.method);
     const origin = `http://127.0.0.1:${server.address().port}`;
     let data = { item: { ...item, head: forkHead() }, gate: { ready: true, blockers: [] }, policy: { checks: ["true"], sandboxOnly: false } };
     if (req.url === "/api/version") data = { capabilities: SERVER_CAPABILITIES };
-    if (req.url.endsWith("/claim")) data = { item, workspace: { token: claim.token, remote: `${origin}/fork.git`, defaultBranch: "main", expiresAt: "tomorrow" } };
+    if (req.url.endsWith("/claim")) data = { item, workspace: { token: claim.token, remote: `${origin}/fork.git`, defaultBranch: "main", expiresAt: claim.expiresAt } };
     if (req.url.endsWith("/push")) data = { ...item, head: forkHead() };
     if (req.url.endsWith("/read-token")) data = { remote: `${origin}/fork.git`, token: READ, head: forkHead(), defaultBranch: "main" };
     if (req.url.endsWith("/baseline-token") || req.url.endsWith("/base-token")) data = { remote: `${origin}/base.git`, token: BASE, head: forkHead(), defaultBranch: "main" };
@@ -118,7 +121,7 @@ process.exit(r.status ?? 1);
     return { status, output };
   }
   const calls = () => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  return { root, source, workspace: join(root, "cache", "work", "proj", "t1"), valid, seen, claim, run, calls, forkUrl: `http://127.0.0.1:${server.address().port}/fork.git` };
+  return { root, source, workspace: join(root, "cache", "work", "proj", "t1"), valid, seen, claim, claims, refuse, run, calls, forkUrl: `http://127.0.0.1:${server.address().port}/fork.git` };
 }
 
 test("claim, re-claim, push and check authenticate without a token in any git argument", async (t) => {
@@ -184,4 +187,75 @@ test("auth puts the header in git's environment after any configuration the call
     assert.equal(read("http.extraheader"), "Authorization: Bearer T");
     assert.equal(read("user.name"), "Caller");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// t705, seen in ikon-weblog/t112 after a build of about ten hours: the fetch
+// was refused for an expired token, atelier claim then answered "internal",
+// and only atelier start worked. update and push now renew the token for the
+// holder, or say plainly to run atelier start.
+async function started(t) {
+  const f = await fixture(t);
+  const start = await f.run(["start", "t1"], f.source);
+  assert.equal(start.status, 0, start.output);
+  return f;
+}
+const lapse = (f) => { f.claim.token = WRITE2; f.valid["fork.git"] = new Set([WRITE2, READ]); f.claim.expiresAt = "2999-01-01T00:00:00.000Z"; };
+
+test("update renews a workspace token whose recorded expiry has passed, for the holder, before fetching", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await started(t);
+  real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
+  lapse(f);
+  // A refusal the CLI would not read as an expired token: only the recorded expiry can have prompted the renewal.
+  f.refuse.status = 500;
+  const r = await f.run(["update"], f.workspace);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /t1: this workspace's token had expired; renewed it for codex\/test/);
+  assert.equal(real(f.workspace, "config", "--local", "atelier.write-token-expires-at"), "2999-01-01T00:00:00.000Z");
+  assert.match(readFileSync(join(f.workspace, ".git", "atelier-credentials"), "utf8"), new RegExp(WRITE2));
+});
+
+test("update renews a token the fork refuses as expired and fetches again", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await started(t);
+  f.refuse.status = 403;
+  lapse(f);
+  const r = await f.run(["update"], f.workspace);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /renewed it for codex\/test/);
+  assert.deepEqual(f.claims, ["POST", "POST"], "one claim to start, one to renew");
+});
+
+test("push renews a token the fork refuses as expired and pushes with the new one", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await started(t);
+  f.refuse.status = 403;
+  lapse(f);
+  real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+  const r = await f.run(["push"], f.workspace);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /renewed it for codex\/test/);
+  assert.match(r.output, /t1 head [0-9a-f]{8}/);
+});
+
+test("update says plainly to run atelier start when the token cannot be renewed for the caller", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await started(t);
+  f.refuse.status = 403;
+  f.valid["fork.git"] = new Set([]);
+  f.claim.owner = "codex/other";
+  const r = await f.run(["update"], f.workspace);
+  assert.notEqual(r.status, 0);
+  assert.match(r.output, /refused this workspace's token as expired\. t1 is held by codex\/other now, so it cannot be renewed for codex\/test\. Run atelier start t1 --as codex\/test to issue a new token\./);
+  assert.deepEqual(f.claims, ["POST"], "no second claim was made");
+});
+
+test("update that renews and is refused again says to run atelier start", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await started(t);
+  f.refuse.status = 403;
+  f.valid["fork.git"] = new Set([]);
+  const r = await f.run(["update"], f.workspace);
+  assert.notEqual(r.status, 0);
+  assert.match(r.output, /still refused this workspace's token after it was renewed\. Run atelier start t1 --as codex\/test\./);
 });
