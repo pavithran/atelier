@@ -35,7 +35,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -2578,14 +2578,19 @@ export class Ledger extends DurableObject<Env> {
   // the conflicts for it to resolve, where a plain rework would reset the
   // workspace to a head that cannot reach main.
   //
-  // With overlapOk, a task already dispatched keeps its offer: omitted fields
+  // With overlapOk, a task still waiting on its dispatch keeps its offer: omitted fields
   // stay as they were (overrideDispatch in src/dispatch/rules.ts), and the
   // answer names the core-file hold the override released, if one held it.
   // `why`: what chose the builder, the role assignments applied or skipped
   // included, set by the dispatch route and kept on item.dispatched.
   dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
     const item = this.checkDispatch(id, actor);
-    const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, item.dispatch);
+    // Only a dispatch still waiting in the queue is an offer to keep. One a
+    // runner has since claimed is spent: a held or submitted task dispatched
+    // again with an override starts a fresh build, so an earlier merge-main
+    // job and head are not carried over (t517).
+    const waiting = waitingDispatch(item);
+    const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waiting);
     // Under single-family mode a dispatch names only the company's models:
     // one for another company's model would hand the work to a builder no
     // reviewer of the company could then be shown independent of (t394).
@@ -2597,7 +2602,7 @@ export class Ledger extends DurableObject<Env> {
     const items = this.items();
     assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
     this.assertCriteriaReviewed(item, d, "dispatched");
-    const retained = input.overlapOk === true && !!item.dispatch;
+    const retained = input.overlapOk === true && !!waiting;
     const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
     if (held) {
@@ -2659,7 +2664,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) {
-      const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, item.dispatch);
+      const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
       this.assertMergeMainWorkspace(item, d);
       assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
       this.assertCriteriaReviewed(item, d, "dispatched");
