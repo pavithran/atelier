@@ -1739,7 +1739,7 @@ export function formatReviews(reviews, owner = OWNER, unparsable = []) {
     const recorded = recordedText(r, owner);
     lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
-    for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+    for (const f of r.findings ?? []) lines.push(`    ${f.severity}${f.label ? ` (${flat(f.label)})` : ""} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
   }
   for (const r of newestReviews(unparsable)) {
     lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);

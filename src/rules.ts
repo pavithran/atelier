@@ -340,7 +340,14 @@ export interface Finding {
   line: number | null;
   severity: "blocking" | "follow-up";
   text: string;
+  // Why a finding the reviewer called blocking does not block (t717): the
+  // change did not touch the lines it is about ("pre-existing"), or no
+  // independent check confirmed it ("unverified"). A labelled finding is
+  // always a follow-up; see "Review convergence" below.
+  label?: FindingLabel;
 }
+export type FindingLabel = "pre-existing" | "unverified";
+export const FINDING_LABELS: readonly FindingLabel[] = ["pre-existing", "unverified"];
 
 // A criterion the builder cannot verify in its workspace (t457): one that
 // needs a signed-in browser, production data, a deployed service or a human
@@ -2500,6 +2507,262 @@ export function fastFixTask(itemId: string, title: string, review: { by: string;
     title: `Fix after fast landing of ${itemId}: ${title}`,
     brief: `${itemId} landed in fast mode and its post-merge review by ${review.by} at ${review.head.slice(0, 12)} rejected it${review.request !== undefined ? ` (review request ${review.request})` : ""}. Note: ${review.note}`.slice(0, 3000),
     accept,
+  };
+}
+
+// ── Review convergence (t717) ───────────────────────────────────────────────
+// Reviews that never settle cost more than they find. On 2026-10-15 and 16
+// t363, t478, t705, t687 and t676 each ran round after round, every round
+// finding a narrower variant of the last, several over code the task never
+// touched. Anthropic's Claude Code team found the same ("Solving code review
+// at Anthropic"): much of the code a reviewer flagged again and again
+// predated its first pass. Four rules end the loop, each the simplest that
+// fails safe: when a rule cannot tell, the finding blocks and the round is
+// asked again.
+//   1. A round cap (roundCapHold): after REVIEW_ROUND_CAP rejected rounds no
+//      further round starts on its own; the developer decides.
+//   2. A re-review reads the diff since the last reviewed head
+//      (reviewedSince, reReviewDiff) and drops a finding the developer
+//      already marked fixed or refuted (dropSettled).
+//   3. A blocking finding on lines the change did not touch, in a file it
+//      changed, is "pre-existing" (labelPreExisting): a follow-up, never a
+//      blocker.
+//   4. A blocking finding blocks only when an independent check confirmed
+//      it (applyVerification); the rest are "unverified" follow-ups.
+
+// How many rejected rounds a task gets before the developer is asked to
+// reconsider the approach (t717).
+export const REVIEW_ROUND_CAP = 3;
+
+// One rejected round: a head a model rejected, the first model to do so.
+export interface RejectedRound { head: string; by: string; note: string }
+
+// The rejected rounds in `reviews`, oldest first, one per head. The
+// developer's own rejections are decisions, not rounds of automatic review.
+export function rejectedRounds(reviews: readonly Pick<Review, "head" | "by" | "approve" | "note" | "at">[], owner = DEFAULT_OWNER): RejectedRound[] {
+  const rounds = new Map<string, RejectedRound>();
+  for (const r of [...reviews].sort((a, b) => a.at.localeCompare(b.at))) {
+    if (r.approve || r.by === owner || rounds.has(r.head)) continue;
+    rounds.set(r.head, { head: r.head, by: r.by, note: r.note });
+  }
+  return [...rounds.values()];
+}
+
+// Why no further round starts, with the rounds listed, or null while the
+// task is under the cap. The developer's own request for a review
+// (atelier land ID --reviewer H/M) is how another round is asked for.
+export function roundCapHold(rounds: readonly RejectedRound[], itemId = "ID"): string | null {
+  if (rounds.length < REVIEW_ROUND_CAP) return null;
+  const listed = rounds.map((r, i) => `round ${i + 1}, ${r.head.slice(0, 8)}, rejected by ${r.by}: ${oneLine(r.note, 160) || "no note"}`);
+  return `${rounds.length} review rounds were rejected and no further round starts on its own, so the developer decides whether the approach should change. ${listed.join("; ")}. To ask another round anyway: atelier land ${itemId} --reviewer H/M`;
+}
+
+function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+// The head the last earlier review judged: the newest review by a model
+// other than the developer of a head other than `head`. A re-review reads
+// the diff from there. Null when no earlier head was reviewed.
+export function reviewedSince(previous: readonly Pick<Review, "head" | "by" | "at">[], head: string, owner = DEFAULT_OWNER): string | null {
+  const earlier = previous.filter((r) => r.head !== head && r.by !== owner).sort((a, b) => a.at.localeCompare(b.at));
+  return earlier.at(-1)?.head ?? null;
+}
+
+// The diff a re-review reads: the one since the last reviewed head when it
+// is smaller than the whole change and not empty, else the whole change. A
+// merge of main into the task makes the diff since the last head larger than
+// the change itself, and an empty one (a second opinion on the same tree)
+// leaves nothing to read, so each falls back to the whole change.
+export function reReviewDiff(whole: string, since: string | null): { diff: string; incremental: boolean } {
+  return since && since.trim() && since.length < whole.length ? { diff: since, incremental: true } : { diff: whole, incremental: false };
+}
+
+// The same finding, however it is spaced or capitalised: the key a settled
+// finding is matched by. A reworded finding is a different key on purpose;
+// dropping only exact repeats cannot hide a new defect, and a reviewer that
+// rewords a refuted finding has been told to bring new evidence.
+export function findingKey(f: Pick<Finding, "file" | "text">): string {
+  return `${f.file.trim().replace(/^\.\//, "")}\n${f.text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()}`;
+}
+
+// The findings of a re-review without those the developer marked fixed or
+// refuted: they are answered, and raised again they only start another round.
+export function dropSettled<F extends Pick<Finding, "file" | "text">>(findings: readonly F[], settled: readonly Pick<Finding, "file" | "text">[]): F[] {
+  const keys = new Set(settled.map(findingKey));
+  return findings.filter((f) => !keys.has(findingKey(f)));
+}
+
+// The lines of each file a unified diff adds or changes, in the new file's
+// numbers; a deletion marks the line it sat before. Null when the diff has
+// no file header at all (not a diff), so nothing is judged by it. A file
+// listed with no hunk (a binary file, a mode change, a pure rename, an
+// elided diff) has an empty set, which labelPreExisting reads as "cannot
+// tell"; git's "diff --git", rename and "Binary files" lines name it.
+export type TouchedLines = Map<string, Set<number>>;
+
+// A path as git prints it in a header: with core.quotePath (the default) a
+// name holding a quote, a backslash, a control character or a byte over 127 is
+// written in double quotes with C escapes, a non-ASCII letter as octal bytes
+// ("src/caf\303\251.ts" is src/café.ts). Returns the path decoded, without
+// the quotes; a name not in quotes is returned as it is.
+export function unquoteGitPath(raw: string): string {
+  const text = raw.trim();
+  if (text.length < 2 || !text.startsWith('"') || !text.endsWith('"')) return text;
+  const bytes: number[] = [];
+  const simple: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, "\\": 92, '"': 34 };
+  const inner = text.slice(1, -1);
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    const octal = c === "\\" ? /^[0-3][0-7]{2}/.exec(inner.slice(i + 1, i + 4)) : null;
+    if (octal) { bytes.push(parseInt(octal[0], 8)); i += 3; }
+    else if (c === "\\" && inner[i + 1] in simple) { bytes.push(simple[inner[i + 1]]); i++; }
+    else bytes.push(...new TextEncoder().encode(c));
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
+const withoutSide = (path: string) => path.replace(/^[ab]\//, "");
+
+// The two paths of a "diff --git" line, decoded, with the a/ and b/ sides
+// removed. Quoted names are read as tokens; two unquoted names that may hold
+// spaces are split where both sides name the same path, else at the first
+// " b/".
+function gitHeaderPaths(rest: string): string[] {
+  const tokens: string[] = [];
+  let at = 0;
+  while (at < rest.length && tokens.length < 2) {
+    if (rest[at] === " ") { at++; continue; }
+    if (rest[at] === '"') {
+      let end = at + 1;
+      while (end < rest.length && rest[end] !== '"') end += rest[end] === "\\" ? 2 : 1;
+      tokens.push(rest.slice(at, end + 1));
+      at = end + 1;
+    } else {
+      const next = rest.indexOf(' "', at);
+      const quotedNext = next !== -1 && rest.indexOf(" b/", at) === -1;
+      const end = quotedNext ? next : rest.length;
+      const word = rest.slice(at, end);
+      if (tokens.length === 0 && !quotedNext) {
+        const splits = [...word.matchAll(/ b\//g)].map((m) => m.index!);
+        const same = splits.find((i) => withoutSide(word.slice(0, i)) === word.slice(i + 1).replace(/^b\//, ""));
+        const split = same ?? splits[0];
+        if (split === undefined) return [withoutSide(word)];
+        return [withoutSide(word.slice(0, split)), word.slice(split + 1).replace(/^b\//, "")];
+      }
+      tokens.push(word);
+      at = end;
+    }
+  }
+  return tokens.map((t) => withoutSide(unquoteGitPath(t)));
+}
+
+export function touchedLines(diff: string): TouchedLines | null {
+  const touched: TouchedLines = new Map();
+  const list = (path: string): Set<number> => {
+    let lines = touched.get(path);
+    if (!lines) touched.set(path, lines = new Set());
+    return lines;
+  };
+  let lines: Set<number> | null = null;
+  let sawHeader = false;
+  let at = 0, oldLeft = 0, newLeft = 0;
+  for (const line of diff.replace(/\r\n/g, "\n").split("\n")) {
+    // Inside a hunk its header's counts say where it ends, so a deleted line
+    // that reads "-- x" is never taken for a "--- file" header.
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith("+")) { lines?.add(at++); newLeft--; continue; }
+      if (line.startsWith("-")) { lines?.add(at); oldLeft--; continue; }
+      if (line.startsWith(" ") || line === "") { at++; oldLeft--; newLeft--; continue; }
+      if (line.startsWith("\\")) continue;
+      oldLeft = newLeft = 0;
+    }
+    // Git's own header names every changed path, with or without hunks: a
+    // mode change, a binary file and a pure rename have none. Each is listed
+    // with no lines, which places no finding by it.
+    if (line.startsWith("diff --git ")) {
+      sawHeader = true;
+      lines = null;
+      for (const path of gitHeaderPaths(line.slice("diff --git ".length))) list(path);
+      continue;
+    }
+    const named = /^(?:rename|copy) (?:from|to) (.+)$/.exec(line);
+    if (named) { sawHeader = true; list(unquoteGitPath(named[1])); continue; }
+    const binary = /^Binary files (.+) and (.+) differ$/.exec(line);
+    if (binary) { sawHeader = true; for (const side of [binary[1], binary[2]]) if (side !== "/dev/null") list(withoutSide(unquoteGitPath(side))); continue; }
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (hunk) { oldLeft = hunk[1] === undefined ? 1 : Number(hunk[1]); at = Number(hunk[2]); newLeft = hunk[3] === undefined ? 1 : Number(hunk[3]); continue; }
+    const to = /^\+\+\+ (.+?)\s*$/.exec(line);
+    if (to) {
+      sawHeader = true;
+      const path = unquoteGitPath(to[1]);
+      lines = path === "/dev/null" ? null : list(withoutSide(path));
+      continue;
+    }
+    const from = /^--- (.+?)\s*$/.exec(line);
+    if (from) { sawHeader = true; const path = unquoteGitPath(from[1]); if (path !== "/dev/null") list(withoutSide(path)); }
+  }
+  return sawHeader ? touched : null;
+}
+
+// How far from a changed line a finding's line may be and still count as
+// about the change: a reviewer cites the line it read, and the line it means
+// is often the one above or below. Generous on purpose: a pre-existing label
+// lifts a blocker, so it needs the finding well clear of the change.
+export const PRE_EXISTING_MARGIN = 5;
+
+// Whether a blocking finding is about lines the change did not touch: it
+// names a line, its file is one the diff changes with hunks, and no changed
+// line is within PRE_EXISTING_MARGIN of that line. Anything else cannot be
+// placed and keeps blocking: a finding with no line, a file the diff lists
+// without a hunk, and a path the diff does not name at all, which may be a
+// changed path spelled in a way the parser did not read.
+export function isPreExisting(f: Pick<Finding, "file" | "line">, touched: TouchedLines): boolean {
+  if (f.line === null || f.line < 1) return false;
+  const file = f.file.trim().replace(/^\.\//, "");
+  if (!file) return false;
+  // A path the diff does not name at all is not placed either: it may be a
+  // spelling of a changed path this parser did not read, so it keeps blocking
+  // and the independent check judges it.
+  const lines = touched.get(file);
+  if (!lines?.size) return false;
+  for (const n of lines) if (Math.abs(n - f.line) <= PRE_EXISTING_MARGIN) return false;
+  return true;
+}
+
+// `findings` with each blocking one the change did not touch made a
+// pre-existing follow-up. A diff that cannot be read labels nothing.
+export function labelPreExisting(findings: readonly Finding[], diff: string): Finding[] {
+  const touched = touchedLines(diff);
+  if (!touched) return [...findings];
+  return findings.map((f) => f.severity === "blocking" && isPreExisting(f, touched) ? { ...f, severity: "follow-up", label: "pre-existing" } : f);
+}
+
+// `findings` after the independent check. `confirmed` holds the one-based
+// positions in `findings` it confirmed: they keep blocking. `preExisting`
+// holds those it showed were already present at the task's base: they are
+// pre-existing follow-ups, in a touched file or not. A blocking finding in
+// neither is made an unverified follow-up, since a blocker is proved, not
+// assumed. A position in both stays blocking: when the check is torn, the
+// finding blocks.
+export function applyVerification(findings: readonly Finding[], confirmed: ReadonlySet<number>, preExisting: ReadonlySet<number> = new Set()): Finding[] {
+  return findings.map((f, i) => {
+    if (f.severity !== "blocking" || confirmed.has(i + 1)) return f;
+    return { ...f, severity: "follow-up", label: preExisting.has(i + 1) ? "pre-existing" : "unverified" };
+  });
+}
+
+// The follow-up task a review's pre-existing findings are filed as: one task
+// for the review, the findings its criteria, so nothing the reviewer found
+// is lost for not blocking the change.
+export function preExistingTask(itemId: string, title: string, review: { by: string; head: string; findings?: readonly Finding[] }): { title: string; brief: string; accept: string[] } | null {
+  const found = (review.findings ?? []).filter((f) => f.label === "pre-existing");
+  if (!found.length) return null;
+  return {
+    title: `Pre-existing in ${itemId}: ${title}`,
+    brief: `The review of ${itemId} by ${review.by} at ${review.head.slice(0, 12)} found ${found.length === 1 ? "a problem" : "problems"} in code that change did not touch. ${found.length === 1 ? "It" : "They"} did not block ${itemId}; ${found.length === 1 ? "it is" : "they are"} filed here.`.slice(0, 3000),
+    accept: found.map((f) => `${f.file}${f.line === null ? "" : `:${f.line}`}: ${f.text}`.slice(0, 1000)),
   };
 }
 

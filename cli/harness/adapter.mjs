@@ -18,7 +18,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
-import { NO_VERDICT, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
+import { NO_VERDICT, VERIFY_BASE_LINE, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
 import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, RUN_LIMITS, TRANSPORT_ERROR, metadataEscaped, openRouterRefusal } from "./providers.mjs";
 
@@ -85,6 +85,42 @@ export function reviewPrompt(brief, diff) {
   ].join("\n");
 }
 
+// A verification job (t717, src/review/verify.ts) runs as a review job: the
+// same six arguments, the answer in VERDICT. Its brief opens with
+// VERIFY_HEADING, which is how the adapter knows to end the prompt with the
+// verification format and not the review's VERDICT and FINDING lines: a
+// verifier that followed those would answer in a shape parseVerification
+// cannot read, and the request would be released.
+export const isVerification = (brief) => brief.startsWith(VERIFY_HEADING);
+
+export const VERIFY_DEMAND = "Your reply MUST end with one line for each finding in the brief, the findings numbered as the brief numbers them: FINDING n: CONFIRMED because ..., or FINDING n: NOT CONFIRMED because ... . Write no VERDICT line, no SUMMARY line and no FINDING: blocking or FINDING: follow-up line: this is not a review of the change.";
+
+// The same demand when the brief offers PRE-EXISTING (the check was given a
+// base commit): the last instruction of a prompt wins over the brief, so it
+// must allow every answer the brief does (t717, round 4).
+export const VERIFY_DEMAND_BASE = "Your reply MUST end with one line for each finding in the brief, the findings numbered as the brief numbers them: FINDING n: CONFIRMED because ..., or FINDING n: NOT CONFIRMED because ..., or FINDING n: PRE-EXISTING because ... for a defect already present at the base commit the brief names. Write no VERDICT line, no SUMMARY line and no FINDING: blocking or FINDING: follow-up line: this is not a review of the change.";
+
+// The last instruction of a review job's prompt, whichever adapter composes it.
+export function demandFor(brief) {
+  if (!isVerification(brief)) return VERDICT_DEMAND;
+  return brief.includes(VERIFY_BASE_LINE) ? VERIFY_DEMAND_BASE : VERIFY_DEMAND;
+}
+
+export function verificationPrompt(brief, diff) {
+  const fence = fenceFor(diff);
+  return [
+    brief.replace(/\n+$/, ""),
+    "",
+    "The whole change under review:",
+    `${fence}diff`,
+    diff.replace(/\n+$/, ""),
+    fence,
+    "",
+    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; confirm a finding only when you have shown it yourself.",
+    demandFor(brief),
+  ].join("\n");
+}
+
 // What every review prompt ends with. GLM 5.3 under opencode answered
 // review after review in prose with no VERDICT line, 48 replies released
 // overnight on 2026-10-13 ("the reply states no verdict"), yet answered at
@@ -121,7 +157,10 @@ export const VERDICT_FOLLOW_UP = [
 // The prompt for the job, which goes to the harness on standard input.
 export function promptFor(harness, args, read = (f) => readFileSync(f, "utf8")) {
   const brief = read(args.brief);
-  if (jobKind(args) === "review") return reviewPrompt(brief, args.diff ? read(args.diff) : "");
+  if (jobKind(args) === "review") {
+    const diff = args.diff ? read(args.diff) : "";
+    return isVerification(brief) ? verificationPrompt(brief, diff) : reviewPrompt(brief, diff);
+  }
   return `${agentRules(harness, args.model, args.workspace, args.plan)}\n\n${brief}`;
 }
 
@@ -399,7 +438,7 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   let prompt, brief = "";
   try {
     prompt = promptFor(harness, args);
-    if (kind === "review" && HARNESSES[harness].followUp) brief = readFileSync(args.brief, "utf8");
+    if (kind === "review") brief = readFileSync(args.brief, "utf8");
   } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
@@ -422,7 +461,7 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   // for the verdict lines alone (t576); the kept reply is both answers, so
   // findings the first gave as lines still count. Any failure of the second
   // ask leaves the first reply, which the runner records as unparsable.
-  const followUp = HARNESSES[harness].followUp;
+  const followUp = isVerification(brief) ? null : HARNESSES[harness].followUp;
   if (followUp && noVerdict(answer)) {
     const again = spawn(exe, followUp(args, kind, setup), {
       cwd: args.workspace, env: childEnv, input: verdictFollowUp(criteriaAsked(brief)), encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
