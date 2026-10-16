@@ -174,19 +174,23 @@ export function renderMarkdown(result) {
 }
 
 // loadReviews(out, builds, reviewers, pairs): the review texts and statuses of
-// a run. With `pairs` (the run's pairs.txt: every scheduled { reviewer, build })
-// each pair is returned, and one with neither a review nor a status is marked
-// missing, so it scores as a failed review instead of vanishing. Without
-// pairs, only the pairs that left a file are returned.
+// a run. The pairs scored are a union: every pair in `pairs` (the run's
+// pairs.txt: every scheduled { reviewer, build }) and every pair that has a
+// review or status file on disc. A scheduled pair with neither file is marked
+// missing, so it scores as a failed review instead of vanishing; a result
+// from an earlier run stays scored when a later run's manifest omits it, and
+// a directory with no manifest scores everything it holds.
 export function loadReviews(out, builds, reviewers, pairs = null) {
   const reviews = [];
-  const list = pairs ?? reviewers.flatMap((reviewer) => builds.map((build) => ({ reviewer, build })));
+  const scheduled = new Set((pairs ?? []).map((p) => `${p.reviewer}\t${p.build}`));
+  const list = [...(pairs ?? [])];
+  for (const reviewer of reviewers) for (const build of builds) if (!scheduled.has(`${reviewer}\t${build}`)) list.push({ reviewer, build });
   for (const { reviewer, build } of list) {
     const file = `${reviewer.replace(/\//g, "_")}__${build}`;
     const md = join(out, "reviews", `${file}.md`);
     const st = join(out, "status", `${file}.json`);
     const none = !existsSync(st) && !existsSync(md);
-    if (none && !pairs) continue;
+    if (none && !scheduled.has(`${reviewer}\t${build}`)) continue;
     reviews.push({ reviewer, build, text: existsSync(md) ? readFileSync(md, "utf8") : "", status: existsSync(st) ? JSON.parse(readFileSync(st, "utf8")) : null, missing: none });
   }
   return reviews;
