@@ -18,7 +18,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
-import { NO_VERDICT, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
+import { NO_VERDICT, VERIFY_BASE_LINE, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
 import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, RUN_LIMITS, TRANSPORT_ERROR, metadataEscaped, openRouterRefusal } from "./providers.mjs";
 
@@ -95,6 +95,17 @@ export const isVerification = (brief) => brief.startsWith(VERIFY_HEADING);
 
 export const VERIFY_DEMAND = "Your reply MUST end with one line for each finding in the brief, the findings numbered as the brief numbers them: FINDING n: CONFIRMED because ..., or FINDING n: NOT CONFIRMED because ... . Write no VERDICT line, no SUMMARY line and no FINDING: blocking or FINDING: follow-up line: this is not a review of the change.";
 
+// The same demand when the brief offers PRE-EXISTING (the check was given a
+// base commit): the last instruction of a prompt wins over the brief, so it
+// must allow every answer the brief does (t717, round 4).
+export const VERIFY_DEMAND_BASE = "Your reply MUST end with one line for each finding in the brief, the findings numbered as the brief numbers them: FINDING n: CONFIRMED because ..., or FINDING n: NOT CONFIRMED because ..., or FINDING n: PRE-EXISTING because ... for a defect already present at the base commit the brief names. Write no VERDICT line, no SUMMARY line and no FINDING: blocking or FINDING: follow-up line: this is not a review of the change.";
+
+// The last instruction of a review job's prompt, whichever adapter composes it.
+export function demandFor(brief) {
+  if (!isVerification(brief)) return VERDICT_DEMAND;
+  return brief.includes(VERIFY_BASE_LINE) ? VERIFY_DEMAND_BASE : VERIFY_DEMAND;
+}
+
 export function verificationPrompt(brief, diff) {
   const fence = fenceFor(diff);
   return [
@@ -106,7 +117,7 @@ export function verificationPrompt(brief, diff) {
     fence,
     "",
     "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; confirm a finding only when you have shown it yourself.",
-    VERIFY_DEMAND,
+    demandFor(brief),
   ].join("\n");
 }
 

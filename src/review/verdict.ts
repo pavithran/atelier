@@ -59,6 +59,12 @@ export interface VerdictOptions {
 // review format (cli/harness/adapter.mjs).
 export const VERIFY_HEADING = "# Verification of findings";
 
+// The line of a verification brief's reply format that offers PRE-EXISTING,
+// present only when the check was given a base commit. The adapter reads it
+// to end its prompt with a demand that offers the same answer: a final line
+// that allowed fewer answers than the brief would override the brief.
+export const VERIFY_BASE_LINE = "FINDING 3: PRE-EXISTING because the same defect is in the code at the base, shown by the lines you read there.";
+
 export const NO_VERDICT = "the reply states no verdict: it has no VERDICT line and no JSON verdict";
 
 export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2000, summary: 600 } as const;

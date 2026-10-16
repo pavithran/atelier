@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { AGY_MODELS, VERDICT_DEMAND } from "./harness/adapter.mjs";
+import { AGY_MODELS, demandFor } from "./harness/adapter.mjs";
 
 // An adapter a runner's config names as the review command for the antigravity
 // harness (docs/orchestrator.md, section 4). The review job hands it the brief
@@ -38,15 +38,16 @@ const diff = readFileSync(diffFile, "utf8").replace(/\n+$/, "");
 let longest = 3;
 for (const m of diff.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
 const fence = "`".repeat(longest + 1);
+const brief = readFileSync(briefFile, "utf8").replace(/\n+$/, "");
 const prompt = [
-  readFileSync(briefFile, "utf8").replace(/\n+$/, ""),
+  brief,
   "",
   `${fence}diff`,
   diff,
   fence,
   "",
   "In the current folder you may read files and run the project's tests; do not push, do not run any atelier command, and verify a blocking finding before you state it.",
-  VERDICT_DEMAND,
+  demandFor(brief),
 ].join("\n");
 
 const agy = process.env.ATELIER_AGY || "agy";

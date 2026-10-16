@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERIFY_DEMAND, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERIFY_DEMAND, VERIFY_DEMAND_BASE, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
 import { runWithLimits } from "../bin/harness/limit.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
@@ -656,4 +656,28 @@ test("a verification is given the verification format and never the review's VER
   // An ordinary review brief still ends with the review's own demand.
   writeFileSync(s.brief, "# Review of t9 at aaaaaaaa\nReview it.\n");
   assert.ok(run("claude-code", s, { model: "opus-5.5", review: true }).seen.input.trimEnd().endsWith(VERDICT_DEMAND));
+});
+
+// t717, round 4 (head d71c7d3f): the last instruction of the prompt allowed only
+// CONFIRMED and NOT CONFIRMED, over the brief's PRE-EXISTING, so the base rule
+// could never trigger in production. With a base the final demand offers all three.
+test("a verification brief with a base is given a final demand offering CONFIRMED, NOT CONFIRMED and PRE-EXISTING, by every harness, and each answer parses", (t) => {
+  const s = setup(t);
+  const input = { item: { id: "t9", title: "Landing" }, head: "a".repeat(40), findings: [1, 2, 3].map((n) => ({ file: "src/a.ts", line: n, severity: "blocking", text: `Defect ${n}.` })), diffFile: s.diff };
+  const answer = "FINDING 1: CONFIRMED because line 1 drops the row.\nFINDING 2: NOT CONFIRMED because the test passes.\nFINDING 3: PRE-EXISTING because git show base:src/a.ts reads the same at line 3.";
+  for (const [harness, model] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"], ["opencode", "deepseek-v4-pro"], ["antigravity", "gemini-3.1-pro"]]) {
+    writeFileSync(s.brief, verifierBrief({ ...input, base: "0".repeat(40) }));
+    const { seen, verdict } = run(harness, s, { model, review: true, env: { FAKE_ANSWER: answer } });
+    const tail = seen.input.trimEnd();
+    assert.ok(tail.endsWith(VERIFY_DEMAND_BASE), `${harness}: the prompt ends with the demand that offers PRE-EXISTING`);
+    for (const form of ["FINDING n: CONFIRMED because", "FINDING n: NOT CONFIRMED because", "FINDING n: PRE-EXISTING because"]) assert.ok(VERIFY_DEMAND_BASE.includes(form), `${harness}: ${form}`);
+    assert.ok(seen.input.includes("FINDING 3: PRE-EXISTING because"), `${harness}: the brief offers it too`);
+    const read = parseVerification(readFileSync(verdict, "utf8"), 3);
+    assert.ok(read.ok, harness);
+    assert.deepEqual([[...read.confirmed], [...read.preExisting]], [[1], [3]], harness);
+    // Without a base the demand is the one it was, and offers no PRE-EXISTING.
+    writeFileSync(s.brief, verifierBrief(input));
+    const plain = run(harness, s, { model, review: true, env: { FAKE_ANSWER: answer } }).seen.input.trimEnd();
+    assert.ok(plain.endsWith(VERIFY_DEMAND) && !plain.includes("PRE-EXISTING"), `${harness}: no base, no PRE-EXISTING`);
+  }
 });
