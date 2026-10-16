@@ -69,7 +69,7 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
-import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
+import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
 import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -1479,9 +1479,20 @@ export class Ledger extends DurableObject<Env> {
   // head measured, and a part's spec from its approved plan, so every caller
   // reads the same roles (gpt-6-astra's twentieth review of t622, finding 2).
   private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): Assignment[] {
+    return applicableAssignments(this.heldAssignments(), null, this.reviewRolesOf(item, part, changed));
+  }
+
+  private reviewRolesOf(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): AssignmentRole[] {
     const measured = changed ?? (item.head ? evidenceAt(this.project().policy, this.evidenceFor(item.id), item.head).changedPaths ?? [] : []);
-    const spec = part ?? this.partSpec(item);
-    return applicableAssignments(this.heldAssignments(), null, reviewRolesFor(item, measured, spec));
+    return reviewRolesFor(item, measured, part ?? this.partSpec(item));
+  }
+
+  // The review role a request or a verdict serves (t663): the most specific
+  // of the roles the review reads, as reviewAssigned reads them. Recorded on
+  // review.requested and on the verdict so the Models page can measure each
+  // role; an event from before it has none and counts as review.
+  private reviewRoleOf(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): ReviewRole {
+    return this.reviewRolesOf(item, part, changed)[0] as ReviewRole;
   }
 
   // A part's spec from its plan's approved document, or null for a task or a
@@ -2213,7 +2224,7 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
         id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
       this.log(id, ORCHESTRATOR, "review.requested", {
-        head: need.head, reviewer, round: need.round, via: "criteria-changed",
+        head: need.head, reviewer, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: "criteria-changed",
         ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
       }, at);
       // The tier is judged against the live offers this ledger holds, as
@@ -3252,7 +3263,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, role: this.reviewRoleOf(item), ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
@@ -6495,7 +6506,7 @@ export class Ledger extends DurableObject<Env> {
       const namedOutcome = named ? aheadOfAssignments(this.reviewAssigned(p, part, need.changedPaths), "the developer's named reviewer") : null;
       const reason = namedOutcome ? ["Named by the developer for this part", ...namedOutcome.lines].join(" ") : pick!.reviewer!.reasons.join(" ");
       const assignment = namedOutcome ?? pick?.assignment;
-      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, reason, ...(assignment ? { assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
+      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, role: this.reviewRoleOf(p, part, need.changedPaths), reason, ...(assignment ? { assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
       // The tier is the project's, judged against the developer's pool as it is
       // now (the default), with the offers the tick read.
       this.askTierReview(p, need, reviewer, ORCHESTRATOR, at, false, undefined, tickOffers);
@@ -7045,7 +7056,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved, pool, offers);
     return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number, ...(withdrew.length ? { withdrew } : {}) };
   }
@@ -7132,7 +7143,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
     // What the role assignments said of this choice, kept on the request
     // (gpt-6-astra's review of t622, finding 7).
-    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, tier: true, ...(pick.reasons.length ? { reason: pick.reasons.join(" ") } : {}) }, at, proved);
+    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), tier: true, ...(pick.reasons.length ? { reason: pick.reasons.join(" ") } : {}) }, at, proved);
   }
 
   // Withdraws an item's live tier requests (open ones only, with `only`), so
@@ -7210,7 +7221,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
       itemId, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
     this.log(itemId, ORCHESTRATOR, "review.requested", {
-      head: need.head, reviewer, round: need.round, via: "head-moved", from: last.head as string,
+      head: need.head, reviewer, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: "head-moved", from: last.head as string,
       ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
     }, at);
     this.askTierReview(item, need, reviewer, ORCHESTRATOR, at, false, undefined, this.heldOffers());
