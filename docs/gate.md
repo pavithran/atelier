@@ -313,11 +313,13 @@ and the round is asked again.
   (`atelier finding`) that the reviewer raises again word for word is dropped
   before the review is recorded; a reworded one is not.
 - **A finding on code the change did not touch is pre-existing.** The runner
-  reads the whole change's diff. A blocking finding that names a line, in a
-  file the change did not touch or more than `PRE_EXISTING_MARGIN` lines from
-  any line the change touched, becomes a follow-up labelled `pre-existing`.
-  A finding with no line, or in a file the diff lists with no hunk (a mode
-  change, a binary file, a pure rename), is not placed and keeps blocking. The review records one follow-up task with each
+  reads the whole change's diff. A blocking finding that names a line more
+  than `PRE_EXISTING_MARGIN` lines from any line the change touched, in a file
+  the change changed with hunks, becomes a follow-up labelled `pre-existing`.
+  A finding with no line, in a file the diff lists with no hunk (a mode
+  change, a binary file, a pure rename), or in a path the diff does not name
+  (git's quoted spellings are decoded first), is not placed and keeps
+  blocking; the independent check judges it. The review records one follow-up task with each
   pre-existing finding as a criterion, so nothing found is lost.
 - **A blocking finding blocks only when a second check confirms it.** The
   runner asks another model on the runner, of another family than the

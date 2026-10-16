@@ -1292,7 +1292,8 @@ test("reviewBrief: a re-review given the diff since the last reviewed head says 
   assert.ok(text.includes(`This is the change since ${H1}, the last head a review judged, the output of git diff ${H1} ${H2}.`), text);
   assert.ok(text.includes(`the whole of it is git diff ${H0} ${H2}`));
   assert.ok(text.includes("+since only") && !text.includes("+whole change"));
-  assert.ok(text.includes("Do not re-read the rest of the change for new faults: a finding on code this diff does not touch is pre-existing, and does not block. Do not repeat a finding the developer marked fixed or refuted."));
+  assert.ok(text.includes("for new faults, and check each earlier blocking finding against the code as it stands now, whether or not this diff touches it. Do not re-read the rest of the change for new faults. Do not repeat a finding the developer marked fixed or refuted."));
+  assert.ok(!text.includes("is pre-existing, and does not block"), "the reviewer is not told to drop an unresolved earlier blocker");
 });
 
 test("parseVerdict: settled findings make a rejection with nothing left to block on an approval that must still prove its criteria", () => {

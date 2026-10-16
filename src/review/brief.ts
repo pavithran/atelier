@@ -243,7 +243,7 @@ export function reviewBrief(input: BriefInput): string {
       ? ["", `This is review round ${need.round}. ${again}. Start with the earlier blocking findings under "Earlier reviews": say in your summary which are resolved, and repeat as blocking any that still holds.`]
       : []),
     ...(since
-      ? ["", `Read the diff since ${short(since.from)}, the last head a review judged, and the earlier findings. Do not re-read the rest of the change for new faults: a finding on code this diff does not touch is pre-existing, and does not block. Do not repeat a finding the developer marked fixed or refuted.`]
+      ? ["", `Read the diff since ${short(since.from)}, the last head a review judged, for new faults, and check each earlier blocking finding against the code as it stands now, whether or not this diff touches it. Do not re-read the rest of the change for new faults. Do not repeat a finding the developer marked fixed or refuted.`]
       : []),
   );
 
