@@ -270,9 +270,14 @@ export function recordTokenExpiry(dir, expiresAt) {
 
 // How Artifacts (or the Worker in front of it) refuses a Git request whose
 // token has lapsed or was revoked.
-// A refused discovery reads "returned error: 401"; a refused push upload may
-// read only "RPC failed; HTTP 401".
-export const TOKEN_REFUSED = /Invalid or expired token|The requested URL returned error: 40[13]|RPC failed; HTTP 40[13]/i;
+// A refused discovery reads "returned error: 40x" when the server answers 403,
+// but a 401 sends git into its credential retry: with the Bearer header
+// and no credential helper, and GIT_TERMINAL_PROMPT=0, git 2.54 prints
+// "could not read Username for '<url>': terminal prompts disabled" whether or
+// not the 401 carried WWW-Authenticate (measured in t705 round 6). With a
+// username in the URL it prints "Authentication failed for '<url>'". A refused
+// push upload may read only "RPC failed; HTTP 401".
+export const TOKEN_REFUSED = /Invalid or expired token|The requested URL returned error: 40[13]|RPC failed; HTTP 40[13]|could not read (?:Username|Password) for '[^']*': terminal prompts disabled|Authentication failed for '/i;
 
 // Whether this process has renewed the workspace token already: a command
 // renews it once, and a refusal after that ends it saying to run atelier start.

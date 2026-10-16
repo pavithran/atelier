@@ -218,9 +218,9 @@ test("update renews a workspace token whose recorded expiry has passed, for the 
   assert.match(readFileSync(join(f.workspace, ".git", "atelier-credentials"), "utf8"), new RegExp(WRITE2));
 });
 
-test("update renews a token the fork refuses as expired and fetches again", async (t) => {
+for (const status of [403, 401]) test(`update renews a token the fork refuses as expired and fetches again (git sees ${status})`, async (t) => {
   const f = await started(t);
-  f.refuse.status = 403;
+  f.refuse.status = status;
   lapse(f);
   const r = await f.run(["update"], f.workspace);
   assert.equal(r.status, 0, r.output);
@@ -228,9 +228,9 @@ test("update renews a token the fork refuses as expired and fetches again", asyn
   assert.deepEqual(f.claims, ["POST", "POST"], "one claim to start, one to renew");
 });
 
-test("push renews a token the fork refuses as expired and pushes with the new one", async (t) => {
+for (const status of [403, 401]) test(`push renews a token the fork refuses as expired and pushes with the new one (git sees ${status})`, async (t) => {
   const f = await started(t);
-  f.refuse.status = 403;
+  f.refuse.status = status;
   lapse(f);
   real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
   const r = await f.run(["push"], f.workspace);
@@ -239,9 +239,9 @@ test("push renews a token the fork refuses as expired and pushes with the new on
   assert.match(r.output, /t1 head [0-9a-f]{8}/);
 });
 
-test("update says plainly to run atelier start when the token cannot be renewed for the caller", async (t) => {
+for (const status of [403, 401]) test(`update says plainly to run atelier start when the token cannot be renewed for the caller (git sees ${status})`, async (t) => {
   const f = await started(t);
-  f.refuse.status = 403;
+  f.refuse.status = status;
   f.valid["fork.git"] = new Set([]);
   f.claim.owner = "codex/other";
   const r = await f.run(["update"], f.workspace);
@@ -250,9 +250,9 @@ test("update says plainly to run atelier start when the token cannot be renewed 
   assert.deepEqual(f.claims, ["POST"], "no second claim was made");
 });
 
-test("update that renews and is refused again says to run atelier start", async (t) => {
+for (const status of [403, 401]) test(`update that renews and is refused again says to run atelier start (git sees ${status})`, async (t) => {
   const f = await started(t);
-  f.refuse.status = 403;
+  f.refuse.status = status;
   f.valid["fork.git"] = new Set([]);
   const r = await f.run(["update"], f.workspace);
   assert.notEqual(r.status, 0);
@@ -289,13 +289,13 @@ test("a stepped push refused again after its one renewal stops with atelier star
   assert.deepEqual(f.claims, ["POST", "POST"], "one claim to start, one renewal");
 });
 
-test("a token expired by its recorded date and refused again after one renewal stops with atelier start, in update and push", async (t) => {
+for (const status of [403, 401]) test(`a token expired by its recorded date and refused again after one renewal stops with atelier start, in update and push (git sees ${status})`, async (t) => {
   for (const command of ["update", "push"]) {
     const f = await started(t);
     real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
     f.claim.token = WRITE2; // the renewed token is still refused
     f.valid["fork.git"] = new Set([]);
-    f.refuse.status = 403;
+    f.refuse.status = status;
     real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
     const r = await f.run([command], f.workspace);
     assert.notEqual(r.status, 0, `${command}: ${r.output}`);
@@ -336,6 +336,17 @@ test("git's RPC failure for a refused push upload reads as a refused token", asy
   assert.match("error: RPC failed; HTTP 401", TOKEN_REFUSED);
   assert.match("error: RPC failed; HTTP 403 curl 22", TOKEN_REFUSED);
   assert.doesNotMatch("error: RPC failed; HTTP 413", TOKEN_REFUSED);
+});
+
+// Captured from git 2.54.0 against a server answering 401 to /info/refs, with
+// the Bearer extraHeader, no credential helper and GIT_TERMINAL_PROMPT=0, for
+// ls-remote, fetch and push alike, with and without WWW-Authenticate: Basic.
+test("git's real wording for a 401 reads as a refused token, and unrelated errors do not", async () => {
+  const { TOKEN_REFUSED } = await import("../cli/atelier.mjs");
+  assert.match("fatal: could not read Username for 'http://127.0.0.1:58536': terminal prompts disabled", TOKEN_REFUSED);
+  assert.match("fatal: could not read Password for 'https://u@host': terminal prompts disabled", TOKEN_REFUSED);
+  assert.match("fatal: Authentication failed for 'https://host/r.git/'", TOKEN_REFUSED);
+  for (const other of ["fatal: unable to access 'http://h/r.git/': Could not resolve host: h", "fatal: repository 'http://h/r.git/' not found", "error: RPC failed; HTTP 500", "fatal: could not read from remote repository."]) assert.doesNotMatch(other, TOKEN_REFUSED);
 });
 
 // Round 5 (both reviewers): a renewal that fails keeps the exit code of the
