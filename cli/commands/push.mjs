@@ -1,9 +1,12 @@
 // atelier push. Its forms, flags and help are declared in src/usage/commands/push.ts.
-import { I, OWNER, actor, args, call, cfg, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, saveConfig, short, serverVersion, wsConfig } from "../atelier.mjs";
+import { I, OWNER, actor, args, call, cfg, count, die, forkBranch, git, hasCommit, holds, itemArg, project, renewWorkspaceToken, requireWorkspace, saveConfig, short, serverVersion, TOKEN_REFUSED, workspaceForkBranch, wsConfig } from "../atelier.mjs";
 import { guardedPush, remoteBases } from "../private.mjs";
 
 import { checkCapabilities, COMMAND_CAPABILITIES } from "../../src/route-level.ts";
 import { pushCommitsInTurn, refused413 } from "../push-steps.mjs";
+
+// The server refused the workspace token while the push read the fork (t705).
+class TokenRefused extends Error {}
 
 // A workspace a runner claimed pushes through the runner route (t488).
 const RUNNER_ROUTE = /\/git\/runner\/[^/?#]+\/[^/?#]+$/i;
@@ -22,7 +25,9 @@ export default async function pushCommand() {
   // Atelier never reads, so it is refused before anything is sent. When
   // origin does not name its branch, the push goes ahead and the
   // comparison below still reports a head Atelier did not see.
-  const recorded = wsConfig("branch"), reads = forkBranch();
+  // The workspace's token is renewed first when it lapsed (t705), so the read
+  // of the fork's branch is not refused and skipped.
+  const recorded = wsConfig("branch"), reads = ownerPort ? forkBranch() : await workspaceForkBranch(name, id, as);
   if (recorded && reads && recorded !== reads) {
     die(`${id}'s fork reads its head from ${reads}, but this workspace pushes to ${recorded} (git config atelier.branch); nothing was pushed. Run atelier claim ${id} to refresh the workspace's branch, then push again.`);
   }
@@ -101,8 +106,21 @@ export default async function pushCommand() {
   };
   // Pinned to the head read above: that commit is scanned and pushed by its
   // id, and recorded, whatever HEAD does meanwhile.
-  let r = guardedPush({ project: name, cwd: undefined, tip: head, bases: forkBases, what: `${id}'s push to its fork`, fail: die },
+  // The read of what the fork holds is refused first when the token lapsed
+  // since the check above: it is carried to the same renewal as a refused push.
+  let r;
+  try {
+    r = guardedPush({ project: name, cwd: undefined, tip: head, bases: forkBases, what: `${id}'s push to its fork`,
+      fail: (message) => { if (!credential && TOKEN_REFUSED.test(message)) throw new TokenRefused(message); return die(message); } },
     (sha) => git([...pushArgs.slice(0, -1), `${sha}:refs/heads/${branch}`], { allowFail: true, token: credential?.token, env: credentialEnv }));
+  } catch (error) {
+    if (!(error instanceof TokenRefused)) throw error;
+    r = { status: 1, stderr: error.message };
+  }
+  if (!credential && r.status !== 0 && TOKEN_REFUSED.test(`${r.stderr ?? ""}${r.stdout ?? ""}`)) {
+    await renewWorkspaceToken(name, id, as, "The server refused this workspace's token as expired.");
+    return pushCommand();
+  }
   // A pack too large for one request answers 413 (t577: t544's ~96
   // regenerated PNGs through the runner route stranded its build for seven
   // hours). The unpushed first-parent commits then go one at a time, oldest
@@ -118,8 +136,21 @@ export default async function pushCommand() {
     const fork = onRoute ? git(["config", "--get", "atelier.fork-remote"], { allowFail: true }).stdout?.trim() || null : null;
     const { item } = await call("GET", I(name, id), undefined, as);
     const ownerHint = `The developer can push it from a workspace on the fork itself: atelier claim ${id} --as ${item.owner ?? "HOLDER"} --runner ${item.runner ?? "home:NAME"}, then atelier push.`;
+    const step = () => pushCommitsInTurn(git, undefined, { remote, branch, head, opts: { token: credential?.token, env: credentialEnv }, say: (line) => console.log(line), fallback: fork, ownerHint, refusal: (r.stderr || r.stdout || "").trim() });
     try {
-      pushCommitsInTurn(git, undefined, { remote, branch, head, opts: { token: credential?.token, env: credentialEnv }, say: (line) => console.log(line), fallback: fork, ownerHint, refusal: (r.stderr || r.stdout || "").trim() });
+      try { step(); }
+      catch (error) {
+        // A token that lapsed during the steps is renewed once; the steps
+        // then resume from what the fork holds.
+        if (credential || !TOKEN_REFUSED.test(error.message)) throw error;
+        await renewWorkspaceToken(name, id, as, "The server refused this workspace's token as expired.");
+        // A second refusal is not renewed again: the developer is told how to start over.
+        try { step(); }
+        catch (again) {
+          if (!TOKEN_REFUSED.test(again.message)) throw again;
+          die(`The server still refused this workspace's token after it was renewed. Run atelier start ${id} --as ${as}.`);
+        }
+      }
       r = { status: 0 };
     } catch (error) { die(`${id}: ${error.message}`); }
   }
