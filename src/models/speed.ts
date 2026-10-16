@@ -20,6 +20,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { modelKey } from "../rules.ts";
+import { reviewRoleOfEvent, type ReviewRole } from "./assignments.ts";
 import { isAgent, isInfrastructureOutcome, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { SERVED, servedActor, servedBy } from "./served.ts";
 
@@ -39,12 +40,19 @@ export interface Measure { n: number; median: number | null }
 // reported as ending without one, and of those the stalls.
 export interface RoleSpeed extends Measure { runs: number; stalled: number }
 
+// The roles whose pace is read apart (t663): each review role a verdict
+// served (an event that names none is review) and planning. Build stays in
+// ModelSpeed.build, and review there still holds every review role together.
+export type SpeedRole = ReviewRole | "plan";
+export const SPEED_ROLES: readonly SpeedRole[] = ["review", "security-review", "claims-review", "plan"];
+
 export interface ModelSpeed {
   model: string;        // modelKey
   actors: string[];     // the harness/model names it acted under
   build: RoleSpeed;     // its claim to its submission
   review: RoleSpeed;    // its review claim to its verdict
   task: Measure;        // the task's first claim, which it made, to the merge
+  byRole: Record<SpeedRole, RoleSpeed>; // a review role's claim to verdict; planning's claim to its plan (a stall is only known of runs a runner reported: review runs by role are not)
 }
 
 export interface SpeedRecord {
@@ -62,7 +70,8 @@ const median = (xs: number[]): number | null => {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 };
 
-interface Bin { actors: Set<string>; build: number[]; review: number[]; task: number[]; buildRuns: number; reviewRuns: number; buildStalled: number; reviewStalled: number }
+interface RoleBin { samples: number[]; runs: number; stalled: number }
+interface Bin { actors: Set<string>; build: number[]; review: number[]; task: number[]; buildRuns: number; reviewRuns: number; buildStalled: number; reviewStalled: number; roles: Record<SpeedRole, RoleBin> }
 
 export function buildSpeed(projects: readonly ProjectEvents[], runs: readonly RunReport[], owner: string, now: number, days = SPEED_DAYS): SpeedRecord {
   const since = now - days * 86_400_000;
@@ -71,7 +80,7 @@ export function buildSpeed(projects: readonly ProjectEvents[], runs: readonly Ru
   const bin = (actor: string): Bin => {
     const key = modelKey(actor);
     let b = bins.get(key);
-    if (!b) bins.set(key, (b = { actors: new Set(), build: [], review: [], task: [], buildRuns: 0, reviewRuns: 0, buildStalled: 0, reviewStalled: 0 }));
+    if (!b) bins.set(key, (b = { actors: new Set(), build: [], review: [], task: [], buildRuns: 0, reviewRuns: 0, buildStalled: 0, reviewStalled: 0, roles: { review: { samples: [], runs: 0, stalled: 0 }, "security-review": { samples: [], runs: 0, stalled: 0 }, "claims-review": { samples: [], runs: 0, stalled: 0 }, plan: { samples: [], runs: 0, stalled: 0 } } }));
     b.actors.add(actor);
     return b;
   };
@@ -79,17 +88,20 @@ export function buildSpeed(projects: readonly ProjectEvents[], runs: readonly Ru
 
   for (const { events } of projects) replay(events, owner, inWindow, bin, seconds);
   for (const run of runs) {
-    if ((run.role !== "build" && run.role !== "review") || !isAgent(run.actor, owner) || !inWindow(run.at) || isInfrastructureOutcome(run.outcome)) continue;
+    if (run.role !== "build" && run.role !== "review" && run.role !== "plan") continue;
+    if ( !isAgent(run.actor, owner) || !inWindow(run.at) || isInfrastructureOutcome(run.outcome)) continue;
     const b = bin(run.actor);
     const stalled = STALL_OUTCOMES.includes(run.outcome) ? 1 : 0;
     if (run.role === "build") { b.buildRuns++; b.buildStalled += stalled; }
-    else { b.reviewRuns++; b.reviewStalled += stalled; }
+    else if (run.role === "plan") { b.roles.plan.runs++; b.roles.plan.stalled += stalled; }
+    else { b.reviewRuns++; b.reviewStalled += stalled; b.roles.review.runs++; b.roles.review.stalled += stalled; }
   }
   const models = [...bins.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([model, b]): ModelSpeed => ({
     model, actors: [...b.actors].sort(),
     build: { n: b.build.length, median: median(b.build), runs: b.buildRuns, stalled: b.buildStalled },
     review: { n: b.review.length, median: median(b.review), runs: b.reviewRuns, stalled: b.reviewStalled },
     task: { n: b.task.length, median: median(b.task) },
+    byRole: Object.fromEntries(SPEED_ROLES.map((role) => [role, { n: b.roles[role].samples.length, median: median(b.roles[role].samples), runs: b.roles[role].runs, stalled: b.roles[role].stalled }])) as Record<SpeedRole, RoleSpeed>,
   }));
   return { days, since: new Date(since).toISOString(), until: new Date(now).toISOString(), minSamples: SPEED_MIN_SAMPLES, models };
 }
@@ -118,7 +130,16 @@ function replay(events: readonly LedgerEvent[], owner: string, inWindow: (at: st
     const { itemId: item, kind } = event;
     if (item === null || kind === SERVED) continue;
     const actor = servedActor(event, served);
-    if (kind === "item.claimed") {
+    if (kind === "plan.proposed") {
+      // A plan run ends with its plan, timed from the planner's claim (t663).
+      const claim = building.get(item);
+      if (claim && inWindow(event.at) && isAgent(claim.model, owner)) {
+        const b = bin(claim.model);
+        b.roles.plan.samples.push(seconds(claim.at, event.at));
+        b.roles.plan.runs++;
+        building.delete(item);
+      }
+    } else if (kind === "item.claimed") {
       if (!isAgent(actor, owner)) { building.delete(item); continue; }
       building.set(item, { at: event.at, model: actor });
       if (!firstClaim.has(item)) firstClaim.set(item, { at: event.at, model: actor });
@@ -155,7 +176,9 @@ function replay(events: readonly LedgerEvent[], owner: string, inWindow: (at: st
       if (!inWindow(event.at)) continue;
       const b = bin(actor);
       b.reviewRuns++;
-      if (at !== undefined) b.review.push(seconds(at, event.at));
+      const role = b.roles[reviewRoleOfEvent(event.data)];
+      role.runs++;
+      if (at !== undefined) { b.review.push(seconds(at, event.at)); role.samples.push(seconds(at, event.at)); }
     }
   }
 }
