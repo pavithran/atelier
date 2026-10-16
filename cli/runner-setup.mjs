@@ -12,7 +12,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { DEFAULT_JOBS, defaultConfigPath, parseConfig, providersDir } from "./runner-config.mjs";
 import { HARNESSES, opencodeMajor } from "./harness/adapter.mjs";
 import {
-  PROVIDERS, SERVED, checkLimits, configuredLimits, localServed, opencodeConfig, openRouterId, openRouterServed, providerFor,
+  PROVIDERS, SERVED, checkLimits, configuredLimits, localServed, opencodeConfig, openRouterId, openRouterRefusal, openRouterServed, providerFor,
 } from "./harness/providers.mjs";
 
 export const OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models";
@@ -61,6 +61,8 @@ export async function resolveOpencode(entries, fetchJson, catalogue = {}) {
       const hit = openRouterId(entry.id, openrouter);
       if (!hit) { refuse(`OpenRouter lists no single model that ${entry.id} names (an id VENDOR/MODEL, written VENDOR-MODEL in the pool)`); continue; }
       providerModel = hit.id;
+      const claude = openRouterRefusal(providerModel);
+      if (claude) { refuse(claude); continue; }
       served = openRouterServed(hit);
     } else if (provider === "ai-studio") {
       if (studioEndpoint && studioEndpoint !== where.baseURL) { refuse(`a runner reaches one AI Studio endpoint, and ${studioEndpoint} is already configured`); continue; }
@@ -86,7 +88,10 @@ export async function resolveOpencode(entries, fetchJson, catalogue = {}) {
 // permissions key is written only for 2 or later, since opencode 1 throws on it.
 export async function planSetup({ configPath, pool, env, which, fetchJson, catalogue, major = null }) {
   const found = Object.keys(HARNESSES).filter((h) => which(HARNESSES[h].executable));
-  const home = (Array.isArray(pool) ? pool : []).filter((m) => m.where === "home");
+  // A home runner takes the pool's home models and the opencode models served
+  // by OpenRouter's API, which the pool records as cloud (t698): an API model
+  // runs on any machine with the key.
+  const home = (Array.isArray(pool) ? pool : []).filter((m) => m.where === "home" || (m.harness === "opencode" && m.provider === "openrouter"));
   const gateway = gatewayFrom(env);
   // Each runner config's provider configs have a folder of their own, so a
   // second runner's setup leaves the first's as they were.
