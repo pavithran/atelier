@@ -106,13 +106,17 @@ export interface LandingUnparsable {
   head: string;
   at: string;
   note?: string;
+  // t613: false for a reply that released no claim (a late one from a claim
+  // that had lapsed). Absent on replies kept before it, which count.
+  request?: number;
+  released?: boolean;
 }
 
 export type ReviewStall = { kind: "unparsable"; by: string; note: string } | { kind: "no_request" };
 
 export function reviewStall(head: string, since: string, reviewer: string | null, live: { reviewer: string } | null, unparsable: readonly LandingUnparsable[]): ReviewStall | null {
   const asked = reviewer?.toLowerCase() ?? null;
-  const bad = (unparsable ?? []).filter((u) => u && u.head === head && Date.parse(u.at) >= Date.parse(since) && (asked === null || u.by.toLowerCase() === asked)).at(-1);
+  const bad = (unparsable ?? []).filter((u) => u && u.head === head && Date.parse(u.at) >= Date.parse(since) && !(u.request !== undefined && u.released !== true) && (asked === null || u.by.toLowerCase() === asked)).at(-1);
   if (bad) return { kind: "unparsable", by: bad.by, note: bad.note ?? "" };
   if (!live) return { kind: "no_request" };
   return null;
