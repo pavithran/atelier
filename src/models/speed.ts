@@ -132,12 +132,14 @@ function replay(events: readonly LedgerEvent[], owner: string, inWindow: (at: st
     const actor = servedActor(event, served);
     if (kind === "plan.proposed") {
       // A plan run ends with its plan, timed from the planner's claim (t663).
+      // The claim is consumed by any proposal, in the window or not, so a
+      // later revision is not timed from the original claim.
       const claim = building.get(item);
+      building.delete(item);
       if (claim && inWindow(event.at) && isAgent(claim.model, owner)) {
         const b = bin(claim.model);
         b.roles.plan.samples.push(seconds(claim.at, event.at));
         b.roles.plan.runs++;
-        building.delete(item);
       }
     } else if (kind === "item.claimed") {
       if (!isAgent(actor, owner)) { building.delete(item); continue; }
