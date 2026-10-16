@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
+import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
 import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
@@ -1508,6 +1509,33 @@ test("a merge is recorded only when main holds it and its second parent is the t
   assert.equal(code({ parents: [P1], holds: true }), "not_a_merge");
   assert.equal(code({ parents: [H1, P1], holds: true }), "second_parent_differs");
   assert.match(recordedMergeRefusal(record, { parents: [H1, P1], holds: true })!.detail, /second parent is eeeeeeee, not aaaaaaaa/);
+});
+
+// t687 (PAVI, 2026-10-15): ikon-weblog had never admitted gemini-4-argon, so
+// a review asked of antigravity/gemini-4-argon there was refused as ineligible.
+const admission = (id: string, active = true, aliases: string[] = []): ReviewerAdmission => ({ id, aliases, by: "owner", reason: "r", at: T, active });
+
+test("a reviewer admitted in the standard project is admitted in every project unless that project records its own", () => {
+  const argon = admission("gemini-4-argon");
+  assert.deepEqual(effectiveAdmissions([], [argon]), [argon]);
+  // A project's own withdrawal, or its own admission, stands in place of the standard one.
+  const withdrawn = admission("gemini-4-argon", false);
+  assert.deepEqual(effectiveAdmissions([withdrawn], [argon]), [withdrawn]);
+  const own = admission("Gemini-4-Argon", true, ["argon"]);
+  assert.deepEqual(effectiveAdmissions([own], [argon]), [own]);
+  // Another model's record leaves it inherited.
+  const other = admission("qwen3-coder");
+  assert.deepEqual(effectiveAdmissions([other], [argon]), [other, argon]);
+  // What the standard project withdrew is not shared.
+  assert.deepEqual(effectiveAdmissions([], [admission("gemini-4-argon", false)]), []);
+  assert.deepEqual(standardAdmissions([argon, admission("x", false)]), [argon]);
+});
+
+test("a model named as the listing prints it, harness/model, is the model; a model id with a slash stays whole", () => {
+  assert.deepEqual(splitHarness("antigravity/gemini-4-argon"), { harness: "antigravity", model: "gemini-4-argon" });
+  assert.deepEqual(splitHarness("Opencode/z-ai/glm-5"), { harness: "opencode", model: "z-ai/glm-5" });
+  assert.deepEqual(splitHarness("gemini-4-argon"), { model: "gemini-4-argon" });
+  assert.deepEqual(splitHarness("z-ai/glm-5"), { model: "z-ai/glm-5" });
 });
 
 // t562, found on ikon-weblog t33: `done` recorded a check as not applicable at a

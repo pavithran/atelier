@@ -14,7 +14,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -538,6 +538,22 @@ async function sendPool(env: Env): Promise<string[]> {
 async function unreachedOf(projects: readonly ProjectRecord[], send: (p: ProjectRecord) => Promise<void>): Promise<string[]> {
   const results = await Promise.all(projects.map((p) => send(p).then(() => null, () => p.name)));
   return results.filter((name): name is string => name !== null);
+}
+// The reviewers admitted in the standard project, which every project
+// inherits unless it records its own admission or withdrawal (t687).
+// Read with the version the standard project gave that set, which a ledger
+// uses to drop a delivery older than the one it holds.
+async function standardReviewers(env: Env): Promise<{ admissions: ReviewerAdmission[]; version: number }> {
+  const home = (await index(env).projects()).find((p) => p.name === STANDARD_REVIEWER_PROJECT);
+  if (!home) return { admissions: [], version: 0 };
+  const snapshot = await ledgerOf(env, home).standardReviewersSnapshot();
+  return { admissions: standardAdmissions(snapshot.admissions), version: snapshot.version };
+}
+// Sends them to every other project's ledger; returns the projects it could
+// not reach, which keep their last copy.
+async function sendStandardReviewers(env: Env): Promise<string[]> {
+  const [standard, projects] = await Promise.all([standardReviewers(env), index(env).projects()]);
+  return unreachedOf(projects.filter((p) => p.name !== STANDARD_REVIEWER_PROJECT), async (p) => { await ledgerOf(env, p).setStandardReviewers(standard.admissions, standard.version); });
 }
 // Sends each project's ledger the role assignments bearing on it (its own,
 // by its key, and every project's; src/models/assignments.ts), after one is
@@ -1698,9 +1714,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   if (parts[2] === "reviewers") {
     requireOwner(env, actor);
-    if (parts.length === 3 && m === "GET") return json(await L.reviewerAdmissions());
+    if (parts.length === 3 && m === "GET") return json(await L.reviewerListing());
     if (parts.length === 4 && (m === "PUT" || m === "DELETE")) {
-      return json(await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models()));
+      const record = await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models());
+      // The standard project's reviewers are every project's (t687).
+      const unreached = project === STANDARD_REVIEWER_PROJECT ? await sendStandardReviewers(env) : [];
+      return json(unreached.length ? { ...record, unreached } : record);
     }
     throw new RuleError("not_found", "no such reviewer admission route", 404);
   }
@@ -1809,13 +1828,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     await seedProject({
       register: () => index(env).registerProject(record),
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
-      install: (snapshot) => L.poolChanged(models, snapshot),
+      install: async (snapshot) => { await L.poolChanged(models, snapshot); const standard = await standardReviewers(env); await L.setStandardReviewers(standard.admissions, standard.version); },
     });
     return json({ project: record, baseline: await mintFor(c, repo, "write", await projectBranch(env, record)) });
   }
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
     if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    // The standard reviewer set is found by this project's registration
+    // (t687): without it standardReviewers() reads an empty set at version 0,
+    // which other projects drop as stale, so a withdrawal would never reach
+    // them and new projects would inherit nothing.
+    if (ref.name === STANDARD_REVIEWER_PROJECT || ref.key === STANDARD_REVIEWER_PROJECT) {
+      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} cannot be removed: reviewers admitted there are every project's reviewers, and the other projects find them through its registration`, 409);
+    }
     const items = await L.items();
     // A task queued for a runner is live work too: removing the project would drop it from the queue while it stays claimable.
     if (body.force !== true && items.some((i) => i.state === "open" && i.dispatch)) {
@@ -1841,6 +1867,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const to = projectNameArg(body.to);
     if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    // The standard reviewer set is found by this project's name (t687):
+    // moving the name away would strand the admissions every other project
+    // inherited, and moving it onto another project would hand that project
+    // the standing without a broadcast.
+    if (project === STANDARD_REVIEWER_PROJECT || to === STANDARD_REVIEWER_PROJECT) {
+      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} cannot be renamed, or taken as a new name: reviewers admitted there are every project's reviewers, and the other projects find them by that name`, 409);
+    }
     // Renaming back to one of the project's own names is not a new name.
     if (!ref.names.includes(to)) assertNewName(to);
     if (project === to) {

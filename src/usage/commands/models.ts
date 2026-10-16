@@ -6,17 +6,17 @@ const spec: CommandSpec = {
     {
       group: "Models", line: 1, slot: 60,
       form: "models admit ID --project NAME --reason TEXT",
-      about: "Developer only: admits a registered model as a reviewer in this project, including its aliases. A known independent family is still required.",
+      about: "Developer only: admits a registered model as a reviewer in this project, including its aliases. ID is the model or harness/model as `atelier models` prints it. A known independent family is still required. A model admitted in the atelier project is a reviewer in every project; a project's own admission or withdrawal of it takes its place.",
     },
     {
       group: "Models", line: 1, slot: 70,
       form: "models withdraw ID --project NAME --reason TEXT",
-      about: "Developer only: withdraws reviewer admission and outstanding requests. Past approvals keep their bindings.",
+      about: "Developer only: withdraws reviewer admission and outstanding requests. ID is the model or harness/model. In another project it also withdraws a reviewer inherited from atelier there. Past approvals keep their bindings.",
     },
     {
       group: "Models", line: 1, slot: 80,
       form: "models reviewers --project NAME",
-      about: "Lists the project's reviewer admissions and withdrawals with actor, reason and time.",
+      about: "Lists the project's reviewer admissions and withdrawals with actor, reason and time, and the standard ones it inherits from atelier.",
     },
     {
       group: "Models", line: 1, slot: 10,
