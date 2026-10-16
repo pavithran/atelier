@@ -17,7 +17,14 @@ const git = (cwd, ...args) => {
   assert.equal(r.status, 0, r.stderr);
   return r.stdout.trim();
 };
-const commit = (cwd, name) => { writeFileSync(join(cwd, name), name); git(cwd, 'add', '.'); git(cwd, 'commit', '-q', '-m', name); return git(cwd, 'rev-parse', 'HEAD'); };
+// `stamp` fixes both dates so a commit's hash never depends on the clock.
+const commit = (cwd, name, { text = name, stamp } = {}) => {
+  writeFileSync(join(cwd, name), text); git(cwd, 'add', '.');
+  const e = stamp ? { ...env, GIT_AUTHOR_DATE: stamp, GIT_COMMITTER_DATE: stamp } : env;
+  const r = spawnSync('git', ['commit', '-q', '-m', text], { cwd, env: e, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return git(cwd, 'rev-parse', 'HEAD');
+};
 const init = (dir) => { mkdirSync(dir); git(dir, 'init', '-q', '-b', 'main'); };
 function forkPoint(ws, main) {
   git(ws, 'fetch', '-q', main, 'main');
@@ -28,9 +35,21 @@ test('a fresh-history workspace forks at the newest baseline commit the map list
   const dir = mkdtempSync(join(tmpdir(), 'atelier-forkpoint-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const main = join(dir, 'main'), ws = join(dir, 'ws');
-  init(main); const c1 = commit(main, 'one'); const c2 = commit(main, 'two'); commit(main, 'three');
-  init(ws); const b1 = commit(ws, 'one'); const b2 = commit(ws, 'two'); commit(ws, 'task');
+  // The two histories differ in contents, messages and dates, so they can
+  // share no commit whatever the clock does (argon, t688 review 1: identical
+  // commits made merge-base answer and the baseline map was never read).
+  init(main);
+  const c1 = commit(main, 'one', { text: 'main one', stamp: '2020-01-01T00:00:00Z' });
+  const c2 = commit(main, 'two', { text: 'main two', stamp: '2020-01-02T00:00:00Z' });
+  commit(main, 'three', { text: 'main three', stamp: '2020-01-03T00:00:00Z' });
+  init(ws);
+  const b1 = commit(ws, 'one', { text: 'ws one', stamp: '2021-01-01T00:00:00Z' });
+  const b2 = commit(ws, 'two', { text: 'ws two', stamp: '2021-01-02T00:00:00Z' });
+  commit(ws, 'task', { text: 'ws task', stamp: '2021-01-03T00:00:00Z' });
   writeFileSync(join(main, '.git/atelier-baseline-map.json'), JSON.stringify({ atelier: { [b1]: c1, [b2]: c2 }, other: {} }));
+  git(ws, 'fetch', '-q', main, 'main');
+  assert.notEqual(spawnSync('git', ['merge-base', 'HEAD', 'FETCH_HEAD'], { cwd: ws, env }).status, 0, 'the histories must share no commit');
+  assert.notEqual(b1, c1); assert.notEqual(b2, c2);
   const r = forkPoint(ws, main);
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), b2);
