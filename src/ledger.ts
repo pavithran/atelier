@@ -81,7 +81,7 @@ import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick }
 import { offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
-import { exactEntry } from "./models/identity.ts";
+import { exactEntry, reviewerEntries } from "./models/identity.ts";
 import { ACTING_EVENTS, linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
 import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
@@ -6890,8 +6890,8 @@ export class Ledger extends DurableObject<Env> {
       if (single && actorFamily(admission?.active ? admissionActor(reviewer, admission) : reviewer) !== single) {
         throw new RuleError("single_family", `${reviewer} is not one of ${single}'s models, and this project runs in single-family mode (${single}): name one of ${single}'s models with --reviewer, or return to cross-family review with atelier init --cross-family`, 409);
       }
-      const entries = pool.filter((m) => [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(reviewer!)));
-      if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models`, 409);
+      const entries = reviewerEntries(pool.filter((m) => [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(reviewer!))), reviewer);
+      if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models: ${entries.map((m) => `${m.harness}/${m.id}`).join(", ")}; name one by its exact harness/id`, 409);
       if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
       if ((!admission && !entries.length) || !mayAssess(reviewer, policy, this.owner)) {
         throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the developer can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403);
