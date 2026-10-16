@@ -2644,7 +2644,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers()));
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers(), body.hand === true));
     }
     // The developer withdraws an open, unclaimed review request with a
     // reason (t627), so another reviewer can be asked at the same head.
