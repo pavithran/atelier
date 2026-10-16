@@ -45,6 +45,13 @@ export default async function updateCommand() {
   const t = await call("POST", `${I(name, id)}/base-token`, { scope: "read" }, as);
   git(["fetch", "--quiet", t.remote, t.defaultBranch], { token: t.token });
   const baseline = short(git(["rev-parse", "FETCH_HEAD"]));
+  // A HEAD that already holds the baseline, such as after a conflict merge
+  // was resolved and committed (t691), has nothing to take: a rebase would
+  // replay the task's own commits onto the baseline and conflict again.
+  if (holds("FETCH_HEAD", "HEAD")) {
+    console.log(`${id} already holds baseline ${baseline}; nothing to update.${rebased ? " Push with: atelier push --force" : ""}`);
+    return;
+  }
   if (await mergedThrough(cwd, "FETCH_HEAD", { what: "", message: `Merge baseline ${baseline} into ${id}`, next: `Push with: atelier push${rebased ? " --force" : ""}` })) {
     console.log(`${id} merged baseline ${baseline} through the merge pipeline, which regenerated its outputs. Push with: atelier push${rebased ? " --force" : ""}`);
     return;
