@@ -236,6 +236,33 @@ test("runnerCheckout reads a real checkout's HEAD and which commits it contains"
   assert.equal(await runnerCheckout(join(dir, "missing")).head(), null);
 });
 
+// t695, the finding: 'atelier runner' started from the atelier checkout at the
+// deployed commit printed "behind: ... main is at 0d9f5296, and this checkout
+// does not contain it" and reloaded for nothing, because the server names main
+// by the --history-since baseline's commit id, which the checkout's history
+// never holds. The checkout keeps the pair in atelier-baseline-map.json.
+test("runnerCheckout holds a baseline commit through the checkout's baseline map, and reloadCheck is not behind for it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-reload-map-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...argv) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...argv], { cwd: dir, encoding: "utf8" }).stdout.trim();
+  git("init", "--quiet");
+  git("commit", "--quiet", "--allow-empty", "-m", "one");
+  const one = git("rev-parse", "HEAD");
+  git("commit", "--quiet", "--allow-empty", "-m", "two");
+  const two = git("rev-parse", "HEAD");
+  const checkout = runnerCheckout(dir);
+  const merged = (main) => ({ commit: two, main, routeLevel: ROUTE_LEVEL, capabilities: [...SERVER_CAPABILITIES] });
+  assert.equal(await checkout.contains(NEW, two), false, "an unmapped baseline commit is still missing");
+  assert.equal((await reloadCheck(two, { version: async () => merged(NEW), checkout })).action, "behind");
+  writeFileSync(join(dir, ".git", "atelier-baseline-map.json"), JSON.stringify({ atelier: { [NEW]: two, [LATER]: "d".repeat(40) }, other: { [OLD]: one } }));
+  assert.equal(await checkout.contains(NEW, two), true, "mapped to the checkout's HEAD");
+  assert.equal(await checkout.contains(OLD, two), true, "mapped to an ancestor, whichever project holds the pair");
+  assert.equal(await checkout.contains(OLD, one), true);
+  assert.equal(await checkout.contains(NEW, one), false, "mapped to a commit the ref does not contain");
+  assert.equal(await checkout.contains(LATER, two), false, "mapped to a commit the checkout never fetched");
+  assert.deepEqual(await reloadCheck(two, { version: async () => merged(NEW), checkout }), { action: "none" }, "started from the commit main maps to");
+  assert.equal((await reloadCheck(one, { version: async () => merged(NEW), checkout })).action, "reload", "an older start still reloads once the checkout holds the mapped commit");
+});
 
 // Real children exercise spawn errors, startup failure, timeout cleanup and
 // the readiness barrier on the running Node, including supported Node 24.
