@@ -420,6 +420,12 @@ export interface UnparsableReply {
   note: string;    // why no verdict could be read, as the parser said it
   reply: string;   // the reply itself, its last 100 KB
   at: string;
+  // The request the reply answered, and whether it released that request's
+  // claim (t613). A reply from a claim that had lapsed releases nothing, so
+  // it must not stand for a stall of the request that replaced it. Absent
+  // on replies kept before this and on runners that send no request number.
+  request?: number;
+  released?: boolean;
 }
 
 // What a review is bound to: the head it read and the binding of the

@@ -5474,7 +5474,7 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
+    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -7382,13 +7382,16 @@ export class Ledger extends DurableObject<Env> {
     // gate's unparsable replies.
     if (isPrereviewRequest(request)) return this.prereviewOutcome(itemId, actor, request, { outcome: "malformed", detail: `${note}: …${reply.slice(-1500)}` }, proved, head);
     const at = new Date().toISOString();
-    this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at } satisfies UnparsableReply));
+    this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at, ...(request === undefined ? {} : { request }) } satisfies UnparsableReply));
     this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
     // Keeping an unusable reply is harmless; releasing a successor is not.
     this.expireReviewClaims();
     if (request === undefined) return { released: false };
     const row = this.sql.exec(`SELECT id FROM review_requests WHERE id = ? AND item = ? AND head = ? AND state = 'claimed' AND claimedBy = ?`, request, itemId, head, actor).toArray()[0];
     if (!row) return { released: false };
+    // The reply released the request it answered (t613): only such a reply
+    // stalls a landing, and the record says so.
+    this.sql.exec(`UPDATE unparsable SET json = json_set(json, '$.released', json('true')) WHERE id = (SELECT MAX(id) FROM unparsable WHERE item_id = ?)`, itemId);
     this.replaceReviewClaim(row.id as number);
     this.log(itemId, actor, "review.released", { note, request }, at, proved);
     return { released: true };
