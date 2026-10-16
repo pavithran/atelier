@@ -44,7 +44,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
 import { buildPulse, PULSE_DAYS, pulseFromCounts } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
@@ -2441,7 +2441,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // that names no agent without asking stays open to any runner's agent.
       // An overlap override of an existing dispatch keeps its builder
       // restrictions unless named, so it asks for no suggestion.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
+      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && waitingDispatch(await L.item(id)))) {
         requireOwner(env, actor);
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
         // The suggestion is checked against runners' offers for the job this

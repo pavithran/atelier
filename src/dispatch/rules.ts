@@ -163,6 +163,15 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
 }
 
+// The dispatch an overlap override may keep (t517): only one still waiting in
+// the queue, an open task no runner owns. One a runner has claimed is spent,
+// so a held or submitted task dispatched again starts a fresh build. The
+// ledger's dispatch and its preflight, and the route's choice to suggest a
+// builder, all ask here so they cannot disagree.
+export function waitingDispatch(item: { state: string; owner: string | null; dispatch?: Dispatch | null }): Dispatch | null {
+  return item.state === "open" && !item.owner ? item.dispatch ?? null : null;
+}
+
 // An overlap override sent as an ordinary dispatch (with a destination, note
 // or job, or for a task a runner holds) edits the existing offer (t491).
 // Undefined means omitted; empty strings deliberately remove the
