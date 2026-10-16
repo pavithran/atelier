@@ -6855,7 +6855,10 @@ export class Ledger extends DurableObject<Env> {
   // One transaction (t627): a request the developer's named reviewer
   // redirects is withdrawn only if the new one is asked, so a refusal after
   // the withdrawal (the gate blocked, no runner) leaves the old one standing.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): ReviewAsked {
+  // `hand` (t694): the developer serves this review by hand (review-claim
+  // --runner home:hand), so no live runner need offer it; only the check that
+  // one does is waived, every other check on the reviewer stands.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[], hand = false): ReviewAsked {
     // The offers and the pool are kept whatever the answer, as they were
     // before the transaction: the ticks read them.
     offers = this.ownOffers(offers);
@@ -6864,7 +6867,7 @@ export class Ledger extends DurableObject<Env> {
     this.reviewItem(id);
     this.keepPool(pool);
     try {
-      return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers));
+      return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers, hand));
     } catch (err) {
       // Rolled back: the requests the redirect would have withdrawn stand.
       if (!(err instanceof KeptRequests)) throw err;
@@ -6873,7 +6876,7 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: (SuggestionRecords & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined): ReviewAsked {
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: (SuggestionRecords & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false): ReviewAsked {
     const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
@@ -6914,7 +6917,7 @@ export class Ledger extends DurableObject<Env> {
         const refusal = familyRefusal(reviewer, contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy));
         if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403);
         const dispatch = { ...this.standingDispatch({ to: entry.where, agent: entry.harness, model: entry.id }, "review", ORCHESTRATOR, new Date().toISOString(), pool), job: "review" as const };
-        if (!liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+        if (!hand && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
           throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; start a runner with its registered harness and endpoint`, 409);
         }
       }
@@ -7051,7 +7054,7 @@ export class Ledger extends DurableObject<Env> {
     const chosenEntry = exactEntry(pool, chosen) ?? (reviewer !== null ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen)) : undefined);
     const where = records || reviewerAdmission(chosen, policy)?.active ? chosenEntry?.where ?? "home" : "home";
     const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
-    if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+    if (!hand && reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
       throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
     }
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
