@@ -5,7 +5,9 @@
 //        [--labels labels.json] [--json] [--write]
 //
 // DIR/reviews/REVIEWER__BUILD.md holds each review (REVIEWER is the reviewer
-// with "/" written "_"), DIR/status/REVIEWER__BUILD.json how its run ended.
+// with "/" written "_"), DIR/status/REVIEWER__BUILD.json how its run ended,
+// DIR/pairs.txt (reviewer TAB build) every pair the run scheduled: a pair with
+// neither file counts as a failed review (missing), and the report says how many.
 // truth.json (see below) says, per build, its judge's grade, the defects the
 // judge confirmed (each with a regular expression that recognises a FINDING
 // line naming it) and the findings the judge ruled false or outside the review
@@ -84,11 +86,11 @@ export function classify(parsed, entry, ruled, labels = {}, prefix = "") {
 }
 
 // scoreReview(...): the numbers for one review of one build.
-export function scoreReview({ reviewer, build, text, status }, truth, labels = {}) {
+export function scoreReview({ reviewer, build, text, status, missing }, truth, labels = {}) {
   const entry = truth.builds[build];
   if (!entry) throw new Error(`no ground truth for build ${build}`);
   const parsed = parseReview(text ?? "");
-  const base = { reviewer, build, grade: entry.grade, defects: entry.defects.length, tries: status?.tries ?? null };
+  const base = { reviewer, build, grade: entry.grade, defects: entry.defects.length, tries: status?.tries ?? null, missing: Boolean(missing) };
   if (!parsed.verdict) return { ...base, failed: true, verdict: null, caught: [], caughtBlocking: [], missed: entry.defects.map((d) => d.id), trueBlocking: 0, falseBlocking: 0, unjudgedBlocking: 0, badApproval: false, badRejection: false, findings: [] };
   const key = `${reviewer}|${build}`;
   const findings = classify(parsed, entry, truth.ruled ?? [], labels, key);
@@ -118,8 +120,9 @@ export function scoreRun(reviews, truth, labels = {}) {
   const rows = reviews.map((r) => scoreReview(r, truth, labels));
   const reviewers = {};
   for (const r of rows) {
-    const t = (reviewers[r.reviewer] ??= { reviewer: r.reviewer, reviews: 0, failed: 0, approvalsCD: 0, rejectionsA: 0, defects: 0, defectsReal: 0, caught: 0, caughtReal: 0, trueBlocking: 0, falseBlocking: 0, unjudgedBlocking: 0, rightVerdicts: 0, judgedVerdicts: 0 });
+    const t = (reviewers[r.reviewer] ??= { reviewer: r.reviewer, reviews: 0, failed: 0, missing: 0, approvalsCD: 0, rejectionsA: 0, defects: 0, defectsReal: 0, caught: 0, caughtReal: 0, trueBlocking: 0, falseBlocking: 0, unjudgedBlocking: 0, rightVerdicts: 0, judgedVerdicts: 0 });
     t.reviews++;
+    if (r.missing) t.missing++;
     if (r.failed) { t.failed++; continue; }
     const entry = truth.builds[r.build];
     t.approvalsCD += r.badApproval ? 1 : 0;
@@ -150,40 +153,60 @@ const pct = (x) => (x === null ? "n/a" : `${Math.round(x * 100)}%`);
 
 export function renderMarkdown(result) {
   const out = [];
+  const missing = result.rows.filter((r) => r.missing);
+  if (missing.length) out.push(`${missing.length} scheduled review(s) left no result and count as failed: ${missing.map((r) => `${r.reviewer} ${r.build}`).join("; ")}`, "");
   out.push("## Per reviewer", "");
-  out.push("| reviewer | reviews | failed | approvals of C/D | rejections of A | right verdicts (A/C/D) | defects caught | blocking findings: true / false / unjudged | precision | precision (judged only) | recall | recall (real only) |");
+  out.push("| reviewer | reviews | failed (missing) | approvals of C/D | rejections of A | right verdicts (A/C/D) | defects caught | blocking findings: true / false / unjudged | precision | precision (judged only) | recall | recall (real only) |");
   out.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const t of result.reviewers) {
-    out.push(`| ${t.reviewer} | ${t.reviews} | ${t.failed} | ${t.approvalsCD} | ${t.rejectionsA} | ${t.rightVerdicts}/${t.judgedVerdicts} | ${t.caught}/${t.defects} | ${t.trueBlocking} / ${t.falseBlocking} / ${t.unjudgedBlocking} | ${pct(t.precision)} | ${pct(t.precisionJudged)} | ${pct(t.recall)} | ${pct(t.recallReal)} |`);
+    out.push(`| ${t.reviewer} | ${t.reviews} | ${t.failed} (${t.missing}) | ${t.approvalsCD} | ${t.rejectionsA} | ${t.rightVerdicts}/${t.judgedVerdicts} | ${t.caught}/${t.defects} | ${t.trueBlocking} / ${t.falseBlocking} / ${t.unjudgedBlocking} | ${pct(t.precision)} | ${pct(t.precisionJudged)} | ${pct(t.recall)} | ${pct(t.recallReal)} |`);
   }
   out.push("", "## Per build", "");
   out.push("| build | grade | reviewer | verdict | caught | missed | blocking true / false / unjudged | flag |");
   out.push("|---|---|---|---|---|---|---|---|");
   const rows = [...result.rows].sort((a, b) => a.build.localeCompare(b.build) || a.reviewer.localeCompare(b.reviewer));
   for (const r of rows) {
-    if (r.failed) { out.push(`| ${r.build} | ${r.grade} | ${r.reviewer} | FAILED | | | | no verdict after ${r.tries ?? "?"} tries |`); continue; }
+    if (r.failed) { out.push(`| ${r.build} | ${r.grade} | ${r.reviewer} | FAILED | | | | ${r.missing ? "no result: scheduled but never recorded" : `no verdict after ${r.tries ?? "?"} tries`} |`); continue; }
     const flag = r.badApproval ? "approves a C/D build" : r.badRejection ? "rejects an A build" : "";
     out.push(`| ${r.build} | ${r.grade} | ${r.reviewer} | ${r.verdict} | ${r.caught.join(", ") || "-"} | ${r.missed.join(", ") || "-"} | ${r.trueBlocking} / ${r.falseBlocking} / ${r.unjudgedBlocking} | ${flag} |`);
   }
   return out.join("\n") + "\n";
 }
 
-// loadReviews(out, sample): the review texts and statuses of a run.
-export function loadReviews(out, builds, reviewers) {
+// loadReviews(out, builds, reviewers, pairs): the review texts and statuses of
+// a run. With `pairs` (the run's pairs.txt: every scheduled { reviewer, build })
+// each pair is returned, and one with neither a review nor a status is marked
+// missing, so it scores as a failed review instead of vanishing. Without
+// pairs, only the pairs that left a file are returned.
+export function loadReviews(out, builds, reviewers, pairs = null) {
   const reviews = [];
-  for (const reviewer of reviewers) {
-    for (const build of builds) {
-      const file = `${reviewer.replace(/\//g, "_")}__${build}`;
-      const md = join(out, "reviews", `${file}.md`);
-      const st = join(out, "status", `${file}.json`);
-      if (!existsSync(st) && !existsSync(md)) continue;
-      reviews.push({ reviewer, build, text: existsSync(md) ? readFileSync(md, "utf8") : "", status: existsSync(st) ? JSON.parse(readFileSync(st, "utf8")) : null });
-    }
+  const list = pairs ?? reviewers.flatMap((reviewer) => builds.map((build) => ({ reviewer, build })));
+  for (const { reviewer, build } of list) {
+    const file = `${reviewer.replace(/\//g, "_")}__${build}`;
+    const md = join(out, "reviews", `${file}.md`);
+    const st = join(out, "status", `${file}.json`);
+    const none = !existsSync(st) && !existsSync(md);
+    if (none && !pairs) continue;
+    reviews.push({ reviewer, build, text: existsSync(md) ? readFileSync(md, "utf8") : "", status: existsSync(st) ? JSON.parse(readFileSync(st, "utf8")) : null, missing: none });
   }
   return reviews;
 }
 
+// readPairs(out, builds): the scheduled pairs of DIR/pairs.txt (reviewer TAB build), or null when the run left none.
+export function readPairs(out, builds) {
+  const file = join(out, "pairs.txt");
+  if (!existsSync(file)) return null;
+  return readFileSync(file, "utf8").split("\n").filter((l) => l.trim()).map((l) => { const [reviewer, build] = l.split("\t"); return { reviewer, build }; }).filter((p) => p.build && builds.includes(p.build));
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  // --has-verdict FILE: exit 0 when the file holds a verdict this parser reads (review-bake.sh's one test of a reply).
+  const hv = process.argv.indexOf("--has-verdict");
+  if (hv !== -1) {
+    let text = "";
+    try { text = readFileSync(process.argv[hv + 1], "utf8"); } catch { /* unreadable: no verdict */ }
+    process.exit(parseReview(text).verdict ? 0 : 1);
+  }
   const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i === -1 ? undefined : process.argv[i + 1]; };
   const out = arg("out"), truthFile = arg("truth");
   if (!out || !truthFile) { console.error("usage: review-bake-score.mjs --out DIR --truth truth.json [--sample sample.txt] [--labels labels.json] [--json] [--write]"); process.exit(64); }
@@ -199,8 +222,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     for (const f of readdirSync(join(out, dir))) { const m = /^(.+)__(.+)\.(md|json)$/.exec(f); if (m && builds.includes(m[2])) names.add(m[1]); }
   }
   // "codex_gpt-6-astra" back to "codex/gpt-6-astra": the first underscore is the slash.
+  for (const p of readPairs(out, builds) ?? []) names.add(p.reviewer.replace("/", "_"));
   const reviewers = [...names].map((n) => n.replace("_", "/")).sort();
-  const result = scoreRun(loadReviews(out, builds, reviewers), truth, labels);
+  const pairs = readPairs(out, builds);
+  const result = scoreRun(loadReviews(out, builds, reviewers, pairs), truth, labels);
   if (process.argv.includes("--write")) {
     const slim = { ...result, rows: result.rows.map(({ findings, ...r }) => ({ ...r, findings: findings.map(({ index, severity, where, kind, ids }) => ({ index, severity, where, kind, ids })) })) };
     writeFileSync(join(out, "scores.json"), JSON.stringify(slim, null, 2) + "\n");

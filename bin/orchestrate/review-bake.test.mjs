@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseReview, scoreRun } from "./review-bake-score.mjs";
+import { loadReviews, parseReview, renderMarkdown, scoreRun } from "./review-bake-score.mjs";
 
 // t699: review-bake.sh gives every reviewer the same blind brief and diff of
 // each judged build and collects the replies; review-bake-score.mjs compares
@@ -180,4 +180,60 @@ test("review-bake.sh tries a reply with no verdict again and records a second mi
   const by = (name) => scored.reviewers.find((x) => x.reviewer === name);
   assert.equal(by("codex/gpt-test").failed, 1);
   assert.equal(by("antigravity/gemini-3.1-pro").approvalsCD, 1);
+});
+
+// Review 1 of t699, finding 1: a scheduled pair that left no file used to vanish from scoring.
+test("a scheduled pair with no result counts as a failed review and the report says so", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-bake-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "reviews")); mkdirSync(join(dir, "status"));
+  writeFileSync(join(dir, "reviews", "codex_x__d-t1.md"), "VERDICT: REJECT\n");
+  const pairs = [{ reviewer: "codex/x", build: "d-t1" }, { reviewer: "codex/x", build: "c-t1" }];
+  const loaded = loadReviews(dir, ["d-t1", "c-t1"], ["codex/x"], pairs);
+  assert.equal(loaded.length, 2);
+  const run = scoreRun(loaded, truth);
+  const x = run.reviewers[0];
+  assert.equal(x.reviews, 2); assert.equal(x.failed, 1); assert.equal(x.missing, 1);
+  assert.equal(run.rows.find((r) => r.build === "c-t1").missing, true);
+  assert.match(renderMarkdown(run), /1 scheduled review\(s\) left no result and count as failed: codex\/x c-t1/);
+});
+
+test("review-bake.sh records every scheduled pair, and a clone failure still scores as a failed review", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-bake-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const f = fixture(dir);
+  standIn(join(dir, "codex"), join(dir, "codex.jsonl"), "VERDICT: REJECT\n");
+  // Break the clone: the build's repository is gone once its inputs are prepared.
+  writeFileSync(join(dir, "sample.txt"), "demo-t1\tC\twhy\n");
+  const r = run(dir, f, ["--reviewers", "codex/gpt-test,codex/other", "--cache", "/dev/null/nope"], { RB_CODEX: join(dir, "codex") });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(join(dir, "out", "pairs.txt"), "utf8"), "codex/gpt-test\tdemo-t1\ncodex/other\tdemo-t1\n");
+  const truthFile = join(dir, "truth.json");
+  writeFileSync(truthFile, JSON.stringify({ ruled: [], builds: { "demo-t1": { grade: "C", defects: [], ruled: [] } } }));
+  const s = spawnSync(zsh, [script, "score", "--out", join(dir, "out"), "--truth", truthFile, "--json"], { encoding: "utf8" });
+  assert.equal(s.status, 0, s.stderr);
+  const scored = JSON.parse(s.stdout);
+  assert.deepEqual(scored.reviewers.map((x) => [x.reviewer, x.reviews, x.failed]).sort(), [["codex/gpt-test", 1, 1], ["codex/other", 1, 1]]);
+});
+
+// Review 1 of t699, finding 2: the runner's grep and the scorer's parser disagreed.
+test("the runner keeps and collects exactly the replies the scorer reads a verdict in", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-bake-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const has = (text) => { const file = join(dir, "reply.md"); writeFileSync(file, text); return spawnSync("node", [join(here, "review-bake-score.mjs"), "--has-verdict", file]).status === 0; };
+  for (const text of ["verdict: approve\n", "`VERDICT: REJECT`\n", "**Verdict**: Reject\n"]) assert.equal(has(text), parseReview(text).verdict !== null, text);
+  assert.equal(has("verdict: approve\n"), true);
+  assert.equal(has("I cannot provide VERDICT: APPROVE or REJECT\n"), false);
+  assert.equal(parseReview("I cannot provide VERDICT: APPROVE or REJECT\n").verdict, null);
+  // Through the script: a lower-case reply is accepted at once, prose with the words is tried again and fails.
+  const f = fixture(dir);
+  standIn(join(dir, "codex"), join(dir, "codex.jsonl"), "verdict: approve\n");
+  standIn(join(dir, "agy"), join(dir, "agy.jsonl"), "I cannot provide VERDICT: APPROVE or REJECT\n");
+  const r = run(dir, f, ["--reviewers", "codex/gpt-test,antigravity/gemini-3.1-pro"], { RB_CODEX: join(dir, "codex"), RB_AGY_REVIEW: join(dir, "agy") });
+  assert.equal(r.status, 0, r.stderr);
+  const status = (key) => JSON.parse(readFileSync(join(dir, "out", "status", `${key}__demo-t1.json`), "utf8"));
+  assert.deepEqual([status("codex_gpt-test").tries, status("codex_gpt-test").ok], [1, true]);
+  assert.deepEqual([status("antigravity_gemini-3.1-pro").tries, status("antigravity_gemini-3.1-pro").ok], [2, false]);
+  const again = run(dir, f, ["--reviewers", "codex/gpt-test"], { RB_CODEX: join(dir, "codex") });
+  assert.match(again.stdout, /kept\s+codex\/gpt-test demo-t1/);
 });
