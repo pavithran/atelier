@@ -1,6 +1,6 @@
 // atelier update. Its forms, flags and help are declared in src/usage/commands/update.ts.
 import { classify as classifyConflicts, describeConflicts, installMergeConfig, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
-import { I, actor, call, count, die, forkBranch, git, holds, itemArg, project, requireWorkspace, short, wsConfig } from "../atelier.mjs";
+import { I, actor, call, count, die, forkBranch, git, holds, itemArg, project, requireWorkspace, short, workspaceGit, wsConfig } from "../atelier.mjs";
 
 // Agents: bring the workspace up to date with what has merged since the
 // fork. The fork's own branch comes first: a workspace that lacks commits
@@ -28,7 +28,8 @@ export default async function updateCommand() {
   const cwd = process.cwd();
   installMergeConfig(cwd, { git });
   let rebased = false;
-  git(["fetch", "--quiet", "origin"]);
+  // The workspace token may have expired since the claim (t705): renewed for the holder, not left to a refused fetch.
+  await workspaceGit(name, id, as, ["fetch", "--quiet", "origin"]);
   if (git(["rev-parse", "--verify", "--quiet", remote], { allowFail: true }).status === 0 && !holds(remote, "HEAD")) {
     const missing = git(["log", "--oneline", `HEAD..${remote}`]);
     const n = count(missing.split("\n").filter(Boolean).length, "commit");

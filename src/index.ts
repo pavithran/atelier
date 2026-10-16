@@ -2137,95 +2137,105 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         }
       }
       const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
-      const p = await L.project();
-      let fork = item.fork, moved = false;
-      if (needsFork) {
-        // Forks are named after the key, like the baseline, whatever the project is called now.
-        const name = fork = repoName(ref.key, id);
-        try {
-          // A part forks from its plan's fork at its current head, not from the
-          // baseline (docs/orchestrator.md, section 5).
-          const from = await baseRepo(env, L, item, p.repo);
-          // A fork already there under the item's name is one an earlier
-          // attempt made, in this call or in a claim that failed after it
-          // (t349): no fork is recorded for the item, so no token was ever
-          // made for it, and it is taken as this claim's fork.
-          const made = await artifactsStep(`fork ${from} as ${name}`, async () => {
-            using base = await env.ARTIFACTS.get(from);
-            await base.fork(name, { description: taskForkMark(name), defaultBranchOnly: true });
-            return true;
-          }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
-            if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
-            return false;
-          });
-          // Only an earlier attempt's fork is taken: a repository made for
-          // anything else under this name is refused before any token is
-          // made for it (the reviews of t641).
-          if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
-          const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
-          await L.setFork(id, name, head, actor, !!c.token, generation);
-        } catch (err) {
-          // A give-up that fails is logged, and the claim's own failure is
-          // answered: the claimer still holds an item with no fork, which its
-          // retry forks (t349).
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
-          throw err;
+      try {
+        const p = await L.project();
+        let fork = item.fork, moved = false;
+        if (needsFork) {
+          // Forks are named after the key, like the baseline, whatever the project is called now.
+          const name = fork = repoName(ref.key, id);
+          try {
+            // A part forks from its plan's fork at its current head, not from the
+            // baseline (docs/orchestrator.md, section 5).
+            const from = await baseRepo(env, L, item, p.repo);
+            // A fork already there under the item's name is one an earlier
+            // attempt made, in this call or in a claim that failed after it
+            // (t349): no fork is recorded for the item, so no token was ever
+            // made for it, and it is taken as this claim's fork.
+            const made = await artifactsStep(`fork ${from} as ${name}`, async () => {
+              using base = await env.ARTIFACTS.get(from);
+              await base.fork(name, { description: taskForkMark(name), defaultBranchOnly: true });
+              return true;
+            }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+              if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+              return false;
+            });
+            // Only an earlier attempt's fork is taken: a repository made for
+            // anything else under this name is refused before any token is
+            // made for it (the reviews of t641).
+            if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
+            const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
+            await L.setFork(id, name, head, actor, !!c.token, generation);
+          } catch (err) {
+            // A give-up that fails is logged, and the claim's own failure is
+            // answered: the claimer still holds an item with no fork, which its
+            // retry forks (t349).
+            await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
+            throw err;
+          }
+        } else {
+          // A part or task with nothing of its own starts again from the plan's
+          // branch, or main.
+          // A failed move gives up a claim this call took; a holder claiming
+          // again keeps the item and can retry.
+          try {
+            moved = await moveEmptyFork(env, L, item, p, actor, !!c.token);
+          } catch (err) {
+            if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
+            throw err;
+          }
         }
-      } else {
-        // A part or task with nothing of its own starts again from the plan's
-        // branch, or main.
-        // A failed move gives up a claim this call took; a holder claiming
-        // again keeps the item and can retry.
-        try {
-          moved = await moveEmptyFork(env, L, item, p, actor, !!c.token);
-        } catch (err) {
-          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
-          throw err;
+        // Re-claiming rotates the token: one live write token per item, ever.
+        // If the old one cannot be revoked, the claim fails before a new one
+        // is minted, and the old one stays recorded. L.claim above is the
+        // claim's check, and it has already refused anyone who may not claim
+        // the item, so a refused claim revokes nothing: only the holder
+        // re-claiming, or the claimer of an item nobody holds, gets here, and
+        // `replaces` is the token this claim takes over.
+        // The workspace and the baseline are both given the project's branch:
+        // the fork's HEAD names it, and headOf reads HEAD. A moved fork took
+        // its tokens with the repository it replaced.
+        if (!moved) await revoke(env, fork, replaces);
+        const branch = await projectBranch(env, p);
+        if (c.token?.runner) {
+          const secret = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+          const hash = await sha256(secret);
+          if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
+            throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
+          }
+          const b = await mint(env, p.repo, "read", branch);
+          return json({ item: await L.item(id), workspace: {
+            remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
+            expiresAt: c.token.expiresAt, defaultBranch: branch,
+          }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+          // A runner's claim sets the same identity as any other (t451).
+          commitIdentity: p.policy.commitIdentity ?? null });
         }
-      }
-      // Re-claiming rotates the token: one live write token per item, ever.
-      // If the old one cannot be revoked, the claim fails before a new one
-      // is minted, and the old one stays recorded. L.claim above is the
-      // claim's check, and it has already refused anyone who may not claim
-      // the item, so a refused claim revokes nothing: only the holder
-      // re-claiming, or the claimer of an item nobody holds, gets here, and
-      // `replaces` is the token this claim takes over.
-      // The workspace and the baseline are both given the project's branch:
-      // the fork's HEAD names it, and headOf reads HEAD. A moved fork took
-      // its tokens with the repository it replaced.
-      if (!moved) await revoke(env, fork, replaces);
-      const branch = await projectBranch(env, p);
-      if (c.token?.runner) {
-        const secret = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
-        const hash = await sha256(secret);
-        if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
-          throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
+        const w = await mint(env, fork!, "write", branch);
+        // The Ledger records the token only if this claim still stands (see
+        // recordToken). If it does not, the token is revoked and never
+        // returned, so its plaintext reaches no one.
+        if (!await L.recordToken(id, actor, generation, replaces, w.tokenId)) {
+          await revoke(env, fork, w.tokenId);
+          throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409);
         }
         const b = await mint(env, p.repo, "read", branch);
-        return json({ item: await L.item(id), workspace: {
-          remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
-          expiresAt: c.token.expiresAt, defaultBranch: branch,
-        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
-        // A runner's claim sets the same identity as any other (t451).
-        commitIdentity: p.policy.commitIdentity ?? null });
+        return json({
+          item: await L.item(id),
+          workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
+          baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+          // What the claim writes into the workspace's Git config, on whatever
+          // machine it runs (t451); null when the project names none yet.
+          commitIdentity: p.policy.commitIdentity ?? null,
+        });
+      } catch (err) {
+        // A holder asking again for the claim it already has is never answered
+        // "internal" (t705): the claim stands, so the answer says what failed and
+        // what to run. A failure the runtime says a retry cures, and any refusal
+        // already worded, pass through as they are.
+        if (before.owner !== actor || parseRuleError(err) || retryableByRuntime(err)) throw err;
+        console.error(errorLine(`re-claim of ${id} by ${actor}`, err));
+        throw new RuleError("claim_failed", `${id} is still claimed by ${actor}, but the server could not renew its workspace token just now and logged why; nothing was changed. Run atelier claim ${id} again, or atelier start ${id} --as ${actor}, which issues a new token`, 503);
       }
-      const w = await mint(env, fork!, "write", branch);
-      // The Ledger records the token only if this claim still stands (see
-      // recordToken). If it does not, the token is revoked and never
-      // returned, so its plaintext reaches no one.
-      if (!await L.recordToken(id, actor, generation, replaces, w.tokenId)) {
-        await revoke(env, fork, w.tokenId);
-        throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409);
-      }
-      const b = await mint(env, p.repo, "read", branch);
-      return json({
-        item: await L.item(id),
-        workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
-        baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
-        // What the claim writes into the workspace's Git config, on whatever
-        // machine it runs (t451); null when the project names none yet.
-        commitIdentity: p.policy.commitIdentity ?? null,
-      });
     }
     // In fast mode (t589) a runner takes a dispatched build without a fork
     // (L.takeFast, src/rules.ts fastBuildRefusal): the claim's holder and
