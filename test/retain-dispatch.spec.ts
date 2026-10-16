@@ -243,3 +243,78 @@ it("validates merged dispatch before releasing or revoking, and never bypasses r
   expect(await L.tokenId(item.id)).toBe("retain-token");
   expect(revoked).not.toContain("retain-token");
 });
+
+// t517: a rework dispatch carried an earlier merge-main job and head into the
+// new build, because the orchestrator passes --overlap-ok on every dispatch.
+const MAIN_HEAD = "b".repeat(40);
+for (const state of ["held", "submitted"] as const) {
+  it(`a ${state} task redispatched with --overlap-ok and a note is a build, not the earlier merge-main job`, async () => {
+    const { L, item, path } = await setup(`retain-rework-${state}`, []);
+    await L.claim(item.id, "codex/shared");
+    await L.setFork(item.id, `retain-rework-${state}--t2`, "a".repeat(40), "codex/shared");
+    await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: MAIN_HEAD });
+    await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+    if (state === "submitted") { await L.recordPush(item.id, "codex/shared", "c".repeat(40), "c".repeat(40)); await L.submit(item.id, "codex/shared"); }
+    expect((await L.item(item.id)).dispatch).toMatchObject({ job: "merge-main", head: MAIN_HEAD });
+    const res = await call("POST", path, { overlapOk: true, note: "address the review" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const { dispatch } = await res.json() as Answer;
+    expect(dispatch).toMatchObject({ to: "any", note: "address the review", overlapOk: true });
+    expect(dispatch.job).toBeUndefined();
+    expect(dispatch.head).toBeUndefined();
+    expect((await L.item(item.id)).dispatch).toEqual(dispatch);
+    // --job still names the job given.
+    await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+    const named = await (await call("POST", path, { overlapOk: true, job: "merge-main", head: MAIN_HEAD })).json() as Answer;
+    expect(named.dispatch).toMatchObject({ job: "merge-main", head: MAIN_HEAD });
+  });
+}
+it("the hold-only release of a waiting merge-main dispatch keeps merge-main and its place", async () => {
+  const { L, item, path } = await setup("retain-hold-merge-main");
+  await L.claim(item.id, "codex/shared");
+  await L.setFork(item.id, "retain-hold-merge-main--t2", "a".repeat(40), "codex/shared");
+  await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: MAIN_HEAD });
+  const before = (await L.item(item.id)).dispatch!;
+  const res = await call("POST", path, { overlapOk: true, retain: true, retainAt: before.at });
+  expect(res.status, await res.clone().text()).toBe(200);
+  const answer = await res.json() as Answer;
+  expect(answer.retainedDispatch).toBe(true);
+  expect(answer.dispatch).toEqual({ ...before, overlapOk: true });
+});
+
+// t517 (round 2): the preflight and the route judge a held or submitted task's
+// redispatch as the dispatch itself does, a fresh build, not the earlier offer.
+it("a held task's rework dispatch refused as a fresh build is refused before its token is revoked", async () => {
+  const { L, record, item, path } = await setup("retain-preflight", []);
+  const mint = await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+  await L.setFork(item.id, "retain-preflight--t2", "a".repeat(40), "codex/shared");
+  await L.recordToken(item.id, "codex/shared", mint.generation, mint.replaces, "preflight-token");
+  await L.dispatch(item.id, "owner", { ...original, job: "merge-main", head: MAIN_HEAD });
+  await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+  await L.setProject({ ...record, policy: { ...record.policy, refuseOverlap: true } }, "owner");
+  const before = await L.item(item.id);
+  // The inherited agent and model would name the claimant exempt from the
+  // overlap refusal; the fresh build names none.
+  const res = await call("POST", path, { overlapOk: true, note: "address the review" });
+  expect(res.status, await res.clone().text()).toBe(409);
+  expect(await res.text()).toContain("overlaps live");
+  expect(revoked).not.toContain("preflight-token");
+  expect(await L.tokenId(item.id)).toBe("preflight-token");
+  expect(await L.item(item.id)).toEqual(before);
+});
+for (const state of ["held", "submitted"] as const) {
+  it(`a ${state} task redispatched with --overlap-ok and a note still gets a suggested builder`, async () => {
+    const { L, item, path } = await setup(`retain-suggest-${state}`, []);
+    await L.dispatch(item.id, "owner", original);
+    await L.claim(item.id, "codex/shared", { runner: "home:retain", kind: "home" });
+    await L.setFork(item.id, `retain-suggest-${state}--t2`, "a".repeat(40), "codex/shared");
+    if (state === "submitted") { await L.recordPush(item.id, "codex/shared", "c".repeat(40), "c".repeat(40)); await L.submit(item.id, "codex/shared"); }
+    const res = await call("POST", path, { overlapOk: true, suggest: true, note: "address the review" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const answer = await res.json() as Answer;
+    expect(answer.suggestion).toBeTruthy();
+    expect(answer.retainedDispatch).toBeUndefined();
+    expect(answer.dispatch.agent).toBe("codex");
+    expect(answer.dispatch.model).toBeTruthy();
+  });
+}

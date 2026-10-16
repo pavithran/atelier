@@ -72,6 +72,19 @@ export function namedCandidates<E extends Pick<ModelEntry, "id" | "harness" | "a
   return { found: inHarness.filter((m) => m.aliases.some((alias) => `${m.harness}/${alias}`.toLowerCase() === lower || sameActor(`${m.harness}/${alias}`, name))), how: "is an alias of" };
 }
 
+// The registered entries a harness-qualified reviewer name stands for,
+// given the entries that share its model by modelKey in any harness. One
+// model sold through two harnesses (claude-code/sonnet-5.5 and
+// antigravity/claude-sonnet-5.5) is two entries, and a name that is exactly
+// one of them is that one (t697, found when atelier land t52 --reviewer
+// claude-code/sonnet-5.5 was refused as ambiguous). Several entries still
+// answering after the harness is read stay several.
+export function reviewerEntries<E extends Pick<ModelEntry, "id" | "harness" | "aliases">>(sharing: readonly E[], name: string): E[] {
+  if (sharing.length < 2 || !name.includes("/")) return [...sharing];
+  const named = namedCandidates(sharing, name).found;
+  return named.length ? named : [...sharing];
+}
+
 // The exact harness/id a typed name stands for, or the name as typed when
 // no pool entry is it (a model outside the pool, which some places allow).
 export function typedActor(pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[], name: string): string {

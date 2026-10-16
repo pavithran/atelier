@@ -14,7 +14,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -37,6 +37,7 @@ import type { PairwiseRecord } from "./models/pairwise.ts";
 import { canonicalName, compareModel, measureRecords, type ModelComparison } from "./models/compare.ts";
 import { addDays, BACKFILL_DAYS, computeSnapshot, dayEnd, daysDue, replayDifferences, SNAPSHOT_SCHEMA, TREND_DAYS, trendOf, utcDay, type ModelTrend, type SnapshotRow, type StoredSnapshot } from "./models/snapshot.ts";
 import type { CardView } from "./models/cards.ts";
+import { reviewModels } from "./models/review.ts";
 import type { PrecisionRecord } from "./models/precision.ts";
 import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -44,7 +45,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
 import { buildPulse, PULSE_DAYS, pulseFromCounts } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
@@ -538,6 +539,22 @@ async function unreachedOf(projects: readonly ProjectRecord[], send: (p: Project
   const results = await Promise.all(projects.map((p) => send(p).then(() => null, () => p.name)));
   return results.filter((name): name is string => name !== null);
 }
+// The reviewers admitted in the standard project, which every project
+// inherits unless it records its own admission or withdrawal (t687).
+// Read with the version the standard project gave that set, which a ledger
+// uses to drop a delivery older than the one it holds.
+async function standardReviewers(env: Env): Promise<{ admissions: ReviewerAdmission[]; version: number }> {
+  const home = (await index(env).projects()).find((p) => p.name === STANDARD_REVIEWER_PROJECT);
+  if (!home) return { admissions: [], version: 0 };
+  const snapshot = await ledgerOf(env, home).standardReviewersSnapshot();
+  return { admissions: standardAdmissions(snapshot.admissions), version: snapshot.version };
+}
+// Sends them to every other project's ledger; returns the projects it could
+// not reach, which keep their last copy.
+async function sendStandardReviewers(env: Env): Promise<string[]> {
+  const [standard, projects] = await Promise.all([standardReviewers(env), index(env).projects()]);
+  return unreachedOf(projects.filter((p) => p.name !== STANDARD_REVIEWER_PROJECT), async (p) => { await ledgerOf(env, p).setStandardReviewers(standard.admissions, standard.version); });
+}
 // Sends each project's ledger the role assignments bearing on it (its own,
 // by its key, and every project's; src/models/assignments.ts), after one is
 // recorded or withdrawn, so its selectors read them without the index. Each
@@ -940,6 +957,38 @@ async function mint(env: Env, repo: string, scope: "read" | "write", branch: str
 }
 const NOT_FOUND = /NOT_FOUND|not found/i;
 
+// A token minted for a request made with an agent token is recorded against
+// it, so revoking the agent token revokes it too (t598). A token that cannot
+// be recorded, because the agent token was revoked meanwhile or the record
+// failed, is revoked at once and never returned.
+async function mintFor(c: Ctx, repo: string, scope: "read" | "write", branch: string, ttl?: number) {
+  const t = await mint(c.env, repo, scope, branch, ttl);
+  if (!c.token) return t;
+  let kept: boolean;
+  try {
+    kept = await index(c.env).recordArtifactsToken(c.token.id, repo, t.tokenId, t.expiresAt);
+  } catch (err) {
+    await revoke(c.env, repo, t.tokenId).catch((e) => console.error(errorLine(`revoke an unrecorded token for ${repo}`, e)));
+    throw err;
+  }
+  if (!kept) {
+    await revoke(c.env, repo, t.tokenId);
+    throw new RuleError("token_revoked", "this agent token was revoked while the request was made; no Git token was issued", 401);
+  }
+  return t;
+}
+
+// Revokes in Artifacts every token an agent token's requests minted. A row is
+// forgotten only once its token is revoked, so a failure (a 503 from revoke)
+// leaves the rest recorded and a second DELETE finishes the work.
+async function revokeAgentArtifacts(env: Env, agentId: string) {
+  const I = index(env);
+  for (const { repo, tokenId } of await I.agentArtifactsTokens(agentId)) {
+    await revoke(env, repo, tokenId);
+    await I.forgetArtifactsToken(agentId, tokenId);
+  }
+}
+
 // Whether a repository exists; one still being forked counts.
 async function repoExists(env: Env, repo: string): Promise<boolean> {
   return artifactsStep(`look up ${repo}`, async () => {
@@ -1272,7 +1321,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { hash: _, ...publicRecord } = record;
       return json({ ...publicRecord, token }, 201);
     }
-    if (parts.length === 2 && m === "DELETE") return json({ revoked: await I.revokeAgentToken(parts[1]) });
+    if (parts.length === 2 && m === "DELETE") {
+      // The token stops working first, so no new Git token is minted for it
+      // while its recorded ones are revoked (t598).
+      const revoked = await I.revokeAgentToken(parts[1]);
+      if (revoked) await revokeAgentArtifacts(env, parts[1]);
+      return json({ revoked });
+    }
     throw new RuleError("not_found", "no such route", 404);
   }
   // The public showcase setting: which projects the owner shows, and whether
@@ -1311,6 +1366,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Older clients keep the list shape, but a failed read is still labelled.
     if (read.unread.length) res.headers.set("x-atelier-incomplete", read.unread.slice().sort().join(","));
     return res;
+  }
+  // The recurring model review (t624, src/models/review.ts): the developer's
+  // alone, read-only. It reads the records as of a time and writes none.
+  if (parts[0] === "model-review" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    const asked = c.url.searchParams.get("as-of");
+    const asOf = asked === null ? new Date().toISOString() : /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2}))?$/.test(asked) && !Number.isNaN(Date.parse(asked)) ? new Date(asked).toISOString() : null;
+    if (!asOf) throw new RuleError("bad_time", "as-of is an ISO date or time, such as 2026-10-14 or 2026-10-14T09:00:00Z", 400);
+    const I = index(env);
+    // Every run report recorded before TIME, page by page (the newest 1,000 that
+    // readSources gives would lose the older ones a past TIME needs); a read that
+    // cannot finish makes the review partial, never a review of what was read.
+    const [read, runs, assignmentEvents, roles] = await Promise.all([readSources(env, false), readRunsThrough(I, null, asOf), I.assignmentEvents(), I.roleAssignments()]);
+    const pool = (await I.models()) as unknown as ModelEntry[];
+    const { takes, rows } = await readModelSnapshots(env, [...new Set(pool.map((e) => canonicalName(`${e.harness}/${e.id}`, pool)))], Date.parse(asOf));
+    return json(reviewModels({
+      asOf, pool, sources: read.sources, runs: runs.reports, assignmentEvents, owner: ownerActor(env), cards: await I.modelCardRecords(),
+      assignments: roles.assignments, projectNames: roles.names, takes, rows, unread: [...read.unread.map((p) => p.name), ...(runs.complete ? [] : ["some run reports"])],
+    }));
   }
   // The model pool requires the owner token. Owner tools may read it and
   // report runner status; changes also require the owner actor.
@@ -1640,9 +1714,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
 
   if (parts[2] === "reviewers") {
     requireOwner(env, actor);
-    if (parts.length === 3 && m === "GET") return json(await L.reviewerAdmissions());
+    if (parts.length === 3 && m === "GET") return json(await L.reviewerListing());
     if (parts.length === 4 && (m === "PUT" || m === "DELETE")) {
-      return json(await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models()));
+      const record = await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models());
+      // The standard project's reviewers are every project's (t687).
+      const unreached = project === STANDARD_REVIEWER_PROJECT ? await sendStandardReviewers(env) : [];
+      return json(unreached.length ? { ...record, unreached } : record);
     }
     throw new RuleError("not_found", "no such reviewer admission route", 404);
   }
@@ -1751,13 +1828,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     await seedProject({
       register: () => index(env).registerProject(record),
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
-      install: (snapshot) => L.poolChanged(models, snapshot),
+      install: async (snapshot) => { await L.poolChanged(models, snapshot); const standard = await standardReviewers(env); await L.setStandardReviewers(standard.admissions, standard.version); },
     });
-    return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
+    return json({ project: record, baseline: await mintFor(c, repo, "write", await projectBranch(env, record)) });
   }
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
     if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    // The standard reviewer set is found by this project's registration
+    // (t687): without it standardReviewers() reads an empty set at version 0,
+    // which other projects drop as stale, so a withdrawal would never reach
+    // them and new projects would inherit nothing.
+    if (ref.name === STANDARD_REVIEWER_PROJECT || ref.key === STANDARD_REVIEWER_PROJECT) {
+      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} cannot be removed: reviewers admitted there are every project's reviewers, and the other projects find them through its registration`, 409);
+    }
     const items = await L.items();
     // A task queued for a runner is live work too: removing the project would drop it from the queue while it stays claimable.
     if (body.force !== true && items.some((i) => i.state === "open" && i.dispatch)) {
@@ -1783,6 +1867,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const to = projectNameArg(body.to);
     if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    // The standard reviewer set is found by this project's name (t687):
+    // moving the name away would strand the admissions every other project
+    // inherited, and moving it onto another project would hand that project
+    // the standing without a broadcast.
+    if (project === STANDARD_REVIEWER_PROJECT || to === STANDARD_REVIEWER_PROJECT) {
+      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} cannot be renamed, or taken as a new name: reviewers admitted there are every project's reviewers, and the other projects find them by that name`, 409);
+    }
     // Renaming back to one of the project's own names is not a new name.
     if (!ref.names.includes(to)) assertNewName(to);
     if (project === to) {
@@ -1904,7 +1995,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const scope = body.scope === "write" ? "write" : "read";
     if (scope === "write") requireOwner(env, actor);
     const p = await L.project();
-    return json(await mint(env, p.repo, scope, await projectBranch(env, p)));
+    return json(await mintFor(c, p.repo, scope, await projectBranch(env, p)));
   }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
   // in progress carried between the developer's Macs, in a repository of
@@ -1930,7 +2021,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const scope = body.scope === "write" ? "write" : "read";
       if (scope === "write") await developerBranchesRepo(env, L, actor, ref.key, p.repo, repo, p.name);
       else if (!made) throw new RuleError("no_branches", `${p.name} has no developer branches yet: push one first with atelier branch push NAME`, 404);
-      const minted = await mint(env, repo, scope, await projectBranch(env, p));
+      const minted = await mintFor(c, repo, scope, await projectBranch(env, p));
       return json({ ...minted, repo, prefix: DEVELOPER_BRANCH_PREFIX });
     }
     if (parts.length === 3 && m === "POST") {
@@ -2202,7 +2293,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
             throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
           }
-          const b = await mint(env, p.repo, "read", branch);
+          const b = await mintFor(c, p.repo, "read", branch);
           return json({ item: await L.item(id), workspace: {
             remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
             expiresAt: c.token.expiresAt, defaultBranch: branch,
@@ -2210,7 +2301,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A runner's claim sets the same identity as any other (t451).
           commitIdentity: p.policy.commitIdentity ?? null });
         }
-        const w = await mint(env, fork!, "write", branch);
+        const w = await mintFor(c, fork!, "write", branch);
         // The Ledger records the token only if this claim still stands (see
         // recordToken). If it does not, the token is revoked and never
         // returned, so its plaintext reaches no one.
@@ -2218,7 +2309,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           await revoke(env, fork, w.tokenId);
           throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this claim's token was made; no token was issued`, 409);
         }
-        const b = await mint(env, p.repo, "read", branch);
+        const b = await mintFor(c, p.repo, "read", branch);
         return json({
           item: await L.item(id),
           workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
@@ -2251,7 +2342,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const p = await L.project();
       const branch = await projectBranch(env, p);
-      const b = await mint(env, p.repo, "read", branch);
+      const b = await mintFor(c, p.repo, "read", branch);
       return json({
         item: await L.item(id), fast: true,
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
@@ -2266,7 +2357,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const { item, generation, replaces } = await L.reserveOwnerPort(id, actor);
       await revoke(env, item.fork, replaces);
-      const t = await mint(env, item.fork!, "write", await projectBranch(env, await L.project()), 300);
+      const t = await mintFor(c, item.fork!, "write", await projectBranch(env, await L.project()), 300);
       try {
         if (!await L.recordOwnerPortToken(id, actor, generation, replaces, t.tokenId, t.expiresAt)) {
           throw new RuleError("claim_superseded", `${id} changed while the port token was made; no token was issued`, 409);
@@ -2280,7 +2371,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "read-token": {
       const item = await L.item(id);
       if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
-      const t = await mint(env, item.fork, "read", await projectBranch(env, await L.project()));
+      const t = await mintFor(c, item.fork, "read", await projectBranch(env, await L.project()));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch, head: item.head, base: item.base });
     }
     case "base-token": {
@@ -2291,7 +2382,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       const p = await L.project();
       const repo = await baseRepo(env, L, item, p.repo);
-      const t = await mint(env, repo, "read", await projectBranch(env, p));
+      const t = await mintFor(c, repo, "read", await projectBranch(env, p));
       return json({ remote: t.remote, token: t.token, defaultBranch: t.defaultBranch });
     }
     case "push": {
@@ -2451,7 +2542,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // that names no agent without asking stays open to any runner's agent.
       // An overlap override of an existing dispatch keeps its builder
       // restrictions unless named, so it asks for no suggestion.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
+      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && waitingDispatch(await L.item(id)))) {
         requireOwner(env, actor);
         const [pool, track, item, p, assignments, offers] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project(), index(env).currentRoleAssignments(), offersOf(env)]);
         // The suggestion is checked against runners' offers for the job this
@@ -2558,8 +2649,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const branch = await projectBranch(env, p);
         const landed = landingOf(claim.item, claim.events);
         const repo = landed?.onPlanBranch ? await baseRepo(env, L, claim.item, p.repo) : p.repo;
-        const t = await mint(env, landed ? repo : claim.item.fork!, "read", branch);
-        const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
+        const t = await mintFor(c, landed ? repo : claim.item.fork!, "read", branch);
+        const b = await mintFor(c, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
           ...(landed ? { landed } : {}),
@@ -2654,7 +2745,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
       // The live offers go with the ask (t353): a request at this head every
       // runner offering its reviewer has skipped is withdrawn and asked anew.
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers()));
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers(), body.hand === true));
     }
     // The developer withdraws an open, unclaimed review request with a
     // reason (t627), so another reviewer can be asked at the same head.
@@ -2897,12 +2988,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (lapsed) await revoke(env, leased.item.fork, lapsed);
       const p = await L.project();
       const branch = await projectBranch(env, p);
-      const w = await mint(env, leased.item.fork!, "write", branch);
+      const w = await mintFor(c, leased.item.fork!, "write", branch);
       if (!await L.recordRefreshToken(id, leased.lease.id, w.tokenId)) {
         await revoke(env, leased.item.fork, w.tokenId);
         throw new RuleError("lease_lost", `${id}'s refresh lease changed while its token was made; no token was issued`, 409);
       }
-      const b = await mint(env, p.repo, "read", branch);
+      const b = await mintFor(c, p.repo, "read", branch);
       return json({
         ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
@@ -3378,9 +3469,9 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
 
 // Every project's events, by its key (so a renamed project keeps its history, as suggestionRecords has it), with the newest RUN_REPORTS run
 // reports and the projects whose Ledger could not be read just then.
-async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
+async function readSources(env: Env, withRuns = true): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
-  const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
+  const [projects, runs] = await Promise.all([I.projects(), withRuns ? I.runs() : []]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
     try { return { project: p.key ?? p.name, events: await allEvents(ledgerOf(env, p)) }; }
@@ -3472,17 +3563,25 @@ export async function replayModelSnapshot(env: Env, day: string, rev?: number): 
   return { stored, replayed: replayed.rows, differences: replayDifferences(stored.rows, replayed.rows) };
 }
 
+// The one reader of stored snapshots for display: the trend span ending the day
+// before `now`, the takes and the rows of the given canonical models. The trend
+// pages and the model review (t624) read through it, and nothing that routes
+// work does (test/model-snapshots.test.ts).
+async function readModelSnapshots(env: Env, models: readonly string[], now: number) {
+  const I = index(env);
+  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
+  const takes = await I.modelSnapshotTakes(from, to);
+  const rows = (await Promise.all(models.map((m) => I.modelSnapshotRows(m, from, to)))).flat();
+  return { takes, rows, to };
+}
+
 // One model's trend over the TREND_DAYS ended days, by its canonical key
 // through the pool now: what GET /api/models/ID/trend answers and the
 // Models page renders.
 async function modelTrends(env: Env, named: readonly string[], pool: readonly ModelEntry[], now = Date.now()): Promise<ModelTrend[]> {
-  const I = index(env);
-  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
-  const takes = await I.modelSnapshotTakes(from, to);
-  return Promise.all(named.map(async (n) => {
-    const model = canonicalName(n, pool);
-    return trendOf(model, takes, await I.modelSnapshotRows(model, from, to), to);
-  }));
+  const models = named.map((n) => canonicalName(n, pool));
+  const { takes, rows, to } = await readModelSnapshots(env, models, now);
+  return models.map((model) => trendOf(model, takes, rows.filter((r) => r.model === model), to));
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and
@@ -4240,7 +4339,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
   // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).

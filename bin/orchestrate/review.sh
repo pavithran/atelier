@@ -8,6 +8,9 @@
 # (family openai). Writes OUTBASE.prompt.md, OUTBASE.json and OUTBASE.md, the
 # answer, in the reply format of src/review/verdict.ts (VERDICT, SUMMARY and
 # FINDING lines).
+# A task of a project whose baseline starts at its own root commit
+# (init --history-since) shares no commit with MAIN_REPO's main; the fork
+# point is then read from the checkout's baseline map (fork_point in lib.sh).
 # REVIEW_BAR overrides what may block; unset, the bar is Atelier's default.
 # PROSE_STANDARD overrides the path of the project's prose standard; unset,
 # it is the one the project's policy records (atelier init --prose-standard),
@@ -58,7 +61,7 @@ mkdir -p "${out:h}"
 # The answer files may sit in the workspace's .scratch/; keep it out of Git.
 grep -qx ".scratch/" .git/info/exclude 2>/dev/null || echo ".scratch/" >> .git/info/exclude
 git fetch -q "$main" main
-base=$(git merge-base HEAD FETCH_HEAD)
+base=$(fork_point "$ws" "$main" "$project")
 clone=$(mktemp -d "${TMPDIR:-/tmp}/atelier-review-$project-$(git config --local atelier.item).XXXXXX")
 trap 'rm -rf "$clone"' EXIT
 git clone -q "$ws" "$clone/repo"

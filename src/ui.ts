@@ -2396,7 +2396,7 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   // and the acting model on the receipt; they read as the text receipt
   // (cli/receipt.mjs) and the override block say them, through directionText.
   const words = typeof r.quote === "string" && r.quote ? `; on ${e(directionText({ quote: r.quote, acting: typeof r.acting === "string" ? r.acting : undefined }))}` : "";
-  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}${words}.</p>
+  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}${Array.isArray(r.contributors) && r.contributors.length > 1 ? ` (with ${r.contributors.filter((c) => c !== r.builder).map((c) => e(String(c))).join(", ")} in the range)` : ""}. Reason: ${e(String(r.reason ?? ""))}${words}.</p>
   <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. ${reviewLine}</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
 }
 

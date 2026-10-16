@@ -35,8 +35,14 @@ export const SNAPSHOT_SCHEMA = 1;
 // measure compareModel gives has one (test/model-snapshots.test.ts).
 export const MEASURE_VERSIONS: Readonly<Record<string, number>> = {
   "first-review-approval": 1, merged: 1, defects: 1, "build-time": 1, "build-stalled": 1, "runs-failed": 1,
-  "review-precision": 1, "pairwise-catches": 1, "pairwise-misses": 1, "approvals-contradicted": 1, "review-time": 1, "review-stalled": 1, "reviews-unfinished": 1,
+  "review-precision": 1, "pairwise-catches": 1, "pairwise-misses": 1, "approvals-contradicted": 2, "review-time": 2, "review-stalled": 2, "reviews-unfinished": 1,
   "judgement-upheld": 1, "judgement-contradicted": 1, decisions: 1, overrides: 1,
+  // t663: the review figures count the review role alone (version 2 of
+  // approvals-contradicted, review-time and review-stalled), and each new role
+  // has its own measures.
+  "security-review-approvals-contradicted": 1, "security-review-time": 1, "security-review-verdicts": 1,
+  "claims-review-approvals-contradicted": 1, "claims-review-time": 1, "claims-review-verdicts": 1,
+  "plan-time": 1, "plan-stalled": 1, "plan-runs-failed": 1,
 };
 
 // How many ended days back a run of the scheduler fills when it finds them

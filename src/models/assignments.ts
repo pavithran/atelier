@@ -109,6 +109,12 @@ export const FALLBACK: Record<AssignmentRole, string> = {
   plan: "the planner is the first eligible pool model in routing order for research work",
 };
 
+// The role one review served, as recorded on its request and its verdict
+// (t663). A review is read under one of these; an event without one is review.
+export const REVIEW_ROLES = ["review", "security-review", "claims-review"] as const;
+export type ReviewRole = (typeof REVIEW_ROLES)[number];
+export const reviewRoleOfEvent = (data: Record<string, unknown>): ReviewRole => (REVIEW_ROLES as readonly string[]).includes(data.role as string) ? data.role as ReviewRole : "review";
+
 // The roles a review reads, most specific first: security or gate work
 // reads security-review, docs work claims-review, and both fall back to review.
 export function reviewRoles(opts: { sensitive?: boolean; docs?: boolean }): AssignmentRole[] {

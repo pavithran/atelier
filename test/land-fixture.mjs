@@ -93,6 +93,11 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       item: { id, title: `Fixture ${id}`, state, owner: box.holder ?? "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}), ...box.policy },
       gate: box.gate ?? { ready: true, outOfScope: [], blockers: [] }, evidence: box.evidence[id] ?? [], reviews, events,
+      // The live gate request and the replies the server could not read
+      // (t613), where a test gives them: `liveReview` null is a request
+      // gone; absent, the server sends neither, as an older one did.
+      ...(id === "t1" && "liveReview" in box.review ? { liveReview: box.review.liveReview } : {}),
+      ...(id === "t1" && box.review.unparsable ? { unparsable: box.review.unparsable.map((u) => ({ itemId: id, head, note: "no VERDICT line", reply: "fine", at: new Date().toISOString(), ...u })) } : {}),
     };
   };
   const server = createServer(async (req, res) => {
