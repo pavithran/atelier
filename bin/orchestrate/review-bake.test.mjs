@@ -216,6 +216,32 @@ test("review-bake.sh records every scheduled pair, and a clone failure still sco
   assert.deepEqual(scored.reviewers.map((x) => [x.reviewer, x.reviews, x.failed]).sort(), [["codex/gpt-test", 1, 1], ["codex/other", 1, 1]]);
 });
 
+// Review 2 of t699: a rerun for one reviewer wrote a manifest that replaced discovery, so a pre-fix directory lost its other results.
+test("a rerun for one reviewer adds to the manifest: earlier results from a directory with no manifest stay scored", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-bake-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "reviews")); mkdirSync(join(dir, "status"));
+  const builds = ["d-t1", "c-t1"];
+  for (const r of ["codex_a", "codex_b", "claude-code_c"]) for (const b of builds) writeFileSync(join(dir, "reviews", `${r}__${b}.md`), "VERDICT: REJECT\n");
+  writeFileSync(join(dir, "sample.txt"), "d-t1\tD\twhy\nc-t1\tC\twhy\n");
+  // No manifest: everything on disc is scored.
+  const before = scoreRun(loadReviews(dir, builds, ["claude-code/c", "codex/a", "codex/b"], null), truth);
+  assert.equal(before.rows.length, 6);
+  // A rerun for codex/a alone leaves a manifest of its own pairs; the rest must still count.
+  writeFileSync(join(dir, "pairs.txt"), "codex/a\td-t1\ncodex/a\tc-t1\n");
+  const truthFile = join(dir, "truth.json");
+  writeFileSync(truthFile, JSON.stringify(truth));
+  const s = spawnSync(process.execPath, [join(here, "review-bake-score.mjs"), "--out", dir, "--truth", truthFile, "--json"], { encoding: "utf8" });
+  assert.equal(s.status, 0, s.stderr);
+  const scored = JSON.parse(s.stdout);
+  assert.equal(scored.rows.length, 6);
+  assert.deepEqual(scored.reviewers.map((x) => x.reviewer).sort(), ["claude-code/c", "codex/a", "codex/b"]);
+  // And a manifest pair with no result still counts as failed alongside them.
+  writeFileSync(join(dir, "pairs.txt"), "codex/a\td-t1\ncodex/a\tc-t1\ncodex/z\td-t1\n");
+  const s2 = spawnSync(process.execPath, [join(here, "review-bake-score.mjs"), "--out", dir, "--truth", truthFile, "--json"], { encoding: "utf8" });
+  assert.equal(JSON.parse(s2.stdout).rows.length, 7);
+});
+
 // Review 1 of t699, finding 2: the runner's grep and the scorer's parser disagreed.
 test("the runner keeps and collects exactly the replies the scorer reads a verdict in", { skip }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-review-bake-"));
