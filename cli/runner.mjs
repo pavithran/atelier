@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
-import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
@@ -569,6 +569,32 @@ export function reviewToken(config, model, actor, deps = {}) {
     return { refused: `the agent token under tokens["${model}"] (${where}) is the developer's token: a review must not use the developer's token (atelier token issue --as ${actor}, then store that token there)` };
   }
   return { token };
+}
+
+// Prepare Node dependencies on the host before entering the review sandbox.
+// Nested projects (for example relay/) need their own dependency directory.
+export async function prepareReviewDependencies(workspace, source, { executeChild = execute, signal } = {}) {
+  if (!existsSync(workspace)) return;
+  async function visit(dir, original) {
+    if (existsSync(join(dir, "package.json")) && !existsSync(join(dir, "node_modules"))) {
+      if (existsSync(join(original, "node_modules"))) {
+        symlinkSync(resolve(original, "node_modules"), join(dir, "node_modules"), "dir");
+      } else {
+        const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+        if (manifest.dependencies || manifest.devDependencies || manifest.optionalDependencies) {
+          const locked = existsSync(join(dir, "package-lock.json")) || existsSync(join(dir, "npm-shrinkwrap.json"));
+          await checked(["npm", locked ? "ci" : "install", "--no-audit", "--no-fund"],
+            { cwd: dir, env: checkEnv(process.env), signal, timeoutMs: prepareTimeout(), step: "review dependencies" }, executeChild);
+        }
+      }
+    }
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory() && ![".git", "node_modules"].includes(entry.name)) {
+        await visit(join(dir, entry.name), join(original, entry.name));
+      }
+    }
+  }
+  await visit(workspace, source);
 }
 
 // A review job clones the part's fork read-only with an Artifacts read token,
@@ -1729,6 +1755,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       if (io.stopped()) throw new Error("interrupted");
       await io.checkout(workspace, claimed.head);
     }
+    await (io.prepareReview ?? prepareReviewDependencies)(workspace, io.workspacePath(project, item.id));
     const compare = await reviewBase(io, workspace, claimed);
     if (io.stopped()) throw new Error("interrupted");
     if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
@@ -3177,6 +3204,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
     harness: (argv, cwd, env, options = {}) => startHarness(argv, cwd, env, { ...options, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, executeChild),
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
+    prepareReview: (cwd, source) => prepareReviewDependencies(cwd, source, { executeChild, signal: controller.signal }),
     prepare: async (cwd) => {
       if (!existsSync(join(cwd, ".git"))) return null;
       const git = (argv) => checked(["git", ...argv], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);

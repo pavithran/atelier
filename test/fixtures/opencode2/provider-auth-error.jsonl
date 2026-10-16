@@ -1,0 +1,2 @@
+{"type":"step_start","timestamp":1792073353812,"sessionID":"ses_ec01aba90ffeMtGpnQ7t4fh703","part":{"id":"prt_13fe54a54001SyJmnNrbKhJB4k","sessionID":"ses_ec01aba90ffeMtGpnQ7t4fh703","messageID":"msg_13fe5464c001z5cWRQhAV1dqGX","type":"step-start","snapshot":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"}}
+{"type":"error","timestamp":1792073353828,"sessionID":"ses_ec01aba90ffeMtGpnQ7t4fh703","error":{"type":"provider.auth","message":"token expired or incorrect","status":401,"response":{"body":"{\"error\":{\"code\":\"401\",\"message\":\"token expired or incorrect\"}}"}}}

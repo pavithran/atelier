@@ -169,6 +169,19 @@ test("the generated provider configs send the gateway metadata, allow git add an
   assert.match(direct.lines.join("\n"), /No AI Gateway is named/);
 });
 
+// The finding on t683: opencode 1.18.34 throws on the V2 "permissions" key.
+test("setup writes the V2 permissions into the provider configs only when the opencode found is 2 or later", async () => {
+  const names = ["deepseek-api.json", "ai-studio.json", "openrouter-api.json", "zai-coding.json"];
+  for (const [major, has] of [[2, true], [1, false], [null, false]]) {
+    const p = await plan({ major });
+    for (const name of names) {
+      const config = file(p, ["opencode", "runner.json", name]);
+      assert.equal(config.permission.external_directory, "deny", `${name} keeps opencode 1's deny`);
+      assert.equal("permissions" in config, has, `${name}, major ${major}`);
+    }
+  }
+});
+
 test("setup writes the files, refuses to overwrite a runner config, and a dry run writes nothing", async () => {
   const written = new Map(), printed = [];
   const io = { pool: async () => POOL, which: everything, fetchJson, env: {}, print: (t) => printed.push(t), writeFile: (p, t) => written.set(p, t), exists: () => false };

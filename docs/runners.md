@@ -388,6 +388,10 @@ removed as opencode ends. The adapter sets `XDG_DATA_HOME` to this folder's
 `data` whatever the runner gave it, so the data folder the runner makes
 beside the workspace (below) is not the one the shipped adapter's opencode
 uses; that folder serves an opencode entry with a custom `command`.
+On opencode 2 the adapter also passes `--standalone`, so the run does not join
+a background service that has a data folder of its own, and the generated
+config denies `external_directory` in opencode 2's `permissions` form too
+(`bin/orchestrate/README.md`, "Switching to opencode 2").
 
 ## Home runner
 

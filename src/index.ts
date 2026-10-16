@@ -1477,11 +1477,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // prints it, and says so when an older server sends none.
     // `judgement` is each acting model's verdicts on findings, decisions and
     // overrides over its window, with the window's totals.
-    const { sources, reliability, speed, events, unread } = await trackRecords(env);
-    // Role assignments are recorded on the index, so its events are one
-    // more source of the acting models' decisions (t622).
-    const assigned = { project: "(model roles)", events: await index(env).assignmentEvents() };
-    const judgement = buildJudgement([...sources, assigned], judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    // The same five readers the Models page and a daily snapshot use
+    // (measureRecords, t623); role assignments are recorded on the index, so
+    // its events are one more source of the acting models' decisions (t622).
+    const I = index(env);
+    const [read, assignmentEvents, pool] = await Promise.all([readSources(env), I.assignmentEvents(), I.models()]);
+    const { events, unread } = read;
+    const { reliability, speed, judgement } = measureRecords({ sources: read.sources, runs: read.runs, assignmentEvents, pool: pool as unknown as ModelEntry[], owner: ownerActor(env) }, new Date());
     const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
@@ -1632,7 +1634,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
       for (const r of other.reviews) if (r.runner) active.push(r.runner);
     }));
-    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable));
+    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names));
   }
 
   if (parts[2] === "reviewers") {
@@ -3363,14 +3365,14 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
   return { sources, reliability: buildReliability(sources, runs, ownerActor(env)), speed: buildSpeed(sources, runs, ownerActor(env), Date.now()), events, unread };
 }
 
-// Every project's events, by its name now, with the newest RUN_REPORTS run
+// Every project's events, by its key (so a renamed project keeps its history, as suggestionRecords has it), with the newest RUN_REPORTS run
 // reports and the projects whose Ledger could not be read just then.
 async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
   const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
-    try { return { project: p.name, events: await allEvents(ledgerOf(env, p)) }; }
+    try { return { project: p.key ?? p.name, events: await allEvents(ledgerOf(env, p)) }; }
     catch { unread.push(p); return null; }
   }))).filter((s): s is ProjectEvents => s !== null);
   return { sources, runs: runs as unknown as RunReport[], events: sources.reduce((n, s) => n + s.events.length, 0), unread };

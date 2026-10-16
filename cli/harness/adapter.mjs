@@ -20,7 +20,7 @@ import { join, relative, resolve } from "node:path";
 
 import { NO_VERDICT, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
-import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, metadataEscaped } from "./providers.mjs";
+import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, metadataEscaped } from "./providers.mjs";
 
 const UNSET = "undefined";
 
@@ -174,12 +174,12 @@ export const HARNESSES = {
   opencode: {
     executable: "opencode",
     command(args, kind, setup) {
-      return { argv: ["run", "--model", `${setup.provider}/${setup.providerModel}`], verdictFrom: "stdout" };
+      return { argv: ["run", ...standalone(setup), "--model", `${setup.provider}/${setup.providerModel}`], verdictFrom: "stdout" };
     },
     // The same session again: the run's own data folder (runHome) holds this
     // job's session alone, so --continue resumes the review just answered.
     followUp(args, kind, setup) {
-      return ["run", "--model", `${setup.provider}/${setup.providerModel}`, "--continue"];
+      return ["run", ...standalone(setup), "--model", `${setup.provider}/${setup.providerModel}`, "--continue"];
     },
   },
   antigravity: {
@@ -192,6 +192,28 @@ export const HARNESSES = {
     },
   },
 };
+
+// opencode 2's `run` connects to a background service shared by every run
+// unless it is given --standalone, and the service keeps its own data folder,
+// which undoes the run's (runHome, XDG_DATA_HOME); opencode 1 has no such
+// service and may reject the flag (t683). So the flag follows the major
+// version, which runAdapter reads into setup.major.
+function standalone(setup) {
+  return setup.major >= 2 ? ["--standalone"] : [];
+}
+
+// The major version of the opencode at `exe`, from `exe --version` ("1.18.34",
+// "opencode v2.0.29"), asked once per executable and kept. null when it
+// cannot be read; runAdapter then refuses the run.
+const majors = new Map();
+export function opencodeMajor(exe, env, spawn = spawnSync) {
+  if (majors.has(exe)) return majors.get(exe);
+  const r = spawn(exe, ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+  const found = r.error || r.status !== 0 ? null : /(\d+)\.\d+\.\d+/.exec(String(r.stdout ?? ""));
+  const major = found ? Number(found[1]) : null;
+  if (major !== null) majors.set(exe, major);
+  return major;
+}
 
 // The executable for a harness: its name on the PATH, or the variable that
 // names a stand-in (ATELIER_CLAUDE, ATELIER_CODEX, ATELIER_OPENCODE,
@@ -347,6 +369,14 @@ export function runAdapter(harness, argv, io = {}) {
       // Outside the workspace, so nothing opencode leaves in it is committed.
       runDir = mkdtempSync(join(tmpdir(), "atelier-opencode-run-"));
       Object.assign(childEnv, runHome(env, runDir));
+      const major = opencodeMajor(executableFor(harness, env), childEnv, io.spawn);
+      // Fail closed: an opencode whose version cannot be read might be
+      // opencode 2, which needs --standalone and the deny rule, and opencode 1
+      // rejects both, so no run starts on a guess (the finding on t683).
+      if (major === null) throw new Error(`could not read the version of ${executableFor(harness, env)} (\`--version\` failed or printed no version), so it is not known whether it needs --standalone and the external_directory deny; no run was started`);
+      setup.major = major;
+      // opencode 2 gets the deny at every run, over whatever config was stored.
+      if (major >= 2) childEnv.OPENCODE_CONFIG_CONTENT = OPENCODE2_CONFIG_CONTENT;
     }
     if (harness === "codex") setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
   } catch (error) {

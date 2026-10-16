@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
+import { runReview, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 
@@ -1761,6 +1761,65 @@ test("a renewal refused as stale prevents a late verdict from the review child",
   assert.equal(calls.some((c) => c.argv?.[0] === "review"), false);
   const release = calls.find((c) => c.argv?.[0] === "review-release");
   assert.equal(release.argv[release.argv.indexOf("--request") + 1], String(claimed.request));
+});
+
+
+test("review dependencies are available in root and nested packages before the reviewer starts", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), ".review-deps-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, "task"), clone = join(root, "clone");
+  for (const part of ["", "relay"]) {
+    mkdirSync(join(source, part, "node_modules", "fixture-dependency"), { recursive: true });
+    mkdirSync(join(clone, part), { recursive: true });
+    writeFileSync(join(clone, part, "package.json"), JSON.stringify({ dependencies: { "fixture-dependency": "1" } }));
+    writeFileSync(join(source, part, "node_modules", "fixture-dependency", "index.js"), "module.exports = 42;");
+  }
+  const { io } = fixture();
+  io.workspacePath = () => source;
+  io.clone = async (_remote, _token, target) => {
+    const { cpSync } = await import("node:fs");
+    cpSync(clone, target, { recursive: true });
+  };
+  io.prepareReview = prepareReviewDependencies;
+  io.harness = async (_argv, cwd) => {
+    for (const part of ["", "relay"]) {
+      assert.equal(execFileSync(process.execPath, ["-e", "console.log(require('fixture-dependency'))"], { cwd: join(cwd, part), encoding: "utf8" }).trim(), "42");
+    }
+    return { code: 0 };
+  };
+  assert.equal((await runReview(assignment, config, "home:test", io)).phase, "reviewed");
+});
+
+test("review dependency preparation installs from the lockfile and propagates failures", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), ".review-install-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ devDependencies: { example: "1" } }));
+  writeFileSync(join(root, "package-lock.json"), "{}");
+  let installed = false;
+  await prepareReviewDependencies(root, join(root, "absent"), { executeChild: async (argv, options) => {
+    assert.deepEqual(argv, ["npm", "ci", "--no-audit", "--no-fund"]);
+    assert.equal(options.cwd, root);
+    installed = true;
+    return { code: 0 };
+  } });
+  assert.equal(installed, true);
+  await assert.rejects(prepareReviewDependencies(root, join(root, "absent"), { executeChild: async () => ({ code: 1, stderr: "install failed" }) }), /install failed/);
+});
+
+test("review brief carries required check commands, Observed results and the exact head", async () => {
+  const { io, calls } = fixture({ claim: { ...claimed, need: { ...claimed.need,
+    checks: [...claimed.need.checks, { claim: "npm run typecheck", grade: "observed", passed: true, where: "runner" }],
+  } } });
+  await runReview(assignment, config, "home:test", io);
+  const brief = calls.find((c) => c.brief).brief;
+  assert.ok(brief.includes(`- \`npm test\`: Observed passed, head \`${H1}\``), brief);
+  assert.ok(brief.includes(`- \`npm run typecheck\`: Observed passed, head \`${H1}\``), brief);
+});
+
+test("review brief never treats inability to run commands in the reviewer environment as blocking", async () => {
+  const { io, calls } = fixture();
+  await runReview(assignment, config, "home:test", io);
+  assert.match(calls.find((c) => c.brief).brief, /Inability to run a command in the reviewer’s environment is never blocking/);
 });
 
 // t675: the prose assessment of 2026-10-14 found no review brief named the
