@@ -12,6 +12,7 @@ import { killTree, runGroup, treeGroups } from "./group.mjs";
 import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
 import { SLOT_WRAPPER } from "./load.mjs";
 import { pairedProjectCommit } from "./fresh.mjs";
+import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { REVIEW_RENEW_MS, fastJobRefusal } from "../src/rules.ts";
@@ -357,7 +358,15 @@ export function nextStep(state, result) {
     case "asked": return result.empty ? { phase: "idle" } : { ...state, phase: "claimed" };
     case "claimed": return { ...state, phase: "working" };
     case "working":
-      if (result.code !== 0) return { ...state, phase: "failed", reason: `harness exited ${result.code}` };
+      if (result.code !== 0 || result.timedOut) {
+        // A harness that fails after moving the head (t363) left commits behind,
+        // not nothing: the reason says so, and the head is kept so the claim is
+        // too. The next run finishes from that head rather than starting over.
+        // A timeout is a failure of the same kind (t363), and a harness killed
+        // by a signal has no exit code (null), which is not success.
+        const failure = failureReason(result);
+        return { ...state, phase: "failed", ...(failure.head ? { head: failure.head } : {}), reason: failure.reason };
+      }
       if (!result.head || result.head === result.before) return { ...state, phase: "failed", reason: "harness made no new commit" };
       return { ...state, phase: "committed", head: result.head };
     case "committed": return { ...state, phase: "submitted" };
@@ -1290,6 +1299,20 @@ export function unpausedOffer(offer, pauses) {
   return { ...offer, agents: offer.agents.filter(({ agent }) => !pauses[agent]) };
 }
 
+// The obligation this process holds for failures it could not save anywhere,
+// by workspace and task: a read of the obligation is the files or this map,
+// whichever has it, and the count of failed reruns is the larger of the two.
+// Cleared when a harness succeeds.
+const unsavedFailures = new Map();
+const unsavedKey = (workspace, id) => `${workspace}\0${id}`;
+export const _unsavedFailures = unsavedFailures; // for tests, which share workspace names
+
+// The two files that hold a workspace's failure marker.
+export const harnessFailureFiles = (cwd) => [
+  join(cwd, ".git", "atelier-harness-failed"),
+  join(process.env.ATELIER_CACHE ?? join(homedir(), "Library", "Caches", "ai-projects", "cloudflare-git"), "harness-failed", createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 24) + ".json"),
+];
+
 export async function runTask(assignment, config, name, io) {
   // A build the queue marked fast (t589, the project in fast mode) is taken
   // without a fork; a take the server refuses because the mode or the job is
@@ -1304,7 +1327,31 @@ export async function runTask(assignment, config, name, io) {
   io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
-  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false;
+  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, exitOutcome = null, failedRun = null;
+  // The recovery obligation (t363): a harness run failed in this workspace and
+  // none has since succeeded. `failedRun` is what the run found at its start;
+  // the rest is what this run did to it.
+  let failedNow = false, savedOnce = false, markHead = null, markFrom = null, harnessExit = null, headUnreadable = false;
+  const obligationKey = () => unsavedKey(workspace, item.id);
+  // Records the obligation. The first call comes the moment a harness (or the
+  // resolver) run fails, before HEAD is read or a reason made; later calls add
+  // the head and reason as information. A marker no file takes is held in
+  // memory, and the run then keeps its claim and submits nothing.
+  // Where the failed work began, as information: the head before it when that
+  // differs from the head now, else the task's recorded head or its base.
+  const startOfWork = () => {
+    const now = markHead ?? before;
+    return before && before !== now ? before : item.head && item.head !== now ? item.head : item.base ?? before ?? null;
+  };
+  const markFailure = async (info = {}) => {
+    failedNow = true;
+    const marker = { actor, head: markHead, from: markFrom ?? failedRun?.from ?? startOfWork(), reason: null, reruns: failedRun ? (failedRun.reruns ?? 0) + 1 : 0, ...info };
+    try { await io.writeHarnessFailure?.(workspace, marker); savedOnce = true; unsavedFailures.delete(obligationKey()); }
+    catch (markError) {
+      unsavedFailures.set(obligationKey(), marker);
+      io.log(`could not record the failed harness: ${markError.message}; this runner holds the obligation in memory and keeps the claim`);
+    }
+  };
   // The merges the run started (startMergeMain, startMergePlan), kept for
   // the exit: a head is not complete while one is in progress (alreadyComplete).
   const merges = [];
@@ -1345,10 +1392,23 @@ export async function runTask(assignment, config, name, io) {
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
         const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
         const limit = !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
+        // A resolver that fails, whether or not it committed, leaves the
+        // obligation (t363): recorded first, then the head as information.
+        let failure = null;
+        if (!limit && (result.timedOut || result.code !== 0)) {
+          harnessExit = failedExitOf(result);
+          const started = state.head ?? before;
+          await markFailure();
+          markHead = await io.head(workspace).catch(() => null);
+          // The shared reason says the head moved when the resolver moved it,
+          // and the state carries the new head so the claim is kept at it.
+          failure = failureReason({ code: result.code, timedOut: result.timedOut, before: started, head: markHead });
+          failure = { ...failure, reason: failure.reason.replace(/^(harness (?:timed out|exited \S+))/, "$1 resolving main") };
+          if (failure.head) state = { ...state, head: failure.head };
+        }
         if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
         await checkValidationReport(result);
-        if (result.timedOut) throw new Error("harness timed out resolving main");
-        if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving main`);
+        if (failure) throw new Error(failure.reason);
       } finally {
         if (dataHome) await io.removeDataHome(dataHome);
         await io.removeBrief(resolution);
@@ -1410,7 +1470,25 @@ export async function runTask(assignment, config, name, io) {
     // The dead run already committed the job's requested resolution. A
     // workspace at the recorded head means the dead run committed nothing,
     // and the harness runs as for any other claim.
-    resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head;
+    // The recovery obligation (t363): a harness run failed in this workspace
+    // and none has succeeded since. Any marker for the task, readable or not,
+    // whoever wrote it and at whatever head, means the harness must run again
+    // before this run finishes or submits; it is not a dead run's commit to
+    // finish. The marker is the files or this process's memory, never one
+    // instead of the other.
+    let onFile = null;
+    try { onFile = await io.readHarnessFailure?.(workspace) ?? null; }
+    catch (readError) { io.log(`the failure marker could not be read, so it counts as present: ${readError.message}`); onFile = { invalid: true }; }
+    const inMemory = unsavedFailures.get(obligationKey()) ?? null;
+    failedRun = onFile ?? inMemory;
+    if (failedRun) failedRun = { ...failedRun, reruns: Math.max(onFile?.reruns ?? 0, inMemory?.reruns ?? 0) };
+    resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
+    if (failedRun) {
+      if (failedRun.reruns >= MAX_HARNESS_RERUNS) {
+        throw Object.assign(new Error(`the harness failed ${failedRun.reruns} times in a row in this workspace, so the runner stops rerunning it; this task needs the developer (a broken environment or a corrupt failure marker); the claim is kept`), { needsDeveloper: true });
+      }
+      io.log("a harness run failed in this workspace and none has succeeded since; running the harness again");
+    }
     let result = null;
     const prepare = async () => {
       preparation = await io.prepare?.(workspace);
@@ -1446,7 +1524,9 @@ export async function runTask(assignment, config, name, io) {
       }
       await prepare();
       const merged = merges.some((m) => m.state === "merged") && !merges.some((m) => m.state === "conflicts" || m.state === "skipped");
-      if (merged) {
+      // With the obligation standing, a clean merge is not the work finished:
+      // the harness runs instead of this shortcut.
+      if (merged && !failedRun) {
         // A clean merge is the part's work: the job finishes with it, no harness.
         const head = await io.head(workspace);
         advance({ type: "start" });
@@ -1499,15 +1579,25 @@ export async function runTask(assignment, config, name, io) {
       }
     }
     const limit = result && !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
+    // The obligation is recorded the moment the run fails, before HEAD is read
+    // or a reason made, and how the run ended is kept as a structured fact.
+    if (result && (result.timedOut || result.code !== 0) && !limit) {
+      harnessExit = harnessExitOf(result);
+      await markFailure();
+    }
     if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
     await checkValidationReport(result);
-    if (result?.timedOut) throw new Error("harness timed out");
-    if (io.stopped()) throw new Error("interrupted");
+    // A timeout is read like any other failure: the head it left is looked at
+    // below, so a harness that moved it and then timed out says so (t363).
+    if (!result?.timedOut && io.stopped()) throw new Error("interrupted");
     taskFailure = result !== null && result.code !== 0;
     // A resumed run reads no head again: no harness ran, so before is it. Its
     // work began at the recorded head, not at the workspace's before, so the
     // exit names that head as what the run moved from.
-    const head = resumed ? before : await io.head(workspace);
+    // A failed run whose head cannot be read keeps its claim: the obligation
+    // is recorded, and the head is information only.
+    const head = resumed ? before : harnessExit ? await io.head(workspace).catch((headError) => { headUnreadable = true; io.log(`the head could not be read after the failed harness: ${headError.message}`); return before; }) : await io.head(workspace);
+    if (harnessExit && !headUnreadable) markHead = head;
     // A harness that exited 0 and committed nothing (t453): when the head it
     // left is the task's pushed head, ahead of the base, the work is already
     // committed and pushed by an earlier run — a task sent back whose builder
@@ -1515,12 +1605,60 @@ export async function runTask(assignment, config, name, io) {
     // finishes a dead run's commit: the exit names the base as what the run
     // moved from, the checks run, and that head is submitted. Any other
     // unchanged head is a stall, released below; the log says which.
-    already = !resumed && result?.code === 0 && head === before ? await alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h)) : null;
-    if (already?.complete) io.log(`already complete: ${already.why}; the harness changed nothing, so the checks run and that head is submitted without a new commit`);
+    const unchanged = !resumed && result && !result.timedOut && head === before;
+    already = unchanged && result.code === 0 ? await alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h)) : null;
+    // A harness that fails on a head already pushed ahead of the base (t363)
+    // left that pushed work, not nothing: the exit below names the base as
+    // where the run began, so the head is said to have moved and the claim is
+    // kept, not released as "no new commit".
+    const failedOnPushed = !resumed && result && head === before && (result.timedOut || result.code !== 0)
+      ? await alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h)) : null;
+    // A rerun after a failed one whose harness now exits 0 and adds nothing
+    // finishes the failed run's commit: the checks decide, as for a head
+    // already pushed.
+    const afterFailure = unchanged && result.code === 0 && failedRun && !already?.complete && !merges.some((m) => m.state === "conflicts" || m.state === "skipped") ? failedRun.from ?? head : null;
+    if (afterFailure) io.log(`the harness added nothing to the earlier failed run's commit ${String(head).slice(0, 8)}; the checks run and it is submitted`);
+    else if (already?.complete) io.log(`already complete: ${already.why}; the harness changed nothing, so the checks run and that head is submitted without a new commit`);
     else if (already) io.log(`nothing to submit: ${already.why}, and the harness changed nothing`);
     taskFailure = true;
-    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : already?.complete ? item.base : before, head });
-    if (state.phase === "failed") throw new Error(state.reason);
+    // Only a run that ran no harness has no exit code to report as success;
+    // a harness killed by a signal has code null and is a failure (t363).
+    // A rerun after a failed harness that fails again without a new commit
+    // began at the marker's starting head, not at the commit it reruns from.
+    exitOutcome = harnessOutcome({
+      ran: !!result, marker: failedRun, head, before, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
+      code: result ? result.code : 0, timedOut: result?.timedOut,
+      pushedComplete: !!(already?.complete || failedOnPushed?.complete),
+      mergesBlock: merges.some((m) => m.state === "conflicts" || m.state === "skipped"),
+    });
+    advance(io.stopped() && !result?.timedOut ? { error: "interrupted" } : { type: "exit", code: result ? result.code : 0, timedOut: result?.timedOut, before: exitOutcome.from, head });
+    if (state.phase === "failed") {
+      markFrom = exitOutcome.markerFrom;
+      throw new Error(state.reason);
+    }
+    // Only a harness run that passed and left HEAD where it ended clears the
+    // obligation: a head that moved after the exit means the passing run's
+    // work is not what is in the workspace, so the harness runs once more.
+    if (failedRun) {
+      const now = await io.head(workspace);
+      if (now !== head) {
+        await markFailure({ reason: "the head moved after the harness passed" });
+        throw new Error("the head moved after the harness passed, so the obligation stands and the harness runs once more");
+      }
+    }
+    // A marker that cannot be cleared after a pass is a failure that counts:
+    // the rerun count goes up, so MAX_HARNESS_RERUNS ends the loop, and the
+    // failure is the environment's, not the model's.
+    try { await io.clearHarnessFailure?.(workspace); }
+    catch (clearError) {
+      taskFailure = false;
+      await markFailure({ reason: `could not clear the failure marker: ${clearError.message}` });
+      throw Object.assign(new Error(`could not clear the failure marker after the harness passed: ${clearError.message}`), { infrastructure: true });
+    }
+    unsavedFailures.delete(obligationKey());
+    // The cleared obligation is over: a failure from here on (the finish-time
+    // resolver) starts a new one at reruns 0.
+    failedRun = null;
     await finish();
     advance({ type: "finish" });
   } catch (error) {
@@ -1530,7 +1668,12 @@ export async function runTask(assignment, config, name, io) {
       return state;
     }
     if (state.phase !== "failed") advance({ error: error.message });
-    state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
+    state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
+    // The final record adds the head, the start and the reason as information.
+    if (failedNow && claimed && !error.providerLimit) {
+      await markFailure({ reason: state.reason });
+      if (!savedOnce) state = { ...state, reason: `${state.reason}; the failure marker could not be saved, so this runner holds the obligation in memory and keeps the claim` };
+    }
     // The stall's report to the server (runOutcome, reportRun) says why the
     // unchanged head was nothing to submit, as the log does.
     if (already && !already.complete && state.reason === "harness made no new commit") state = { ...state, detail: `${state.reason}: ${already.why}` };
@@ -1549,7 +1692,12 @@ export async function runTask(assignment, config, name, io) {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
         io.log("released: the same work resumes when the provider's limit resets");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-    } else if (claimed && state.head && item.kind === "part" && state.taskFailure) {
+    } else if (claimed && failedNow && (!savedOnce || headUnreadable)) {
+      // A marker only this process holds, or a head nobody could read, keeps
+      // the claim whatever else would release it: another runner could not
+      // finish the work without the obligation.
+      io.log("claim preserved: the failure marker or the head could not be recorded");
+    } else if (claimed && (exitOutcome?.release || (state.head && item.kind === "part")) && state.taskFailure) {
       // A part whose finish failed is released, not held (docs/orchestrator.md,
       // section 3): the fork keeps the commits, and the plan's tick sends the
       // part back with the failing output in its next brief.
@@ -1557,13 +1705,19 @@ export async function runTask(assignment, config, name, io) {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace);
         io.log("released: the part goes back to its plan with the failing output");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-    } else if (claimed && (state.head || resumed)) {
+    } else if (claimed && (exitOutcome?.keepClaim || state.head || resumed || failedRun || (failedNow && (!savedOnce || headUnreadable)))) {
       io.log("claim preserved: work was committed before finish");
     } else if (claimed && before) {
       let head;
       try { head = await io.head(workspace, { cleanup: true }); } catch { /* Unknown commit status preserves the claim. */ }
       if (head === before) {
-        try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)], workspace); io.log("released: no new commit"); }
+        try {
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)], workspace);
+          // The task is released with nothing committed: nothing is owed.
+          await io.clearHarnessFailure?.(workspace).catch((clearError) => io.log(`could not clear the failure marker: ${clearError.message}`));
+          unsavedFailures.delete(obligationKey());
+          io.log("released: no new commit");
+        }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
       } else io.log("claim preserved: a commit exists or commit status is unknown");
     } else if (claimAttempted && !claimed) {
@@ -1603,7 +1757,7 @@ export async function runFastBuild(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
   const { project, item, agent, model, actor } = assignment;
-  let workspace = null, base = null, claimed = false, claimAttempted = false, taskFailure = false, brief = null;
+  let workspace = null, base = null, claimed = false, claimAttempted = false, taskFailure = false, brief = null, fastExit = null;
   try {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
@@ -1662,13 +1816,13 @@ export async function runFastBuild(assignment, config, name, io) {
     }
     const limit = result && !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
     if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
+    fastExit = failedExitOf(result);
     const blocked = validationBlockedReport(result?.output);
     if (blocked) throw Object.assign(new Error(blocked), { validationBlocked: true });
-    if (result?.timedOut) throw new Error("harness timed out");
-    if (io.stopped()) throw new Error("interrupted");
-    const head = taken.resumed ? taken.head : await io.head(workspace);
+    if (!result?.timedOut && io.stopped()) throw new Error("interrupted");
+    const head = taken.resumed ? taken.head : result?.timedOut ? await io.head(workspace).catch(() => base) : await io.head(workspace);
     taskFailure = true;
-    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: base, head });
+    advance(io.stopped() && !result?.timedOut ? { error: "interrupted" } : { type: "exit", code: result ? result.code : 0, timedOut: result?.timedOut, before: base, head });
     if (state.phase === "failed") throw new Error(state.reason);
     // The report, from the clone: its head, the main it was made at, the
     // builder the commit's Agent line names. Nothing is pushed.
@@ -1683,7 +1837,7 @@ export async function runFastBuild(assignment, config, name, io) {
       return state;
     }
     if (state.phase !== "failed") advance({ error: error.message });
-    state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
+    state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(fastExit ? { harnessExit: fastExit } : {}) };
     if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
     if (error.providerLimit) state = { ...state, providerLimit: error.providerLimit, taskFailure: false };
     if (!claimed && error.skipped) {
@@ -1947,11 +2101,11 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     }
     if (result.timedOut) {
       await release("harness timed out");
-      return { phase: "failed", reason: "harness timed out", taskFailure: true };
+      return { phase: "failed", reason: "harness timed out", taskFailure: true, harnessExit: failedExitOf(result) };
     }
     if (result.code !== 0) {
       await release(`harness exited ${result.code}`);
-      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
     }
     // A harness that wrote no verdict file leaves nothing to read; the empty
     // reply is kept like any other unusable one, so the failure is on the task.
@@ -2148,11 +2302,11 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
     if (io.stopped()) throw new Error("interrupted");
     if (result.timedOut) {
       await fail("harness timed out");
-      return { phase: "failed", reason: "harness timed out", taskFailure: true };
+      return { phase: "failed", reason: "harness timed out", taskFailure: true, harnessExit: failedExitOf(result) };
     }
     if (result.code !== 0) {
       await fail(`harness exited ${result.code}`);
-      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
     }
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
@@ -2329,11 +2483,11 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     if (io.stopped()) throw new Error("interrupted");
     if (result.timedOut) {
       await end({ outcome: "timeout", detail: "the reviewer's harness timed out" });
-      return failed("harness timed out", { taskFailure: true });
+      return failed("harness timed out", { taskFailure: true, harnessExit: failedExitOf(result) });
     }
     if (result.code !== 0) {
       await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}` });
-      return failed(`harness exited ${result.code}`, { taskFailure: true });
+      return failed(`harness exited ${result.code}`, { taskFailure: true, harnessExit: failedExitOf(result) });
     }
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
@@ -2919,9 +3073,12 @@ export function runOutcome(state) {
   if (state.providerLimit) return null;
   if (state.validationBlocked) return "validation_blocked";
   if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
-  if (state.reason === "harness timed out") return "timed-out";
+  // How the harness ended is a structured fact set where the run ended
+  // (harnessExitOf); the reason's wording, and anything appended to it, never
+  // changes it.
+  if (state.harnessExit?.kind === "timed-out") return "timed-out";
+  if (state.harnessExit) return "refused";
   if (state.reason === "harness made no new commit") return "stalled";
-  if (/^harness exited /.test(state.reason ?? "")) return "refused";
   if (/^the harness failed: /.test(state.reason ?? "")) return "harness_failed";
   return null;
 }
@@ -3329,6 +3486,32 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       const file = join(cwd, ".git", "atelier-validation-blocked");
       try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null; } catch { return null; }
     },
+    // The failed harness's marker (t363): { actor, head, from, reason, reruns },
+    // kept in two places so one unwritable location does not lose the
+    // obligation: the workspace's git directory and a file in the cache keyed
+    // by the workspace. Either file is the obligation; a file that exists but
+    // cannot be read or parsed is { invalid: true } and counts as present. The
+    // count of failed reruns is the larger of the two.
+    readHarnessFailure: async (cwd) => {
+      let found = null, invalid = false, reruns = 0;
+      for (const file of harnessFailureFiles(cwd)) {
+        let parsed;
+        try { if (!existsSync(file)) continue; parsed = JSON.parse(readFileSync(file, "utf8")); } catch { invalid = true; continue; }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || typeof parsed.actor !== "string") { invalid = true; continue; }
+        reruns = Math.max(reruns, Number.isInteger(parsed.reruns) ? parsed.reruns : 0);
+        found ??= parsed;
+      }
+      return found ? { ...found, reruns } : invalid ? { invalid: true } : null;
+    },
+    writeHarnessFailure: async (cwd, failure) => {
+      const errors = [];
+      let saved = 0;
+      for (const file of harnessFailureFiles(cwd)) {
+        try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(failure), { mode: 0o600 }); saved++; } catch (error) { errors.push(error.message); }
+      }
+      if (!saved) throw new Error(errors.join("; "));
+    },
+    clearHarnessFailure: async (cwd) => { for (const file of harnessFailureFiles(cwd)) rmSync(file, { force: true }); },
     writeValidationBlock: async (cwd, block) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), JSON.stringify(block), { mode: 0o600 }),
     env: process.env, ownerTokens: () => [...ownerTokens(process.env), credential].filter(Boolean),
     // A brief that names the project's prose standard (t675) is written with

@@ -62,7 +62,7 @@ test("a limit moves neither failure counter and reports no run against the model
   assert.equal(infrastructureFailureCount(2, state), 2, "neither reset nor counted");
   assert.equal(runOutcome({ ...state, taskFailure: true }), null);
   // The same state without the limit is the failure it would have been.
-  const plain = { ...state, providerLimit: undefined, taskFailure: true, reason: "harness exited 75" };
+  const plain = { ...state, providerLimit: undefined, taskFailure: true, reason: "harness exited 75", harnessExit: { kind: "exited", code: 75 } };
   assert.equal(failureCount(1, plain), 2);
   assert.equal(runOutcome(plain), "refused");
 });
