@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERIFY_DEMAND, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
 import { runWithLimits } from "../bin/harness/limit.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
 import { redactKeys } from "../src/models/pool.ts";
 import { parseVerdict, replyFormat } from "../src/review/verdict.ts";
+import { parseVerification, verifierBrief } from "../src/review/verify.ts";
 
 // t374: the four harness adapters ship in bin/harness/, carry the agent
 // rules, hold no key, give every prompt on standard input and are what the
@@ -631,4 +632,28 @@ test("a MiMo run that committed before the connection dropped is not run again, 
   const other = scripted(s, ["reset", "ok"]);
   assert.equal(runRouted(s, "qwen3.8-max").status, 1);
   assert.equal(other(), 1, "only MiMo is retried");
+});
+
+// t717, astra's review of round 1: a verification runs as a review job, so the
+// adapter put the ordinary VERDICT_DEMAND after the verifier's own format, and
+// a verifier that followed the last instruction answered in a shape
+// parseVerification cannot read. The composed prompt, as each harness is given
+// it, is checked here and not only the runner's stand-in.
+test("a verification is given the verification format and never the review's VERDICT and FINDING lines, by every harness", (t) => {
+  const s = setup(t);
+  writeFileSync(s.brief, verifierBrief({ item: { id: "t9", title: "Landing" }, head: "a".repeat(40), findings: [{ file: "src/a.ts", line: 3, severity: "blocking", text: "It loses data." }], diffFile: s.diff }));
+  for (const [harness, model] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"], ["opencode", "deepseek-v4-pro"], ["antigravity", "gemini-3.1-pro"]]) {
+    const { seen, verdict } = run(harness, s, { model, review: true, env: { FAKE_ANSWER: "I read src/a.ts.\nFINDING 1: CONFIRMED because line 3 drops the row." } });
+    assert.ok(seen.input.includes("# Verification of findings on t9"), harness);
+    assert.ok(seen.input.trimEnd().endsWith(VERIFY_DEMAND), `${harness}: the prompt ends with the verification format`);
+    assert.ok(!seen.input.includes(VERDICT_DEMAND) && !seen.input.includes("VERDICT: "), `${harness}: no review format in the prompt`);
+    const read = parseVerification(readFileSync(verdict, "utf8"), 1);
+    assert.ok(read.ok && read.confirmed.has(1), harness);
+  }
+  // A reply with no VERDICT line is not asked again for one: a verification has none.
+  const calls = readFileSync(`${s.record}.calls`, "utf8").trim().split("\n");
+  assert.equal(calls.length, 4, "one run for each harness, no follow-up ask");
+  // An ordinary review brief still ends with the review's own demand.
+  writeFileSync(s.brief, "# Review of t9 at aaaaaaaa\nReview it.\n");
+  assert.ok(run("claude-code", s, { model: "opus-5.5", review: true }).seen.input.trimEnd().endsWith(VERDICT_DEMAND));
 });

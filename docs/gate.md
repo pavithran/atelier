@@ -316,14 +316,16 @@ and the round is asked again.
   reads the whole change's diff. A blocking finding that names a line, in a
   file the change did not touch or more than `PRE_EXISTING_MARGIN` lines from
   any line the change touched, becomes a follow-up labelled `pre-existing`.
-  A finding with no line, or in a file the diff lists with no hunk, is not
-  placed and keeps blocking. The review records one follow-up task with each
+  A finding with no line, or in a file the diff lists with no hunk (a mode
+  change, a binary file, a pure rename), is not placed and keeps blocking. The review records one follow-up task with each
   pre-existing finding as a criterion, so nothing found is lost.
 - **A blocking finding blocks only when a second check confirms it.** The
   runner asks another model on the runner, of another family than the
   reviewer where there is one and never a contributor, to read the code and
   confirm each blocking finding by line or by a test (`src/review/verify.ts`).
-  With no other model the reviewer checks in a fresh run. A finding the check
+  Under single-family mode only that company's models are asked. The check
+  reads the whole change, never the diff since an earlier head. With no other
+  model the reviewer checks in a fresh run. A finding the check
   does not confirm is a follow-up labelled `unverified`. A check that cannot
   run or answers nothing records no review: the request is released and asked
   again.

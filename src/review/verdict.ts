@@ -54,6 +54,11 @@ export interface VerdictOptions {
 // no verdict.
 // The refusal of a reply with no verdict at all, which the opencode adapter
 // answers by asking once more for the verdict lines (t576).
+// The first line of a verification brief (src/review/verify.ts). A harness
+// adapter reads it to give the verifier the verification format and not this
+// review format (cli/harness/adapter.mjs).
+export const VERIFY_HEADING = "# Verification of findings";
+
 export const NO_VERDICT = "the reply states no verdict: it has no VERDICT line and no JSON verdict";
 
 export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2000, summary: 600 } as const;

@@ -1269,6 +1269,8 @@ test("reviewNeeded: no round starts after REVIEW_ROUND_CAP rejected rounds, unle
   assert.ok(!held.needed && held.reason.includes("atelier land t21 --reviewer H/M"));
   // The developer asking for a review by name is the answer; so is a post-merge audit.
   assert.ok(need({ reviews: rounds(REVIEW_ROUND_CAP), wanted: true }).needed);
+  // A tier review is asked only beside a gate request that passed the cap (argon's follow-up on round 1).
+  assert.ok(need({ reviews: rounds(REVIEW_ROUND_CAP), wanted: false, tier: true }).needed, "the companion tier request is not held by the cap");
   // The developer's own rejections are no rounds, and a task gets its own count.
   assert.ok(need({ reviews: [...rounds(REVIEW_ROUND_CAP - 1), review(OWNER, false, heads[3], { at: "2026-10-05T09:00:00.000Z" })], item: item({ head: heads[3] }), evidence: [pass({ head: heads[3] })] }).needed === false, "the developer's rejection of this head still waits for rework");
 });
