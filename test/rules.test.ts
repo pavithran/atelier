@@ -1672,3 +1672,21 @@ test("the follow-up task for pre-existing findings names each, and there is none
   assert.match(task.title, /t717/);
   assert.equal(preExistingTask("t717", "x", { by: "a/b", head: sha("a"), findings: findings.slice(1) }), null);
 });
+
+// Astra's review of round 1 (head 3a817817): git gives a mode change, a binary
+// change and a pure rename no ---/+++ lines, so another file's hunk made them
+// look untouched and a blocking finding on run.sh became an approval.
+test("a path git lists with no hunk (mode change, binary, rename) is changed with unknown placement, so a finding on it keeps blocking", () => {
+  const diff = [
+    "diff --git a/src/a.ts b/src/a.ts", "--- a/src/a.ts", "+++ b/src/a.ts", "@@ -10,1 +10,2 @@", " keep", "+added",
+    "diff --git a/run.sh b/run.sh", "old mode 100755", "new mode 100644",
+    "diff --git a/img.png b/img.png", "index 1..2 100644", "Binary files a/img.png and b/img.png differ",
+    "diff --git a/old/name.ts b/new/name.ts", "similarity index 100%", "rename from old/name.ts", "rename to new/name.ts",
+    "diff --git a/dir/x y.txt b/dir/x y.txt", "old mode 100644", "new mode 100755",
+  ].join("\n");
+  const touched = touchedLines(diff)!;
+  for (const path of ["run.sh", "img.png", "old/name.ts", "new/name.ts", "dir/x y.txt"]) assert.deepEqual([...touched.get(path) ?? ["missing"]], [], path);
+  const f = (file: string, line: number): Finding => ({ file, line, severity: "blocking", text: "t" });
+  const out = labelPreExisting([f("run.sh", 1), f("img.png", 2), f("new/name.ts", 3), f("old/name.ts", 4), f("src/other.ts", 5), f("src/a.ts", 400)], diff);
+  assert.deepEqual(out.map((x) => x.label ?? "blocks"), ["blocks", "blocks", "blocks", "blocks", "pre-existing", "pre-existing"]);
+});

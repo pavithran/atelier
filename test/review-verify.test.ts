@@ -61,3 +61,18 @@ test("the verifier is another model of another family where the runner has one, 
   assert.match(alone.why, /fresh run/);
   assert.equal(pickVerifier([reviewer, builder], reviewer, [builder]).independent, false, "the only other model built the change");
 });
+
+test("under single-family mode the verifier is one of the company's models, or the reviewer in a fresh run", () => {
+  const reviewer = "codex/gpt-6-astra", builder = "codex/gpt-6-pro";
+  const pool = [reviewer, builder, "claude-code/sonnet-5.5", "codex/gpt-6-mini"];
+  assert.equal(pickVerifier(pool, reviewer, [builder], "openai").actor, "codex/gpt-6-mini");
+  assert.equal(pickVerifier(["claude-code/sonnet-5.5"], reviewer, [], "openai").actor, reviewer, "another company's model is never chosen");
+  assert.equal(pickVerifier([reviewer, builder, "claude-code/sonnet-5.5"], reviewer, [builder], "openai").independent, false);
+  assert.equal(pickVerifier([reviewer, "claude-code/sonnet-5.5"], reviewer, []).actor, "claude-code/sonnet-5.5", "without the policy the other family verifies");
+});
+
+test("the verifier is told where the whole change is and how to print it", () => {
+  const text = verifierBrief({ item: { id: "t21", title: "x" }, head: "a".repeat(40), findings, diffFile: ".scratch/atelier-review.diff", compare: `git diff ${"0".repeat(40)} ${"a".repeat(40)}` });
+  assert.ok(text.includes("The whole change, from its base to the head, is in the file .scratch/atelier-review.diff"));
+  assert.ok(text.includes(`It is also the output of git diff ${"0".repeat(40)} ${"a".repeat(40)}.`));
+});

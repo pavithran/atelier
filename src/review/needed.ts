@@ -250,8 +250,9 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const last = modelRejections.at(-1);
   // After REVIEW_ROUND_CAP rejected rounds no further round starts on its own
   // (t717): the developer decides, and asks another with a named reviewer
-  // (`wanted`). A post-merge audit is not a round of the change's review.
-  const held = input.wanted || input.postMerge ? null : roundCapHold(rejectedRounds(modelRejections, owner), item.id);
+  // (`wanted`). A post-merge audit is not a round of the change's review, and
+  // a tier review is asked only beside a gate request that passed this check.
+  const held = input.wanted || input.postMerge || input.tier ? null : roundCapHold(rejectedRounds(modelRejections, owner), item.id);
   if (held) return no(held);
 
   const why = basis === "part"

@@ -2009,3 +2009,33 @@ test("a re-review does not raise again a finding the developer marked fixed or r
   assert.equal((await runReview(assignment, config, "home:studio", done.io)).verdict, "approve");
   assert.match(posted(done.calls)[posted(done.calls).indexOf("--note") + 1], /1 already answered/);
 });
+
+// Astra's review of round 1 (head 3a817817).
+test("the check of a re-review reads the whole change, not the diff the reviewer was given since the last head", async () => {
+  const since = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n@@ -1 +1 @@\n+only what changed since\n";
+  const whole = `${HUNK}${"+more of the whole change\n".repeat(20)}`;
+  const reply = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const { io, calls } = fixture({ claim: reReviewClaim(), verdict: reply, diff: (base) => (base === H_EARLIER ? since : whole) });
+  assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
+  assert.deepEqual(calls.filter((c) => c.writeDiff !== undefined).map((c) => c.writeDiff), [since, whole], "the reviewer's file holds the diff since, the verifier's the whole change");
+  const order = calls.filter((c) => c.writeDiff !== undefined || c.removedDiff || c.harness).map((c) => (c.harness ? "harness" : c.removedDiff ? "removed" : "written"));
+  assert.deepEqual(order, ["written", "harness", "removed", "written", "harness", "removed", "removed"], "the reviewer's file is removed before the whole change is written, and both are removed at the end");
+  const brief = verifierBriefs(calls)[0].brief;
+  assert.ok(brief.includes(`git diff ${H0} ${H1}`), "it names the comparison base of the whole change");
+  assert.ok(brief.includes("The whole change, from its base to the head"));
+});
+
+test("the check is never given a model the project's single-family policy refuses, and falls back to the reviewer", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const openai = { agents: [{ agent: "codex", models: ["gpt-6-astra", "gpt-6-pro", "sonnet-5.5"], command: ["codex", "--model", "{model}", "--file", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}"] }], tokens: { "gpt-6-astra": "agent.astra" } };
+  const who = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" };
+  const builtBy = { ...claimed.item, owner: "codex/gpt-6-pro", pushActors: ["codex/gpt-6-pro"] };
+  const runsOf = (calls) => calls.filter((c) => c.harness).map((c) => c.harness[c.harness.indexOf("--model") + 1]);
+  const single = fixture({ verdict: reply, diff: () => HUNK, claim: { ...claimed, item: builtBy, singleFamily: "openai" } });
+  await runReview(who, openai, "home:studio", single.io);
+  assert.deepEqual(runsOf(single.calls), ["gpt-6-astra", "gpt-6-astra"], "sonnet is another company's model, the builder is a contributor");
+  // Without the policy the other family is the better verifier.
+  const open = fixture({ verdict: reply, diff: () => HUNK, claim: { ...claimed, item: builtBy } });
+  await runReview(who, openai, "home:studio", open.io);
+  assert.deepEqual(runsOf(open.calls), ["gpt-6-astra", "sonnet-5.5"]);
+});

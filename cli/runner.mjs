@@ -2160,7 +2160,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     if (parsed.verdict === "reject" && !claimed.landed) {
       if (renewalFailure) throw renewalFailure;
       const settled = await settleRejection(io, {
-        parsed, reply, claimed, config, entry, diff, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
+        parsed, reply, claimed, config, entry, diff, wholeCommand: merged ? null : compare.from ? `git diff ${compare.from} ${claimed.head}` : null, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
         criteria: criteriaCount(claimed.item, claimed.plan), deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0),
       });
       if (settled.failed) {
@@ -2620,20 +2620,27 @@ export async function settleRejection(io, ctx) {
 export async function verifyBlockers(io, ctx, blockers) {
   const { claimed, config, workspace, actor } = ctx;
   const candidates = config.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`));
-  const choice = pickVerifier(candidates, actor, contributorsOf(claimed.item));
+  const choice = pickVerifier(candidates, actor, contributorsOf(claimed.item), claimed.singleFamily ?? null);
   const slash = choice.actor.indexOf("/");
   const agent = choice.actor.slice(0, slash), model = choice.actor.slice(slash + 1);
   const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
   if (!entry) return { failed: `the verifier ${choice.actor} is not in this runner's config` };
   io.log(`verifying ${blockers.length} blocking finding(s): ${choice.why}`);
-  const brief = await io.brief(workspace, verifierBrief({ item: claimed.item, head: claimed.head, findings: blockers, diffFile: ctx.diffFile?.file ?? null, bar: claimed.reviewBar ?? null }), null);
+  // The verifier reads the whole change, never the diff since an earlier head
+  // that the reviewer of a re-review was given: a finding carried over from an
+  // earlier round is about code that diff does not show.
+  // The reviewer's diff file is replaced by the whole change's (writeDiff
+  // refuses a file that exists).
+  if (ctx.diffFile) io.removeDiff(ctx.diffFile);
+  const whole = await io.writeDiff(workspace, ctx.diff);
+  const brief = await io.brief(workspace, verifierBrief({ item: claimed.item, head: claimed.head, findings: blockers, diffFile: whole.file, compare: ctx.wholeCommand ?? null, bar: claimed.reviewBar ?? null }), null);
   try {
     io.removeFile?.(ctx.verdictFile);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
     let result;
     try {
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: ctx.diffFile?.file, verdictFile: ctx.verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, claimed.item.id, "review", ctx.name, ctx.project, choice.actor));
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: whole.file, verdictFile: ctx.verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, claimed.item.id, "review", ctx.name, ctx.project, choice.actor));
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
@@ -2650,6 +2657,7 @@ export async function verifyBlockers(io, ctx, blockers) {
     return { confirmed: read.confirmed };
   } finally {
     await io.removeBrief(brief);
+    io.removeDiff(whole);
   }
 }
 

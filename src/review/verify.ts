@@ -13,7 +13,9 @@
 // confirm by implication. A reply with no such line at all is no answer, and
 // the caller asks again rather than treating silence as a refutation.
 
-import { actorFamily, contributed, type Finding } from "../rules.ts";
+import { actorFamily, companyRefusal, contributed, type Finding } from "../rules.ts";
+import type { PoolFamily } from "../models/pool.ts";
+import { VERIFY_HEADING } from "./verdict.ts";
 
 export const VERIFY_LIMITS = { reply: 100_000 } as const;
 
@@ -30,7 +32,8 @@ export interface VerifyInput {
   item: { id: string; title: string };
   head: string;
   findings: readonly Finding[];       // the blocking findings to check, in the order they are numbered
-  diffFile?: string | null;           // where the diff is, inside the verifier's clone
+  diffFile?: string | null;           // where the whole change's diff is, inside the verifier's clone
+  compare?: string | null;            // the command that prints the whole change, for the verifier to read in its clone
   bar?: string | null;                // the project's review bar, when it sets one
 }
 
@@ -45,7 +48,7 @@ function block(text: string): string {
 // alone, and its reply changes no verdict beyond which findings block.
 export function verifierBrief(input: VerifyInput): string {
   return [
-    `# Verification of findings on ${input.item.id} at ${input.head.slice(0, 8)}`,
+    `${VERIFY_HEADING} on ${input.item.id} at ${input.head.slice(0, 8)}`,
     "",
     "Another reviewer rejected this change for Atelier and named the blocking findings below. You are not reviewing the change: you judge whether each finding is true. A finding blocks the change only if you confirm it. Make no edits: change no files, and do not commit or push.",
     "",
@@ -56,7 +59,8 @@ export function verifierBrief(input: VerifyInput): string {
     `Item: ${input.item.id}`,
     block(input.item.title),
     `Head: ${input.head}`,
-    input.diffFile ? `The diff is in the file ${input.diffFile} in your clone.` : "Read the change in your clone with git diff.",
+    input.diffFile ? `The whole change, from its base to the head, is in the file ${input.diffFile} in your clone.` : "Read the change in your clone with git diff.",
+    ...(input.compare ? [`It is also the output of ${input.compare}.`] : []),
     "",
     "## The findings to verify",
     "",
@@ -101,11 +105,13 @@ export function parseVerification(text: unknown, count: number): ParsedVerificat
 export interface VerifierChoice { actor: string; independent: boolean; why: string }
 
 // Who verifies: a model on the runner other than the reviewer and the
-// change's contributors, of another family than the reviewer's when there is
-// one. With no such model the reviewer itself checks in a fresh run (a
+// change's contributors, within the project's family policy, of another
+// family than the reviewer's when there is one. With no such model the reviewer itself checks in a fresh run (a
 // verifier pass with the code), which is weaker, and the choice says so.
-export function pickVerifier(candidates: readonly string[], reviewer: string, contributors: readonly string[]): VerifierChoice {
-  const eligible = candidates.filter((c) => !contributed(c, [reviewer, ...contributors]));
+export function pickVerifier(candidates: readonly string[], reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): VerifierChoice {
+  // Under single-family mode no other company's model reads the project's
+  // code, a verifier included, so the policy filters before any preference.
+  const eligible = candidates.filter((c) => !companyRefusal(c, single) && !contributed(c, [reviewer, ...contributors]));
   const other = eligible.find((c) => actorFamily(c) !== actorFamily(reviewer)) ?? eligible[0];
   if (other) return { actor: other, independent: true, why: `${other} verifies, ${actorFamily(other) !== actorFamily(reviewer) ? `of another family than ${reviewer}` : `a different model from ${reviewer}`}` };
   return { actor: reviewer, independent: false, why: `no other model on this runner may verify, so ${reviewer} verifies in a fresh run` };

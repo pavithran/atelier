@@ -2596,8 +2596,9 @@ export function dropSettled<F extends Pick<Finding, "file" | "text">>(findings: 
 // The lines of each file a unified diff adds or changes, in the new file's
 // numbers; a deletion marks the line it sat before. Null when the diff has
 // no file header at all (not a diff), so nothing is judged by it. A file
-// listed with no hunk (a binary file, a mode change, an elided diff) has an
-// empty set, which labelPreExisting reads as "cannot tell".
+// listed with no hunk (a binary file, a mode change, a pure rename, an
+// elided diff) has an empty set, which labelPreExisting reads as "cannot
+// tell"; git's "diff --git", rename and "Binary files" lines name it.
 export type TouchedLines = Map<string, Set<number>>;
 export function touchedLines(diff: string): TouchedLines | null {
   const touched: TouchedLines = new Map();
@@ -2614,6 +2615,13 @@ export function touchedLines(diff: string): TouchedLines | null {
       if (line.startsWith("\\")) continue;
       oldLeft = newLeft = 0;
     }
+    // Git's own header names every changed path, with or without hunks: a
+    // mode change, a binary file and a pure rename have none. Each is listed
+    // with no lines, which places no finding by it.
+    const git = /^diff --git (?:"?a\/)(.+?)"? (?:"?b\/)(.+?)"?$/.exec(line);
+    if (git) { sawHeader = true; lines = null; for (const path of new Set([git[1], git[2]])) if (!touched.has(path)) touched.set(path, new Set()); continue; }
+    const named = /^(?:rename|copy) (?:from|to) (.+)$|^Binary files (?:a\/)?(.+?) and (?:b\/)?(.+?) differ$/.exec(line);
+    if (named) { sawHeader = true; for (const path of [named[1], named[2], named[3]]) if (path && path !== "/dev/null" && !touched.has(path)) touched.set(path, new Set()); continue; }
     const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (hunk) { oldLeft = hunk[1] === undefined ? 1 : Number(hunk[1]); at = Number(hunk[2]); newLeft = hunk[3] === undefined ? 1 : Number(hunk[3]); continue; }
     const to = /^\+\+\+ (?:b\/)?(.+?)\s*$/.exec(line);
