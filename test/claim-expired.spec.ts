@@ -83,4 +83,7 @@ it("a holder's re-claim that fails inside the server is answered plainly, never 
   expect({ status: res.status, error: body.error }).toEqual({ status: 503, error: "claim_failed" });
   expect(body.detail).toContain("atelier start t1 --as claude-code/opus-5.5");
   expect(body.detail).not.toContain("art_secret_");
+  // The old token may already be revoked, so the message never promises that nothing changed.
+  expect(body.detail).not.toContain("nothing was changed");
+  expect(body.detail).toContain("may already be revoked");
 });

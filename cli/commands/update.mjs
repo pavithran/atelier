@@ -1,6 +1,6 @@
 // atelier update. Its forms, flags and help are declared in src/usage/commands/update.ts.
 import { classify as classifyConflicts, describeConflicts, installMergeConfig, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
-import { I, actor, call, count, die, forkBranch, git, holds, itemArg, project, requireWorkspace, short, workspaceGit, wsConfig } from "../atelier.mjs";
+import { I, actor, call, count, die, git, holds, itemArg, project, requireWorkspace, short, workspaceForkBranch, workspaceGit, wsConfig } from "../atelier.mjs";
 
 // Agents: bring the workspace up to date with what has merged since the
 // fork. The fork's own branch comes first: a workspace that lacks commits
@@ -23,7 +23,7 @@ import { I, actor, call, count, die, forkBranch, git, holds, itemArg, project, r
 export default async function updateCommand() {
   const name = project(), id = itemArg(), as = await actor();
   requireWorkspace("update", name, id, as);
-  const branch = wsConfig("branch") ?? forkBranch() ?? "main";
+  const branch = wsConfig("branch") ?? await workspaceForkBranch(name, id, as) ?? "main";
   const remote = `refs/remotes/origin/${branch}`;
   const cwd = process.cwd();
   installMergeConfig(cwd, { git });
