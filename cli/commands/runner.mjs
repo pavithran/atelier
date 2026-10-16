@@ -1,5 +1,5 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { P, I, OWNER, apiToken, args, die, discoverModels, postAsRunner, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
+import { P, I, OWNER, apiToken, args, cfg, die, discoverModels, postAsRunner, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // Queue polling has already resolved the runner's identity. A failed policy
 // read must reach the job's infrastructure handling, never call()'s process.exit.
@@ -37,6 +37,9 @@ export default async function runnerCommand() {
       credential: apiToken(),
       api: { server, I },
       workspacePath,
+      // Where the developer's checkout of a project is on this Mac, which the
+      // project's prose standard (a path from it) is copied from (t676).
+      checkoutOf: (name) => cfg.projects?.[name]?.path ?? null,
       // An idle runner reloads itself from this checkout once it holds the
       // deployed commit (t265), handing off to an initialized replacement.
       reload: { checkout: runnerCheckout(), reexec: reexecSelf },

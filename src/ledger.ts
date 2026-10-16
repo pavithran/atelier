@@ -199,6 +199,8 @@ export interface CriteriaReviewClaim {
   reviewer: string;
   brief: string;
   owner: string;
+  // The project's prose standard path, structurally (t676): the runner stages the copy from this, never from the brief's text.
+  proseStandard: string | null;
 }
 
 // Where an item's criteria review stands, as the detail route and the
@@ -5587,7 +5589,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -5610,7 +5612,7 @@ export class Ledger extends DurableObject<Env> {
       // cannot know: the server holds the policy.
       const prose = proseStandardLine(this.project().policy.proseStandard);
       const text = [...sections.map((f) => findingsSection(f)), criteria, prose].filter(Boolean).join("\n\n");
-      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text) };
+      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null };
     }
     assertOwner(item, actor);
     const project = this.project();
@@ -5626,6 +5628,7 @@ export class Ledger extends DurableObject<Env> {
           actor: record.planner, attempt: failed + 1, note, errors: lastErrors,
           proseStandard: project.policy.proseStandard ?? null,
         }),
+        proseStandard: project.policy.proseStandard ?? null,
       };
     }
     const planId = item.plan!;
@@ -5667,6 +5670,7 @@ export class Ledger extends DurableObject<Env> {
         criteriaReview: criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id)) || null,
         proseStandard: project.policy.proseStandard ?? null,
       }),
+      proseStandard: project.policy.proseStandard ?? null,
     };
   }
 
@@ -7558,7 +7562,7 @@ export class Ledger extends DurableObject<Env> {
       if (held === null || lapse < held) await this.ctx.storage.setAlarm(lapse);
     }
     const status = criteriaStatus(rev, this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), now);
-    return { item, rev, criteria: row.criteria, authors: row.authors, request: row.id, reviewer: actor, brief: this.criteriaBrief(item, rev, row.authors, status.round), owner: this.owner };
+    return { item, rev, criteria: row.criteria, authors: row.authors, request: row.id, reviewer: actor, brief: this.criteriaBrief(item, rev, row.authors, status.round), owner: this.owner, proseStandard: this.project().policy.proseStandard ?? null };
   }
 
   // A named criteria reviewer, and every claim and verdict, meets the
