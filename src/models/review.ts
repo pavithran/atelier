@@ -243,10 +243,22 @@ export function reviewModels(input: ReviewInput): ModelReview {
     const measures = MEASURES[role];
     const standing = current.filter((a) => a.role === role);
     const standingModels = new Set(standing.flatMap((a) => a.choices.map((c) => keyOf(c.actor))));
+    // Why the owner's standing keeps a model from the role (paused, reserved, or without the role), or null.
+    const refusalOf = (cmp: ModelComparison): string | null => {
+      for (const id of cmp.entries) {
+        const e = pool.find((x) => `${x.harness}/${x.id}` === id);
+        const why = e ? standingRefusal(e, POOL_ROLE[role]) : null;
+        if (why) return why;
+      }
+      return null;
+    };
     const eligible = (cmp: ModelComparison) => cmp.entries.some((id) => {
       const e = pool.find((x) => `${x.harness}/${x.id}` === id);
       return !!e && standingRefusal(e, POOL_ROLE[role]) === null;
     });
+    // Assigned models stay candidates so their standing evidence is shown, but only an eligible one may replace a first choice.
+    const mayReplace = new Set(models.filter((m) => eligible(m.cmp)).map((m) => m.cmp.model));
+    const heldReason = new Map(models.map((m) => [m.cmp.model, refusalOf(m.cmp)] as const));
     const candidates = models.filter((m) => standingModels.has(m.cmp.model) || eligible(m.cmp)).map((m): Candidate => {
       const figures = m.cmp.roles.find((r) => r.role === role)?.figures ?? [];
       return {
@@ -287,7 +299,7 @@ export function reviewModels(input: ReviewInput): ModelReview {
       if (partial) return insufficient(`${a.id} cannot be judged: the record is partial.`);
       if (!own) return insufficient(`${a.id}'s first choice ${p} is not in the pool, so there is no record to judge it by.`);
       if (!own.quality?.usable) return insufficient(`${a.id}'s first choice ${p} has no usable quality figure yet.`, [own.quality?.text ?? "no quality figure"]);
-      const beats = candidates.filter((c) => c.model !== p && comparable(own.quality, c.quality) && leadsByMargin(c.quality!.value!, own.quality!.value!))
+      const beats = candidates.filter((c) => c.model !== p && mayReplace.has(c.model) && comparable(own.quality, c.quality) && leadsByMargin(c.quality!.value!, own.quality!.value!))
         .sort((x, y) => y.quality!.value! - x.quality!.value! || y.quality!.n - x.quality!.n || x.model.localeCompare(y.model));
       const lead = beats[0];
       const evidence = [`${p} (first choice of ${a.id}): ${own.quality.text}`, ...(own.speed ? [`${p}: ${own.speed.text}`] : []), `${p}: cost ${own.cost}`];
@@ -304,13 +316,17 @@ export function reviewModels(input: ReviewInput): ModelReview {
         counter.push(...aside(lead.model), ...aside(p));
       } else {
         // Why nothing replaces it: closer rivals, and leaders whose figure is too few to count.
-        for (const c of candidates.filter((x) => x.model !== p)) {
+        for (const c of candidates.filter((x) => x.model !== p && mayReplace.has(x.model))) {
           if (!c.quality) continue;
           if (!c.quality.usable) counter.push(`${c.model}'s quality figure is not usable: ${c.quality.text}`);
           else if (!comparable(own.quality, c.quality)) counter.push(`${c.model}'s quality figure is not comparable (window or threshold differs): ${c.quality.text}`);
           else if (c.quality.value! > own.quality.value!) counter.push(`${c.model} leads by ${Math.round((c.quality.value! - own.quality.value!) * 100)} points, under the ${Math.round(QUALITY_MARGIN * 100)}-point margin: ${c.quality.text}`);
         }
         counter.push(...aside(p));
+      }
+      // A model that leads but may not take the role is shown, never proposed.
+      for (const c of candidates.filter((x) => x.model !== p && !mayReplace.has(x.model))) {
+        if (c.quality?.usable && comparable(own.quality, c.quality) && leadsByMargin(c.quality.value!, own.quality.value!)) counter.push(`${c.model} leads on quality (${c.quality.text}) but cannot replace ${p}: it is ${heldReason.get(c.model) ?? "not eligible"}`);
       }
       const trendFor = (m: string) => snapshotTrend(view.get(m)!.trend, role, measures.quality);
       for (const m of [p, ...(lead ? [lead.model] : [])]) { const t = trendFor(m); evidence.push(`${m}: snapshots, ${t ?? "none with a quality value in the span"}`); }
