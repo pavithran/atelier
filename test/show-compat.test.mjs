@@ -124,3 +124,20 @@ test("show says the task's pre-review in words, and takes no build reasons from 
   assert.deepEqual(json.prereview, prereview);
   assert.deepEqual(json.prereviewFence, fence);
 });
+
+// t710: twenty filed tasks could be read only from their filing commands:
+// show printed the title and criteria, never the brief the developer wrote,
+// and start, which prints it, also claims the task.
+test("show prints the filed brief and --json carries it, without claiming", (t) => {
+  const filed = "2026-10-16: the runner stalls.\nRecommendation: accept. Nothing blocks this.";
+  const run = fixture(t, 200, "", "", null, { item: { id: "t1", head: null, brief: filed }, reviews: [], unparsable: [] });
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes("\nBrief: 2026-10-16: the runner stalls. Recommendation: accept. Nothing blocks this.\n"), r.stdout);
+  assert.ok(!/\nRecommendation: accept\./.test(r.stdout), "a newline in the brief cannot pose as a line of Atelier's");
+  assert.equal(JSON.parse(run(["--json"]).stdout).brief, filed);
+  // A task filed with no brief says nothing of one.
+  const bare = fixture(t, 200, "", "", null, { item: { id: "t1", head: null, brief: null }, reviews: [], unparsable: [] });
+  assert.ok(!bare().stdout.includes("Brief:"));
+  assert.equal("brief" in JSON.parse(bare(["--json"]).stdout), false);
+});

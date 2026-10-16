@@ -1,6 +1,6 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
 import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
-import { I, OWNER, RequestError, actor, args, call, die, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
+import { I, OWNER, RequestError, actor, args, call, die, flat, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
 import { queueReasons } from "../status.mjs";
 import { fenceText, PREREVIEW_JOB, prereviewLines } from "../../src/dispatch/prereview.ts";
 
@@ -49,8 +49,14 @@ export default async function showCommand() {
   // The newest pre-review of the task (t524) and the fence a blocking one
   // left on its landing: state, binding, reviewer, findings and recovery.
   const prereview = d.prereviews?.[0] ?? null, fence = d.prereviewFence ?? null;
-  if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
+  // What the developer wrote when filing the task (its --brief): the server's
+  // decision brief carries the title and criteria but not this text, which
+  // only `start` printed, and `start` claims the task. Absent when the task
+  // has none or the server sends no detail (t710).
+  const filed = typeof d.item?.brief === "string" && d.item.brief ? d.item.brief : null;
+  if (args.json) return console.log(JSON.stringify({ ...brief, ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
+  if (filed) blocks.push(`Brief: ${flat(filed)}`);
   if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
   if (prereview || fence) blocks.push([...(prereview ? prereviewLines(prereview) : []), ...(fence ? [`Fenced: ${fenceText(id, fence)}`] : [])].join("\n"));
   if (failures.length) blocks.push(failureSummary(id, d.item.head, failures));
