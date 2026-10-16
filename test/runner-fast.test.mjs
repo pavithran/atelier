@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runTask, fastBuildSection } from "../cli/runner.mjs";
+import { runTask, runOutcome, fastBuildSection } from "../cli/runner.mjs";
 import { fastLand, readySources } from "../cli/fast.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
@@ -234,4 +234,14 @@ test("atelier fast take makes a clean clone of main with no remote, fast ready r
   assert.equal(gitIn(owner, "rev-parse", "HEAD^2"), built);
   assert.ok(logs.includes(`fetched t1's build from ${reported}`));
   assert.ok(existsSync(join(owner, "b.txt")));
+});
+
+test("a fast build whose harness exits non-zero or times out is reported as a refusal or a timeout (t363, round 8)", async () => {
+  for (const [result, outcome] of [[{ code: 1 }, "refused"], [{ code: null }, "refused"], [{ code: null, timedOut: true }, "timed-out"]]) {
+    const { io, calls } = fixture();
+    io.harness = async (argv, cwd) => { calls.push({ harness: argv, cwd }); return result; };
+    const state = await runTask(assignment({ fast: true }), config, "home:studio", io);
+    assert.equal(state.phase, "failed");
+    assert.equal(runOutcome(state), outcome, JSON.stringify(result));
+  }
 });
