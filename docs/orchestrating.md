@@ -320,7 +320,14 @@ lease it confirms main is still the commit the head was checked and
 reviewed against (if not, it releases the lease and goes round again from
 the merge of main), then accepts and merges. Each step and how long it
 took are recorded on the task as `land.*` events, and a landing stopped
-partway is resumed by running the same command again. The same
+partway is resumed by running the same command again. `atelier land`
+does not push commits that exist only in the task's workspace: a builder
+dispatched by hand (a script that runs an agent which commits but holds no
+token to push) leaves its work unpushed, and an orchestrator's own fix
+committed in the workspace is work the ledger has not seen. Landing stops
+before the lease with "holds N commits the recorded head lacks" and
+changes nothing. Run `atelier push` in the workspace first, then land;
+the push is a deliberate step so that nothing reaches review unseen. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
 `cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
 `atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
