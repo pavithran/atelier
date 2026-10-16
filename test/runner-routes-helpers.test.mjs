@@ -287,7 +287,9 @@ function functionSource(source, name) {
 // are judged by declaration) and the transport itself.
 export function importedModules(file, seen = new Set(), files = { read, exists: (path) => existsSync(resolve(path)) }) {
   const source = files.read(file);
-  for (const m of source.matchAll(/^\s*(?:import|export)\b[^;]*?from\s*["'](\.\.?\/[^"']+\.mjs)["']/gm)) {
+  // Static imports and re-exports, and dynamic imports of a literal path.
+  const specs = [...source.matchAll(/^\s*(?:import|export)\b[^;]*?from\s*["'](\.\.?\/[^"']+\.mjs)["']/gm), ...source.matchAll(/\bimport\s*\(\s*["'`](\.\.?\/[^"'`]+\.mjs)["'`]\s*\)/g)];
+  for (const m of specs) {
     const path = relative(resolve("."), resolve(dirname(file), m[1]));
     if (/(?:^|\/)(?:atelier|server-fetch)\.mjs$/.test(path) || !path.startsWith("cli/") || seen.has(path) || !files.exists(path)) continue;
     seen.add(path);
@@ -467,6 +469,27 @@ test("a namespace, aliased or default import of the transport is a bypass, in a 
   const modules = importedModules("cli/commands/claim.mjs", new Set(), files);
   assert.deepEqual(modules, ["cli/helper.mjs", "cli/deeper.mjs"], "atelier.mjs and the transport are not followed; every other cli module is");
   assert.deepEqual(modules.filter((m) => bypasses(tree[m]).length), ["cli/deeper.mjs"]);
+});
+
+// The reviewer's third-round finding: a dynamic import of the transport
+// (judged against the network modules only) and a computed serverFetch member
+// (judged as "fetch" alone) returned no bypass, and a dynamically imported
+// helper was never followed.
+test("a dynamic import of the transport, a computed serverFetch member and a dynamically imported helper are bypasses", () => {
+  const reviewer = 'const transport = await import("../server-fetch.mjs");\nawait transport["serverFetch"](server() + "/api/runners");';
+  assert.deepEqual(bypasses(reviewer), ['import("../server-fetch.mjs")', '["serverFetch"]']);
+  assert.deepEqual(bypasses('(await import("./server-fetch.mjs")).default;'), ['import("./server-fetch.mjs")']);
+  assert.deepEqual(bypasses('x[`serverFetch`](u); y["server" + "Fetch"](u); z["fe" + "tch"](u); w[\'fetch\'](u);'), ["[`serverFetch`]", '["server" + "Fetch"]', '["fe" + "tch"]', "['fetch']"]);
+  assert.deepEqual(bypasses('const a = o["fetchAll"]; const b = o["server" + "Name"]; const c = o[`${name}`];'), []);
+  const tree = {
+    "cli/commands/claim.mjs": 'const { go } = await import("../helper.mjs");',
+    "cli/helper.mjs": 'await fetch(server() + "/api/runners");',
+    "cli/atelier.mjs": "", "cli/server-fetch.mjs": "",
+  };
+  const files = { read: (path) => tree[path], exists: (path) => path in tree };
+  const modules = importedModules("cli/commands/claim.mjs", new Set(), files);
+  assert.deepEqual(modules, ["cli/helper.mjs"]);
+  assert.deepEqual(modules.filter((m) => bypasses(tree[m]).length), ["cli/helper.mjs"]);
 });
 
 test("the bypass scan reads code, not strings or comments", () => {

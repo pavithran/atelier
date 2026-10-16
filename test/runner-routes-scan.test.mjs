@@ -77,7 +77,7 @@ export function codeOnly(source) {
 export const BYPASSES = [
   /(?<![.\w$])fetch\b/g,
   /(?<![\w$])[\w$]*\s*\??\.\s*fetch\b/g,
-  /\[\s*["'`][^"'`\n]*["'`]\s*\]/g, // a computed member, judged below: ["fetch"]
+  /\[\s*["'`][^"'`\n]*["'`](?:\s*\+\s*["'`][^"'`\n]*["'`])*\s*\]/g, // a computed member, judged below: ["fetch"], ["serverFetch"], ["server" + "Fetch"]
   // serverFetch (cli/server-fetch.mjs, t568) is fetch after the event loop
   // has caught up: a way to the server like fetch itself.
   /(?<![.\w$])serverFetch\b/g,
@@ -110,12 +110,15 @@ export function references(source) {
       if (m[0].startsWith("import")) {
         // A dynamic import names its module in a string; judge the original.
         const spec = /^import\s*\(\s*["'`]([^"'`]*)["'`]/.exec(source.slice(m.index))?.[1] ?? "";
-        if (NETWORK_MODULE.test(spec)) at(m.index, `import("${spec}")`);
+        if (NETWORK_MODULE.test(spec) || TRANSPORT_MODULE.test(spec)) at(m.index, `import("${spec}")`);
         continue;
       }
       if (m[0].startsWith("[")) {
         // A computed member names its property in a string; judge the original.
-        if (/^\[\s*["'`]fetch["'`]\s*\]$/.test(source.slice(m.index, m.index + m[0].length))) at(m.index, source.slice(m.index, m.index + m[0].length));
+        // Literals joined by + are resolved to the one name they spell.
+        const member = source.slice(m.index, m.index + m[0].length);
+        const key = [...member.matchAll(/(["'`])([^"'`\n]*)\1/g)].map((k) => k[2]).join("");
+        if (/^(?:fetch|serverFetch)$/.test(key) && !member.includes("${")) at(m.index, member);
         continue;
       }
       at(m.index, source.slice(m.index, m.index + m[0].length + 1).trim());
