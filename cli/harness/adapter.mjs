@@ -14,13 +14,13 @@
 // and gives them to opencode alone; the others use their harness's own login.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 import { NO_VERDICT, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
-import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, metadataEscaped } from "./providers.mjs";
+import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, RUN_LIMITS, TRANSPORT_ERROR, metadataEscaped, openRouterRefusal } from "./providers.mjs";
 
 const UNSET = "undefined";
 
@@ -282,6 +282,8 @@ export function opencodeSetup(model, dir) {
   if (!existsSync(index)) throw new Error(`no provider configs in ${dir}; run atelier runner setup`);
   const entry = JSON.parse(readFileSync(index, "utf8")).models?.[model];
   if (!entry) throw new Error(`${model} is not in ${index}; run atelier runner setup after adding it to the pool`);
+  const claude = entry.provider === "openrouter-api" ? openRouterRefusal(entry.providerModel) : null;
+  if (claude) throw new Error(`${model} is refused: ${claude}`);
   return { ...entry, config: join(dir, entry.config) };
 }
 
@@ -401,11 +403,14 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
-  const result = spawn(exe, harnessArgv, {
+  const options = {
     cwd: args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     stdio: ["pipe", capture ? "pipe" : "inherit", "inherit"],
-  });
-  if (result.error) return fail(`could not run ${exe}: ${result.error.message}`);
+  };
+  const limit = harness === "opencode" && kind === "build" ? RUN_LIMITS[setup.providerModel] : null;
+  const err = io.stderr ?? ((text) => process.stderr.write(text));
+  const result = limit ? runLimited(spawn, exe, harnessArgv, options, { ms: io.limitMs ?? limit.ms, err, harness }) : spawn(exe, harnessArgv, options);
+  if (result.error) return fail(result.error.code === "ETIMEDOUT" && limit ? `${exe} was stopped after its time limit of ${Math.round((io.limitMs ?? limit.ms) / 1000)} s` : `could not run ${exe}: ${result.error.message}`);
   if (result.status !== 0) return result.status ?? 1;
   if (!capture) return 0;
   let answer = result.stdout ?? "";
@@ -429,6 +434,31 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   }
   writeFileSync(args.verdict, answer, "utf8");
   return 0;
+}
+
+// A run with a time limit (RUN_LIMITS). It is run once more when it ends with
+// no new commit and a transport error: the limit passing, or its exit non-zero
+// with a TRANSPORT_ERROR line on stderr, which is held in a file so the line
+// can be read and is then passed on.
+function runLimited(spawn, exe, argv, options, { ms, err, harness }) {
+  const head = () => String(spawn("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? "").trim();
+  for (let attempt = 1; ; attempt++) {
+    const before = head();
+    const dir = mkdtempSync(join(tmpdir(), "atelier-opencode-stderr-"));
+    const log = join(dir, "stderr"), fd = openSync(log, "w");
+    let result, text = "";
+    try {
+      result = spawn(exe, argv, { ...options, timeout: ms, killSignal: "SIGKILL", stdio: [options.stdio[0], options.stdio[1], fd] });
+    } finally {
+      closeSync(fd);
+      try { text = readFileSync(log, "utf8"); } catch { /* nothing was written */ }
+      rmSync(dir, { recursive: true, force: true });
+    }
+    if (text) err(text);
+    const transport = result.error?.code === "ETIMEDOUT" || (result.status !== 0 && TRANSPORT_ERROR.test(text));
+    if (attempt === 2 || !transport || head() !== before) return result;
+    err(`atelier-${harness}: the run ended with no commit and a transport error (${result.error?.code === "ETIMEDOUT" ? "time limit" : "stderr"}); running it once more\n`);
+  }
 }
 
 function noVerdict(answer) {

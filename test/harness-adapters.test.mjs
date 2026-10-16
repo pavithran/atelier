@@ -55,7 +55,7 @@ if (mcp !== -1 && argv[mcp + 1] === "list") {
 // opencode --version (t683): FAKE_VERSION, else the 1.x the runs use until the switch.
 if (argv[0] === "--version") { fs.appendFileSync(${JSON.stringify(record)} + ".version", "asked\\n"); process.stdout.write((process.env.FAKE_VERSION ?? "1.18.34") + "\\n"); process.exit(0); }
 const input = fs.readFileSync(0, "utf8");
-const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
+const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
   "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION",
   "HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "GIT_CONFIG_GLOBAL"];
 const list = (dir) => dir && fs.existsSync(dir) ? fs.readdirSync(dir) : null;
@@ -513,4 +513,88 @@ test("an entry with no command runs the adapter Atelier ships, with every placeh
   assert.match(parseConfig({ agents: [{ agent: "zcode", models: ["glm-5.3"] }] }).errors.join(), /ships no adapter for zcode; give its command/);
   // A command the owner gives still wins.
   assert.deepEqual(parseConfig({ agents: [{ agent: "codex", models: ["m"], command: ["my-codex", "{model}", "{brief_file}"] }] }).agents[0].command, ["my-codex", "{model}", "{brief_file}"]);
+});
+
+// t698: the opencode adapter runs an OpenRouter model, refuses a Claude one,
+// and bounds and retries a MiMo run that hangs or drops its connection.
+function routed(t, models) {
+  const s = setup(t);
+  writeFileSync(join(s.providers, "openrouter-api.json"), JSON.stringify(opencodeConfig("openrouter-api", [{ providerModel: "xiaomi/mimo-v2.6-pro", atelierId: "mimo-v2.6-pro", limit: { context: 1000000, output: 32000 } }], { gateway: { account: "acct", id: "atelier" } })));
+  const entry = (providerModel) => ({ provider: "openrouter-api", providerModel, config: "openrouter-api.json", key: "openrouter.API_KEY", keyVar: "OPENROUTER_API_KEY", gateway: true });
+  writeFileSync(join(s.providers, "models.json"), JSON.stringify({ models: Object.fromEntries(models.map(([id, pm]) => [id, entry(pm)])) }));
+  writeFileSync(join(s.store, "secrets.json"), JSON.stringify({ "openrouter.API_KEY": "DUMMY-or", CF_AIG_TOKEN: "DUMMY-gateway" }), { mode: 0o600 });
+  for (const argv of [["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base"]]) spawnSync("git", argv, { cwd: s.ws });
+  return s;
+}
+
+// An opencode that does what ACTS says on its nth run: "ok", "hang", "reset"
+// (a transport error on stderr, exit 1) or "commit" (commit, then reset).
+function scripted(s, acts) {
+  const counter = join(s.dir, "count");
+  rmSync(counter, { force: true });
+  writeFileSync(s.fake, `#!${process.execPath}
+const fs = require("node:fs"), cp = require("node:child_process");
+if (process.argv[2] === "--version") { process.stdout.write("2.0.29\\n"); process.exit(0); }
+fs.readFileSync(0);
+const n = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0;
+fs.writeFileSync(${JSON.stringify(counter)}, String(n + 1));
+const act = ${JSON.stringify(acts)}[n] ?? "ok";
+if (act === "hang") setTimeout(() => {}, 60000);
+else if (act === "ok") process.exit(0);
+else { if (act === "commit") cp.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "work"]); process.stderr.write("fetch failed: ECONNRESET\\n"); process.exit(1); }
+`);
+  return () => (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0);
+}
+
+function runRouted(s, model, limitMs = 1500) {
+  const out = [];
+  const status = runAdapter("opencode", ["--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store, model, s.brief, s.ws, "undefined", "undefined", "undefined"],
+    { env: { PATH: process.env.PATH, HOME: s.dir, ATELIER_OPENCODE: s.fake, CF_AIG_METADATA: gatewayMetadata("t9", "build", "home:mbp") }, stderr: (x) => out.push(x), limitMs });
+  return { status, stderr: out.join("") };
+}
+
+test("the opencode adapter runs an OpenRouter model with its provider model id", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const seen = run("opencode", s, { model: "mimo-v2.6-pro", env: { FAKE_VERSION: "2.0.29" } }).seen;
+  assert.deepEqual(seen.argv.slice(0, 4), ["run", "--standalone", "--model", "openrouter-api/xiaomi/mimo-v2.6-pro"]);
+  assert.equal(seen.env.OPENROUTER_API_KEY, "DUMMY-or");
+  assert.equal(seen.env.CF_AIG_TOKEN, "DUMMY-gateway");
+  assert.deepEqual(JSON.parse(seen.env.OPENCODE_CONFIG_CONTENT).permissions[0].effect, "deny");
+});
+
+test("the opencode adapter refuses a Claude model through OpenRouter and never starts opencode", (t) => {
+  const s = routed(t, [["claude-sonnet-5.5", "anthropic/claude-sonnet-5.5"]]);
+  const count = scripted(s, []);
+  const r = runRouted(s, "claude-sonnet-5.5");
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no prompt caching.*claude-code/);
+  assert.equal(count(), 0);
+});
+
+test("a MiMo run that hangs past its time limit with no commit is run once more", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["hang", "ok"]);
+  const r = runRouted(s, "mimo-v2.6-pro");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(count(), 2);
+  assert.match(r.stderr, /no commit and a transport error \(time limit\); running it once more/);
+});
+
+test("a MiMo run that drops its connection with no commit is run once more, but only once", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["reset", "reset", "ok"]);
+  const r = runRouted(s, "mimo-v2.6-pro");
+  assert.equal(r.status, 1);
+  assert.equal(count(), 2);
+  assert.match(r.stderr, /ECONNRESET/);
+});
+
+test("a MiMo run that committed before the connection dropped is not run again, nor is any other model", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"], ["qwen3.8-max", "qwen/qwen3.8-max-0902"]]);
+  const count = scripted(s, ["commit", "ok"]);
+  assert.equal(runRouted(s, "mimo-v2.6-pro").status, 1);
+  assert.equal(count(), 1);
+  const other = scripted(s, ["reset", "ok"]);
+  assert.equal(runRouted(s, "qwen3.8-max").status, 1);
+  assert.equal(other(), 1, "only MiMo is retried");
 });
