@@ -2087,6 +2087,13 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       evidence: claimed.evidence ?? null,
     });
     brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare, claimed.singleFamily ?? null)}\n\n${testSlotNote}\n\n${text}`, claimed.proseStandard ?? null);
+    // What the check of a rejection reads: the whole change as the reviewer
+    // had it, never the diff since an earlier head. For a merge that is the
+    // conflict resolution and, outside a plan, the task's own change after it.
+    const verifyDiff = ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`;
+    const wholeCommand = merged
+      ? `git show --remerge-diff ${claimed.head}${ownDiff !== null ? `, then git diff ${merged.compare.merge.own.from} ${claimed.head}` : ""}`
+      : compare.from ? `git diff ${compare.from} ${claimed.head}` : null;
     diffFile = await io.writeDiff(workspace, ownDiff === null ? shown : `${shown}${shown && !shown.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -2160,7 +2167,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     if (parsed.verdict === "reject" && !claimed.landed) {
       if (renewalFailure) throw renewalFailure;
       const settled = await settleRejection(io, {
-        parsed, reply, claimed, config, entry, diff, wholeCommand: merged ? null : compare.from ? `git diff ${compare.from} ${claimed.head}` : null, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
+        parsed, reply, claimed, config, entry, diff, verifyDiff, wholeCommand, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
         criteria: criteriaCount(claimed.item, claimed.plan), deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0),
       });
       if (settled.failed) {
@@ -2632,7 +2639,7 @@ export async function verifyBlockers(io, ctx, blockers) {
   // The reviewer's diff file is replaced by the whole change's (writeDiff
   // refuses a file that exists).
   if (ctx.diffFile) io.removeDiff(ctx.diffFile);
-  const whole = await io.writeDiff(workspace, ctx.diff);
+  const whole = await io.writeDiff(workspace, ctx.verifyDiff ?? ctx.diff);
   const brief = await io.brief(workspace, verifierBrief({ item: claimed.item, head: claimed.head, findings: blockers, diffFile: whole.file, compare: ctx.wholeCommand ?? null, bar: claimed.reviewBar ?? null }), null);
   try {
     io.removeFile?.(ctx.verdictFile);

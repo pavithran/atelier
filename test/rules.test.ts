@@ -7,7 +7,7 @@ import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
-  applyVerification, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
+  applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
   type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
@@ -1639,12 +1639,13 @@ test("a blocking finding on lines the change did not touch is a pre-existing fol
     f("src/a.ts", 11), f("src/a.ts", near), f("src/a.ts", far), f("src/a.ts", 300), f("src/untouched.ts", 4),
     f("src/a.ts", null), f("bin.dat", 9), f("see the docs", 3), f("", 3),
   ], DIFF);
-  assert.deepEqual(labelled.map((x) => x.label ?? "blocks"), ["blocks", "blocks", "pre-existing", "pre-existing", "pre-existing", "blocks", "blocks", "blocks", "blocks"]);
+  // src/untouched.ts is no path the diff names, so it cannot be placed and keeps blocking (round 2 of review).
+  assert.deepEqual(labelled.map((x) => x.label ?? "blocks"), ["blocks", "blocks", "pre-existing", "pre-existing", "blocks", "blocks", "blocks", "blocks", "blocks"]);
   for (const x of labelled) assert.equal(x.severity, x.label ? "follow-up" : "blocking", "a labelled finding never blocks");
   // A follow-up stays as it is; it is not turned into a task of its own.
-  assert.deepEqual(labelPreExisting([{ file: "src/untouched.ts", line: 4, severity: "follow-up", text: "t" }], DIFF), [{ file: "src/untouched.ts", line: 4, severity: "follow-up", text: "t" }]);
+  assert.deepEqual(labelPreExisting([{ file: "src/a.ts", line: 400, severity: "follow-up", text: "t" }], DIFF), [{ file: "src/a.ts", line: 400, severity: "follow-up", text: "t" }]);
   // A diff nothing can be read from labels nothing.
-  assert.equal(labelPreExisting([f("src/untouched.ts", 4)], "").at(0)?.label, undefined);
+  assert.equal(labelPreExisting([f("src/a.ts", 400)], "").at(0)?.label, undefined);
   assert.equal(isPreExisting({ file: "src/a.ts", line: 0 }, touchedLines(DIFF)!), false);
 });
 
@@ -1688,5 +1689,31 @@ test("a path git lists with no hunk (mode change, binary, rename) is changed wit
   for (const path of ["run.sh", "img.png", "old/name.ts", "new/name.ts", "dir/x y.txt"]) assert.deepEqual([...touched.get(path) ?? ["missing"]], [], path);
   const f = (file: string, line: number): Finding => ({ file, line, severity: "blocking", text: "t" });
   const out = labelPreExisting([f("run.sh", 1), f("img.png", 2), f("new/name.ts", 3), f("old/name.ts", 4), f("src/other.ts", 5), f("src/a.ts", 400)], diff);
-  assert.deepEqual(out.map((x) => x.label ?? "blocks"), ["blocks", "blocks", "blocks", "blocks", "pre-existing", "pre-existing"]);
+  assert.deepEqual(out.map((x) => x.label ?? "blocks"), ["blocks", "blocks", "blocks", "blocks", "blocks", "pre-existing"]);
+});
+
+// Astra's review of round 2 (head 6111b5e7): git writes src/café.ts as
+// "src/caf\303\251.ts" in its headers, and the quoted spelling matched no
+// finding, so a finding on a changed line of it was demoted and skipped the check.
+test("git's quoted paths are decoded in every header form, and a path no header names keeps blocking", () => {
+  assert.equal(unquoteGitPath('"src/caf\\303\\251.ts"'), "src/café.ts");
+  assert.equal(unquoteGitPath('"a\\tb \\"q\\" \\\\.txt"'), 'a\tb "q" \\.txt');
+  assert.equal(unquoteGitPath("plain name.txt"), "plain name.txt");
+  assert.equal(unquoteGitPath('"\\344\\270\\255.md"'), "中.md", "three octal bytes are one character");
+  const diff = [
+    'diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"', "index 1..2 100644", '--- "a/src/caf\\303\\251.ts"', '+++ "b/src/caf\\303\\251.ts"', "@@ -1,1 +1,2 @@", " keep", "+added",
+    "diff --git a/dir/with space.txt b/dir/with space.txt", "--- a/dir/with space.txt\t", "+++ b/dir/with space.txt\t", "@@ -1 +1 @@", "-a", "+b",
+    'diff --git "a/q\\"uote.txt" "b/q\\"uote.txt"', '--- "a/q\\"uote.txt"', '+++ "b/q\\"uote.txt"', "@@ -1 +1 @@", "-a", "+b",
+    'diff --git a/old.ts "b/n\\303\\251w.ts"', "similarity index 100%", "rename from old.ts", 'rename to "n\\303\\251w.ts"',
+    'diff --git "a/bin\\303\\251.dat" "b/bin\\303\\251.dat"', 'Binary files "a/bin\\303\\251.dat" and "b/bin\\303\\251.dat" differ',
+  ].join("\n");
+  const touched = touchedLines(diff)!;
+  assert.deepEqual([...touched.keys()].sort(), ["biné.dat", "dir/with space.txt", "néw.ts", "old.ts", 'q"uote.txt', "src/café.ts"].sort());
+  assert.deepEqual([...touched.get("src/café.ts")!], [2]);
+  const f = (file: string, line: number): Finding => ({ file, line, severity: "blocking", text: "t" });
+  const out = labelPreExisting([
+    f("src/café.ts", 2), f("src/café.ts", 300), f("dir/with space.txt", 1), f('q"uote.txt', 1), f("néw.ts", 1), f("old.ts", 1), f("biné.dat", 1),
+    f('src/caf\\303\\251.ts', 2), f("src/never-named.ts", 3), f("a/src/café.ts", 2),
+  ], diff);
+  assert.deepEqual(out.map((x) => x.label ?? "blocks"), ["blocks", "pre-existing", "blocks", "blocks", "blocks", "blocks", "blocks", "blocks", "blocks", "blocks"]);
 });

@@ -88,7 +88,7 @@ it("the round after the cap is not started: the task is held for the developer w
   expect(await L.requestReview(id, "owner", GPT, POOL, true)).toMatchObject({ requested: true, head: head(REVIEW_ROUND_CAP + 1), reviewer: GPT });
 });
 
-it("a task under the cap, an approval, and the developer's own rejection start no hold", async () => {
+it("a task under the cap, and a round that approves, start no hold", async () => {
   const L = await setup("round-cap-none");
   const id = await firstSubmission(L);
   await pushed(L, id, head(1));

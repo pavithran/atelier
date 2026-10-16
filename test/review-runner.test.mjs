@@ -1925,13 +1925,13 @@ test("a rejection no blocking finding of which stands cannot be recorded as an a
 });
 
 test("a blocking finding on lines the change did not touch is a pre-existing follow-up that blocks nothing and needs no check", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried."), "FINDING: blocking src/rules.ts:5 Drops a row.", PROOF].join("\n");
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried."), blockingAt(300, "Drops a row."), PROOF].join("\n");
   const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "approve");
   assert.equal(verifierBriefs(calls).length, 0, "nothing blocking is left to check");
   const found = findingsOf(posted(calls));
-  assert.deepEqual(found.map((f) => [f.file, f.line, f.severity, f.label]), [["src/review/needed.ts", 88, "follow-up", "pre-existing"], ["src/rules.ts", 5, "follow-up", "pre-existing"]]);
+  assert.deepEqual(found.map((f) => [f.file, f.line, f.severity, f.label]), [["src/review/needed.ts", 88, "follow-up", "pre-existing"], ["src/review/needed.ts", 300, "follow-up", "pre-existing"]]);
   assert.match(posted(calls)[posted(calls).indexOf("--note") + 1], /2 pre-existing/);
 });
 
@@ -2038,4 +2038,30 @@ test("the check is never given a model the project's single-family policy refuse
   const open = fixture({ verdict: reply, diff: () => HUNK, claim: { ...claimed, item: builtBy } });
   await runReview(who, openai, "home:studio", open.io);
   assert.deepEqual(runsOf(open.calls), ["gpt-6-astra", "sonnet-5.5"]);
+});
+
+// Astra's review of round 2: a standalone task that merged main is reviewed by
+// the merge's conflict resolution and, after it, its own change. The check read
+// the resolution alone and called it the whole change.
+test("the check of a standalone merge task reads the conflict resolution and the task's own change, with both commands", async () => {
+  const MAIN = "d".repeat(40), PREV = "e".repeat(40), BASE = "f".repeat(40);
+  const own = "diff --git a/src/own.ts b/src/own.ts\n--- /dev/null\n+++ b/src/own.ts\n@@ -0,0 +1,2 @@\n+the task's own change\n+more\n";
+  const resolution = "diff --cc src/conflict.ts\n+resolved\n";
+  const claim = { ...claimed, plan: null, item: { ...claimed.item, accept: undefined, kind: "task", dispatch: { job: "merge-main" } },
+    events: [{ seq: 1, itemId: "t21", at: "2026-10-05T10:00:00.000Z", actor: "x", kind: "item.submitted", data: { head: H1, summary: `Merged main at ${MAIN}` } }],
+    target: { remote: "https://artifacts.example/p", token: "t", branch: "main" } };
+  const reply = ["VERDICT: REJECT", "SUMMARY: The own change is wrong.", "FINDING: blocking src/own.ts:1 The task's own change drops a row."].join("\n");
+  const { io, calls } = fixture({ claim, verdict: reply, diff: (base) => (base === BASE ? own : resolution) });
+  Object.assign(io, {
+    fetch: async () => {}, revParse: async () => MAIN, mergeBase: async () => BASE, parents: async () => `${H1} ${PREV} ${MAIN}`,
+    remergeDiff: async () => resolution, diffNames: async () => "src/conflict.ts\n",
+  });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.verdict, "reject", JSON.stringify(state));
+  const written = calls.filter((c) => c.writeDiff !== undefined).map((c) => c.writeDiff);
+  assert.equal(written.length, 2);
+  assert.ok(written[0].includes("diff --cc src/conflict.ts") && written[0].includes("the task's own change"), "the reviewer had both");
+  assert.equal(written[1], written[0], "the verifier has the same two diffs, not the resolution alone");
+  const brief = verifierBriefs(calls)[0].brief;
+  assert.ok(brief.includes(`git show --remerge-diff ${H1}, then git diff ${BASE} ${H1}`), brief);
 });
