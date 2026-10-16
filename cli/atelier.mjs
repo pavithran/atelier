@@ -270,7 +270,13 @@ export function recordTokenExpiry(dir, expiresAt) {
 
 // How Artifacts (or the Worker in front of it) refuses a Git request whose
 // token has lapsed or was revoked.
-export const TOKEN_REFUSED = /Invalid or expired token|The requested URL returned error: 40[13]/i;
+// A refused discovery reads "returned error: 401"; a refused push upload may
+// read only "RPC failed; HTTP 401".
+export const TOKEN_REFUSED = /Invalid or expired token|The requested URL returned error: 40[13]|RPC failed; HTTP 40[13]/i;
+
+// Whether this process has renewed the workspace token already: a command
+// renews it once, and a refusal after that ends it saying to run atelier start.
+let renewedThisCommand = false;
 
 // The workspace's write token renewed for the holder, by asking for the
 // claim again, which rotates the token (t705, seen in ikon-weblog/t112 after
@@ -282,6 +288,7 @@ export const TOKEN_REFUSED = /Invalid or expired token|The requested URL returne
 // recorded, as every claim does.
 export async function renewWorkspaceToken(name, id, as, why) {
   const stuck = (reason) => die(`${why} ${reason} Run atelier start ${id} --as ${as} to issue a new token.`);
+  if (renewedThisCommand) die(`The server still refused this workspace's token after it was renewed. Run atelier start ${id} --as ${as}.`);
   let item, r;
   try {
     item = (await request("GET", I(name, id), undefined, as)).item;
@@ -293,8 +300,11 @@ export async function renewWorkspaceToken(name, id, as, why) {
   }
   const origin = git(["config", "--local", "--get", "remote.origin.url"], { allowFail: true }).stdout?.trim();
   if (!r?.workspace?.token || r.workspace.remote !== origin) stuck("The server's workspace is not the one this clone fetches from.");
-  storeWorkspaceToken(process.cwd(), r.workspace.remote, r.workspace.token);
-  recordTokenExpiry(process.cwd(), r.workspace.expiresAt);
+  // From any directory of the workspace, not only its top.
+  const top = git(["rev-parse", "--show-toplevel"]);
+  storeWorkspaceToken(top, r.workspace.remote, r.workspace.token);
+  recordTokenExpiry(top, r.workspace.expiresAt);
+  renewedThisCommand = true;
   console.log(`${id}: this workspace's token had expired; renewed it for ${as}${r.workspace.expiresAt ? `, expires ${r.workspace.expiresAt}` : ""}.`);
 }
 
@@ -302,7 +312,7 @@ export async function renewWorkspaceToken(name, id, as, why) {
 // expiry has passed is renewed first, rather than sent to be refused.
 export async function renewLapsedWorkspaceToken(name, id, as) {
   const at = Date.parse(wsConfig("write-token-expires-at") ?? "");
-  if (Number.isFinite(at) && at <= Date.now()) await renewWorkspaceToken(name, id, as, `This workspace's token expired at ${new Date(at).toISOString()}.`);
+  if (!renewedThisCommand && Number.isFinite(at) && at <= Date.now()) await renewWorkspaceToken(name, id, as, `This workspace's token expired at ${new Date(at).toISOString()}.`);
 }
 
 // A git command that authenticates with the workspace's own token. A
@@ -1119,8 +1129,15 @@ function setWorkspaceIdentity(dir, policy, checkout, name) {
 // does not name a branch.
 export function forkBranch(cwd) {
   const r = git(["ls-remote", "--symref", "origin", "HEAD"], { cwd, allowFail: true });
-  if (r.status !== 0) return null;
-  return /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(r.stdout)?.[1] ?? null;
+  return forkBranchOf(r);
+}
+const forkBranchOf = (r) => r.status !== 0 ? null : /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(r.stdout)?.[1] ?? null;
+
+// The same read with the workspace's token, renewed first when it lapsed or
+// is refused (t705): a read refused for an expired token would otherwise
+// answer null and skip the checks that depend on the branch.
+export async function workspaceForkBranch(name, id, as) {
+  return forkBranchOf(await workspaceGit(name, id, as, ["ls-remote", "--symref", "origin", "HEAD"], { allowFail: true }));
 }
 
 // Whether `commit` holds `ancestor` in its history, and whether the

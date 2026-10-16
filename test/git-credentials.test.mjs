@@ -35,6 +35,8 @@ function serveGit(req, res, repos, valid, seen, refuse = { status: 401 }) {
   const tokens = (req.headersDistinct.authorization ?? []).map((h) => h.replace(/^Bearer /, ""));
   seen.push({ repo, tokens });
   if (!tokens.length || tokens.some((token) => !valid[repo]?.has(token))) { res.writeHead(refuse.status); res.end(); return; }
+  const answer = refuse.upload?.(req, tokens);
+  if (answer) { res.writeHead(answer); res.end(); return; }
   const child = spawn(REAL_GIT, ["http-backend"], { env: {
     PATH: process.env.PATH, HOME: repos, GIT_CONFIG_NOSYSTEM: "1", GIT_PROJECT_ROOT: repos, GIT_HTTP_EXPORT_ALL: "1", REMOTE_USER: "agent", REMOTE_ADDR: "127.0.0.1",
     REQUEST_METHOD: req.method, PATH_INFO: decodeURIComponent(url.pathname), QUERY_STRING: url.search.slice(1),
@@ -202,7 +204,6 @@ async function started(t) {
 const lapse = (f) => { f.claim.token = WRITE2; f.valid["fork.git"] = new Set([WRITE2, READ]); f.claim.expiresAt = "2999-01-01T00:00:00.000Z"; };
 
 test("update renews a workspace token whose recorded expiry has passed, for the holder, before fetching", async (t) => {
-  if (!canInspectSlots(t)) return;
   const f = await started(t);
   real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
   lapse(f);
@@ -216,7 +217,6 @@ test("update renews a workspace token whose recorded expiry has passed, for the 
 });
 
 test("update renews a token the fork refuses as expired and fetches again", async (t) => {
-  if (!canInspectSlots(t)) return;
   const f = await started(t);
   f.refuse.status = 403;
   lapse(f);
@@ -227,7 +227,6 @@ test("update renews a token the fork refuses as expired and fetches again", asyn
 });
 
 test("push renews a token the fork refuses as expired and pushes with the new one", async (t) => {
-  if (!canInspectSlots(t)) return;
   const f = await started(t);
   f.refuse.status = 403;
   lapse(f);
@@ -239,7 +238,6 @@ test("push renews a token the fork refuses as expired and pushes with the new on
 });
 
 test("update says plainly to run atelier start when the token cannot be renewed for the caller", async (t) => {
-  if (!canInspectSlots(t)) return;
   const f = await started(t);
   f.refuse.status = 403;
   f.valid["fork.git"] = new Set([]);
@@ -251,11 +249,74 @@ test("update says plainly to run atelier start when the token cannot be renewed 
 });
 
 test("update that renews and is refused again says to run atelier start", async (t) => {
-  if (!canInspectSlots(t)) return;
   const f = await started(t);
   f.refuse.status = 403;
   f.valid["fork.git"] = new Set([]);
   const r = await f.run(["update"], f.workspace);
   assert.notEqual(r.status, 0);
   assert.match(r.output, /still refused this workspace's token after it was renewed\. Run atelier start t1 --as codex\/test\./);
+});
+
+test("a token that lapses during the stepped pushes is renewed once and the steps resume", async (t) => {
+  const f = await started(t);
+  f.valid["fork.git"] = new Set([WRITE, WRITE2, READ]);
+  f.claim.token = WRITE2;
+  f.claim.expiresAt = "2999-01-01T00:00:00.000Z";
+  // The whole push answers 413; the first step is refused as expired; the renewed token pushes.
+  let uploads = 0;
+  f.refuse.upload = (req, tokens) => req.method === "POST" && req.url.includes("git-receive-pack") && tokens.includes(WRITE) ? (++uploads === 1 ? 413 : 403) : undefined;
+  real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+  const r = await f.run(["push"], f.workspace);
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /renewed it for codex\/test/);
+  assert.match(r.output, /t1 head [0-9a-f]{8}/);
+});
+
+test("a token expired by its recorded date and refused again after one renewal stops with atelier start, in update and push", async (t) => {
+  for (const command of ["update", "push"]) {
+    const f = await started(t);
+    real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
+    f.claim.token = WRITE2; // the renewed token is still refused
+    f.valid["fork.git"] = new Set([]);
+    f.refuse.status = 403;
+    real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+    const r = await f.run([command], f.workspace);
+    assert.notEqual(r.status, 0, `${command}: ${r.output}`);
+    assert.match(r.output, /still refused this workspace's token after it was renewed\. Run atelier start t1 --as codex\/test\./, command);
+    assert.deepEqual(f.claims, ["POST", "POST"], `${command}: one claim to start, one renewal`);
+  }
+});
+
+test("update and push renew an expired token from a subdirectory of the workspace", async (t) => {
+  for (const command of ["update", "push"]) {
+    const f = await started(t);
+    real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
+    lapse(f);
+    f.refuse.status = 500;
+    real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+    const sub = join(f.workspace, "deep", "er");
+    mkdirSync(sub, { recursive: true });
+    const r = await f.run([command], sub);
+    assert.equal(r.status, 0, `${command}: ${r.output}`);
+    assert.match(readFileSync(join(f.workspace, ".git", "atelier-credentials"), "utf8"), new RegExp(WRITE2), command);
+  }
+});
+
+test("push renews a lapsed token before reading the fork's branch, so a branch mismatch still stops it", async (t) => {
+  const f = await started(t);
+  real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
+  real(f.workspace, "config", "--local", "atelier.branch", "elsewhere");
+  lapse(f);
+  f.refuse.status = 403;
+  real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+  const r = await f.run(["push"], f.workspace);
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /reads its head from main, but this workspace pushes to elsewhere/);
+});
+
+test("git's RPC failure for a refused push upload reads as a refused token", async () => {
+  const { TOKEN_REFUSED } = await import("../cli/atelier.mjs");
+  assert.match("error: RPC failed; HTTP 401", TOKEN_REFUSED);
+  assert.match("error: RPC failed; HTTP 403 curl 22", TOKEN_REFUSED);
+  assert.doesNotMatch("error: RPC failed; HTTP 413", TOKEN_REFUSED);
 });

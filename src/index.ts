@@ -2234,7 +2234,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // already worded, pass through as they are.
         if (before.owner !== actor || parseRuleError(err) || retryableByRuntime(err)) throw err;
         console.error(errorLine(`re-claim of ${id} by ${actor}`, err));
-        throw new RuleError("claim_failed", `${id} is still claimed by ${actor}, but the server could not renew its workspace token just now and logged why; nothing was changed. Run atelier claim ${id} again, or atelier start ${id} --as ${actor}, which issues a new token`, 503);
+        throw new RuleError("claim_failed", `${id} is still claimed by ${actor}, but the server could not finish renewing its workspace token and logged why. The old token may already be revoked and a new one may not have reached you, so the workspace's token may not work. Run atelier claim ${id} again, or atelier start ${id} --as ${actor}, which issues a new token`, 503);
       }
     }
     // In fast mode (t589) a runner takes a dispatched build without a fork
