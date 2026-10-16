@@ -833,15 +833,21 @@ export class RequestError extends Error {
 
 // `call` without ending the command: a failure throws a RequestError, so a
 // caller can retry it or name the step that failed.
+// Whether this process is a command the runner spawns: one held to the
+// declared helper calls (RUNNER_CALLS, src/tokens.ts). `atelier fast` is also
+// the owner's (status, land, record, close), on routes no runner declares;
+// only fast take and fast ready are the runner's.
+function runnerHelper() {
+  const command = commandFor(args._[0]);
+  return RUNNER_COMMANDS.has(command) && (command !== "fast" || ["take", "ready"].includes(args._[1]));
+}
+
 export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
   // Validate before even the identity read: spelling, aliases and indirect
   // calls cannot evade this boundary. Ordinary owner commands retain their
   // wider transport; every command the runner can spawn uses the table.
-  // `atelier fast` is also the owner's (status, land, record, close), on
-  // routes no runner declares; only fast take and fast ready are the runner's.
-  const command = commandFor(args._[0]);
-  const helper = RUNNER_COMMANDS.has(command) && (command !== "fast" || ["take", "ready"].includes(args._[1]));
+  const helper = runnerHelper();
   if (helper) declaredHelperCall(method, path, body, !!tokenRunner);
   if (path !== "/config") await resolveTokenActor();
   if (helper && tokenRunner) declaredHelperCall(method, path, body, true);
@@ -882,6 +888,9 @@ export async function request(method, path, body, as, extra = {}, signal) {
 // under the name; any other refusal is a RequestError with the server's
 // words.
 export async function requestText(path, as) {
+  // The owner's read: no declared helper call is a text payload, so a
+  // spawned helper is refused here as it is in request (t478).
+  if (runnerHelper()) declaredHelperCall("GET", path, undefined);
   await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
@@ -913,6 +922,7 @@ export const logReader = (name, id, as) => (ref) => requestText(`${I(name, id)}/
 // `call`, because a project not yet registered answers 404, and here that is
 // an answer, not a failure.
 export async function recordedApproval(name) {
+  if (runnerHelper()) declaredHelperCall("GET", P(name), undefined);
   await resolveTokenActor();
   let res, data;
   try {
@@ -1776,6 +1786,7 @@ function landingRunning(name) {
 // token, still gets the rest of the section; the lease is then reported as
 // unreadable. The holder is a person's or agent's name, so it is flattened.
 export async function landingLease(name, as) {
+  if (runnerHelper()) declaredHelperCall("GET", `${P(name)}/landing-lease`, undefined);
   await resolveTokenActor();
   let res, data;
   try {
@@ -1928,6 +1939,7 @@ export function wrapReady(name, cwd, report) {
 // names another actor: a runner token cannot act as the owner, so its
 // review skip goes as the review job's actor (t353).
 export async function postAsRunner(path, body, runner, signal, as = OWNER) {
+  if (runnerHelper()) declaredHelperCall("POST", path, body);
   const res = await serverFetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
