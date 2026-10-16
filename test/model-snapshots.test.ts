@@ -285,7 +285,7 @@ test("no module that routes work imports the snapshots", () => {
   // And the Worker reads them only to take, replay and show them.
   const worker = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   const callers = [...worker.matchAll(/I\.(modelSnapshot\w*|putModelSnapshot)\(/g)].map((m) => /\n(?:export )?(?:async )?function (\w+)[^\n]*\n(?![\s\S]*\n(?:export )?(?:async )?function )/.exec(worker.slice(0, m.index))?.[1]);
-  assert.deepEqual([...new Set(callers)].sort(), ["modelTrends", "replayModelSnapshot", "takeModelSnapshots"]);
+  assert.deepEqual([...new Set(callers)].sort(), ["readModelSnapshots", "replayModelSnapshot", "takeModelSnapshots"]);
 });
 
 // Finding (gpt-6-astra, t623): the first version read the newest 1,000 run

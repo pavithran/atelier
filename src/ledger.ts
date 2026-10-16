@@ -1292,6 +1292,11 @@ export class Ledger extends DurableObject<Env> {
       .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }));
   }
 
+  // Every card record, for the model review (t624) to read as of a time.
+  modelCardRecords(): CardRecord[] {
+    return this.cardRecords();
+  }
+
   modelCards(named: string): CardView {
     return modelCardView(this.cardRecords(), this.models(), named);
   }
