@@ -287,7 +287,9 @@ let renewedThisCommand = false;
 // does work. A renewed token replaces the old header and its expiry is
 // recorded, as every claim does.
 export async function renewWorkspaceToken(name, id, as, why) {
-  const stuck = (reason) => die(`${why} ${reason} Run atelier start ${id} --as ${as} to issue a new token.`);
+  // A server that could not answer (4) or a task closed under the holder (5, 6)
+  // keeps its exit code: the runner reads it (t476); the instruction is added.
+  const stuck = (reason, code = 1) => die(`${why} ${reason} Run atelier start ${id} --as ${as} to issue a new token.`, code);
   if (renewedThisCommand) die(`The server still refused this workspace's token after it was renewed. Run atelier start ${id} --as ${as}.`);
   let item, r;
   try {
@@ -295,7 +297,7 @@ export async function renewWorkspaceToken(name, id, as, why) {
     if (item.owner !== as) stuck(`${id} is held by ${item.owner ?? "nobody"} now, so it cannot be renewed for ${as}.`);
     r = await request("POST", `${I(name, id)}/claim`, {}, as, item.runner ? { "x-atelier-runner": item.runner } : {});
   } catch (error) {
-    if (error instanceof RequestError) stuck(`Renewing it failed: ${error.message}.`);
+    if (error instanceof RequestError) stuck(`Renewing it failed: ${error.message}.`, error.code);
     throw error;
   }
   const origin = git(["config", "--local", "--get", "remote.origin.url"], { allowFail: true }).stdout?.trim();

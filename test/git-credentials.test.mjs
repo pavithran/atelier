@@ -94,9 +94,11 @@ process.exit(r.status ?? 1);
   const seen = [], claim = { token: WRITE, expiresAt: "tomorrow", owner: actor }, refuse = { status: 401 };
   const item = { id: "t1", title: "Edit", scope: [], owner: actor, state: "claimed" };
   const claims = [];
+  const api = { fail: null };
   const server = createServer(async (req, res) => {
     if (!req.url.startsWith("/api/")) return serveGit(req, res, repos, valid, seen, refuse);
     for await (const chunk of req) void chunk;
+    if (api.fail && req.url !== "/api/version") { res.writeHead(api.fail.status, { "content-type": "application/json" }); res.end(JSON.stringify(api.fail.body)); return; }
     item.owner = claim.owner;
     if (req.url.endsWith("/claim")) claims.push(req.method);
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -123,7 +125,7 @@ process.exit(r.status ?? 1);
     return { status, output };
   }
   const calls = () => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  return { root, source, workspace: join(root, "cache", "work", "proj", "t1"), valid, seen, claim, claims, refuse, run, calls, forkUrl: `http://127.0.0.1:${server.address().port}/fork.git` };
+  return { root, source, workspace: join(root, "cache", "work", "proj", "t1"), valid, seen, claim, claims, refuse, api, run, calls, forkUrl: `http://127.0.0.1:${server.address().port}/fork.git` };
 }
 
 test("claim, re-claim, push and check authenticate without a token in any git argument", async (t) => {
@@ -335,3 +337,22 @@ test("git's RPC failure for a refused push upload reads as a refused token", asy
   assert.match("error: RPC failed; HTTP 403 curl 22", TOKEN_REFUSED);
   assert.doesNotMatch("error: RPC failed; HTTP 413", TOKEN_REFUSED);
 });
+
+// Round 5 (both reviewers): a renewal that fails keeps the exit code of the
+// failure (4 for a server that cannot answer, 5 or 6 for a task closed under
+// the holder, t476) and still says to run atelier start.
+for (const [what, fail, code] of [
+  ["a server that cannot answer", { status: 503, body: { error: "unavailable", detail: "try later" } }, 4],
+  ["a merged task", { status: 409, body: { error: "task_terminal", detail: "t1 is merged (state: merged)" } }, 5],
+  ["an abandoned task", { status: 409, body: { error: "task_terminal", detail: "t1 is closed (state: abandoned)" } }, 6],
+]) for (const command of ["update", "push"]) {
+  test(`${command}: a renewal answered by ${what} exits ${code} and says to run atelier start`, async (t) => {
+    const f = await started(t);
+    if (command === "push") real(f.workspace, "-c", "user.name=A", "-c", "user.email=a@example.test", "commit", "-q", "--allow-empty", "-m", "Work");
+    real(f.workspace, "config", "--local", "atelier.write-token-expires-at", "2020-01-01T00:00:00.000Z");
+    f.api.fail = fail;
+    const r = await f.run([command], f.workspace);
+    assert.equal(r.status, code, r.output);
+    assert.match(r.output, /Renewing it failed: .*Run atelier start t1 --as codex\/test to issue a new token\./);
+  });
+}
