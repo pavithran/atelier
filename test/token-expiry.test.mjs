@@ -84,7 +84,9 @@ test("--help prints the usage and records nothing", () => {
 test("every other ops command still goes to the toolkit", () => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-token-expiry-"));
   try {
-    const r = run(["ops", "audit", "token-expiry"], {});
+    // The toolkit is named at a path that holds nothing, so the answer does
+    // not depend on whether this machine keeps atelier-ops at ~/ai-projects.
+    const r = run(["ops", "audit", "token-expiry"], { ATELIER_OPS: join(dir, "absent") });
     assert.equal(r.status, 2);
     assert.match(r.stderr, /not installed on this machine/);
   } finally { rmSync(dir, { recursive: true, force: true }); }

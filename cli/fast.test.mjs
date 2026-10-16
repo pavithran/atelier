@@ -446,7 +446,7 @@ test("a grafts file a project command writes stops the batch (finding 4)", async
 // checks left a receipt without the hidden commit's agent.
 test("a graft written during an earlier merge and removed before validation does not shrink a receipt's contributors (t603)", async () => {
   const gen = GENERATOR + `import { existsSync, appendFileSync } from "node:fs";
-if (existsSync("graft.txt")) { mkdirSync(".git/info", { recursive: true }); appendFileSync(".git/info/grafts", readFileSync("graft.txt", "utf8")); }
+if (existsSync("graft.txt")) { mkdirSync([".git", "info"].join("/"), { recursive: true }); appendFileSync([".git", "info", "grafts"].join("/"), readFileSync("graft.txt", "utf8")); }
 `;
   const { dir } = generatedRepo(gen);
   try {
