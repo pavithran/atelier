@@ -2739,12 +2739,18 @@ export function labelPreExisting(findings: readonly Finding[], diff: string): Fi
   return findings.map((f) => f.severity === "blocking" && isPreExisting(f, touched) ? { ...f, severity: "follow-up", label: "pre-existing" } : f);
 }
 
-// `findings` with each blocking one an independent check did not confirm
-// made an unverified follow-up. `confirmed` holds the one-based positions in
-// `findings` the check confirmed; a finding it said nothing of is
-// unconfirmed, since a blocker is proved, not assumed.
-export function applyVerification(findings: readonly Finding[], confirmed: ReadonlySet<number>): Finding[] {
-  return findings.map((f, i) => f.severity === "blocking" && !confirmed.has(i + 1) ? { ...f, severity: "follow-up", label: "unverified" } : f);
+// `findings` after the independent check. `confirmed` holds the one-based
+// positions in `findings` it confirmed: they keep blocking. `preExisting`
+// holds those it showed were already present at the task's base: they are
+// pre-existing follow-ups, in a touched file or not. A blocking finding in
+// neither is made an unverified follow-up, since a blocker is proved, not
+// assumed. A position in both stays blocking: when the check is torn, the
+// finding blocks.
+export function applyVerification(findings: readonly Finding[], confirmed: ReadonlySet<number>, preExisting: ReadonlySet<number> = new Set()): Finding[] {
+  return findings.map((f, i) => {
+    if (f.severity !== "blocking" || confirmed.has(i + 1)) return f;
+    return { ...f, severity: "follow-up", label: preExisting.has(i + 1) ? "pre-existing" : "unverified" };
+  });
 }
 
 // The follow-up task a review's pre-existing findings are filed as: one task

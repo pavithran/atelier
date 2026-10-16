@@ -34,7 +34,7 @@ import { submission } from "../brief.ts";
 import type { LedgerEvent } from "../ledger.ts";
 import type { PoolFamily } from "../models/pool.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { DEFAULT_OWNER, type ChangeClass, type Evidence, type Item } from "../rules.ts";
+import { DEFAULT_OWNER, findingKey, type ChangeClass, type Evidence, type Item } from "../rules.ts";
 import type { LargeRef } from "../large.ts";
 import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
@@ -324,6 +324,11 @@ export function reviewBrief(input: BriefInput): string {
   if (criteriaSection) section(criteriaSection, "", "Judge the change against the criteria as they stand above; a resolution the developer recorded on a criteria finding is their decision on that reading of the criterion.");
 
   if (need.previous.length) section("## Earlier reviews", "", ...earlier(need.previous, head, owner, verdicts));
+  // Findings the developer answered in a review a later one of the same
+  // reviewer replaced at its head are not among the reviews above (t717).
+  const listed = new Set(need.previous.flatMap((r) => (r.findings ?? []).map(findingKey)));
+  const unlisted = (need.settled ?? []).filter((f) => !listed.has(findingKey(f)));
+  if (unlisted.length) section("## Findings already answered", "", "The developer marked these findings fixed or refuted, in reviews that a later review replaced above. Do not repeat them:", block(unlisted.map((f) => `${f.file}${f.line ? `:${f.line}` : ""} ${f.text}`).join("\n")));
 
   const limit = input.diffLimit !== undefined && Number.isFinite(input.diffLimit) && input.diffLimit > 0 ? Math.floor(input.diffLimit) : BRIEF_LIMITS.diff;
   const diff = input.diff ? cutDiff(input.diff, limit) : null;

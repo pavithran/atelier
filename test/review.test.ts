@@ -1314,3 +1314,27 @@ test("parseVerdict: settled findings make a rejection with nothing left to block
   const approval = parseVerdict(["VERDICT: APPROVE", "SUMMARY: Fine.", "CRITERION 1: met — Ran the clone's tests; test 1 fails without the change."].join("\n"), 1, { settled: [] });
   assert.ok(approval.ok && approval.verdict === "approve");
 });
+
+// Round 3 of review (head 08472e10): the history was pruned to the latest
+// review per head and reviewer before it was counted.
+test("reviewNeeded: a rejection the same reviewer later approved at its head is still a round, and its answered findings are still settled", () => {
+  const heads = ["1", "2", "3", "4"].map((c) => c.repeat(40));
+  const f: Finding = { file: "src/a.ts", line: 1, severity: "blocking", text: "Variant one." };
+  const reviews = [
+    review(GPT, false, heads[0], { at: "2026-10-05T01:00:00.000Z", findings: [f], note: "variant 1" }),
+    review(GPT, true, heads[0], { at: "2026-10-05T01:30:00.000Z" }),
+    review(GPT, false, heads[1], { at: "2026-10-05T02:00:00.000Z", note: "variant 2", findings: [{ ...f, line: 2 }] }),
+    review(GPT, false, heads[2], { at: "2026-10-05T03:00:00.000Z", note: "variant 3", findings: [{ ...f, line: 3 }] }),
+  ];
+  const held = need({ reviews, item: item({ head: heads[3] }), evidence: [pass({ head: heads[3] })] });
+  assert.equal(held.needed, false, "three heads were rejected, one of them later approved");
+  assert.ok(!held.needed && held.reason.includes(`round 1, ${heads[0].slice(0, 8)}`), held.needed ? "" : held.reason);
+  // Two rejected heads are not yet a hold, and the round number counts the erased one.
+  const two = required({ reviews: reviews.slice(0, 3), item: item({ head: heads[3] }), evidence: [pass({ head: heads[3] })] });
+  assert.equal(two.round, 3);
+  // The refuted finding survives its rejection being replaced in `previous`.
+  const verdicts = [event(9, OWNER, "review.finding", { head: heads[0], index: 1, verdict: "refuted", by: GPT, finding: f })];
+  const settled = required({ reviews: reviews.slice(0, 2), item: item({ head: heads[3] }), evidence: [pass({ head: heads[3] })], verdicts });
+  assert.deepEqual(settled.previous.map((r) => r.approve), [true], "the rejection is gone from the latest-per-head list");
+  assert.deepEqual(settled.settled, [f]);
+});

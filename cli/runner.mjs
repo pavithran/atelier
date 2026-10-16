@@ -2167,7 +2167,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     if (parsed.verdict === "reject" && !claimed.landed) {
       if (renewalFailure) throw renewalFailure;
       const settled = await settleRejection(io, {
-        parsed, reply, claimed, config, entry, diff, verifyDiff, wholeCommand, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
+        parsed, reply, claimed, config, entry, diff, verifyDiff, wholeCommand, base: merged ? (ownDiff !== null ? merged.compare.merge.own.from : null) : compare.from ?? null, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
         criteria: criteriaCount(claimed.item, claimed.plan), deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0),
       });
       if (settled.failed) {
@@ -2594,19 +2594,21 @@ export async function sinceLastReview(io, workspace, claimed, whole) {
 // request is then released and asked again, which is the safe thing.
 export async function settleRejection(io, ctx) {
   const { parsed, reply, claimed } = ctx;
-  let findings = dropSettled(parsed.findings, settledFindings(claimed.need?.previous ?? [], ownerVerdicts(claimed.events ?? [])));
+  let findings = dropSettled(parsed.findings, claimed.need?.settled ?? settledFindings(claimed.need?.previous ?? [], ownerVerdicts(claimed.events ?? [])));
   const answered = parsed.findings.length - findings.length;
   // Placement is judged against the whole change, never a diff since an
   // earlier head, and not at all against a merge's conflict resolution.
   if (!ctx.merged) findings = labelPreExisting(findings, ctx.diff);
   const blockers = findings.flatMap((f, i) => (f.severity === "blocking" ? [i] : []));
   let confirmed = new Set(blockers.map((i) => i + 1));
+  let preExisting = new Set();
   if (blockers.length) {
     const checked = await verifyBlockers(io, ctx, blockers.map((i) => findings[i]));
     if (checked.failed) return { failed: checked.failed };
     confirmed = new Set(blockers.filter((_, k) => checked.confirmed.has(k + 1)).map((i) => i + 1));
+    preExisting = new Set(blockers.filter((_, k) => checked.preExisting.has(k + 1)).map((i) => i + 1));
   }
-  findings = applyVerification(findings, confirmed);
+  findings = applyVerification(findings, confirmed, preExisting);
   if (answered === 0 && JSON.stringify(findings) === JSON.stringify(parsed.findings)) return { parsed };
   const count = (label) => findings.filter((f) => f.label === label).length;
   const result = parseVerdict(reply, ctx.criteria, { deferred: ctx.deferred, settled: findings });
@@ -2640,7 +2642,7 @@ export async function verifyBlockers(io, ctx, blockers) {
   // refuses a file that exists).
   if (ctx.diffFile) io.removeDiff(ctx.diffFile);
   const whole = await io.writeDiff(workspace, ctx.verifyDiff ?? ctx.diff);
-  const brief = await io.brief(workspace, verifierBrief({ item: claimed.item, head: claimed.head, findings: blockers, diffFile: whole.file, compare: ctx.wholeCommand ?? null, bar: claimed.reviewBar ?? null }), null);
+  const brief = await io.brief(workspace, verifierBrief({ item: claimed.item, head: claimed.head, findings: blockers, diffFile: whole.file, compare: ctx.wholeCommand ?? null, base: ctx.base ?? null, bar: claimed.reviewBar ?? null }), null);
   try {
     io.removeFile?.(ctx.verdictFile);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -2661,7 +2663,9 @@ export async function verifyBlockers(io, ctx, blockers) {
     try { said = io.readVerdict(ctx.verdictFile); } catch { said = ""; }
     const read = parseVerification(said, blockers.length);
     if (!read.ok) return { failed: `the verification by ${choice.actor} gave no answer: ${read.error}` };
-    return { confirmed: read.confirmed };
+    // PRE-EXISTING counts only when the check was given a base to look at;
+    // without one the answer is not one it could give, and the finding blocks.
+    return { confirmed: new Set([...read.confirmed, ...(ctx.base ? [] : read.preExisting)]), preExisting: ctx.base ? read.preExisting : new Set() };
   } finally {
     await io.removeBrief(brief);
     io.removeDiff(whole);

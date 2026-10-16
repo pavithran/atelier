@@ -1717,3 +1717,9 @@ test("git's quoted paths are decoded in every header form, and a path no header 
   ], diff);
   assert.deepEqual(out.map((x) => x.label ?? "blocks"), ["blocks", "pre-existing", "blocks", "blocks", "blocks", "blocks", "blocks", "blocks", "blocks", "blocks"]);
 });
+
+test("a defect the check shows was at the base is a pre-existing follow-up, even where the change touched; a torn answer blocks", () => {
+  const findings: Finding[] = [1, 2, 3, 4].map((n) => ({ file: "src/a.ts", line: n, severity: "blocking", text: `f${n}` }));
+  const out = applyVerification(findings, new Set([1, 4]), new Set([2, 4]));
+  assert.deepEqual(out.map((x) => [x.severity, x.label ?? null]), [["blocking", null], ["follow-up", "pre-existing"], ["follow-up", "unverified"], ["blocking", null]]);
+});

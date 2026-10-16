@@ -319,7 +319,11 @@ and the round is asked again.
   A finding with no line, in a file the diff lists with no hunk (a mode
   change, a binary file, a pure rename), or in a path the diff does not name
   (git's quoted spellings are decoded first), is not placed and keeps
-  blocking; the independent check judges it. The review records one follow-up task with each
+  blocking; the independent check judges it.
+  The check also decides by the base: told the task's base commit, it says
+  whether a defect it confirms is already present there. Present at the base
+  means `pre-existing` (a follow-up task, in a touched file or not); present
+  only with the change, or undecidable, means it blocks, wherever it sits. The review records one follow-up task with each
   pre-existing finding as a criterion, so nothing found is lost.
 - **A blocking finding blocks only when a second check confirms it.** The
   runner asks another model on the runner, of another family than the
