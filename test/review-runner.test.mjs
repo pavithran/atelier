@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReview, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
+import { runReview, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 
@@ -2064,4 +2064,61 @@ test("the check of a standalone merge task reads the conflict resolution and the
   assert.equal(written[1], written[0], "the verifier has the same two diffs, not the resolution alone");
   const brief = verifierBriefs(calls)[0].brief;
   assert.ok(brief.includes(`git show --remerge-diff ${H1}, then git diff ${BASE} ${H1}`), brief);
+});
+
+// Round 3 of review (head 08472e10), and the orchestrator's note: pre-existing
+// is decided by the base. The line rule stays the cheap first filter; the check
+// of a surviving blocker says whether the defect is already at the base.
+
+test("a defect the check shows is present at the base is a pre-existing follow-up even in a touched file, and the check is told the base", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), PROOF].join("\n");
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: PRE-EXISTING because git show base:src/review/needed.ts:11 reads the same." });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.verdict, "approve");
+  const argv = posted(calls);
+  assert.deepEqual(findingsOf(argv).map((f) => [f.severity, f.label]), [["follow-up", "pre-existing"]]);
+  assert.match(argv[argv.indexOf("--note") + 1], /1 pre-existing/);
+  const brief = verifierBriefs(calls)[0].brief;
+  assert.ok(brief.includes(`commit ${H0}`) && brief.includes(`git show ${H0}:PATH`), "the check is given the task's base and how to read it");
+  assert.ok(brief.includes("FINDING 3: PRE-EXISTING"));
+});
+
+test("a caller the change broke in a file it never touched is checked, not demoted, and blocks when the check confirms it", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: A caller breaks.", "FINDING: blocking src/caller.ts:7 The caller still passes the old argument."].join("\n");
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: CONFIRMED because the call at line 7 fails at the head; at the base it passed." });
+  assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
+  assert.equal(verifierBriefs(calls).length, 1, "an untouched file is not demoted by the line rule");
+  assert.deepEqual(findingsOf(posted(calls)).map((f) => f.severity), ["blocking"]);
+});
+
+test("when the check cannot tell whether the defect was at the base, the finding blocks; a base it was not given cannot be answered", async () => {
+  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const undecided = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: CONFIRMED because line 11 is wrong; I could not read the base." });
+  assert.equal((await runReview(assignment, config, "home:studio", undecided.io)).verdict, "reject");
+  // Without a base in the verifier's brief a PRE-EXISTING answer is not one it can give.
+  let wrote = "";
+  const io = {
+    log() {}, stopped: () => false, env: {}, ownerTokens: () => [], workspacePath: () => "/w",
+    removeFile() {}, async removeBrief() {}, removeDiff() {}, verdictPath: () => "/v",
+    async brief(w, text) { wrote = text; return { file: "/b" }; }, async writeDiff() { return { file: "/d" }; },
+    async harness() { return { code: 0, timedOut: false }; }, readVerdict: () => "FINDING 1: PRE-EXISTING because it was there.",
+    async dataHome() { return { dir: "/h" }; }, async removeDataHome() {},
+  };
+  const ctx = { claimed: { item: claimed.item, head: H1 }, config, workspace: "/w", actor: assignment.actor, diff: DIFF, verdictFile: "/v", name: "n", project: "atelier" };
+  const finding = { file: "src/a.ts", line: 3, severity: "blocking", text: "x" };
+  const noBase = await verifyBlockers(io, { ...ctx, base: null }, [finding]);
+  assert.deepEqual([[...noBase.confirmed], [...noBase.preExisting]], [[1], []], "without a base it blocks");
+  assert.ok(!wrote.includes("PRE-EXISTING") && !wrote.includes("git show"));
+  const withBase = await verifyBlockers(io, { ...ctx, base: H0 }, [finding]);
+  assert.deepEqual([[...withBase.confirmed], [...withBase.preExisting]], [[], [1]]);
+});
+
+test("a finding the developer refuted is not raised again on a later head even when the reviewer's later approval replaced the rejection in the claim's history", async () => {
+  const refutedFinding = earlier.findings[0];
+  const claim = { ...reReviewClaim(), need: { ...reReviewClaim().need, previous: [{ ...earlier, approve: true, note: "", findings: [] }], settled: [refutedFinding] } };
+  const again = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), blockingAt(12, "A new defect in the retry.")].join("\n");
+  const { io, calls } = fixture({ claim, verdict: again, diff: () => HUNK });
+  assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
+  assert.deepEqual(findingsOf(posted(calls)).map((f) => f.text), ["A new defect in the retry."]);
+  assert.ok(calls.find((c) => c.brief).brief.includes("## Findings already answered"), "and the reviewer is told it was answered");
 });

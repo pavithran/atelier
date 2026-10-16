@@ -15,15 +15,17 @@
 
 import { actorFamily, companyRefusal, contributed, type Finding } from "../rules.ts";
 import type { PoolFamily } from "../models/pool.ts";
+import { TEXT_CONTROLS } from "../text.ts";
 import { VERIFY_HEADING } from "./verdict.ts";
 
 export const VERIFY_LIMITS = { reply: 100_000 } as const;
 
-const FORMAT = [
+const format = (base: boolean) => [
   "End your reply with one line for each finding, each at the start of its own line, numbered as the findings are numbered above:",
   "",
   "FINDING 1: CONFIRMED because of the lines you read, or the test you ran and what it printed.",
   "FINDING 2: NOT CONFIRMED because it does not hold, or you could not show it.",
+  ...(base ? ["FINDING 3: PRE-EXISTING because the same defect is in the code at the base, shown by the lines you read there."] : []),
   "",
   "CONFIRMED only when you showed the defect yourself, by reading the code the finding names or by running a test, and the line says how. A finding you cannot show is NOT CONFIRMED, however plausible it reads; so is one that rests on a limit of your environment (a missing dependency, a command you could not run), which is never a defect in the change. Prose around these lines is allowed and is not read.",
 ].join("\n");
@@ -34,12 +36,19 @@ export interface VerifyInput {
   findings: readonly Finding[];       // the blocking findings to check, in the order they are numbered
   diffFile?: string | null;           // where the whole change's diff is, inside the verifier's clone
   compare?: string | null;            // the command that prints the whole change, for the verifier to read in its clone
+  // The commit the change is measured from. Given, the verifier also says
+  // whether each defect is already present there (PRE-EXISTING); absent, it
+  // cannot, and every defect it confirms blocks.
+  base?: string | null;
   bar?: string | null;                // the project's review bar, when it sets one
 }
 
 const ticks = (s: string) => (s.match(/`+/g) ?? []).reduce((n, run) => Math.max(n, run.length), 0);
+// Invisible and bidirectional controls are shown as <U+XXXX>, as the review
+// brief shows them; every other character, a hyphen included, is kept.
+const visible = (c: string) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`;
 function block(text: string): string {
-  const body = text.replace(/\r\n/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, "").replace(/\n+$/, "");
+  const body = text.replace(/\r\n/g, "\n").replace(TEXT_CONTROLS, (c) => (c === "\n" || c === "\t" ? c : visible(c))).replace(/\n+$/, "");
   const fence = "`".repeat(Math.max(3, ticks(body) + 1));
   return `${fence}\n${body}\n${fence}`;
 }
@@ -69,23 +78,27 @@ export function verifierBrief(input: VerifyInput): string {
     "## How to verify",
     "",
     "- Read the code each finding names, at this head, and follow it far enough to show the defect or fail to.",
-    "- A finding about code this change did not touch, or about a case the change does not make worse, is not a defect of the change: it is NOT CONFIRMED.",
+    "- A finding is CONFIRMED when the defect is real at this head, wherever it sits: a caller in a file the change did not touch that the change breaks is a regression, and blocks.",
+    ...(input.base
+      ? [`- Then ask whether the same defect is already present at the base, commit ${input.base}: read the code there with git show ${input.base}:PATH, and change nothing. If it is present there, the change did not cause it: answer PRE-EXISTING, which does not block. If it appears only with the change, or you cannot tell whether it was there, answer CONFIRMED.`]
+      : []),
     ...(input.bar?.trim() ? ["- The project's review bar says what may block; a finding outside it is NOT CONFIRMED:", block(input.bar.trim())] : []),
     "",
     "## Reply format",
     "",
-    FORMAT,
+    format(!!input.base),
   ].join("\n");
 }
 
 export type ParsedVerification =
-  | { ok: true; confirmed: Set<number> }
+  | { ok: true; confirmed: Set<number>; preExisting: Set<number> }
   | { ok: false; error: string };
 
-const LINE = /^[ \t]*FINDING[ \t]+(\d+)[ \t]*:[ \t]*(NOT[ \t]+CONFIRMED|CONFIRMED|REFUTED|UNSURE)\b/gim;
+const LINE = /^[ \t]*FINDING[ \t]+(\d+)[ \t]*:[ \t]*(NOT[ \t]+CONFIRMED|CONFIRMED|PRE[ \t-]?EXISTING|REFUTED|UNSURE)\b/gim;
 
-// The findings a reply confirms, by position from one. A finding the reply
-// says nothing of, says twice, or answers both ways is not confirmed. A
+// The findings a reply confirms, and those it shows were already there at the
+// base, by position from one. A finding the reply says nothing of, says twice,
+// or answers both ways is neither. A
 // reply with no verification line at all is refused: nobody checked.
 export function parseVerification(text: unknown, count: number): ParsedVerification {
   if (typeof text !== "string") return { ok: false, error: "the verification reply is not text" };
@@ -97,9 +110,13 @@ export function parseVerification(text: unknown, count: number): ParsedVerificat
     said.set(n, [...(said.get(n) ?? []), m[2].replace(/\s+/g, " ").toUpperCase()]);
   }
   if (!said.size) return { ok: false, error: "the verification reply has no FINDING n: CONFIRMED or NOT CONFIRMED line" };
-  const confirmed = new Set<number>();
-  for (const [n, answers] of said) if (answers.length === 1 && answers[0] === "CONFIRMED") confirmed.add(n);
-  return { ok: true, confirmed };
+  const confirmed = new Set<number>(), preExisting = new Set<number>();
+  for (const [n, answers] of said) {
+    if (answers.length !== 1) continue;
+    if (answers[0] === "CONFIRMED") confirmed.add(n);
+    else if (/^PRE[ -]?EXISTING$/.test(answers[0])) preExisting.add(n);
+  }
+  return { ok: true, confirmed, preExisting };
 }
 
 export interface VerifierChoice { actor: string; independent: boolean; why: string }
