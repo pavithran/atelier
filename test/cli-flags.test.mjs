@@ -380,6 +380,23 @@ test("--version after a command prints the version and contacts no server", (t) 
   assert.deepEqual(f.requests(), []);
 });
 
+// t690: the developer sends accepted work back to building with their own
+// token and no --as; the command used to demand "say who you are" and a
+// model name, which the server then refused as not_project_owner.
+test("handoff with no --as and no workspace acts as the developer, and --as still wins", (t) => {
+  const f = fixture(t);
+  const noActor = { ATELIER_ACTOR: undefined };
+  const r = f.run(f.checkout, ["handoff", "t1", "--to", "codex/test", "--project", "demo"], noActor);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /say who you are/);
+  const sent = f.requests().find((q) => q.path.endsWith("/items/t1/handoff"));
+  assert.equal(sent.actor, "owner");
+  f.clear();
+  const named = f.run(f.checkout, ["handoff", "t1", "--to", "codex/test", "--project", "demo", "--as", "claude-code/opus-5.5"], noActor);
+  assert.equal(named.status, 0, named.stderr);
+  assert.equal(f.requests().find((q) => q.path.endsWith("/items/t1/handoff")).actor, "claude-code/opus-5.5");
+});
+
 test("a flag that needs a value refuses a bare one before any request", (t) => {
   const f = fixture(t);
   for (const [argv, flag] of [
