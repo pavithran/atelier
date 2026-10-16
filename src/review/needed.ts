@@ -16,8 +16,8 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, singleFamily,
-  type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, roundCapHold, singleFamily,
+  type ChangeClass, type Evidence, type EvidenceView, type Finding, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
 
@@ -63,6 +63,9 @@ export interface ReviewRequired {
   checks: EvidenceView["checks"];
   round: number;                    // 1, plus each head a model rejected that this review moves past: an earlier head by a push, this head by the owner's refutation of its rejection
   previous: ReviewRecord[];         // counting reviews at any head, latest per reviewer and head, oldest first
+  // The findings the developer marked fixed or refuted in any counting review,
+  // however many later reviews replaced it in `previous`. An older server sends none.
+  settled?: Finding[];
   previousReviewer: string | null;  // who rejected most recently, asked first on a re-review
   lapsed: string[];                 // reviewers whose claim on a review of this head lapsed
 }
@@ -116,6 +119,15 @@ export function ownerVerdicts(events: readonly LedgerEvent[]): Map<string, Owner
 export function refutedRejection(r: ReviewRecord, verdicts: ReadonlyMap<string, OwnerVerdict>): boolean {
   const blocking = (r.findings ?? []).map((f, i) => ({ f, index: i + 1 })).filter(({ f }) => f.severity === "blocking");
   return blocking.length > 0 && blocking.every(({ f, index }) => verdictOn(verdicts, r, index, f)?.verdict === "refuted");
+}
+
+// The findings of earlier reviews the developer marked fixed or refuted
+// (t717): answered, so a re-review does not raise them again.
+export function settledFindings(previous: readonly ReviewRecord[], verdicts: ReadonlyMap<string, OwnerVerdict>): Finding[] {
+  return previous.flatMap((r) => (r.findings ?? []).filter((f, i) => {
+    const v = verdictOn(verdicts, r, i + 1, f)?.verdict;
+    return v === "fixed" || v === "refuted";
+  }));
 }
 
 export interface NeedInput {
@@ -236,9 +248,20 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     latest.set(`${r.head}\n${r.by}`, r);
   }
   const previous = [...latest.values()].sort((a, b) => a.at.localeCompare(b.at));
-  const modelRejections = previous.filter((r) => !r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts)));
+  // Rounds and settled findings are read from every authorized review, not
+  // from `previous`: that keeps the latest review per head and reviewer, so a
+  // rejection the same reviewer later approved at its head would vanish from
+  // the count and from the findings the developer answered (t717, round 3).
+  const everyReview = reviews.filter(counts).sort((a, b) => a.at.localeCompare(b.at));
+  const modelRejections = everyReview.filter((r) => !r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts)));
   const round = new Set(modelRejections.map((r) => r.head)).size + 1;
   const last = modelRejections.at(-1);
+  // After REVIEW_ROUND_CAP rejected rounds no further round starts on its own
+  // (t717): the developer decides, and asks another with a named reviewer
+  // (`wanted`). A post-merge audit is not a round of the change's review, and
+  // a tier review is asked only beside a gate request that passed this check.
+  const held = input.wanted || input.postMerge || input.tier ? null : roundCapHold(rejectedRounds(modelRejections, owner), item.id);
+  if (held) return no(held);
 
   const why = basis === "part"
     ? `every part is reviewed by ${single ? independentReviewerText(single) : "another model family"}, and this ${kind} change has no such approval at ${short(head)}`
@@ -260,6 +283,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     checks: view.checks,
     round,
     previous,
+    settled: settledFindings(everyReview, verdicts),
     previousReviewer: last?.by ?? null,
     lapsed,
   };

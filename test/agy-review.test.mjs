@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseConfig } from "../cli/runner-config.mjs";
-import { AGY_MODELS, VERDICT_DEMAND } from "../cli/harness/adapter.mjs";
+import { AGY_MODELS, VERDICT_DEMAND, VERIFY_DEMAND, VERIFY_DEMAND_BASE } from "../cli/harness/adapter.mjs";
+import { verifierBrief } from "../src/review/verify.ts";
 
 // The antigravity review adapter (cli/agy-review.mjs): it reads the brief and
 // the diff the review job wrote, builds one prompt, runs the stand-in for `agy`
@@ -21,7 +22,7 @@ const adapter = fileURLToPath(new URL("../cli/agy-review.mjs", import.meta.url))
 const standIn = (stdout, code = 0) =>
   `#!/usr/bin/env node\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.AGY_LOG, JSON.stringify({ argv: process.argv, stdin: fs.readFileSync(0, "utf8") }));\n${stdout ? `process.stdout.write(${JSON.stringify(stdout)});\n` : ""}process.exit(${code});\n`;
 
-function review(t, { stdout = JSON.stringify({ response: "...VERDICT: APPROVE..." }), code = 0, model = "gemini-3.1-pro", diffText = "DIFF TEXT\n" } = {}) {
+function review(t, { stdout = JSON.stringify({ response: "...VERDICT: APPROVE..." }), code = 0, model = "gemini-3.1-pro", diffText = "DIFF TEXT\n", briefText = "BRIEF TEXT\n" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-agy-review-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const brief = join(dir, "brief.txt");
@@ -29,7 +30,7 @@ function review(t, { stdout = JSON.stringify({ response: "...VERDICT: APPROVE...
   const verdict = join(dir, "verdict.txt");
   const log = join(dir, "args.json");
   const agy = join(dir, "agy");
-  writeFileSync(brief, "BRIEF TEXT\n");
+  writeFileSync(brief, briefText);
   writeFileSync(diff, diffText);
   writeFileSync(agy, standIn(stdout, code));
   chmodSync(agy, 0o755);
@@ -113,4 +114,15 @@ test("a runner config with the antigravity command validates", () => {
     ],
   };
   assert.deepEqual(parseConfig(config).errors, []);
+});
+
+// t717, round 4: the demand that ends the prompt must allow every answer the
+// verification brief does. This adapter composed its own prompt tail.
+test("a verification brief ends with the verification demand, offering PRE-EXISTING only when the brief does", (t) => {
+  const input = { item: { id: "t9", title: "x" }, head: "a".repeat(40), findings: [{ file: "src/a.ts", line: 1, severity: "blocking", text: "x" }] };
+  const plain = review(t, { briefText: verifierBrief(input) });
+  assert.ok(JSON.parse(readFileSync(plain.log, "utf8")).stdin.endsWith(VERIFY_DEMAND));
+  const based = review(t, { briefText: verifierBrief({ ...input, base: "0".repeat(40) }) });
+  const prompt = JSON.parse(readFileSync(based.log, "utf8")).stdin;
+  assert.ok(prompt.endsWith(VERIFY_DEMAND_BASE) && !prompt.includes(VERDICT_DEMAND));
 });
