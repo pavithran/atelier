@@ -3,6 +3,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import { briefFor, definingOf } from "../src/brief.ts";
 import { landingOf } from "../src/diff.ts";
+import { criteriaOf } from "../src/criteria.ts";
+import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 import { standingFastReady } from "../src/rules.ts";
 import { renderItem, type Detail } from "../src/ui.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
@@ -85,4 +88,83 @@ it("an item with few events is drawn from the same events as before", async () =
   const item = await L.newItem("Small", ["src/**"], "owner", { accept: ["Works"] });
   const d = await L.detail(item.id) as unknown as Detail;
   expect(definingOf(d).map((x) => x.seq)).toEqual(d.events.map((x) => x.seq));
+});
+
+// The pages themselves (review 1 of t661): every changed call site is driven
+// through the page or route it serves. The Artifacts binding is a spy that
+// records which repository is opened and which commit is read, and reads
+// nothing, so the diff comes back "unavailable" and what the page asked for
+// is the proof of which landing it saw. A page that lost the landing past the
+// window would open nothing at all (no fork, no landing, no diff).
+const TOKEN = "defining-pages-owner";
+const spy = () => {
+  const opened: string[] = [], read: string[] = [];
+  const ARTIFACTS = { async get(name: string) { opened.push(name); return { readCommit: async (h: string) => { read.push(h); return null; }, [Symbol.dispose]() {} }; } };
+  return { opened, read, env: { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS } as unknown as typeof env };
+};
+const get = async (path: string, bindings: typeof env, cookie: string) => (await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie } }), bindings)).text();
+// What each page says of a diff it could not read.
+const UNREAD = { task: "The diff could not be read from Artifacts just now", decisions: "Could not be read just now" };
+
+it("the task page and the decisions page diff a merged task from its merge beyond the window", async () => {
+  const name = "defining-pages-merged";
+  const L = await project(name);
+  const item = await L.newItem("Merged long ago", ["src/**"], "owner", { accept: ["Works"] });
+  await seed(name, item.id, [{ kind: "item.merged", data: { mergeCommit: M1, head: C1 } }], { state: "merged", head: C1, accepted_head: C1 });
+  const cookie = await signIn(TOKEN, { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  for (const [path, said] of [[`/p/${name}/${item.id}`, UNREAD.task], [`/decisions?project=${name}&task=${item.id}`, UNREAD.decisions]]) {
+    const s = spy();
+    expect(await get(path, s.env, cookie), path).toContain(said);
+    expect(s.opened, path).toContain(`${name}--baseline`);
+    expect(s.read, path).toContain(M1);
+  }
+});
+
+it("a plan part integrated beyond the window is diffed from the plan branch at the commit it went in as, on both pages", async () => {
+  const name = "defining-pages-part";
+  const L = await project(name);
+  const plan = await L.newItem("The plan", ["src/**"], "owner", { accept: ["Works"] });
+  const part = await L.newItem("A part", ["src/**"], "owner", { accept: ["Works"] });
+  await runInDurableObject(L, async (_i, s) => { s.storage.sql.exec(`UPDATE items SET fork = ? WHERE id = ?`, `${name}--plan`, plan.id); });
+  await seed(name, part.id, [
+    { kind: "item.merged", data: { mergeCommit: M1, head: C1, via: plan.id } },
+    { kind: "part.integrated", data: { mergeCommit: M2, head: C1 } },
+  ], { state: "merged", head: C1, accepted_head: C1, kind: "part", plan: plan.id });
+  const now = await L.item(part.id);
+  // A review of the landed commit, bound to its criteria, past the window too.
+  await runInDurableObject(L, async (_i, s) => {
+    const review = { itemId: part.id, by: "gpt-6-astra", head: M2, approve: true, note: "Audit of the landed integration", at: AT, criteria: criteriaOf(now) };
+    s.storage.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, part.id, JSON.stringify(review));
+  });
+  const cookie = await signIn(TOKEN, { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  const d = await L.detail(part.id) as unknown as Detail;
+  expect(d.events.some((x) => x.kind === "part.integrated")).toBe(false);
+
+  const task = spy();
+  const page = await get(`/p/${name}/${part.id}`, task.env, cookie);
+  expect(page).toContain(UNREAD.task);
+  expect(task.opened).toContain(`${name}--plan`);
+  expect(task.read).toContain(M2);
+  expect(task.read).not.toContain(M1);
+  // The review of the landed head, beside the reviews of the item's own.
+  expect(page).toContain("Audit of the landed integration");
+
+  const decisions = spy();
+  expect(await get(`/decisions?project=${name}&task=${part.id}`, decisions.env, cookie)).toContain(UNREAD.decisions);
+  expect(decisions.opened).toContain(`${name}--plan`);
+  expect(decisions.read).toContain(M2);
+  expect(decisions.read).not.toContain(M1);
+});
+
+it("a ready report stale by an event after it stays hidden once both are buried", async () => {
+  const name = "defining-stale";
+  const L = await project(name);
+  const item = await L.newItem("Reported then released", ["src/**"], "owner", { accept: ["Works"] });
+  await seed(name, item.id, [
+    { kind: "item.fast_ready", actor: OPUS, data: { commit: C1, base: H, builder: OPUS } },
+    { kind: "item.released", actor: OPUS, data: {} },
+  ], { state: "open" });
+  const d = await L.detail(item.id) as unknown as Detail;
+  expect(standingFastReady(definingOf(d))).toBeNull();
+  expect(renderItem(await L.project(), d)).not.toContain("Ready for fast land");
 });
