@@ -175,7 +175,7 @@ test("projection: an empty history gives every role, no share, no median, and sa
   for (const role of ["security-review", "claims-review", "plan"]) assert.match(v.roles.find((r) => r.role === role)!.unmeasured!, /\./);
   assert.deepEqual(v.vendor, { claims: [], limitations: [], ended: 0, disagreements: [], priors: [] });
   assert.equal(figureText(fig(v, "review", "review-precision")), `Its blocking findings that held up (confirmed or fixed) of those the developer judged: none yet; 2026-09-14 to 2026-10-14 (30 days)`);
-  assert.match(comparisonLines(v).join("\n"), /Atelier's record: unknown\. Atelier does not yet measure planning/);
+  assert.match(comparisonLines(v).join("\n"), /Atelier's record: unknown\. No plan run has been recorded/);
 });
 
 // `k` rejections by GPT, each with one blocking finding the developer confirmed, at revisions GEMINI approved.
@@ -349,4 +349,65 @@ test("projection: the coverage travels inside it, and a project not read makes t
   const partial = project([], { coverage: { projects: 2, events: 30, unread: ["zeta", "hush-app"] } });
   assert.deepEqual(partial.coverage.unread, ["hush-app", "zeta"]);
   assert.equal(comparisonLines(partial)[1], "    Partial record: Atelier's figures read 30 events of 2 projects; hush-app, zeta could not be read just now, so their work is in no figure below and the record is partial.");
+});
+
+// ── t663: every role has its own events ────────────────────────────────────
+
+// `n` reviews by GPT of items built by OPUS, claimed a minute before the verdict, each approval carrying `role`.
+const roleReviews = (n: number, role: string | undefined, at = AT): LedgerEvent[] => Array.from({ length: n }, (_, i) => {
+  const item = `${role ?? "plain"}${i}`;
+  const t = (m: number) => new Date(Date.parse(at) + m * 60_000).toISOString();
+  return [created(item), ev(item, OPUS, "item.claimed", {}, t(0)), ev(item, OPUS, "item.submitted", { head: H1 }, t(1)),
+    ev(item, GPT, "review.claimed", { head: H1 }, t(2)), ev(item, GPT, "review.approved", { head: H1, criteria: CRIT, note: "", ...(role ? { role } : {}) }, t(5))];
+}).flat();
+
+test("security-review and claims-review figures come from verdicts that name the role; the review row keeps only the rest", () => {
+  const v = project([...roleReviews(3, "security-review"), ...roleReviews(3, "claims-review", "2026-10-10T13:00:00.000Z"), ...roleReviews(2, undefined, "2026-10-10T14:00:00.000Z")]);
+  for (const role of ["security-review", "claims-review"]) {
+    assert.equal(fig(v, role, `${role}-verdicts`).value, 3, role);
+    assert.deepEqual([fig(v, role, `${role}-time`).state, fig(v, role, `${role}-time`).value, fig(v, role, `${role}-time`).n], ["measured", 3 * 60, 3], role);
+    assert.equal(v.roles.find((r) => r.role === role)!.unmeasured, undefined, role);
+  }
+  // Events without a role count as review, as before; the other roles' do not.
+  assert.equal(fig(v, "review", "review-time").n, 2);
+  assert.equal(fig(v, "review", "review-stalled").denominator, 2);
+});
+
+test("a role with no event keeps saying there is no measure yet", () => {
+  const v = project(roleReviews(3, undefined));
+  assert.match(v.roles.find((r) => r.role === "security-review")!.unmeasured!, /No review has been recorded/);
+  assert.equal(fig(v, "review", "review-time").n, 3);
+});
+
+test("a defect traced to a security-review approval is counted against that role only", () => {
+  const events = [...roleReviews(5, "security-review"), ...Array.from({ length: 5 }, (_, i) => ev(`security-review${i}`, OWNER, "item.defect", { head: H1, mergeCommit: H1, note: "bad" }))];
+  const v = project(events);
+  assert.equal(fig(v, "security-review", "security-review-approvals-contradicted").numerator, 5);
+  assert.equal(fig(v, "review", "approvals-contradicted").denominator, 0);
+});
+
+// A planner's claim of a plan item to the plan it posted, and failed plan runs.
+test("plan runs are timed and counted apart from build runs", () => {
+  const planEvents = (item: string, minutes: number): LedgerEvent[] => [
+    ev(item, OWNER, "item.created", { kind: "plan", scope: ["src/**"] }),
+    ev(item, GPT, "item.claimed", {}, AT),
+    ev(item, GPT, "plan.proposed", { hash: "h", parts: 2 }, new Date(Date.parse(AT) + minutes * 60_000).toISOString()),
+  ];
+  const events = [...planEvents("p1", 10), ...planEvents("p2", 20), ...planEvents("p3", 30)];
+  const runs = [{ actor: GPT, role: "plan" as const, outcome: "stalled" as const, project: "atelier", item: "p4", detail: "", runner: "home:studio", at: AT }];
+  const sources = [{ project: "atelier", events }];
+  const v = compareModel({
+    named: GPT, pool: POOL, cards: null,
+    reliability: buildReliability(sources, runs, OWNER), precision: buildPrecision(sources, WINDOW, OWNER),
+    speed: buildSpeed(sources, runs, OWNER, NOW.getTime()), judgement: buildJudgement(sources, judgementWindow(NOW), OWNER, POOL as never),
+    pairwise: buildPairwise(sources, WINDOW, OWNER, POOL as never), assignments: [], coverage: { projects: 1, events: events.length, unread: [] },
+  });
+  assert.deepEqual([fig(v, "plan", "plan-time").state, fig(v, "plan", "plan-time").value], ["measured", 20 * 60]);
+  assert.equal(fig(v, "plan", "plan-stalled").numerator, 1);
+  assert.equal(fig(v, "plan", "plan-stalled").denominator, 4);
+  assert.equal(fig(v, "plan", "plan-runs-failed").value, 1);
+  assert.equal(v.roles.find((r) => r.role === "plan")!.unmeasured, undefined);
+  // Not build: the build row sees neither the plan's time nor its run.
+  assert.equal(fig(v, "build", "build-time").n, 0);
+  assert.equal(fig(v, "build", "build-stalled").denominator, 0);
 });
