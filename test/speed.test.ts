@@ -220,3 +220,15 @@ test("the reviewer is ordered by its review pace, among reviewers of another fam
   assert.equal(after.reviewer!.actor, "claude-code/opus-5.5");
   assert.match(after.reviewer!.reasons.join("\n"), /reviews median 5m, n=3/);
 });
+
+// t663 review 1: a proposal out of the window still ends its plan run, so a
+// later revision is not timed from the original claim.
+test("a plan proposed before the window ends its run; a revision inside the window is not timed from that claim", () => {
+  const at = (iso: string) => iso;
+  const ev = (seq: number, kind: string, when: string, data: Record<string, unknown> = {}): LedgerEvent => ({ seq, itemId: "p1", actor: GPT, kind, data, at: at(when) });
+  const events = [ev(1, "item.claimed", "2026-09-01T00:00:00.000Z"), ev(2, "plan.proposed", "2026-09-01T00:10:00.000Z", { hash: "a" }), ev(3, "plan.proposed", "2026-10-06T00:00:00.000Z", { hash: "b" })];
+  const s = buildSpeed([{ project: "a", events }], [], OWNER, NOW);
+  const gpt = s.models.find((x) => x.model === "gpt-6-astra");
+  assert.equal(gpt?.byRole.plan.runs ?? 0, 0);
+  assert.equal(gpt?.byRole.plan.n ?? 0, 0);
+});

@@ -194,6 +194,44 @@ it("a separate tier review request records the assignment that chose its reviewe
   expect(String(tier?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id} \\(security-review`));
 });
 
+// t697: atelier land t52 --reviewer claude-code/sonnet-5.5 was refused as
+// ambiguous because the pool held claude-code/sonnet-5.5 and
+// antigravity/claude-sonnet-5.5, the same model by modelKey in two harnesses.
+async function twinTask(name: string, pool: ModelEntry[]) {
+  for (const m of pool) await index().putModel(m);
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT };
+  const L = ledger(name);
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  const H = "a".repeat(40);
+  await L.newItem("Tidy a helper", ["src/**"], "owner", { accept: ["Works"] });
+  await L.claim("t1", "codex/gpt-6-astra");
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush("t1", "codex/gpt-6-astra", H, H);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit("t1", "codex/gpt-6-astra");
+  return L;
+}
+
+it("a harness-qualified reviewer that is exactly one of two entries for one model resolves to it", async () => {
+  const pool = [...POOL, entry("claude-code", "sonnet-5.5"), entry("antigravity", "claude-sonnet-5.5")];
+  const L = await twinTask("roles-twin-sonnet", pool);
+  const asked = await L.requestReview("t1", "owner", "claude-code/sonnet-5.5", pool);
+  expect(asked.requested).toBe(true);
+  const L2 = await twinTask("roles-twin-sonnet-agy", pool);
+  expect((await L2.requestReview("t1", "owner", "antigravity/claude-sonnet-5.5", pool)).requested).toBe(true);
+});
+
+it("a reviewer that still names two entries after its harness is read is ambiguous and lists them", async () => {
+  const pool = [...POOL, entry("claude-code", "sonnet-5.5"), entry("claude-code", "claude-sonnet-5.5"), entry("antigravity", "claude-sonnet-5.5")];
+  const L = await twinTask("roles-twin-ambiguous", pool);
+  const error = await L.requestReview("t1", "owner", "claude-code/claude-sonnet-5-5", pool).then(() => null, (e: unknown) => String(e));
+  expect(error).toMatch(/ambiguous_model/);
+  expect(error).toContain("claude-code/sonnet-5.5");
+  expect(error).toContain("claude-code/claude-sonnet-5.5");
+  expect(error).not.toContain("antigravity/");
+});
+
 // gemini-4-argon's review of t622 at 53bf739d, finding 3.
 it("the listing names the pool's models, so a choice the pool lost is marked", async () => {
   const listed = await (await call("GET", "/model-roles")).json() as { inPool: string[] };

@@ -420,6 +420,12 @@ export interface UnparsableReply {
   note: string;    // why no verdict could be read, as the parser said it
   reply: string;   // the reply itself, its last 100 KB
   at: string;
+  // The request the reply answered, and whether it released that request's
+  // claim (t613). A reply from a claim that had lapsed releases nothing, so
+  // it must not stand for a stall of the request that replaced it. Absent
+  // on replies kept before this and on runners that send no request number.
+  request?: number;
+  released?: boolean;
 }
 
 // What a review is bound to: the head it read and the binding of the
@@ -1511,7 +1517,19 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
   const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
     Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   const changedPaths = measured?.changedPaths ?? null;
-  const applies = (claim: string) => checkApplies(policy, claim, changedPaths) !== false;
+  // A check's applicability at a head is settled once, by the newest counting
+  // record of it there: a record that the check does not apply stands, judged
+  // by the paths it measured, however the paths measured since read, since main
+  // moving under an unchanged head lists other tasks' paths and must not turn a
+  // check `done` called not applicable into one review-request waits for (t562).
+  // A run of the check after that record, or a record the current policy no
+  // longer supports, leaves the paths measured now to decide.
+  const recordedNotApplicable = (claim: string) => {
+    const last = atHead.filter((e) => counts(e) && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    const paths = last?.notApplicable ? measuredPaths(last.changedPaths) : null;
+    return !!paths && checkApplies(policy, claim, paths) === false;
+  };
+  const applies = (claim: string) => !recordedNotApplicable(claim) && checkApplies(policy, claim, changedPaths) !== false;
   const checks = policy.checks.filter(applies).map((claim) => {
     const e = latest(claim);
     return e
@@ -1548,8 +1566,8 @@ export function mergedRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: 
 
 export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, mainNow: string | null): MergedCheckView {
   const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox")) : [];
-  const changed = evidenceAt(policy, evidence, head).changedPaths;
-  const checks = policy.checks.filter((claim) => checkApplies(policy, claim, changed) !== false).map((claim) => {
+  const notApplicable = new Set(evidenceAt(policy, evidence, head).notApplicable);
+  const checks = policy.checks.filter((claim) => !notApplicable.has(claim)).map((claim) => {
     const e = mergedRunsAt(policy, runs, head, claim).pop();
     return e
       ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", mainHead: e.mainHead, stale: !!mainNow && e.mainHead !== mainNow, at: e.at, by: e.by }

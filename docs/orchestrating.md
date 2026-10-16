@@ -230,6 +230,14 @@ misread:
   security among them, were filed with none, so their reviews had nothing to
   judge against. `atelier new` now warns on a task filed without criteria, and
   `atelier init --require-criteria` refuses one for the project.
+- Before dispatch, run each "existing tests pass" criterion against the change
+  the task asks for, and name any test the change must rewrite. The criterion
+  is binding on the builder, so one that the fix itself falsifies sends the
+  builder to choose between the criterion and the fix. hqpe-control t54 was
+  filed with "t52's tests pass unchanged" while its own fix made one t52 test
+  (the 3x ratio, with only the Nx filter) wrong by design; reading the test
+  before dispatch caught it, and nothing else would have. Write "t52's tests
+  pass except the 3x ratio test, which the task rewrites" instead.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the developer's checkout.
 - Point the agent to the project's prose standard, the path `atelier init
@@ -312,7 +320,14 @@ lease it confirms main is still the commit the head was checked and
 reviewed against (if not, it releases the lease and goes round again from
 the merge of main), then accepts and merges. Each step and how long it
 took are recorded on the task as `land.*` events, and a landing stopped
-partway is resumed by running the same command again. The same
+partway is resumed by running the same command again. `atelier land`
+does not push commits that exist only in the task's workspace: a builder
+dispatched by hand (a script that runs an agent which commits but holds no
+token to push) leaves its work unpushed, and an orchestrator's own fix
+committed in the workspace is work the ledger has not seen. Landing stops
+before the lease with "holds N commits the recorded head lacks" and
+changes nothing. Run `atelier push` in the workspace first, then land;
+the push is a deliberate step so that nothing reaches review unseen. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
 `cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
 `atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
@@ -330,6 +345,8 @@ review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
 review by hand.
+
+A request for an admitted reviewer is refused `no_runner` while no live runner offers the review job for it. When the developer will serve the review by hand, open the request with `atelier review-request ID --reviewer H/M --hand`: it skips that one check (every other check on the reviewer stands), needs no runner and no agent token for the reviewer, and the claim below then serves it (t694).
 
 To serve a review by hand, claim it as the reviewer with `atelier
 review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
