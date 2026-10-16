@@ -74,14 +74,28 @@ test("a first choice that still leads is kept, and a rival under the margin or w
   assert.equal(p.kind, "keep");
   assert.equal(p.to, null);
   assert.match(p.counterevidence.join("\n"), /gpt-6-astra's quality figure is not usable: .*3 of 3; under 5, too few for a share/);
-  // Under the margin: 5 of 5 against 9 of 10 is a lead the other way.
-  const near = [...many(9, () => piece(OPUS, GEMINI, "confirmed")), ...many(1, () => piece(OPUS, GEMINI, "refuted")), ...many(5, () => piece(OPUS, GPT, "confirmed"))];
-  const k = proposal(reviewModels(input(near, { assignments: [assigned("a1", "review", [GEMINI, GPT])] })), "review", "a1");
-  assert.equal(k.kind, "keep");
-  assert.match(k.counterevidence.join("\n"), /gpt-6-astra leads by 10 points/);
-  // Ten points is the margin: a lead of exactly that changes it, nine does not (95 of 100 against 86 of 100 stays a keep).
+  // Under the margin: 5 of 5 against 86 of 100 is a lead of 14, but 95 of 100 against 86 of 100 is nine points, a keep.
   const nine = [...many(86, () => piece(OPUS, GEMINI, "confirmed")), ...many(14, () => piece(OPUS, GEMINI, "refuted")), ...many(95, () => piece(OPUS, GPT, "confirmed")), ...many(5, () => piece(OPUS, GPT, "refuted"))];
-  assert.equal(proposal(reviewModels(input(nine, { assignments: [assigned("a1", "review", [GEMINI])] })), "review", "a1").kind, "keep");
+  const k = proposal(reviewModels(input(nine, { assignments: [assigned("a1", "review", [GEMINI])] })), "review", "a1");
+  assert.equal(k.kind, "keep");
+  assert.match(k.counterevidence.join("\n"), /gpt-6-astra leads by 9 points, under the 10-point margin/);
+});
+
+// Finding (gpt-6-astra and gemini-4-argon, t624 review 1): 100% over 90% subtracts
+// to 0.09999999999999998 and was a keep, and the test asserted it. The rule is
+// "at least the margin": exactly ten points proposes the change.
+test("a lead of exactly QUALITY_MARGIN proposes a change, and one point less does not", () => {
+  const exact = [...many(9, () => piece(OPUS, GEMINI, "confirmed")), ...many(1, () => piece(OPUS, GEMINI, "refuted")), ...many(5, () => piece(OPUS, GPT, "confirmed"))];
+  const p = proposal(reviewModels(input(exact, { assignments: [assigned("a1", "review", [GEMINI, GPT])] })), "review", "a1");
+  assert.equal(p.kind, "change");
+  assert.equal(p.to, "gpt-6-astra");
+  assert.match(p.summary, /10 points ahead/);
+  // 0.7 over 0.6 is the same trap in another place.
+  const seven = [...many(6, () => piece(OPUS, GEMINI, "confirmed")), ...many(4, () => piece(OPUS, GEMINI, "refuted")), ...many(7, () => piece(OPUS, GPT, "confirmed")), ...many(3, () => piece(OPUS, GPT, "refuted"))];
+  assert.equal(proposal(reviewModels(input(seven, { assignments: [assigned("a1", "review", [GEMINI])] })), "review", "a1").kind, "change");
+  // 89 of 100 against 80 of 100 is nine points.
+  const under = [...many(80, () => piece(OPUS, GEMINI, "confirmed")), ...many(20, () => piece(OPUS, GEMINI, "refuted")), ...many(89, () => piece(OPUS, GPT, "confirmed")), ...many(11, () => piece(OPUS, GPT, "refuted"))];
+  assert.equal(proposal(reviewModels(input(under, { assignments: [assigned("a1", "review", [GEMINI])] })), "review", "a1").kind, "keep");
 });
 
 test("sparse data for the first choice is insufficient-evidence; the sparse leader is not trusted", () => {
@@ -118,12 +132,16 @@ test("roles Atelier does not measure get insufficient-evidence with the reason, 
 
 test("build: a better first-review approval rate proposes the change, and a challenger with more defects is cited against it", () => {
   const events = [...many(5, () => piece(GLM, GPT, "approved")), ...many(1, () => piece(GLM, GPT, "confirmed")), ...many(2, () => piece(OPUS, GPT, "approved")), ...many(4, () => piece(OPUS, GPT, "confirmed"))];
-  const defect = ev("w1", OWNER, "item.defect", { note: "it broke", foundIn: H1 });
-  const r = reviewModels(input([...events, defect], { assignments: [assigned("a1", "build", [OPUS, GLM])] }));
+  // A defect the developer traced to work glm-5.3 built and had merged.
+  const built = piece(GLM, GPT, "approved");
+  const item = built[0].itemId!;
+  const defect = [ev(item, OWNER, "item.merged", { head: H1 }), ev(item, OWNER, "item.defect", { note: "it broke", head: H1 })];
+  const r = reviewModels(input([...events, ...built, ...defect], { assignments: [assigned("a1", "build", [OPUS, GLM])] }));
   const p = proposal(r, "build", "a1");
   assert.equal(p.kind, "change");
   assert.equal(p.to, "glm-5.3");
-  assert.match(p.evidence.join("\n"), /glm-5.3: .*5 of 6|83%/);
+  assert.match(p.evidence.join("\n"), /glm-5\.3: .*86% \(6 of 7\)/);
+  assert.match(p.counterevidence.join("\n"), /glm-5\.3 has more defects traced to its accepted work \(1\) than opus-5\.5 \(0\)/);
 });
 
 // ── as of TIME ─────────────────────────────────────────────────────────────
@@ -215,6 +233,34 @@ test("snapshots: the days taken, partial days and unjoined points are reported, 
   assert.match(r.models.find((m) => m.model === "opus-5.5")!.snapshots, /4 of 14 days .*have a snapshot, 0 with a figure for this model/);
   // A snapshot of a day after TIME is not read.
   assert.match(reviewModels(input(SCENARIO(), { takes, rows, asOf: "2026-10-11T12:00:00.000Z" })).models.find((m) => m.model === "gpt-6-astra")!.snapshots, /1 of 14 days .*1 with a figure/);
+});
+
+// Finding (gpt-6-astra, t624 review 1): snapshots were filtered by the day they
+// represent, so one recorded after TIME (a backfill, or a revision of an earlier
+// day) changed a historical review.
+test("a snapshot recorded after TIME is not read, whether it is a backfill of an earlier day or a revision of one", () => {
+  const take = (day: string, rev: number, takenAt: string, complete = true) => ({ schema: 1, day, rev, revises: rev > 1 ? rev - 1 : null, takenAt, origin: "original" as const, complete, owner: OWNER, cutoffs: { asOf: "", ledgers: [], unread: [], index: 0, runs: 0 }, pool: [], coverage: { projects: 1, events: 0, unread: [] } });
+  const row = (day: string, rev: number, value: number) => ({ day, rev, model: "gpt-6-astra", role: "review" as const, names: ["gpt-6-astra"], entries: [GPT], leftOut: [], figures: [{ measure: "review-precision", label: "Its blocking findings", source: "precision" as const, window: { from: null, to: null, days: 30 }, kind: "share" as const, numerator: Math.round(value * 10), denominator: 10, n: 10, value, minSamples: 5, state: "measured" as const, version: 1 }] });
+  const a = [assigned("a1", "review", [GEMINI])];
+  const text = (r: ModelReview) => r.models.find((m) => m.model === "gpt-6-astra")!.snapshots;
+  const proposalText = (r: ModelReview) => proposal(r, "review", "a1").evidence.join("\n");
+  // Taken on its day, and a later backfill of 13 October recorded on the 15th, after TIME (the 14th).
+  const takes = [take("2026-10-12", 1, "2026-10-12T23:59:00.000Z"), take("2026-10-13", 1, "2026-10-15T08:00:00.000Z")];
+  const rows = [row("2026-10-12", 1, 0.6), row("2026-10-13", 1, 0.9)];
+  const r = reviewModels(input(SCENARIO(), { takes, rows, assignments: a }));
+  assert.match(text(r), /1 of 14 days .*have a snapshot, 1 with a figure/);
+  assert.doesNotMatch(proposalText(r), /2026-10-13/);
+  // Asked after the backfill, it is seen.
+  assert.match(text(reviewModels(input(SCENARIO(), { takes, rows, asOf: "2026-10-16T00:00:00.000Z" }))), /2 of 14 days/);
+  // A revision of 12 October recorded after TIME: the review reads the revision it could have seen, rows and all.
+  const revised = [take("2026-10-12", 1, "2026-10-12T23:59:00.000Z"), take("2026-10-12", 2, "2026-10-15T09:00:00.000Z")];
+  const revRows = [row("2026-10-12", 1, 0.6), row("2026-10-12", 2, 0.8)];
+  const early = reviewModels(input(SCENARIO(), { takes: revised, rows: revRows, assignments: a }));
+  assert.match(proposalText(early), /60% on 2026-10-12/);
+  assert.doesNotMatch(proposalText(early), /80%/);
+  assert.match(text(early), /1 of 14 days/);
+  const late = reviewModels(input(SCENARIO(), { takes: revised, rows: revRows, asOf: "2026-10-16T00:00:00.000Z", assignments: a }));
+  assert.match(proposalText(late), /80% on 2026-10-12/);
 });
 
 // ── empty, partial, aliases ───────────────────────────────────────────────
