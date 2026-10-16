@@ -166,6 +166,11 @@ export function samePlan(a: Pick<Item, "id" | "kind" | "plan">, b: Pick<Item, "i
 export interface ReviewOverride {
   // Only the rejections present when the developer explicitly overrode them.
   rejections?: { by: string; at: string }[];
+  // Set when an independent approval stood at the head as this was recorded,
+  // so it waived only the rejections above and never the review. If that
+  // approval is later withdrawn, the review is missing again and this does
+  // not stand in for it (t693).
+  rejectionsOnly?: true;
   head: string;
   by: string;
   reason: string;
@@ -1394,7 +1399,7 @@ export function reviewOverrideFor(
   const waived = rejections.length
     ? `Recorded rejections by ${rejections.map((r) => r.by).join(", ")}${g.needsAssessor ? `; ${requirement}` : ""}`
     : requirement;
-  return { override: { head: item.head, by: owner, reason: text, at, ...(rejections.length ? { rejections } : {}) }, waived, contributors: contributorsOf(item) };
+  return { override: { head: item.head, by: owner, reason: text, at, ...(rejections.length ? { rejections } : {}), ...(!g.needsAssessor ? { rejectionsOnly: true as const } : {}) }, waived, contributors: contributorsOf(item) };
 }
 
 // An item holds its scope against other claims while it is claimed,
@@ -1850,7 +1855,10 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       // A project that forbids overrides (t371) counts none, an override
       // recorded before the prohibition included: the change waits for its
       // review as if the override had never been made.
-      overridden = policy.noOverride ? null : overrideAt(item, owner);
+      // An override recorded beside an approval waived only the rejections it
+      // named (rejectionsOnly), so it never stands in for the review.
+      const forReview = policy.noOverride ? null : overrideAt(item, owner);
+      overridden = forReview?.rejectionsOnly ? null : forReview;
       if (!overridden) {
         needsAssessor = true;
         blockers.push(governed ? requirement : protectedNeed(single));

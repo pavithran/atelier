@@ -65,6 +65,15 @@ export function cleanSummary(v: unknown): string | undefined {
 
 // The latest submission for this head decides the summary: a later submit
 // without one leaves none. Events arrive newest first, but order by seq anyway.
+// The events a task page block is defined by: `defining` (read by kind, any
+// age) with the recent window, newest first; the window alone where a page is
+// drawn without a ledger (t661).
+export function definingOf(d: { events: LedgerEvent[]; defining?: LedgerEvent[] }): LedgerEvent[] {
+  if (!d.defining) return d.events;
+  const seen = new Set<number>();
+  return [...d.defining, ...d.events].filter((ev) => !seen.has(ev.seq) && !!seen.add(ev.seq)).sort((a, b) => b.seq - a.seq);
+}
+
 export function submission(events: LedgerEvent[], itemId: string, head: string | null): { summary: string; by: string } | null {
   if (!head) return null;
   const last = events
@@ -83,7 +92,7 @@ const reviewer = (d: Detail, by: string) => (by === (d.ownerActor ?? DEFAULT_OWN
 const upper = (s: string) => (s.startsWith("the ") ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events): Brief {
+export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(detail)): Brief {
   const { item, policy, gate } = detail;
   const view = evidenceAt(policy, detail.evidence, item.head);
   const reviews = countingReviews(detail.reviews, bindingOf(item), policy, detail.ownerActor ?? DEFAULT_OWNER);
@@ -220,7 +229,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
   }
   if (item.state === "merged" || item.state === "abandoned") {
     // A merged task's own event carries the merge commit, when the record has it.
-    const merge = d.events.find((ev) => ev.itemId === item.id && ev.kind === "item.merged");
+    const merge = definingOf(d).find((ev) => ev.itemId === item.id && ev.kind === "item.merged");
     const commit = typeof merge?.data.mergeCommit === "string" ? merge.data.mergeCommit : "";
     const closed = item.state === "abandoned" ? "abandoned" : commit ? `merged as ${commit.slice(0, 8)}` : "merged";
     return { verdict: "none", reason: `The task is closed (${closed}), so nothing is waiting on you.` };

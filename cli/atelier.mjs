@@ -397,7 +397,10 @@ const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPat
 // parses anything, so no argument is changed on the way, and it exits as the
 // toolkit exits; only --version and the token-expiry command are read here
 // first, so they never reach the toolkit. The toolkit is the program
-// ATELIER_OPS names, or atelier-ops on PATH; only an executable file counts.
+// ATELIER_OPS names, or atelier-ops on PATH, or last the checkout the
+// portfolio keeps at ~/ai-projects/atelier-ops (t703: nothing put it on PATH
+// after the move out of iCloud, so every wrap's budget check could not run);
+// only an executable file counts.
 const runnable = (path) => {
   try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
 };
@@ -408,12 +411,13 @@ export function findOps(env = process.env) {
     const candidate = resolve(dir, "atelier-ops");
     if (runnable(candidate)) return candidate;
   }
-  return null;
+  const kept = join(env.HOME || homedir(), "ai-projects", "atelier-ops", "bin", "atelier-ops");
+  return runnable(kept) ? kept : null;
 }
 function runOps(argv) {
   const exe = findOps();
   if (!exe) {
-    process.stderr.write("atelier: atelier ops runs the operations toolkit, atelier-ops, which is not installed on this machine: put it on PATH or set ATELIER_OPS to its path\n");
+    process.stderr.write("atelier: atelier ops runs the operations toolkit, atelier-ops, which is not installed on this machine: put it on PATH, set ATELIER_OPS to its path, or keep it at ~/ai-projects/atelier-ops\n");
     process.exit(2);
   }
   const r = spawnSync(exe, argv, { stdio: "inherit" });
@@ -1575,10 +1579,11 @@ export function criteriaNotice(id, change) {
 }
 
 // The task an agent starts: its short title, then its whole brief, and the
-// project's prose standard (t675) when its policy records one.
-export function formatTask(item, policy = null) {
+// project's prose standard (t675) when its policy records one, as the copy
+// in the workspace when the claim made one (t676).
+export function formatTask(item, policy = null, proseCopy = null) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
-    proseStandardLine(policy?.proseStandard),
+    proseStandardLine(policy?.proseStandard, proseCopy),
     // The note is carried whole, with its line breaks (t480); only terminal control codes go.
     item.dispatch?.note ? `Note (the developer's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }

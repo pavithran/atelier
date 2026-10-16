@@ -3,6 +3,7 @@ import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, fastJobRefusal } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
+import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
@@ -4145,7 +4146,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
     const read: Detail = await L.detail(task);
     const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
     const selectedItem = await L.item(task);
-    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,detail.events),auto};
+    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,definingOf(detail)),auto};
   }
   const recent = (v: FloorView) => v.events[0]?.at ?? "";
   const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
@@ -4231,7 +4232,7 @@ async function taskPage(env: Env, L: ReturnType<typeof ledger>, id: string, form
   const read: Detail = await L.detail(id);
   const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env), ...(formError ? { formError } : {}) };
   detail.runs = await index(env).runsForItem(p.name, id);
-  return renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live);
+  return renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, definingOf(detail)), live);
 }
 
 // Whether a reviewer of another family was available when the owner

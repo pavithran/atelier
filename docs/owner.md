@@ -305,8 +305,8 @@ repository: work on the machines and services around the projects, such as
 surveys of every project, devices, backups and archives, which belongs to
 one developer's setup rather than to the Git platform. `ops` comes first:
 Atelier hands everything after it, unchanged and before reading anything
-itself, to the executable `ATELIER_OPS` names or to `atelier-ops` on `PATH`,
-and exits as it exits. Without one, `atelier ops` says so and exits 2.
+itself, to the executable `ATELIER_OPS` names, to `atelier-ops` on `PATH`, or
+else to `~/ai-projects/atelier-ops/bin/atelier-ops`, and exits as it exits. Without one, `atelier ops` says so and exits 2.
 
 `atelier ops token-expiry NAME --on YYYY-MM-DD` is the one `ops` command
 Atelier handles itself. It records the day a named token expires — the deploy
