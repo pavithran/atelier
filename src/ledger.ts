@@ -811,6 +811,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS agent_artifacts_tokens (agent_id TEXT NOT NULL, repo TEXT NOT NULL, token_id TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, token_id));
       CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -1104,6 +1105,28 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE agent_tokens SET json = ? WHERE id = ?`, JSON.stringify(token), id);
     this.log(null, this.owner, "token.revoked", { id: token.id, actor: token.actor, projects: token.projects ?? null, expiresAt: token.expiresAt }, at);
     return true;
+  }
+
+  // The Artifacts tokens an agent token's requests minted (t598), so revoking
+  // the agent token can revoke them too. Recording is refused (false) when the
+  // agent token is unknown or already revoked: the caller then revokes the
+  // token it just minted. A token past its expiry needs no revoking, so its
+  // row is dropped whenever another is recorded.
+  recordArtifactsToken(agentId: string, repo: string, tokenId: string, expiresAt: string): boolean {
+    const row = this.sql.exec(`SELECT json FROM agent_tokens WHERE id = ?`, agentId).toArray()[0];
+    if (!row || (JSON.parse(row.json as string) as AgentToken).revokedAt) return false;
+    this.sql.exec(`DELETE FROM agent_artifacts_tokens WHERE expires_at <= ?`, new Date().toISOString());
+    this.sql.exec(`INSERT OR REPLACE INTO agent_artifacts_tokens (agent_id, repo, token_id, expires_at) VALUES (?, ?, ?, ?)`, agentId, repo, tokenId, expiresAt);
+    return true;
+  }
+
+  agentArtifactsTokens(agentId: string): { repo: string; tokenId: string }[] {
+    return this.sql.exec(`SELECT repo, token_id FROM agent_artifacts_tokens WHERE agent_id = ? ORDER BY rowid`, agentId).toArray()
+      .map((r) => ({ repo: r.repo as string, tokenId: r.token_id as string }));
+  }
+
+  forgetArtifactsToken(agentId: string, tokenId: string): void {
+    this.sql.exec(`DELETE FROM agent_artifacts_tokens WHERE agent_id = ? AND token_id = ?`, agentId, tokenId);
   }
 
   // Browser sessions. Signing in stores the SHA-256 of a random session id
