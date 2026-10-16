@@ -18,7 +18,7 @@ import type { CriteriaReviewView, ProjectRecord, LedgerEvent, ReviewerAvailabili
 import { landingOf } from "./diff";
 import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
-import { briefFor, submission, type Verdict } from "./brief";
+import { briefFor, definingOf, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
 import { fenceText, prereviewLines, type PrereviewFence, type PrereviewView } from "./dispatch/prereview.ts";
 import { drawImported, laneColour } from "./import/draw";
@@ -264,6 +264,10 @@ export interface Detail {
   // `events` is (fastLandingEvents in src/ledger.ts, t637); unset where the
   // page is drawn without a ledger, which then reads `events`.
   fastLanding?: LedgerEvent[];
+  // The events the other blocks are defined by, read by kind and outside that
+  // window (definingEvents in src/ledger.ts, t661); read through
+  // definingOf in src/brief.ts, which falls back to `events`.
+  defining?: LedgerEvent[];
 }
 export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
@@ -2400,7 +2404,7 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
 // the merge, the commit merged and the reviews as the developer gave them,
 // said plainly so it is never read as a gated landing.
 function recordedMergeBlock(d: Detail): string {
-  const ev = d.events.find((x) => x.kind === "item.merge_recorded");
+  const ev = definingOf(d).find((x) => x.kind === "item.merge_recorded");
   if (!ev) return "";
   const r = ev.data as Record<string, unknown>;
   const short = (v: unknown) => e(String(v ?? "").slice(0, 12));
@@ -2415,7 +2419,7 @@ function recordedMergeBlock(d: Detail): string {
 // the owner's batch takes, as atelier fast land takes it.
 function fastReadyBlock(d: Detail): string {
   if (d.item.state === "merged" || d.item.state === "abandoned") return "";
-  const ready = standingFastReady(d.events);
+  const ready = standingFastReady(definingOf(d));
   if (!ready) return "";
   return `<div class="fast-ready"><p><strong>Ready for fast land at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the developer lands it with the next batch.</p>
   <p class="meta"><code>atelier fast land ${e(d.item.id)}=${e(ready.commit)}</code></p></div>`;
@@ -2435,8 +2439,8 @@ const VERDICT_TONE: Record<Verdict, string> = { accept: "go", merge: "go", revie
 // record shows, and what it points to.
 function briefBlock(d: Detail): string {
   if (!["claimed", "submitted", "accepted", "blocked"].includes(d.item.state)) return "";
-  const b = briefFor(d, d.events);
-  const said = submission(d.events, d.item.id, d.item.head);
+  const b = briefFor(d, definingOf(d));
+  const said = submission(definingOf(d), d.item.id, d.item.head);
   const summary = said
     ? `<div class="review-note"><p>“${e(said.summary)}”</p><p class="meta">Summary from ${e(said.by)}, not verified</p></div>`
     : "";
@@ -2862,7 +2866,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // The owner's framing, set with atelier new or atelier edit: shown only
   // when any of it is set, above the brief, where an agent or reviewer reads first.
   const list = (entries: string[]) => `<ul>${entries.map((x) => `<li>${e(x)}</li>`).join("")}</ul>`;
-  const defectOrigin = d.events.filter((ev) => ev.kind === "item.defect_of" && typeof ev.data.itemId === "string").map((ev) => `<p>Defect from post-merge review of <a href="${href("p", p.name, String(ev.data.itemId))}">${e(String(ev.data.itemId))}</a>.</p>`).join("");
+  const defectOrigin = definingOf(d).filter((ev) => ev.kind === "item.defect_of" && typeof ev.data.itemId === "string").map((ev) => `<p>Defect from post-merge review of <a href="${href("p", p.name, String(ev.data.itemId))}">${e(String(ev.data.itemId))}</a>.</p>`).join("");
   const framing = item.nonGoals?.length || item.stopWhen?.length || item.nextGate
     ? `<section class="review-section framing" id="framing" aria-label="How the task is framed"><h3>Framing</h3><dl>
     ${item.nonGoals?.length ? `<dt>Non-goals</dt><dd>${list(item.nonGoals)}</dd>` : ""}
@@ -2959,7 +2963,7 @@ ${submissionRounds(d)}
   // review of the landed head (t396) audits the merge and is shown beside them.
   const reviewBinding = bindingOf(item);
   const counting = new Set(countingReviews(d.reviews, reviewBinding, d.policy, d.ownerActor ?? DEFAULT_OWNER));
-  const landedHead = landingOf(item, d.events.toReversed())?.commit ?? null;
+  const landedHead = landingOf(item, definingOf(d).toReversed())?.commit ?? null;
   const current = latestReviews(d.reviews, reviewBinding);
   const shownReviews = [...current, ...(typeof landedHead === "string" && landedHead !== item.head ? latestReviews(d.reviews, { ...reviewBinding, head: landedHead }) : [])];
   const notCounted = (r: Review) => current.includes(r) && !counting.has(r);
@@ -2979,7 +2983,7 @@ ${submissionRounds(d)}
   // for nothing on a task still in hand, as gate counts none; a merged task's
   // went in on it, and keeps its label.
   const voided = !!overridden && !!d.policy.noOverride && item.state !== "merged";
-  const overrideEvent = overridden ? d.events.filter((v) => v.kind === "review.overridden" && str(v.data.head) === overridden.head).sort((a, b) => a.seq - b.seq).at(-1) : undefined;
+  const overrideEvent = overridden ? definingOf(d).filter((v) => v.kind === "review.overridden" && str(v.data.head) === overridden.head).sort((a, b) => a.seq - b.seq).at(-1) : undefined;
   const overrideNote = overridden
     ? `<div class="review-note">${tag(voided ? "Override not counted" : "Review overridden", "ask")}
     <p>${e(overridden.reason)}</p>${overridden.quote ? `<p class="meta">On ${e(directionText(overridden))}</p>` : ""}<p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the developer's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p>${overrideEvent ? `<p class="meta">${e(availabilityText(overrideEvent.data.availability))}</p>` : ""}</div>`
@@ -2996,7 +3000,7 @@ ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
   ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${prereview}${overrideNote}${blockers}
-  ${item.state === "merged" ? d.events.filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
+  ${item.state === "merged" ? definingOf(d).filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
   ${fastLandingBlock(p, d)}${recordedMergeBlock(d)}${fastReadyBlock(d)}
 </section>
 ${submissionRounds(d)}
