@@ -10,9 +10,11 @@
 # run   gives every reviewer in LIST the same blind brief and the same diff of
 #       every build in the sample, read-only, and collects each reply. Reviews
 #       run per family at the same time: at most 2 Codex, 2 Antigravity, 1
-#       Claude Code. A reply with no "VERDICT: APPROVE|REJECT" line is tried
+#       Claude Code. A reply in which review-bake-score.mjs finds no verdict is tried
 #       again once; a second miss is recorded as failed for that build. A run
-#       can be repeated: a review that already has its verdict is kept.
+#       can be repeated: a review that already has its verdict is kept. Every
+#       scheduled reviewer/build pair is written to DIR/pairs.txt; the scorer
+#       counts a pair with no result as a failed review.
 # score compares each review with the judge's verdict (review-bake-score.mjs,
 #       described there): per build the defects caught and missed, the false
 #       blocking findings, the approvals of C or D builds and the rejections of
@@ -96,16 +98,19 @@ prepare_inputs() {
   print -r -- $head > $d/head
 }
 
+# has_verdict FILE: true when review-bake-score.mjs reads a verdict in FILE.
+has_verdict() { node $here/review-bake-score.mjs --has-verdict $1 }
+
 # one REVIEWER BUILD: one review, with its tries; writes reviews/ and status/.
 one() {
   local reviewer=$1 build=$2 key=${1//\//_}__$2
   local in=$RB_OUT/inputs/$build ws=$RB_BUILDS/$build
   local res=$RB_OUT/reviews/$key.md st=$RB_OUT/status/$key.json log=$RB_OUT/logs/$key
   mkdir -p $RB_OUT/reviews $RB_OUT/status $RB_OUT/logs $RB_CACHE
-  if [[ -s $res ]] && grep -qE 'VERDICT[*_ ]*:[*_ ]*(APPROVE|REJECT)' $res; then print "kept   $reviewer $build"; return 0; fi
+  if [[ -s $res ]] && has_verdict $res; then print "kept   $reviewer $build"; return 0; fi
   local head=$(<$in/head) clone=$RB_CACHE/$$-$key try=0 ok=0 started=$SECONDS
   rm -rf $clone
-  git -c advice.detachedHead=false clone -q $ws $clone && git -C $clone -c advice.detachedHead=false checkout -q --detach $head || { print -u2 "clone failed for $key"; return 1 }
+  git -c advice.detachedHead=false clone -q $ws $clone && git -C $clone -c advice.detachedHead=false checkout -q --detach $head || { print -u2 "clone failed for $key"; print -r -- "{\"reviewer\":\"$reviewer\",\"build\":\"$build\",\"tries\":0,\"ok\":false,\"seconds\":0,\"error\":\"clone failed\"}" > $st; return 1 }
   git -C $clone remote remove origin 2>/dev/null
   [[ -d $ws/node_modules ]] && ln -s $ws/node_modules $clone/node_modules
   mkdir -p $clone/.scratch; print ".scratch/" >> $clone/.git/info/exclude
@@ -122,8 +127,8 @@ one() {
       claude-code/*)
         timeout $RB_TIMEOUT ${RB_CLAUDE:-$HOME/.local/bin/atelier-claude} ${reviewer#claude-code/} $in/brief.md $clone undefined $in/diff.txt $res.try > $log.out 2> $log.err ;;
     esac
-    # A reply counts when it states a verdict line; the scorer reads it the same way.
-    grep -qE 'VERDICT[*_ ]*:[*_ ]*(APPROVE|REJECT)' $res.try && ok=1 || cp $res.try $res.fail$try
+    # A reply counts when the scorer's parser finds a verdict in it: one parser for collection, retention and scoring.
+    has_verdict $res.try && ok=1 || cp $res.try $res.fail$try
   done
   if (( ok )); then mv $res.try $res; else rm -f $res.try; : > $res; fi
   print -r -- "{\"reviewer\":\"$reviewer\",\"build\":\"$build\",\"tries\":$try,\"ok\":$( (( ok )) && print true || print false ),\"seconds\":$(( SECONDS - started ))}" > $st
@@ -175,6 +180,9 @@ case $sub in
     typeset -A lane
     for b in $builds; do for r in $run_list; do f=$(reviewer_family $r); lane[$f]+="$r $b"$'\n'; done; done
     if [[ -n $dry ]]; then for f in ${(k)lane}; do print "lane $f:"; print -r -- ${lane[$f]}; done; exit 0; fi
+    # Every scheduled pair is recorded, so the scorer can count one that left no result as failed.
+    for b in $builds; do for r in $run_list; do print -r -- "$r	$b"; done; done >> $RB_OUT/pairs.txt
+    sort -u -o $RB_OUT/pairs.txt $RB_OUT/pairs.txt
     pids=()
     for f in ${(k)lane}; do
       case $f in codex) par=2 ;; antigravity) par=2 ;; *) par=1 ;; esac
