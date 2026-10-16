@@ -1842,6 +1842,19 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
+  // The version of the standard set last stored here; 0 before any delivery.
+  standardReviewersVersion(): number {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'standard-reviewers-version'`).toArray()[0];
+    return row ? Number(row.value) : 0;
+  }
+
+  // On the standard project: its admissions with the version of this state,
+  // which every admission or withdrawal here raises by one.
+  standardReviewersSnapshot(): { admissions: ReviewerAdmission[]; version: number } {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewer-admissions-version'`).toArray()[0];
+    return { admissions: this.reviewerAdmissions(), version: row ? Number(row.value) : 0 };
+  }
+
   // The standard project's active admissions, as the index last sent them
   // (setStandardReviewers). The standard project itself judges by its own.
   standardReviewers(): ReviewerAdmission[] {
@@ -1859,12 +1872,17 @@ export class Ledger extends DurableObject<Env> {
 
   // The standard project's admissions change: stored, and a request open to a
   // model no longer admitted here is withdrawn as a withdrawal here would.
-  setStandardReviewers(admissions: ReviewerAdmission[]): void {
+  // Each delivery carries the version the standard project gave the set
+  // (standardReviewersSnapshot); a delivery older than the one stored is
+  // dropped, so a slow broadcast cannot restore a reviewer a later one withdrew.
+  setStandardReviewers(admissions: ReviewerAdmission[], version: number): void {
     if (this.project().name === STANDARD_REVIEWER_PROJECT) return;
+    if (version < this.standardReviewersVersion()) return;
     const before = this.project().policy.reviewerAdmissions ?? [];
     const standard = standardAdmissions(admissions);
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('standard-reviewers', ?)`, JSON.stringify(standard));
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('standard-reviewers-version', ?)`, String(version));
       const after = this.project().policy.reviewerAdmissions ?? [];
       const at = new Date().toISOString();
       for (const gone of before.filter((b) => b.active && !after.some((a) => a.active && sharesName(a, b)))) {
@@ -1903,6 +1921,12 @@ export class Ledger extends DurableObject<Env> {
     const entry = entries[0];
     if (active && !entry) throw new RuleError("no_model", `${named} is not registered; use atelier models add before atelier models admit`, 404);
     if (!active && !prior) throw new RuleError("no_admission", `${named} has no reviewer admission in this project`, 404);
+    // A harness prefix on a withdrawal must name the registered model's harness too.
+    if (!active && harness) {
+      const registered = pool.filter((m) => matches(m.id, m.aliases));
+      if (!registered.length) throw new RuleError("no_model", `${named} is not registered, so its harness cannot be checked; withdraw it by the model name alone`, 404);
+      if (!entry) throw new RuleError("no_model", `${named} is not registered under that harness; atelier models lists the registered harness`, 404);
+    }
     const id = active ? entry!.id : prior!.id;
     const aliases = active ? entry!.aliases : prior!.aliases;
     if (active && actorFamily(`model/${id}`) === "other") throw new RuleError("unknown_family", `${id}'s family is not recognised from its name`, 403);
@@ -1920,6 +1944,7 @@ export class Ledger extends DurableObject<Env> {
     next.push(record);
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions', ?)`, JSON.stringify(next));
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions-version', ?)`, String(this.standardReviewersSnapshot().version + 1));
       this.log(null, actor, active ? "reviewer.admitted" : "reviewer.withdrawn", { ...record }, record.at);
       if (!active) this.withdrawRequestsOf(record, actor, record.at, record.reason);
     });
