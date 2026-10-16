@@ -1321,12 +1321,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const asOf = asked === null ? new Date().toISOString() : /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2}))?$/.test(asked) && !Number.isNaN(Date.parse(asked)) ? new Date(asked).toISOString() : null;
     if (!asOf) throw new RuleError("bad_time", "as-of is an ISO date or time, such as 2026-10-14 or 2026-10-14T09:00:00Z", 400);
     const I = index(env);
-    const [read, assignmentEvents, roles] = await Promise.all([readSources(env), I.assignmentEvents(), I.roleAssignments()]);
+    // Every run report recorded before TIME, page by page (the newest 1,000 that
+    // readSources gives would lose the older ones a past TIME needs); a read that
+    // cannot finish makes the review partial, never a review of what was read.
+    const [read, runs, assignmentEvents, roles] = await Promise.all([readSources(env, false), readRunsThrough(I, null, asOf), I.assignmentEvents(), I.roleAssignments()]);
     const pool = (await I.models()) as unknown as ModelEntry[];
     const { takes, rows } = await readModelSnapshots(env, [...new Set(pool.map((e) => canonicalName(`${e.harness}/${e.id}`, pool)))], Date.parse(asOf));
     return json(reviewModels({
-      asOf, pool, sources: read.sources, runs: read.runs, assignmentEvents, owner: ownerActor(env), cards: await I.modelCardRecords(),
-      assignments: roles.assignments, projectNames: roles.names, takes, rows, unread: read.unread.map((p) => p.name),
+      asOf, pool, sources: read.sources, runs: runs.reports, assignmentEvents, owner: ownerActor(env), cards: await I.modelCardRecords(),
+      assignments: roles.assignments, projectNames: roles.names, takes, rows, unread: [...read.unread.map((p) => p.name), ...(runs.complete ? [] : ["some run reports"])],
     }));
   }
   // The model pool requires the owner token. Owner tools may read it and
@@ -3385,9 +3388,9 @@ async function trackRecords(env: Env): Promise<{ sources: ProjectEvents[]; relia
 
 // Every project's events, by its key (so a renamed project keeps its history, as suggestionRecords has it), with the newest RUN_REPORTS run
 // reports and the projects whose Ledger could not be read just then.
-async function readSources(env: Env): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
+async function readSources(env: Env, withRuns = true): Promise<{ sources: ProjectEvents[]; runs: RunReport[]; events: number; unread: ProjectRecord[] }> {
   const I = index(env);
-  const [projects, runs] = await Promise.all([I.projects(), I.runs()]);
+  const [projects, runs] = await Promise.all([I.projects(), withRuns ? I.runs() : []]);
   const unread: ProjectRecord[] = [];
   const sources = (await Promise.all(projects.map(async (p): Promise<ProjectEvents | null> => {
     try { return { project: p.key ?? p.name, events: await allEvents(ledgerOf(env, p)) }; }
