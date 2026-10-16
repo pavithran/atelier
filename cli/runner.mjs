@@ -11,6 +11,7 @@ import { checkEnv } from "./check-env.mjs";
 import { killTree, runGroup, treeGroups } from "./group.mjs";
 import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
 import { SLOT_WRAPPER } from "./load.mjs";
+import { pairedProjectCommit } from "./fresh.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { REVIEW_RENEW_MS, fastJobRefusal } from "../src/rules.ts";
@@ -2864,7 +2865,17 @@ export function runnerCheckout(dir = RUNNER_CHECKOUT, executeChild = execute) {
       const head = result.code === 0 ? (result.output ?? "").trim() : "";
       return COMMIT.test(head) ? head : null;
     },
-    contains: async (commit, ref) => COMMIT.test(commit) && (await git(["merge-base", "--is-ancestor", commit, ref])).code === 0,
+    // A server whose project was built with --history-since names main by the
+    // baseline's commit id, which this checkout never holds; its pair in the
+    // checkout's baseline map is the commit that stands for it here (t695).
+    contains: async (commit, ref) => {
+      if (!COMMIT.test(commit)) return false;
+      if ((await git(["merge-base", "--is-ancestor", commit, ref])).code === 0) return true;
+      const gitDir = await git(["rev-parse", "--absolute-git-dir"]);
+      if (gitDir.code !== 0) return false;
+      const paired = pairedProjectCommit((gitDir.output ?? "").trim(), commit);
+      return Boolean(paired && COMMIT.test(paired) && (await git(["merge-base", "--is-ancestor", paired, ref])).code === 0);
+    },
   };
 }
 

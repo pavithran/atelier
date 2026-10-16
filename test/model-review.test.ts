@@ -126,7 +126,7 @@ test("roles Atelier does not measure get insufficient-evidence with the reason, 
     assert.equal(p.kind, "insufficient-evidence");
     assert.match(p.summary, /cannot be judged: /);
   }
-  assert.match(r.roles.find((x) => x.role === "plan")!.unmeasured!, /does not yet measure planning/);
+  assert.match(r.roles.find((x) => x.role === "plan")!.unmeasured!, /No plan run has been recorded/);
   assert.equal(candidate(r, "plan", "opus-5.5").quality, null);
 });
 

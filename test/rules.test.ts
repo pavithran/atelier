@@ -1488,3 +1488,27 @@ test("a merge is recorded only when main holds it and its second parent is the t
   assert.equal(code({ parents: [H1, P1], holds: true }), "second_parent_differs");
   assert.match(recordedMergeRefusal(record, { parents: [H1, P1], holds: true })!.detail, /second parent is eeeeeeee, not aaaaaaaa/);
 });
+
+// t562, found on ikon-weblog t33: `done` recorded a check as not applicable at a
+// head, then a later measurement at that head (main had moved, so it listed
+// another task's paths) made the same check required, and review-request
+// waited on a check `done` had called not applicable.
+test("a check recorded not applicable at a head stays so when a later measurement of that head lists its paths", () => {
+  const p: ProjectPolicy = { checks: ["npm test", "npm run e2e"], checkPaths: [{ command: "npm run e2e", paths: ["e2e/**"] }] };
+  const na = pass({ claim: "npm run e2e", passed: null, notApplicable: true, changedPaths: ["src/a.ts"], where: "runner", at: "2026-10-03T12:00:00.000Z" });
+  const ran = pass({ at: "2026-10-03T12:00:00.000Z", where: "runner" });
+  const later = pass({ at: "2026-10-03T13:00:00.000Z", where: "runner", changedPaths: ["src/a.ts", "e2e/other.spec.ts"] });
+  const view = evidenceAt(p, [na, ran, later], H1);
+  assert.deepEqual(view.notApplicable, ["npm run e2e"]);
+  assert.deepEqual(view.checks.map((c) => c.claim), ["npm test"]);
+  assert.deepEqual(mergedChecksAt(p, [na, ran, later], H1, null).checks.map((c) => c.claim), ["npm test"]);
+  // Without the record, the later measurement makes the check required and pending.
+  const bare = evidenceAt(p, [ran, later], H1);
+  assert.deepEqual(bare.checks.map((c) => c.claim), ["npm test", "npm run e2e"]);
+  // A run of the check after the record leaves the paths measured to decide.
+  const reran = pass({ claim: "npm run e2e", at: "2026-10-03T14:00:00.000Z", changedPaths: ["src/a.ts", "e2e/other.spec.ts"] });
+  assert.deepEqual(evidenceAt(p, [na, ran, later, reran], H1).notApplicable, []);
+  // A record the policy no longer supports (its paths now include the measured ones) does not stand.
+  const widened: ProjectPolicy = { ...p, checkPaths: [{ command: "npm run e2e", paths: ["e2e/**", "src/**"] }] };
+  assert.deepEqual(evidenceAt(widened, [na, ran, later], H1).notApplicable, []);
+});

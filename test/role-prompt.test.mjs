@@ -72,6 +72,17 @@ test("docs/orchestrating.md states the same standing rules", () => {
   for (const rule of ORCHESTRATE_RULES) assert.match(doc, rule);
 });
 
+// Finding: hqpe-control t54 was filed with "t52's tests pass unchanged" while its
+// own fix falsified one t52 test; only reading the test before dispatch caught it.
+test("the briefing section tells the orchestrator to run 'existing tests pass' criteria against the change, with the t54 example", () => {
+  const doc = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
+  const briefing = doc.slice(doc.indexOf("## Briefing an agent"), doc.indexOf("## Running agents in each harness"));
+  assert.match(briefing, /run each "existing tests pass" criterion against the change/);
+  assert.match(briefing, /name any test the change must rewrite/);
+  assert.match(briefing, /hqpe-control t54/);
+  assert.match(briefing, /t52's tests pass unchanged/);
+});
+
 test("the orchestrate guide names the handbook's public URL, and --full prints the handbook from outside the checkout", () => {
   assert.ok(ROLE_PROMPTS.orchestrate.includes("https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md"));
   const full = run(["guide", "--role", "orchestrate", "--full"]);
@@ -172,4 +183,14 @@ test("under single-family mode the runner's default review role never asks for a
   // A project's own review prompt is the owner's text, used as written in either mode.
   const own = { show: async () => "## Reviewing\n\nThe project's own review instructions.\n" };
   assert.equal(await reviewRoleText(own, "/ws", { target: "abc123" }, "anthropic"), "## Reviewing\n\nThe project's own review instructions.");
+});
+
+// Finding t701: a hand-dispatched builder's unpushed commits stopped
+// `atelier land t52` with "holds 1 commit the recorded head lacks", and the
+// handbook said land does the push. It stops by design (test/land-lease-workflow
+// "land stops before the lease ..."), so the handbook must say a push comes first.
+test("docs/orchestrating.md says a push comes before landing a workspace with unpushed commits", () => {
+  const doc = readFileSync("docs/orchestrating.md", "utf8");
+  assert.match(doc, /does\s+not\s+push\s+commits\s+that\s+exist\s+only\s+in\s+the\s+task's\s+workspace/);
+  assert.match(doc, /Run\s+`atelier push`\s+in\s+the\s+workspace\s+first,\s+then\s+land/);
 });
