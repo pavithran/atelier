@@ -199,6 +199,8 @@ export interface CriteriaReviewClaim {
   reviewer: string;
   brief: string;
   owner: string;
+  // The project's prose standard path, structurally (t676): the runner stages the copy from this, never from the brief's text.
+  proseStandard: string | null;
 }
 
 // Where an item's criteria review stands, as the detail route and the
@@ -5175,6 +5177,24 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.landed_fast', 'item.fix_filed') OR (seq >= ? AND kind IN ('review.requested', 'review.approved', 'review.rejected'))) ORDER BY seq DESC`, id, landed).toArray().map(eventOf);
   }
 
+  // The events the task page's other blocks are defined by, newest first,
+  // read by kind outside the window detail().events is (t661, follow-up of
+  // t637's fastLandingEvents): the merge and its plan-branch integration
+  // (the merge receipt, the diff as landed), the submissions (the summary),
+  // the standing fast-ready report with what could make it stale, the defect
+  // links both ways, the merge recorded afterwards and the override with its
+  // reviewer availability. Each is a handful of events however long the
+  // task's record is.
+  definingEvents(id: string): LedgerEvent[] {
+    const ready = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'item.fast_ready'`, id).one().seq;
+    const stale = FAST_READY_STALE.map(() => "?").join(", ");
+    const rows = this.sql.exec(
+      `SELECT * FROM events WHERE item_id = ? AND (kind IN ('item.merged', 'part.integrated', 'item.submitted', 'item.defect_of', 'item.defect', 'item.merge_recorded', 'review.overridden') OR (? IS NOT NULL AND seq >= ? AND (kind = 'item.fast_ready' OR kind IN (${stale})))) ORDER BY seq DESC`,
+      id, ready ?? null, ready ?? 0, ...FAST_READY_STALE,
+    ).toArray();
+    return rows.map(eventOf);
+  }
+
   landedFastReceipt(id: string): FastReceipt | null {
     const e = this.events(id, Number.MAX_SAFE_INTEGER).find((x) => x.kind === "item.landed_fast");
     return e ? e.data as unknown as FastReceipt : null;
@@ -5425,7 +5445,7 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id) };
+    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -5592,7 +5612,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -5615,7 +5635,7 @@ export class Ledger extends DurableObject<Env> {
       // cannot know: the server holds the policy.
       const prose = proseStandardLine(this.project().policy.proseStandard);
       const text = [...sections.map((f) => findingsSection(f)), criteria, prose].filter(Boolean).join("\n\n");
-      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text) };
+      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null };
     }
     assertOwner(item, actor);
     const project = this.project();
@@ -5631,6 +5651,7 @@ export class Ledger extends DurableObject<Env> {
           actor: record.planner, attempt: failed + 1, note, errors: lastErrors,
           proseStandard: project.policy.proseStandard ?? null,
         }),
+        proseStandard: project.policy.proseStandard ?? null,
       };
     }
     const planId = item.plan!;
@@ -5672,6 +5693,7 @@ export class Ledger extends DurableObject<Env> {
         criteriaReview: criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id)) || null,
         proseStandard: project.policy.proseStandard ?? null,
       }),
+      proseStandard: project.policy.proseStandard ?? null,
     };
   }
 
@@ -6380,10 +6402,13 @@ export class Ledger extends DurableObject<Env> {
       const live = this.sql.exec(`SELECT id, head, dispatch, tier, state FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
       for (const r of live) {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
-        const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+        // A request naming only a model is held by the owner's standing as
+        // a dispatch is (t649, t659); independence reads a reviewer's
+        // harness and model, so it needs both.
+        const asked = dispatchActor(d);
         const refusal = !asked ? null
-          : (r.tier === 1 ? (contributed(asked, contributors) ? `${asked} contributed to it, and nobody reviews their own work` : companyRefusal(asked, single))
-            : independenceRefusal(asked, contributors, single)) ?? (r.state === "open" ? actorStanding(standing, asked, "review") : null);
+          : (d.agent ? (r.tier === 1 ? (contributed(asked, contributors) ? `${asked} contributed to it, and nobody reviews their own work` : companyRefusal(asked, single))
+            : independenceRefusal(asked, contributors, single)) : null) ?? (r.state === "open" ? actorStanding(standing, asked, "review") : null);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal, ...(r.tier === 1 ? { tier: true } : {}) }, at);
@@ -7563,7 +7588,7 @@ export class Ledger extends DurableObject<Env> {
       if (held === null || lapse < held) await this.ctx.storage.setAlarm(lapse);
     }
     const status = criteriaStatus(rev, this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), now);
-    return { item, rev, criteria: row.criteria, authors: row.authors, request: row.id, reviewer: actor, brief: this.criteriaBrief(item, rev, row.authors, status.round), owner: this.owner };
+    return { item, rev, criteria: row.criteria, authors: row.authors, request: row.id, reviewer: actor, brief: this.criteriaBrief(item, rev, row.authors, status.round), owner: this.owner, proseStandard: this.project().policy.proseStandard ?? null };
   }
 
   // A named criteria reviewer, and every claim and verdict, meets the
