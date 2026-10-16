@@ -6408,10 +6408,13 @@ export class Ledger extends DurableObject<Env> {
       const live = this.sql.exec(`SELECT id, head, dispatch, tier, state FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
       for (const r of live) {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
-        const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+        // A request naming only a model is held by the owner's standing as
+        // a dispatch is (t649, t659); independence reads a reviewer's
+        // harness and model, so it needs both.
+        const asked = dispatchActor(d);
         const refusal = !asked ? null
-          : (r.tier === 1 ? (contributed(asked, contributors) ? `${asked} contributed to it, and nobody reviews their own work` : companyRefusal(asked, single))
-            : independenceRefusal(asked, contributors, single)) ?? (r.state === "open" ? actorStanding(standing, asked, "review") : null);
+          : (d.agent ? (r.tier === 1 ? (contributed(asked, contributors) ? `${asked} contributed to it, and nobody reviews their own work` : companyRefusal(asked, single))
+            : independenceRefusal(asked, contributors, single)) : null) ?? (r.state === "open" ? actorStanding(standing, asked, "review") : null);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal, ...(r.tier === 1 ? { tier: true } : {}) }, at);

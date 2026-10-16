@@ -284,6 +284,16 @@ unless `--config` names another file):
   The runner's default opencode command names this folder
   (`--providers`), so two runner configs never share an index.
 
+A home runner also takes the pool's opencode models served by OpenRouter
+that the pool records as cloud (`qwen3.8-max`, `mimo-v2.6-pro`): they run
+through the AI Gateway's `openrouter/v1` route, and `OPENROUTER_IDS` in
+`cli/harness/providers.mjs` maps their pool ids to OpenRouter's. A Claude
+model (`anthropic/*`) through OpenRouter is refused, by setup and by the
+adapter: opencode's OpenAI-compatible route gets no prompt caching for it, so
+it costs about five times its cached price; it belongs on claude-code. A
+MiMo build run has a 20-minute limit (`RUN_LIMITS`) and is run once more
+when it ends with no commit and a transport error.
+
 A pool model for a harness this machine lacks is named and left out. An
 opencode model is refused, and left out with the reason printed, when:
 
