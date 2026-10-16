@@ -43,7 +43,8 @@
 //   insufficient-evidence  the role is unmeasured, the record is partial, P is
 //                          not in the pool, or P's quality figure is not usable.
 //   change                 another candidate's quality figure is comparable
-//                          with P's and exceeds it by at least QUALITY_MARGIN.
+//                          with P's and exceeds it by at least QUALITY_MARGIN
+//                          (a lead of exactly the margin counts).
 //                          The best such candidate (then the larger sample,
 //                          then the model id) is proposed.
 //   keep                   otherwise: P's figure is usable and nothing
@@ -74,7 +75,13 @@ import { pace } from "./speed.ts";
 // The lead, in share points, a challenger's quality needs over the first
 // choice's for a change to be proposed. Ten points of a share of at least
 // five cases is the smallest difference this review treats as more than noise.
+//
+// The rule is "at least": a lead of exactly QUALITY_MARGIN proposes a change,
+// one point under it does not. The lead is a difference of two shares, so it
+// is compared to a tolerance (a share of 100% over 90% subtracts to
+// 0.09999999999999998, which is ten points).
 export const QUALITY_MARGIN = 0.1;
+export const leadsByMargin = (lead: number, first: number) => lead - first >= QUALITY_MARGIN - 1e-9;
 // A card read longer ago than this is stale; one recorded within NEW_CARD_DAYS is new.
 export const CARD_STALE_DAYS = 90;
 export const NEW_CARD_DAYS = 7;
@@ -216,13 +223,18 @@ export function reviewModels(input: ReviewInput): ModelReview {
   const cardRecords = input.cards.filter((c) => before(c.at));
   const named = [...new Map(pool.map((e) => [canonicalName(`${e.harness}/${e.id}`, names), `${e.harness}/${e.id}`])).values()];
   const to = addDays(utcDay(end), -1);
-  const takes = input.takes.filter((t) => t.day <= to);
+  // A snapshot counts when it was recorded strictly before TIME, not only when
+  // its day is before: a day backfilled or revised after TIME is not seen, and
+  // its rows go with the revision that wrote them.
+  const takes = input.takes.filter((t) => t.day <= to && before(t.takenAt));
+  const admitted = new Set(takes.map((t) => `${t.day} ${t.rev}`));
+  const rows = input.rows.filter((r) => r.day <= to && admitted.has(`${r.day} ${r.rev}`));
   const view = new Map<string, { cmp: ModelComparison; cards: CardView; trend: ModelTrend; notes: ModelNote[] }>();
   for (const n of named) {
     const cards = modelCardView(cardRecords, pool, n);
     const cmp = compareModel({ named: n, pool, cards, ...records, assignments: current, projectNames: input.projectNames, coverage });
     const notes = cmp.entries.flatMap((id) => pool.find((e) => `${e.harness}/${e.id}` === id)?.notes ?? []).filter((x) => before(x.at)).sort((a, b) => a.at.localeCompare(b.at));
-    view.set(cmp.model, { cmp, cards, notes, trend: trendOf(cmp.model, takes, input.rows.filter((r) => r.day <= to), to) });
+    view.set(cmp.model, { cmp, cards, notes, trend: trendOf(cmp.model, takes, rows, to) });
   }
   const models = [...view.values()].sort((a, b) => a.cmp.model.localeCompare(b.cmp.model));
   const keyOf = (actor: string) => canonicalName(actor, names);
@@ -275,7 +287,7 @@ export function reviewModels(input: ReviewInput): ModelReview {
       if (partial) return insufficient(`${a.id} cannot be judged: the record is partial.`);
       if (!own) return insufficient(`${a.id}'s first choice ${p} is not in the pool, so there is no record to judge it by.`);
       if (!own.quality?.usable) return insufficient(`${a.id}'s first choice ${p} has no usable quality figure yet.`, [own.quality?.text ?? "no quality figure"]);
-      const beats = candidates.filter((c) => c.model !== p && comparable(own.quality, c.quality) && c.quality!.value! - own.quality!.value! >= QUALITY_MARGIN)
+      const beats = candidates.filter((c) => c.model !== p && comparable(own.quality, c.quality) && leadsByMargin(c.quality!.value!, own.quality!.value!))
         .sort((x, y) => y.quality!.value! - x.quality!.value! || y.quality!.n - x.quality!.n || x.model.localeCompare(y.model));
       const lead = beats[0];
       const evidence = [`${p} (first choice of ${a.id}): ${own.quality.text}`, ...(own.speed ? [`${p}: ${own.speed.text}`] : []), `${p}: cost ${own.cost}`];

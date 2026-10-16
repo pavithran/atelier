@@ -1322,11 +1322,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const I = index(env);
     const [read, assignmentEvents, roles] = await Promise.all([readSources(env), I.assignmentEvents(), I.roleAssignments()]);
     const pool = (await I.models()) as unknown as ModelEntry[];
-    const to = addDays(utcDay(Date.parse(asOf)), -1), from = addDays(to, -(TREND_DAYS - 1));
-    const rows = (await Promise.all([...new Set(pool.map((e) => canonicalName(`${e.harness}/${e.id}`, pool)))].map((k) => I.modelSnapshotRows(k, from, to)))).flat();
+    const { takes, rows } = await readModelSnapshots(env, [...new Set(pool.map((e) => canonicalName(`${e.harness}/${e.id}`, pool)))], Date.parse(asOf));
     return json(reviewModels({
       asOf, pool, sources: read.sources, runs: read.runs, assignmentEvents, owner: ownerActor(env), cards: await I.modelCardRecords(),
-      assignments: roles.assignments, projectNames: roles.names, takes: await I.modelSnapshotTakes(from, to), rows, unread: read.unread.map((p) => p.name),
+      assignments: roles.assignments, projectNames: roles.names, takes, rows, unread: read.unread.map((p) => p.name),
     }));
   }
   // The model pool requires the owner token. Owner tools may read it and
@@ -3479,17 +3478,25 @@ export async function replayModelSnapshot(env: Env, day: string, rev?: number): 
   return { stored, replayed: replayed.rows, differences: replayDifferences(stored.rows, replayed.rows) };
 }
 
+// The one reader of stored snapshots for display: the trend span ending the day
+// before `now`, the takes and the rows of the given canonical models. The trend
+// pages and the model review (t624) read through it, and nothing that routes
+// work does (test/model-snapshots.test.ts).
+async function readModelSnapshots(env: Env, models: readonly string[], now: number) {
+  const I = index(env);
+  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
+  const takes = await I.modelSnapshotTakes(from, to);
+  const rows = (await Promise.all(models.map((m) => I.modelSnapshotRows(m, from, to)))).flat();
+  return { takes, rows, to };
+}
+
 // One model's trend over the TREND_DAYS ended days, by its canonical key
 // through the pool now: what GET /api/models/ID/trend answers and the
 // Models page renders.
 async function modelTrends(env: Env, named: readonly string[], pool: readonly ModelEntry[], now = Date.now()): Promise<ModelTrend[]> {
-  const I = index(env);
-  const to = addDays(utcDay(now), -1), from = addDays(to, -(TREND_DAYS - 1));
-  const takes = await I.modelSnapshotTakes(from, to);
-  return Promise.all(named.map(async (n) => {
-    const model = canonicalName(n, pool);
-    return trendOf(model, takes, await I.modelSnapshotRows(model, from, to), to);
-  }));
+  const models = named.map((n) => canonicalName(n, pool));
+  const { takes, rows, to } = await readModelSnapshots(env, models, now);
+  return models.map((model) => trendOf(model, takes, rows.filter((r) => r.model === model), to));
 }
 
 // Browsing: /p/P/{code,log,commit,history}/… reads the baseline, and

@@ -1044,9 +1044,10 @@ nothing), so running it early or twice costs nothing. The steps:
    the days themselves; `atelier models roles` lists the decisions.
 5. **Judge.** Read each proposal against its evidence and counterevidence:
    - *keep*: the first choice's quality figure is usable and no comparable
-     figure beats it by 10 points.
+     figure is ahead of it by 10 points or more.
    - *change*: another model's quality figure is comparable (same window and
-     threshold) and at least 10 points ahead. Speed, cost, cards, notes and
+     threshold) and at least 10 points ahead; a lead of exactly 10 points
+     counts, one of 9 does not. Speed, cost, cards, notes and
      history never decide this; they are cited so that you can.
    - *insufficient-evidence*: the role is not measured (security review,
      claims review and plan are not), the record is partial, or the first
