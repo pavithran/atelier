@@ -1,16 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODEX_FEATURES_OFF, agentRules, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, VERDICT_DEMAND, VERDICT_FOLLOW_UP, agentRules, verdictFollowUp, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { runWithLimits } from "../bin/harness/limit.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
 import { redactKeys } from "../src/models/pool.ts";
+import { parseVerdict, replyFormat } from "../src/review/verdict.ts";
 
 // t374: the four harness adapters ship in bin/harness/, carry the agent
 // rules, hold no key, give every prompt on standard input and are what the
@@ -51,16 +53,27 @@ if (mcp !== -1 && argv[mcp + 1] === "list") {
   process.stdout.write(JSON.stringify(shown));
   process.exit(0);
 }
+// opencode --version (t683): FAKE_VERSION, else the 1.x the runs use until the switch.
+if (argv[0] === "--version") { fs.appendFileSync(${JSON.stringify(record)} + ".version", "asked\\n"); process.stdout.write((process.env.FAKE_VERSION ?? "1.18.34") + "\\n"); process.exit(0); }
 const input = fs.readFileSync(0, "utf8");
-const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
+const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
   "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION",
   "HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "GIT_CONFIG_GLOBAL"];
 const list = (dir) => dir && fs.existsSync(dir) ? fs.readdirSync(dir) : null;
 const configHome = list(process.env.XDG_CONFIG_HOME), home = list(process.env.HOME);
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: process.cwd(), configHome, home, env: Object.fromEntries(pick.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) }));
-const answer = "VERDICT: APPROVE\\nSUMMARY: fine";
+fs.appendFileSync(${JSON.stringify(record)} + ".calls", JSON.stringify({ argv, input }) + "\\n");
+// FAKE_ANSWER, when set, is the first reply and FAKE_FOLLOW_UP the reply in
+// the continued session (opencode run --continue).
+// FAKE_FOLLOW_UP=@template answers the second ask as a reviewer who follows
+// it to the letter: with the ask's own verdict-format lines, and no other.
+const template = (ask) => ask.split("\\n").filter((l) => /^(?:SUMMARY|FINDING|CRITERION \\d+|VERDICT):/.test(l)).join("\\n");
+const followUp = process.env.FAKE_FOLLOW_UP === "@template" ? template(input) : process.env.FAKE_FOLLOW_UP;
+const answer = !process.env.FAKE_ANSWER ? "VERDICT: APPROVE\\nSUMMARY: fine" : argv.includes("--continue") ? followUp : process.env.FAKE_ANSWER;
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
+else if (argv.includes("--format") && argv[argv.indexOf("--format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "text", part: { text: answer } }));
+else if (argv.includes("-p") && argv[argv.indexOf("--output-format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: answer }));
 else if (argv.includes("--output-format") && argv[argv.indexOf("--output-format") + 1] === "json") process.stdout.write(JSON.stringify({ response: answer }));
 else process.stdout.write(answer);
 `);
@@ -171,9 +184,64 @@ for (const [harness, model] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-as
     assert.match(seen.input, /diff --git a\/x b\/x/);
     assert.match(seen.input, /````diff/, "the fence is longer than the diff's own backticks");
     assert.match(seen.input, /Edit nothing/);
+    assert.ok(seen.input.endsWith(VERDICT_DEMAND), "the prompt ends by demanding a final VERDICT line (t576)");
     assert.equal(readFileSync(verdict, "utf8"), "VERDICT: APPROVE\nSUMMARY: fine");
+    assert.equal(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").length, 1, "a reply with a verdict is not asked again");
   });
 }
+
+// The finding t576 names: GLM 5.3 under opencode answered reviews in prose
+// with no VERDICT line, and the runner released 48 of them overnight on
+// 2026-10-13 ("the reply states no verdict"). The adapter now asks once more,
+// in the same session, for the verdict lines alone.
+test("an opencode review reply with no verdict is asked once more in the same session, and the verdict is recorded", (t) => {
+  const s = setup(t);
+  const narrative = "I read the diff and ran the tests; the change looks correct and complete.";
+  const { verdict } = run("opencode", s, { model: "deepseek-v4-pro", review: true, env: {
+    FAKE_ANSWER: narrative, FAKE_FOLLOW_UP: "SUMMARY: read the diff, tests pass\nVERDICT: APPROVE",
+  } });
+  const calls = readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(calls.length, 2, "one second ask, no more");
+  assert.deepEqual(calls[1].argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--continue", "--format", "json"], "the second ask continues the run's session");
+  assert.equal(calls[1].input, VERDICT_FOLLOW_UP, "and asks for the verdict lines alone");
+  const kept = readFileSync(verdict, "utf8");
+  assert.ok(kept.startsWith(narrative), "the first reply is kept");
+  assert.ok(kept.trimEnd().endsWith("VERDICT: APPROVE"));
+  const parsed = parseVerdict(kept);
+  assert.equal(parsed.ok, true, parsed.error);
+  assert.equal(parsed.verdict, "approve");
+});
+
+// Astra's review of t576 (2026-10-13): the second ask permitted only
+// SUMMARY, FINDING and VERDICT lines, so a reviewer following it on a task
+// with acceptance criteria still gave an approval the runner refuses for
+// its missing CRITERION lines (parseVerdict with the task's criterion
+// count), and the review was released. The ask now names one CRITERION line
+// per criterion, reading the count from the brief's reply format.
+test("an opencode review's second ask, on a task with acceptance criteria, asks for one CRITERION line per criterion", (t) => {
+  const s = setup(t);
+  writeFileSync(s.brief, `Task: t9\nBuild it.\n\n## Acceptance criteria\n\n1. One.\n2. Two.\n\n## Reply format\n\n${replyFormat(2)}\n`);
+  const narrative = "I read the diff and ran the tests; both criteria hold.";
+  const { verdict } = run("opencode", s, { model: "deepseek-v4-pro", review: true, env: { FAKE_ANSWER: narrative, FAKE_FOLLOW_UP: "@template" } });
+  const calls = readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].input, /one CRITERION line for each of the 2 acceptance criteria/);
+  const parsed = parseVerdict(readFileSync(verdict, "utf8"), 2);
+  assert.equal(parsed.ok, true, parsed.error);
+  assert.equal(parsed.verdict, "approve");
+  // Without criteria in the brief the ask names none.
+  assert.equal(verdictFollowUp(0), VERDICT_FOLLOW_UP);
+  assert.doesNotMatch(VERDICT_FOLLOW_UP, /CRITERION/);
+});
+
+test("an opencode review whose second ask also states no verdict keeps both replies for the runner to record as unparsable", (t) => {
+  const s = setup(t);
+  const { verdict } = run("opencode", s, { model: "deepseek-v4-pro", review: true, env: { FAKE_ANSWER: "Looks fine to me.", FAKE_FOLLOW_UP: "Still fine." } });
+  assert.equal(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").length, 2, "asked once more, not again");
+  const parsed = parseVerdict(readFileSync(verdict, "utf8"));
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.error, /states no verdict/);
+});
 
 test("the harnesses are started with their own permission rules", (t) => {
   const s = setup(t);
@@ -191,10 +259,49 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.equal(run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv[codex.indexOf("--sandbox") + 1], "read-only");
   const agy = run("antigravity", s, { model: "gemini-3.1-pro" }).seen.argv;
   assert.equal(agy[agy.indexOf("--model") + 1], "gemini-3.1-pro-high");
-  assert.ok(agy.includes("--sandbox"));
-  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro"]);
+  const argon = run("antigravity", s, { model: "gemini-4-argon" }).seen.argv;
+  assert.equal(argon[argon.indexOf("--model") + 1], "gemini-4-argon-high", "Gemini 4 Argon runs at its high setting");
+  // d14 (2026-10-13): Antigravity builds run without the terminal sandbox; reviews keep it.
+  assert.ok(!agy.includes("--sandbox"), "an Antigravity build runs without the terminal sandbox");
+  assert.ok(run("antigravity", s, { model: "gemini-3.1-pro", review: true }).seen.argv.includes("--sandbox"), "an Antigravity review keeps the sandbox");
+  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
   assert.equal(claudeModel("sonnet-5.5"), "claude-sonnet-5-5");
   assert.equal(claudeModel("claude-fable-5-1"), "claude-fable-5-1");
+});
+
+// t683: opencode 2's run joins a shared background service, with a data folder
+// of its own, unless it is given --standalone; opencode 1 gets its old argv.
+test("the opencode adapter, run as a process, passes --standalone on opencode 2 only, and keeps the run's own data folder", (t) => {
+  const s = setup(t);
+  const two = run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "opencode v2.0.29" } }).seen;
+  assert.deepEqual(two.argv, ["run", "--standalone", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
+  assert.match(two.env.XDG_DATA_HOME, /atelier-opencode-run-.*[\\/]data$/);
+  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "1.18.34" } }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
+  const calls = () => readFileSync(`${s.record}.version`, "utf8").trim().split("\n").length;
+  rmSync(`${s.record}.version`);
+  run("opencode", s, { model: "deepseek-v4-pro", review: true, env: { FAKE_VERSION: "2.0.29", FAKE_ANSWER: "no verdict here", FAKE_FOLLOW_UP: "VERDICT: APPROVE" } });
+  assert.equal(calls(), 1, "the version is asked once although the review runs twice");
+  assert.deepEqual(JSON.parse(readFileSync(`${s.record}.calls`, "utf8").trim().split("\n").at(-1)).argv, ["run", "--standalone", "--model", "deepseek-api/deepseek-v4-pro", "--continue", "--format", "json"]);
+});
+
+test("the provider config the opencode adapter is given keeps opencode 1's deny, and the adapter adds opencode 2's at run time", (t) => {
+  const s = setup(t);
+  const seen = run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "2.0.29" } }).seen;
+  const config = JSON.parse(readFileSync(seen.env.OPENCODE_CONFIG, "utf8"));
+  assert.equal(config.permission.external_directory, "deny");
+  assert.equal("permissions" in config, false, "the stored config here was written with no V2 key (an installation from before t683)");
+  assert.deepEqual(JSON.parse(seen.env.OPENCODE_CONFIG_CONTENT), { permissions: [{ action: "external_directory", resource: "*", effect: "deny" }] });
+  assert.equal(run("opencode", s, { model: "deepseek-v4-pro", env: { FAKE_VERSION: "1.18.34" } }).seen.env.OPENCODE_CONFIG_CONTENT, undefined);
+});
+
+// The finding on t683: an unreadable version was run as opencode 1.
+test("the opencode adapter refuses to run when `--version` prints no version", (t) => {
+  const s = setup(t);
+  const env = { PATH: process.env.PATH, HOME: s.dir, ATELIER_OPENCODE: s.fake, FAKE_VERSION: "unknown", CF_AIG_METADATA: gatewayMetadata("t9", "build", "home:mbp") };
+  const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS.opencode), "--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store, "deepseek-v4-pro", s.brief, s.ws, "undefined", "undefined", "undefined"], { encoding: "utf8", env, timeout: 10_000 });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /could not read the version of .*no run was started/);
+  assert.equal(existsSync(s.record), false, "opencode itself was never run");
 });
 
 test("codex runs with its MCP features off and its config.toml servers switched off by name, checked against codex", (t) => {
@@ -407,4 +514,121 @@ test("an entry with no command runs the adapter Atelier ships, with every placeh
   assert.match(parseConfig({ agents: [{ agent: "zcode", models: ["glm-5.3"] }] }).errors.join(), /ships no adapter for zcode; give its command/);
   // A command the owner gives still wins.
   assert.deepEqual(parseConfig({ agents: [{ agent: "codex", models: ["m"], command: ["my-codex", "{model}", "{brief_file}"] }] }).agents[0].command, ["my-codex", "{model}", "{brief_file}"]);
+});
+
+// t698: the opencode adapter runs an OpenRouter model, refuses a Claude one,
+// and bounds and retries a MiMo run that hangs or drops its connection.
+function routed(t, models) {
+  const s = setup(t);
+  writeFileSync(join(s.providers, "openrouter-api.json"), JSON.stringify(opencodeConfig("openrouter-api", [{ providerModel: "xiaomi/mimo-v2.6-pro", atelierId: "mimo-v2.6-pro", limit: { context: 1000000, output: 32000 } }], { gateway: { account: "acct", id: "atelier" } })));
+  const entry = (providerModel) => ({ provider: "openrouter-api", providerModel, config: "openrouter-api.json", key: "openrouter.API_KEY", keyVar: "OPENROUTER_API_KEY", gateway: true });
+  writeFileSync(join(s.providers, "models.json"), JSON.stringify({ models: Object.fromEntries(models.map(([id, pm]) => [id, entry(pm)])) }));
+  writeFileSync(join(s.store, "secrets.json"), JSON.stringify({ "openrouter.API_KEY": "DUMMY-or", CF_AIG_TOKEN: "DUMMY-gateway" }), { mode: 0o600 });
+  for (const argv of [["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base"]]) spawnSync("git", argv, { cwd: s.ws });
+  return s;
+}
+
+// An opencode that does what ACTS says on its nth run: "ok", "hang", "reset"
+// (a transport error on stderr, exit 1) or "commit" (commit, then reset).
+function scripted(s, acts) {
+  const counter = join(s.dir, "count");
+  rmSync(counter, { force: true });
+  writeFileSync(s.fake, `#!${process.execPath}
+const fs = require("node:fs"), cp = require("node:child_process");
+if (process.argv[2] === "--version") { process.stdout.write("2.0.29\\n"); process.exit(0); }
+fs.readFileSync(0);
+const n = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0;
+fs.writeFileSync(${JSON.stringify(counter)}, String(n + 1));
+const act = ${JSON.stringify(acts)}[n] ?? "ok";
+if (act === "hang") setTimeout(() => {}, 60000);
+else if (act === "hang-child") {
+  const kid = cp.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  fs.writeFileSync(${JSON.stringify(counter + ".kid")}, String(kid.pid));
+  setTimeout(() => {}, 60000);
+} else if (act === "ok-after-child") {
+  let alive = true;
+  try { process.kill(Number(fs.readFileSync(${JSON.stringify(counter + ".kid")}, "utf8")), 0); } catch { alive = false; }
+  fs.writeFileSync(${JSON.stringify(counter + ".alive")}, String(alive));
+  process.exit(0);
+}
+else if (act === "ok") process.exit(0);
+else { if (act === "commit") cp.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "work"]); process.stderr.write("fetch failed: ECONNRESET\\n"); process.exit(1); }
+`);
+  return () => (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0);
+}
+
+function runRouted(s, model, limitMs = 1500) {
+  const out = [];
+  const status = runAdapter("opencode", ["--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store, model, s.brief, s.ws, "undefined", "undefined", "undefined"],
+    { env: { PATH: process.env.PATH, HOME: s.dir, ATELIER_OPENCODE: s.fake, CF_AIG_METADATA: gatewayMetadata("t9", "build", "home:mbp") }, stderr: (x) => out.push(x), limitMs });
+  return { status, stderr: out.join("") };
+}
+
+test("the opencode adapter runs an OpenRouter model with its provider model id", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const seen = run("opencode", s, { model: "mimo-v2.6-pro", env: { FAKE_VERSION: "2.0.29" } }).seen;
+  assert.deepEqual(seen.argv.slice(0, 4), ["run", "--standalone", "--model", "openrouter-api/xiaomi/mimo-v2.6-pro"]);
+  assert.equal(seen.env.OPENROUTER_API_KEY, "DUMMY-or");
+  assert.equal(seen.env.CF_AIG_TOKEN, "DUMMY-gateway");
+  assert.deepEqual(JSON.parse(seen.env.OPENCODE_CONFIG_CONTENT).permissions[0].effect, "deny");
+});
+
+test("the opencode adapter refuses a Claude model through OpenRouter and never starts opencode", (t) => {
+  const s = routed(t, [["claude-sonnet-5.5", "anthropic/claude-sonnet-5.5"]]);
+  const count = scripted(s, []);
+  const r = runRouted(s, "claude-sonnet-5.5");
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no prompt caching.*claude-code/);
+  assert.equal(count(), 0);
+});
+
+test("a MiMo run that hangs past its time limit with no commit is run once more", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["hang", "ok"]);
+  const r = runRouted(s, "mimo-v2.6-pro");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(count(), 2);
+  assert.match(r.stderr, /no commit and a transport error \(time limit\); running it once more/);
+});
+
+test("a timed-out attempt's whole process group has ended before the retry starts", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["hang-child", "ok-after-child"]);
+  t.after(() => { try { process.kill(Number(readFileSync(join(s.dir, "count.kid"), "utf8")), "SIGKILL"); } catch { /* gone */ } });
+  const r = runRouted(s, "mimo-v2.6-pro");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(count(), 2);
+  assert.equal(readFileSync(join(s.dir, "count.alive"), "utf8"), "false", "the first attempt's child was still running when the retry started");
+});
+
+// The shipped path (bin/harness/atelier-opencode.mjs) runs the adapter through
+// runWithLimits, whose spawn captures stderr on a pipe and returns it.
+test("a MiMo connection drop is retried through the shipped runWithLimits path too", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["reset", "ok"]);
+  const out = [];
+  const status = runWithLimits("opencode", ["--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store, "mimo-v2.6-pro", s.brief, s.ws, "undefined", "undefined", "undefined"],
+    { env: { PATH: process.env.PATH, HOME: s.dir, ATELIER_OPENCODE: s.fake, CF_AIG_METADATA: gatewayMetadata("t9", "build", "home:mbp") }, stderr: (x) => out.push(x), limitMs: 1500 });
+  assert.equal(status, 0, out.join(""));
+  assert.equal(count(), 2);
+  assert.match(out.join(""), /transport error \(stderr\); running it once more/);
+});
+
+test("a MiMo run that drops its connection with no commit is run once more, but only once", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"]]);
+  const count = scripted(s, ["reset", "reset", "ok"]);
+  const r = runRouted(s, "mimo-v2.6-pro");
+  assert.equal(r.status, 1);
+  assert.equal(count(), 2);
+  assert.match(r.stderr, /ECONNRESET/);
+});
+
+test("a MiMo run that committed before the connection dropped is not run again, nor is any other model", (t) => {
+  const s = routed(t, [["mimo-v2.6-pro", "xiaomi/mimo-v2.6-pro"], ["qwen3.8-max", "qwen/qwen3.8-max-0902"]]);
+  const count = scripted(s, ["commit", "ok"]);
+  assert.equal(runRouted(s, "mimo-v2.6-pro").status, 1);
+  assert.equal(count(), 1);
+  const other = scripted(s, ["reset", "ok"]);
+  assert.equal(runRouted(s, "qwen3.8-max").status, 1);
+  assert.equal(other(), 1, "only MiMo is retried");
 });

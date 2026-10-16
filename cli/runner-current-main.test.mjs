@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { prepareBuildSubmission, runTask, mergeMainArgs } from './runner.mjs';
 import { readMovedCodeRecords } from './landing.mjs';
 
@@ -47,7 +48,7 @@ const landingGit = (cwd, args, { token, allowFail = false, raw = false, env = nu
 };
 
 function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false, noPort = false } = {}) {
-  const root = mkdtempSync(join(process.cwd(), '.runner-main-test-'));
+  const root = mkdtempSync(join(tmpdir(), 'atelier-runner-main-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main'), workspace = join(root, 'work');
   mkdirSync(main);

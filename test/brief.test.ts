@@ -119,10 +119,10 @@ test("the owner's override is named with its reason, while the item waits for ac
   const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
   const ready = briefFor(detail({ item: { reviewOverride }, evidence }), []);
   assert.equal(ready.recommendation.verdict, "accept");
-  assert.ok(ready.evidence.includes("The project owner overrode the independent review at this revision: No model of another family is available."));
+  assert.ok(ready.evidence.includes("The developer overrode the independent review at this revision: No model of another family is available."));
   const accepted = briefFor(detail({ item: { reviewOverride, state: "accepted", acceptedHead: H1 }, evidence }), []);
   assert.equal(accepted.recommendation.reason, "You accepted this revision with the independent review overridden, and the merge runs in your local checkout.");
-  assert.ok(accepted.evidence.includes("The project owner overrode the independent review at this revision: No model of another family is available."));
+  assert.ok(accepted.evidence.includes("The developer overrode the independent review at this revision: No model of another family is available."));
   // An override at an earlier head is not mentioned.
   const moved = briefFor(detail({ item: { reviewOverride: { ...reviewOverride, head: H2 } }, evidence }), []);
   assert.equal(moved.recommendation.verdict, "review");
@@ -213,11 +213,11 @@ test("the project owner is kept apart from models in review lines", () => {
     rev({ approve: false, by: "codex/gpt-5.5", note: "", at: "2026-10-03T12:02:00.000Z" }),
     rev({ approve: false, by: "zcode/glm-5.3", note: "", at: "2026-10-03T12:03:00.000Z" }),
   ] }), []);
-  assert.ok(b.evidence.includes("The project owner and 2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note from the project owner: no"));
-  assert.ok(b.evidence.includes("Reviews at this revision: the project owner asked for changes, gpt-5.5 asked for changes, glm-5.3 asked for changes."));
-  assert.match(b.recommendation.reason, /^The project owner asked for changes at this revision and gpt-5\.5/);
+  assert.ok(b.evidence.includes("The developer and 2 models (gpt-5.5, glm-5.3) asked for changes and no push is recorded since. Note from the developer: no"));
+  assert.ok(b.evidence.includes("Reviews at this revision: the developer asked for changes, gpt-5.5 asked for changes, glm-5.3 asked for changes."));
+  assert.match(b.recommendation.reason, /^The developer asked for changes at this revision and gpt-5\.5/);
   const one = briefFor(detail({ reviews: [rev({ approve: false, by: OWNER })] }), []);
-  assert.ok(one.evidence.some((l) => l.startsWith("The project owner asked for changes and no push")));
+  assert.ok(one.evidence.some((l) => l.startsWith("The developer asked for changes and no push")));
 });
 
 test("another item's submission is never attributed to this one", () => {
@@ -320,7 +320,7 @@ test("governed briefs show the class requirement even after approval", () => {
   for (const [path, label] of [["docs/a.md", "Direct"], ["src/a.ts", "Coordinated"], ["AGENTS.md", "Protected"]]) {
     for (const reviews of [[], [rev()]]) {
       const b = briefFor(detail({ policy: p, evidence: [pass({ changedPaths: [path] })], reviews }));
-      assert.ok(b.evidence.some((line) => line.startsWith(`${label} change:`) && line.includes("owner acceptance is required")));
+      assert.ok(b.evidence.some((line) => line.startsWith(`${label} change:`) && line.includes("Developer acceptance is required")));
     }
   }
   const b = briefFor(detail({ policy: p }));
@@ -332,7 +332,7 @@ test("governed briefs show the class requirement even after approval", () => {
 test("the project owner's rejection stays visible under role policy", () => {
   const b = briefFor(detail({ policy: { ...policy, agents: {} }, reviews: [rev({ by: OWNER, approve: false, note: "Fix this" })] }));
   assert.equal(b.recommendation.verdict, "send back");
-  assert.match(b.evidence.join(), /project owner asked for changes/);
+  assert.match(b.evidence.join(), /developer asked for changes/);
 });
 
 test("send back: the required checks fail on the merge with main, which moved after the revision's own checks passed", () => {
@@ -358,5 +358,5 @@ test("the reviews line says who recorded each review, as atelier show prints it 
     rev({ by: "antigravity/gemini-3.1-pro", recordedBy: OWNER, proved: false, claimed: false }),
   ];
   const b = briefFor(detail({ reviews }), []);
-  assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved (recorded by codex/gpt-5.5 with its own token), gemini-3.1-pro approved (recorded by the project owner with the owner token)."), b.evidence.join("\n"));
+  assert.ok(b.evidence.includes("Reviews at this revision: gpt-5.5 approved (recorded by codex/gpt-5.5 with its own token), gemini-3.1-pro approved (recorded by the developer with the developer token)."), b.evidence.join("\n"));
 });

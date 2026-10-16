@@ -70,11 +70,14 @@ it("GET /api/usage carries the gateway's view for atelier runner --usage", async
   expect(body.gateway).toMatchObject({ off: "AI Gateway figures are off: set ANALYTICS_TOKEN", days: 7, models: [], tasks: [] });
 });
 
-it("nothing pulls the gateway's logs: no scheduled handler, no pull on a runner's poll, no pull record on the index", async () => {
-  expect("scheduled" in worker).toBe(false);
+it("nothing pulls the gateway's logs: the scheduled handler takes model snapshots alone, no pull on a runner's poll, no pull record on the index", async () => {
   for (const m of ["gatewayMark", "gatewayPull", "gatewayGaps", "claimGatewayPull", "recordGatewayPull"]) expect(m in Ledger.prototype).toBe(false);
   const spy = vi.spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({})) as typeof fetch);
   try {
+    // The scheduled handler is back for the daily model snapshots (t623);
+    // it asks Cloudflare for nothing.
+    await worker.scheduled({ scheduledTime: NOW, cron: "7 */6 * * *", noRetry() {} } as ScheduledController, ON);
+    expect(spy.mock.calls.some(([u]) => String(u).includes("api.cloudflare.com"))).toBe(false);
     const ctx = createExecutionContext();
     const req = new Request("https://atelier.test/api/queue", { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
       body: JSON.stringify({ runner: "home:test", kind: "home", agents: [], jobs: ["review"] }) });

@@ -62,13 +62,13 @@ async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promi
 const events = async (L: L, id?: string) => (await L.events(id)) as unknown as LedgerEvent[];
 
 // A plan approved over the pool, its part item.
-async function approved(L: L) {
+async function approved(L: L, pool: ModelEntry[] = POOL) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
   return { id: item.id, partId: parts[0].id, builder: `${parts[0].dispatch!.agent}/${parts[0].dispatch!.model}` };
 }
 
@@ -289,9 +289,9 @@ it("a rejection the owner has fully refuted is reviewed again at the same head w
   expect(round2.need!.round).toBe(2);
   expect(round2.need!.kind).toBe("re-review");
   const brief2 = reviewBrief({ need: round2.need!, item: round2.item, events: round2.events, plan: round2.plan, owner: round2.owner, bar: round2.reviewBar });
-  expect(brief2).toContain("This is review round 2. A model rejected this head, and the project owner refuted every blocking finding of that rejection, so it is reviewed again rather than reworked.");
+  expect(brief2).toContain("This is review round 2. A model rejected this head, and the developer refuted every blocking finding of that rejection, so it is reviewed again rather than reworked.");
   expect(brief2).toContain("Round 1, at aaaaaaaa (this head)");
-  expect(brief2).toContain("The project owner's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`\n- finding 2: refuted, noting `src/a/y.ts:12 keeps the row.`");
+  expect(brief2).toContain("The developer's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`\n- finding 2: refuted, noting `src/a/y.ts:12 keeps the row.`");
   // The second opinion approves at the same head, and the request is answered.
   await L.addReview({ request: round2.request, itemId: partId, criteria: await L.criteria(partId), by: reviewer1, head, approve: true, note: "Both findings were refuted; approving.", at: new Date().toISOString() });
   expect(await reviewWaiting(L)).toEqual([]);
@@ -530,14 +530,14 @@ it("a part blocked for want of a reviewer is unblocked by naming one outside the
   expect(item.blocked).toBeUndefined();
   expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "antigravity", model: "gemini-3.1-pro" }]);
   const log = await events(L, partId);
-  expect(log.find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ actor: "owner", data: { from: routed, to: GEMINI, reason: "named by the project owner" } });
+  expect(log.find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ actor: "owner", data: { from: routed, to: GEMINI, reason: "named by the developer" } });
   expect(log.find((e) => e.kind === "item.unblocked")).toMatchObject({ actor: "owner", data: { to: "submitted" } });
   // Naming a reviewer is not a builder's reroute: the attempts stand.
   expect(log.some((e) => e.kind === "plan.rerouted")).toBe(false);
   const view = await L.planView(id);
   expect(view.parts[0].attempts).toEqual(attemptsBefore);
-  expect(view.parts[0].route!.reviewer).toEqual({ actor: GEMINI, reasons: [`Named by the project owner in place of ${routed}`] });
-  expect(planText(view as unknown as PlanView, "review-reroute-blocked")).toContain(`reviewer ${GEMINI}, of another family, in place of ${routed}: named by the project owner`);
+  expect(view.parts[0].route!.reviewer).toEqual({ actor: GEMINI, reasons: [`Named by the developer in place of ${routed}`] });
+  expect(planText(view as unknown as PlanView, "review-reroute-blocked")).toContain(`reviewer ${GEMINI}, of another family, in place of ${routed}: named by the developer`);
   // The named reviewer claims the review, and its approval counts.
   const namedClaim = await L.claimReview(partId, GEMINI, RUNNER) as unknown as ReviewClaim;
   expect(namedClaim.head).toBe(head);
@@ -552,7 +552,7 @@ it("naming a reviewer is refused for a contributor's family, the owner, another'
   await refusal(L.reroutePlan(partId, "owner", builder), "not_independent", /cannot review .*contributed to it/);
   await refusal(L.reroutePlan(partId, "owner", "claude-code/sonnet-5.5"), "not_independent", /not of another family than every contributor/);
   await refusal(L.reroutePlan(partId, "owner", "owner"), "bad_actor", /name the reviewer as harness\/model/);
-  await refusal(L.reroutePlan(partId, GEMINI, GEMINI), "not_project_owner", /only the project owner/);
+  await refusal(L.reroutePlan(partId, GEMINI, GEMINI), "not_project_owner", /only the developer/);
   expect((await L.item(partId)).state).toBe("blocked");
   // Once the named reviewer has claimed the review, another name waits for it.
   await L.reroutePlan(partId, "owner", GEMINI);
@@ -570,7 +570,7 @@ it("naming a reviewer for a submitted part withdraws the open request and asks t
   await L.reroutePlan(partId, "owner", third);
   expect(await routedReviewer(L, partId)).toBe(third);
   expect((await events(L, partId)).filter((e) => e.kind === "review.withdrawn")).toEqual([
-    expect.objectContaining({ actor: "owner", data: { head, reviewer, reason: `the project owner named ${third} to review it` } }),
+    expect.objectContaining({ actor: "owner", data: { head, reviewer, reason: `the developer named ${third} to review it` } }),
   ]);
   expect((await L.reviewRequests(partId)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
 });
@@ -655,8 +655,8 @@ it("a review claim carries the project's review bar and the owner's verdicts on 
   const round2 = await L.claimReview(partId, await routedReviewer(L, partId), RUNNER) as unknown as ReviewClaim;
   expect(round2.need!.round).toBe(2);
   const brief2 = reviewBrief({ need: round2.need!, item: round2.item, events: round2.events, plan: round2.plan, owner: round2.owner, bar: round2.reviewBar });
-  expect(brief2).toContain("finding 1: blocking src/a/x.ts:1 It loses data.\n```\nThe project owner's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`");
-  expect(brief2).toContain("A finding the owner refuted is repeated only with new evidence that the owner's answer is wrong, quoting the code");
+  expect(brief2).toContain("finding 1: blocking src/a/x.ts:1 It loses data.\n```\nThe developer's verdicts on these findings:\n- finding 1: refuted, noting `src/a/x.ts:9 writes the row before it deletes.`");
+  expect(brief2).toContain("A finding the developer refuted is repeated only with new evidence that their answer is wrong, quoting the code");
 
   // With no bar set, the claim carries none and the brief states the default.
   const plain = await setup("review-bar-default");
@@ -1021,7 +1021,7 @@ it("a review claim carries the owner's standing decisions, and the brief marks t
   expect(claim.decisions.map((d) => d.id)).toEqual([kept.id]);
   const brief = reviewBrief({ need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, owner: claim.owner, bar: claim.reviewBar, decisions: claim.decisions });
   expect(brief).toContain(`## Standing decisions\n\n${DECISIONS_RULE}\n\n${decisionLines(claim.decisions).join("\n")}\n\n## Rules for blocking`);
-  expect(brief).toContain(`- d1 (${kept.at.slice(0, 10)}): Another company reviews every change. The owner's words: “another company reviews everywhere”`);
+  expect(brief).toContain(`- d1 (${kept.at.slice(0, 10)}): Another company reviews every change. The developer's words: “another company reviews everywhere”`);
   expect(brief).not.toContain("Spend at most");
   // Withdrawn later, the decision leaves the next claim too.
   await L.withdrawDecision(kept.id, "owner", "reviews come from the pool now");
@@ -1030,7 +1030,7 @@ it("a review claim carries the owner's standing decisions, and the brief marks t
   await submitPart(plain, other, "c".repeat(40));
   const none = await plain.claimReview(other, await routedReviewer(plain, other), RUNNER) as unknown as ReviewClaim;
   expect(none.decisions).toEqual([]);
-  expect(reviewBrief({ need: none.need!, item: none.item, events: none.events, plan: none.plan, owner: none.owner, decisions: none.decisions })).toContain("The project owner has recorded no standing decision for this project.");
+  expect(reviewBrief({ need: none.need!, item: none.item, events: none.events, plan: none.plan, owner: none.owner, decisions: none.decisions })).toContain("The developer has recorded no standing decision for this project.");
 });
 
 // The owner's standing for a model (src/models/pool.ts) reaches the reviews
@@ -1067,6 +1067,27 @@ it("a plan's reviewer the owner reserves after approval is passed over, and its 
   expect((await L.planView(id)).blocked).toBeNull();
 });
 
+// gpt-6-astra's and gemini-4-argon's review of t649: a reviewer saved
+// review-only at approval, then removed, while a build-only entry now lists
+// its id as an alias, shares no role with it. withStanding gave it its saved
+// review role, the tick picked it, the dispatch check (which reads the pool
+// now) refused it, and every tick failed (plan.tick_failed) instead of
+// asking the remaining reviewer.
+it("a removed reviewer whose roles share none with the entry now running its model is passed over, and the plan's tick asks another", async () => {
+  const L = await setup("review-held-no-shared-role");
+  const reviewOnly = POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, roles: ["review" as const] } : e);
+  const { id, partId, builder } = await approved(L, reviewOnly);
+  expect(builder).not.toBe(GPT);
+  const luna = { ...entry("gpt-6-luna", "codex"), aliases: ["gpt-6-astra"], roles: ["build" as const] };
+  await L.poolChanged([...POOL.filter((e) => e.id !== "gpt-6-astra"), luna]);
+  await submitPart(L, partId, "a".repeat(40));
+  const other = [OPUS, GLM].find((a) => a !== builder)!;
+  expect(await routedReviewer(L, partId)).toBe(other);
+  expect((await events(L, partId)).find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ data: { from: GPT, to: other, reason: expect.stringMatching(/not a reviewer/) } });
+  expect((await events(L)).filter((e) => e.kind === "plan.tick_failed")).toEqual([]);
+  expect((await L.planView(id)).blocked).toBeNull();
+});
+
 it("an open review request is withdrawn when the owner pauses its reviewer or takes away its review role, and asked of another", async () => {
   for (const [name, change, reason] of [
     ["paused", { state: "paused", stateAt: AT }, /paused since 2026-10-06/],
@@ -1088,7 +1109,7 @@ it("an open review request is withdrawn when the owner pauses its reviewer or ta
 it("a planner, builder or part reviewer the owner names while it is held from the job is refused with the reason", async () => {
   const planning = await setup("named-held-planner");
   const paused = POOL.map((e) => e.id === "glm-5.3" ? { ...e, state: "paused" as const, stateAt: AT, note: "AI Studio down" } : e);
-  await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, paused), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-06 \(the owner's standing\): AI Studio down/);
+  await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, paused), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-06 \(the developer's standing\): AI Studio down/);
   const reviewOnly = POOL.map((e) => e.id === "glm-5.3" ? { ...e, roles: ["review" as const] } : e);
   await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, reviewOnly), "model_held", /zcode\/glm-5\.3 is not a planner; its roles are review/);
   // A new project's first plan keeps the pool it was started with, so a
@@ -1107,7 +1128,7 @@ it("a planner, builder or part reviewer the owner names while it is held from th
   await L.poolChanged(POOL);
   await submitPart(L, partId, "a".repeat(40));
   await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, state: "reserved" as const, stateAt: AT, note: "credits" } : e));
-  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is reserved since 2026-10-06 \\(the owner's standing\\): credits`));
+  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is reserved since 2026-10-06 \\(the developer's standing\\): credits`));
   await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, roles: ["build" as const] } : e));
   await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is not a reviewer; its roles are build`));
 });
@@ -1118,8 +1139,8 @@ it("a planner, builder or part reviewer the owner names while it is held from th
 // the owner reroutes the plan to another.
 it("a planner held since the plan started is refused on retry and revise, and nothing is dispatched", async () => {
   for (const [name, change, why] of [
-    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
-    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the developer's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the developer's standing\): astra's credits/],
     ["review-only", { roles: ["review"] }, /codex\/gpt-6-astra is not a planner; its roles are review/],
   ] as const) {
     const L = await setup(`planner-held-again-${name}`);
@@ -1144,8 +1165,8 @@ it("a planner held since the plan started is refused on retry and revise, and no
 // builder, and the builder named by a profile is refused like its plain name.
 it("a part's builder held after approval is taken back and the part goes to the next routed builder", async () => {
   for (const [name, change, why] of [
-    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
-    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /paused since 2026-10-06 \(the developer's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-06 \(the developer's standing\): astra's credits/],
     ["review-only", { roles: ["review"] }, /not a builder; its roles are review/],
   ] as const) {
     const L = await setup(`plan-builder-held-${name}`);
@@ -1428,7 +1449,8 @@ it("t485: concurrent claims, same-name restart and same-actor takeover fence eve
   await refusal(L.releaseReview(partId, GPT, "late SIGTERM", true, old.request), "stale_request", /no longer current/);
   await refusal(L.releaseReview(partId, GPT, "missing generation", true), "stale_request", /no longer current/);
   await refusal(L.addReview(verdict, undefined, true), "stale_request", /withdrawn or replaced/);
-  await refusal(L.addReview({ ...verdict, request: undefined }, undefined, true), "stale_request", /withdrawn or replaced/);
+  // t575: a verdict naming no request says so, never "request undefined".
+  await refusal(L.addReview({ ...verdict, request: undefined }, undefined, true), "stale_request", /names no review request, but .* claimed (request \d+|one) at .*--request N.*withdrawn or replaced/);
   expect(await L.unparsableReview(partId, GPT, head, "late", "no verdict", true, old.request)).toEqual({ released: false });
   await L.releaseReview(partId, GPT, "restart", true, restarted.request);
   const takeover = await L.claimReview(partId, GPT, { runner: "home:other", kind: "home" }, true) as unknown as ReviewClaim;
@@ -1569,7 +1591,7 @@ it("authenticated renewal and release require the current generation and the cla
 // not asked again, and the request is withdrawn with the reason.
 it("a released or lapsed claim of a reviewer the owner has since held is withdrawn, not asked again", async () => {
   const change = { state: "paused" as const, stateAt: AT, note: "AI Studio down" };
-  const why = /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/;
+  const why = /codex\/gpt-6-astra is paused since 2026-10-06 \(the developer's standing\): AI Studio down/;
   const released = await setup("review-held-claim-released");
   let { partId } = await approved(released);
   await submitPart(released, partId, "a".repeat(40));
@@ -1610,4 +1632,133 @@ it("an expired post-merge claim can be claimed again with a fresh generation", a
   await refusal(L.addReview({ itemId: id, by: GPT, head: merge, criteria: first.criteria, request: first.request, approve: true, note: "Late audit", at: AT }), "stale_request", /withdrawn or replaced/);
   await L.addReview({ itemId: id, by: GPT, head: merge, criteria: next.criteria, request: next.request, approve: true, note: "Fresh audit", at: AT });
   expect(await L.item(id)).toMatchObject({ state: "merged" });
+});
+
+// gpt-6-astra's review of t627: withdrawing a part's request only marked it
+// withdrawn, and the next tick (which a runner's stale claim also runs) saw
+// no live request and asked the same reviewer again at the same head. The
+// withdrawal now sticks: the tick asks another reviewer the routing allows,
+// or waits for the developer, without blocking the part.
+it("a part's review request the developer withdraws is not asked of that reviewer again at the head; another is asked (t627)", async () => {
+  const L = await setup("review-withdraw-part");
+  const { id, partId, builder } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+  const gone = await L.withdrawReviewRequest(partId, "owner", "No runner serves gpt-6-astra");
+  expect(gone).toMatchObject({ head, reviewer: GPT });
+  // The tick asked another reviewer, of another family than the builder.
+  const [next] = await reviewWaiting(L);
+  const other = `${next.agent}/${next.model}`;
+  expect(other).not.toBe(GPT);
+  expect(familyOf(next.model!)).not.toBe(familyOf(builder.split("/")[1]));
+  // A stale claim by the withdrawn reviewer is refused and asks it nothing.
+  await refusal(L.claimReview(partId, GPT, RUNNER), "wrong_agent", new RegExp(`asks for ${next.agent}`));
+  const asked = (await events(L, partId)).filter((e) => e.kind === "review.requested" && e.data.head === head).sort((a, b) => a.seq - b.seq).map((e) => e.data.reviewer);
+  expect(asked).toEqual([GPT, other]);
+  expect(await reviewWaiting(L)).toEqual([next]);
+  expect((await L.planView(id)).blocked).toBeNull();
+});
+
+it("with no other reviewer than the one withdrawn, the part waits for the developer and is not blocked (t627)", async () => {
+  const L = await setup("review-withdraw-only");
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+  await L.claim(item.id, PLANNER, RUNNER);
+  const post = await L.postPlan(item.id, PLANNER, doc(part("a")));
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [POOL[0], POOL[1]]);
+  const partId = parts[0].id;
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const [first] = await reviewWaiting(L);
+  const reviewer = `${first.agent}/${first.model}`;
+  await L.withdrawReviewRequest(partId, "owner", "Wait for me");
+  // Ticks run again, by a stale claim and an evidence write: nothing is asked.
+  await refusal(L.claimReview(partId, reviewer, RUNNER), "no_review", /no open review request/);
+  await L.addEvidence(observed(partId, head));
+  expect(await reviewWaiting(L)).toEqual([]);
+  expect((await events(L, partId)).filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer)).toEqual([reviewer]);
+  expect((await L.planView(item.id)).blocked).toBeNull();
+});
+
+// t675: the prose assessment of 2026-10-14 found that no brief Atelier
+// composed named the project's prose standard. With the policy naming one,
+// the planner's brief, a part's build brief, an ordinary task's job brief
+// (which the runner appends to its own) and the review claim all carry it;
+// a project with none gets no line.
+it("the planner's, a part's and a task's job briefs and the review claim carry the project's prose standard", async () => {
+  const PATH = "../ai-projects-house-style/house-style.md";
+  const L = ledger("prose-standard");
+  await L.setProject({ name: "prose-standard", repo: "prose-standard--baseline", policy: { ...policy, proseStandard: PATH }, createdAt: new Date().toISOString() }, "owner");
+  const line = `Prose standard: this project's prose follows \`${PATH}\``;
+  const { item: plan } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+  await L.claim(plan.id, PLANNER, RUNNER);
+  expect((await L.jobBrief(plan.id, PLANNER)).text).toContain(line);
+  const post = await L.postPlan(plan.id, PLANNER, doc(part("a")));
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(plan.id, PLANNER, "proposed");
+  const { parts } = await L.approvePlan(plan.id, "owner", post.hash, false, POOL);
+  const partId = parts[0].id, builder = `${parts[0].dispatch!.agent}/${parts[0].dispatch!.model}`;
+  await L.claim(partId, builder, RUNNER);
+  expect((await L.jobBrief(partId, builder)).text).toContain(line);
+  await L.release(partId, builder, "stuck");
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const claim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.proseStandard).toBe(PATH);
+  // An ordinary task's runner writes its own brief and appends the server's.
+  const task = await L.newItem("Plain task", ["docs/**"], "owner");
+  await L.claim(task.id, OPUS);
+  const brief = await L.jobBrief(task.id, OPUS);
+  expect(brief.job).toBe("build");
+  expect(brief.text).toContain(line);
+  // A project with no prose standard gets no line.
+  const bare = await setup("prose-standard-none");
+  const other = await bare.newItem("Plain task", ["docs/**"], "owner");
+  await bare.claim(other.id, OPUS);
+  expect((await bare.jobBrief(other.id, OPUS)).text).not.toContain("Prose standard");
+});
+
+// t663: a review request and its verdict say which review role they served
+// (security-review for security or gate work, claims-review for docs, else
+// review), so the Models page can measure each role.
+it("a review request and its verdict carry the review role they served", async () => {
+  const cases: [string, PlanPart, string][] = [
+    ["role-security", part("auth"), "security-review"],
+    ["role-claims", part("d", { kind: "docs", taskKind: "docs" }), "claims-review"],
+    ["role-plain", part("a"), "review"],
+  ];
+  for (const [name, spec, role] of cases) {
+    const L = await setup(name);
+    const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+    await L.claim(item.id, PLANNER, RUNNER);
+    const post = await L.postPlan(item.id, PLANNER, doc(spec));
+    if (!post.valid) throw new Error(post.errors.join("; "));
+    await L.release(item.id, PLANNER, "proposed");
+    const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+    const partId = parts[0].id, head = "a".repeat(40);
+    await submitPart(L, partId, head);
+    const requested = (await events(L, partId)).find((e) => e.kind === "review.requested")!;
+    expect(requested.data.role, name).toBe(role);
+    const lease = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+    await L.addReview({ request: lease.request, itemId: partId, criteria: await L.criteria(partId), by: GPT, head, approve: true, note: "Looks good", at: new Date().toISOString() });
+    const verdict = (await events(L, partId)).find((e) => e.kind === "review.approved")!;
+    expect(verdict.data.role, name).toBe(role);
+  }
+});
+
+// t659: a plan's review request naming only a model (no harness) was skipped
+// by the standing check, so a reviewer the owner paused kept the request.
+it("an open review request naming only a model is withdrawn when the owner pauses that model, and asked of another", async () => {
+  const L = await setup("review-held-bare-model");
+  const { partId, builder } = await approved(L);
+  await submitPart(L, partId, "a".repeat(40));
+  expect(await routedReviewer(L, partId)).toBe(GPT);
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE review_requests SET dispatch = json_set(dispatch, '$.agent', NULL) WHERE state = 'open'`);
+  });
+  await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, state: "paused" as const, stateAt: AT } : e));
+  expect((await events(L, partId)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: "gpt-6-astra", reason: expect.stringMatching(/paused since 2026-10-06/) } });
+  expect(await routedReviewer(L, partId)).toBe([OPUS, GLM].find((a) => a !== builder));
 });

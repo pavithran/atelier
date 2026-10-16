@@ -45,7 +45,7 @@ test("the policy takes a validated name and address, explicit agent addresses an
   // A later init changes only what it names.
   assert.deepEqual(settleCommitIdentity({ agentEmails: [] }, settled), { ...POLICY, agentEmails: [] });
   assert.equal(settleCommitIdentity({}, settled), settled);
-  assert.equal(settleCommitIdentity({}, undefined), undefined, "a project from before t451 names none until the owner does");
+  assert.equal(settleCommitIdentity({}, undefined), undefined, "a project from before t451 names none until the developer does");
 });
 
 test("an invalid policy is refused, naming the field to fix", () => {
@@ -142,7 +142,7 @@ test("a workspace with no policy recorded refuses the builder and names the init
   rmSync(join(dir, ".git", IDENTITY_FILE));
   run(dir, ["config", "--local", "user.name", OWNER.name], env);
   run(dir, ["config", "--local", "user.email", OWNER.email], env);
-  assert.deepEqual(identityRefusals(dir, env, "demo"), ["demo has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL [--agent-email EMAIL ...] (docs/setup.md, \"Commit identity\")"]);
+  assert.deepEqual(identityRefusals(dir, env, "demo"), ["demo has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL [--agent-email EMAIL ...] (docs/setup.md, \"Commit identity\")"]);
   assert.deepEqual(builderRefusals(null, resolveIdentity(dir, env), "demo"), identityRefusals(dir, env, "demo"));
 });
 
@@ -326,7 +326,7 @@ test("a claim in a project with no identity says so, and the runner's check refu
   f.state.identity = null;
   const r = await f.claim();
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /Warning: proj has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL/);
+  assert.match(r.output, /Warning: proj has no commit identity in its policy; the developer sets one with atelier init --commit-name NAME --commit-email EMAIL/);
   assert.deepEqual(identityRefusals(f.ws, f.env, "proj"), [r.output.match(/Warning: (proj has no commit identity[^\n]*?\))\./)[1]]);
 });
 
@@ -367,5 +367,20 @@ test("every commit email the policy accepts is one Git keeps as written (t451)",
   const emails = ["owner@example.org", "1111157+pavithran@users.noreply.github.com", "a.b@c.d.example", "o'neil@example.org", "owner@example.org,", ",owner@example.org", "owner@example.org.", "'owner@example.org'", "owner;x@example.org", "owner\"@example.org", "own er@example.org", "owner@example.org\\", ":owner@example.org"];
   for (const email of emails) {
     if (emailProblem(email) === null) assert.equal(recorded(email), email, `${JSON.stringify(email)} is accepted but Git records ${JSON.stringify(recorded(email))}`);
+  }
+});
+
+test("registered mirror destinations and privacy rules validate, persist and clear", () => {
+  const fields = { publicMirrors: ["github"], publicMirrorDestinations: { github: "https://example.org/public.git" }, privatePaths: ["private/**"], privatePatterns: ["INTERNAL-[0-9]+"] };
+  const policy = settleCommitIdentity({ commitName: OWNER.name, commitEmail: OWNER.email, ...fields }, undefined);
+  for (const [key, value] of Object.entries(fields)) assert.deepEqual(policy[key], value);
+  const renamed = settleCommitIdentity({ commitName: "New name" }, policy);
+  for (const [key, value] of Object.entries(fields)) assert.deepEqual(renamed[key], value);
+  const cleared = settleCommitIdentity({ publicMirrorDestinations: {}, privatePaths: [], privatePatterns: [] }, policy);
+  assert.deepEqual(cleared.publicMirrorDestinations, {});
+  assert.deepEqual(cleared.privatePaths, []);
+  assert.deepEqual(cleared.privatePatterns, []);
+  for (const invalid of [{ publicMirrorDestinations: [] }, { publicMirrorDestinations: { github: "" } }, { publicMirrorDestinations: { github: "-option" } }, { privatePaths: "private" }, { privatePatterns: ["("] }]) {
+    assert.throws(() => settleCommitIdentity(invalid, policy), /publicMirrorDestinations|privatePaths|privatePatterns/);
   }
 });

@@ -69,14 +69,14 @@ const mergePart = async (L: L, id: string) => (await L.planView(id)).parts.filte
 // A plan forked at H0 with parts a and b, b depending on a; a is submitted
 // at PART_A, approved by another family, and integrated as MA with main
 // noted at M1, so the tick has dispatched a refresh for M1 before b.
-async function behindPlan(L: L) {
+async function behindPlan(L: L, pool: ModelEntry[] = POOL) {
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
   await L.claim(item.id, PLANNER, RUNNER);
   await L.setFork(item.id, `fork-${item.id}`, H0, PLANNER);
   const post = await L.postPlan(item.id, PLANNER, doc(part("a"), part("b", { dependsOn: ["a"] })));
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, PLANNER, "proposed");
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, pool);
   const [a, b] = [parts[0].id, parts[1].id];
   await submitApproved(L, a, PART_A, "src/a/x.ts");
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
@@ -223,7 +223,7 @@ it("plan refresh --resolve adds the part for main's head without a refresh, to t
   await L.claim(id, INTEGRATOR, RUNNER, true);
   await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
   await L.release(id, INTEGRATOR, "refresh failed");
-  await refusal(L.planResolve(id, PLANNER, M1, false, undefined), "not_project_owner", /only the project owner/);
+  await refusal(L.planResolve(id, PLANNER, M1, false, undefined), "not_project_owner", /only the developer/);
   await refusal(L.planResolve(a, "owner", M1, false, undefined), "not_a_plan", /part of/);
   await refusal(L.planResolve(id, "owner", M1, true, undefined), "up_to_date", /already holds main's head 11111111/);
   await refusal(L.planResolve(id, "owner", "nope", false, undefined), "bad_head", /full commit hash/);
@@ -320,4 +320,79 @@ it("POST integrated records main as taken only when the merge commit holds the p
   const ok = await call(other, `${plan.id}/integrated`, INTEGRATOR, { part: KEY, mergeCommit: MM }, missing);
   expect(ok.status).toBe(200);
   expect((await O.planView(plan.id)).refresh?.taken).toBe(H0);
+});
+
+// gpt-6-astra's twentieth review of t622, finding 1: plan refresh --resolve
+// compared the routed builder with --to in any letter case, so --to
+// zcode/GLM-5.3 (an entry of its own) was taken for the routed
+// zcode/glm-5.3 and no reroute was recorded.
+it("plan refresh --resolve --to names an entry whose id differs from the routed builder's only in letter case, and it builds", async () => {
+  const L = await setup("mm-resolve-case");
+  const reviewOnly = (e: ModelEntry): ModelEntry => ({ ...e, roles: ["review"] });
+  // The plan is approved with zcode/glm-5.3 its only builder; zcode/GLM-5.3,
+  // free to build, joins the pool after. Until t649 GLM-5.3 was review-only
+  // here and built anyway: the standing check read whichever zcode entry
+  // came first in the pool, glm-5.3, for it.
+  const approved = [reviewOnly(entry("opus-5.5", "claude-code")), reviewOnly(entry("gpt-6-astra", "codex")), entry("glm-5.3", "zcode")];
+  await L.poolChanged(approved);
+  const { id } = await behindPlan(L, approved);
+  await L.poolChanged([...approved, entry("GLM-5.3", "zcode")]);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
+  await L.release(id, INTEGRATOR, "refresh failed");
+  await L.planResolve(id, "owner", M1, false, "zcode/GLM-5.3");
+  const [m] = await mergePart(L, id);
+  expect(m.route?.builder?.actor).toBe("zcode/GLM-5.3");
+});
+
+// gpt-6-astra's twenty-first review of t622: the merge-main part was routed
+// with a plain build's offer check, though it is dispatched with the
+// merge-main job; a build assignment preferring Astra, offered only for build
+// and review, routed it to Astra, whom no runner would claim it as.
+it("the merge-main part is routed to a model a runner offers the merge-main job for, whatever a build assignment prefers", async () => {
+  const L = await setup("mm-resolve-job");
+  const { id } = await behindPlan(L);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
+  await L.release(id, INTEGRATOR, "refresh failed");
+  await L.assignmentsChanged({ version: 999, assignments: [{ id: "a1", kind: "assigned", scope: "*", role: "build", choices: [{ actor: "codex/gpt-6-astra", model: "gpt-6-astra" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  const now = new Date().toISOString();
+  const offers = [
+    { runner: "home:astra", kind: "home" as const, jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: now },
+    { runner: "home:opus", kind: "home" as const, jobs: ["merge-main", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: now },
+  ];
+  await L.planResolve(id, "owner", M1, false, undefined, offers);
+  const [m] = await mergePart(L, id);
+  expect(m.route?.builder?.actor).toBe("claude-code/opus-5.5");
+  expect(m.route?.builder?.reasons.join(" ")).toMatch(/Role assignment a1 skipped: no choice is eligible here \(codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
+});
+
+// gpt-6-astra's twenty-second review of t622, finding 2: a --to that the
+// routing could not honour became a reroute whose reasons said only
+// "Rerouted by the developer", and plan.part_added recorded no assignment
+// outcome, so nothing said the build assignment was passed over for it.
+it("a merge-main --to the routing did not pick names each build assignment skipped for it, on the route and on the event", async () => {
+  const L = await setup("mm-resolve-to-ahead");
+  const { id } = await behindPlan(L);
+  await L.claim(id, INTEGRATOR, RUNNER, true);
+  await L.refreshFailed(id, INTEGRATOR, M1, "the plan's checks failed with main merged: FAIL npm test", "checks");
+  await L.release(id, INTEGRATOR, "refresh failed");
+  await L.assignmentsChanged({ version: 999, assignments: [{ id: "a1", kind: "assigned", scope: "*", role: "build", choices: [{ actor: "codex/gpt-6-astra", model: "gpt-6-astra" }], reason: "By judgement.", quote: "q", evidence: [], by: "owner", at: AT }] });
+  const now = new Date().toISOString();
+  // No runner offers glm-5.3 the merge-main job, so the routing picks Opus
+  // and the developer's --to reroutes the part.
+  const offers = [
+    { runner: "home:glm", kind: "home" as const, jobs: ["build", "review"], agents: [{ agent: "zcode", models: ["glm-5.3"] }], at: now },
+    { runner: "home:opus", kind: "home" as const, jobs: ["merge-main", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }], at: now },
+  ];
+  await L.planResolve(id, "owner", M1, false, "zcode/glm-5.3", offers);
+  const [m] = await mergePart(L, id);
+  expect(m.route?.builder?.actor).toBe("zcode/glm-5.3");
+  expect(m.route?.builder?.reasons).toEqual([
+    "Rerouted by the developer",
+    "The developer's --to comes before role assignments",
+    "Role assignment a1 skipped: the developer's --to comes before role assignments",
+  ]);
+  const added = (await events(L, id)).find((e) => e.kind === "plan.part_added");
+  expect(added?.data).toMatchObject({ builder: "zcode/glm-5.3", assignment: { applied: null, skipped: [{ id: "a1", why: "the developer's --to comes before role assignments" }] } });
 });

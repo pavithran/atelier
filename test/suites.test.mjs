@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { createVitest } from "vitest/node";
 import { assign, discover, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
@@ -10,8 +11,9 @@ import { assign, discover, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
 const run = resolve("test/run.mjs");
 function tree(t, files) {
-  mkdirSync(".cache", { recursive: true });
-  const dir = mkdtempSync(resolve(".cache/atelier-suites-test-"));
+  // The real path: macOS reaches its temp folder through the /var symlink,
+  // and Vitest matches its globs against the resolved root.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "atelier-suites-test-")));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   for (const file of files) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
@@ -120,6 +122,21 @@ test("active config changes affect ownership; duplicate and excluded paths stop 
   assert.deepEqual(rejections(await plan(dir)), []);
 });
 
+// t658: plan() resolved its root with path.resolve only, so a root reached
+// through a symlink (macOS's /var -> /private/var, where os.tmpdir() lives)
+// matched none of Vitest's globs, which Vitest checks against the real path,
+// and every spec file came back unassigned.
+test("plan() assigns Vitest's files when its root is reached through a symlink", async (t) => {
+  const dir = tree(t, ["test/a.spec.ts", "b.test.mjs"]);
+  const links = mkdtempSync(join(tmpdir(), "atelier-suites-link-"));
+  t.after(() => rmSync(links, { recursive: true, force: true }));
+  const link = join(links, "root");
+  symlinkSync(dir, link, "dir");
+  const result = await plan(link);
+  assert.deepEqual(rejections(result), []);
+  assert.deepEqual(result.byRunner, { node: ["b.test.mjs"], vitest: ["test/a.spec.ts"] });
+});
+
 test("assignments equal actual configured Vitest collection and Node executes its assigned files", async (t) => {
   // Compare to Vitest's independent glob collection, not the ownership matcher.
   const result = await plan();
@@ -171,4 +188,31 @@ test("npm test executes real runner-token routes and propagates a failed token a
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   assert.match(failed.stdout + failed.stderr, /deliberately-wrong-runner/);
   assert.match(failed.stdout, /1 failed/);
+});
+
+// t568: a failed Node pool used to end npm test before vitest started, so a
+// landing saw only the first pool's failures. Both pools now run, and the
+// exit is the worst status either ended with.
+test("npm test runs the vitest pool after a failed Node pool and exits with the worst status", (t) => {
+  const dir = tree(t, []);
+  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs"]) {
+    mkdirSync(join(dir, file, ".."), { recursive: true });
+    cpSync(file, join(dir, file));
+  }
+  writeFileSync(join(dir, "a.test.mjs"), `import { test } from "node:test"; test("fails", () => { throw new Error("node pool fails"); });`);
+  writeFileSync(join(dir, "test/b.spec.ts"), "");
+  // The real vitest resolves which files it owns; a stand-in for its binary
+  // records that it ran and exits with VITEST_STATUS.
+  mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
+  symlinkSync(resolve("node_modules/vitest"), join(dir, "node_modules/vitest"), "dir");
+  writeFileSync(join(dir, "node_modules/.bin/vitest"), `#!/bin/sh\necho ran > "${join(dir, "vitest-ran")}"\nexit "$VITEST_STATUS"\n`, { mode: 0o755 });
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
+  for (const [vitestStatus, expected] of [[0, 1], [3, 3]]) {
+    rmSync(join(dir, "vitest-ran"), { force: true });
+    const r = spawnSync(process.execPath, ["test/run.mjs"], { cwd: dir, env: { ...env, VITEST_STATUS: String(vitestStatus) }, encoding: "utf8", timeout: 60_000 });
+    assert.match(r.stdout + r.stderr, /node pool fails/);
+    assert.equal(readFileSync(join(dir, "vitest-ran"), "utf8").trim(), "ran", "vitest ran after the Node pool failed");
+    assert.equal(r.status, expected, r.stdout + r.stderr);
+  }
 });

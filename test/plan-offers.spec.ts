@@ -97,7 +97,7 @@ it("the default planner is one a live runner offers; a named planner is the owne
   await L.stopPlan(again.item.id, "owner", "done");
   // A named planner needs no offer: the owner claims the plan by hand.
   const named = await L.newPlan("Named", ["src/**"], "owner", "zcode/glm-5.3", POOL);
-  expect([named.planner, named.reasons]).toEqual(["zcode/glm-5.3", ["Named by the project owner"]]);
+  expect([named.planner, named.reasons]).toEqual(["zcode/glm-5.3", ["Named by the developer"]]);
 });
 
 it("a runner's ask is recorded with when it asked, and the owner alone reads the offers", async () => {
@@ -180,5 +180,37 @@ it("runners have asked but none is live: routing falls back to the whole pool, a
   // what names them then (unoffered, in the review lines).
   const approved = planText(await L.planView(id, null, null, await index().runnerOffers()) as PlanView, "plan-offers-stale");
   expect(approved).not.toContain("falls back to the whole pool");
+  await L.stopPlan(id, "owner", "done");
+});
+
+// t652, finding 3 of the review of t626: plan routing read every runner's
+// offer, so a model offered only by a runner whose token serves another
+// project looked available to this project's plan. A runner scoped
+// elsewhere offers this project nothing (offersFor in src/dispatch/rules.ts),
+// and, still live, it is no reason to fall back to the whole pool.
+it("a model only a runner scoped to another project offers is not routed in this project's plan", async () => {
+  const L = await setup("plan-offers-scoped");
+  const { id, hash } = await proposed(L);
+  const at = new Date().toISOString();
+  await index().putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["build", "review"], agents: [{ agent: "zcode", models: ["glm-5.3"] }] }, at);
+  await index().putRunnerOffer({
+    runner: "home:desk", kind: "home", jobs: ["build", "review"], projects: ["plan-offers-elsewhere"],
+    agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }],
+  }, at);
+  // Only glm-5.3 is offered to this project, so no reviewer of another
+  // family is, and approval is refused as unrouted.
+  await refusal(L.approvePlan(id, "owner", hash, false, POOL), "unrouted", /part a has no reviewer: .*codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra, so no runner could claim its dispatch\)/);
+  const preview = await L.planView(id, POOL);
+  expect(preview.preview?.map((r) => [r.key, r.builder?.actor ?? null, r.unrouted !== null])).toEqual([
+    ["a", "zcode/glm-5.3", true],
+    ["b", "zcode/glm-5.3", true],
+  ]);
+  // The same runner serving this project too: approval routes.
+  await index().putRunnerOffer({
+    runner: "home:desk", kind: "home", jobs: ["build", "review"], projects: ["plan-offers-elsewhere", "plan-offers-scoped"],
+    agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }],
+  }, new Date().toISOString());
+  const { parts } = await L.approvePlan(id, "owner", hash, false, POOL);
+  expect(parts).toHaveLength(2);
   await L.stopPlan(id, "owner", "done");
 });

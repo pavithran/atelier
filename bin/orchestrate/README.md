@@ -17,7 +17,8 @@ for `land.sh` and `queue.sh` (default `atelier`).
 | `queue.sh TASK CONTEXT NOTE` | Takes this machine's landing lock for the project, merges main into the task, and hands it to `land.sh` when the merge is clean and type-checks. |
 | `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits and reviews the head it read before the review; records the verdict with the reviewer's own summary and its findings either way, and on approval accepts at that head with NOTE on the acceptance and merges, then type-checks main. `REVIEW_MODEL` is `gemini-3.1-pro-high` (recorded as `antigravity/gemini-3.1-pro`) or `gpt-oss-120b-medium` (`antigravity/gpt-oss-120b`); any other is refused. |
 | `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON; `land.sh` records them. |
-| `regen-fixtures.sh` | Rewrites the CLI's help fixtures from the CLI in the current directory. |
+| `review-bake.sh run\|score` | A reviewer bake-off (t699): gives each reviewer the same blind brief and diff of every build in a sample of judged model-bake-off builds, read-only, and scores the replies against the judge's verdicts with `review-bake-score.mjs`. See "Measuring reviewers". |
+| `regen-fixtures.sh` | Runs `node cli/regenerate.mjs`, rewriting the command indexes and the CLI's help fixtures in the current directory. |
 | `land-queue.sh [TASK:H/M ...]` | Lands queued tasks one after another with `atelier land --workflow --wait --reviewer`, each once the five-minute load average is under `LAND_QUEUE_LOAD` (25), printing one `LANDQ tN: OUTCOME` line per landing for a watcher. Run it once in the background from the project's checkout; add a task with `land-queue.sh --add tN:harness/model`, which takes the queue's lock (a bare append to the queue file is not safe). `docs/orchestrating.md`, "The loop with runners", says how its outcomes are handled. It is a workaround until the server keeps a queue of landings itself (t460). |
 
 `atelier land` (task t187) does what `queue.sh` and `land.sh` do inside
@@ -79,6 +80,53 @@ per run — task, role, runner — and `run-agent.sh` sets it from the brief's t
 line, so the gateway's figures count calls per task (docs/models-and-usage.md,
 "AI Gateway costs"). The provider's own key still goes in its own header; the
 gateway passes it through and logs the call.
+
+### Switching to opencode 2
+
+Atelier runs opencode 1 and opencode 2 and tells them apart by asking the
+executable once, with `opencode --version`, the major version it prints.
+Nothing in Atelier needs changing to switch: put an opencode 2 first on the
+`PATH` (with Homebrew, `brew unlink` the npm release's link and `brew link
+opencode`), and the next run is an opencode 2 run. This Mac stays on opencode
+2 (PAVI, 2026-10-15); 1.x still works, but support for it may be dropped, so
+treat the switch as one-way. What differs for a run on opencode 2:
+
+- A version that cannot be read stops the run: the adapter exits with "could
+  not read the version of ..." and `run-agent.sh` exits 69. It might be
+  opencode 2, which needs the two protections below, and opencode 1 rejects
+  both, so neither guess is safe and nothing is launched.
+- `--standalone` is added to every `opencode run`, by the adapter
+  (`cli/harness/adapter.mjs`, both the run and its `--continue`) and by
+  `run-agent.sh`. Without it opencode 2 hands the run to a background service
+  that all runs share, which keeps its own data folder and undoes the run's
+  `XDG_DATA_HOME`. opencode 1 is not given the flag.
+- A rule denying `external_directory` is applied to every run. opencode 2 asks
+  where a rule is missing, and `opencode run` approves what it is asked: a
+  run with an unchanged config read `/etc/hosts`. The adapter passes the rule
+  at run time through `OPENCODE_CONFIG_CONTENT` (`OPENCODE2_CONFIG_CONTENT` in
+  `cli/harness/providers.mjs`), which opencode 2 merges over the stored
+  provider config, so a runner set up before the rule existed is fenced too;
+  `run-agent.sh` does the same. The generated provider configs keep opencode
+  1's `permission` deny always and add opencode 2's `permissions` array only
+  when `atelier runner setup` found an opencode 2, since opencode 1.18.34
+  throws on that key ("V2 permissions are not supported by OpenCode V1").
+  The wrappers' own configs in `~/.config/opencode` are yours: add
+  `"permissions": [{ "action": "external_directory", "resource": "*", "effect": "deny" }]`
+  to each only if you run them without `run-agent.sh` and are on opencode 2.
+- The rule fences opencode's file tools, not its shell: on opencode 2.0.29 a
+  `head /etc/hosts` run by the shell tool succeeded under it. The workspace
+  rule in an agent's brief, and a `shell` rule of your own, are what restrain
+  that.
+- `--format json` output has the same events as opencode 1 for text
+  (`{"type":"text","part":{"text":...}}`), which the adapter reads. A provider
+  failure differs: opencode 2 reports `error.type` `provider.*` where
+  opencode 1 reports `error.name` `APIError`, and the adapter's limit
+  detection reads both. Recorded output is in `test/fixtures/opencode2`.
+
+The tests that run opencode 2 itself (`test/opencode2.test.mjs`) are skipped
+unless `ATELIER_OPENCODE2` names an opencode 2 executable, for example
+`ATELIER_OPENCODE2=/opt/homebrew/opt/opencode/bin/opencode`. They need no
+key: a local stand-in answers as the model.
 
 Reviews run through Antigravity's CLI, `agy`, signed in to a Google account
 with Gemini access; its models include `gemini-3.1-pro-high` and
@@ -278,18 +326,18 @@ It runs no model and reads no config. It offers only the integrate and refresh
 jobs and acts as `atelier/integrator`. Without it, a plan's parts build and
 pass review and then stop. Run exactly one.
 
-The integrator does not claim under the owner's token that `atelier login`
+The integrator does not claim under the developer's token that `atelier login`
 stored. It acts as the reserved actor `atelier/integrator`, whose claim the
 server takes only through an agent token bound to that actor; a claim with
-any other token is refused (`integrator_token`). Issue the token from an
-owner session and start the integrator with it in `ATELIER_TOKEN`:
+any other token is refused (`integrator_token`). Issue the token from a
+developer session and start the integrator with it in `ATELIER_TOKEN`:
 
 ```sh
 atelier token issue --as atelier/integrator --label integrator   # prints the token once
 ATELIER_TOKEN=atl_… atelier runner --integrate --name home:mac-integrator
 ```
 
-Started with the owner's token instead, the integrator is offered the jobs
+Started with the developer's token instead, the integrator is offered the jobs
 all the same, every claim is refused, and it logs `runner: claim refused:
 integrator_token: atelier/integrator claims only through a token bound to
 it`, skips the job and integrates nothing. The token expires (30 days unless
@@ -321,6 +369,7 @@ folder holding `node` in `PATH`):
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/Users/YOU/.local/bin</string>
+    <key>ATELIER_RUNNER_SUPERVISED</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -375,11 +424,11 @@ unknown, so the claim stays), or `runner: claim not released: REASON`. A review
 job ends with `runner: reviewed: approve` or `reject`. A job that never got
 its claim logs `runner: skipped: REASON` or `runner: claim refused: REASON`.
 The integrator logs `runner: every part is integrated; the plan item
-is submitted for the owner` when a plan's last part merges.
+is submitted for the developer` when a plan's last part merges.
 
 The log does not name the task a job is on: the lines above carry no task id.
 Only the line after a job ends, `runner: reported PROJECT/ID as OUTCOME`, and
-the notice `runner: PROJECT/ID needs the owner's attention after 2 failures;
+the notice `runner: PROJECT/ID needs the developer's attention after 2 failures;
 skipped for this process` (3 consecutive infrastructure failures for the
 other form) do. To see which task a runner holds now, run `atelier status
 --project PROJECT`. `launchctl print gui/$(id -u)/zone.atelier.runner`
@@ -398,9 +447,81 @@ resumed: …`, then the push, checks and submit of `atelier finish`) without
 running the model again, and where it holds none, the model builds as for any
 claim. A restart therefore loses no committed work and leaves no runner
 reported busy with a claim no live run holds; a resumed finish that keeps
-failing leaves the claim for the owner, as any failed finish does. This needs
+failing leaves the claim for the developer, as any failed finish does. This needs
 a server at route level 13 (the task's own raise to 6 plus the raises main
 had already merged), which the runner asks for at start.
+
+Runners no longer need restarting after a deploy (t265). An idle runner, the
+integrator included, reads the deployed commit (`GET /api/version`) after
+each poll that claimed nothing and, once its checkout holds that commit,
+spawns a replacement with the same arguments and environment. Once the new
+runner signals ready, the old one releases it to poll for work and waits
+for it to exit, forwarding every SIGINT, SIGTERM and SIGHUP even during
+startup. The replacement has its own process group so a terminal signal
+reaches it only once. Ctrl-C and session end still stop the attached replacement.
+The replacement has a new pid. It logs `runner:
+reloading: started from OLD, the server runs NEW; …`, and the new process
+`runner: reloaded: was OLD, now NEW`. Pull the checkout after a deploy
+(`git -C CHECKOUT pull --ff-only`); until then the runner logs once `runner:
+behind: …` and keeps running the old code. It never reloads mid-job. A failed
+re-exec logs `runner: reload failed: …` and keeps the old process running;
+restart that one by hand. Reload works on every supported Node (24 or later)
+without `process.execve`. A replacement that exits before ready or times out
+also leaves the old runner running. Set `ATELIER_RUNNER_SUPERVISED=1`
+explicitly for supervisors configured to restart on exit, including launchd
+with KeepAlive. The runner then logs the old and target commits and exits so
+the supervisor restarts the same command from the updated checkout, without
+a duplicate. `XPC_SERVICE_NAME` alone does not enable this mode; supervisors
+own startup failures. Details:
+docs/runners.md, "Reload on deploy".
+
+## Measuring reviewers
+
+`review-bake.sh` measures how well each reviewer judges a build, on builds a
+judge has already graded and whose defects the judge confirmed and
+reproduced (the model bake-off's builds, kept in a data folder outside the
+repository). The script's header documents every option.
+
+```sh
+bin/orchestrate/review-bake.sh run --sample sample.txt --out DIR \
+  --reviewers codex/gpt-6-astra,antigravity/gemini-4-argon,claude-code/opus-5.5 \
+  --skip claude-code/opus-5.5
+bin/orchestrate/review-bake.sh score --out DIR --truth truth.json
+```
+
+- **Reviewers** are `codex/MODEL` (`codex exec -s read-only`, brief and diff on
+  standard input), `antigravity/MODEL` (`cli/agy-review.mjs`) and
+  `claude-code/MODEL` (`~/.local/bin/atelier-claude` in its review mode, which
+  needs `claude -p` signed in; `--skip` leaves such a reviewer out and says so
+  in `DIR/skipped.txt`).
+- **The sample** lists one build per line (`SLUG-TASK`, its grade, why). Each
+  build is reviewed in a clean clone at its head, with no `.scratch/` of the
+  builder; its brief is the blind brief the model bake-off gave its reviewers
+  (rebuilt from the task's brief when the build has none) and its diff is the
+  build's change from the task's base. Every reviewer gets the identical files,
+  kept in `DIR/inputs/`.
+- **Concurrency** is per family: at most 2 Codex, 2 Antigravity and 1 Claude
+  Code review at a time. A reply with no `VERDICT:` line is tried once more
+  after `--retry-sleep` seconds; a second miss is recorded as failed. Rerunning
+  keeps the reviews that have a verdict.
+- **Ground truth** (`truth.json`, described at the top of
+  `review-bake-score.mjs`) is written by hand from the judge's verdicts: per
+  build its grade, each confirmed defect with a regular expression that
+  recognises a `FINDING` line naming it, and the findings the judge ruled
+  false or outside the review bar. A blocking finding that matches nothing is
+  unjudged: read it, and say what it is in `labels.json`, which the scorer
+  reads from the output folder (`"REVIEWER|BUILD|N": defect id | false | real |
+  none`).
+- **The score**, per build: defects caught and missed, blocking findings the
+  judge ruled false, approvals of a C or D build, rejections of an A build.
+  Per reviewer: the totals, precision (true blocking findings over all) and
+  recall (confirmed defects caught over those in the builds it reviewed).
+
+It reads builds and judge verdicts that the bake-off kept; it changes none of
+them and runs reviewers only in throwaway clones under
+`~/Library/Caches/ai-projects/atelier-review-bake`. `node --test
+bin/orchestrate/review-bake.test.mjs` tests the scorer and the script against
+stand-ins for the reviewers' CLIs.
 
 ## What the agents may and may not do
 
@@ -415,7 +536,7 @@ terminal sandboxed. No script pushes a project's own remotes or deploys.
 `land-queue.sh` runs `post-merge.sh TASK` synchronously after the CLI reports
 that a task landed through the landing Workflow. This step requires clean
 `main`, pulls, runs `npm run typecheck` and `npm test`,
-deploys (owner decision d6), and publishes to `public`. Set `NOREPLY` to the
+deploys (developer decision d6), and publishes to `public`. Set `NOREPLY` to the
 recorded public no-reply address. It checks author and committer separately
 and audits every outgoing commit, including paths removed in later commits.
 

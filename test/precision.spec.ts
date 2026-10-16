@@ -141,3 +141,24 @@ it("the Models page shows each reviewer's precision over the stated window, and 
   expect(row("deepseek-v4-pro")).toContain("n=3, too few to rank");
   expect(row("deepseek-v4-pro")).not.toContain("%");
 });
+
+// gpt-6-astra's and gemini-4-argon's reviews of t621: the Ledger's own
+// precision record, which routing reads, left out the served annotations,
+// so routing credited a served review's findings to the declared model
+// while the Models page credited the model that served it.
+it("routing reads review precision under the model that served each review", async () => {
+  const policy: ProjectPolicy = { checks: ["npm test"], protected: ["src/**"] };
+  const POOL = [entry("opus-5.5", "claude-code"), entry("gemini-3.1-pro", "antigravity"), entry("gpt-6-astra", "codex")];
+  const L = await project("precision-served", policy);
+  const from = new Date(Date.now() - 60_000).toISOString();
+  await judged(L, GPT, times("confirmed" as const, 6));
+  const to = new Date(Date.now() + 1000).toISOString();
+  await judged(L, GEMINI, [...times("confirmed" as const, 4), ...times("refuted" as const, 2)]);
+  const before = await submitted(L, OPUS);
+  expect(await L.requestReview(before.id, "owner", null, POOL)).toMatchObject({ requested: true, reviewer: GPT });
+  // Every review gpt-6-astra recorded was served by another model: its six held findings are not its own.
+  const done = await L.annotateServed({ served: "gpt-6-mini", recorded: GPT, from, to, items: null, note: "served by the mini" }, "owner", true);
+  expect(done.annotated).toBeGreaterThan(0);
+  const after = await submitted(L, OPUS);
+  expect(await L.requestReview(after.id, "owner", null, POOL)).toMatchObject({ requested: true, reviewer: GEMINI });
+});

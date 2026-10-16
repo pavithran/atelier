@@ -1,11 +1,12 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import layout from "../src/layout.css";
 import { HELP_GROUPS } from "../src/usage.ts";
 import { buildStory, type Story } from "../src/graph.ts";
 import { buildImported } from "../src/import/history.ts";
-import { renderShowcase, type ShownProject } from "../src/ui.ts";
+import { FAST_MODE_NOTE, renderShowcase, type ShownProject } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 
 // The public showcase as an anonymised portfolio (t184): the owner's setting
@@ -63,15 +64,16 @@ it("an anonymised project's names, titles, paths, commands, notes and addresses 
   for (const secret of ["hush-app", "Hush Secret Title", "Fix the crash", "src/auth.ts", "dev@private.example", "secret reviewer note", "npm run hush-suite", "Hush.xcodeproj"]) {
     expect(body, secret).not.toContain(secret);
   }
-  // What the page says instead: a neutral label from the project's kind, the
-  // kind of work of each task story, and the card's counts and families.
-  expect(body).toContain("<h2>An iOS app</h2>");
-  expect(body).toContain("A fix");
-  expect(body).toMatch(/<b>0<\/b>merged, last two weeks/);
-  expect(body).toMatch(/<b>0<\/b>merged, all time/);
-  expect(body).toMatch(/<b>1<\/b>sent back/);
-  expect(body).toMatch(/<b>1<\/b>in progress/);
-  expect(body).toContain('class="pulse-graph"');
+  // What the page says instead: a neutral label from the project's kind and
+  // the card's counts and families. Its one task is open, so no task is told
+  // as it happened (t578: only a merged task is).
+  expect(body).toContain("<h3>An iOS app</h3>");
+  expect(body).not.toContain('id="story-h"');
+  expect(body).toContain("<dt>merged, last two weeks</dt><dd>0</dd>");
+  expect(body).toContain("<dt>merged, all time</dt><dd>0</dd>");
+  expect(body).toContain("<dt>sent back, last two weeks</dt><dd>1</dd>");
+  expect(body).toContain("<dt>in progress, last two weeks</dt><dd>1</dd>");
+  expect(body).toContain('class="pulse-graph bars"');
   expect(body).toContain(">GPT<");
   expect(body).toContain(">GLM<");
   // The sign-in page draws the same anonymised activity behind its form.
@@ -93,10 +95,10 @@ it("a project shown named appears by name, beside the anonymised one", async () 
   await I().setShowcase("hush-app", "anonymous");
   await I().setShowcase("open-tool", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body).toContain("<h2>Open Tool</h2>");
-  expect(body).toContain("Polish the handle");
+  expect(body).toContain("<h3>Open Tool</h3>");
+  expect(body).toContain('<span class="meta">Open Tool · </span>gpt-6 took t1');
   expect(body).not.toContain("Hush Secret Title");
-  expect(body).toContain("<h2>An iOS app</h2>");
+  expect(body).toContain("<h3>An iOS app</h3>");
 });
 
 it("the setting is the owner's alone: agent tokens and unsigned callers cannot change it", async () => {
@@ -134,9 +136,9 @@ it("the setting is the owner's alone: agent tokens and unsigned callers cannot c
   expect(await (await OWNER_TOKEN_CALL("GET", "/showcase")).text()).not.toContain("owner-only");
 });
 
-it("the sign-in page stands in the public shell, with no signed-in rail", async () => {
+it("the sign-in page stands in the public shell, with no owner bar", async () => {
   const body = await (await worker.fetch(new Request("https://atelier.test/login"), testEnv)).text();
-  expect(body).not.toContain('class="rail"');
+  expect(body).not.toContain('class="owner-bar"');
   expect(body).not.toContain('href="/decisions"');
   expect(body).toContain('class="public-bar"');
   expect(body).toContain('<a href="/how">how Atelier works</a>');
@@ -148,19 +150,40 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await I().registerProject(record);
   await L("lead-check").newItem("Tidy the desk", [], "owner");
   await L("lead-check").claim("t1", "codex/gpt-6");
+  // One task, as it happened, tells a merged task only (t578).
+  await L("lead-check").setFork("t1", "lead-check--t1", "1".repeat(40), "codex/gpt-6");
+  await L("lead-check").recordPush("t1", "codex/gpt-6", head, head);
+  await L("lead-check").addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6", at: time, changedPaths: ["src/a.ts"] });
+  await L("lead-check").submit("t1", "codex/gpt-6");
+  await L("lead-check").accept("t1", "owner", head);
+  await L("lead-check").merged("t1", "owner", "d".repeat(40), true, head);
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body).toContain("<h1>A Git platform for multiple coding agents</h1>");
-  expect(body.indexOf("<strong>Proven. Reviewed. Recorded.</strong> Git keeps the code. Atelier brings the receipts.")).toBeGreaterThan(0);
-  // How a task travels names the five steps as its headings, then sums them up.
-  const travels = body.slice(body.indexOf('aria-label="How a task travels"'));
-  const verbs = [...travels.matchAll(/<h3>([A-Za-z]+)<\/h3>/g)].map((m) => m[1]).slice(0, 5);
-  expect(verbs).toEqual(["Claim", "Fork", "Prove", "Review", "Land"]);
-  expect(travels).toContain('<p class="takeaways">Proven. Reviewed. Recorded.</p>');
+  // t673 (PAVI chose mockup C, "the" left white): Git's sentence muted,
+  // Atelier's bright, only "receipts." in gold; the nested spans still break
+  // a phone's headline into Git keeps / the code. / Atelier brings / the receipts.
+  expect(body).toContain('<h1><span class="given"><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the <span class="hl">receipts.</span></span></span></h1>');
+  expect(layout).toContain(".show-hero h1 { margin: 0; font: 800 clamp(24px, calc((100vw - 32px) / 13), 88px)/.98 var(--font-display); letter-spacing: -.035em; color: var(--text-bright); }");
+  expect(layout).toContain(".show-hero h1 .given { color: var(--text-muted); }");
+  expect(layout).toContain(".show-hero h1 .hl { color: var(--signal); }");
+  expect(layout).toContain(".show-hero h1 > span { display: block; white-space: nowrap; }");
+  expect(layout).toContain(".show-hero h1 > span > span { display: block; }");
+  expect(body).toContain('<p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>');
+  expect(body).toContain('<p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>');
+  // The canvas's order (d29): the hero, the comparison when there is one, the
+  // tally with its evidence key, the portfolio, one task, the steps, the
+  // moves, where it runs.
+  const order = ['id="top"', 'id="tally-h"', 'class="evidence-key"', 'id="portfolio-h"', 'id="story-h"', 'id="travels-h"', 'id="moves-h"', 'id="where-h"', 'class="show-foot"'].map((m) => body.indexOf(m));
+  expect(order.every((at) => at > 0)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  // How a task travels names its seven steps, each counted from the tally.
+  const travels = body.slice(body.indexOf('id="travels-h"'), body.indexOf('id="moves-h"'));
+  expect([...travels.matchAll(/<h3>([A-Za-z]+)<\/h3>/g)].map((m) => m[1])).toEqual(["Planned", "Claimed", "Worked", "Checked", "Reviewed", "Decided", "Merged"]);
+  expect(travels).toMatch(/<span class="travel-count">\d+ planned<\/span>/);
+  expect(travels).toMatch(/<span class="travel-count">\d+ tasks? taken, \d+ handoffs?<\/span>/);
   // The steps take the accent, not the agents' family colours.
-  expect(travels.slice(0, travels.indexOf("</section>"))).not.toContain("--m-");
-  expect(body.indexOf('class="subhead"')).toBeGreaterThan(body.indexOf("<h1>A Git platform"));
-  expect(body).toContain("The owner made 0 decisions.");
+  expect(travels).not.toContain("--m-");
+  expect(body).toContain("The developer made 1 decision.");
 });
 
 it("the comparison uses the shown project with the largest imported history when the same project's is thin", async () => {
@@ -181,11 +204,11 @@ it("the comparison uses the shown project with the largest imported history when
     { project: { name: "photograph", repo: "photograph", policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story: photo },
   ];
   const html = renderShowcase([samey, photo], samey.tally, "pavi", "PAVI", false, imported, cards);
-  const before = html.split('class="compare-card before"')[1].split("</a>")[0];
+  const before = html.split('class="compare-card before"')[1].split("</article>")[0];
   expect(before).toContain(">Photograph<");
-  expect(before).toContain("<b>3,000</b> commits");
+  expect(before).toContain("<dt>3,000</dt><dd>commits</dd>");
   expect(before).not.toContain(">Samey<");
-  expect(html.split('class="compare-card with"')[1].split("</a>")[0]).toContain(">Samey<");
+  expect(html.split('class="compare-card with"')[1].split("</article>")[0]).toContain(">Samey<");
 });
 
 it("the comparison prefers a project with a substantial history of its own over a busier one whose history is thin", async () => {
@@ -206,10 +229,10 @@ it("the comparison prefers a project with a substantial history of its own over 
   ]);
   const card = (name: string, s: typeof busy): ShownProject => ({ project: { name, repo: name, policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story: s });
   const html = renderShowcase([busy, deep, photo], busy.tally, "pavi", "PAVI", false, imported, [card("busy", busy), card("deep", deep), card("photograph", photo)]);
-  const before = html.split('class="compare-card before"')[1].split("</a>")[0];
+  const before = html.split('class="compare-card before"')[1].split("</article>")[0];
   expect(before).toContain(">Deep<");
-  expect(before).toContain("<b>400</b> commits");
-  expect(html.split('class="compare-card with"')[1].split("</a>")[0]).toContain(">Deep<");
+  expect(before).toContain("<dt>400</dt><dd>commits</dd>");
+  expect(html.split('class="compare-card with"')[1].split("</article>")[0]).toContain(">Deep<");
 });
 
 it("the How page's command reference arrives collapsed, each group closed until opened", async () => {
@@ -269,9 +292,9 @@ it("an anonymised project's commit hashes never reach the showcase or the sign-i
   await I().setShowcase("hush-hash", "anonymous");
   await I().setShowcase("named-hash", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body.match(/<b>1<\/b>merged, all time/g)?.length).toBeGreaterThanOrEqual(2);
-  expect(body).toContain("5eedba5e");    // a named project's revisions stay named
-  expect(body).toContain("dec0ded5");
+  expect(body.match(/<dt>merged, all time<\/dt><dd>1<\/dd>/g)?.length).toBeGreaterThanOrEqual(2);
+  // A named project's revisions stay named: its merge, in the latest moves.
+  expect(body).toContain("accepted t1; merged into main as dec0ded5");
   expect(body).not.toContain("e7a1c0de"); // an anonymised project's hashes are gone
   expect(body).not.toContain("c0ffee42");
   // The sign-in page draws the same anonymised activity behind its form.
@@ -307,4 +330,113 @@ it("an anonymised story carries no commit hash in its beads, moments or drawing;
   const namedHtml = renderShowcase([named], named.tally, "pavi", "PAVI", false, new Map(), [card(named, "named")]);
   expect(namedHtml).toContain(H.slice(0, 8));
   expect(namedHtml).toContain(M.slice(0, 8));
+});
+
+// Seen live on 13 Oct 2026 (t578): the showcase read the last 3,000 events,
+// which on Atelier's own busy ledger covered eight hours, so it said 0 merged
+// in two weeks beside 379 all time and told an open, failing task as its
+// story. Every figure is now counted over the whole record, and the story is
+// a merged task read from its own events.
+it("the showcase counts the whole record, not the most recent events, and tells a merged task", async () => {
+  const name = "busy-record";
+  const record = { name, repo: name, title: "Busy Record", policy: { checks: [], protected: [] }, createdAt: time };
+  await L(name).setProject(record, "owner");
+  await I().registerProject(record);
+  const l = L(name);
+  await l.newItem("Ship the parser", [], "owner");
+  await l.claim("t1", "codex/gpt-6");
+  await l.setFork("t1", `${name}--t1`, "1".repeat(40), "codex/gpt-6");
+  await l.recordPush("t1", "codex/gpt-6", head, head);
+  await l.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6", at: time, changedPaths: ["src/a.ts"] });
+  await l.addReview({ itemId: "t1", criteria: await l.criteria("t1"), by: "zcode/glm-5.3", head, approve: false, note: "not yet", at: time });
+  await l.addReview({ itemId: "t1", criteria: await l.criteria("t1"), by: "zcode/glm-5.3", head, approve: true, note: "fine now", at: time });
+  await l.submit("t1", "codex/gpt-6");
+  await l.accept("t1", "owner", head);
+  await l.merged("t1", "owner", "d".repeat(40), true, head);
+  await l.newItem("Chase the flaky build", [], "owner");
+  await l.claim("t2", "codex/gpt-6");
+  // More events than any read limit, all after the merge: failing checks on the open task.
+  const NOISE = 3200;
+  await runInDurableObject(l, async (_: unknown, state: DurableObjectState) => {
+    const at = new Date().toISOString();
+    for (let i = 0; i < NOISE; i++) {
+      state.storage.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES ('t2', ?, 'atelier/sandbox', 'evidence.observed', ?)`, at, JSON.stringify({ passed: false, where: "sandbox", claim: "npm test" }));
+    }
+  });
+  // This project alone is shown, so the page's figures are its own.
+  for (const e of await I().showcaseEntries()) await I().removeShowcase(e.name);
+  await I().setShowcase(name, "named");
+  const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
+  // The figures count every event: the merge, the review and the owner's
+  // acceptance happened before the last 3,000 events.
+  expect(body).toContain(`<dt>checks run on a clean copy, ${NOISE.toLocaleString("en")} in Cloudflare</dt><dd>${(NOISE + 1).toLocaleString("en")}</dd>`);
+  expect(body).toContain("<dt>times a model sent work back</dt><dd>1</dd>");
+  expect(body).toContain("The developer made 1 decision.");
+  expect(body).toContain("<dt>merged, last two weeks</dt><dd>1</dd>");
+  expect(body).toContain("<dt>merged, all time</dt><dd>1</dd>");
+  expect(body).toContain("<dt>sent back, last two weeks</dt><dd>1</dd>");
+  expect(body).not.toContain("the most recent part of the record");
+  // The story is the merged task, sent back once, not the open one with thousands of failures.
+  const story = body.slice(body.indexOf('id="story-h"'), body.indexOf("</section>", body.indexOf('id="story-h"')));
+  expect(story).toContain("t1 · Ship the parser");
+  expect(story).not.toContain("t2");
+  expect(story).toContain("sent it back");
+});
+
+// t578's first deploy left every project out when its whole-record counts
+// failed, behind a catch that logged nothing. A project whose counts cannot
+// be read is still shown, from its recent events, and the error is logged.
+it("a project whose whole-record counts fail is still shown, from its recent events, and the error is logged", async () => {
+  const name = "counts-fail";
+  const record = { name, repo: name, title: "Counts Fail", policy: { checks: [], protected: [] }, createdAt: time };
+  await L(name).setProject(record, "owner");
+  await I().registerProject(record);
+  await L(name).newItem("Mend the gate", [], "owner");
+  await L(name).claim("t1", "codex/gpt-6");
+  // The Ledger's counts fail for this test alone; the method is restored after it.
+  type Proto = { showcaseCounts: (...a: unknown[]) => unknown };
+  const real = await runInDurableObject(L(name), async (instance: object) => {
+    const proto = Object.getPrototypeOf(instance) as Proto;
+    const was = proto.showcaseCounts;
+    proto.showcaseCounts = () => { throw new Error("no such table: events_fake"); };
+    return was;
+  });
+  for (const e of await I().showcaseEntries()) await I().removeShowcase(e.name);
+  await I().setShowcase(name, "named");
+  const logged: string[] = [];
+  const error = console.error;
+  console.error = (...a: unknown[]) => { logged.push(a.join(" ")); };
+  try {
+    const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
+    expect(body).not.toContain("could not be read just now");
+    expect(body).toContain("<h3>Counts Fail</h3>");
+    expect(body).toContain("gpt-6 took t1");
+  } finally {
+    console.error = error;
+    await runInDurableObject(L(name), async (instance: object) => { (Object.getPrototypeOf(instance) as Proto).showcaseCounts = real; });
+  }
+  expect(logged.join("\n")).toContain("showcase: the whole-record counts of counts-fail could not be read: no such table: events_fake");
+});
+
+// Gemini 4 Argon's claims audit of 2026-10-13, finding 8: the showcase
+// counted tasks "landed in fast mode" and nothing said what fast mode is.
+it("the fast-mode count says what fast mode is, and no count appears without fast landings", () => {
+  const evs = [
+    { seq: 1, at: "2026-10-13T12:00:00Z", actor: "pavi", kind: "item.created", itemId: "t1", data: {} },
+    { seq: 2, at: "2026-10-13T12:01:00Z", actor: "codex/gpt-6-astra", kind: "item.claimed", itemId: "t1", data: {} },
+  ].reverse();
+  const story = buildStory("quick", [{ id: "t1", title: "Work", state: "claimed" }] as never, evs as never, "pavi", false, "Quick", { redact: true, ownerLabel: "PAVI" });
+  const shown = (landedFast?: number): ShownProject => ({ project: { name: "quick", repo: "quick", policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story, allTimeMerged: 20, landedFast });
+  const html = renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [shown(13)]);
+  // Visible text in the card, after its figures, not a tooltip a keyboard
+  // or a touch screen never reaches (codex/gpt-6-astra's review of t605).
+  const cardHtml = html.split('class="show-card"')[1].split("</li>")[0];
+  const note = /<\/dl><p class="card-note">([^<]*)<\/p>/.exec(cardHtml)?.[1] ?? "";
+  expect(cardHtml).toContain("landed in fast mode, all time");
+  expect(cardHtml).not.toContain("title=");
+  expect(note).toBe(FAST_MODE_NOTE);
+  expect(note).toMatch(/with a reason/);
+  expect(note).toMatch(/any review comes after the merge, when the developer asks for one/);
+  expect(note).toMatch(/Full mode, review first, is the default/);
+  expect(renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [shown()])).not.toContain("landed in fast mode");
 });

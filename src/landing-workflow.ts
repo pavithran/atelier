@@ -3,11 +3,11 @@
 // pipeline on the owner's Mac as before (cli/land.mjs, docs/landing.md).
 //
 // One instance lands one task. The steps the server can do alone are durable
-// Workflow steps with retries: taking the project's landing lease (queueing
-// for it in the order the landings asked, t249), the required checks in a
-// Cloudflare container (the CheckRunner `atelier check --sandbox` starts),
-// the submission, the review request and the wait for its verdict, the
-// acceptance, and the watch for the merge. Each reads and writes the Ledger
+// Workflow steps with retries: the required checks in a Cloudflare
+// container (the CheckRunner `atelier check --sandbox` starts), the
+// submission, the review request and the wait for its verdict, taking the
+// project's landing lease (queueing for it in the order the landings asked,
+// t249), the acceptance, and the watch for the merge. Each reads and writes the Ledger
 // Durable Object directly, with no token, so an expired write token cannot
 // end them, and each retries on its own when the Ledger, the container or
 // Artifacts fails it transiently (a 503). The verdict wait and the merge
@@ -24,11 +24,24 @@
 // polls that stage, does the workspace steps when the stage is `workspace`
 // and reports them as a `workspace` event, and runs `atelier merge` when the
 // stage is `merge`. A merge of main that stops on conflicts is reported as
-// such: the Workflow releases the lease and pauses at stage `conflict`,
-// naming the files, until the owner resolves them and runs the command
-// again, which sends a `resume` event; the Workflow then queues for the
-// lease once more and asks for the workspace steps again (a new round, since
-// main may have moved while it waited).
+// such: the Workflow pauses at stage `conflict`, holding no lease, naming
+// the files, until the owner resolves them and runs the command again,
+// which sends a `resume` event; the Workflow then asks for the workspace
+// steps again (a new round, since main may have moved while it waited).
+//
+// Review before the runway (t550): the lease is held for the merge alone.
+// The workspace steps, the checks, the submission and the review all run
+// without it, beside any other task's landing; a conflict, a failed check,
+// a stopped triage or a rejection ends (or pauses) the landing with the
+// lease never taken. Only once the gate holds the pushed head with its
+// checks passing and an approval it counts does the Workflow queue for the
+// lease (stage `lease`), and under it confirm that main is still the commit
+// the executor merged; where main moved, it releases the lease without
+// accepting and begins a new round from the merge of main, whose review
+// request is where the server carries the approval over a clean merge as
+// far as its rules let it (t459, where deployed) or asks for a new review.
+// Each lease step records the time the round spent before the lease and in
+// the queue, and each release step the time the lease was held.
 //
 // The required checks run in one of two places, the landing's checks mode
 // (t305), chosen by `atelier land ID --workflow --checks local|container`:
@@ -69,9 +82,11 @@ import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
+import { landingVerdict, allSkipped, recordedApproval, reviewStall, type RecordedDetail, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
+import { fenceText, type PrereviewFence } from "./dispatch/prereview.ts";
+import { offersFor } from "./dispatch/rules.ts";
 
 // What the landing-workflow route passes when it creates the instance.
 // `key` is the project's storage key; `actor` is the project owner;
@@ -144,6 +159,11 @@ const EVENT_CHUNK_MS = 60 * 60_000;
 // only bridges a slow answer.
 const PUSH_SEEN_MS = 5 * 60_000;
 
+// How many times main may move under the lease before the landing stops
+// (t550), as the CLI's own landing bounds it: each time the lease is
+// released and the head merged with main, checked and reviewed again.
+const MAIN_MOVED_ROUNDS = 5;
+
 const HASH = /^[a-f0-9]{40,64}$/;
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 8) : "—");
 const span = (ms: number) => ms < 60_000 ? `${Math.round(ms / 1000)} seconds` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} minutes` : `${Math.round(ms / 3_600_000)} hours`;
@@ -168,9 +188,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // so the wait only bridges a slow record; half an hour, renewed lease.
       checksWait: bounded(raw.checksTimeoutMs, 30 * 60_000),
       triage: raw.triage === true,
+      sfx: "",
     };
     const L = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${p.key}`));
     let round = 0;
+    // When this landing took the lease it holds, for the time it held it.
+    let leasedAt: number | null = null;
     try {
       // The refusals the CLI's preflight makes, asked again here: a closed
       // task, a plan (which lands with atelier merge) and an accepted task
@@ -180,78 +203,138 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         if (item.state === "merged" || item.state === "abandoned") throw new NonRetryableError(`${p.item} is ${item.state}; there is nothing to land.`);
         if (item.kind === "plan") throw new NonRetryableError(`${p.item} is a plan, which lands with atelier merge ${p.item} --head INTEGRATION_HEAD, the integration head atelier plan show ${p.item} prints.`);
         if (item.state === "accepted") throw new NonRetryableError(`${p.item} is accepted at ${short(item.acceptedHead)}; merge it with: atelier merge ${p.item}.`);
+        // A landing a blocking pre-review fenced (t524) is refused the lease
+        // until `atelier unblock`, so it ends here, before a check or a
+        // review is spent on a landing that could not merge.
+        const fence = ((await L.detail(p.item)) as unknown as { prereviewFence?: PrereviewFence | null }).prereviewFence;
+        if (fence) throw new NonRetryableError(fenceText(p.item, fence));
         return { state: item.state };
       });
 
-      // The workspace rounds: take the lease, ask the executor for the
-      // merge of main and the push, and either go on with the head it
-      // pushed or, on conflicts, release the lease and pause until the
-      // owner resolves them, then begin a new round.
+      // The rounds (t550): ask the executor for the merge of main and the
+      // push, check, submit and review the head it pushed — all without the
+      // lease, beside any other task's landing — and only then take the
+      // lease and confirm main is still the commit that head was merged
+      // with. A conflict pauses the landing (no lease is held) until the
+      // owner resolves it; main moving before the lease releases the lease
+      // and begins a new round, whose review request is where the server
+      // carries the approval over a clean merge of main as far as its rules
+      // let it (t459, where deployed) or asks for a new review. Each round's
+      // steps are named for it (`p.sfx`), so none answers from a cached
+      // step of an earlier round.
       let report: Reported;
+      let moves = 0;
+      let movedNote: string | undefined;
       for (;;) {
-        await this.stage(step, L, p, "lease", round);
-        await this.takeLease(step, L, p, `r${round}`, round === 0);
-        await this.stage(step, L, p, "workspace", round, "waiting for the machine holding the workspace to merge main and push");
+        p.sfx = round ? ` r${round}` : "";
+        const roundAt = await step.do(`note the start of the round${p.sfx || " r0"}`, RETRIES, async () => Date.now());
+        await this.stage(step, L, p, "workspace", round, movedNote ?? "waiting for the machine holding the workspace to merge main and push; no lease is held");
         const got = await this.waitForWorkspace(step, p, round);
         if ("conflict" in got) {
           await this.stage(step, L, p, "conflict", round, got.reason, got.files);
-          await this.release(step, L, p, `release the landing lease for the conflict r${round}`);
           await this.waitForResume(step, p, round);
           round++;
+          movedNote = undefined;
           continue;
         }
         report = got;
-        break;
+        const head = report.head;
+        await this.seeHeadPushed(step, L, p, head);
+
+        // The checks: in the container mode, in the same Cloudflare
+        // container `atelier check --sandbox` starts, from the fork at the
+        // pushed head; in the local mode, the observed results the
+        // executor's clean-clone run recorded at that head, read from the
+        // Ledger.
+        await this.stage(step, L, p, "checks", round, p.checks === "local" ? `waiting for the observed results of the required checks at ${short(head)}, run in a clean clone on the machine holding the workspace` : undefined);
+        if (p.checks === "local") await this.awaitObservedChecks(step, L, p, head);
+        else await this.runChecks(step, L, p, head);
+
+        // The submission, in the name of the task's holder, as `atelier
+        // submit` run in the workspace submits it with the owner's token; it
+        // is skipped where the Ledger already holds it, so a retried step
+        // never submits twice. A landing that triages submits only while its
+        // triage stands at the reported binding (t475).
+        const reported = report;
+        await step.do(`submit the merged head${p.sfx}`, RETRIES, async () => {
+          await this.stillCurrent(L, p);
+          const item = await L.item(p.item);
+          if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
+          if (["submitted", "accepted", "merged"].includes(item.state)) return { skipped: true };
+          await this.triageStands(L, p, reported, `so the landing stops before the submission: nothing was submitted and no review was asked for, and ${p.item} stays with its holder`);
+          if (!item.owner) throw new NonRetryableError(`${p.item} has no holder to submit it; claim it, then run atelier land ${p.item} --workflow again`);
+          const t0 = Date.now();
+          try {
+            await L.submit(p.item, item.owner, reported.mergedIn && reported.mainHead ? `Merged with main at ${short(reported.mainHead)}; the required checks pass.` : "The required checks pass.", p.origin);
+          } catch (error) {
+            const parsed = parseRuleError(error);
+            if (parsed && parsed.status < 500) throw new NonRetryableError(parsed.detail);
+            throw error;
+          }
+          await this.note(L, p, "submit", Date.now() - t0, {});
+          return {};
+        });
+
+        // The review: requested of the reviewer the owner named or the one
+        // the gate picks, then waited for on the server. --no-review leaves
+        // the task submitted for the owner to settle by hand, and never
+        // takes the lease.
+        await this.stage(step, L, p, "review", round);
+        if (p.noReview) {
+          await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { skipped: true }); return {}; });
+          await this.stage(step, L, p, "done", round, "submitted; the review is left to the developer (--no-review); the landing lease was never taken");
+          return { item: p.item, workflow: p.instance, review: "skipped" };
+        }
+        await this.review(step, L, p, head, round, report);
+
+        // The gate as the acceptance will read it, asked before the lease:
+        // the head must be the one checked and approved, with the required
+        // checks passing and an approval the gate counts (or none needed).
+        await step.do(`confirm the gate before the lease${p.sfx}`, RETRIES, async () => {
+          await this.stillCurrent(L, p);
+          const d = (await L.detail(p.item)) as unknown as { item: { head: string | null }; gate?: { ready: boolean; blockers?: string[] } };
+          if (d.item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(d.item.head)} after ${short(head)} was checked and reviewed, so the landing stops before taking the lease; run atelier land ${p.item} --workflow again`);
+          if (d.gate && !d.gate.ready) throw new NonRetryableError(`${p.item} at ${short(head)} is not ready to accept, so the landing stops before taking the lease: ${(d.gate.blockers ?? []).join("; ") || "the gate gave no reason"}. Nothing was merged`);
+          return {};
+        });
+
+        // The lease, for the merge alone: queued for in the order the
+        // landings asked (t249), with the time spent before it and in the
+        // queue recorded on the lease step.
+        await this.stage(step, L, p, "lease", round, `${short(head)} is checked and approved; waiting for the landing lease for the merge`);
+        const taken = await this.takeLease(step, L, p, `r${round}`, roundAt, report);
+        leasedAt = taken.at;
+
+        // Main must be the commit the head was merged with, checked and
+        // reviewed against. Where it moved, the lease is released without
+        // accepting and the landing goes round again from the merge of main.
+        const main = await step.do(`confirm main has not moved${p.sfx}`, RETRIES, async () => {
+          await this.renewOrStop(L, p);
+          return { main: await this.mainHead(L, p) };
+        });
+        if (main.main === report.mainHead) {
+          // Recorded on the Ledger with the head, so the merge of this head
+          // is refused into any other main (beginLanding), whatever happens
+          // to the lease before the executor merges.
+          await step.do(`record the confirmed main${p.sfx}`, RETRIES, async () => {
+            try { await L.confirmLeaseMain(p.item, p.actor, main.main, p.instance); }
+            catch (error) {
+              const parsed = parseRuleError(error);
+              if (parsed && parsed.status < 500) throw new NonRetryableError(`the landing could not record main ${short(main.main)} under its lease, so it stops without accepting ${p.item}: ${parsed.detail}. Run atelier land ${p.item} --workflow again`);
+              throw error;
+            }
+            return {};
+          });
+          break;
+        }
+        moves++;
+        await this.release(step, L, p, `release the landing lease, main moved r${round}`, leasedAt, `main moved from ${report.mainHead} to ${main.main}`);
+        leasedAt = null;
+        if (moves >= MAIN_MOVED_ROUNDS) throw new NonRetryableError(`main moved under the lease ${MAIN_MOVED_ROUNDS} times (now at ${short(main.main)}, where ${short(head)} was checked and reviewed against ${short(report.mainHead)}), so the landing stops without merging ${p.item}; it stays submitted. Run atelier land ${p.item} --workflow again once main settles`);
+        movedNote = `main moved from ${short(report.mainHead)} to ${short(main.main)} while ${short(head)} was checked and reviewed, so the lease was released without accepting; waiting for the machine holding the workspace to merge main again and push`;
+        round++;
       }
       const head = report.head;
-      await this.seeHeadPushed(step, L, p, head);
-
-      // The checks: in the container mode, in the same Cloudflare container
-      // `atelier check --sandbox` starts, from the fork at the pushed head;
-      // in the local mode, the observed results the executor's clean-clone
-      // run recorded at that head, read from the Ledger. The lease is
-      // renewed first: a lease another landing took over while the
-      // workspace worked stops this landing here.
-      await this.stage(step, L, p, "checks", round, p.checks === "local" ? `waiting for the observed results of the required checks at ${short(head)}, run in a clean clone on the machine holding the workspace` : undefined);
-      await step.do("renew the lease before the checks", RETRIES, async () => { await this.renewOrStop(L, p); return {}; });
-      if (p.checks === "local") await this.awaitObservedChecks(step, L, p, head);
-      else await this.runChecks(step, L, p, head);
-
-      // The submission, in the name of the task's holder, as `atelier
-      // submit` run in the workspace submits it with the owner's token; it
-      // is skipped where the Ledger already holds it, so a retried step
-      // never submits twice. A landing that triages submits only while its
-      // triage stands at the reported binding (t475).
-      await step.do("submit the merged head", RETRIES, async () => {
-        await this.renewOrStop(L, p);
-        const item = await L.item(p.item);
-        if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
-        if (["submitted", "accepted", "merged"].includes(item.state)) return { skipped: true };
-        await this.triageStands(L, p, report, `so the landing stops before the submission: nothing was submitted and no review was asked for, and ${p.item} stays with its holder`);
-        if (!item.owner) throw new NonRetryableError(`${p.item} has no holder to submit it; claim it, then run atelier land ${p.item} --workflow again`);
-        const t0 = Date.now();
-        try {
-          await L.submit(p.item, item.owner, report.mergedIn && report.mainHead ? `Merged with main at ${short(report.mainHead)}; the required checks pass.` : "The required checks pass.", p.origin);
-        } catch (error) {
-          const parsed = parseRuleError(error);
-          if (parsed && parsed.status < 500) throw new NonRetryableError(parsed.detail);
-          throw error;
-        }
-        await this.note(L, p, "submit", Date.now() - t0, {});
-        return {};
-      });
-
-      // The review: requested of the reviewer the owner named or the one
-      // the gate picks, then waited for on the server. --no-review leaves
-      // the task submitted for the owner to settle by hand.
-      await this.stage(step, L, p, "review", round);
-      if (p.noReview) {
-        await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { skipped: true }); return {}; });
-        await this.release(step, L, p, "release the landing lease");
-        await this.stage(step, L, p, "done", round, "submitted; the review is left to the owner (--no-review)");
-        return { item: p.item, workflow: p.instance, review: "skipped" };
-      }
-      await this.review(step, L, p, head, round, report);
 
       // The acceptance: the fork's head is read from Artifacts and must be
       // the reviewed head (as the accept route checks it), and the lease
@@ -265,6 +348,8 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         return { head };
       });
       await step.do("accept the reviewed head", RETRIES, async () => {
+        // Under the lease taken above, renewed here: a landing that lost it
+        // stops before accepting.
         await this.renewOrStop(L, p);
         const item = await L.item(p.item);
         if (item.state === "merged") return { done: "merged" };
@@ -284,7 +369,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // Ledger until the merge is recorded.
       await this.stage(step, L, p, "merge", round, `accepted at ${short(head)}; waiting for atelier merge ${p.item} in the registered checkout`);
       await this.waitForMerge(step, L, p);
-      await this.release(step, L, p, "release the landing lease");
+      await this.release(step, L, p, "release the landing lease", leasedAt, "merged");
       await this.stage(step, L, p, "done", round, "merged");
       return { item: p.item, workflow: p.instance, landed: true };
     } catch (error) {
@@ -302,6 +387,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
           // `failed` and its reason (a lease-wait timeout names that holder).
           let outcome: { released?: true; handedOver?: true } = { released: true };
           try { await L.cancelProjectLanding(p.item, p.actor, p.instance); } catch (err) { const code = parseRuleError(err)?.code; if (code === "stale_landing") return { replaced: true }; if (code !== "landing_lease") throw err; outcome = { handedOver: true }; }
+          if (leasedAt !== null && outcome.released) await this.note(L, p, "release", Date.now() - leasedAt, { reason: `stopped: ${message.split("\n")[0]}`.slice(0, 500) });
           await L.setLandingWorkflowStage(p.item, p.instance, "failed", round, message);
           return outcome;
         });
@@ -315,7 +401,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   private async stage(step: WorkflowStep, L: LedgerStub, p: Landing, stage: LandingWorkflowStage, round: number, detail?: string, files?: string[]): Promise<void> {
     await step.do(`stage ${stage} r${round}`, RETRIES, async () => {
       const record = await L.setLandingWorkflowStage(p.item, p.instance, stage, round, detail, files);
-      if (!record && stage === "lease" && round === 0) {
+      // The first stage this instance writes (the workspace, since t550)
+      // waits for the record the route makes when it creates the instance.
+      if (!record && stage === "workspace" && round === 0) {
         throw new Error("the landing instance is waiting for its record after creation");
       }
       return {};
@@ -326,9 +414,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   // refreshes the landing's place in the server's queue (t249) and tries
   // the take; a refusal names whose landing stands in the way, and the
   // Workflow sleeps and asks again until the wait's limit, when it leaves
-  // the queue and ends. `record` writes the land.lease event for the first
-  // take alone; a retake in a later round is a resume, not a second lease.
-  private async takeLease(step: WorkflowStep, L: LedgerStub, p: Landing, label: string, record: boolean): Promise<void> {
+  // the queue and ends. Each take is the lease for one round's merge (t550),
+  // recorded as a land.lease event with the time the round spent before it
+  // (from `roundAt`: the merge of main, the checks and the review) and the
+  // time it waited in the queue. Answers when the lease was taken.
+  private async takeLease(step: WorkflowStep, L: LedgerStub, p: Landing, label: string, roundAt: number, report: Reported): Promise<{ at: number }> {
+    const asked = await step.do(`note the ask for the landing lease ${label}`, RETRIES, async () => Date.now());
     // Bound replay/step pressure during a long lease queue without letting
     // its heartbeat approach the Ledger's fifteen-minute queue expiry.
     // Small test/short-wait polls retain their requested cadence.
@@ -337,10 +428,18 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     for (let i = 0; ; i++) {
       const ask = await step.do(`ask for the landing lease ${label} #${i}`, RETRIES, async () => {
         const t0 = Date.now();
-        await L.queueProjectLanding(p.item, p.actor, false, p.instance);
+        // A landing a blocking pre-review fenced (t524) is refused the queue
+        // until `atelier unblock`; no retry of the ask lifts it, so it ends
+        // the Workflow at once rather than after every retry.
+        try { await L.queueProjectLanding(p.item, p.actor, false, p.instance); }
+        catch (error) {
+          const parsed = parseRuleError(error);
+          if (parsed?.code === "prereview_blocked") throw new NonRetryableError(parsed.detail);
+          throw error;
+        }
         try {
           const { expired }: { expired: LandingLease | null } = await L.beginProjectLanding(p.item, p.actor, p.instance);
-          return { took: true as const, t0, expired: expired ? expired.item : null };
+          return { took: true as const, t0, at: Date.now(), expired: expired ? expired.item : null };
         } catch (error) {
           const parsed = parseRuleError(error);
           // The holder at this attempt, read after the refusal: the final
@@ -357,13 +456,15 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         }
       });
       if (ask.took) {
-        if (record) {
-          await step.do(`record the lease step ${label}`, RETRIES, async () => {
-            await this.note(L, p, "lease", Math.max(0, Date.now() - ask.t0), ask.expired ? { expired: ask.expired } : {});
-            return {};
+        await step.do(`record the lease step ${label}`, RETRIES, async () => {
+          await this.note(L, p, "lease", Math.max(0, ask.at - ask.t0), {
+            head: report.head, main: report.mainHead,
+            beforeLease: Math.max(0, asked - roundAt), waited: Math.max(0, ask.t0 - asked),
+            ...(ask.expired ? { reason: `took over the lapsed lease of ${ask.expired}` } : {}),
           });
-        }
-        return;
+          return {};
+        });
+        return { at: ask.at };
       }
       if (i + 1 >= maxAsks) {
         await step.do(`leave the landing queue ${label}`, RETRIES, async () => { await L.queueProjectLanding(p.item, p.actor, true, p.instance); return {}; });
@@ -390,11 +491,38 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     }
   }
 
-  private async release(step: WorkflowStep, L: LedgerStub, p: Landing, name: string): Promise<void> {
+  // The fence a replaced instance meets before the lease (t430, t550): the
+  // steps before the lease hold none to renew, so each asks the record
+  // whether this instance is still the task's landing, and one that was
+  // replaced stops without checking, submitting or reviewing anything.
+  private async stillCurrent(L: LedgerStub, p: Landing): Promise<void> {
+    const record = await L.landingWorkflowOf(p.item);
+    if (record && record.instance !== p.instance) throw new NonRetryableError(`this landing Workflow was replaced, so it stops without advancing ${p.item}: ${record.instance} is ${p.item}'s landing Workflow now`);
+  }
+
+  // Releases the lease this landing holds, recording the time it held it
+  // (from `since`) and why it let it go as a land.release event (t550).
+  private async release(step: WorkflowStep, L: LedgerStub, p: Landing, name: string, since: number | null = null, why = "released"): Promise<void> {
     await step.do(name, RETRIES, async () => {
-      try { await L.cancelProjectLanding(p.item, p.actor, p.instance); } catch (err) { const code = parseRuleError(err)?.code; if (code === "landing_lease") return { handedOver: true }; if (code === "stale_landing") return { replaced: true }; throw err; }
-      return { released: true };
+      // A lease handed over (t237) to a landing that took it after this
+      // task merged was still held until then, and is recorded so.
+      let outcome: { released?: true; handedOver?: true } = { released: true };
+      try { await L.cancelProjectLanding(p.item, p.actor, p.instance); } catch (err) { const code = parseRuleError(err)?.code; if (code === "stale_landing") return { replaced: true }; if (code !== "landing_lease") throw err; outcome = { handedOver: true }; }
+      if (since !== null) await this.note(L, p, "release", Date.now() - since, { reason: why.slice(0, 500) });
+      return outcome;
     });
+  }
+
+  // Main's head as the baseline holds it now: the project's repository, or
+  // a part's plan branch, read from Artifacts as the merge of main reads it.
+  private async mainHead(L: LedgerStub, p: Landing): Promise<string> {
+    const item = await L.item(p.item);
+    const project = await L.project();
+    const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
+    using repo = await this.env.ARTIFACTS.get(baseRepoOf(item, project.repo, planFork));
+    const [top] = await repo.log({ limit: 1 });
+    if (!top || !HASH.test(top.hash)) throw new Error(`main's head could not be read for ${p.item}`);
+    return top.hash;
   }
 
   // ── the workspace steps, on the machine that holds the workspace ──────
@@ -420,13 +548,16 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         }
         const head = String(payload.head ?? "");
         if (!HASH.test(head)) throw new NonRetryableError(`the workspace report is malformed (its head is not a commit hash); run atelier land ${p.item} --workflow again`);
+        // The main the head was merged with is what the lease confirms main
+        // is still at (t550); a report without it cannot be merged safely.
         const mainHead = String(payload.mainHead ?? "");
+        if (!HASH.test(mainHead)) throw new NonRetryableError(`the workspace report names no main head the push was merged with, so the landing cannot confirm main has not moved before it merges; run atelier land ${p.item} --workflow again with this CLI`);
         const t = payload.triage;
         const triage = t && typeof t === "object" && HASH.test(String(t.base ?? "")) && /^[a-f0-9]{64}$/.test(String(t.criteria ?? "")) ? { head, base: String(t.base), criteria: String(t.criteria) } : null;
-        return { head, mainHead: HASH.test(mainHead) ? mainHead : null, mergedIn: payload.mergedIn === true, triage };
+        return { head, mainHead, mergedIn: payload.mergedIn === true, triage };
       }
       if (i + 1 >= chunks) {
-        throw new NonRetryableError(`the workspace did not report the merge of main and the push within ${span(p.workspace)}, so the landing stops without submitting ${p.item}; the lease is released and nothing was merged. Run atelier land ${p.item} --workflow again from the machine holding its workspace`);
+        throw new NonRetryableError(`the workspace did not report the merge of main and the push within ${span(p.workspace)}, so the landing stops without submitting ${p.item}; no lease was held and nothing was merged. Run atelier land ${p.item} --workflow again from the machine holding its workspace`);
       }
     }
   }
@@ -469,14 +600,15 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   // an existing run as it stands), and polls it to its end. A project with
   // no required checks skips the container, recorded as skipped.
   private async runChecks(step: WorkflowStep, L: LedgerStub, p: Landing, head: string): Promise<void> {
-    const started = await step.do("run the required checks in a Cloudflare container", RETRIES, async () => {
+    const started = await step.do(`run the required checks in a Cloudflare container${p.sfx}`, RETRIES, async () => {
+      await this.stillCurrent(L, p);
       const item = await L.item(p.item);
       const project = await L.project();
       if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
       if (!project.policy.checks.length) return { none: true as const, t0: Date.now(), runId: "", seconds: 0 };
       if (!item.fork || !item.head) throw new NonRetryableError(`${p.item} has nothing pushed to check`);
       const refused = [...(project.policy.prepare ? [project.policy.prepare.command] : []), ...project.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
-      if (refused.length) throw new NonRetryableError(`${refused.join(". ")}. The project owner replaces it with atelier init --check; until then land ${p.item} without --workflow.`);
+      if (refused.length) throw new NonRetryableError(`${refused.join(". ")}. The developer replaces it with atelier init --check; until then land ${p.item} without --workflow.`);
       const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
       const runId = `${p.key}:${p.item}:${head.slice(0, 12)}:wf-${p.instance}`;
       const request: RunRequest = {
@@ -491,12 +623,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       return { none: false as const, t0: Date.now(), runId, seconds: (project.policy.checks.length + (project.policy.prepare ? 1 : 0)) * 1800 + 120 };
     });
     if (started.none) {
-      await step.do("record the check step", RETRIES, async () => { await this.note(L, p, "check", Date.now() - started.t0, { skipped: true }); return {}; });
+      await step.do(`record the check step${p.sfx}`, RETRIES, async () => { await this.note(L, p, "check", Date.now() - started.t0, { skipped: true }); return {}; });
       return;
     }
     const maxPolls = Math.max(1, Math.ceil((started.seconds + 300) * 1000 / p.poll));
     for (let i = 0; ; i++) {
-      const state = await step.do(`read the check run #${i}`, RETRIES, async () => {
+      const state = await step.do(`read the check run #${i}${p.sfx}`, RETRIES, async () => {
         const s = await this.env.RUNNER.get(this.env.RUNNER.idFromName(started.runId)).state();
         // A step returns serializable state alone, narrowed to what the
         // decision below reads.
@@ -508,7 +640,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         // the evidence the run recorded, read as the gate reads it, after
         // the line that names the checks, within the record's size.
         const why = `the required checks failed at ${short(head)} in the Cloudflare container: ${failed.map((r) => r.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.`;
-        const { detail } = await step.do("record the check step", RETRIES, async () => {
+        const { detail } = await step.do(`record the check step${p.sfx}`, RETRIES, async () => {
           await this.note(L, p, "check", Date.now() - started.t0, failed.length ? { failed: true, reason: failed.map((r) => r.claim).join(", ").slice(0, 500) } : {});
           return { detail: failed.length && state.recorded ? await this.failureText(L, p, head, why) : "" };
         });
@@ -518,7 +650,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       }
       if (state?.status === "failed") throw new NonRetryableError(`the check run failed: ${state.error || "unknown error"}. Run atelier land ${p.item} --workflow again`);
       if (i + 1 >= maxPolls) throw new NonRetryableError(`the checks were still ${state?.status ?? "unread"} after ${span(maxPolls * p.poll)}; run atelier land ${p.item} --workflow again`);
-      await step.sleep(`wait for the check run #${i}`, p.poll);
+      await step.sleep(`wait for the check run #${i}${p.sfx}`, p.poll);
     }
   }
 
@@ -530,14 +662,14 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   // (never a report), at exactly this head, not a merged run, the latest per
   // check, and under sandboxOnly only a container's. Every required check
   // that applies must pass; a failing one ends the landing; one with no
-  // result is waited for, renewing the lease on each poll since the
-  // executor's heartbeat has stopped, until the checks timeout.
+  // result is waited for until the checks timeout. No lease is held while
+  // it waits (t550).
   private async awaitObservedChecks(step: WorkflowStep, L: LedgerStub, p: Landing, head: string): Promise<void> {
-    const t0 = await step.do("note the start of the observed checks wait", RETRIES, async () => Date.now());
+    const t0 = await step.do(`note the start of the observed checks wait${p.sfx}`, RETRIES, async () => Date.now());
     const maxPolls = Math.max(1, Math.floor(p.checksWait / p.poll));
     for (let i = 0; ; i++) {
-      const seen = await step.do(`read the observed checks at ${short(head)} #${i}`, RETRIES, async () => {
-        await this.renewOrStop(L, p);
+      const seen = await step.do(`read the observed checks at ${short(head)} #${i}${p.sfx}`, RETRIES, async () => {
+        await this.stillCurrent(L, p);
         const item = await L.item(p.item);
         if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
         const { policy } = await L.project();
@@ -548,7 +680,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       const failed = seen.checks.filter((c) => c.observed && !c.passed);
       if (failed.length) {
         const why = `the required checks failed at ${short(head)} in a clean clone on the machine holding the workspace: ${failed.map((c) => c.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.`;
-        const { detail } = await step.do("record the failed observed checks", RETRIES, async () => {
+        const { detail } = await step.do(`record the failed observed checks${p.sfx}`, RETRIES, async () => {
           await this.note(L, p, "check", Date.now() - t0, { failed: true, head, reason: failed.map((c) => c.claim).join(", ").slice(0, 500) });
           return { detail: await this.failureText(L, p, head, why) };
         });
@@ -559,16 +691,22 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       if (i + 1 >= maxPolls) {
         throw new NonRetryableError(`no observed result at ${short(head)} for ${pending.map((c) => c.claim).join("; ")} within ${span(p.checksWait)}: in the local checks mode the machine holding the workspace runs the required checks in a clean clone (atelier check) after it pushes, and the server records them. Nothing was submitted; run atelier land ${p.item} --workflow again from that machine, or with --checks container`);
       }
-      await step.sleep(`wait for the observed checks at ${short(head)} #${i}`, p.poll);
+      await step.sleep(`wait for the observed checks at ${short(head)} #${i}${p.sfx}`, p.poll);
     }
   }
 
   private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string, round: number, report: Reported): Promise<void> {
-    const ask = await step.do("request the review", RETRIES, async () => {
-      await this.renewOrStop(L, p);
+    const ask = await step.do(`request the review${p.sfx}`, RETRIES, async () => {
+      await this.stillCurrent(L, p);
       // The triage is asked again whether it stands: criteria changed since
       // the submission stop the landing before any review is asked for.
       await this.triageStands(L, p, report, `so no review was asked for: ${p.item} is submitted at ${short(head)} and stays with its holder`);
+      // A qualifying approval already recorded at this head, which the gate
+      // holds ready to accept (`atelier show`'s accept), settles the review
+      // before any request (t628), as the CLI's landing reads it.
+      const now = (await L.detail(p.item)) as unknown as RecordedDetail;
+      const held = recordedApproval({ ...now, ownerActor: p.actor }, head, p.reviewer);
+      if (held) return { needed: false, held: held.by, reason: `${held.by} already approved ${short(head)}, and the gate counts it`, at: "", asked: "", reviewer: null, request: null };
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
       const records = p.reviewer === null ? { ...await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))), project: (await index.resolveProject(p.project)).key } : undefined;
@@ -580,35 +718,62 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         // every runner offering its reviewer has skipped, left by an earlier
         // landing, is withdrawn and asked anew, so the runners serve it again.
         const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records, await index.runnerOffers());
-        if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
+        // An unclaimed request for another reviewer the named one replaced is said too (t627).
+        const withdrew = (r.withdrew ?? []).map((w) => `Withdrew the unclaimed review request ${w.request}${w.reviewer ? ` for ${w.reviewer}` : ""}. `).join("");
+        if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `${withdrew}Reviewer: ${r.reviewer}. ${r.reason}`);
         // The request's number travels with the ask (t353): the skips the
         // wait counts are that request's alone.
-        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null, request: r.request ?? null };
+        // `asked` is when this landing asked (t574): only a reply with no
+        // readable verdict given since then ends its wait, not one an earlier
+        // landing already stopped on.
+        const asked = new Date().toISOString();
+        return { needed: r.needed, held: null as string | null, reason: r.reason, at: r.at ?? asked, asked, reviewer: r.reviewer ?? null, request: r.request ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));
       }
     });
+    if (ask.held) {
+      const by = ask.held;
+      await step.do(`record the review already approved${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: by, resolvedBy: by, reason: "approval recorded at the head before the landing asked for a review" }); return {}; });
+      return;
+    }
     if (!ask.needed && p.reviewer) throw new NonRetryableError(`the server made no review request for ${p.reviewer} (${ask.reason}); ${p.item} stays submitted`);
     if (!ask.needed) {
-      await step.do("record the review none needed", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) }); return {}; });
+      await step.do(`record the review none needed${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) }); return {}; });
       return;
     }
     const maxPolls = Math.max(1, Math.floor(p.review / p.poll));
     for (let i = 0; ; i++) {
-      const poll = await step.do(`wait for the verdict #${i}`, RETRIES, async () => {
-        await this.renewOrStop(L, p);
+      const poll = await step.do(`wait for the verdict #${i}${p.sfx}`, RETRIES, async () => {
+        await this.stillCurrent(L, p);
+        // The live request is read before the verdicts (t574): a verdict
+        // closes the request it answers, so one recorded between the reads is
+        // seen in the detail rather than taken for a request gone unanswered.
+        const live = await L.liveReviewRequest(p.item, head);
         // The Ledger's detail is a wide view; the step keeps what it reads.
-        const d = (await L.detail(p.item)) as unknown as { item: { head: string | null }; reviews: LandingReview[] };
+        const d = (await L.detail(p.item)) as unknown as { item: { head: string | null }; reviews: LandingReview[]; unparsable?: LandingUnparsable[] };
         if (d.item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
         const { verdict } = landingVerdict(d.reviews ?? [], head, ask.at);
-        return verdict ? { approve: verdict.approve, by: verdict.by, note: String(verdict.note ?? ""), tier: verdict.tier === true } : null;
+        if (verdict) return { approve: verdict.approve, by: verdict.by, note: String(verdict.note ?? ""), tier: verdict.tier === true };
+        // No verdict: the wait goes on only while one can still come.
+        const stall = reviewStall(head, ask.asked ?? ask.at, ask.reviewer, live, d.unparsable ?? []);
+        return stall ? { stall } : null;
       });
+      if (poll && "stall" in poll) {
+        const stall = poll.stall as ReviewStall;
+        await step.do(`record the stalled review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: stall.kind === "unparsable" ? "unparsable" : "no-request", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
+        const byHand = `review by hand (atelier review ${p.item} --approve --as H/M --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}`;
+        if (stall.kind === "unparsable") {
+          throw new NonRetryableError(`${stall.by} replied to the review of ${p.item} at ${short(head)} with no verdict the server could read (${stall.note.slice(0, 300) || "no note"}); the reply is kept on the task (atelier show ${p.item}). The request stays asked of ${stall.by} and ${p.item} stays submitted. Run atelier land ${p.item} --workflow --reviewer H/M to ask another reviewer, which replaces that request, or ${byHand}`);
+        }
+        throw new NonRetryableError(`no review request of ${p.item} at ${short(head)} is open or claimed and no verdict was given, so none will come; ${p.item} stays submitted. Run atelier land ${p.item} --workflow${ask.reviewer ? ` --reviewer ${ask.reviewer}` : ""} to ask again, or ${byHand}`);
+      }
       if (poll) {
         if (!poll.approve) {
-          await step.do("record the rejected review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "reject", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
+          await step.do(`record the rejected review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "reject", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
           throw new NonRetryableError(`${poll.by}${poll.tier ? " (tier review)" : ""} rejected ${p.item} at ${short(head)}: ${poll.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
         }
-        await step.do("record the approved review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
+        await step.do(`record the approved review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
         return;
       }
       // t353: a review request every runner that offers the reviewer has
@@ -617,36 +782,55 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // the hour. The skips counted are this request's alone, by its number:
       // an earlier request's at the same head are that request's.
       if (ask.reviewer && ask.request !== null) {
-        const stuck = await step.do(`see whether every reviewer skipped #${i}`, RETRIES, async () => {
-          const offers = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
+        const stuck = await step.do(`see whether every reviewer skipped #${i}${p.sfx}`, RETRIES, async () => {
+          const [offers, project] = await Promise.all([this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers(), L.project()]);
           const live = await L.liveReviewRequest(p.item, head);
           if (!live) return null;
-          const runners = allSkipped(live.reviewer, offers, await L.reviewSkips(p.item, live.request));
+          // Only the runners that serve this project count (offersFor, t652).
+          const runners = allSkipped(live.reviewer, offersFor(offers, project.name), await L.reviewSkips(p.item, live.request));
           return runners ? { runners } : null;
         });
         if (stuck) {
-          await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
+          await step.do(`record the skipped review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
           throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again, which asks the review anew for the runners to serve`);
         }
       }
       if (i + 1 >= maxPolls) {
-        await step.do("record the review timeout", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "timeout", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
+        await step.do(`record the review timeout${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "timeout", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
         throw new NonRetryableError(`no verdict${ask.reviewer ? ` from ${ask.reviewer}` : ""} within ${span(p.review)}; the review request stays open and ${p.item} stays submitted. Review by hand, then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again to wait once more`);
       }
-      await step.sleep(`wait for the verdict to settle #${i}`, p.poll);
+      await step.sleep(`wait for the verdict to settle #${i}${p.sfx}`, p.poll);
     }
   }
 
-  // Watches the Ledger for the merge the executor records. The wait leaves
-  // the lease unrenewed, so a checkout that never comes (a closed laptop)
-  // does not hold the project: the lease lapses after its expiry, a merge
-  // refused meanwhile because another landing took it (t232) is retried by
-  // the executor, and this wait times out into the by-hand command.
+  // Watches the Ledger for the merge the executor records, renewing the
+  // lease on each poll until it is recorded (t550): a lease left to lapse
+  // here once let a queued landing take it, merge, and move main under this
+  // accepted head, which the executor then merged unchecked. A checkout
+  // that never comes (a closed laptop) now holds the project until the
+  // wait times out into the by-hand command, or until the owner frees the
+  // lease with atelier land ID --release-lease, which ends this landing at
+  // its next poll; and the merge of a head into a main other than the one
+  // confirmed under the lease is refused by the Ledger (beginLanding).
   private async waitForMerge(step: WorkflowStep, L: LedgerStub, p: Landing): Promise<void> {
     const maxPolls = Math.max(1, Math.floor(p.merge / p.mergePoll));
     for (let i = 0; ; i++) {
       const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => {
-        if ((await L.item(p.item)).state !== "merged") return false;
+        // The lease is renewed while the merge is awaited (t550), so it
+        // cannot lapse to a queued landing that would merge first and move
+        // main under this accepted head. Once merged the lease guards
+        // nothing and may already be another landing's, so it is left alone.
+        if ((await L.item(p.item)).state !== "merged") {
+          try { await L.renewProjectLanding(p.item, p.actor, p.instance); }
+          catch (error) {
+            const parsed = parseRuleError(error);
+            if (parsed?.code === "stale_landing") throw new NonRetryableError(`this landing Workflow was replaced, so it stops without advancing ${p.item}: ${parsed.detail}`);
+            if (!parsed || (parsed.code !== "no_lease" && parsed.code !== "landing_lease")) throw error;
+            // Merged between the read and the renewal: the lease went with it.
+            if ((await L.item(p.item)).state !== "merged") throw new NonRetryableError(`the landing lease of ${p.project} was lost while ${p.item} waited to merge (the server said "${parsed.detail}"); ${p.item} stays accepted, and its merge is refused if main has moved from the commit it was checked against. Run atelier land ${p.item} --workflow again`);
+          }
+          return false;
+        }
         const run = await L.postMergeRun(p.item);
         return !run || run.state === "complete";
       });
@@ -713,10 +897,14 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 }
 
 type LedgerStub = ReturnType<Env["LEDGER"]["get"]>;
-type Reported = { head: string; mainHead: string | null; mergedIn: boolean; triage: TriageBinding | null };
+type Reported = { head: string; mainHead: string; mergedIn: boolean; triage: TriageBinding | null };
 type Landing = {
   project: string; key: string; item: string; actor: string; instance: string;
   reviewer: string | null; noReview: boolean; origin?: string;
   poll: number; mergePoll: number; wait: number; workspace: number; conflict: number; review: number; merge: number;
   checks: LandingChecksMode; checksWait: number; triage: boolean;
+  // The suffix of this round's step names (t550): empty in the first round,
+  // " rN" after, so a step of a later round never answers from the cache of
+  // an earlier one's.
+  sfx: string;
 };

@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
+import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
-  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertCriteriaAllowed, assertEligible, checkFiles, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
@@ -76,8 +77,22 @@ test("models compare without letter case or profile, and by the registry's id fo
   assert.ok(!sameActor("claude-code/opus-5.5", "claude-code/sonnet-5.5"));
 });
 
+// The shared identity contract of the model-assessment tasks (t622): one
+// model under several harnesses is one model. Antigravity names Opus
+// "claude-opus-5.5", with a dot where the registry's alias has a dash, so
+// before this antigravity/claude-opus-5.5 counted as a model of its own.
+test("a registered model's name with dots for dashes, as another harness spells it, is that model", () => {
+  assert.equal(modelKey("antigravity/claude-opus-5.5"), "opus-5.5");
+  assert.equal(modelKey("antigravity/Claude-Sonnet-5.5:high"), "sonnet-5.5");
+  // A name the registry does not know keeps its own spelling.
+  assert.equal(modelKey("opencode/kimi-k2.7"), "kimi-k2.7");
+  assert.equal(modelKey("opencode/kimi-k2-7"), "kimi-k2-7");
+  assert.equal(modelKey("zcode/glm-5-3"), "glm-5.3");
+  assert.ok(!sameActor("claude-code/opus-5.5", "antigravity/claude-opus-5.5"));
+});
+
 test("one owner: a second actor cannot claim an owned item", () => {
-  assert.throws(() => assertClaimable(item({ state: "claimed" }), "codex/gpt-5.5"), /owned by claude-code/);
+  assert.throws(() => assertClaimable(item({ state: "claimed" }), "codex/gpt-5.5"), /held by claude-code/);
   assert.doesNotThrow(() => assertClaimable(item({ state: "claimed" }), "claude-code/opus-5.5"));
   assert.doesNotThrow(() => assertClaimable(item({ state: "open", owner: null }), "codex/gpt-5.5"));
   assert.throws(() => assertClaimable(item({ state: "merged", owner: null }), "codex/gpt-5.5"), /merged/);
@@ -332,7 +347,7 @@ test("eligibleAgents names only the available agents holding the role", () => {
 test("overlappingRefusal names the same live items with the same words as the claim", () => {
   const held = item({ id: "t1", state: "claimed", owner: "codex/gpt-5.5", scope: ["src/**"] });
   const want = item({ id: "t2", state: "open", owner: null, scope: ["src/ui/**"] });
-  assert.equal(overlappingRefusal(want, [held], "claude-code/opus-5.5"), "t2's scope overlaps live t1 (codex/gpt-5.5); this project refuses overlapping claims. The project owner can narrow a scope with atelier edit t1 --scope GLOB (or atelier edit t2 --scope GLOB)");
+  assert.equal(overlappingRefusal(want, [held], "claude-code/opus-5.5"), "t2's scope overlaps live t1 (codex/gpt-5.5); this project refuses overlapping claims. The developer can narrow a scope with atelier edit t1 --scope GLOB (or atelier edit t2 --scope GLOB)");
   assert.equal(overlappingRefusal(want, [], "claude-code/opus-5.5"), null);
   assert.equal(overlappingRefusal(want, [held], "codex/gpt-5.5"), null, "the holder of the overlapping item may take it");
 });
@@ -358,23 +373,32 @@ test("a live task blocks an overlapping claim by one rule in every state, and th
   }
 });
 
-test("gc removes clean workspaces at a head that proves nothing is unpublished", async () => {
-  const { gcWorkspaceReason } = await import("../src/rules.ts");
-  assert.equal(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, false), null);
-  // An abandoned item never merges; the last head Atelier recorded is its proof.
-  assert.equal(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, false), null);
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, true, false));
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, true));
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: H2 }), H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: null }), H1, false, false));
-  for (const state of ["open", "claimed", "submitted", "accepted"] as const) {
-    assert.match(gcWorkspaceReason(item({ state, acceptedHead: H1 }), H1, false, false)!, /neither merged nor abandoned/);
+test("a finished workspace goes only against proof that nothing is lost, ignored work included (t561)", async () => {
+  const { finishedWorkspaceReason } = await import("../src/rules.ts");
+  const clean = { atLedgerHead: true, headInMain: false, dirty: false, ignored: [] as string[], extraCommits: false };
+  for (const state of ["merged", "abandoned"] as const) {
+    assert.equal(finishedWorkspaceReason(item({ state }), clean), null, state);
+    assert.equal(finishedWorkspaceReason(item({ state }), { ...clean, atLedgerHead: false, headInMain: true }), null, state);
   }
-  assert.ok(gcWorkspaceReason(undefined, H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged" }), H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H2 }), H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, true, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, true));
+  for (const state of ["open", "claimed", "submitted", "accepted"] as const) {
+    assert.match(finishedWorkspaceReason(item({ state }), clean)!, /neither merged nor abandoned/);
+  }
+  assert.match(finishedWorkspaceReason(undefined, clean)!, /neither merged nor abandoned/);
+  assert.match(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, atLedgerHead: false })!, /neither the head Atelier recorded nor in main/);
+  assert.match(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, dirty: true })!, /changed or untracked/);
+  assert.match(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, extraCommits: true })!, /commits neither/);
+  // A harness's logs under .scratch/ were removed without a word (t561 pre-review).
+  assert.equal(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, ignored: [".scratch/", ".env"] }),
+    "holds ignored files that are not rebuildable output: .scratch/, .env");
+  const many = ["a", "b", "c", "d", "e", "f", "g"];
+  assert.match(finishedWorkspaceReason(item({ state: "abandoned" }), { ...clean, ignored: many })!, /: a, b, c, d, e and 2 more$/);
+});
+
+test("only rebuildable output among ignored files lets a finished workspace go (t561)", async () => {
+  const { unkeptIgnored } = await import("../src/rules.ts");
+  assert.deepEqual(unkeptIgnored(["node_modules/", "web/node_modules/", ".cache/", "dist/", "worker-configuration.d.ts", "app/.DS_Store", "tsconfig.tsbuildinfo"]), []);
+  assert.deepEqual(unkeptIgnored([".scratch/", ".env", ".env.local", "renders/", ".wrangler/", ".ai-project-data/", "notes.md"]),
+    [".scratch/", ".env", ".env.local", "renders/", ".wrangler/", ".ai-project-data/", "notes.md"]);
 });
 
 test("gc requires an expired check record and no live process", async () => {
@@ -789,9 +813,9 @@ test("decision 2026-10-06: the inbox and the page name the override and its reas
   const touching = [pass({ changedPaths: ["AGENTS.md"] })];
   const reviewOverride: ReviewOverride = { head: H1, by: "owner", reason: "No other family is available", at: T };
   const entry = (over: Partial<Item>) => inboxFor("proj", [item({ scope: [], ...over })], policy, touching, [], now);
-  assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the owner's last resort`]]);
-  assert.deepEqual(entry({ reviewOverride }).map((x) => [x.kind, x.reason]), [["accept", "all checks observed passing at this head, with the independent review overridden by the project owner: No other family is available"]]);
-  assert.deepEqual(entry({ reviewOverride, state: "accepted", acceptedHead: H1 }).map((x) => [x.kind, x.reason]), [["merge", "accepted, with the independent review overridden by the project owner: No other family is available; run `atelier merge` in the project checkout"]]);
+  assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the developer's last resort`]]);
+  assert.deepEqual(entry({ reviewOverride }).map((x) => [x.kind, x.reason]), [["accept", "all checks observed passing at this head, with the independent review overridden by the developer: No other family is available"]]);
+  assert.deepEqual(entry({ reviewOverride, state: "accepted", acceptedHead: H1 }).map((x) => [x.kind, x.reason]), [["merge", "accepted, with the independent review overridden by the developer: No other family is available; run `atelier merge` in the project checkout"]]);
   assert.equal(entry({ state: "accepted", acceptedHead: H1 })[0].reason, "accepted; run `atelier merge` in the project checkout");
   // The page's decision line says the owner's approval is not the review, and gives the override's reason once used.
   const waiting = decisionFor(item(), policy, touching, [review("owner")]);
@@ -1045,4 +1069,422 @@ test("review leases expire at five server-clock minutes; renewal cadence is thir
   assert.equal(reviewLeaseExpired(T, start + REVIEW_LEASE_MS + 1), true);
   assert.equal(reviewLeaseExpired(null, start), true);
   assert.equal(reviewLeaseExpired("invalid", start), true);
+});
+
+test("only the project owner can port to an open unclaimed task", () => {
+  assert.equal(ownerPortAllowed(item({ state: "open", owner: null }), "person", "person"), true);
+  assert.equal(ownerPortAllowed(item({ state: "open", owner: null }), "builder", "person"), false);
+  assert.equal(ownerPortAllowed(item({ state: "open", owner: "builder" }), "person", "person"), false);
+  for (const state of ["claimed", "submitted", "accepted", "integrated", "merged", "abandoned", "blocked"] as const) {
+    assert.equal(ownerPortAllowed(item({ state, owner: null }), "person", "person"), false);
+  }
+});
+
+// ── modes (t585) ─────────────────────────────────────────────────────────────
+// On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
+// merged by hand outside the record. Fast mode records that path; these pin
+// its pure rules.
+import { projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
+
+test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
+  assert.deepEqual(projectMode(null), { mode: "full" });
+  assert.deepEqual(projectMode({ mode: "fast" }), { mode: "full" });
+  assert.equal(modeLine({ mode: "full" }), "Mode: full");
+  const at = "2026-10-13T14:05:09.000Z";
+  assert.throws(() => modeSwitch({ mode: "full" }, "codex/gpt-6", "owner", "fast", "forks fail", at), (e: RuleError) => e.code === "not_project_owner");
+  assert.throws(() => modeSwitch({ mode: "full" }, "owner", "owner", "fast", "  ", at), (e: RuleError) => e.code === "bad_reason");
+  assert.throws(() => modeSwitch({ mode: "full" }, "owner", "owner", "slow", "x", at), (e: RuleError) => e.code === "bad_mode");
+  assert.throws(() => modeSwitch({ mode: "full" }, "owner", "owner", "full", undefined, at), (e: RuleError) => e.code === "already_full");
+  const fast = modeSwitch({ mode: "full" }, "owner", "owner", "fast", "Artifacts fails\nevery fork", at);
+  assert.deepEqual(fast, { mode: "fast", since: at, reason: "Artifacts fails every fork", by: "owner", decision: null });
+  assert.equal(modeLine(fast), "Mode: fast since 2026-10-13 14:05 UTC (Artifacts fails every fork)");
+  assert.deepEqual(projectMode(JSON.parse(JSON.stringify(fast))), fast);
+  assert.throws(() => modeSwitch(fast, "owner", "owner", "fast", "again", at), (e: RuleError) => e.code === "already_fast");
+  assert.deepEqual(modeSwitch(fast, "owner", "owner", "full", undefined, at), { mode: "full" });
+  assert.throws(() => assertFastMode({ mode: "full" }), (e: RuleError) => e.code === "not_fast_mode");
+  assertFastMode(fast);
+});
+
+// Astra's audit of 2026-10-13, finding 3: fast mode lands without the gate,
+// so switching to it took the developer token alone and skipped both the
+// confirmation an override needs and a project's --no-override. The switch
+// and a fast landing are refused under noOverride, and the switch needs the
+// permission the developer gives on the Settings page with the factor no
+// agent holds, as an override from the command line does.
+import { assertFastModeAllowed, assertFastModeConfirmed, fastModeConfirmationHint } from "../src/rules.ts";
+
+test("fast mode is refused where overrides are, and the switch needs the developer's confirmation, not the token", () => {
+  assert.throws(() => assertFastModeAllowed({ noOverride: true }), (e: RuleError) => e.code === "fast_mode_forbidden" && /forbids overrides/.test(e.detail) && /--no-override/.test(e.detail));
+  assertFastModeAllowed({});
+  const now = Date.parse("2026-10-13T14:00:00.000Z");
+  const given = { by: "owner", at: "2026-10-13T13:50:00.000Z", until: "2026-10-13T14:05:00.000Z", factor: "secret" as const };
+  assert.throws(() => assertFastModeConfirmed(null, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed" && e.status === 403 && /Allow fast mode from the command line/.test(e.detail) && /developer token alone/.test(e.detail));
+  assert.throws(() => assertFastModeConfirmed({ ...given, until: "2026-10-13T13:59:00.000Z" }, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed");
+  assert.throws(() => assertFastModeConfirmed({ ...given, by: "codex/gpt-6" }, now, "owner", "proj"), (e: RuleError) => e.code === "fast_mode_unconfirmed");
+  assertFastModeConfirmed(given, now, "owner", "proj");
+  assert.match(fastModeConfirmationHint("proj", "https://a.test", "access"), /^open https:\/\/a\.test\/p\/proj\/settings as the developer, press "Allow fast mode from the command line" under your Cloudflare Access sign-in/);
+  assert.match(fastModeConfirmationHint("proj", "", null), /this server can take no confirmation/);
+});
+
+// t629 reverses t596's confirmation for the command line (Astra's audit of
+// 2026-10-13, finding 3; the developer's decision of 2026-10-13: "why isn't
+// my direction sufficient?"). The developer token alone switches to fast mode
+// or overrides a missing review when the request carries the developer's own
+// words and names the model acting on them, so every such switch says who
+// asked and why; a blank quote, or none, or no acting model is refused.
+import { ownerDirection, overrideConfirmationHint, DIRECTION_QUOTE_MAX } from "../src/rules.ts";
+
+test("the developer's direction is their quoted words and the model acting on them, both required", () => {
+  assert.equal(ownerDirection(undefined, "claude-code/opus-5.5", "fast mode"), null);
+  assert.deepEqual(ownerDirection("  go fast,\n forks fail  ", "claude-code/opus-5.5", "fast mode"), { quote: "go fast, forks fail", acting: "claude-code/opus-5.5" });
+  for (const bad of ["", "   ", 42, null]) assert.throws(() => ownerDirection(bad, "claude-code/opus-5.5", "fast mode"), (e: RuleError) => e.code === "bad_quote" && e.status === 400 && /--quote/.test(e.detail), String(bad));
+  assert.throws(() => ownerDirection("x".repeat(DIRECTION_QUOTE_MAX + 1), "claude-code/opus-5.5", "fast mode"), (e: RuleError) => e.code === "too_long");
+  for (const none of [null, undefined, ""]) assert.throws(() => ownerDirection("go fast", none as never, "an override of the independent review"), (e: RuleError) => e.code === "no_acting" && e.status === 400 && /--as H\/M/.test(e.detail) && /an override/.test(e.detail));
+  // The mode line says whose words switched it, and who relayed them.
+  const fast = { mode: "fast" as const, since: "2026-10-13T14:05:00.000Z", reason: "forks fail", by: "owner", decision: "d1" };
+  assert.equal(modeLine(fast), "Mode: fast since 2026-10-13 14:05 UTC (forks fail)");
+  assert.equal(modeLine({ ...fast, quote: "go fast", acting: "claude-code/opus-5.5" }), "Mode: fast since 2026-10-13 14:05 UTC (forks fail); the developer's words: \u201cgo fast\u201d, relayed by claude-code/opus-5.5");
+  // Both refusals name the direction as the other way to confirm.
+  assert.match(fastModeConfirmationHint("proj"), /Allow fast mode from the command line.*; or run it again with --quote "the developer's words" and --as H\/M naming the model acting on them/);
+  assert.match(overrideConfirmationHint("proj", "t1"), /Allow an override from the command line.*; or run it again with --quote "the developer's words" and --as H\/M naming the model acting on them/);
+});
+
+test("a landed-fast receipt needs both commits, the builder, the test command and its output's sha256, in fast mode only", () => {
+  const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
+  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };
+  const r = fastReceipt(body, fast, "owner", "2026-10-13T01:00:00Z");
+  assert.deepEqual(r, { ...body, reason: "forks fail", at: "2026-10-13T01:00:00Z", by: "owner" });
+  assert.throws(() => fastReceipt(body, { mode: "full" }, "owner", "x"), (e: RuleError) => e.code === "not_fast_mode");
+  for (const bad of [{ commit: "abc" }, { mergeCommit: null }, { builder: "nobody" }, { tests: { command: "npm test", sha256: "short" } }, { tests: { command: "", sha256: "c".repeat(64) } }, { tests: { command: "npm test", sha256: "c".repeat(64), where: "laptop" } }]) {
+    assert.throws(() => fastReceipt({ ...body, ...bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
+  }
+  // Where the tests ran (t588): the default run in a clean clone, a given --test in the checkout.
+  for (const where of ["clean clone", "checkout"] as const) {
+    const withWhere = { ...body, tests: { ...body.tests, where } };
+    assert.deepEqual(fastReceipt(withWhere, fast, "owner", "x").tests, { command: "npm test", sha256: "c".repeat(64), where });
+  }
+  assert.equal(agentOfMessage("Fix it\n\nAgent: codex/gpt-6\nAgent: claude-code/opus-5.5\nCo-Authored-By: x"), "claude-code/opus-5.5");
+  assert.equal(agentOfMessage("no trailer"), null);
+  // The builder becomes a contributor, as a pusher is.
+  assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5" } }]), ["claude-code/opus-5.5"]);
+});
+
+test("a same-family post-merge review is accepted only for a task landed in fast mode, and says so", () => {
+  const contributors = ["claude-code/opus-5.5"];
+  assert.deepEqual(postMergeIndependence("claude-code/sonnet-5", contributors, null, true), { refusal: null, independence: SAME_FAMILY_FAST });
+  assert.match(postMergeIndependence("claude-code/sonnet-5", contributors, null, false).refusal ?? "", /same family/);
+  assert.deepEqual(postMergeIndependence("codex/gpt-6", contributors, null, false), { refusal: null, independence: null });
+  assert.equal(SAME_FAMILY_FAST, "same-family (fast mode)");
+  const fix = fastFixTask("t9", "Add a thing", { by: "claude-code/sonnet-5", head: H2, note: "breaks x", request: 3, findings: [{ file: "src/a.ts", line: 4, severity: "blocking", text: "null deref" }] });
+  assert.equal(fix.title, "Fix after fast landing of t9: Add a thing");
+  assert.deepEqual(fix.accept, ["src/a.ts:4: null deref"]);
+  assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
+});
+
+// ── fast builds (t589) ───────────────────────────────────────────────────────
+// 2026-10-13 10:35 EDT: in fast mode every runner build still began with a
+// claim that forks main, and the forks failed, so builds ran by hand in
+// local clones. In fast mode a dispatched plain build is taken without a
+// fork and its commit reported ready; in full mode nothing changes.
+import { fastJobRefusal, fastBuildRefusal, assertFastBuild, fastReady, standingFastReady, fastReadyLines } from "../src/rules.ts";
+
+const FAST = projectMode({ mode: "fast", since: "2026-10-13T14:00:00.000Z", reason: "forks fail", by: "owner" });
+const BUILD = { id: "t9", kind: undefined, plan: undefined, dispatch: { at: T, agent: "claude-code", model: "opus-5.5" } } as unknown as Item;
+
+test("in fast mode a dispatched plain build is taken without a fork; in full mode every build claims with one", () => {
+  assert.equal(fastBuildRefusal(FAST, BUILD), null);
+  assert.match(fastBuildRefusal({ mode: "full" }, BUILD) ?? "", /full mode, so a build claims with a fork/);
+  assert.throws(() => assertFastBuild({ mode: "full" }, BUILD), (e: RuleError) => e.code === "not_fast_mode" && e.status === 409);
+  assert.doesNotThrow(() => assertFastBuild(FAST, BUILD));
+  // A job named build is the same as none named.
+  assert.equal(fastJobRefusal({ ...BUILD, dispatch: { ...BUILD.dispatch!, job: "build" } }), null);
+  // Plans, parts and merge-main jobs keep the claim in either mode.
+  for (const other of [{ ...BUILD, kind: "plan" as const }, { ...BUILD, kind: "part" as const, plan: "t1" }, { ...BUILD, dispatch: { ...BUILD.dispatch!, job: "merge-main" } }, { ...BUILD, dispatch: { ...BUILD.dispatch!, job: "plan" } }]) {
+    assert.ok(fastJobRefusal(other as Item), JSON.stringify(other));
+    assert.throws(() => assertFastBuild(FAST, other as Item), (e: RuleError) => e.code === "not_fast_build");
+  }
+  // A fork that holds work from an earlier claim is built there; an empty one is not.
+  assert.match(fastJobRefusal({ ...BUILD, fork: "p--t9", base: H1, head: H2 }) ?? "", /fork holds work/);
+  assert.equal(fastJobRefusal({ ...BUILD, fork: "p--t9", base: H1, head: H1 }), null);
+  // A fast take is for a dispatched build.
+  assert.throws(() => assertFastBuild(FAST, { ...BUILD, dispatch: null }), (e: RuleError) => e.code === "not_dispatched");
+});
+
+test("a fast build's report names the commit, its main and the builder its Agent line names, from the holder, in fast mode", () => {
+  const held = { id: "t9", state: "claimed" as const, owner: "claude-code/opus-5.5", runner: "home:studio" };
+  const body = { commit: H2, base: H1, builder: "claude-code/opus-5.5", workspace: "/Users/x/cache/fast/p/t9" };
+  assert.deepEqual(fastReady(body, FAST, held, "claude-code/opus-5.5"), { ...body, runner: "home:studio" });
+  // The runner is the server's record, not the report's.
+  assert.equal(fastReady({ ...body, runner: "home:other" }, FAST, held, "claude-code/opus-5.5").runner, "home:studio");
+  assert.equal(fastReady({ ...body, workspace: undefined }, FAST, held, "claude-code/opus-5.5").workspace, null);
+  assert.throws(() => fastReady(body, { mode: "full" }, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "not_fast_mode");
+  assert.throws(() => fastReady(body, FAST, held, "codex/gpt-6"), (e: RuleError) => e.code === "not_holder");
+  assert.throws(() => fastReady(body, FAST, { ...held, state: "open" as const }, "claude-code/opus-5.5"), (e: RuleError) => e.code === "not_holder");
+  assert.throws(() => fastReady({ ...body, commit: H1 }, FAST, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "nothing_built");
+  for (const bad of [{ commit: "abc" }, { base: null }, { builder: "nobody" }, { builder: "codex/gpt-6" }, { workspace: "relative/path" }, { workspace: `/${"x".repeat(1001)}` }, { workspace: "/a\nb" }]) {
+    assert.throws(() => fastReady({ ...body, ...bad }, FAST, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "bad_ready", JSON.stringify(bad));
+  }
+});
+
+test("the standing report is the last one with no claim, release, handoff, dispatch or close after it", () => {
+  const ev = (seq: number, kind: string, data: Record<string, unknown> = {}) => ({ seq, kind, data, at: `2026-10-13T14:0${seq}:00.000Z`, actor: "claude-code/opus-5.5" });
+  const ready = (seq: number, commit: string) => ev(seq, "item.fast_ready", { commit, base: "0".repeat(40), builder: "claude-code/opus-5.5", runner: "home:studio", workspace: "/w" });
+  assert.equal(standingFastReady([]), null);
+  // In any order: the task page's events come newest first.
+  assert.deepEqual(standingFastReady([ready(3, H2), ev(2, "item.fast_taken"), ev(1, "item.claimed")]), { commit: H2, base: "0".repeat(40), builder: "claude-code/opus-5.5", runner: "home:studio", workspace: "/w", at: "2026-10-13T14:03:00.000Z", by: "claude-code/opus-5.5" });
+  assert.equal(standingFastReady([ready(1, H1), ready(4, H2)])?.commit, H2);
+  for (const kind of ["item.claimed", "item.released", "item.handoff", "item.dispatched", "item.merged", "item.abandoned"]) {
+    assert.equal(standingFastReady([ready(1, H1), ev(2, kind)]), null, kind);
+  }
+  // Events that change nothing about the build leave it standing.
+  assert.equal(standingFastReady([ready(1, H1), ev(2, "review.requested")])?.commit, H1);
+});
+
+test("fast status prints each ready commit as a tN=SHA line atelier fast land takes, and the command for all", () => {
+  assert.deepEqual(fastReadyLines([]), ["Nothing is ready for fast land."]);
+  const lines = fastReadyLines([
+    { item: "t5", commit: H1, builder: "claude-code/opus-5.5", runner: "home:studio", at: "2026-10-13T14:05:00.000Z" },
+    { item: "t7", commit: H2, builder: "codex/gpt-6", runner: null, at: "2026-10-13T14:09:00.000Z" },
+  ]);
+  assert.deepEqual(lines, [
+    "Ready for fast land (2):",
+    `t5=${H1}  built by claude-code/opus-5.5 on home:studio at 2026-10-13 14:05 UTC`,
+    `t7=${H2}  built by codex/gpt-6 at 2026-10-13 14:09 UTC`,
+    `Land them: atelier fast land t5=${H1} t7=${H2}`,
+  ]);
+  // Each line's first word is what atelier fast land parses.
+  for (const l of lines.slice(1, 3)) assert.match(l.split(" ")[0], /^t\d+=[0-9a-f]{40}$/);
+});
+
+// t586: on 2026-10-13 from 09:35 to 10:05 EDT, after the deploys of t578
+// and t585, the busy atelier Ledger kept its old code and answered "The RPC
+// receiver does not implement the method" for showcaseCounts and mode.
+test("the runtime's missing-method answer is recognised, and nothing else is", () => {
+  assert.equal(missingLedgerMethod(new Error('The RPC receiver does not implement the method "showcaseCounts".')), "showcaseCounts");
+  assert.equal(missingLedgerMethod(new Error("The RPC receiver does not implement the method mode")), "mode");
+  assert.equal(missingLedgerMethod("The RPC receiver does not implement the method 'fastLandings'."), "fastLandings");
+  assert.equal(missingLedgerMethod(new TypeError('The RPC receiver does not implement "mode".')), "mode");
+  assert.equal(missingLedgerMethod(new Error("409|closed|t1 is merged")), null);
+  assert.equal(missingLedgerMethod(undefined), null);
+  assert.equal(UPDATING_DETAIL, "the server is updating; try again in a minute");
+});
+
+test("a Ledger restarts when its build differs from the Worker's or a method was missing, at most once a minute", () => {
+  const OLD = "a".repeat(40), NEW = "b".repeat(40), now = 10_000_000;
+  assert.deepEqual(ledgerRestart({ ledger: OLD, worker: NEW, last: null, now }), { restart: true, why: "stale" });
+  assert.deepEqual(ledgerRestart({ ledger: NEW, worker: NEW, last: null, now }), { restart: false, why: "current" });
+  // Local development and tests set no DEPLOYED_MAIN: no version restart.
+  assert.deepEqual(ledgerRestart({ ledger: null, worker: NEW, last: null, now }), { restart: false, why: "unknown" });
+  assert.deepEqual(ledgerRestart({ ledger: OLD, worker: null, last: null, now }), { restart: false, why: "unknown" });
+  // A missing method restarts whatever the versions say.
+  assert.deepEqual(ledgerRestart({ ledger: null, worker: null, last: null, now, missing: true }), { restart: true, why: "missing_method" });
+  assert.deepEqual(ledgerRestart({ ledger: NEW, worker: NEW, last: null, now, missing: true }), { restart: true, why: "missing_method" });
+  // Once a minute at most.
+  const recent = { at: now - LEDGER_RESTART_GAP_MS + 1, from: "c".repeat(40), for: OLD };
+  assert.deepEqual(ledgerRestart({ ledger: OLD, worker: NEW, last: recent, now }), { restart: false, why: "too_soon" });
+  assert.deepEqual(ledgerRestart({ ledger: null, worker: null, last: recent, now, missing: true }), { restart: false, why: "too_soon" });
+  assert.equal(ledgerRestart({ ledger: OLD, worker: NEW, last: { ...recent, at: now - LEDGER_RESTART_GAP_MS }, now }).restart, true);
+  // A restart for a Worker that brought the same code back is not repeated
+  // for that Worker: it was the older one (an old isolate after a deploy).
+  const back = { at: now - 5 * LEDGER_RESTART_GAP_MS, from: NEW, for: OLD };
+  assert.deepEqual(ledgerRestart({ ledger: NEW, worker: OLD, last: back, now }), { restart: false, why: "no_change" });
+  assert.equal(ledgerRestart({ ledger: NEW, worker: "d".repeat(40), last: back, now }).restart, true, "the next deploy restarts it");
+  // An earlier restart that moved the code does not stop the next deploy's.
+  assert.equal(ledgerRestart({ ledger: NEW, worker: "d".repeat(40), last: { at: 0, from: OLD, for: NEW }, now }).restart, true);
+});
+
+test("the stored last restart is read back, and anything unreadable is none", () => {
+  assert.deepEqual(parseLedgerRestart(JSON.stringify({ at: 5, from: "a", for: "b" })), { at: 5, from: "a", for: "b" });
+  assert.deepEqual(parseLedgerRestart(JSON.stringify({ at: 5, from: null, for: "" })), { at: 5, from: null, for: null });
+  assert.equal(parseLedgerRestart(undefined), null);
+  assert.equal(parseLedgerRestart("not json"), null);
+  assert.equal(parseLedgerRestart(JSON.stringify({ at: "soon" })), null);
+});
+
+// t641: the developer's branches. A name is taken under wip/ or refused;
+// main, the project's branch, a task's id, a full ref and a name under
+// another prefix are refused rather than renamed, which is what keeps
+// `atelier branch push main` from ever naming main.
+test("a developer branch is a name under wip/, and main, a task's id and any other prefix are refused", () => {
+  assert.equal(developerBranch("idea"), "wip/idea");
+  assert.equal(developerBranch("wip/idea"), "wip/idea");
+  assert.equal(developerBranch("wip/mac/draft-2.1_x"), "wip/mac/draft-2.1_x");
+  for (const name of ["main", "master", "HEAD", "t641", "trunk", "refs/heads/main", "refs/heads/wip/x", "feature/x", "wip/", "wip//x", "wip/x/", "wip/../main", "wip/x..y", "wip/.hidden", "wip/x.lock", "wip/x.", "wip/a b", "wip/x:y", "wip/x~1", "wip/-x", "", "wip/" + "a".repeat(200)]) {
+    assert.throws(() => developerBranch(name, "trunk"), (e: unknown) => e instanceof RuleError && e.code === "bad_branch", name);
+  }
+  assert.throws(() => developerBranch(undefined), RuleError);
+  // Only the project's own branch name is reserved beyond main, master and HEAD.
+  assert.equal(developerBranch("trunk"), "wip/trunk");
+});
+
+test("the Mac a branch was pushed from is one short line, without .local", () => {
+  assert.equal(branchHost("Pavis-MacBook-Pro.local"), "Pavis-MacBook-Pro");
+  assert.equal(branchHost(" studio "), "studio");
+  for (const host of ["", "  ", "a\nb", "x".repeat(101), 5, null]) assert.throws(() => branchHost(host), RuleError);
+});
+
+// The reviews of t641: a branches repository's name has a fixed form from a
+// hash of the key, of the same length whatever the key, which every new
+// baseline is refused and no task fork (KEY--tN) can have.
+test("a branches repository is named devbr- and 32 hex digits of the key's hash, a form no baseline may take", async () => {
+  const demo = await branchesRepoName("demo");
+  assert.match(demo, /^devbr-[0-9a-f]{32}$/);
+  assert.equal(await branchesRepoName("demo"), demo);
+  assert.notEqual(await branchesRepoName("Demo"), demo);
+  assert.match(await branchesRepoName("k".repeat(63)), /^devbr-[0-9a-f]{32}$/);
+  // Argon's collision: project branches's fork of t1 is not project t1's branches.
+  assert.notEqual(repoName("branches", "t1"), await branchesRepoName("t1"));
+  assert.throws(() => assertBaselineName(demo), (e: unknown) => e instanceof RuleError && e.code === "repo_reserved");
+  for (const repo of ["demo", "demo--branches", "branches", "branches--t1", "devbr-", "devbr-xyz", `${demo}x`]) assert.doesNotThrow(() => assertBaselineName(repo), repo);
+});
+
+// Private files (t645).
+test("a private path is made plain, and one outside the checkout or in .git is refused", () => {
+  assert.deepEqual(privatePath("PROJECT.md"), { path: "PROJECT.md" });
+  assert.deepEqual(privatePath("./notes/plan.md"), { path: "notes/plan.md" });
+  assert.deepEqual(privatePath("notes/"), { path: "notes" });
+  for (const bad of ["", "  ", "/etc/passwd", "../outside.md", "notes/../x", "a//b", "./", ".git/config", ".GIT/hooks/x", "a\nb"]) {
+    assert.ok("error" in privatePath(bad), JSON.stringify(bad));
+  }
+});
+
+test("private paths match themselves and what lies under a private folder, as a Mac compares names", () => {
+  const paths = ["PROJECT.md", "project.md", "notes/plan.md", "notes", "notesy.md", "src/PROJECT.md", "Notes/a.md"];
+  assert.deepEqual(privatePathsAmong(paths, ["PROJECT.md", "notes"]), ["PROJECT.md", "project.md", "notes/plan.md", "notes", "Notes/a.md"]);
+  assert.deepEqual(privatePathsAmong(paths, []), []);
+});
+
+test("a project's iCloud folder is the one named for it, case, spaces, hyphens and underscores aside", () => {
+  assert.ok(privateFolderMatches("ikon-weblog", "ikon weblog"));
+  assert.ok(privateFolderMatches("assetsapp", "AssetsApp"));
+  assert.ok(privateFolderMatches("hqpe-control", "HQPe-Control"));
+  assert.ok(!privateFolderMatches("atelier", "atelier-ops"));
+  assert.ok(!privateFolderMatches("", ""));
+});
+
+test("each private path is excluded by an anchored line with its special characters escaped", () => {
+  assert.equal(privateExcludeLine("PROJECT.md"), "/PROJECT.md");
+  assert.equal(privateExcludeLine("notes/a*b?[c].md"), "/notes/a\\*b\\?\\[c\\].md");
+  assert.equal(privateExcludeLine("#plan!"), "/#plan!");
+  assert.equal(privateExcludeLine("trail  "), "/trail\\ \\ ");
+});
+
+test("the iCloud list of private files is read line by line as data, and written sorted with each path once", () => {
+  assert.ok("error" in privatePath(".atelier-private"), "the list itself is never a private file");
+  const r = parsePrivateList("# comment\nPROJECT.md\r\n\n  # indented comment\n../x\nnotes/\nPROJECT.md\n/abs\n.atelier-private\n");
+  assert.deepEqual(r.paths, ["PROJECT.md", "notes"]);
+  assert.deepEqual(r.refused.map((x) => [x.line, x.text]), [[5, "../x"], [8, "/abs"], [9, ".atelier-private"]]);
+  const text = privateListText(["notes", "PROJECT.md", "notes"]);
+  assert.deepEqual(text.split("\n").filter((l) => l && !l.startsWith("#")), ["PROJECT.md", "notes"]);
+  assert.deepEqual(parsePrivateList(text), { paths: ["PROJECT.md", "notes"], refused: [] });
+});
+
+import { gateApprovals } from "../src/rules.ts";
+import { recordedApproval } from "../src/landing-verdict.ts";
+
+// t628 review (gpt-6-astra, gemini-3.1-pro-argon): a landing took any
+// approval at a ready head for the review it needed. The gate's own
+// selection says which approvals it counts, and a landing reads only that.
+test("gateApprovals is the gate's selection: only approvals it counts as the independent review, none where no review is needed", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const a: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, proved: false, claimed: true };
+  const unproved: Review = { ...a, by: "antigravity/gemini-3.1-pro", claimed: false };
+  const sameFamily: Review = { ...a, by: "claude-code/sonnet-5.5" };
+  const tier: Review = { ...a, by: "antigravity/gemini-3.1-pro", tier: true };
+  const later: Review = { ...a, approve: false, at: "2026-10-03T13:00:00.000Z" };
+  // A's claimed approval makes the gate ready; the unproved, same-family and
+  // tier approvals beside it are never counted.
+  assert.equal(gate(item(), policy, [touching], [a, unproved, sameFamily, tier]).ready, true);
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [a, unproved, sameFamily, tier]).map((r) => r.by), ["codex/gpt-5.5"]);
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [unproved, sameFamily, tier]), []);
+  // The reviewer's latest verdict is a rejection: its approval no longer counts.
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [a, later]), []);
+  // An unprotected change needs no review, so no approval is counted for one.
+  assert.equal(gate(item(), policy, [pass()], [a]).ready, true);
+  assert.deepEqual(gateApprovals(item(), policy, [pass()], [a]), []);
+  // A review held outside the item counts none either.
+  assert.deepEqual(gateApprovals(item(), policy, [touching], [a], "owner", { reviewHeld: true }), []);
+});
+
+test("a landing counts a recorded approval only where the gate is ready and counts that very approval, the named reviewer's where one is named (t628)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const a: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, proved: false, claimed: true };
+  const b: Review = { ...a, by: "antigravity/gemini-3.1-pro", claimed: false };
+  const detail = (reviews: Review[], evidence = [touching]) => ({ item: item({ state: "submitted" }), policy, evidence, reviews, gate: gate(item({ state: "submitted" }), policy, evidence, reviews) });
+  assert.equal(recordedApproval(detail([a, b]), H1, null)?.by, "codex/gpt-5.5");
+  assert.equal(recordedApproval(detail([a, b]), H1, "codex/gpt-5.5")?.by, "codex/gpt-5.5");
+  // B's unproved approval stands beside A's counting one: naming B asks B.
+  assert.equal(recordedApproval(detail([a, b]), H1, "antigravity/gemini-3.1-pro"), null);
+  // Another head, a gate not ready, or a change that needs no review: none.
+  assert.equal(recordedApproval(detail([a]), H2, null), null);
+  assert.equal(recordedApproval(detail([b]), H1, null), null);
+  assert.equal(recordedApproval(detail([a], [pass()]), H1, null), null);
+});
+
+
+test("an explicit rejection override waives only the recorded reviews and never checks or future rejections", () => {
+  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const rejected = review("codex/gpt-6", { approve: false, note: "Sandbox EPERM prevented tests" });
+  const made = reviewOverrideFor(item(), policy, evidence, [rejected], "owner", "Override environment-only rejection", T);
+  const accepted = item({ reviewOverride: made.override });
+  assert.equal(gate(accepted, policy, evidence, [rejected]).ready, true);
+  assert.equal(gate(accepted, { ...policy, noOverride: true }, evidence, [rejected]).ready, false);
+  assert.equal(gate(accepted, policy, [pass({ passed: false, changedPaths: ["AGENTS.md"] })], [rejected]).ready, false);
+  assert.equal(gate(accepted, policy, evidence, [{ ...rejected, at: "2026-10-16T00:00:00Z" }]).ready, false);
+  assert.equal(gate(item({ head: H2, reviewOverride: made.override }), policy, evidence, [rejected]).ready, false);
+});
+
+// t693 (found reviewing t686 at 8534105d): an override recorded beside an
+// independent approval, to waive a rejection, also stood in for the review
+// once that approval was withdrawn.
+test("an override that waived a rejection beside an approval does not stand in for the review once the approval is withdrawn", () => {
+  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const approval = review("codex/gpt-6");
+  const rejected = review("antigravity/gemini-4-argon", { approve: false, note: "environment only" });
+  const made = reviewOverrideFor(item(), policy, evidence, [approval, rejected], "owner", "Override environment-only rejection", T);
+  assert.equal(made.override.rejectionsOnly, true);
+  const accepted = item({ reviewOverride: made.override });
+  assert.equal(gate(accepted, policy, evidence, [approval, rejected]).ready, true);
+  // The approval is no longer counted; the rejection the override named stays waived, the review is missing.
+  const withdrawn = gate(accepted, policy, evidence, [rejected]);
+  assert.equal(withdrawn.ready, false);
+  assert.equal(withdrawn.needsAssessor, true);
+  assert.equal(withdrawn.overridden?.rejectionsOnly, true);
+  // An override made while the review was missing too still waives both.
+  const both = reviewOverrideFor(item(), policy, evidence, [rejected], "owner", "No reviewer qualifies", T);
+  assert.equal(both.override.rejectionsOnly, undefined);
+  assert.equal(gate(item({ reviewOverride: both.override }), policy, evidence, [rejected]).ready, true);
+});
+
+// t653: the tasks t590-t651 were merged into main outside Atelier under the
+// 2026-10-13 freeze, and the ledger still showed them open or claimed. The
+// record names the merge, the commit merged and the reviews as given, and is
+// refused when main lacks the merge or its second parent is another commit.
+test("a merge recorded after the fact needs both commits and a review approving the commit merged", () => {
+  const H2 = "b".repeat(40), M = "c".repeat(40);
+  const review = { by: "codex/gpt-6-astra", verdict: "approve", head: H1, at: "2026-10-13" };
+  const body = { mergeCommit: M, commit: H1, reviews: [review, { by: "antigravity/gemini-4-argon", verdict: "reject", head: H2 }] };
+  assert.deepEqual(recordedMerge(body, "owner", "2026-10-14T00:00:00Z"), { ...body, outside: true, at: "2026-10-14T00:00:00Z", by: "owner" });
+  assert.equal(recordedMerge({ ...body, note: "  freeze  " }, "owner", "x").note, "freeze");
+  for (const bad of [{ mergeCommit: "abc" }, { commit: null }, { reviews: [] }, { reviews: "x" }, { reviews: [{ ...review, by: "nobody" }] }, { reviews: [{ ...review, verdict: "lgtm" }] },
+    { reviews: [{ ...review, head: "3f313d3b" }] }, { reviews: [{ ...review, at: "yesterday" }] }, { reviews: [{ ...review, at: "2026-13-45" }] }, { note: 5 }]) {
+    assert.throws(() => recordedMerge({ ...body, ...bad }, "owner", "x"), (e: RuleError) => e.code === "bad_record", JSON.stringify(bad));
+  }
+  // The reviews that approved it: a rejection alone, or an approval of another head, is refused.
+  for (const reviews of [[{ ...review, verdict: "reject" }], [{ ...review, head: H2 }]]) {
+    assert.throws(() => recordedMerge({ ...body, reviews }, "owner", "x"), (e: RuleError) => e.code === "no_approval" && /approves aaaaaaaa/.test(e.detail));
+  }
+});
+
+test("a merge is recorded only when main holds it and its second parent is the task's head", () => {
+  const record = { mergeCommit: "c".repeat(40), commit: H1 };
+  const P1 = "e".repeat(40);
+  assert.equal(recordedMergeRefusal(record, { parents: [P1, H1], holds: true }), null);
+  const code = (baseline: { parents: string[] | null; holds: boolean | null }) => recordedMergeRefusal(record, baseline)?.code;
+  assert.equal(code({ parents: null, holds: false }), "merge_not_on_main");
+  assert.equal(code({ parents: [P1, H1], holds: false }), "merge_not_on_main");
+  assert.equal(code({ parents: [P1, H1], holds: null }), "merge_unconfirmed");
+  assert.equal(code({ parents: [P1], holds: true }), "not_a_merge");
+  assert.equal(code({ parents: [H1, P1], holds: true }), "second_parent_differs");
+  assert.match(recordedMergeRefusal(record, { parents: [H1, P1], holds: true })!.detail, /second parent is eeeeeeee, not aaaaaaaa/);
 });

@@ -257,7 +257,7 @@ it("atelier plan refresh dispatches the refresh, and refuses before approval, wh
   await refusal(L.planRefresh(draft.id, "owner", M1, false), "closed", /abandoned/);
 
   const { id, a } = await readyPlan(L);
-  await refusal(L.planRefresh(id, PLANNER, M1, false), "not_project_owner", /only the project owner/);
+  await refusal(L.planRefresh(id, PLANNER, M1, false), "not_project_owner", /only the developer/);
   await refusal(L.planRefresh(a, "owner", M1, false), "not_a_plan", /part of/);
   // The integrate job for a is queued, then held.
   await refusal(L.planRefresh(id, "owner", M1, false), "job_in_flight", /integrate job for part a is queued/);
@@ -269,7 +269,7 @@ it("atelier plan refresh dispatches the refresh, and refuses before approval, wh
   await refusal(L.planRefresh(id, "owner", "not-a-hash", false), "bad_head", /full commit hash/);
   await L.planRefresh(id, "owner", M1, false);
   expect(await L.item(id)).toMatchObject({ dispatch: { job: "refresh", head: M1, by: "owner" } });
-  expect((await events(L, id)).find((e) => e.kind === "item.dispatched")?.data).toMatchObject({ job: "refresh", reason: "the project owner asked for a refresh" });
+  expect((await events(L, id)).find((e) => e.kind === "item.dispatched")?.data).toMatchObject({ job: "refresh", reason: "the developer asked for a refresh" });
   await refusal(L.planRefresh(id, "owner", M1, false), "job_in_flight", /refresh from main at 11111111 is queued/);
   // Only the integrator holding the refresh records it, for the head it was dispatched to merge.
   await refusal(L.refreshed(id, INTEGRATOR, M1, R, true), "not_owner", /claim its refresh job first/);

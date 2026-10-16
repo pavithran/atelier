@@ -59,7 +59,7 @@ const PLAN_DOCUMENT = { schema: "atelier.plan.v1", goal: "Ship", parts: [{ key: 
 // The reads runnerRoute allows that no runner call makes: configuration and
 // base reads a runner may make by hand (docs/runners.md), each exercised below.
 const SPARE_READS = [
-  ["GET", "/projects/p/decisions"], ["GET", "/projects/p/baseline-head"],
+  ["GET", "/projects/p/decisions"],
   ["GET", "/projects/p/items/t1/brief"], ["GET", "/projects/p/items/t1/diff"], ["GET", `/projects/p/items/t1/logs/${"a".repeat(64)}`], ["GET", `/projects/p/items/t1/diffs/${"a".repeat(64)}`],
 ];
 
@@ -74,7 +74,8 @@ const API_ROUTES = [
     "GET /projects/p/decisions", "POST /projects/p/decisions", "POST /projects/p/decisions/d1/withdraw", "GET /projects/p/actions", "GET /projects/p/items", "POST /projects/p/items"],
   ...["GET", "GET brief", "GET job-brief", "GET sandbox/p:t1:abc:1", "GET diff", `GET logs/${"a".repeat(64)}`, `GET diffs/${"a".repeat(64)}`, "GET plan", "GET landing-workflow",
     ...["claim", "read-token", "read-token (write)", "base-token", "base-token (write)", "push", "evidence", "sandbox", "dispatch", "undispatch", "edit", "block", "unblock", "clear-secret",
-      "review", "review-claim", "review-renew", "review-release", "review-skip", "review-unparsable", "run-skip", "review-request", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
+      "review", "review-claim", "review-renew", "review-release", "review-skip", "review-unparsable", "run-skip", "review-request", "fast-take", "fast-ready", "owner-port-token",
+      "criteria-review-claim", "criteria-review", "criteria-review-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
       "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed", "plan", "plan/approve"].map((v) => `POST ${v}`),
   ].map((entry) => { const [method, rest = ""] = entry.split(" ", 2); const write = entry.endsWith(" (write)"); const verb = rest.replace(" (write)", ""); return `${method} /projects/p/items/t1${verb ? `/${verb}` : ""}${write ? " (write)" : ""}`; }),
 ];
@@ -91,6 +92,7 @@ test("each declared call is allowed for the credential it declares, and refused 
     const runner = runnerRoute(call.method, parts, body), agent = agentRoute(call.method, parts, body);
     if (call.credential === "runner") assert.equal(runner, true, `${call.name} is a runner-token call runnerRoute refuses`);
     else if (call.credential === "agent") assert.deepEqual([runner, agent], [false, true], `${call.name} is an agent-token call: agentRoute allows it, runnerRoute refuses it`);
+    else if (call.credential === "owner") assert.deepEqual([runner, agent], [false, false], `${call.name} is an owner call: neither a runner token nor an agent token may make it`);
     else assert.deepEqual([runner, agent, call.path], [false, false, "/version"], `${call.name} is public: the gateway answers it before any token is read`);
     assert.equal(call.via === "cli", call.command !== undefined, `${call.name}: a cli call names its command, a runner call none`);
     if (call.via === "cli") assert.ok(RUNNER_COMMANDS.has(call.command));
@@ -184,6 +186,9 @@ test("the transport sends a declared call as declared, and refuses an undeclared
   await assert.rejects(refused.identity(), (error) => error.status === 401 && /config: 401/.test(error.message));
   assert.equal(helperCommand(["claim", "t1"]), "claim");
   assert.throws(() => helperCommand(["frobnicate", "t1"]), /atelier frobnicate is not a command the runner declares/);
+  assert.equal(helperCommand(["fast", "take", "t1"]), "fast");
+  assert.equal(helperCommand(["fast", "ready", "t1"]), "fast");
+  assert.throws(() => helperCommand(["fast", "land", "t1=abc"]), /atelier fast land is not a command the runner declares/);
 });
 
 // ── 2. the source ──────────────────────────────────────────────────────────
@@ -237,10 +242,16 @@ function runnerSourceCheck(runner, command) {
   // A lease call (leaseCall, t351) is the runner's own, sent through the
   // transport, never spawned: review-renew names no atelier command.
   for (const m of runner.matchAll(/\bcli\(\[\s*"([a-z-]+)"/g)) spawned.add(m[1]);
+  // The task refresh (cli/task-refresh.mjs, t462) spawns its commands through
+  // report([...]) and io.cli, and reaches the server in no other way: the
+  // only reference its scan finds is the runner's git fetch helper.
+  const refresh = read("cli/task-refresh.mjs");
+  assert.deepEqual([...new Set(bypasses(refresh))], ["io.fetch("], "cli/task-refresh.mjs reaches the server outside the CLI's transport");
+  for (const m of refresh.matchAll(/\b(?:report|io\.cli)\(\[\s*(?:argv\[0\]|"([a-z-]+)")/g)) if (m[1]) spawned.add(m[1]);
   for (const name of own) spawned.delete(name);
   assert.deepEqual([...spawned].sort(), [...RUNNER_COMMANDS].sort());
   // The spawn refuses an undeclared command at run time, before anything runs.
-  assert.match(runner, /cli: \(argv, cwd, options = \{\}\) => leaseCall\(argv, options, api\) \?\? checked\(\[process\.execPath, cli, \.\.\.argv\][^\n]*helperCommand\(argv\)/);
+  assert.match(runner, /cli: \(argv, cwd, options = \{\}\) => leaseCall\(argv, options, api, credential\) \?\? checked\(\[process\.execPath, cli, \.\.\.argv\][^\n]*helperCommand\(argv\)/);
 }
 
 test("the runner reaches the server only through the transport, and every call and command it makes is declared", () => {
@@ -497,7 +508,12 @@ test("idle polling: an empty queue answers [], records the offer, and GET /queue
   assert.deepEqual(entry.item.dispatch, { to: "home", agent: "codex", model: "gpt-7", job: null });
   await denied(api("POST", "/queue", { body: { ...OFFER, runner: "home:other", why: true } }), token, "why poll as another runner");
   await denied(api("GET", "/queue?why=1"), token, "GET /queue with why");
-  cover("queue", "queue-why", "config", "version", "capabilities");
+  // A busy runner's heartbeat (t537): its offer marked as one, on the poll's
+  // route, answered with nothing and recorded as a poll is. Another
+  // runner's name in the offer is refused as it is for the poll.
+  assert.deepEqual(await expect(api("POST", "/queue", { body: { ...OFFER, heartbeat: true } }), 200, "heartbeat"), []);
+  await denied(api("POST", "/queue", { body: { ...OFFER, runner: "home:other", heartbeat: true } }), token, "heartbeat as another runner");
+  cover("queue", "queue-why", "queue-heartbeat", "config", "version", "capabilities");
 });
 
 test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and release, each under the runner's own claim", async () => {
@@ -543,7 +559,52 @@ test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and rel
   assert.equal((await expect(api("POST", `${p.base(id)}/submit`, { body: { summary: "Built" } }), 200, "submit")).state, "submitted");
   assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { note: "done" } }), 200, "release")).state, "open");
   await denied(api("GET", p.base(id)), token, "item after release");
-  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "baseline-token", "baseline-project", "push", "evidence", "sandbox", "sandbox-run", "submit", "release");
+  // The developer's own push of the released task's fork (atelier push
+  // --owner-port, t571): the owner's token alone; a runner token is refused.
+  assert.equal(runnerRoute("POST", ["projects", p.name, "items", id, "owner-port-token"], {}), false);
+  await denied(api("POST", `${p.base(id)}/owner-port-token`, { body: {} }), token, "owner-port-token as the runner");
+  const port = await expect(call("POST", `${p.base(id)}/owner-port-token`, { body: {} }), 200, "owner-port-token");
+  assert.deepEqual([port.remote, port.token, port.defaultBranch], [`https://git.test/${fork(p.name, id)}.git`, "git-write-secret", "main"]);
+  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "baseline-token", "baseline-project", "baseline-head", "push", "evidence", "sandbox", "sandbox-run", "submit", "release", "owner-port-token");
+});
+
+test("a release that reports a provider limit, and a fast take and its report, reach the ledger under the runner's own claim", async () => {
+  const p = await project();
+  const id = await task(p);
+  await dispatch(p, id);
+  const token = await issue(p);
+  const api = under(token);
+  await claimed(p, token, id);
+  // The runner's release for a provider's usage limit (leaseCall, t505): the
+  // same route as a plain release, with the one field the exemption reads.
+  assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { providerLimit: true, note: "the provider's limit resets at noon" } }), 200, "release-provider-limit")).state, "open");
+  await denied(api("POST", `${p.base(id)}/release`, { body: { providerLimit: true, note: "again" } }), token, "a second release after the first");
+  // Fast mode (t589): the dispatched build is offered marked fast, and taken
+  // without a fork; the commit it built is reported as ready for the
+  // developer's fast land, as the holder alone.
+  const fast = await project();
+  await fast.L.confirmFastMode("owner", "access");
+  await fast.L.setMode("owner", "fast", "forks fail");
+  const fastId = await task(fast, "Fast build");
+  await dispatch(fast, fastId);
+  const fastToken = await issue(fast);
+  const f = under(fastToken);
+  const offered = await expect(f("POST", "/queue", { body: OFFER }), 200, "fast poll");
+  assert.deepEqual(offered.map((j) => [j.item.id, j.fast]), [[fastId, true]]);
+  const ready = { commit: H1, base: H0, builder: ACTOR, workspace: "/tmp/fast-workspace" };
+  await denied(f("POST", `${fast.base(fastId)}/fast-take`, { actor: "codex/other", body: {} }), fastToken, "fast take as another actor");
+  await denied(f("POST", `${fast.base(fastId)}/fast-take`, { actor: "owner", body: {} }), fastToken, "fast take as the owner");
+  await denied(f("POST", `${fast.base(fastId)}/fast-ready`, { body: ready }), fastToken, "fast ready before the take");
+  const taken = await expect(f("POST", `${fast.base(fastId)}/fast-take`, { body: {} }), 200, "fast-take");
+  assert.deepEqual([taken.fast, taken.item.owner, taken.item.fork ?? null, taken.baseline.token, taken.baseline.defaultBranch], [true, ACTOR, null, "git-read-secret", "main"]);
+  await denied(f("POST", `${fast.base(fastId)}/fast-ready`, { actor: "codex/other", body: { ...ready, builder: "codex/other" } }), fastToken, "fast ready as another actor");
+  assert.equal((await expect(f("POST", `${fast.base(fastId)}/fast-ready`, { body: { ...ready, commit: H0 } }), 409, "fast ready of nothing built")).error, "nothing_built");
+  const reported = await expect(f("POST", `${fast.base(fastId)}/fast-ready`, { body: ready }), 200, "fast-ready");
+  assert.deepEqual([reported.ready.commit, reported.ready.builder, reported.ready.runner], [H1, ACTOR, RUNNER]);
+  // Another project's token reaches neither.
+  const stranger = await issue(p, "home:stranger");
+  await denied(under(stranger)("POST", `${fast.base(fastId)}/fast-ready`, { runner: "home:stranger", body: ready }), stranger, "fast ready on another project");
+  cover("release-provider-limit", "fast-take", "fast-ready");
 });
 
 test("a plan job: claim, the brief, a valid document, a refused one, and the release", async () => {
@@ -642,10 +703,84 @@ test("the review job's calls are the reviewer's agent token's, never the runner 
   // The lease forms the runner sends itself (leaseCall): a renewal and a
   // release that carry the claim's request number.
   assert.deepEqual(await expect(asReviewer("review-renew", { request: claim.request, note: "" }), 200, "review-renew"), { renewed: true });
+  // atelier review-claim --renew, by hand (t575): the request number alone.
+  assert.deepEqual(await expect(asReviewer("review-renew", { request: claim.request }), 200, "review-renew by hand"), { renewed: true });
   await expect(asReviewer("review-release", { request: claim.request, note: "the harness could not start" }), 200, "review-release");
   const integrator = ["integrated", "integration-failed", "refreshed", "refresh-failed"];
   for (const verb of integrator) assert.deepEqual([runnerRoute("POST", parts(verb)), agentRoute("POST", parts(verb))], [false, true], verb);
-  cover("review-claim", "review-renew", "review-release", "review-release-lease", "review-unparsable", "review-unparsable-lease", "review", ...integrator);
+  cover("review-claim", "review-renew", "review-claim-renew", "review-release", "review-release-lease", "review-unparsable", "review-unparsable-lease", "review", ...integrator);
+});
+
+test("the criteria review job's calls are the reviewer's agent token's: the claim, a verdict and a failure, never the runner token's", async () => {
+  const p = await project();
+  const token = await issue(p);
+  const api = under(token);
+  const [approved, failed] = [await task(p, "Criteria one"), await task(p, "Criteria two")];
+  const agent = await expect(call("POST", "/tokens", { body: { actor: REVIEWER, projects: [p.name] } }), 201, "agent token");
+  const builder = await expect(call("POST", "/tokens", { body: { actor: ACTOR, projects: [p.name] } }), 201, "builder's agent token");
+  const as = (who, id, verb, body, actor = REVIEWER) => call("POST", `${p.base(id)}/${verb}`, { token: who.token, actor, runner: RUNNER, body });
+  const parts = (id, verb) => ["projects", p.name, "items", id, verb];
+  for (const id of [approved, failed]) {
+    const asked = await expect(call("POST", `${p.base(id)}/criteria-review-request`, { body: { reviewer: REVIEWER } }), 200, "criteria-review-request");
+    assert.deepEqual([asked.requested, asked.reviewer], [true, REVIEWER]);
+  }
+  await expect(api("POST", "/queue", { body: { ...OFFER, jobs: ["criteria-review"] } }), 200, "poll");
+  for (const verb of ["criteria-review-claim", "criteria-review", "criteria-review-failed"]) {
+    assert.deepEqual([runnerRoute("POST", parts(approved, verb)), agentRoute("POST", parts(approved, verb))], [false, true], verb);
+    await denied(api("POST", `${p.base(approved)}/${verb}`, { actor: REVIEWER, runner: RUNNER, body: { request: 1, rev: 1, criteria: "x", approve: true } }), token, `${verb} under the runner token`);
+  }
+  // Only the reviewer asked claims; the builder's own token does not.
+  assert.notEqual((await as(builder, approved, "criteria-review-claim", {}, ACTOR)).status, 200, "a claim by a model that was not asked");
+  const claim = await expect(as(agent, approved, "criteria-review-claim", {}), 200, "criteria-review-claim");
+  assert.deepEqual([typeof claim.rev, typeof claim.criteria, typeof claim.request], ["number", "string", "number"]);
+  assert.notEqual((await as(agent, approved, "criteria-review", { rev: claim.rev + 1, criteria: claim.criteria, request: claim.request, approve: true })).status, 200, "a verdict at another revision");
+  const verdict = await expect(as(agent, approved, "criteria-review", { rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, note: "Clear and measurable.", findings: [], checks: [] }), 200, "criteria-review");
+  assert.ok(JSON.stringify(verdict).includes("Clear and measurable."), JSON.stringify(verdict));
+  const second = await expect(as(agent, failed, "criteria-review-claim", {}), 200, "second claim");
+  await expect(as(agent, failed, "criteria-review-failed", { request: second.request, note: "the harness wrote no verdict" }), 200, "criteria-review-failed");
+  assert.notEqual((await as(agent, failed, "criteria-review-failed", { request: second.request, note: "twice" })).status, 200, "a failure of a review already ended");
+  cover("criteria-review-claim", "criteria-review", "criteria-review-failed");
+});
+
+test("the task refresh's lease calls are the integrator's agent token's: a runner token is refused, the integrator's token reaches the Ledger", async () => {
+  const p = await project();
+  const token = await issue(p);
+  const api = under(token);
+  const { id } = await reviewJob(p, token), other = await reviewJob(p, token);
+  await p.L.noteMainHead("a".repeat(40));
+  const integrator = await expect(call("POST", "/tokens", { body: { actor: "atelier/integrator", projects: [p.name] } }), 201, "integrator's agent token");
+  const as = (verb, body) => call("POST", `${p.base(id)}/${verb}`, { token: integrator.token, actor: "atelier/integrator", runner: RUNNER, body });
+  // The lease forms and the reports under it, each refused to the runner token.
+  const forms = [
+    ["refresh-lease", { job: "refresh", runner: RUNNER }], ["refresh-lease", { renew: "x" }], ["refresh-lease", { status: "x" }], ["refresh-lease", { release: "x", reason: "x", providerLimit: true }],
+    ["refresh-pushing", { lease: "x" }], ["refresh-checked", { lease: "x", passed: true }], ["refreshed", { lease: "x" }], ["refresh-failed", { lease: "x", outcome: "returned" }],
+  ];
+  for (const [verb, body] of forms) {
+    const parts = ["projects", p.name, "items", id, verb];
+    assert.deepEqual([runnerRoute("POST", parts), agentRoute("POST", parts)], [false, true], verb);
+    await denied(api("POST", `${p.base(id)}/${verb}`, { actor: "atelier/integrator", body }), token, `${verb} under the runner token`);
+  }
+  // The integrator's token takes the lease, with the write token for the
+  // fork and the heads the reports must name.
+  const leased = await expect(as("refresh-lease", { job: "refresh", runner: RUNNER }), 200, "refresh-lease");
+  const { id: leaseId, mainHead, expectedHead } = leased.lease;
+  assert.deepEqual([leased.lease.by, leased.lease.runner, mainHead, expectedHead, typeof leased.workspace.token, leased.baseline.token], ["atelier/integrator", RUNNER, "a".repeat(40), H1, "string", "git-read-secret"]);
+  const lease = { lease: leaseId, mainHead, expectedHead };
+  const refusal = async (verb, body, status, error) => assert.deepEqual(await expect(as(verb, body), status, verb).then((r) => [r.error]), [error], verb);
+  assert.deepEqual(await expect(as("refresh-lease", { renew: leaseId }), 200, "renew").then((r) => r.lease.id), leaseId);
+  assert.deepEqual(await expect(as("refresh-lease", { status: leaseId }), 200, "status"), { head: H1, lease: true, checking: null });
+  // The announced push is recorded under the lease; the reports the Ledger
+  // cannot verify here are refused by the Ledger, not by the gateway.
+  assert.equal((await expect(as("refresh-pushing", { ...lease, head: H1 }), 200, "refresh-pushing")).id, leaseId);
+  await refusal("refresh-checked", { ...lease, passed: true }, 409, "no_refresh");
+  await refusal("refreshed", { ...lease, head: H1 }, 409, "unverified_merge");
+  await refusal("refresh-failed", { ...lease, outcome: "returned", reason: "x", report: {} }, 400, "bad_report");
+  await refusal("refresh-lease", { release: leaseId, reason: "x" }, 409, "refresh_pushing");
+  // A lease another task took is not this one's to renew or report under.
+  const taken = await expect(call("POST", `${p.base(other.id)}/refresh-lease`, { token: integrator.token, actor: "atelier/integrator", runner: RUNNER, body: { job: "refresh", runner: RUNNER } }), 200, "second lease");
+  await refusal("refresh-lease", { renew: taken.lease.id }, 409, "lease_lost");
+  assert.equal((await expect(call("POST", `${p.base(other.id)}/refresh-failed`, { token: integrator.token, actor: "atelier/integrator", runner: RUNNER, body: { lease: taken.lease.id, mainHead: taken.lease.mainHead, expectedHead: taken.lease.expectedHead, outcome: "mechanical", reason: "mechanical conflicts in package-lock.json" } }), 200, "refresh-failed")).error, undefined);
+  cover("refresh-lease", "refresh-pushing", "refresh-checked");
 });
 
 test("wrong project: a token scoped to one project reaches nothing of another", async () => {
@@ -765,7 +900,8 @@ test("owner-only operations and write-token requests are refused by runnerRoute 
     ["PUT", P, {}], ["DELETE", P, {}], ["POST", `${P}/rename`, { to: "x" }], ["GET", `${P}/owners`], ["GET", `${P}/standing`], ["GET", `${P}/items`], ["POST", `${P}/items`, { title: "x" }],
     ["POST", `${P}/decisions`, { text: "x" }], ["GET", `${P}/landing-lease`], ["POST", `${P}/served`, {}],
     ...["dispatch", "undispatch", "edit", "block", "unblock", "clear-secret", "review", "review-claim", "review-release", "review-unparsable", "review-request", "land", "landing-workflow",
-      "handoff", "abandon", "accept", "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed"].map((verb) => ["POST", `${base}/${verb}`, { head: H0, to: "owner" }]),
+      "handoff", "abandon", "accept", "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed",
+      "criteria-review-request", "criteria-finding", "refresh-lease", "refresh-pushing", "refresh-checked", "criteria-review-claim", "criteria-review", "criteria-review-failed", "owner-port-token"].map((verb) => ["POST", `${base}/${verb}`, { head: H0, to: "owner" }]),
     ["GET", `${base}/plan`], ["GET", `${base}/landing-workflow`], ["POST", `${base}/plan/approve`, {}],
   ];
   for (const [method, path, body] of ownerOnly) {

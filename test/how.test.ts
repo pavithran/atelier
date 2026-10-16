@@ -90,7 +90,13 @@ test("the review code is called by the ledger and the runner, and the page says 
   // import it, and nothing else from src/review.
   const triageOnly = (file: string) => [join("cli", "land.mjs"), join("src", "landing-workflow.ts"), join("src", "index.ts")].includes(file)
     && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "triage.ts");
-  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && imports.test(read(file)));
+  // The harness adapter (cli/harness/adapter.mjs), which the runner starts
+  // for a review, reads the reply with the runner's own verdict parser only
+  // to tell whether it states a verdict, and asks once more when it does not
+  // (t576); it imports src/review/verdict.ts and nothing else from src/review.
+  const verdictCheckOnly = (file: string) => file === join("cli", "harness", "adapter.mjs")
+    && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "verdict.ts");
+  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && !verdictCheckOnly(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;
   assert.ok(requests.built);
@@ -187,8 +193,8 @@ test("the plan flow draws what the code does, from goal to merge", () => {
   assert.match(read("src/plans/integrate.ts"), /export const LANDED: readonly PartState\[\] = \["integrated", "merged"\]/);
   assert.equal(PLAN_FLOW[0].lane, "owner");
   assert.equal(PLAN_FLOW.at(-1)!.name, "Accept and merge");
-  assert.equal(PLAN_FLOW.filter((s) => s.lane === "owner").length, 3, "the owner acts three times, as the caption says");
-  assert.match(PLAN_FLOW_CAPTION, /The owner acts three times/);
+  assert.equal(PLAN_FLOW.filter((s) => s.lane === "owner").length, 3, "the developer acts three times, as the caption says");
+  assert.match(PLAN_FLOW_CAPTION, /The developer acts three times/);
 });
 
 test("the plan flow's text fits its boxes and lanes at the drawn size", () => {
@@ -206,14 +212,14 @@ test("the plan flow's text fits its boxes and lanes at the drawn size", () => {
 // home runner takes, and those are the jobs the runner offers by default:
 // build and plan with the merge jobs such a build needs (DEFAULT_JOBS in
 // cli/runner-config.mjs; a config's jobs names exactly the jobs it takes
-// instead), review when the config lists it, and integrate and refresh for a
-// runner started with --integrate.
+// instead), review when the config lists it, and integrate, refresh and the
+// task refresh (t462) for a runner started with --integrate.
 test("the layers diagram shows a goal entering as a plan and the runner's jobs", () => {
   const runner = read("cli/runner.mjs");
   assert.match(runner, /jobs: \[\.\.\.\(jobs \?\? DEFAULT_JOBS\)\]/);
   assert.match(read("cli/runner-config.mjs"), /DEFAULT_JOBS = \["build", "plan", "merge-main", "merge-main-task", "merge-plan"\]/);
   assert.match(runner, /dispatch carrying job: "plan"[\s\S]{0,80}carrying "review"/);
-  assert.match(runner, /jobs: \["integrate", "refresh"\]/);
+  assert.match(runner, /jobs: \["integrate", "refresh", "task-refresh"\]/);
   for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) {
     assert.match(t, /atelier plan "goal"/, t);
     assert.match(t, /build, plan and review jobs|build and plan jobs, and review jobs/, t);
@@ -221,7 +227,7 @@ test("the layers diagram shows a goal entering as a plan and the runner's jobs",
   assert.match(LAYERS_LABEL, /Ledger[^.]*holds each plan and dispatches its parts/);
   assert.match(LAYERS_CAPTION, /--integrate[^.]*integrate and refresh jobs/);
   const svg = layersDiagram();
-  assert.ok(svg.includes(">owner: atelier plan &quot;goal&quot;</text>"), "the terminal node shows the goal entering as a plan");
+  assert.ok(svg.includes(">atelier plan &quot;goal&quot;</text>"), "the terminal node shows the goal entering as a plan");
   assert.ok(svg.includes(">build, plan and review jobs</text>"), "the home runner node names its jobs");
   assert.ok(svg.includes(">holds each plan and dispatches its parts and jobs</text>"), "the Ledger node holds the plan");
   for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
@@ -275,4 +281,45 @@ test("the How page, help and docs state the current core-file hold rule", () => 
   assert.match(core.enforced, /claimed item or of the item named by a live landing lease/);
   assert.match(core.enforced, /submitted or accepted item that is not landing holds nothing/);
   assert.match(core.enforced, /once each claimed blocker submits or is released and each landing ends/);
+});
+
+// t595's review (codex/gpt-6-astra and antigravity/gemini-4-argon, 2026-10-13):
+// pages and docs once said Atelier itself runs the tests, where a local check
+// runs on the caller's machine and only a container check, which
+// `--sandbox-only` requires, is Atelier's own run. No reader-facing text may
+// say so again, and /how must name the setting that makes it true.
+test("no page or doc says Atelier itself runs the tests, and /how names --sandbox-only", () => {
+  const docs = readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => `docs/${name}`);
+  const pages = readdirSync(join(root, "src")).filter((name) => /^how.*\.ts$/.test(name)).map((name) => `src/${name}`);
+  for (const file of ["README.md", ...docs, ...pages, "src/ui.ts"]) {
+    const text = read(file).replace(/\s+/g, " ");
+    for (const claim of [/Atelier (itself )?runs (the |their |its )?(tests|checks)( itself)?/i, /run by Atelier and not taken on an agent's word/i, /(tests|checks) run on the exact head, not on the agent's word/i]) {
+      assert.doesNotMatch(text, claim, `${file} says ${claim.source}`);
+    }
+  }
+  assert.ok(pages.some((file) => read(file).includes("--sandbox-only")), "/how no longer names --sandbox-only");
+  // The film's narration says the trust boundary where it speaks of the
+  // exact head: a local pass is the caller's word, a container's is not.
+  for (const line of read("docs/video.md").split("\n").filter((l) => l.startsWith("> ") && /exact head/.test(l))) {
+    assert.match(line, /Cloudflare container/, `the narration speaks of the exact head without the container: ${line}`);
+  }
+});
+
+// Gemini 4 Argon's claims audit of 2026-10-13, finding 8: /how listed the
+// fast-mode commands and never said what fast mode is.
+test("/how says what fast mode is: chosen with a reason, batch checks, review after the merge, full mode the default", () => {
+  const prose = read("src/how.ts").replace(/\s+/g, " ");
+  for (const said of ["atelier mode fast --reason", "atelier fast land", "one typecheck, one secret scan and one test run", "follows the merge instead of preceding it", "carries a receipt", "Full mode, the process above, is the default"]) {
+    assert.ok(prose.includes(said), `/how does not say "${said}"`);
+  }
+});
+
+// t595's review (codex/gpt-6-astra, 2026-10-13): independence of review holds
+// against agents, not against whoever holds the developer token; /how and the
+// README must keep saying so.
+test("/how and the README say review independence holds against agents, not the developer token", () => {
+  for (const file of ["README.md", "src/how-data.ts"]) {
+    const text = read(file).replace(/\s+/g, " ");
+    assert.match(text, /against agents, not against whoever holds (the|that) (developer )?token/i, `${file} keeps the developer-token caveat`);
+  }
 });

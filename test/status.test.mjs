@@ -319,7 +319,7 @@ test("On this Mac gives each workspace one line, and a task with no workspace he
   assert.ok(r.output.includes("  t5  clean, pushed\n"), r.output);
   assert.ok(!r.output.includes("t9"), "a task with no workspace here is left out");
   assert.ok(!/  t[68]  /.test(r.output), "a merged or abandoned task's workspace is not listed");
-  assert.ok(r.output.includes("  2 workspaces of merged or abandoned tasks left here; atelier gc --project demo previews removing them\n"), r.output);
+  assert.ok(r.output.includes("  2 workspaces of merged or abandoned tasks left here; atelier clean --project demo removes those whose work is in main or the ledger\n"), r.output);
   assert.ok(r.output.includes("  Landing: no landing is running on this Mac; the server's landing lease is held by no one.\n"), r.output);
 });
 
@@ -338,7 +338,8 @@ test("the same facts are in --json, and no local section at all when no task has
   const empty = await runLocal(t, () => ({}), ["status", "--project", "demo", "--json"]);
   assert.equal(empty.code, 0, empty.output);
   assert.equal("local" in JSON.parse(empty.output), false, "no local field when no task has a workspace here");
-  assert.deepEqual(empty.seen, ["GET /api/projects/demo/standing"], "nothing else is read when there is nothing local");
+  // The developer's branches (t641) are the server's, read whatever is local.
+  assert.deepEqual(empty.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/branches"], "nothing else is read when there is nothing local");
 });
 
 // The kernel lock queue.sh holds while it lands: flock on Linux, lockf on macOS.

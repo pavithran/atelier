@@ -89,7 +89,7 @@ test("init sends the owner's declaration for each check Atelier cannot read, and
   assert.deepEqual(put.body.checkClasses, [{ command: "./check.sh", by: "owner", note: "Pavi, 2026-10-06: check.sh runs the unit tests" }]);
   assert.match(r.stdout, /^Checks: {5}npm test \| \.\/check\.sh$/m);
   assert.match(r.stdout, /^ {2}npm test: read-only, a known build or test command$/m);
-  assert.match(r.stdout, /^ {2}\.\/check\.sh: read-only, declared by the project owner: Pavi, 2026-10-06: check\.sh runs the unit tests$/m);
+  assert.match(r.stdout, /^ {2}\.\/check\.sh: read-only, declared by the developer: Pavi, 2026-10-06: check\.sh runs the unit tests$/m);
   // Without a declaration the checks go to the server, which decides with what it has recorded.
   f.clear();
   assert.equal(f.run("init", "--check", "./check.sh").status, 0);
@@ -185,7 +185,7 @@ test("check runs nothing, and clones nothing, when a registered check or the com
   const r = await f.run("check", "t1");
   assert.equal(r.status, 1, r.stdout);
   assert.match(r.stderr, /`npm --prefix web run deploy` is not a check: it runs a script whose name says it deploys or publishes/);
-  assert.match(r.stderr, /Nothing was run\. Ask the project owner to replace the check with atelier init --check\./);
+  assert.match(r.stderr, /Nothing was run\. Ask the developer to replace the check with atelier init --check\./);
   assert.ok(!f.paths.some((p) => p.endsWith("/read-token") || p.endsWith("/evidence")), f.paths.join(" "));
   assert.equal(existsSync(ran(f.root)), false);
   assert.ok(!existsSync(join(f.root, "cache", "checks")) || readdirSync(join(f.root, "cache", "checks")).length === 0, "no clone was made");

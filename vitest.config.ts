@@ -1,5 +1,16 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// No test touches this Mac's own ~/.config/atelier (t645): the run, and
+// every process it starts, gets a config folder of its own.
+// The folder goes when the process that loaded this config exits, which is
+// after the workers it started (t658: it was left in the temp folder).
+const configDir = mkdtempSync(join(tmpdir(), "atelier-vitest-config-"));
+process.env.ATELIER_CONFIG_DIR = configDir;
+process.once("exit", () => rmSync(configDir, { recursive: true, force: true }));
 
 // The test/**/*.spec.ts and runner-token spec run inside workerd through the Workers
 // test pool, against the bindings wrangler.jsonc declares: the Ledger
@@ -15,5 +26,6 @@ export default defineConfig({
       remoteBindings: false,
     }),
   ],
-  test: { include: ["test/**/*.spec.ts", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs"] },
+  // t570: a loaded landing host stalls in-process Worker tests past the 5 s default.
+  test: { testTimeout: 60_000, hookTimeout: 60_000, include: ["test/**/*.spec.ts", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs"] },
 });

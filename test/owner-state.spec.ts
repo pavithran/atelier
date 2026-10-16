@@ -29,7 +29,8 @@ function detail(): Detail {
 }
 const review = (o: Partial<Review>): Review => ({ itemId: "t1", head, criteria: NO_CRITERIA, approve: true, by: "pavi", note: "", at: time, ...o });
 const event = (seq: number, kind: string, data: Record<string, unknown>, at = time): LedgerEvent => ({ seq, itemId: "t1", at, actor: "pavi", kind, data });
-const header = (html: string) => html.slice(0, html.indexOf("</header>"));
+// The task's own header, in <main>: the owner's bar above it is a header too.
+const header = (html: string) => { const main = html.slice(html.indexOf('<main id="main"')); return main.slice(0, main.indexOf("</header>")); };
 
 afterEach(() => { setTimeZone(undefined); });
 
@@ -93,7 +94,7 @@ it("criterion 2: the state matrix covers blockers, unavailable diffs and the ter
     ["waiting for review", () => {}, true, { independent: "Required, not yet given", acceptance: "Not ready: 1 blocker" }, "next", /^Run the landing command below\.$/],
     ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Accept revision, below; the merge command follows\.$/],
     ["overridden", (d) => { d.item.reviewOverride = { head, by: "pavi", reason: "none qualifies", at: time }; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Overridden by you, 2026-10-10 17:41 UTC: not a review", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Accept revision, below; the merge command follows\.$/],
-    ["failing check", (d) => { d.evidence[0].passed = false; d.gate = { ready: false, needsAssessor: true, blockers: ["`npm test` failed when observed", "Protected"], outOfScope: [] }; }, true, { acceptance: "Not ready: 2 blockers" }, "waiting", /^For the task owner, codex\/gpt-6\.$/],
+    ["failing check", (d) => { d.evidence[0].passed = false; d.gate = { ready: false, needsAssessor: true, blockers: ["`npm test` failed when observed", "Protected"], outOfScope: [] }; }, true, { acceptance: "Not ready: 2 blockers" }, "waiting", /^For the task holder, codex\/gpt-6\.$/],
     ["diff unavailable", () => {}, false, { acceptance: "Unavailable until the changes shown match the recorded revision" }, "next", /^Reload this task/],
     ["secret pending", (d) => { d.item.secretScan = head; }, true, {}, "waiting", /^For the secret scan/],
     ["blocked", (d) => { d.item.state = "blocked"; d.item.blocked = { by: "pavi", at: time, reason: "waiting on design", from: "submitted" }; }, true, { acceptance: "Not possible while the task is blocked" }, "next", /^Unblock the task/],
@@ -101,7 +102,7 @@ it("criterion 2: the state matrix covers blockers, unavailable diffs and the ter
     ["merged", (d) => { d.item.state = "merged"; d.item.acceptedHead = head; }, true, { acceptance: "Accepted at aaaaaaaa" }, "complete", /^Nothing waits on you\.$/],
     ["closed", (d) => { d.item.state = "abandoned"; }, true, { acceptance: "Closed without merging" }, "complete", /^Nothing waits on you\.$/],
     ["integrated part", (d) => { d.item.state = "integrated"; d.item.plan = "t9"; d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: false, needsAssessor: false, blockers: ["state is integrated, not submitted"], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Integrated into t9 at aaaaaaaa; lands with the plan" }, "waiting", /^For t9 to land: this part is submitted and integrated into the plan's branch/],
-    ["working", (d) => { d.item.state = "claimed"; d.gate = { ready: false, needsAssessor: false, blockers: ["state is claimed, not submitted"], outOfScope: [] }; }, true, { acceptance: "Not submitted yet" }, "waiting", /^For the task owner, codex\/gpt-6\.$/],
+    ["working", (d) => { d.item.state = "claimed"; d.gate = { ready: false, needsAssessor: false, blockers: ["state is claimed, not submitted"], outOfScope: [] }; }, true, { acceptance: "Not submitted yet" }, "waiting", /^For the task holder, codex\/gpt-6\.$/],
   ];
   for (const [what, set, visible, expected, kind, next] of rows) {
     const d = detail(); set(d);
@@ -167,7 +168,7 @@ it("criterion 5: the CLI permission reads active with revision and zoned expiry,
     ["used at an earlier revision", (d) => { d.item.head = other; d.events = [event(2, "review.overridden", { head, confirmed: "command line" }), allowed]; }, "none", "Not given"],
     ["forbidden", (d) => { d.policy = { ...d.policy, noOverride: true }; }, "forbidden", "Forbidden: this project refuses every override"],
     ["active, then noOverride", (d) => { d.item.overrideConfirmation = { head, by: "pavi", at: time, until, factor: "access" }; d.events = [allowed]; d.policy = { ...d.policy, noOverride: true }; }, "forbidden", "Prohibited by policy: given for revision aaaaaaaa until 2026-10-10 14:10 EDT, but this project now refuses every override, so it allows nothing"],
-    ["no factor", (d) => { d.ownerFactor = null; }, "unconfirmable", "Unavailable: this server takes no owner confirmation"],
+    ["no factor", (d) => { d.ownerFactor = null; }, "unconfirmable", "Unavailable: this server takes no developer confirmation"],
   ];
   for (const [what, set, status, text] of states) {
     const d = detail(); set(d);

@@ -46,12 +46,12 @@ test("t371: the owner's permission for a command-line override stands at its hea
   // The refusal names the page, the button and the time, on the server
   // asked, and the factor that server takes: the Access sign-in, the
   // confirmation secret, or neither, which says what to set.
-  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone"), 'open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" confirming as the owner, then run the command again within 15 minutes; the owner token alone does not confirm it');
-  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", "access"), 'open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation, then run the command again within 15 minutes; the owner token alone does not confirm it');
-  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", "secret"), 'open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" giving the server\'s confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the owner token alone does not confirm it');
-  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", null), `open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" confirming as the owner, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the owner token alone does not confirm it`);
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone"), 'open https://atelier.zone/p/demo/t1 as the developer, press "Allow an override from the command line" confirming as the developer, then run the command again within 15 minutes; or run it again with --quote "the developer\'s words" and --as H/M naming the model acting on them; the developer token alone does not confirm it');
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", "access"), 'open https://atelier.zone/p/demo/t1 as the developer, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation, then run the command again within 15 minutes; or run it again with --quote "the developer\'s words" and --as H/M naming the model acting on them; the developer token alone does not confirm it');
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", "secret"), 'open https://atelier.zone/p/demo/t1 as the developer, press "Allow an override from the command line" giving the server\'s confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; or run it again with --quote "the developer\'s words" and --as H/M naming the model acting on them; the developer token alone does not confirm it');
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", null), `open https://atelier.zone/p/demo/t1 as the developer, press "Allow an override from the command line" confirming as the developer, then run the command again within 15 minutes; or run it again with --quote "the developer's words" and --as H/M naming the model acting on them; ${NO_OWNER_FACTOR}; the developer token alone does not confirm it`);
   assert.match(NO_OWNER_FACTOR, /CF_ACCESS_ISS, CF_ACCESS_AUD and CF_ACCESS_OWNER_EMAIL.*OVERRIDE_SECRET/);
-  assert.match(overrideConfirmationHint("my project", "t1"), /^open \/p\/my%20project\/t1 as the owner/);
+  assert.match(overrideConfirmationHint("my project", "t1"), /^open \/p\/my%20project\/t1 as the developer/);
 });
 
 // Round 2: a project that forbids overrides counts none, an override recorded
@@ -78,7 +78,7 @@ test("t371: a project that forbids overrides refuses every override before the r
   // The inbox, the page and the brief say so instead of offering the override.
   const now = new Date(T);
   const entry = (p: ProjectPolicy) => inboxFor("proj", [item()], p, touching, [], now).map((x) => [x.kind, x.reason]);
-  assert.deepEqual(entry(policy), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the owner's last resort`]]);
+  assert.deepEqual(entry(policy), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the developer's last resort`]]);
   assert.deepEqual(entry(forbidding), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M; this project forbids overrides`]]);
   assert.equal(overrideOffer(policy, true), " If no reviewer qualifies, you can accept with an override and say why.");
   assert.equal(overrideOffer(policy, false), "");

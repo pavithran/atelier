@@ -57,7 +57,9 @@ it("a protected change with no qualifying reviewer waits on the owner in every v
   expect(home).toMatch(row);
   const overview = await page(`/p/${NAME}`, cookie);
   expect(overview.split('id="standing"')[1]).toContain("No reviewer");
-  expect(overview).toContain("1 task waiting on you here");
+  expect(overview).toContain("Waiting on you · 1");
+  // On the grid it is a protected change waiting for its review.
+  expect(overview).toContain('<a href="/p/pool-placement/tasks?state=needs-review"><span class="state-n ask">1</span>');
   const decisions = await page(`/decisions?project=${NAME}&task=t1`, cookie);
   expect(decisions).toContain("No reviewer in the pool qualifies for this protected change");
 
@@ -67,7 +69,7 @@ it("a protected change with no qualifying reviewer waits on the owner in every v
   expect(some.waiting).toEqual([]);
   expect(some.pipeline).toEqual([{ stage: "submitted", count: 1 }]);
   expect(await page("/home", cookie)).not.toMatch(row);
-  expect(await page(`/p/${NAME}`, cookie)).not.toContain("waiting on you here");
+  expect(await page(`/p/${NAME}`, cookie)).toContain("Waiting on you · 0");
 });
 
 // The portfolio inbox reads each project on its own (t504 review): a project

@@ -12,7 +12,7 @@ import { areaField } from "../src/area-commands.ts";
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
@@ -21,6 +21,7 @@ import { basename, join, resolve } from "node:path";
 import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
 
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
+import { proseStandardLine } from "../src/prose-standard.ts";
 
 import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
 import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
@@ -28,7 +29,7 @@ import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/co
 import { cleanSummary } from "../src/brief.ts";
 import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
-import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
+import { ROUTE_LEVEL, capabilityFallback, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
 import { callPath, declaredCall, declaredHelperCall, RUNNER_COMMANDS, terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -36,7 +37,7 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIP
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { absolute, taskLink, waitingCommand } from "./status.mjs";
+import { absolute, overrideTail, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
@@ -44,12 +45,15 @@ import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTok
 import { runnerCredential, readSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
+import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
 import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
+import { serverFetch } from "./server-fetch.mjs";
+import { saveWholeConfig, useConfig } from "./private.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -80,12 +84,43 @@ export function die(msg, code = 1) {
 function loadConfig() {
   try { return JSON.parse(readFileSync(CONFIG, "utf8")); } catch { return { server: null, projects: {} }; }
 }
+// Writes the config this process holds, merged under a lock with the file
+// as it is now (saveWholeConfig in cli/private.mjs, t645): what this
+// process changed since it read the config is written, what another command
+// wrote since is kept, and no project's private names are dropped. `c` is
+// left holding what was written.
+let savedConfig = null;
 export function saveConfig(c) {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+  const merged = saveWholeConfig(c, c === cfg ? savedConfig : null);
+  for (const key of Object.keys(c)) if (!(key in merged)) delete c[key];
+  Object.assign(c, merged);
+  if (c === cfg) savedConfig = structuredClone(merged);
 }
 
 export const trimSlash = (url) => String(url).replace(/\/$/, "");
+
+// The review requests this machine claimed by hand (t575): `review-claim`
+// records each claim it makes here, by server, project and task, so
+// `review` without --request answers the request this machine last claimed
+// for the task, and `review-claim --renew` renews it, rather than sending
+// none and being refused for a claim it holds. Kept beside the
+// configuration, never in a workspace: a hand review has none.
+const REVIEW_CLAIMS = join(CONFIG_DIR, "review-claims.json");
+const REVIEW_CLAIM_KEEP_MS = 24 * 60 * 60_000;
+function readReviewClaims() {
+  try { const c = JSON.parse(readFileSync(REVIEW_CLAIMS, "utf8")); return c && typeof c === "object" ? c : {}; } catch { return {}; }
+}
+export function rememberReviewClaim(name, id, claim) {
+  const now = Date.now();
+  const kept = Object.fromEntries(Object.entries(readReviewClaims()).filter(([, c]) => now - Date.parse(c?.at) < REVIEW_CLAIM_KEEP_MS));
+  kept[`${server()} ${name} ${id}`] = { ...claim, at: new Date(now).toISOString() };
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(REVIEW_CLAIMS, JSON.stringify(kept, null, 2) + "\n", { mode: 0o600 });
+}
+export function rememberedReviewClaim(name, id) {
+  const c = readReviewClaims()[`${server()} ${name} ${id}`];
+  return c && Number.isSafeInteger(c.request) && c.request > 0 ? c : undefined;
+}
 
 // ATELIER_TOKEN wins, for whichever server is in use: the environment is the
 // user's own setting, for an agent's session or as an override. Otherwise the
@@ -105,7 +140,7 @@ export function apiToken() {
     if (runner) return runner;
     if (name && !ownerNoticeGiven) {
       ownerNoticeGiven = true;
-      process.stderr.write(`runner ${name} has no runner token: running with the owner's credential\n`);
+      process.stderr.write(`runner ${name} has no runner token: running with the developer's credential\n`);
     }
   } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
@@ -153,7 +188,8 @@ export function git(args, opts = {}) {
   let off = {};
   if (opts.hooks === false) { try { off = configEnv(hooksOff(opts.cwd, gitEnv(process.env, {}, args))); } catch (error) { die(error.message); } }
   const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
-  const r = spawnSync("git", args, { encoding: "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", args, { encoding: opts.bytes ? null : "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  if (opts.bytes && r.stderr) r.stderr = r.stderr.toString("utf8");
   const shown = redactGitArgs(args);
   // git itself did not run: the folder it was to run in is missing, it is
   // not on PATH or not executable, or its output overran the buffer. There
@@ -165,7 +201,7 @@ export function git(args, opts = {}) {
     const why = r.error.code !== "ENOENT" ? r.error.message : opts.cwd && !existsSync(opts.cwd) ? `the folder ${opts.cwd} does not exist` : "git was not found on PATH";
     die(`git ${shown.join(" ")} could not run: ${why}`);
   }
-  let detail = (r.stderr || r.stdout || "").trim();
+  let detail = (r.stderr || r.stdout || "").toString().trim();
   for (const [i, arg] of args.entries()) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
   }
@@ -323,7 +359,7 @@ function checkFlags(cmd) {
 // declared preflight call (RUNNER_CALLS in src/tokens.ts, t478).
 export async function serverVersion() {
   try {
-    const res = await fetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal: AbortSignal.timeout(30_000) });
+    const res = await serverFetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal: AbortSignal.timeout(30_000) });
     return res.ok ? await res.json() : null;
   } catch { return null; }
 }
@@ -342,11 +378,17 @@ export async function serverVersion() {
 // not be read, and 1 for a refusal.
 export async function requireCapabilities(cmd, word = args._[1]) {
   if (cmd === "init" && args["rename-local"] === true) return;
+  // publish takes one REMOTE at most; its handler refuses more with the usage,
+  // which needs no server.
+  if (cmd === "publish" && args._.length > 2) return;
   if (COMMANDS[cmd]?.capabilityCheck === "handler") return;
   const required = requiredForCommand(cmd, word, args);
   if (!required.length) return;
   const check = checkCapabilities(await serverVersion(), required);
-  if (!check.ok) die(`${check.message}, then run atelier ${cmd} again`, check.kind === "unavailable" ? 4 : 1);
+  if (!check.ok) {
+    const fallback = capabilityFallback(check.missing);
+    die(`${check.message}, then run atelier ${cmd} again${fallback ? `. ${fallback}` : ""}`, check.kind === "unavailable" ? 4 : 1);
+  }
 }
 
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -357,7 +399,10 @@ const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPat
 // parses anything, so no argument is changed on the way, and it exits as the
 // toolkit exits; only --version and the token-expiry command are read here
 // first, so they never reach the toolkit. The toolkit is the program
-// ATELIER_OPS names, or atelier-ops on PATH; only an executable file counts.
+// ATELIER_OPS names, or atelier-ops on PATH, or last the checkout the
+// portfolio keeps at ~/ai-projects/atelier-ops (t703: nothing put it on PATH
+// after the move out of iCloud, so every wrap's budget check could not run);
+// only an executable file counts.
 const runnable = (path) => {
   try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
 };
@@ -368,12 +413,13 @@ export function findOps(env = process.env) {
     const candidate = resolve(dir, "atelier-ops");
     if (runnable(candidate)) return candidate;
   }
-  return null;
+  const kept = join(env.HOME || homedir(), "ai-projects", "atelier-ops", "bin", "atelier-ops");
+  return runnable(kept) ? kept : null;
 }
 function runOps(argv) {
   const exe = findOps();
   if (!exe) {
-    process.stderr.write("atelier: atelier ops runs the operations toolkit, atelier-ops, which is not installed on this machine: put it on PATH or set ATELIER_OPS to its path\n");
+    process.stderr.write("atelier: atelier ops runs the operations toolkit, atelier-ops, which is not installed on this machine: put it on PATH, set ATELIER_OPS to its path, or keep it at ~/ai-projects/atelier-ops\n");
     process.exit(2);
   }
   const r = spawnSync(exe, argv, { stdio: "inherit" });
@@ -425,10 +471,14 @@ if (isMain && process.argv[2] === "ops") {
 
 export const args = parseArgs(process.argv.slice(2));
 export const cfg = isMain ? loadConfig() : {};
+// The private-file guard reads and keeps its copy of the list in this same
+// config (t645), so what it saves is not lost to a later saveConfig.
+if (isMain) useConfig(cfg);
+savedConfig = structuredClone(cfg);
 
 // The server says which actor stands for the project owner; `login` records it.
 export const OWNER = process.env.ATELIER_OWNER ?? cfg.owner ?? "owner";
-export const OWNER_NAME = cfg.ownerName ?? "the project owner";
+export const OWNER_NAME = cfg.ownerName ?? "the developer";
 
 // The server in use: the one `login` is checking, else ATELIER_SERVER, else
 // the one config.json names. Every request goes through here, so an address
@@ -455,7 +505,7 @@ export function insecureServer(url) {
   try { parsed = new URL(url); } catch { return `${url} is not a URL; name the server as https://HOST`; }
   if (parsed.protocol === "https:") return undefined;
   if (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname)) return undefined;
-  return `${url} is not https: the owner token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
+  return `${url} is not https: the developer's token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
 }
 
 // A session driving Atelier by hand reads the project's AGENTS.md and the
@@ -710,9 +760,22 @@ export function fieldsArg(cmd) {
 // server refuses the same (overrideReason in src/rules.ts).
 export function overrideArg(form) {
   const reason = args["override-review"];
+  if (args.quote !== undefined && reason === undefined) die(`--quote records the developer's words for an override: atelier ${form} --override-review REASON --quote "what the developer said"`);
   if (reason === undefined) return undefined;
   if (typeof reason !== "string" || !reason.trim()) die(`--override-review needs a reason: atelier ${form} --override-review "why no independent review is possible"`);
   return reason.trim();
+}
+
+// The developer's direction (t629): their own words, --quote, which with the
+// acting model (--as or ATELIER_ACTOR, sent as X-Atelier-Acting) let the
+// developer token alone switch to fast mode or override a missing review.
+// Both are checked here before any request; the server checks them again.
+export function directionArg(form) {
+  const quote = args.quote;
+  if (quote === undefined) return {};
+  if (typeof quote !== "string" || !quote.trim()) die(`--quote needs the developer's words: atelier ${form} --quote "what the developer said"`);
+  if (!actingHeaders()["x-atelier-acting"]) die(`--quote needs the model acting on the developer's words: add --as H/M or set ATELIER_ACTOR, such as claude-code/opus-5.5`);
+  return { quote: quote.trim() };
 }
 
 export function itemArg(i = 1) {
@@ -782,7 +845,7 @@ export async function request(method, path, body, as, extra = {}, signal) {
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
-    res = await fetch(server() + "/api" + path, {
+    res = await serverFetch(server() + "/api" + path, {
       method, signal,
       headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -797,9 +860,10 @@ export async function request(method, path, body, as, extra = {}, signal) {
     // answer, which a runner's task merged or abandoned under it gets
     // (assertRunnerJob in src/ledger.ts), ends with the state's own exit
     // (TERMINAL_TASK_EXITS), a claim's included: the runner reads the state
-    // from it and stops the job, where a refusal would be retried.
+    // from it and stops the job, where a refusal would be retried. A fast
+    // take (t589) is a claim without a fork and exits as one.
     const code = terminalTaskExit(data) ?? (res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
+      method === "POST" && (path.endsWith("/claim") || path.endsWith("/fast-take")) && res.status >= 400 && res.status < 500 ? 3 : 1);
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
@@ -819,7 +883,7 @@ export async function requestText(path, as) {
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
-    res = await fetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
+    res = await serverFetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
     text = await res.text();
   } catch (error) { throw new RequestError(`server request failed: ${error.message}`, 4); }
   if (res.status === 404) return null;
@@ -849,7 +913,7 @@ export async function recordedApproval(name) {
   await resolveTokenActor();
   let res, data;
   try {
-    res = await fetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+    res = await serverFetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
     data = await res.json().catch(() => ({}));
   } catch (error) { die(`server request failed: ${error.message}`, 4); }
   if (res.status === 404) return null;
@@ -891,6 +955,10 @@ export async function claimWorkspace(name, id, as, runner) {
   // configured header, and a revoked one alongside the fresh one is refused.
   storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
   recordTokenExpiry(dir, r.workspace.expiresAt);
+  // The merge drivers .gitattributes names (cli/merge-pipeline.mjs), so a
+  // merge or rebase the builder runs by hand here merges declared outputs
+  // and records as Atelier's own merges do, never as plain text.
+  installMergeConfig(dir, { git });
   if (!fresh) {
     git(["remote", "set-url", "origin", r.workspace.remote], { cwd: dir });
     git(["fetch", "--quiet", "origin"], { cwd: dir });
@@ -920,6 +988,48 @@ export async function claimWorkspace(name, id, as, runner) {
     if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
   }
   return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
+}
+
+// Where a fast build is made (t589): apart from the task's fork clone, which
+// a claim in full mode may have left with work in it.
+export function fastWorkspacePath(name, id) {
+  return join(CACHE, "fast", name, id);
+}
+
+// In fast mode, take a dispatched build without a fork (POST fast-take) and
+// make a clean clone of main for it: the baseline the take's read token
+// reads, at the project's branch. No write token exists, and the clone keeps
+// no remote, so nothing is pushed from it. A clone an earlier run of the same
+// holder left with commits past the main it was made at is kept instead, so
+// a commit made and never reported is reported, not lost.
+export async function fastTakeWorkspace(name, id, as, runner) {
+  const r = await call("POST", `${I(name, id)}/fast-take`, {}, as, runner ? { "x-atelier-runner": runner } : {});
+  const dir = fastWorkspacePath(name, id);
+  if (existsSync(join(dir, ".git"))) {
+    const base = wsConfig("base", dir), head = git(["rev-parse", "--verify", "-q", "HEAD"], { cwd: dir, allowFail: true });
+    const at = head.status === 0 ? head.stdout.trim() : null;
+    if (base && at && at !== base && wsConfig("item", dir) === id && wsConfig("actor", dir) === as && holds(base, at, dir)) {
+      return { item: r.item, dir, base, head: at, resumed: true };
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+  mkdirSync(join(CACHE, "fast", name), { recursive: true });
+  const branch = r.baseline.defaultBranch;
+  git(["clone", "--quiet", "--branch", branch, r.baseline.remote, dir], { token: r.baseline.token });
+  git(["remote", "remove", "origin"], { cwd: dir });
+  installMergeConfig(dir, { git });
+  const base = git(["rev-parse", "HEAD"], { cwd: dir }).trim();
+  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, base, fast: "true" })) {
+    git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
+  }
+  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
+  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
+  const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
+  if (!runner && r.commitIdentity) {
+    const refused = identityRefusals(dir, process.env, name);
+    if (refused.length) die(`${id} is taken, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier fast take ${id} again.`);
+  }
+  return { item: r.item, dir, base, head: base, resumed: false, identity };
 }
 
 // The environment that makes a commit's author and committer the project's
@@ -1030,6 +1140,7 @@ export function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git(["clone", "--quiet", remote, dir], { token });
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
+  installMergeConfig(dir, { git });
   let changed, againstMain;
   if (baseline) {
     git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token });
@@ -1052,21 +1163,37 @@ export function cleanClone(remote, token, head, baseline, name) {
 // of its own, and goes away with the clone; nothing pushes it. Returns main's
 // head, which the evidence is bound to. A merge that stops on conflicts ends
 // the command: the preview on the item page lists the same paths, and the
-// workspace's owner resolves them with atelier update.
-export function mergeWithMain(dir, id) {
+// workspace's owner resolves them with atelier update. The merge goes
+// through the merge pipeline (cli/merge-pipeline.mjs), as a landing's
+// does, so the checks see the regenerated outputs the landing would push,
+// compared as they are with nothing exempted. Answers { main, provenance }:
+// the merge's provenance lines and where each generator's log is kept, since
+// the clone, its merge commit and the logs under its Git directory go when
+// the check ends. Each log is copied under CACHE/merge-logs first, and the
+// caller records the provenance with each check's evidence.
+export async function mergeWithMain(dir, id, name = "") {
   const main = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
   if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
     process.stderr.write(`atelier: main at ${short(main)} is already in this revision; the merge is the revision itself\n`);
-    return main;
+    return { main, provenance: "" };
   }
-  const r = git(["-c", "user.name=atelier", "-c", "user.email=atelier@localhost", "-c", "commit.gpgsign=false", "merge", "--no-ff", "--no-verify", "--no-edit", "-m", `atelier check --merged: main at ${main}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
-  if (r.status !== 0) {
-    const conflicts = git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir, allowFail: true }).stdout.trim();
-    git(["merge", "--abort"], { cwd: dir, allowFail: true });
-    die(`the merge of ${id} with main at ${short(main)} stops${conflicts ? ` on conflicts in:\n${conflicts}` : `:\n${(r.stderr || r.stdout).trim()}`}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
+  const config = [["user.name", "atelier"], ["user.email", "atelier@localhost"], ["commit.gpgsign", "false"]];
+  const r = await mergeThrough(dir, "FETCH_HEAD", { git, config, verify: false, message: `atelier check --merged: main at ${main}`, log: (line) => process.stderr.write(`atelier: ${line}\n`) });
+  if (r.state === "conflicts") die(`the merge of ${id} with main at ${short(main)} stops on conflicts; nothing was regenerated.\n${describeConflicts(r, r.manifest)}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
+
+  const kept = join(CACHE, "merge-logs", ...[name, id].filter(Boolean));
+  const logs = [];
+  for (const g of r.regenerated ?? []) {
+    mkdirSync(kept, { recursive: true });
+    const log = join(kept, `${short(main)}-${basename(g.log)}`);
+    copyFileSync(g.log, log);
+    logs.push(`Atelier-Generator-Log: ${g.name}: ${log}`);
+    process.stderr.write(`atelier: ${g.stop ? "failed generator " + g.name : "regenerated"} ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}; log ${log}\n`);
   }
+  if (r.state === "stopped" || r.state === "failed") die(`the merge of ${id} with main at ${short(main)} stops:\n${r.reason}\n${logs.join("\n")}\nIn the workspace, run atelier update, resolve it, commit, and atelier push --force; then check again.`, 2);
   process.stderr.write(`atelier: merged with main at ${short(main)} in the clean clone\n`);
-  return main;
+  const lines = [...(r.provenance ?? []), ...logs];
+  return { main, provenance: lines.length ? `Merged with main at ${main} through the merge pipeline:\n${lines.join("\n")}` : "" };
 }
 
 // Runs one check with checkEnv's variables and returns its output with every
@@ -1244,6 +1371,7 @@ export function writeReceipt(cwd, { name, id, item, owners, view, reviews, polic
         policy.approval ? `The Atelier baseline copy in Artifacts was approved as: ${policy.approval.replace(/[.\s]*$/, "")}.` : null,
         reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : override ? null : "No review was required at the accepted head.",
         override ? `${OWNER_NAME} overrode the independent review at the accepted head: ${override.reason.replace(/[.\s]*$/, "")}.` : null,
+        override?.quote ? `The override was made on ${OWNER_NAME}'s words, \u201c${override.quote}\u201d, relayed by ${override.acting ?? "an unnamed model"}.` : null,
         `Provenance is on refs/notes/atelier for the merge commit${notesRemote ? `, and that ref alone is pushed to ${notesRemote}` : ""}.`,
       ].filter(Boolean).join(" "),
     },
@@ -1306,10 +1434,12 @@ export const flat = (value) => stripVTControlCharacters(String(value)).replace(/
 // line per item, and any text a person or agent wrote flattened.
 export const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
 // `origin` is the server in use, for the link to each merge by override.
-export function formatStanding(s, ownerName = "the project owner", origin = "") {
+export function formatStanding(s, ownerName = "the developer", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const mode = s.familyMode?.single ? ` (single-family: ${flat(s.familyMode.single)})` : "";
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
+  // Fast mode, with the developer's words and the model that relayed them when it was switched on their direction (t629).
+  if (s.mode) lines.push(flat(s.mode));
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
   // One line per task waiting on the owner, as attentionFor places it
@@ -1330,7 +1460,7 @@ export function formatStanding(s, ownerName = "the project owner", origin = "") 
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).
-  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
+  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}${overrideTail(o)}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
   if (lines.length === 1) lines.push("", s.partial?.length ? "Nothing held, waiting, queued or recently merged is shown in the part read." : "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
@@ -1383,9 +1513,9 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   } else if (submitted && gate.ready) {
     outcome = "submitted"; exitCode = 0;
     unresolved = "none";
-    accept = "waiting for the owner"; merge = "not yet; it follows acceptance";
+    accept = "waiting for the developer"; merge = "not yet; it follows acceptance";
     ownerAction = `accept ${id} at ${short(head)}: atelier accept ${id} --head ${head}`;
-    line = "Outcome: submitted, ready for the owner";
+    line = "Outcome: submitted, ready for the developer";
   } else {
     outcome = "checked_but_blocked"; exitCode = 3;
     unresolved = `${blockers.length} (named on the last line)`;
@@ -1402,7 +1532,7 @@ export function doneReport({ id, head, checks, item, gate, changed = [] }) {
     `Accept: ${accept}`,
     `Merge: ${merge}`,
     `Deploy: ${deploy}`,
-    `Owner action: ${ownerAction}`,
+    `Developer action: ${ownerAction}`,
   ];
   const json = {
     outcome, exitCode, outcomeLine: line, head, submitted,
@@ -1456,11 +1586,14 @@ export function criteriaNotice(id, change) {
   ].join("\n");
 }
 
-// The task an agent starts: its short title, then its whole brief.
-export function formatTask(item) {
+// The task an agent starts: its short title, then its whole brief, and the
+// project's prose standard (t675) when its policy records one, as the copy
+// in the workspace when the claim made one (t676).
+export function formatTask(item, policy = null, proseCopy = null) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
+    proseStandardLine(policy?.proseStandard, proseCopy),
     // The note is carried whole, with its line breaks (t480); only terminal control codes go.
-    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
+    item.dispatch?.note ? `Note (the developer's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {
@@ -1468,8 +1601,12 @@ export function formatBrief(project, id, brief, origin) {
     ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief),
     ...(brief.partAccept ?? []).map((c, i) => `Plan acceptance criterion ${i + 1}: ${flat(c)}`),
     ...(brief.criteria ? [`Criteria binding: ${brief.criteria} (a review of these criteria names it with --criteria)`] : []),
+    ...(brief.criteriaReview ? [`Criteria review: ${flat(brief.criteriaReview)}`] : []),
     ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
+    // The project's prose standard (t675): an agent that reads this brief
+    // before it builds or reviews is told where the standard is.
+    ...(proseStandardLine(brief.proseStandard) ? [proseStandardLine(brief.proseStandard)] : []),
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
 }
 
@@ -1501,6 +1638,41 @@ export function formatReviews(reviews, owner = OWNER, unparsable = []) {
   for (const r of newestReviews(unparsable)) {
     lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);
     lines.push(`    Reply: ${flat(r.reply) || "(nothing written)"}`);
+  }
+  return lines.join("\n");
+}
+
+// The reviews of the task's acceptance criteria themselves (t438), apart
+// from the reviews of the change above: where they stand now, who wrote each
+// revision, and each review that reached a verdict or failed, newest first,
+// with its findings and the project owner's newest resolution of each. The
+// same flattening as formatReviews, so no note or finding can pose as a line
+// of Atelier's own. Empty when the server sent no record (an older server).
+export function formatCriteriaReviews(view) {
+  if (!view) return "";
+  const lines = ["Criteria reviews:"];
+  const standing = view.status?.approved ? "approved" : "not approved";
+  lines.push(`  Revision ${view.status?.rev ?? 0}, ${standing}${view.required ? "; the project requires the approval before a build" : ""}: ${flat(view.status?.reason ?? "")}`);
+  for (const r of view.revisions ?? []) lines.push(`  Revision ${r.rev} by ${flat(r.by)} (${at(r.at)}), binding ${flat(r.criteria)}.`);
+  const latest = new Map();
+  for (const v of [...(view.resolutions ?? [])].sort((a, b) => String(a.at).localeCompare(String(b.at)))) latest.set(`${v.review}:${v.index}`, v);
+  const shown = (view.reviews ?? []).filter((r) => ["approved", "rejected", "failed"].includes(r.state)).sort((a, b) => b.id - a.id);
+  if (!shown.length) lines.push("  No criteria review has reached a verdict.");
+  for (const r of shown) {
+    const what = r.state === "failed" ? `reached no verdict (${flat(r.failure ?? "failed")})` : r.state;
+    lines.push(`  Criteria review ${r.id}, revision ${r.rev}${r.rev === view.status?.rev ? " (the criteria as they are now)" : ""}: ${flat(r.reviewer)} ${what} (${at(r.decidedAt ?? r.requestedAt)}).`);
+    if (r.state !== "failed") lines.push(`    Note: ${flat(r.summary ?? "") || "(no note)"}`);
+    (r.findings ?? []).forEach((f, i) => {
+      const v = latest.get(`${r.id}:${i + 1}`);
+      lines.push(`    ${i + 1}. ${f.severity} ${flat(f.file)} ${flat(f.text)}${v ? ` [${flat(v.verdict)}${flat(v.note) ? `: ${flat(v.note)}` : ""}]` : " [no resolution recorded]"}`);
+    });
+    // The criteria the review flagged as checks after deploy (t457).
+    for (const c of r.checks ?? []) lines.push(`    Check after deploy: criterion ${flat(String(c.criterion))}, ${c.by === "owner" ? "the developer's" : "the orchestrator's"}: ${flat(c.text)}`);
+  }
+  // The checks that stand for the criteria as they are now.
+  if (view.checks?.length) {
+    lines.push(`  Checks after deploy for revision ${view.status?.rev ?? 0}, the builder cannot verify these in its workspace:`);
+    for (const c of view.checks) lines.push(`    criterion ${flat(String(c.criterion))}: ${c.by === "owner" ? "the developer" : "the orchestrator"} checks it once deployed. ${flat(c.text)}`);
   }
   return lines.join("\n");
 }
@@ -1604,7 +1776,7 @@ export async function landingLease(name, as) {
   await resolveTokenActor();
   let res, data;
   try {
-    res = await fetch(`${server()}/api${P(name)}/landing-lease`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? as } });
+    res = await serverFetch(`${server()}/api${P(name)}/landing-lease`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? as } });
     data = await res.json().catch(() => ({}));
   } catch (error) { die(`server request failed: ${error.message}`, 4); }
   if (!res.ok) return { unreadable: `${data.error ?? res.status}` };
@@ -1753,7 +1925,7 @@ export function wrapReady(name, cwd, report) {
 // names another actor: a runner token cannot act as the owner, so its
 // review skip goes as the review job's actor (t353).
 export async function postAsRunner(path, body, runner, signal, as = OWNER) {
-  const res = await fetch(`${server()}/api${path}`, {
+  const res = await serverFetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
     headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),

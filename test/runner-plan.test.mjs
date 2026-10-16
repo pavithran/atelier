@@ -171,7 +171,7 @@ test("a job brief that cannot be read is an infrastructure failure, and an entry
   assert.deepEqual(skipped.calls.filter((c) => c.argv || c.harness || c.jobBrief), []);
 });
 
-test("a part's build brief comes from the server, and any other task keeps briefFor", async (t) => {
+test("a part's build brief comes from the server, and any other task keeps briefFor with the server's context after it", async (t) => {
   const part = fixture(t);
   assert.equal((await runTask(partJob, buildConfig, "home:studio", part.io)).phase, "submitted");
   assert.deepEqual(part.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t5", "opencode/glm-5.3"]);
@@ -181,8 +181,12 @@ test("a part's build brief comes from the server, and any other task keeps brief
   assert.ok(brief.endsWith("\n\nSERVER BRIEF"));
   const ordinary = fixture(t);
   assert.equal((await runTask(ordinaryJob, buildConfig, "home:studio", ordinary.io)).phase, "submitted");
-  assert.ok(!ordinary.calls.some((c) => c.jobBrief));
-  assert.ok(ordinary.calls.find((c) => c.brief).brief.includes("npm test"));
+  // An ordinary task fetches its context the same way (t438): what the server
+  // alone holds for it comes after the local brief, which stays.
+  assert.deepEqual(ordinary.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t6", "opencode/glm-5.3"]);
+  const ordinaryBrief = ordinary.calls.find((c) => c.brief).brief;
+  assert.ok(ordinaryBrief.includes("npm test"));
+  assert.ok(ordinaryBrief.endsWith("\nSERVER BRIEF\n"), ordinaryBrief.slice(-80));
 });
 
 test("a part whose finish fails is released with the reason; an ordinary task keeps its claim", async (t) => {
@@ -285,7 +289,7 @@ test("a refused plan job is retried once before the runner retires it", async (t
   });
   assert.deepEqual(claims, [1, 2], "the planner gets its two attempts, then the runner retires the job");
   assert.equal(logs.filter((s) => s.includes("the plan was refused")).length, 2);
-  assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+  assert.equal(logs.filter((s) => s.includes("needs the developer's attention")).length, 1);
 });
 
 test("a plan job whose harness exits with an error is reported as harness_failed with its last error line", async (t) => {

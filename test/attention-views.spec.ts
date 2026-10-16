@@ -37,8 +37,8 @@ it("Home, the Overview and Decisions agree with the rule, per project, counting 
     expect(s.pipeline.reduce((k, x) => k + x.count, 0)).toBe(EXPECTED[n].pipeline.length);
     const page = renderProject(record(n), items[n], [], "PAVI", s);
     const sec = page.split('id="standing"')[1].split('<details class="disclosure')[0];
-    if (EXPECTED[n].owner.length) expect(sec).toContain(`${EXPECTED[n].owner.length} tasks waiting on you here`);
-    else expect(sec).not.toContain("waiting on you here");
+    expect(sec).toContain(`<h2 id="wait-h">Waiting on you · ${EXPECTED[n].owner.length}</h2>`);
+    expect(ids(sec, /<li><a class="row-id" href="\/p\/\w+\/(\w+)">/g).slice(0, Math.min(5, EXPECTED[n].owner.length))).toEqual(EXPECTED[n].owner.slice(0, 5).map(([id]) => id));
     // Overlapping scopes never sit inline with what waits.
     expect(sec).not.toContain("overlap");
   }
@@ -46,9 +46,10 @@ it("Home, the Overview and Decisions agree with the rule, per project, counting 
   // Decisions: one row per task waiting, across projects, in the rule's order.
   const decisions = renderInbox([place("alpha"), place("beta")], [record("alpha"), record("beta")], "PAVI");
   expect(ids(decisions, /task=(\w+)#review"/g)).toEqual([...ownerIds("alpha"), ...ownerIds("beta")]);
-  expect(decisions).toContain(`${ownerIds("alpha").length} tasks need your attention.`);
-  // Each row says what to do and links where it is done.
-  expect(decisions).toContain('<a href="/p/alpha/ship">Open Ship</a>');
+  expect(decisions).toContain(`Decisions · ${ownerIds("alpha").length + ownerIds("beta").length}</h1>`);
+  expect(decisions).toContain(`Alpha · ${ownerIds("alpha").length}</h2>`);
+  // Each row says what to do; the selected task's detail links where it is done.
+  expect(decisions).toContain("Run the protected actions its merge declared: a dry run first, then approve and ship.");
   expect(decisions).toContain("Start a runner that offers codex/gpt-9 on a home runner, or send the task elsewhere.");
   expect(decisions.split('<details class="disclosure overlaps">')[0]).not.toContain("a2 and a3");
   expect(decisions).toContain("1 pair of tasks with overlapping scopes</summary>");
@@ -84,7 +85,7 @@ it("the Overview and GET standing keep the owner calls already read when the not
   expect(page).toContain("The project&#39;s notices could not be read");
   expect(page).toContain("The task board could not be read.");
   expect(page).toContain("The project's events could not be read.");
-  expect(page).toContain("tasks waiting on you here");
+  expect(page).toContain(`Waiting on you · ${known.length}`);
 });
 
 it("the standing labels the tasks as not read when the task list cannot be read, rather than nothing waiting", async () => {
@@ -93,8 +94,8 @@ it("the standing labels the tasks as not read when the task list cannot be read,
   expect(s.partial).toContain("The project's tasks could not be read, so what waits on you there is unknown.");
   const page = renderProject(record("alpha"), [], null, "PAVI", s, null);
   expect(page).toContain("The project&#39;s tasks could not be read");
-  expect(page).toContain("Nothing waiting, queued or recently merged is shown in the part read.");
-  expect(page).not.toContain("Nothing is waiting, queued or recently merged.");
+  // No count is drawn from tasks that were not read.
+  expect(page).not.toContain('class="state-grid"');
 });
 
 it("Home keeps a project's owner calls when its moves or notices cannot be read, and labels what was not", () => {
@@ -130,13 +131,69 @@ it("Decisions' resting panel says the list may be incomplete, naming the project
   const at = (seq: number, actor: string, kind: string) => ({ seq, itemId: "b1", at: `2026-10-04T10:0${seq}:00.000Z`, actor, kind, data: {} });
   const story = buildStory("beta", [{ ...BETA_ITEMS[0], id: "b1", state: "merged" }], [at(2, "pavi", "item.merged"), at(1, "codex/gpt-6", "item.claimed")], "pavi");
   expect(story.threads.length).toBe(1);
-  const unread = renderInbox([attentionFor("beta", null, null, OFFERS, NOW)], [record("beta")], "PAVI", undefined, [], undefined, NOW, [], { story, owner: "pavi" });
+  const unread = renderInbox([attentionFor("beta", null, null, OFFERS, NOW)], [record("beta")], "PAVI", undefined, [], [], { story, owner: "pavi" });
   const panel = unread.slice(unread.indexOf('class="resting-graph"'));
   expect(unread).toContain("The list may be incomplete.");
   expect(panel).toContain("The list may be incomplete: some records of Beta could not be read, so more may be waiting on you.");
   expect(unread).not.toContain("Nothing is waiting on you.");
   // Read in full and with nothing waiting, it says so.
-  const read = renderInbox([attentionFor("beta", [], [], OFFERS, NOW)], [record("beta")], "PAVI", undefined, [], undefined, NOW, [], { story, owner: "pavi" });
+  const read = renderInbox([attentionFor("beta", [], [], OFFERS, NOW)], [record("beta")], "PAVI", undefined, [], [], { story, owner: "pavi" });
   expect(read.slice(read.indexOf('class="resting-graph"'))).toContain("Nothing is waiting on you.");
   expect(read).not.toContain("may be incomplete");
+});
+
+// The tier review of t546 (codex/gpt-6-astra at 2393474a): a board that
+// failed to read was drawn as an empty one, "0 tasks", "Running · 0" and
+// "Nobody is working", and a standing whose tasks failed as "Nothing waits on
+// you here" and "None pending". Not read is said as not read; read and empty
+// still says empty.
+const overviewOf = (page: string) => page.split('id="standing"')[1].split('<details class="disclosure')[0];
+const emptyClaims = ["Nothing waits on you here", "None pending", "Nobody is working", "Nothing merged yet"];
+
+it("the Overview says what it could not read as not read, with no zero counts and no empty-state claims", async () => {
+  const s = await readStanding(source("alpha", ["items", "inbox"]), OFFERS, [], 300, NOW);
+  expect(s.unread).toEqual(["tasks", "notices"]);
+  const page = renderProject(record("alpha"), null, null, "PAVI", s, null);
+  const sec = overviewOf(page);
+  expect(sec).toContain("What waits on you here could not be read.");
+  expect(sec).toContain("Who is working could not be read.");
+  expect(sec).toContain("The merges could not be read.");
+  expect(sec).toContain("The ship requests could not be read.");
+  for (const claim of emptyClaims) expect(sec).not.toContain(claim);
+  expect(sec).not.toMatch(/· 0\b|\b0 tasks?\b|\b0 waiting/);
+  expect(sec).toContain('<h2 id="wait-h">Waiting on you</h2>');
+  expect(sec).toContain('<h2 id="run-h">Running</h2>');
+  // The record under the fold counts nothing from the tasks it did not read.
+  expect(page).not.toContain("0 tasks queued");
+  expect(page).toContain("Atelier's record: its tasks could not be read");
+});
+
+it("the Overview whose board alone failed says who is working as not read, and keeps what the standing read", async () => {
+  const s = await readStanding(source("alpha", []), OFFERS, [], 300, NOW);
+  const sec = overviewOf(renderProject(record("alpha"), null, [], "PAVI", s, null));
+  expect(sec).toContain("Who is working could not be read.");
+  expect(sec).not.toContain("Nobody is working");
+  expect(sec).not.toMatch(/\b0 tasks?\b|Running · /);
+  expect(sec).toContain(`Waiting on you · ${s.waiting.length}`);
+});
+
+it("the Overview of a project read in full and empty still says it is empty", async () => {
+  const empty: StandingSource = {
+    project: () => Promise.resolve(record("alpha")),
+    items: () => Promise.resolve([]),
+    inbox: () => Promise.resolve([]),
+    events: () => Promise.resolve([]),
+    detail: () => Promise.reject(new Error("none")),
+    sessions: () => Promise.resolve([]),
+  };
+  const s = await readStanding(empty, OFFERS, [], 300, NOW);
+  expect(s.unread).toBeUndefined();
+  const page = renderProject(record("alpha"), [], [], "PAVI", s, { items: [] } as never, []);
+  const sec = overviewOf(page);
+  for (const claim of emptyClaims) expect(sec).toContain(claim);
+  expect(sec).toContain("Waiting on you · 0");
+  expect(sec).toContain("Running · 0");
+  expect(sec).toContain("0 tasks");
+  expect(sec).not.toContain("could not be read");
+  expect(page).toContain("0 tasks queued");
 });

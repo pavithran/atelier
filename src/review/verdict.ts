@@ -12,28 +12,47 @@
 // the reason, and the caller asks again or stops.
 
 import { TEXT_CONTROLS } from "../text.ts";
-import type { Finding } from "../rules.ts";
+import { CHECK_BY, type Finding, type PostDeployCheck } from "../rules.ts";
 
-export type { Finding };
+export type { Finding, PostDeployCheck };
 
 // Blocking findings are what the review bar in force allows to block; every
 // other finding is a follow-up and never holds a change back.
 export type Severity = Finding["severity"];
 
+// `checks` are the criteria a criteria review flagged as checks after deploy
+// (t457): read only when the reply was asked for CHECK lines
+// (VerdictOptions.checks), empty otherwise.
 export type ParsedVerdict =
-  | { ok: true; verdict: "approve" | "reject"; summary: string; findings: Finding[] }
+  | { ok: true; verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[] }
   | { ok: false; error: string };
+
+// What a reply was asked for beyond the verdict, summary and findings.
+// `checks`: the reply is a criteria review's (CRITERIA_REPLY_FORMAT), and
+// its CHECK lines, one per criterion the builder cannot verify in its
+// workspace, are read; elsewhere they are prose. `deferred`: the criteria, numbered as
+// the brief numbers them, that a criteria review flagged as checks after
+// deploy, whose CRITERION line may say deferred instead of met; deferred on
+// any other criterion is refused, as unmet is.
+export interface VerdictOptions {
+  checks?: boolean;
+  deferred?: readonly number[];
+}
 
 // A reply longer than `reply` is refused rather than scanned. A list of more
 // than `findings` is refused rather than cut, since a cut could drop a
 // blocking finding. Text over its cap is cut with an ellipsis, which changes
 // no verdict.
+// The refusal of a reply with no verdict at all, which the opencode adapter
+// answers by asking once more for the verdict lines (t576).
+export const NO_VERDICT = "the reply states no verdict: it has no VERDICT line and no JSON verdict";
+
 export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2000, summary: 600 } as const;
 
 // What may block, when the project sets no review bar of its own (`atelier
 // init --review-bar`). Every review brief states the bar in force, and
 // bin/orchestrate/review.sh reads this one as its default.
-export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; a behaviour change without a test that covers it; docs or help that now contradict the code; a breaking change to a command, route or API field without a migration; or a visible regression on a user-facing page. A claim in a commit message that the code does not support is a correctness defect. A blocking finding names the file and line and what breaks, and is never style or naming. Decisions the project owner made are not defects; anything else is a follow-up.";
+export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; a behaviour change without a test that covers it; docs or help that now contradict the code; a breaking change to a command, route or API field without a migration; or a visible regression on a user-facing page. A claim in a commit message that the code does not support is a correctness defect. A blocking finding names the file and line and what breaks, and is never style or naming. Decisions the developer made are not defects; anything else is a follow-up.";
 
 const FORMAT_EXAMPLES = [
   "End your reply with these lines, each at the start of its own line:",
@@ -53,6 +72,18 @@ const FORMAT_END = "Prose around these lines is allowed and is not read, apart f
 
 export const REPLY_FORMAT = [...FORMAT_EXAMPLES, "", ...FORMAT_RULES, FORMAT_END].join("\n");
 
+// The format a criteria review is asked for (src/review/criteria.ts, t457):
+// the same lines, no CRITERION line (the review judges the criteria, it
+// does not prove them met), and one CHECK line for each criterion the
+// builder cannot verify in its workspace: the criterion's number as the
+// brief numbers it, who checks it after deploy (owner, for a human step;
+// orchestrator, for a check a script runs against the deployed project),
+// then why the builder cannot verify it and what the check is. parseVerdict
+// reads the CHECK lines only when asked to (VerdictOptions.checks).
+const CHECK_EXAMPLE = "CHECK: criterion-3 owner Why the builder cannot verify it in its workspace, and what is checked after deploy.";
+const CHECK_RULE = "Write one CHECK line for each criterion the builder cannot verify in its workspace (it needs a signed-in browser, production data, a deployed service or a human step): criterion-N, then owner for a check a person makes or orchestrator for one a script runs against the deployed project, then why the builder cannot verify it and what the check is, all on one line. A CHECK line is not a finding and blocks nothing: do not also write a blocking FINDING for the same criterion on that ground.";
+export const CRITERIA_REPLY_FORMAT = [...FORMAT_EXAMPLES, CHECK_EXAMPLE, "", ...FORMAT_RULES, CHECK_RULE, FORMAT_END].join("\n");
+
 // The format a change with acceptance criteria is asked for: the same lines,
 // and one CRITERION line per criterion, each saying met or unmet and how it
 // was proved. The reply numbers the criteria across every list the brief
@@ -66,11 +97,16 @@ export const REPLY_FORMAT = [...FORMAT_EXAMPLES, "", ...FORMAT_RULES, FORMAT_END
 // takes the same count of criteria and refuses an approval that misses a
 // criterion's line or declares one unmet, so the ask and the reading of the
 // answer cannot drift apart either. A count of zero or less, or not a whole
-// number, is the format with no criteria.
-export function replyFormat(criteria: number, own = 0): string {
+// number, is the format with no criteria. `deferred` names the criteria the
+// criteria review flagged as checks after deploy (t457): their CRITERION
+// line may say deferred, with what the change built for them, since neither
+// the builder nor the reviewer can verify them in a workspace; parseVerdict
+// is handed the same numbers.
+export function replyFormat(criteria: number, own = 0, deferred: readonly number[] = []): string {
   const count = Number.isSafeInteger(criteria) && criteria > 0 ? criteria : 0;
   if (!count) return REPLY_FORMAT;
   const mine = Number.isSafeInteger(own) && own > 0 ? own : 0;
+  const flagged = [...new Set(deferred.filter((n) => Number.isSafeInteger(n) && n >= 1 && n <= count))].sort((a, b) => a - b);
   // How the reply numbers the criteria: as the brief's one list numbers them
   // when there is only one, and across both lists when the task's own
   // criteria and the plan's are carried together.
@@ -80,11 +116,28 @@ export function replyFormat(criteria: number, own = 0): string {
   return [
     ...FORMAT_EXAMPLES,
     "CRITERION 1: met — What you did to prove criterion 1 met, and what you saw.",
+    ...(flagged.length ? [`CRITERION ${flagged[0]}: deferred — What the change built for criterion ${flagged[0]}, which is checked after deploy.`] : []),
     "",
     ...FORMAT_RULES,
-    `Write one CRITERION line for each of the ${count} acceptance criteria, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
+    `${criteriaRule(count)}, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
+    ...(flagged.length ? [`${flagged.length === 1 ? `Criterion ${flagged[0]} was` : `Criteria ${flagged.join(", ")} were`} flagged by the review of the acceptance criteria as ${flagged.length === 1 ? "a check" : "checks"} after deploy: the builder could not verify ${flagged.length === 1 ? "it" : "them"} in a workspace and neither can you. For ${flagged.length === 1 ? "it" : "each"} write CRITERION n, then deferred, then what the change built for it and what the developer or the orchestrator checks after deploy; met is allowed only when you proved it. Deferred is refused on any other criterion: prove it met, or reject with a blocking finding.`] : []),
     FORMAT_END,
   ].join("\n");
+}
+
+// The words that open replyFormat's CRITERION rule, and the count of
+// criteria read back from a brief that carries it (0 when none does): the
+// adapter's second ask of a reviewer whose first reply states no verdict
+// (cli/harness/adapter.mjs, t608) asks again for one CRITERION line per
+// criterion, and reads how many from the brief the reviewer was given. The
+// reply format is the brief's last section, so its rule is the last match;
+// criteria quoted earlier in the brief do not change the count.
+const criteriaRule = (count: number) => `Write one CRITERION line for each of the ${count} acceptance criteria`;
+const CRITERIA_RULE = /Write one CRITERION line for each of the (\d+) acceptance criteria/g;
+export function criteriaAsked(brief: string): number {
+  const last = [...String(brief).matchAll(CRITERIA_RULE)].at(-1);
+  const count = last ? Number(last[1]) : 0;
+  return Number.isSafeInteger(count) && count > 0 ? count : 0;
 }
 
 // The severities the brief names, and the design's verdict-file names for
@@ -100,7 +153,7 @@ const SEVERITIES: Record<string, Severity> = {
 // must belong to a parsed object, or the reply is refused.
 const JSON_ATTEMPTS = 100;
 
-type Statement = { verdict: "approve" | "reject"; summary: string; findings: Finding[] };
+type Statement = { verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[] };
 class Refusal extends Error {}
 function refuse(message: string): never {
   throw new Refusal(message);
@@ -110,25 +163,29 @@ function refuse(message: string): never {
 // reviewBrief counts them; a reply to that brief must prove each with a
 // CRITERION line, and an approval that misses one or declares one unmet is
 // refused. Without criteria (the default) CRITERION lines are not read.
-export function parseVerdict(text: unknown, criteria = 0): ParsedVerdict {
+// `options` says whether CHECK lines are read (a criteria review's reply)
+// and which criteria may be deferred (VerdictOptions).
+export function parseVerdict(text: unknown, criteria = 0, options: VerdictOptions = {}): ParsedVerdict {
   try {
-    return { ok: true, ...read(text, criteria) };
+    return { ok: true, ...read(text, criteria, options) };
   } catch (err) {
     if (err instanceof Refusal) return { ok: false, error: err.message };
     throw err;
   }
 }
 
-function read(raw: unknown, asked: number): Statement {
+function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   if (typeof raw !== "string") refuse("the reply is not text");
   const reply = normalise(raw);
   if (reply.length > VERDICT_LIMITS.reply) refuse(`the reply is ${reply.length} characters, over the ${VERDICT_LIMITS.reply} a verdict needs`);
   const criteria = Number.isSafeInteger(asked) && asked > 0 ? asked : 0;
+  const withChecks = options.checks === true;
+  const deferrable = new Set((options.deferred ?? []).filter((n) => Number.isSafeInteger(n) && n >= 1));
 
-  const json = jsonStatements(reply);
-  const lines = lineStatements(reply, criteria);
+  const json = jsonStatements(reply, withChecks);
+  const lines = lineStatements(reply, criteria, withChecks);
   const verdicts = new Set([...json.map((s) => s.verdict), ...lines.verdicts]);
-  if (!verdicts.size) refuse("the reply states no verdict: it has no VERDICT line and no JSON verdict");
+  if (!verdicts.size) refuse(NO_VERDICT);
   // Lowercase approve and reject are ordinary words in a review of code that
   // approves and rejects things, so only the capitalised keywords count as
   // saying a verdict. A capitalised keyword for the other verdict anywhere,
@@ -138,30 +195,43 @@ function read(raw: unknown, asked: number): Statement {
   const verdict = [...verdicts][0];
 
   if (json.length && lines.findings.length) refuse("the reply gives findings both as JSON and as FINDING lines");
+  if (json.length && lines.checks.length) refuse("the reply gives checks both as JSON and as CHECK lines");
   if (new Set(json.map((s) => JSON.stringify(s))).size > 1) refuse(`the reply has ${json.length} JSON verdicts that differ`);
   const findings = json.length ? json[0].findings : lines.findings;
+  const checks = json.length ? json[0].checks : lines.checks;
   const summary = json.length ? json[0].summary : clip(lines.summary.join(" "), VERDICT_LIMITS.summary);
   if (findings.length > VERDICT_LIMITS.findings) refuse(`the reply has ${findings.length} findings, over the limit of ${VERDICT_LIMITS.findings}`);
+  if (checks.length > VERDICT_LIMITS.findings) refuse(`the reply has ${checks.length} checks, over the limit of ${VERDICT_LIMITS.findings}`);
+  // One check per criterion: two CHECK lines on one criterion are two
+  // readings of the same check, not two checks.
+  const twice = checks.map((c) => c.criterion).filter((n, i, all) => all.indexOf(n) !== i);
+  if (twice.length) refuse(`the reply flags criterion ${twice[0]} as a check after deploy twice; write one CHECK line per criterion`);
   const blocking = findings.filter((f) => f.severity === "blocking").length;
   if (verdict === "reject" && !blocking) refuse("a rejection must name at least one blocking finding; every other finding is a follow-up");
   if (verdict === "approve" && blocking) refuse(`an approval cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`);
+  // A criterion may be deferred only when the criteria review flagged it as
+  // a check after deploy (options.deferred): on any other, deferred is a
+  // way round proving it, and is refused whatever the verdict.
+  const deferredWrongly = [...lines.criteria].filter(([n, state]) => state === "deferred" && !deferrable.has(n)).map(([n]) => n);
+  if (deferredWrongly.length) refuse(`${deferredWrongly.length === 1 ? "criterion" : "criteria"} ${deferredWrongly.join(", ")} ${deferredWrongly.length === 1 ? "is not a check" : "are not checks"} after deploy the review of the acceptance criteria flagged, so ${deferredWrongly.length === 1 ? "it" : "they"} cannot be deferred: prove ${deferredWrongly.length === 1 ? "it" : "each"} met, or reject with a blocking finding`);
   // An approval proves every acceptance criterion: one CRITERION line each,
-  // each met. A missing line leaves the criterion unproved, and a line that
-  // says unmet is a correctness fault the approval cannot carry, as a
-  // blocking finding is below. A rejection needs no criterion lines: its
-  // blocking findings say what they say.
+  // each met, or deferred where the criteria review flagged the criterion
+  // as a check after deploy. A missing line leaves the criterion unproved,
+  // and a line that says unmet is a correctness fault the approval cannot
+  // carry, as a blocking finding is below. A rejection needs no criterion
+  // lines: its blocking findings say what they say.
   if (verdict === "approve" && criteria) {
     const missing: number[] = [];
     const unmet: number[] = [];
     for (let n = 1; n <= criteria; n++) {
-      const met = lines.criteria.get(n);
-      if (met === undefined) missing.push(n);
-      else if (!met) unmet.push(n);
+      const state = lines.criteria.get(n);
+      if (state === undefined) missing.push(n);
+      else if (state === "unmet") unmet.push(n);
     }
     if (missing.length) refuse(`an approval needs a CRITERION line for each of the ${criteria} acceptance criteria: ${missing.length === 1 ? "criterion" : "criteria"} ${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} none`);
     if (unmet.length) refuse(`an approval cannot declare ${unmet.length === 1 ? "criterion" : "criteria"} ${unmet.join(", ")} unmet; an unmet criterion is a correctness fault, so reject with a blocking finding`);
   }
-  return { verdict, summary, findings };
+  return { verdict, summary, findings, checks };
 }
 
 // Line breaks become \n. C0 and C1 controls other than tabs become spaces,
@@ -230,7 +300,7 @@ function collect(value: unknown, found: Record<string, unknown>[], depth = 0): n
   return own + Object.values(record).reduce((n: number, v) => n + collect(v, found, depth + 1), 0);
 }
 
-function jsonStatements(reply: string): Statement[] {
+function jsonStatements(reply: string, withChecks: boolean): Statement[] {
   const found: Record<string, unknown>[] = [];
   const keys = jsonValues(reply).reduce((n: number, v) => n + collect(v, found), 0);
   // Every verdict key written in the reply must have been read from valid
@@ -239,7 +309,7 @@ function jsonStatements(reply: string): Statement[] {
   // last value.
   const written = reply.match(/"(?:verdict|approve)"\s*:/gi)?.length ?? 0;
   if (written !== keys) refuse(`the reply writes ${written} "verdict" or "approve" ${written === 1 ? "field" : "fields"} and ${keys} could be read from valid JSON`);
-  return found.map((o, i) => statementFrom(o, found.length > 1 ? `JSON verdict ${i + 1}` : "the JSON verdict"));
+  return found.map((o, i) => statementFrom(o, found.length > 1 ? `JSON verdict ${i + 1}` : "the JSON verdict", withChecks));
 }
 
 // One field by any of its names, in any case. Two names given different
@@ -250,7 +320,7 @@ function field(o: Record<string, unknown>, names: string[], at: string): unknown
   return values[0];
 }
 
-function statementFrom(o: Record<string, unknown>, at: string): Statement {
+function statementFrom(o: Record<string, unknown>, at: string, withChecks: boolean): Statement {
   const said = field(o, ["verdict"], at);
   const approve = field(o, ["approve"], at);
   let verdict: Statement["verdict"] | undefined;
@@ -271,7 +341,41 @@ function statementFrom(o: Record<string, unknown>, at: string): Statement {
   const list = field(o, ["findings"], at) ?? [];
   if (!Array.isArray(list)) refuse(`${at}: "findings" must be a list`);
   const findings = list.map((entry: unknown, i) => findingFrom(entry, `${at}, finding ${i + 1}`));
-  return { verdict, summary: clip(plain(summary), VERDICT_LIMITS.summary), findings };
+  // A "checks" list is read only from a criteria review's reply; elsewhere
+  // the field is not the reply's to give, and is left unread.
+  const flagged = withChecks ? field(o, ["checks"], at) ?? [] : [];
+  if (!Array.isArray(flagged)) refuse(`${at}: "checks" must be a list`);
+  const checks = flagged.map((entry: unknown, i) => checkFrom(entry, `${at}, check ${i + 1}`));
+  return { verdict, summary: clip(plain(summary), VERDICT_LIMITS.summary), findings, checks };
+}
+
+// One check after deploy as JSON: {criterion, by, text}, the criterion by
+// its number or as the brief names it (criterion-N).
+function checkFrom(entry: unknown, at: string): PostDeployCheck {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) refuse(`${at} is not an object`);
+  const o = entry as Record<string, unknown>;
+  const text = field(o, ["text", "note"], at);
+  if (typeof text !== "string" || !plain(text)) refuse(`${at} has no text`);
+  return {
+    criterion: criterionFrom(field(o, ["criterion", "file"], at), at),
+    by: checkByFrom(field(o, ["by"], at), at),
+    text: clip(plain(text), VERDICT_LIMITS.text),
+  };
+}
+
+function criterionFrom(value: unknown, at: string): number {
+  const text = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim().replace(/^[`'"]+|[`'"]+$/g, "") : "";
+  const m = /^(?:criterion[-\s]*)?\[?(\d+)\]?$/i.exec(text);
+  const n = m ? Number(m[1]) : NaN;
+  if (!Number.isSafeInteger(n) || n < 1) refuse(`${at}: a check names its criterion by number, as the brief numbers them`);
+  return n;
+}
+
+function checkByFrom(value: unknown, at: string): PostDeployCheck["by"] {
+  const by = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const named = CHECK_BY.find((b) => b === by);
+  if (!named) refuse(`${at}: a check is made by owner or orchestrator, not ${JSON.stringify(value ?? null)}`);
+  return named;
 }
 
 function findingFrom(entry: unknown, at: string): Finding {
@@ -346,13 +450,26 @@ const criterionHead = (line: string) => CRITERION_HEAD.test(line);
 // word, as a \b would read it. The closing formatting around the word, and
 // the separator after it, are consumed before the proof is taken, so neither
 // markers nor a bare dash can stand in as the proof.
-const CRITERION_LINE = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(unmet|not met|met)(?![a-z0-9])\\]?${E}\\s*(?:[-–—:]\\s*)?${E}\\s*(.*?)\\s*$`, "i");
+const CRITERION_LINE = new RegExp(`^criterion${E}\\s*:?\\s*${E}\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(unmet|not met|met|deferred)(?![a-z0-9])\\]?${E}\\s*(?:[-–—:]\\s*)?${E}\\s*(.*?)\\s*$`, "i");
+// A CHECK line (t457): "CHECK:" in any case, or "CHECK " in capitals;
+// "Checks:" is a heading and "Check the" is prose. Only a reply asked for
+// checks (CRITERIA_REPLY_FORMAT) has its CHECK lines read; elsewhere they
+// are prose. The line names the criterion as the brief does (criterion-N, or its
+// number alone), who checks it, and the check.
+const CHECK_COLON = new RegExp(`^check${E}\\s*:`, "i");
+const checkHead = (line: string) => CHECK_COLON.test(line) || /^CHECK\s/.test(line);
+const CHECK_LINE = new RegExp(`^check${E}\\s*:?\\s*${E}\\s*(?:criterion[-\\s]*)?\\[?(\\d+)\\]?${E}\\s*:?\\s*${E}\\s*\\[?(owner|orchestrator)(?![a-z0-9])\\]?${E}\\s*(?:[-–—:]\\s*)?${E}\\s*(.*?)\\s*$`, "i");
 
-function lineStatements(reply: string, criteria: number): { verdicts: Statement["verdict"][]; findings: Finding[]; summary: string[]; criteria: Map<number, boolean> } {
+// What a CRITERION line says of its criterion: met, unmet, or deferred to a
+// check after deploy (t457).
+type CriterionState = "met" | "unmet" | "deferred";
+
+function lineStatements(reply: string, criteria: number, withChecks: boolean): { verdicts: Statement["verdict"][]; findings: Finding[]; checks: PostDeployCheck[]; summary: string[]; criteria: Map<number, CriterionState> } {
   const verdicts: Statement["verdict"][] = [];
   const findings: Finding[] = [];
+  const checks: PostDeployCheck[] = [];
   const summary: string[] = [];
-  const met = new Map<number, boolean>();
+  const states = new Map<number, CriterionState>();
   reply.split("\n").forEach((raw, i) => {
     const line = raw.replace(DECORATION, "");
     const at = `line ${i + 1}`;
@@ -363,35 +480,46 @@ function lineStatements(reply: string, criteria: number): { verdicts: Statement[
     // "Verdict:" must be the verdict alone, or the reply is refused.
     else if (VERDICT_HEAD.test(line) && !VERDICT_TITLE.test(line)) refuse(`${at}: a VERDICT line says APPROVE or REJECT and nothing else`);
     else if (findingHead(line)) findings.push(findingLine(line, at));
+    else if (withChecks && checkHead(line)) checks.push(checkLine(line, at));
     else if (criteria && criterionHead(line)) {
       const c = criterionLine(line, at, criteria);
       // The same criterion proved twice must be proved one way.
-      if (met.has(c.n) && met.get(c.n) !== c.met) refuse(`the reply proves criterion ${c.n} both met and unmet`);
-      met.set(c.n, c.met);
+      if (states.has(c.n) && states.get(c.n) !== c.state) refuse(`the reply proves criterion ${c.n} both ${states.get(c.n)} and ${c.state}`);
+      states.set(c.n, c.state);
     }
     else {
       const s = SUMMARY_LINE.exec(line);
       if (s && plain(s[1])) summary.push(plain(s[1]));
     }
   });
-  return { verdicts, findings, summary, criteria: met };
+  return { verdicts, findings, checks, summary, criteria: states };
 }
 
-// One CRITERION line: the criterion's number as the brief numbers it, met or
-// unmet, then how it was proved — the proof is the point of the line, so a
-// line without one is refused rather than read as a bare met. The pattern
-// takes an empty proof so the refusal can name the missing proof, not the
-// line's shape. It consumes the closing formatting around the met or unmet
+// One CRITERION line: the criterion's number as the brief numbers it, met,
+// unmet or deferred, then how it was proved — the proof is the point of the
+// line, so a line without one is refused rather than read as a bare met. The
+// pattern takes an empty proof so the refusal can name the missing proof,
+// not the line's shape. It consumes the closing formatting around the word
 // (**, __, backticks) and the separator before the proof, and the check
 // counts none of the markers, separators or whitespace left in what it takes
 // as proof either, so only the proof's words are.
-function criterionLine(line: string, at: string, of: number): { n: number; met: boolean } {
+function criterionLine(line: string, at: string, of: number): { n: number; state: CriterionState } {
   const m = CRITERION_LINE.exec(line);
-  if (!m) refuse(`${at}: a CRITERION line gives the criterion's number, met or unmet, and how it was proved`);
+  if (!m) refuse(`${at}: a CRITERION line gives the criterion's number, met, unmet or deferred, and how it was proved`);
   const n = Number(m[1]);
   if (n < 1 || n > of) refuse(`${at}: CRITERION ${n} is not one of the ${of} acceptance criteria the brief numbers`);
   if (!plain(m[3]).replace(/[*_`\s:–—-]/g, "")) refuse(`${at}: a CRITERION line ends with how the criterion was proved`);
-  return { n, met: m[2].toLowerCase() === "met" };
+  const word = m[2].toLowerCase();
+  return { n, state: word === "met" ? "met" : word === "deferred" ? "deferred" : "unmet" };
+}
+
+// One CHECK line: the criterion, who checks it after deploy, and the check.
+function checkLine(line: string, at: string): PostDeployCheck {
+  const m = CHECK_LINE.exec(line);
+  if (!m) refuse(`${at}: a CHECK line gives the criterion (criterion-N), owner or orchestrator, and what is checked after deploy`);
+  const text = plain(m[3]);
+  if (!text.replace(/[*_`\s:–—-]/g, "")) refuse(`${at}: a CHECK line ends with why the builder cannot verify the criterion and what is checked after deploy`);
+  return { criterion: criterionFrom(m[1], at), by: checkByFrom(m[2], at), text: clip(text, VERDICT_LIMITS.text) };
 }
 
 function findingLine(line: string, at: string): Finding {

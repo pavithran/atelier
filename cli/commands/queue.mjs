@@ -1,12 +1,13 @@
 // atelier queue. Its forms, flags and help are declared in src/usage/commands/queue.ts.
-import { holdText } from "../../src/dispatch/rules.ts";
+import { holdText, orphanText } from "../../src/dispatch/rules.ts";
 import { notePreview } from "../../src/text.ts";
 import { OWNER, apiToken, die, flat, project, resolveTokenActor, server, tokenActor } from "../atelier.mjs";
+import { serverFetch } from "../server-fetch.mjs";
 
 // Everything waiting for a runner, across projects, oldest first.
 export default async function queueCommand() {
   await resolveTokenActor();
-  const res = await fetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+  const res = await serverFetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
   if (!res.ok) die(`queue: ${res.status} ${(await res.text()).slice(0, 200)}`);
   const incomplete = res.headers.get("x-atelier-incomplete");
   if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
@@ -17,6 +18,10 @@ export default async function queueCommand() {
     console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
     const preview = notePreview(d.note);
     if (preview) console.log(`  note: ${flat(preview)}`);
-    if (item.held) console.log(`  held: ${holdText(item.held)}`);
+    // A claim whose runner stopped polling holds nothing (t537): said in
+    // the hold's text when a live blocker holds the task too, else alone.
+    if (item.held) console.log(`  held: ${holdText(item.held, project)}`);
+    else if (item.orphaned?.length) console.log(`  held: ${orphanText(item.orphaned, project)}`);
+    for (const r of (item.why ?? []).filter((r) => !item.held || r.kind !== "held")) console.log(`  ${r.line}`);
   }
 }

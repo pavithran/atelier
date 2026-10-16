@@ -18,9 +18,13 @@ import { COMMAND_MODULES } from "./usage/commands/index.ts";
 // a change that is not compatible with it takes a new name (…v2), and the
 // old one stays published for as long as the server still behaves that way,
 // so a client that needs v1 is not satisfied by a server that has only v2.
-// Each capability is one line in src/capability-declarations.ts. Its
-// merge=union attribute retains independent additions, including names in
-// the same family. Duplicate names still fail validation after a merge.
+// Each capability is one line in src/capability-declarations.ts, routed by
+// .gitattributes to merge=atelier-records (t463, bin/merge-manifest.json):
+// where Atelier merges, independent additions unite by name, including
+// names in the same family, and a name both sides changed stays in
+// conflict; a clone without Atelier's setup merges the file as text, so
+// neighbouring additions conflict for a person to resolve. Duplicate names
+// still fail validation after a merge.
 // buildCapabilities refuses a name declared twice, or one that
 // is not well formed, when this module loads, and commandCapabilities
 // refuses a command that requires a name no declaration publishes.
@@ -94,16 +98,33 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, readonly string[]>> =
 // subcommand's. `atelier models` lists the pool on any server; `atelier
 // models note` needs models.note.v1.
 // new declares area support, but only requires it when --area is supplied;
+// publish declares the mirror policy, required only by publish REMOTE.
 // models add declares the standing (t389), but only requires it with
-// --state, --roles or --tier.
+// --state, --roles or --tier. mode fast, accept and merge declare the
+// developer's direction (t629), but only require it with --quote.
 export function requiredForCommand(command: string, word?: string, flags: Readonly<Record<string, unknown>> = {}): string[] {
   const d = DECLARED[command];
   if (!d) return [];
   const sub = word !== undefined && Object.hasOwn(d.subcommands, word) ? d.subcommands[word] : [];
   return [...new Set([...d.own, ...sub])].filter((name) =>
     (command !== "new" || name !== "areas.manage.v1" || flags.area !== undefined) &&
+    // Bare publish pushes the baseline; only publish REMOTE reads the mirror policy.
+    (command !== "publish" || name !== "projects.publication-policy.v1" || word !== undefined) &&
     (command !== "models" || word !== "add" || name !== "models.standing.v1" || ["state", "roles", "tier"].some((f) => flags[f] !== undefined)),
-  );
+  ).filter((name) => name !== DIRECTION || flags.quote !== undefined);
+}
+
+// The developer's direction (t629): a server without it takes no --quote,
+// and the developer's permission on the pages is the way until it is
+// deployed. The refusal says so (capabilityFallback).
+export const DIRECTION = "projects.developer-direction.v1";
+// The developer's branches (t641): a server without them keeps no branches
+// repository, and the refusal says nothing was pushed or fetched.
+export const BRANCHES = "projects.developer-branches.v1";
+export function capabilityFallback(missing: readonly string[]): string {
+  if (missing.includes(DIRECTION)) return "Until then, the developer gives the permission on the project's Settings page (Allow fast mode from the command line) or the task's page (Allow an override from the command line), and the command runs again without --quote";
+  if (missing.includes(BRANCHES)) return "This server predates the developer's branches, so nothing was pushed, fetched or listed, and every branch stays where it is until the server is deployed with them";
+  return "";
 }
 
 // What each runner job needs. A job absent here runs without asking. Every
@@ -112,10 +133,12 @@ export function requiredForCommand(command: string, word?: string, flags: Readon
 // carries the criteria; the review job posts the binding, keeps an
 // unparsable reply and reports a review it will not serve as the job's
 // actor (reviews.skip.v1, reviews.skip-as-runner.v1); the integrate and
-// refresh jobs post the integration routes (plans.integration.v1). Every
-// job but the review reports one it gives up to run-skip (runners.run-skip.v1,
-// t420); the queue's why poll, which the same capability names, is only
-// read for the idle message, so the review job does not require it.
+// refresh jobs post the integration routes (plans.integration.v1); the
+// criteria-review job claims and answers the criteria-review routes
+// (reviews.criteria-review.v1, t438). Every job but the two reviews reports
+// one it gives up to run-skip (runners.run-skip.v1, t420); the queue's why
+// poll, which the same capability names, is only read for the idle message,
+// so the review jobs do not require it.
 export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]>> = {
   build: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   plan: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
@@ -123,8 +146,11 @@ export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]
   "merge-main-task": ["projects.commit-identity.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   "merge-plan": ["projects.commit-identity.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   review: ["reviews.post-merge.v1", "projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.lease.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"],
+  "criteria-review": ["reviews.criteria-review.v1", "runners.scoped-token.v1"],
   integrate: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   refresh: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
+  "task-refresh": ["projects.commit-identity.v1", "refresh.tasks.v1", "runners.run-skip.v1"],
+  "task-resolve": ["projects.commit-identity.v1", "refresh.tasks.v1", "runners.run-skip.v1"],
 };
 
 export const requiredForJobs = (jobs: readonly string[]): string[] => [...new Set(jobs.flatMap((job) => JOB_CAPABILITIES[job] ?? []))];

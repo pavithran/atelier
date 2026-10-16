@@ -10,9 +10,18 @@ import command_base_token from "./base-token.ts";
 import command_baseline_token from "./baseline-token.ts";
 import command_block from "./block.ts";
 import command_board from "./board.ts";
+import command_branch from "./branch.ts";
 import command_check from "./check.ts";
 import command_check_log from "./check-log.ts";
 import command_claim from "./claim.ts";
+import command_clean from "./clean.ts";
+import command_clear_secret from "./clear-secret.ts";
+import command_clone from "./clone.ts";
+import command_criteria_finding from "./criteria-finding.ts";
+import command_criteria_review from "./criteria-review.ts";
+import command_criteria_review_claim from "./criteria-review-claim.ts";
+import command_criteria_review_failed from "./criteria-review-failed.ts";
+import command_criteria_verdict from "./criteria-verdict.ts";
 import command_decide from "./decide.ts";
 import command_decisions from "./decisions.ts";
 import command_defect from "./defect.ts";
@@ -20,6 +29,7 @@ import command_diff from "./diff.ts";
 import command_dispatch from "./dispatch.ts";
 import command_done from "./done.ts";
 import command_edit from "./edit.ts";
+import command_fast from "./fast.ts";
 import command_finding from "./finding.ts";
 import command_finish from "./finish.ts";
 import command_gc from "./gc.ts";
@@ -34,6 +44,7 @@ import command_land from "./land.ts";
 import command_login from "./login.ts";
 import command_ls from "./ls.ts";
 import command_merge from "./merge.ts";
+import command_mode from "./mode.ts";
 import command_models from "./models.ts";
 import command_new from "./new.ts";
 import command_notes_remote from "./notes-remote.ts";
@@ -41,14 +52,21 @@ import command_open from "./open.ts";
 import command_ops from "./ops.ts";
 import command_owners from "./owners.ts";
 import command_plan from "./plan.ts";
+import command_private from "./private.ts";
 import command_projects from "./projects.ts";
 import command_publish from "./publish.ts";
+import command_pull from "./pull.ts";
 import command_push from "./push.ts";
 import command_queue from "./queue.ts";
 import command_read_token from "./read-token.ts";
 import command_receipt from "./receipt.ts";
+import command_record_merge from "./record-merge.ts";
+import command_refresh_checked from "./refresh-checked.ts";
 import command_refresh_failed from "./refresh-failed.ts";
+import command_refresh_lease from "./refresh-lease.ts";
+import command_refresh_pushing from "./refresh-pushing.ts";
 import command_refreshed from "./refreshed.ts";
+import command_refreshes from "./refreshes.ts";
 import command_release from "./release.ts";
 import command_report from "./report.ts";
 import command_revert from "./revert.ts";
@@ -57,6 +75,7 @@ import command_review_claim from "./review-claim.ts";
 import command_review_release from "./review-release.ts";
 import command_review_request from "./review-request.ts";
 import command_review_unparsable from "./review-unparsable.ts";
+import command_review_withdraw from "./review-withdraw.ts";
 import command_run_report from "./run-report.ts";
 import command_runner from "./runner.ts";
 import command_served from "./served.ts";
@@ -88,9 +107,18 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/baseline-token.ts", spec: command_baseline_token },
   { path: "src/usage/commands/block.ts", spec: command_block },
   { path: "src/usage/commands/board.ts", spec: command_board },
+  { path: "src/usage/commands/branch.ts", spec: command_branch },
   { path: "src/usage/commands/check.ts", spec: command_check },
   { path: "src/usage/commands/check-log.ts", spec: command_check_log },
   { path: "src/usage/commands/claim.ts", spec: command_claim },
+  { path: "src/usage/commands/clean.ts", spec: command_clean },
+  { path: "src/usage/commands/clear-secret.ts", spec: command_clear_secret },
+  { path: "src/usage/commands/clone.ts", spec: command_clone },
+  { path: "src/usage/commands/criteria-finding.ts", spec: command_criteria_finding },
+  { path: "src/usage/commands/criteria-review.ts", spec: command_criteria_review },
+  { path: "src/usage/commands/criteria-review-claim.ts", spec: command_criteria_review_claim },
+  { path: "src/usage/commands/criteria-review-failed.ts", spec: command_criteria_review_failed },
+  { path: "src/usage/commands/criteria-verdict.ts", spec: command_criteria_verdict },
   { path: "src/usage/commands/decide.ts", spec: command_decide },
   { path: "src/usage/commands/decisions.ts", spec: command_decisions },
   { path: "src/usage/commands/defect.ts", spec: command_defect },
@@ -98,6 +126,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/dispatch.ts", spec: command_dispatch },
   { path: "src/usage/commands/done.ts", spec: command_done },
   { path: "src/usage/commands/edit.ts", spec: command_edit },
+  { path: "src/usage/commands/fast.ts", spec: command_fast },
   { path: "src/usage/commands/finding.ts", spec: command_finding },
   { path: "src/usage/commands/finish.ts", spec: command_finish },
   { path: "src/usage/commands/gc.ts", spec: command_gc },
@@ -112,6 +141,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/login.ts", spec: command_login },
   { path: "src/usage/commands/ls.ts", spec: command_ls },
   { path: "src/usage/commands/merge.ts", spec: command_merge },
+  { path: "src/usage/commands/mode.ts", spec: command_mode },
   { path: "src/usage/commands/models.ts", spec: command_models },
   { path: "src/usage/commands/new.ts", spec: command_new },
   { path: "src/usage/commands/notes-remote.ts", spec: command_notes_remote },
@@ -119,14 +149,21 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/ops.ts", spec: command_ops },
   { path: "src/usage/commands/owners.ts", spec: command_owners },
   { path: "src/usage/commands/plan.ts", spec: command_plan },
+  { path: "src/usage/commands/private.ts", spec: command_private },
   { path: "src/usage/commands/projects.ts", spec: command_projects },
   { path: "src/usage/commands/publish.ts", spec: command_publish },
+  { path: "src/usage/commands/pull.ts", spec: command_pull },
   { path: "src/usage/commands/push.ts", spec: command_push },
   { path: "src/usage/commands/queue.ts", spec: command_queue },
   { path: "src/usage/commands/read-token.ts", spec: command_read_token },
   { path: "src/usage/commands/receipt.ts", spec: command_receipt },
+  { path: "src/usage/commands/record-merge.ts", spec: command_record_merge },
+  { path: "src/usage/commands/refresh-checked.ts", spec: command_refresh_checked },
   { path: "src/usage/commands/refresh-failed.ts", spec: command_refresh_failed },
+  { path: "src/usage/commands/refresh-lease.ts", spec: command_refresh_lease },
+  { path: "src/usage/commands/refresh-pushing.ts", spec: command_refresh_pushing },
   { path: "src/usage/commands/refreshed.ts", spec: command_refreshed },
+  { path: "src/usage/commands/refreshes.ts", spec: command_refreshes },
   { path: "src/usage/commands/release.ts", spec: command_release },
   { path: "src/usage/commands/report.ts", spec: command_report },
   { path: "src/usage/commands/revert.ts", spec: command_revert },
@@ -135,6 +172,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/review-release.ts", spec: command_review_release },
   { path: "src/usage/commands/review-request.ts", spec: command_review_request },
   { path: "src/usage/commands/review-unparsable.ts", spec: command_review_unparsable },
+  { path: "src/usage/commands/review-withdraw.ts", spec: command_review_withdraw },
   { path: "src/usage/commands/run-report.ts", spec: command_run_report },
   { path: "src/usage/commands/runner.ts", spec: command_runner },
   { path: "src/usage/commands/served.ts", spec: command_served },

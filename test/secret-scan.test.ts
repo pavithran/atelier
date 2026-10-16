@@ -98,6 +98,20 @@ test("a private key block and a bearer token are matched", () => {
   assert.ok(scanLine("bearer abcdefghijklmnopqrstuvwxyz0123456789"));
 });
 
+test("Atelier's own atl_ token is matched in dotenv, JSON and string literal forms, and a short atl_ word is not", () => {
+  // Astra's audit of 2026-10-13, finding 12: the scan had no pattern for the
+  // format tokenFromBytes (src/tokens.ts) mints, "atl_" and 64 lowercase hex
+  // digits, so a token pasted into JSON or a source literal passed unflagged.
+  const token = `atl_${"a".repeat(64)}`;
+  assert.ok(scanLine(`ATELIER_TOKEN=${token}`));
+  assert.ok(scanLine(JSON.stringify({ token })));
+  assert.ok(scanLine(`const t = "${token}";`));
+  assert.ok(scanLine(`const t = '${"0123456789abcdef".repeat(4).replace(/^/, "atl_")}';`));
+  for (const word of ["atl_config", "atl_token", "const atl_settings = load();", `atl_${"a".repeat(63)}`, `atl_${"A".repeat(64)}`]) {
+    assert.ok(!scanLine(word), word);
+  }
+});
+
 test("a .env-style assignment whose value carries base64 padding is matched", () => {
   // Built at run time so this file holds no key-shaped literal.
   const padded = ["Zm9v", "YmFy".repeat(12), "=="].join("");

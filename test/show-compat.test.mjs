@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 const cli = resolve("cli/atelier.mjs");
 const brief = {
@@ -12,8 +13,8 @@ const brief = {
 };
 
 // Exercise the CLI against the older server contract without opening sockets.
-function fixture(t, status = 404, error = "not_found", detail = "no such route", queue = null) {
-  const root = mkdtempSync(join(process.cwd(), ".show-compat-test-"));
+function fixture(t, status = 404, error = "not_found", detail = "no such route", queue = null, body = null) {
+  const root = mkdtempSync(join(tmpdir(), "atelier-show-compat-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const preload = join(root, "server.mjs");
   writeFileSync(preload, `
@@ -22,7 +23,7 @@ function fixture(t, status = 404, error = "not_found", detail = "no such route",
       const path = new URL(url).pathname;
       if (path === "/api/queue" && ${queue !== null}) return Response.json(${JSON.stringify(queue)});
       if (path === "/api/projects/proj/items/t1/brief") return Response.json(${JSON.stringify(brief)});
-      if (path === "/api/projects/proj/items/t1") return Response.json(${JSON.stringify({ error, detail })}, { status: ${status} });
+      if (path === "/api/projects/proj/items/t1") return Response.json(${JSON.stringify(body ?? { error, detail })}, { status: ${body ? 200 : status} });
       throw new Error("unexpected route: " + path);
     };
   `);
@@ -89,4 +90,37 @@ test("show says the hold from an older server's queue", (t) => {
   const r = run();
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.includes("\nHeld: waits on t9 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t9 submits or is released, or at once with atelier dispatch t1 --overlap-ok."), r.stdout);
+});
+
+// Pre-review findings of t524's own review. show took the queue's pre-review
+// entry for the task for its build and printed a build's "not taken"
+// reasons for it; and criterion 9's pre-review state, binding, reviewer,
+// findings and recovery action reached show's JSON alone, never its text.
+test("show says the task's pre-review in words, and takes no build reasons from its pre-review entry", (t) => {
+  const prereview = {
+    request: 1000000007, item: "t1", state: "blocked", reviewer: "codex/gpt-6-astra", runner: "home:studio",
+    binding: { head: "a".repeat(40), criteria: "c".repeat(64), contributors: ["claude-code/opus-5.5"], generation: 3, main: "b".repeat(40), tree: "d".repeat(40) },
+    at: "2026-10-11T12:00:00.000Z", claimedAt: "2026-10-11T12:01:00.000Z", settledAt: "2026-10-11T12:09:00.000Z", attempts: 1, outcome: null, detail: null, files: [],
+    verdict: "reject", note: "It breaks.", findings: [{ file: "src/a.ts", line: 3, severity: "blocking", text: "the queue loses a waiter" }],
+    detached: false, ownerAction: null, recovery: "rework: the builder addresses the blocking findings; then atelier unblock t1 and atelier land t1 again",
+  };
+  const fence = { request: 1000000007, head: "a".repeat(40), reviewer: "codex/gpt-6-astra", at: "2026-10-11T12:09:00.000Z", blocking: 1, builder: "claude-code/opus-5.5", ownerAction: null };
+  const run = fixture(t, 404, "not_found", "no such route", [
+    { project: "proj", item: { id: "t1", dispatch: { job: "prereview" }, why: [{ kind: "unoffered", line: "Not offered: no live runner offers a build of it." }] } },
+  ], { item: { id: "t1", head: null }, prereviews: [prereview], prereviewFence: fence, reviews: [], unparsable: [] });
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!r.stdout.includes("Not offered"), r.stdout);
+  for (const line of [
+    "Pre-review 1000000007: blocked; reviewer codex/gpt-6-astra on home:studio; attempt 1 of 3",
+    "Binding: head aaaaaaaa merged with main bbbbbbbb, tree dddddddd, criteria cccccccccccc, contributors claude-code/opus-5.5",
+    "Verdict: reject: It breaks.",
+    "  src/a.ts:3 · blocking · the queue loses a waiter",
+    `Recovery: ${prereview.recovery}`,
+  ]) assert.ok(r.stdout.includes(`\n${line}\n`), `${line}\n${r.stdout}`);
+  assert.match(r.stdout, /Fenced: t1's pre-review 1000000007 by codex\/gpt-6-astra found a blocking finding at aaaaaaaa/);
+  const json = JSON.parse(run(["--json"]).stdout);
+  assert.equal(json.why, undefined);
+  assert.deepEqual(json.prereview, prereview);
+  assert.deepEqual(json.prereviewFence, fence);
 });

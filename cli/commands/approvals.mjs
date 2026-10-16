@@ -16,7 +16,7 @@ export default async function approvalsCommand() {
   const shown = args.all ? approvals : approvals.filter((a) => a.status === "active");
   if (!shown.length) {
     return console.log(args.all || !approvals.length
-      ? `No action has been approved for ${name}. The owner approves one with: atelier approve KIND --head SHA`
+      ? `No action has been approved for ${name}. The developer approves one with: atelier approve KIND --head SHA`
       : `No approval stands for ${name}; atelier approvals --all lists the used, withdrawn and expired ones.`);
   }
   console.log(formatApprovals(shown));

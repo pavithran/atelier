@@ -99,7 +99,7 @@ test("the warning names every matching live task, including an unowned task", (t
   const r = f.run(["new", "Fix the parser", "--scope", "src/parser/**", "--project", "demo"]);
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /^ {2}t12 {2}Fix the parser {2}\(claimed, codex\/test\)$/m);
-  assert.match(r.stderr, /^ {2}t16 {2}Fix parser {2}\(open, unowned\)$/m);
+  assert.match(r.stderr, /^ {2}t16 {2}Fix parser {2}\(open, unclaimed\)$/m);
   assert.doesNotMatch(r.stderr, /t14|t15/);
   assert.deepEqual(f.requests().filter((q) => q.method === "POST"), []);
 });

@@ -1,3 +1,4 @@
+import "./refresh/lifecycle.cases.mjs";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, expect, it, vi } from "vitest";
@@ -59,13 +60,21 @@ it("refuses runner tokens on board and area routes", async () => {
   }
 });
 
-it("issues normalized runner/project credentials, requires owner and one existing project", async () => {
+it("issues normalized runner/project credentials, requires owner and one or more existing projects", async () => {
   const t = await setup();
+  const second = await setup();
   expect(t.token.runner).toBe("home:studio");
   expect(t.token.projects).toEqual([t.name]);
-  for (const input of [{ runner: "x" }, { runner: "x", projects: [] }, { runner: "x", projects: [t.name, "other"] }, { runner: "x", projects: ["missing"] }, { runner: "x", actor: ACTOR, projects: [t.name] }]) {
+  for (const input of [{ runner: "x" }, { runner: "x", projects: [] }, { runner: "x", projects: [t.name, "missing"] }, { runner: "x", projects: ["missing"] }, { runner: "x", actor: ACTOR, projects: [t.name] }]) {
     expect((await t.request("POST", "/tokens", OWNER, "owner", input)).status).toBe(400);
   }
+  const multiRes = await t.request("POST", "/tokens", OWNER, "owner", { runner: "HOME:Studio", projects: [t.name, second.name] });
+  expect(multiRes.status).toBe(201);
+  const multi = await multiRes.json();
+  expect(multi.projects).toEqual([t.name, second.name]);
+  const multiOffered = await (await t.request("POST", "/queue", multi.token, ACTOR, t.offer)).json();
+  expect(multiOffered.map((q) => q.project).sort()).toEqual([t.name, second.name].sort());
+  expect((await t.request("POST", `/projects/${second.name}/items/t1/claim`, multi.token, ACTOR, {})).status).toBe(200);
   expect(await (await t.api("GET", `/projects/${t.name}`)).json()).toMatchObject({ items: [], events: [] });
   const config = await t.api("GET", "/config");
   expect(await config.json()).toMatchObject({ runner: "home:studio", tokenId: t.token.id });
@@ -79,6 +88,46 @@ it("a runner token's claim carries the project's commit identity, as any claim d
   expect((await t.claim()).commitIdentity).toEqual(commitIdentity);
   const bare = await setup();
   expect((await bare.claim()).commitIdentity).toBeNull();
+});
+
+it("a crashed holder cannot reclaim a build after a criteria edit until the current revision is approved", async () => {
+  const t = await setup();
+  const accept = ["The search answers within 200 ms"];
+  await t.L.undispatch("t1", "owner");
+  await t.L.editItem("t1", "owner", { accept });
+  const project = await t.L.project();
+  await t.L.setProject({ ...project, policy: { ...project.policy, requireCriteriaReview: true } }, "owner");
+  const approve = async () => {
+    const reviewer = "claude-code/opus-5.5";
+    await t.L.requestCriteriaReview("t1", "owner", reviewer, [{ id: "opus-5.5", harness: "claude-code", family: "anthropic", where: "home", provider: "subscription", aliases: [], note: "", addedBy: "owner", addedAt: new Date().toISOString() }]);
+    const claim = await t.L.claimCriteriaReview("t1", reviewer, { runner: "home:reviewer", kind: "home" });
+    await t.L.addCriteriaReview({ itemId: "t1", by: reviewer, rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, summary: "Measurable." }, true);
+  };
+  await approve();
+  await t.L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  await t.claim();
+  // A crash before committing leaves the server's held item and its head.
+  const held = await t.L.item("t1");
+  await t.L.editItem("t1", "owner", { accept });
+  expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
+  for (const criteria of [["The search answers within 100 ms"], accept]) {
+    await t.L.editItem("t1", "owner", { accept: criteria });
+    const offered = await (await t.poll()).json();
+    expect(offered).toContainEqual(expect.objectContaining({ project: t.name, item: expect.objectContaining({ id: "t1", state: "claimed", owner: ACTOR, head: held.head, dispatch: held.dispatch }) }));
+    // Both direct claims and the runner's API reclaim use the same gate.
+    const refusal = await t.L.claim("t1", ACTOR, { runner: "home:studio", kind: "home" }).then(() => null, (error) => error.message);
+    expect(refusal).toMatch(/criteria_unreviewed/);
+    const response = await t.api("POST", `${t.base}/claim`, {});
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "criteria_unreviewed", detail: expect.stringContaining("none approves them as they are now") });
+    expect(await t.L.item("t1")).toMatchObject({ state: "claimed", owner: ACTOR, head: held.head, dispatch: held.dispatch });
+  }
+  await approve();
+  expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
+  // Policy-off recovery retains its previous behavior even after an edit.
+  await t.L.setProject(project, "owner");
+  await t.L.editItem("t1", "owner", { accept: ["The search answers within 50 ms"] });
+  expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
 });
 
 it("denies every owner, review and integration operation with identity and no secret", async () => {
@@ -246,4 +295,17 @@ it("concurrent different runners cannot both acquire the same dispatched job", a
   const item = await t.L.item("t1");
   expect(item.owner).toBe(ACTOR);
   expect(["home:studio", "home:second"]).toContain(item.runner);
+});
+
+// Only an authenticated runner can classify a release as infrastructure.
+it.each([true, false])("provider-limit release metadata requires a runner token (%s)", async (runner) => {
+  const t = await setup();
+  await t.claim();
+  const body = { note: "codex usage limit until 2026-10-14T15:00:00.000Z: quota", providerLimit: true };
+  const response = runner
+    ? await t.api("POST", `${t.base}/release`, body)
+    : await t.request("POST", `${t.base}/release`, OWNER, ACTOR, body);
+  expect(response.status).toBe(200);
+  const releases = (await t.L.events("t1")).filter((e) => e.kind === "item.released");
+  expect(releases[0].data.providerLimit).toBe(runner ? true : undefined);
 });

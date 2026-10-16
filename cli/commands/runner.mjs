@@ -1,5 +1,5 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { I, OWNER, apiToken, args, die, discoverModels, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
+import { I, OWNER, apiToken, args, cfg, die, discoverModels, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // Queue polling has already resolved the runner's identity. A failed policy
 // read must reach the job's infrastructure handling, never the process.exit
@@ -25,7 +25,7 @@ export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { runRunner, runnerTransport } = await import("../runner.mjs");
+  const { reexecSelf, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
   // The runner's own server calls, every one through the transport (t478):
   // the queue poll, the plan job's brief and document, the run reports and
   // the review skips, under the runner's token and the name it polls as,
@@ -39,8 +39,15 @@ export default async function runnerCommand() {
       credential: apiToken(),
       api: { server, I },
       workspacePath,
-      // The server's route level against the CLI's, checked once at start:
-      // a server behind this CLI would fail the runner's calls one by one.
+      // Where the developer's checkout of a project is on this Mac, which the
+      // project's prose standard (a path from it) is copied from (t676).
+      checkoutOf: (name) => cfg.projects?.[name]?.path ?? null,
+      // An idle runner reloads itself from this checkout once it holds the
+      // deployed commit (t265), handing off to an initialized replacement.
+      reload: { checkout: runnerCheckout(), reexec: reexecSelf },
+      // The server's route level against the CLI's, checked at start: a
+      // server behind this CLI would fail the runner's calls one by one. An
+      // idle runner reads it again for the deployed commit (t265).
       // A server that cannot be read is refused as land refuses it, with
       // the same "does not answer" message (GET /api/version is public).
       async version(signal) {
@@ -74,6 +81,16 @@ export default async function runnerCommand() {
         if (res.incomplete) console.log(`Could not read: ${res.incomplete}. Tasks waiting there are not listed.`);
         return res.data;
       },
+      // A busy runner's heartbeat (t537): its offer, marked as a heartbeat,
+      // renews its last poll while a job runs, so the claim it builds under
+      // is not taken for one its runner orphaned. Nothing is offered back.
+      // It goes as the poll does, through the transport: the declared
+      // "queue-heartbeat" call, as the token's actor or the owner.
+      async heartbeat(offer, signal) {
+        const who = await transport.identity(signal);
+        const res = await transport.send("queue-heartbeat", {}, { body: { ...offer, heartbeat: true }, actor: who.actor ?? OWNER, signal });
+        if (!res.ok) throw new Error(`heartbeat: ${res.status}`);
+      },
       hasPreparation,
       async jobBrief(project, id, actor) {
         let res;
@@ -89,6 +106,15 @@ export default async function runnerCommand() {
         if (res.status === 422 && res.data && res.data.valid === false) return res.data;
         if (!res.ok) throw Object.assign(new Error(`the plan could not be posted: ${res.status}${detail(res)}`.trim()), { infrastructure: res.status >= 500 || res.status === 429 });
         return res.data;
+      },
+      // The baseline's head (GET baseline-head, which a runner token may
+      // read), for a post-merge review this runner keeps waiting on a merge
+      // commit no source held (t591): it is claimed again once the head moves.
+      // The declared "baseline-head" call, through the transport.
+      async baselineHead(project, actor, signal) {
+        const res = await transport.send("baseline-head", { project }, { actor, signal });
+        if (!res.ok) throw new Error(`baseline-head: ${res.status}`);
+        return res.data?.head ?? null;
       },
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does. A report

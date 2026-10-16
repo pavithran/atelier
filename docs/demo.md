@@ -1,22 +1,25 @@
 # Demo: one goal, end to end
 
-This walks one goal through Atelier's orchestrator, from the project owner
+This walks one goal through Atelier's orchestrator, from the developer
 stating it to the plan's merge into main, with what each command prints in
 outline and where to watch each step. A last section lands a single task
 that is not part of a plan. Every command and flag here is in
 `atelier help`; what the code does not yet do is listed at the end, not
 described along the way.
 
-The project is called `demo`. Its owner is `pavi`. The goal is a small
+The project is called `demo`. Its developer is `pavi`. The goal is a small
 feature with two parts, so the plan's dependency order, the automatic
 cross-family review and the integration branch all show up once.
 
 ## Before you start
 
-**Sign in and register the project.** In the project's checkout:
+**Sign in and register the project.** In the project's checkout, sign in
+to your own Worker, the address you deployed in the README's
+[Quickstart](../README.md#quickstart) (atelier.zone is the project's own
+server and takes only its developer's token):
 
 ```sh
-atelier login --server https://atelier.zone
+atelier login --server https://YOUR-WORKER-ADDRESS
 atelier init --title "Demo" --check "npm test" --protect "src/rules.ts"
 ```
 
@@ -96,7 +99,7 @@ atelier runner --name home:integrator --integrate
 
 **Open the places to watch.** Three views show the whole walk:
 
-- `atelier inbox` prints what waits on the owner, one line of what to do
+- `atelier inbox` prints what waits on the developer, one line of what to do
   and a link per task, in the order of docs/owner.md's table. The
   Decisions page at `/decisions` shows the same.
 - The Studio at `/studio` draws one lane per live task, banded by holder,
@@ -104,7 +107,7 @@ atelier runner --name home:integrator --integrate
   part becomes a lane when a runner claims it.
 - `atelier plan show tP --project demo` prints the plan's phase, its parts
   with their state and routing, and the command for every decision waiting
-  on the owner. It is the page for the plan in text; run it after each step.
+  on the developer. It is the page for the plan in text; run it after each step.
 
 ## 1. State the goal
 
@@ -125,7 +128,7 @@ The plan job waits in the queue for claude-code/opus-5.5; a runner that offers p
 
 `atelier plan show t10 --project demo` now says `Phase: planning.`, `No
 valid proposal yet.` and that the plan job is waiting in the queue. The
-plan does not appear in the inbox yet: nothing waits on the owner.
+plan does not appear in the inbox yet: nothing waits on the developer.
 
 ## 2. The planner's job
 
@@ -173,7 +176,7 @@ demo/t10  Add JSON output to the export script and document it
 Phase: proposed.
 Proposal 1: 2 parts, 3f9c2a7b1d4e, by claude-code/opus-5.5.
 Recommendation: decide. Read the split with atelier plan show t10, then approve it by its hash or send it back with a note.
-https://atelier.zone/p/demo/t10
+https://YOUR-WORKER-ADDRESS/p/demo/t10
 ```
 
 `atelier show t10 --project demo` prints the same brief. The split itself:
@@ -289,7 +292,7 @@ atelier done "Add JSON output to the export script"
 
 `start` claims the part, prints the workspace to work in, and prints its
 title, scope and dispatch note. `done` is `finish` with a required summary,
-and its last line is `Ready for the owner` or what still blocks the part.
+and its last line is `Ready for the developer` or what still blocks the part.
 
 ## 5. Checks
 
@@ -345,7 +348,7 @@ The runner posted it as `atelier review t11 --approve --head SHA --criteria BIND
 verdict makes the runner keep the reply with `review-unparsable` and release
 the claim. On other failures it sends `review-release t11 --request N`, where
 N is the request number returned by `review-claim`, so another runner may
-take it. Agents must supply this number; only the owner's credentials may
+take it. Agents must supply this number; only the developer's credentials may
 omit it to release the named actor's current claim.
 
 **A rework.** Say the reviewer rejects the first head with a blocker
@@ -367,7 +370,7 @@ Studio the lane shows both bands, the review marks and the new push.
 
 Review verdicts and findings live on the part's page, and
 `atelier show t11 --project demo` prints them in the brief. Later, the
-owner can record `atelier finding t11 --head SHA --index 1 --verdict
+developer can record `atelier finding t11 --head SHA --index 1 --verdict
 confirmed` to say the finding was right, which counts toward the
 reviewer's precision on the Models page.
 
@@ -376,7 +379,7 @@ reviewer's precision on the Models page.
 An approval from another family moves the part to integration. The Ledger
 dispatches an `integrate` job on the plan item, naming the part and its
 head, to the reserved actor `atelier/integrator`. The plan item has
-exactly one owner, so integrations are serialized. The integrator runner
+exactly one holder, so integrations are serialized. The integrator runner
 takes it. Its log is quiet when an integration succeeds; it prints
 `runner: failed: …` when one does not, and one line after the last part
 (below).
@@ -410,9 +413,9 @@ After the last part integrates, the integrator submits the plan item:
 runner: every part is integrated; the plan item is submitted for the owner
 ```
 
-## 8. The owner accepts and merges the plan
+## 8. The developer accepts and merges the plan
 
-The plan now waits on the owner. `atelier inbox` lists it, and
+The plan now waits on the developer. `atelier inbox` lists it, and
 `atelier plan show t10 --project demo` ends with the command:
 
 ```text
@@ -442,7 +445,7 @@ plan item's page, which then shows the merge command to copy.
 **If the plan touches a protected path.** `src/rules.ts` is protected
 here. Had a part changed it, the plan item itself would need an independent
 review, and no reviewer qualifies: `atelier/integrator` is one of the
-plan's contributors and its family is not recognised. The owner then
+plan's contributors and its family is not recognised. The developer then
 accepts with an override, and the reason goes on the record as an event of
 its own, never as a review:
 
@@ -477,7 +480,7 @@ merged, revoking their write tokens. History and evidence stay.
 
 ## 9. One task outside a plan: `atelier land`
 
-Not every change needs a plan. For one task, the owner files it and either
+Not every change needs a plan. For one task, the developer files it and either
 dispatches it to a runner or lets an agent take it:
 
 ```sh
@@ -486,32 +489,38 @@ atelier dispatch t13 --to home --agent opencode --project demo
 ```
 
 The runner builds it as in step 4, and the agent's `done` leaves it
-submitted. Then the owner lands it whole, in the registered checkout:
+submitted. Then the developer lands it whole, in the registered checkout:
 
 ```sh
 atelier land t13 --project demo
 ```
 
 ```text
-Landing lease taken for t13 (submitted); one landing at a time in demo.
 Merged main at 1e0f77a2 into t13's workspace (4 commits from main).
 Pushed 5d31b9c0 to t13's fork.
 Review requested for claude-code/opus-5.5: …. Waiting for the verdict…
 claude-code/opus-5.5 approved t13 at 5d31b9c0.
+Landing lease taken for t13 (submitted) for its merge alone; one merge at a time in demo.
+5d31b9c0 was merged with main, checked and reviewed in 9 min without the lease.
+main is still at 1e0f77a2, the commit 5d31b9c0 was checked and reviewed against.
 t13 landed: t13 merged as 2b8d41e7 in /Users/pavi/Projects/demo; baseline and ledger agree.
-The landing lease for demo is released; another task may land.
+t13 spent 9 min landing without the lease and held it 20 s.
+The landing lease for demo is released; another task may merge.
 ```
 
-`land` takes the project's landing lease on the server, so two sessions
-never race main; merges main into the task's workspace, stopping on
-conflicts and naming the files for the owner to resolve by hand; runs the
-project's regenerate command when `init --regenerate` declared one;
-pushes; runs the required checks; submits; asks the server for the
-independent review the gate needs and waits for the verdict; then accepts
-and merges through the CLI's own `accept` and `merge`, run as its children,
-whose output it prints only when one fails. Each step and its duration are
+`land` merges main into the task's workspace, stopping on conflicts and
+naming the files for the developer to resolve by hand; runs the project's
+regenerate command when `init --regenerate` declared one; pushes; runs the
+required checks; submits; and asks the server for the independent review
+the gate needs and waits for the verdict, all without the project's
+landing lease, beside any other task's landing. Only with the head
+checked and approved does it take the lease on the server, for the merge
+alone, so two sessions never race main (a second landing queues behind
+it); it confirms main is still the commit the head was checked against,
+then accepts and merges through the CLI's own `accept` and `merge`, run as
+its children, whose output it prints only when one fails. Each step and its duration are
 recorded on the task as `land.*` events. `--reviewer H/M`
-names the reviewer, `--no-review` leaves the task submitted for the owner
+names the reviewer, `--no-review` leaves the task submitted for the developer
 to settle by hand, and `--dry-run` prints the steps and the refusals
 without changing anything. A landing stopped partway is resumed by running
 the same command again.
@@ -522,11 +531,11 @@ the same command again.
 relies on them:
 
 - A web page for plans. This walk reads a plan with `atelier plan show`.
-- Merging in Cloudflare. Every merge, the integrator's and the owner's,
+- Merging in Cloudflare. Every merge, the integrator's and the developer's,
   runs in local git on a Mac, because the Artifacts binding can read a
   repository but not write it.
-- A second model reviewing the plan document before the owner sees it.
-  The owner reads the split and decides alone.
+- A second model reviewing the plan document before the developer sees it.
+  The developer reads the split and decides alone.
 - More than one active plan per project, and re-planning after approval.
   Changing the split means `atelier plan stop` and a new plan.
 - A cloud runner. Every job is taken by a home runner.

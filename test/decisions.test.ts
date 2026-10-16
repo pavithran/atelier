@@ -25,16 +25,16 @@ test("cleanDecisionInput keeps the decision and the owner's words to one line ea
   refused({ quote: "words" }, "bad_decision", /needs text/);
   refused({ text: "   ", quote: "words" }, "bad_decision", /needs text/);
   refused({ text: 5, quote: "words" }, "bad_decision", /is text/);
-  refused({ text: "Decided." }, "bad_quote", /owner's words/);
-  refused({ text: "Decided.", quote: "\u0000" }, "bad_quote", /owner's words/);
+  refused({ text: "Decided." }, "bad_quote", /developer's words/);
+  refused({ text: "Decided.", quote: "\u0000" }, "bad_quote", /developer's words/);
   refused({ text: "Decided.", quote: ["x"] }, "bad_quote", /are text/);
   refused({ text: "x".repeat(DECISION_TEXT_MAX + 1), quote: "words" }, "too_long", /at most 1000/);
 });
 
 test("decisionLines and decisionsSection say each decision once, dated, with the owner's words", () => {
   assert.deepEqual(decisionLines([d1, d2]), [
-    "- d1 (2026-10-09): Another company reviews every change. The owner's words: “another company reviews everywhere”",
-    "- d2 (2026-10-10): No review is overridden. The owner's words: “no overrides”",
+    "- d1 (2026-10-09): Another company reviews every change. The developer's words: “another company reviews everywhere”",
+    "- d2 (2026-10-10): No review is overridden. The developer's words: “no overrides”",
   ]);
   const section = decisionsSection([d1]);
   assert.ok(section.startsWith("## Standing decisions\n\n"));
@@ -67,7 +67,7 @@ test("reviewBrief carries the standing decisions outside any fence, marked as no
   assert.ok(at > 0);
   assert.ok(at < text.indexOf("## Rules for blocking"));
   assert.ok(text.includes(`## Standing decisions\n\n${DECISIONS_RULE}\n\n${decisionLines([d1, d2]).join("\n")}\n\n## Rules for blocking`));
-  assert.ok(text.includes('A standing decision under "Standing decisions" is the project owner\'s and not open to review: a finding that contests one is neither blocking nor a follow-up.'));
+  assert.ok(text.includes('A standing decision under "Standing decisions" is the developer\'s and not open to review: a finding that contests one is neither blocking nor a follow-up.'));
   // With none recorded, or an older server sending none, the brief says so.
   for (const none of [[], null, undefined]) assert.ok(brief(none).includes(`## Standing decisions\n\n${DECISIONS_RULE}\n\n${NO_DECISIONS}\n\n`));
   // A control character in a decision is shown, never hidden.
@@ -83,9 +83,9 @@ test("an agent token reads a project's decisions and writes none", () => {
 });
 
 test("formatDecisions prints each decision as the briefs say it, and a withdrawn one with when and why", () => {
-  const gone = { ...d2, withdrawn: { by: "owner", at: "2026-10-11T08:00:00.000Z", note: "the owner allows one override" } };
+  const gone = { ...d2, withdrawn: { by: "owner", at: "2026-10-11T08:00:00.000Z", note: "the developer allows one override" } };
   assert.equal(formatDecisions([d1, gone]), [
     decisionLines([d1])[0],
-    `${decisionLines([d2])[0]} Withdrawn 2026-10-11: the owner allows one override`,
+    `${decisionLines([d2])[0]} Withdrawn 2026-10-11: the developer allows one override`,
   ].join("\n"));
 });

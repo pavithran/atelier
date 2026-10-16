@@ -105,13 +105,13 @@ async function giveUp(L: L, id: string) {
 
 it("a goal becomes a plan item dispatched as a plan job, and the planner's valid proposal clears the job", async () => {
   const L = await setup("plan-propose");
-  await refusal(L.newPlan("Ship it", [], "codex/gpt-6-astra", PLANNER, []), "not_project_owner", /only the project owner starts a plan/);
+  await refusal(L.newPlan("Ship it", [], "codex/gpt-6-astra", PLANNER, []), "not_project_owner", /only the developer starts a plan/);
   await refusal(L.newPlan("   ", [], "owner", PLANNER, []), "bad_goal", /a plan needs a goal/);
   await refusal(L.newPlan("Ship it", [], "owner", null, []), "no_planner", /the model pool is empty/);
   const { item, planner, reasons } = await L.newPlan("Ship the feature\nwith care", ["src/**"], "owner", PLANNER, []);
   expect(item).toMatchObject({ id: "t1", kind: "plan", state: "open", title: "Ship the feature with care", scope: ["src/**"] });
   expect(item.dispatch).toMatchObject({ to: "home", agent: "claude-code", model: "opus-5.5", job: "plan", by: "owner" });
-  expect([planner, reasons]).toEqual([PLANNER, ["Named by the project owner"]]);
+  expect([planner, reasons]).toEqual([PLANNER, ["Named by the developer"]]);
   // One active plan per project.
   await refusal(L.newPlan("Another", [], "owner", PLANNER, []), "plan_active", /t1 is this project's active plan/);
   expect((await view(L, "t1")).phase).toBe("planning");
@@ -120,7 +120,7 @@ it("a goal becomes a plan item dispatched as a plan job, and the planner's valid
   await refusal(L.postPlan("t1", PLANNER, doc(part("a"))), "not_planning", /a plan is posted by the holder of its claim/);
   await refusal(L.claim("t1", GPT, RUNNER), "wrong_agent", /asks for claude-code/);
   await L.claim("t1", PLANNER, RUNNER);
-  await refusal(L.postPlan("t1", GPT, doc(part("a"))), "not_owner", /does not own t1/);
+  await refusal(L.postPlan("t1", GPT, doc(part("a"))), "not_owner", /does not hold t1/);
 
   const invalid = await L.postPlan("t1", PLANNER, { ...doc(part("a")), extra: true });
   expect(invalid).toEqual({ valid: false, errors: ["plan.extra: unknown field"], attempt: 1, attempts: 2 });
@@ -190,7 +190,7 @@ it("a newer proposal makes the older hash unapprovable, and after approval nothi
   expect(second.hash).not.toBe(first.hash);
   await L.release(first.id, PLANNER, "proposed");
 
-  await refusal(L.approvePlan(first.id, "codex/gpt-6-astra", second.hash, false, POOL), "not_project_owner", /only the project owner approves/);
+  await refusal(L.approvePlan(first.id, "codex/gpt-6-astra", second.hash, false, POOL), "not_project_owner", /only the developer approves/);
   await refusal(L.approvePlan(first.id, "owner", "abc", false, POOL), "bad_hash", /full hash/);
   await refusal(L.approvePlan(first.id, "owner", first.hash, false, POOL), "stale_plan", new RegExp(`is not t1's newest proposal, which is ${second.hash}`));
   // Approval is refused while a part cannot be routed: one model has no reviewer of another family.
@@ -325,7 +325,7 @@ it("a limit blocks the plan: three attempts, then the plan's job budget after a 
   expect((await events(L, id)).find((e) => e.kind === "plan.blocked")).toMatchObject({ actor: "atelier/orchestrator", data: { reason: "part a has reached 3 attempts" } });
 
   // The owner retries: attempts count afresh, and the builder is asked again.
-  await refusal(L.retryPlan(parts.a, "codex/gpt-6-astra"), "not_project_owner", /only the project owner/);
+  await refusal(L.retryPlan(parts.a, "codex/gpt-6-astra"), "not_project_owner", /only the developer/);
   await L.retryPlan(parts.a, "owner");
   expect((await view(L, id)).blocked).toBeNull();
   const builder = (await view(L, id)).parts[0].route!.builder!.actor;
@@ -343,7 +343,7 @@ it("the owner reroutes an open part, and its dispatch follows", async () => {
   await refusal(L.reroutePlan(parts.a, "owner", "owner"), "bad_actor", /harness\/model/);
   await L.reroutePlan(parts.a, "owner", "zcode/glm-5.3");
   expect(await waiting(L)).toEqual([`${parts.a}:zcode/glm-5.3`]);
-  expect((await view(L, id)).parts[0].route!.builder).toEqual({ actor: GLM, reasons: ["Rerouted by the project owner"] });
+  expect((await view(L, id)).parts[0].route!.builder).toEqual({ actor: GLM, reasons: ["Rerouted by the developer"] });
   await L.claim(parts.a, GLM, RUNNER);
   await refusal(L.reroutePlan(parts.a, "owner", OPUS), "part_busy", /held by zcode\/glm-5\.3/);
   await refusal(L.reroutePlan(id, "owner", OPUS), "plan_approved", /reroute one of its parts instead/);
@@ -422,7 +422,7 @@ it("a plan completes when every part has merged; stopping one closes its open pa
   const stopped = await approved(S, doc(part("a"), part("b")));
   const holder = (await S.item(stopped.parts.a)).dispatch!;
   await S.claim(stopped.parts.a, `${holder.agent}/${holder.model}`, RUNNER);
-  await refusal(S.stopPlan(stopped.id, "codex/gpt-6-astra", "no"), "not_project_owner", /only the project owner stops a plan/);
+  await refusal(S.stopPlan(stopped.id, "codex/gpt-6-astra", "no"), "not_project_owner", /only the developer stops a plan/);
   expect((await S.stopTargets(stopped.id, "owner")).map((t) => t.id)).toEqual([stopped.id, stopped.parts.a, stopped.parts.b]);
   await S.stopPlan(stopped.id, "owner", "changed course");
   for (const x of [stopped.id, stopped.parts.a, stopped.parts.b]) expect(await S.item(x)).toMatchObject({ state: "abandoned", owner: null });

@@ -152,6 +152,59 @@ test("runs the runners reported: stalled, timed out and refused per model, and r
   assert.equal(rel.size, 2);
 });
 
+// t591: a review job whose merge commit no source held is the infrastructure's
+// miss, not the reviewer's. The run report names the missing commit, and the
+// model's record, its speed, the stall exclusion and the dispatch skip count
+// nothing of it (codex/gpt-6-astra's review of t591, finding 1).
+test("an infrastructure miss is a run report that changes no model's record", async () => {
+  const miss = cleanRun({ actor: "codex/gpt-6-astra", role: "review", outcome: "infrastructure_miss", project: "a", item: "t9", detail: `the merge commit ${H1} is not in the baseline` }, "2026-10-13T12:00:00.000Z", "home:studio");
+  assert.equal(miss.outcome, "infrastructure_miss");
+  assert.match(miss.detail, new RegExp(H1));
+  const base = [run({ outcome: "refused", role: "review", actor: "codex/gpt-6-astra" })];
+  const without = one(buildReliability([], base, OWNER), "gpt-6-astra");
+  const withMiss = one(buildReliability([], [...base, miss, miss], OWNER), "gpt-6-astra");
+  assert.deepEqual(withMiss, without);
+  assert.deepEqual(outcomesOf(withMiss), outcomesOf(without));
+  assert.equal(buildReliability([], [miss], OWNER).size, 0, "a miss alone makes no record");
+  const { buildSpeed } = await import("../src/models/speed.ts");
+  const speedOf = (runs: RunReport[]) => buildSpeed([], runs, OWNER, Date.parse("2026-10-13T13:00:00.000Z")).models;
+  assert.deepEqual(speedOf([...base, miss]), speedOf(base));
+  const { skippedBy } = await import("../src/dispatch/rules.ts");
+  assert.deepEqual(skippedBy([{ ...miss, role: "build" }, { ...miss, role: "build" }], "a", "t9"), []);
+});
+
+// t638 (t591's untested filter): the stall exclusion (stalledBuilder) skips
+// infrastructure_miss runs. On one side, a miss is no stall: misses alone
+// latch nothing, and a miss between two stalls neither adds to nor breaks
+// the run, so the two stalls still latch it (unfiltered, the miss would read
+// as a non-stall failure and reset the count). On the other, a real stall is
+// still counted: two latch the exclusion, a stalled review counts in the
+// model's record and its review stall share, and a post-merge review's miss
+// beside it counts in neither.
+test("the stall filter counts a model's stalls and passes over its infrastructure misses", async () => {
+  const { stalledBuilder } = await import("../src/models/suggest.ts");
+  const { cleanEntry } = await import("../src/models/pool.ts");
+  const { buildSpeed } = await import("../src/models/speed.ts");
+  const entry = cleanEntry({ id: "gpt-6-astra", harness: "codex", where: "home" }, OWNER, "2026-10-01");
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 13, 12, minute)).toISOString();
+  const stall = (minute: number) => run({ actor: GPT, role: "build", outcome: "stalled", at: at(minute) });
+  const miss = (minute: number, role: RunReport["role"] = "build") => run({ actor: GPT, role, outcome: "infrastructure_miss", at: at(minute), detail: `the merge commit ${H1} is not in the baseline` });
+  const latched = (runs: RunReport[]) => stalledBuilder(entry, { sources: [], runs });
+  assert.equal(latched([stall(1), stall(2)]), true, "two stalls latch the exclusion");
+  assert.equal(latched([stall(1), miss(2), stall(3)]), true, "a miss between two stalls does not break their run");
+  assert.equal(latched([stall(1), run({ actor: GPT, outcome: "refused", at: at(2) }), stall(3)]), false, "a refusal, the model's own failure, does");
+  assert.equal(latched([miss(1), miss(2)]), false, "misses are no stalls");
+  assert.equal(latched([stall(1), miss(2)]), false);
+  // A post-merge review's miss beside a real stalled review: the stall is
+  // counted in the record and the review stall share, the miss in neither.
+  const stalledReview = run({ actor: GPT, role: "review", outcome: "stalled", at: at(1) });
+  const record = one(buildReliability([], [stalledReview, miss(2, "review")], OWNER), "gpt-6-astra");
+  assert.equal(record.runs.stalled, 1);
+  assert.equal(record.unfinishedReviews, 1);
+  const review = buildSpeed([], [stalledReview, miss(2, "review")], OWNER, Date.parse(at(30))).models[0].review;
+  assert.deepEqual([review.runs, review.stalled], [1, 1]);
+});
+
 test("a plan harness failure is counted as harness_failed, not refused", () => {
   const rel = buildReliability([], [run({ outcome: "harness_failed", role: "plan", detail: "the CLI is too old" })], OWNER);
   const opus = one(rel, "opus-5.5");

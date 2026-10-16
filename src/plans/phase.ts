@@ -135,7 +135,9 @@ function histories(events: readonly LedgerEvent[]): Map<string, PartHistory> {
         holder.set(key, typeof event.data.to === "string" ? event.data.to : null);
         break;
       case "item.released":
-        if (holder.get(key)) h.attempts.push({ actor: holder.get(key)!, outcome: committed.get(key) ? "failed" : "give-up" });
+        // A provider's usage limit (t487) pauses the runner's harness; the
+        // release it leaves is no attempt, so the same builder resumes.
+        if (holder.get(key) && event.data.providerLimit !== true) h.attempts.push({ actor: holder.get(key)!, outcome: committed.get(key) ? "failed" : "give-up" });
         holder.set(key, null);
         committed.set(key, false);
         h.waiting = false;

@@ -47,7 +47,7 @@ export function parsePostMerge(value: unknown, actor: string, at: string): PostM
   const v = value as PostMergePolicy;
   if (!v || v.version !== 1 || !Array.isArray(v.steps) || v.steps.length > 30) bad("postMerge needs version: 1 and at most 30 ordered steps; null clears it");
   if (!v.steps.length) return null;
-  if (typeof v.approval?.reason !== "string" || !v.approval.reason.trim() || v.approval.reason.length > 2000) bad("post-merge steps require explicit owner approval with a reason");
+  if (typeof v.approval?.reason !== "string" || !v.approval.reason.trim() || v.approval.reason.length > 2000) bad("post-merge steps require the developer's explicit approval with a reason");
   const names = new Set<string>();
   const steps = v.steps.map(s => {
     if (!s || !/^[a-zA-Z][\w-]{0,63}$/.test(s.name) || names.has(s.name)) bad("step names must be unique identifiers");

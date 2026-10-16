@@ -3,9 +3,10 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
-import { IDENTITY_LOG_FORMAT, isPublicMirror, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { OWNER, P, actor, args, at, call, cfg, die, git, project, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
-import publishCommand from "./publish.mjs";
+import { OWNER, P, actor, args, at, call, cfg, die, git, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
+import { publishCheckoutRemote } from "../mirror.mjs";
+import { privateChanges, privateGuardFor } from "../private.mjs";
+import { publishBaseline } from "./publish.mjs";
 import syncCommand from "./sync.mjs";
 
 export default async function wrapCommand() {
@@ -13,7 +14,7 @@ export default async function wrapCommand() {
   // The server records a session only for the project owner. Refuse here,
   // before wrap commits or pushes anything the server would then not take a
   // note for.
-  if (as !== OWNER) die(`only the project owner records a session: run wrap as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
+  if (as !== OWNER) die(`only the developer records a session: run wrap as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
   const head = git(["rev-parse", "HEAD"], { cwd });
   let data;
   // An unquoted summary reaches here as several words: they are one summary.
@@ -35,7 +36,7 @@ export default async function wrapCommand() {
     const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: { project: name, actor: as, class: "release" }, maxBytes: 1024 * 1024 });
     const passed = result.status === 0 && !result.error;
     data.checks.push({ command, passed, grade: "reported" });
-    console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+    console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
     if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut });
   }
   // A failing registered check stops wrap here, with every result printed
@@ -107,13 +108,22 @@ export default async function wrapCommand() {
   if (marked.length) {
     die(`wrap will not commit conflict markers: ${marked.map((p) => sessionText(p, 200)).join(", ")}; resolve them first. Nothing was staged.`);
   }
+  // A private file (t645) is never staged: Git ignores each one through
+  // info/exclude, and one staged by hand or no longer excluded stops wrap
+  // here, before anything is staged. A symbolic link is refused as the file.
+  const guard = privateGuardFor(name);
+  if (guard.refusal) die(`wrap stopped before staging anything: ${guard.refusal}`);
+  const privates = guard.paths;
+  let held;
+  try { held = privateChanges(cwd, privates); } catch (error) { die(`${error.message}; nothing was staged`); }
+  if (held.length) die(`wrap will not commit private files: ${held.map((p) => sessionText(p, 200)).join(", ")}. They stay in this Mac's iCloud folder and Atelier never pushes them (atelier private ls). Unstage them with git rm --cached PATH, and run atelier private add PATH to have Git ignore them again. Nothing was staged.`);
   git(["add", "-A"], { cwd });
   // Whitespace is checked on what the commit will hold, after staging: the
   // index against HEAD takes in staged changes and new files, which a diff of
   // the working tree against the index leaves out.
   const diff = git(["diff", "--cached", "--check"], { cwd, allowFail: true });
   data.checks.push({ command: "git diff --cached --check", passed: diff.status === 0, grade: "reported" });
-  console.log(`Reported: git diff --cached --check: ${diff.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+  console.log(`Reported: git diff --cached --check: ${diff.status === 0 ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
   if (diff.stdout || diff.stderr) console.log(diff.stdout || diff.stderr);
   const staged = git(["diff", "--cached", "--quiet"], { cwd, allowFail: true });
   if (staged.status === 1) {
@@ -124,26 +134,10 @@ export default async function wrapCommand() {
   else die("could not inspect staged changes");
   data.pushes = [];
   for (const remote of remotes) {
-    // A remote the policy declares a public mirror (publicMirrors) takes
-    // only the project's own no-reply address (publicRefusals): every
-    // commit it lacks, as last fetched or pushed, must carry it as author
-    // and committer. An agent address allowed for landing is not allowed
-    // here. Such a remote is not pushed, and fails as a push that failed
-    // does. Any other remote is the owner's own and is pushed as before.
     const identity = record.policy.commitIdentity;
-    if (isPublicMirror(identity, remote)) {
-      const log = git(["log", `--format=${IDENTITY_LOG_FORMAT}`, `refs/heads/${branch}`, "--not", `--remotes=${remote}`], { cwd, raw: true });
-      const unpublic = publicRefusals(identity, parseIdentityLog(log));
-      if (unpublic.length) {
-        data.pushes.push({ remote, passed: false });
-        console.log(`Remote ${sessionText(remote, 200)}: not pushed; it would publish addresses that are not public:\n  ${unpublic.map((line) => sessionText(line, 300)).join("\n  ")}`);
-        continue;
-      }
-    }
-    // The owner's own remotes: a normal push, LFS objects included (see gitEnv).
-    const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true, ownerRemote: true });
-    data.pushes.push({ remote, passed: result.status === 0 });
-    console.log(`Remote ${sessionText(remote, 200)}: ${result.status === 0 ? "pushed" : "failed"}.`);
+    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log, project: name });
+    data.pushes.push({ remote, passed: result.ok });
+    console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
   }
   if (!args.push) console.log("Checkout remotes not pushed (no --push).");
   data.found = [];
@@ -157,7 +151,7 @@ export default async function wrapCommand() {
   const note = await call("POST", `${P(name)}/sessions`, cleanSession(data), as);
   console.log(sessionNoteText(note));
   if (cfg.projects[name].fresh === true) await syncCommand();
-  else await publishCommand();
+  else await publishBaseline();
   console.log("Nothing deployed or published as a release.");
   console.log(FILING_RELAY);
   console.log(wrapRelay(note));

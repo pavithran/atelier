@@ -16,10 +16,10 @@ export function setTimeZone(name: string | undefined | null): string {
 
 export const timeZone = () => zone;
 
-const parts = (at: Date | string | number) => {
+const parts = (at: Date | string | number, timeZone = zone) => {
   const d = at instanceof Date ? at : new Date(at);
   const f = new Intl.DateTimeFormat("en-US", {
-    timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short",
   }).formatToParts(d);
   const get = (t: string) => f.find((p) => p.type === t)?.value ?? "";
@@ -50,6 +50,14 @@ export function dayOf(at: Date | string | number): string {
   return `${p.y}-${p.m}-${p.d}`;
 }
 
+// dayOf in a zone named by the caller, for code that runs where no request
+// has set the owner's zone (the Ledger's showcase counts). An unknown zone is UTC.
+export function dayInZone(at: Date | string | number, name: string): string {
+  let p;
+  try { p = parts(at, name); } catch { p = parts(at, "UTC"); }
+  return `${p.y}-${p.m}-${p.d}`;
+}
+
 // "Sunday": the day of the week in the owner's zone.
 export function weekdayOf(at: Date | string | number): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "long" }).format(at instanceof Date ? at : new Date(at));
@@ -60,11 +68,16 @@ export function zoneName(at: Date | string | number = Date.now()): string {
   return parts(at).tz;
 }
 
-// "New York time", or "UTC": the zone itself, right in every season, for a
+// "ET", or "UTC": the zone itself, right in every season, for a
 // legend beside times from many dates. An abbreviation such as EDT is right
 // only for the dates it belongs to.
 export function zoneLabel(): string {
   if (zone === "UTC") return "UTC";
+  // The zone's generic short name ("ET", "PT"), right in every season; the
+  // city's name where the runtime has none (PAVI, 2026-10-13: "times in New
+  // York time" read awkwardly; EST would be wrong in October).
+  const generic = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "shortGeneric" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value;
+  if (generic && /^[A-Z]{1,5}$/.test(generic)) return generic;
   const city = zone.split("/").pop()!.replace(/_/g, " ");
   return `${city} time`;
 }

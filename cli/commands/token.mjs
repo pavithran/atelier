@@ -2,20 +2,21 @@
 import { normalizeRunner, promptSecret, storeRunnerCredential } from "../credentials.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, actor, args, call, die, project, server } from "../atelier.mjs";
+import { serverFetch } from "../server-fetch.mjs";
 
 export default async function tokenCommand() {
   const action = args._[1];
   if (action === "store" && args.runner) {
     const name = normalizeRunner(args.runner);
     const token = await promptSecret("Runner token: ");
-    const res = await fetch(`${server()}/api/config`, { headers: { authorization: `Bearer ${token}` } });
+    const res = await serverFetch(`${server()}/api/config`, { headers: { authorization: `Bearer ${token}` } });
     const config = await res.json();
     if (!res.ok || config.runner !== name) die("credential is not an active token for this runner");
     console.log(storeRunnerCredential(server(), name, token));
     return;
   }
   if (action === "issue") {
-    if (args.runner && args.as) die("a runner token takes --runner and exactly one --project, not --as");
+    if (args.runner && (args.as || !args.multi.project?.length)) die("a runner token takes --runner and --project, not --as");
     if (!args.runner && typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
     if (args.days !== undefined && (!Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
     const result = await call("POST", "/tokens", {

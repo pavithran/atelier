@@ -750,10 +750,10 @@ export function checkClasses(policy: Pick<ProjectPolicy, "checks" | "checkClasse
 
 // A check's class in words, for the project page, init's summary and `atelier status`.
 export function classText(view: CheckClassView): string {
-  if (view.class === "refused") return `refused, because it ${view.refusal}; Atelier will not run it until the project owner replaces it`;
-  if (view.class === "undeclared") return "undeclared: registered before checks had classes, and still run; the project owner declares it with atelier init --declare-read-only \"reason\"";
+  if (view.class === "refused") return `refused, because it ${view.refusal}; Atelier will not run it until the developer replaces it`;
+  if (view.class === "undeclared") return "undeclared: registered before checks had classes, and still run; the developer declares it with atelier init --declare-read-only \"reason\"";
   if (view.by === "adapter") return `read-only, from ControlPlane: ${view.note}`;
-  if (view.by === "owner") return `read-only, declared by the project owner: ${view.note}`;
+  if (view.by === "owner") return `read-only, declared by the developer: ${view.note}`;
   return "read-only, a known build or test command";
 }
 

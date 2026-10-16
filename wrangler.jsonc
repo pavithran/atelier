@@ -12,10 +12,11 @@
   "observability": { "enabled": true },
   "routes": [{ "pattern": "atelier.zone", "custom_domain": true }],
   "workers_dev": false,
-  // An empty cron list clears the schedules an earlier deploy left on the
-  // Worker; without the key, a deploy leaves them running. Nothing exports
-  // scheduled(), so none may fire.
-  "triggers": { "crons": [] },
+  // The daily model snapshots (t623, takeModelSnapshots in src/index.ts):
+  // every six hours, so a run that fails or finds a project unreadable is
+  // tried again within the day; a run with nothing due writes nothing. The
+  // list replaces whatever schedules an earlier deploy left on the Worker.
+  "triggers": { "crons": ["7 */6 * * *"] },
   // Cloudflare Access in front of the owner's pages (src/access.ts): set all
   // three, as vars or secrets, and the Worker verifies the Access assertion
   // on every owner route — /login and its token form among them — against the
@@ -24,7 +25,8 @@
   // Access application's AUD tag; the email is the one person the pages are
   // for. Each public path (/api/*, /showcase, /how, /live.js) needs its own
   // Access application with a Bypass policy, since bearer tokens and visitors
-  // never pass Access (docs/setup.md says how).
+  // never pass Access (docs/setup.md says how). Set all three or none: with
+  // only some set, or one unusable, the owner's routes are refused.
   //   "vars": {
   //     "CF_ACCESS_ISS": "https://TEAM.cloudflareaccess.com",
   //     "CF_ACCESS_AUD": "<the application's AUD tag>",
@@ -65,9 +67,11 @@
   },
   // The landing pipeline as a Cloudflare Workflow (src/landing-workflow.ts),
   // used only by `atelier land ID --workflow` (docs/landing.md): one instance
-  // per landing runs the lease, the checks in a container, the submission,
-  // the review wait and the acceptance as durable steps with retries, and
-  // waits for the owner's machine to merge main, push and merge. At the
+  // per landing runs the checks (in a container with --checks container),
+  // the submission and the review wait without the landing lease, then takes
+  // the lease for the acceptance and the merge alone, as durable steps with
+  // retries, and waits for the developer's machine to merge main, push, run
+  // the checks (with --checks local, the default) and merge. At the
   // default polls a landing takes under 3,000 steps, well inside the
   // default limit of 10,000.
   "workflows": [{ "name": "landing", "binding": "LANDING_WORKFLOW", "class_name": "LandingWorkflow" }],

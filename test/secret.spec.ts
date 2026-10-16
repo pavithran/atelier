@@ -131,7 +131,7 @@ it("only the owner clears the flag, with a required reason, and the clearing is 
   await claimed(L, "secret-clear--t1");
   await L.setSecret("t1", "atelier/events", H1, [await hit(3)]);
 
-  await refusal(L.clearSecret("t1", A, "because"), "not_project_owner", /only the project owner clears/);
+  await refusal(L.clearSecret("t1", A, "because"), "not_project_owner", /only the developer clears/);
   await refusal(L.clearSecret("t1", "owner", ""), "secret_reason", /needs a reason/);
   await refusal(L.clearSecret("t1", "owner", "x".repeat(501)), "secret_reason", /at most/);
 

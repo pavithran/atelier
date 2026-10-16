@@ -3,10 +3,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { subsequence } from './helpers/runner-server.mjs';
 import { prepareWorkspace, preparationMarker, prepareTimeout, execute, runRunner, IDENTITY_FILE } from '../cli/runner.mjs';
 
 function fixture(t) {
-  const cwd = mkdtempSync(join(process.cwd(), '.prepare-test-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'atelier-prepare-test-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const gitDir = join(cwd, '.git'), cache = join(cwd, 'cache');
   mkdirSync(gitDir);
@@ -113,6 +115,6 @@ test('the real runner reads preparation from its claimed Git directory before st
       return execute(argv, options);
     },
   });
-  assert.deepEqual(calls, ['claim', 'harness', 'baseline-token', 'finish']);
+  assert.ok(subsequence(calls, ['claim', 'harness', 'baseline-token', 'finish']), calls.join(', '));
   assert.ok(existsSync(f.marker));
 });

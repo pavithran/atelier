@@ -19,7 +19,7 @@ test("the note names each review's reviewer, verdict, head and recorder, without
     ],
     events: [{ at: "2026-10-06T12:01:00Z", actor: "pavi", kind: "item.accepted", data: { note: "ACCEPT TEXT" } }],
   });
-  assert.ok(note.includes(`REVIEW approve by antigravity/gemini-3.1-pro at ${H}, recorded by pavi with the owner token, answering a claimed review request`), note);
+  assert.ok(note.includes(`REVIEW approve by antigravity/gemini-3.1-pro at ${H}, recorded by pavi with the developer's token, answering a claimed review request`), note);
   assert.ok(note.includes(`REVIEW reject by codex/gpt-6-astra at ${H}, recorded by codex/gpt-6-astra`), note);
   assert.ok(note.includes("2026-10-06T12:01:00Z pavi item.accepted"), note);
   for (const text of ["SECRET REVIEW TEXT", "OTHER TEXT", "ACCEPT TEXT"]) assert.ok(!note.includes(text), `the note carries ${text}`);

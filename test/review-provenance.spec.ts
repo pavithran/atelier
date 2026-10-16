@@ -84,7 +84,7 @@ it("an approval the owner token recorded in a model's name is not the independen
   const d = await L.detail("t1") as unknown as Detail;
   expect(d.reviews.at(-1)).toMatchObject({ by: GPT, recordedBy: "owner", proved: false, claimed: false });
   expect(d.gate.ready).toBe(false);
-  expect(d.gate.blockers).toContain(`the approval by ${GPT} was recorded by owner with the owner token and answers no review request ${GPT} claimed at this head, so it is not the independent review`);
+  expect(d.gate.blockers).toContain(`the approval by ${GPT} was recorded by owner with the developer token and answers no review request ${GPT} claimed at this head, so it is not the independent review`);
   expect((await events(L, "t1")).find((e) => e.kind === "review.approved")?.data).toMatchObject({ recordedBy: "owner" });
 });
 

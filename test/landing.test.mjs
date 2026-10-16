@@ -8,6 +8,8 @@ import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {adoptOldLanding,landingDir,landingJournal,landingJournalFile,landingLock,oldLandingJournalFile,oldLandingLockDir} from '../cli/landing.mjs';
 import {SERVER_CAPABILITIES} from '../src/route-level.ts';
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 // merge checks the server's capabilities first (t458); each stand-in answers the version before anything is recorded.
 const versionAnswer=(req,res)=>{if(req.url!=='/api/version')return false;res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({capabilities:SERVER_CAPABILITIES}));return true;};
 const git=(cwd,...args)=>execFileSync('git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
@@ -304,4 +306,58 @@ test('notes go to a notes remote the policy declares a public mirror only under 
  assert.match(landed.output,/Provenance notes were not pushed to github/);
  assert.match(landed.output,/agent@example\.invalid/);
  assert.equal(execFileSync('git',['--git-dir',pub,'for-each-ref','refs/notes/atelier'],{encoding:'utf8'}).trim(),'');
+});
+
+// Private files (t645): a landing puts no private file on the baseline,
+// whether the task's commits carry one or the checkout's own commits do.
+function namePrivate(p,paths){const file=join(p,'config','config.json');const config=JSON.parse(readFileSync(file,'utf8'));config.projects.proj.private=paths;writeFileSync(file,JSON.stringify(config));}
+test('a merge refuses a task whose accepted revision touches a private file, before anything is merged',async t=>{
+ const {p,checkout,baseline,box,run}=await mergeFixture(t);
+ box.state='accepted';namePrivate(p,['work.txt']);
+ const before=git(checkout,'rev-parse','HEAD'),baselineBefore=git(checkout,'ls-remote',baseline,'refs/heads/main');
+ const r=await run(checkout,'merge','t1');
+ assert.notEqual(r.status,0,r.output);
+ assert.match(r.output,/t1's accepted revision would carry private files: work\.txt in [0-9a-f]{12}\..*Nothing was merged\./s);
+ assert.equal(git(checkout,'rev-parse','HEAD'),before);
+ assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
+ assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
+});
+test('a merge refuses to push the checkout\'s own commit holding a private file with the landing',async t=>{
+ const {p,checkout,baseline,box,run}=await mergeFixture(t);
+ box.state='accepted';namePrivate(p,['PROJECT.md']);
+ writeFileSync(join(checkout,'PROJECT.md'),'the plan\n');git(checkout,'add','-f','PROJECT.md');git(checkout,'commit','-m','by hand');
+ const baselineBefore=git(checkout,'ls-remote',baseline,'refs/heads/main');
+ const r=await run(checkout,'merge','t1');
+ assert.notEqual(r.status,0,r.output);
+ assert.match(r.output,/The landing would carry private files: PROJECT\.md in [0-9a-f]{12}.*Nothing was pushed\./s);
+ assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
+ assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
+});
+// Both reviews of t645: a task's push to its fork was not checked, so a
+// private file committed in a workspace reached Artifacts before any merge.
+test('a task\'s push carries no private file of the project to its fork',async t=>{
+ const {p,workspace,run}=await mergeFixture(t);
+ namePrivate(p,['PROJECT.md']);
+ const fork=join(p,'fork.git'),before=git(p,'--git-dir',fork,'rev-parse','main');
+ writeFileSync(join(workspace,'PROJECT.md'),'the plan\n');git(workspace,'add','-f','PROJECT.md');git(workspace,'commit','-m','by hand\n\nAgent: codex/test');
+ const r=await run(workspace,'push','t1','--as','codex/test');
+ assert.notEqual(r.status,0,r.output);
+ assert.match(r.output,/t1's push to its fork would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./s);
+ assert.equal(git(p,'--git-dir',fork,'rev-parse','main'),before);
+});
+// Astra's sixth review of t645, finding 1: after projects rename, a
+// workspace made before still names the old project, and its push was
+// checked against no configuration.
+test('a task\'s push from a workspace that still names a renamed project is guarded',async t=>{
+ const {p,workspace,run}=await mergeFixture(t);
+ const file=join(p,'config','config.json'),config=JSON.parse(readFileSync(file,'utf8'));
+ // As projects rename leaves it: the entry under the new name, the old one kept as a former name.
+ config.projects.renamed={...config.projects.proj,private:['PROJECT.md'],formerNames:['proj']};delete config.projects.proj;
+ writeFileSync(file,JSON.stringify(config));
+ const fork=join(p,'fork.git'),before=git(p,'--git-dir',fork,'rev-parse','main');
+ writeFileSync(join(workspace,'PROJECT.md'),'the plan\n');git(workspace,'add','-f','PROJECT.md');git(workspace,'commit','-m','by hand\n\nAgent: codex/test');
+ const r=await run(workspace,'push','t1','--as','codex/test');
+ assert.notEqual(r.status,0,r.output);
+ assert.match(r.output,/t1's push to its fork would carry private files: PROJECT\.md/);
+ assert.equal(git(p,'--git-dir',fork,'rev-parse','main'),before);
 });

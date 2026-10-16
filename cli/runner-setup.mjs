@@ -10,9 +10,9 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 import { DEFAULT_JOBS, defaultConfigPath, parseConfig, providersDir } from "./runner-config.mjs";
-import { HARNESSES } from "./harness/adapter.mjs";
+import { HARNESSES, opencodeMajor } from "./harness/adapter.mjs";
 import {
-  PROVIDERS, SERVED, checkLimits, configuredLimits, localServed, opencodeConfig, openRouterId, openRouterServed, providerFor,
+  PROVIDERS, SERVED, checkLimits, configuredLimits, localServed, opencodeConfig, openRouterId, openRouterRefusal, openRouterServed, providerFor,
 } from "./harness/providers.mjs";
 
 export const OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models";
@@ -61,6 +61,8 @@ export async function resolveOpencode(entries, fetchJson, catalogue = {}) {
       const hit = openRouterId(entry.id, openrouter);
       if (!hit) { refuse(`OpenRouter lists no single model that ${entry.id} names (an id VENDOR/MODEL, written VENDOR-MODEL in the pool)`); continue; }
       providerModel = hit.id;
+      const claude = openRouterRefusal(providerModel);
+      if (claude) { refuse(claude); continue; }
       served = openRouterServed(hit);
     } else if (provider === "ai-studio") {
       if (studioEndpoint && studioEndpoint !== where.baseURL) { refuse(`a runner reaches one AI Studio endpoint, and ${studioEndpoint} is already configured`); continue; }
@@ -82,9 +84,14 @@ export async function resolveOpencode(entries, fetchJson, catalogue = {}) {
 }
 
 // Everything setup would write, as { files: [{path, text}], config, refused, found, lines }.
-export async function planSetup({ configPath, pool, env, which, fetchJson, catalogue }) {
+// `major` is the major version of the opencode found (null: unknown); the V2
+// permissions key is written only for 2 or later, since opencode 1 throws on it.
+export async function planSetup({ configPath, pool, env, which, fetchJson, catalogue, major = null }) {
   const found = Object.keys(HARNESSES).filter((h) => which(HARNESSES[h].executable));
-  const home = (Array.isArray(pool) ? pool : []).filter((m) => m.where === "home");
+  // A home runner takes the pool's home models and the opencode models served
+  // by OpenRouter's API, which the pool records as cloud (t698): an API model
+  // runs on any machine with the key.
+  const home = (Array.isArray(pool) ? pool : []).filter((m) => m.where === "home" || (m.harness === "opencode" && m.provider === "openrouter"));
   const gateway = gatewayFrom(env);
   // Each runner config's provider configs have a folder of their own, so a
   // second runner's setup leaves the first's as they were.
@@ -103,7 +110,7 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
     for (const provider of [...new Set(resolved.accepted.map((m) => m.provider))]) {
       const models = resolved.accepted.filter((m) => m.provider === provider);
       const spec = PROVIDERS[provider];
-      const config = opencodeConfig(provider, models, { baseURL: models[0].baseURL, gateway });
+      const config = opencodeConfig(provider, models, { baseURL: models[0].baseURL, gateway, major });
       files.push({ path: join(providers, `${provider}.json`), text: JSON.stringify(config, null, 2) + "\n" });
       for (const m of models) {
         const key = m.keychain ?? spec.key;
@@ -145,9 +152,11 @@ export async function runSetup(args, io) {
   const env = io.env ?? process.env;
   const configPath = resolve(args.config ?? defaultConfigPath());
   if (!args["dry-run"] && (io.exists ?? existsSync)(configPath)) throw new Error(`${configPath} exists; setup does not overwrite a runner config. Move it aside, or name another file with --config PATH`);
+  const which = io.which ?? ((name) => onPath(name, env));
+  const exe = which(HARNESSES.opencode.executable);
   const plan = await planSetup({
-    configPath, env, pool: await io.pool(),
-    which: io.which ?? ((name) => onPath(name, env)),
+    configPath, env, pool: await io.pool(), which,
+    major: io.opencodeMajor ?? (typeof exe === "string" ? opencodeMajor(exe, env) : null),
     fetchJson: io.fetchJson, catalogue: io.catalogue,
   });
   const print = io.print ?? ((text) => console.log(text));

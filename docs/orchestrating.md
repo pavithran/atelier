@@ -11,7 +11,7 @@ made them and when. See [Single-family mode](gate.md#single-family-mode).
 
 This is the handbook for a session that runs Atelier for a project: one that
 files tasks, sends them to coding agents, has their work reviewed, and lands
-it for the owner. It is written from the work of 6 October 2026, when one
+it for the developer. It is written from the work of 6 October 2026, when one
 session landed about forty tasks on Atelier itself with agents from four
 model families, and records what went wrong and what prevents it. The rules
 Atelier enforces are in the README and on the `/how` page; this document is
@@ -35,13 +35,13 @@ points at it and states the review path (it does not edit the file).
 - Every protected or coordinated change is reviewed by a model from another
   company than every agent that worked on it; in single-family mode, only a
   different model of the selected company from every contributor counts.
-- Never override a review, a check or a block, except on the owner's own
-  confirmation. Ask, and cite the owner's words; never infer them.
+- Never override a review, a check or a block, except on the developer's own
+  confirmation. Ask, and cite the developer's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with `atelier finding ... --as H/M`, naming yourself, as you name
   yourself on `atelier decide`, `atelier decisions withdraw` and on an
   override: the Models page measures your verdicts as it measures a
-  reviewer's. Without `--as` the record cannot tell you from the owner, and
+  reviewer's. Without `--as` the record cannot tell you from the developer, and
   the page counts the judgement as unknown.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
@@ -53,7 +53,7 @@ points at it and states the review path (it does not edit the file).
   one task took three review rounds and another five, each over a case the
   criteria left unstated.
 - When a criterion requires that every path be guarded (every write of an
-  owner, every call that needs a check), ask for a runtime boundary, never
+  developer, every call that needs a check), ask for a runtime boundary, never
   for a test that scans the source for the paths. Ask for one guarded entry
   point that does the write and checks the guard, and for the low-level
   write to refuse any call that does not come through it, tested by calling
@@ -61,7 +61,7 @@ points at it and states the review path (it does not edit the file).
   missed. t389's criterion 4 said "a test enumerates those paths and fails
   if one is added without the check"; gpt-6-astra rejected it ten times from
   9 to 12 October, each time over an assignment path the checks missed, and
-  the last two over owner writes the builder's scanner of regular
+  the last two over developer writes the builder's scanner of regular
   expressions missed (the last was
   `const fields = { owner: to }; this.update(id, fields, at)`).
 - Before asking for the independent review, read the diff against the
@@ -71,7 +71,7 @@ points at it and states the review path (it does not edit the file).
   `H/M` names a reviewer of another family than every contributor; the
   command merges main, checks, submits, waits for the independent review,
   then accepts and merges. Never land two together. An override while
-  accepting is the owner's last resort when no reviewer qualifies, and
+  accepting is the developer's last resort when no reviewer qualifies, and
   never the way to land another agent's work.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
@@ -79,8 +79,8 @@ points at it and states the review path (it does not edit the file).
   `atelier release` it. Do not start the same work twice.
 - After two rejections on the same point, stop resending the task to the
   same builder: judge the findings, then hand it to a builder from another
-  company or ask the owner.
-- Record every judgement you make for the owner, with its reason: a finding's
+  company or ask the developer.
+- Record every judgement you make for the developer, with its reason: a finding's
   verdict (`atelier finding`), a decision (`atelier decide`), a hold released.
   Your judgements are measured like a reviewer's: a finding you refuted that
   later proves real counts against you.
@@ -93,7 +93,7 @@ points at it and states the review path (it does not edit the file).
 
 A task moves through five hands:
 
-1. **The owner, or the session acting for the owner,** files it with
+1. **The developer, or the session acting for the developer,** files it with
    `atelier new "title" --scope GLOB`, and reads its id from that command's
    output. Never assume the next number: another session may have filed one
    in between, and claiming the wrong id puts your work under someone else's
@@ -112,7 +112,7 @@ A task moves through five hands:
    review it as well, at the same time, whatever its family in the default mode (only the selected company in single-family mode): its rejection
    sends the change back like any rejection, its approval never stands in
    for the cross-family review, and a landing never waits for it.
-5. **The owner** accepts that exact revision and merges it into the
+5. **The developer** accepts that exact revision and merges it into the
    registered checkout with `atelier merge`.
 
 Several builders can work at once, each on its own task and fork, except on
@@ -134,7 +134,7 @@ must not run in parallel.
 A session that takes over has no memory of the last one; everything it needs
 is in Atelier, the repository and this handbook. Before dispatching anything:
 
-1. `atelier status` for what waits for the owner, and `atelier ls --project
+1. `atelier status` for what waits for the developer, and `atelier ls --project
    P` for every live task and who holds it.
 2. For each claimed task, look at its workspace: uncommitted changes, a
    `COMMIT_MSG.txt` an agent left, a merge in progress, or an agent's log in
@@ -143,7 +143,7 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
    processes live on this Mac, by task, with no command lines.
 3. Check that main type-checks and that the deployed server holds main's
    routes.
-4. Read the owner's standing decisions where the project keeps them, and
+4. Read the developer's standing decisions where the project keeps them, and
    the review bar in force (`atelier init` prints it; every review brief
    states it).
 
@@ -155,7 +155,7 @@ setup in its README.
 
 ## Registering workspace preparation
 
-After deploying the Worker and updating the runner's CLI, the owner registers
+After deploying the Worker and updating the runner's CLI, the developer registers
 Atelier's preparation policy once, from the project checkout:
 
 ```sh
@@ -165,11 +165,15 @@ atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund && npm run 
   --prepare-output node_modules --prepare-output worker-configuration.d.ts
 ```
 
-This is an owner rollout step; a task build does not register the project.
+This is a developer rollout step; a task build does not register the project.
 The runner prepares build and plan workspaces after reset and automatic
 merges, before starting the harness or finishing resumed work. Manual claims
 print the command and directory for the caller to run. Reviews, integration
-and refresh jobs do not prepare.
+and refresh jobs do not run that preparation policy. Before a code reviewer
+starts, the runner links available Node dependencies from the task workspace
+into the review clone, including nested packages. Otherwise it installs
+package dependencies on the host, using npm ci when a lockfile exists.
+The reviewer’s sandbox remains read-only.
 
 The declared inputs are the manifest, lockfile and Wrangler configuration;
 `src` is not an input. A cached success also depends on the command and runtime,
@@ -226,8 +230,23 @@ misread:
   security among them, were filed with none, so their reviews had nothing to
   judge against. `atelier new` now warns on a task filed without criteria, and
   `atelier init --require-criteria` refuses one for the project.
+- Before dispatch, run each "existing tests pass" criterion against the change
+  the task asks for, and name any test the change must rewrite. The criterion
+  is binding on the builder, so one that the fix itself falsifies sends the
+  builder to choose between the criterion and the fix. hqpe-control t54 was
+  filed with "t52's tests pass unchanged" while its own fix made one t52 test
+  (the 3x ratio, with only the Nx filter) wrong by design; reading the test
+  before dispatch caught it, and nothing else would have. Write "t52's tests
+  pass except the 3x ratio test, which the task rewrites" instead.
 - Say what the agent must not do: push, deploy, run `atelier` against the
-  real server, or touch the owner's checkout.
+  real server, or touch the developer's checkout.
+- Point the agent to the project's prose standard, the path `atelier init
+  --prose-standard` records (Atelier's is
+  `../ai-projects-house-style/house-style.md`), and have it load the standard
+  before it writes commit messages, comments, docs or its report. Every
+  brief Atelier composes for a build, a plan or a review names it, and so do
+  `atelier show` and `bin/orchestrate/review.sh`; a brief written by hand
+  names it the same way.
 - Before sending one brief to many projects, pilot it on the project whose
   documents carry the most rules, and have the pilot reviewed. A fault in a
   brief is copied into every project it reaches.
@@ -288,16 +307,20 @@ So land one task at a time, in this order:
    pushing main to its own remotes.
 
 `atelier land` (task t187, `cli/land.mjs`) is the default way to land a
-task: `atelier land ID --reviewer H/M` does these steps under the
-project's landing lease, taken on the server, so two sessions never land
-at once: while one landing runs, another in the same project is refused
-with who holds the lease and since when. It regenerates the project's
-fixtures when its policy declares how, asks the server for the
+task: `atelier land ID --reviewer H/M` does these steps. Since t550 it
+merges main, regenerates the project's fixtures when its policy declares
+how, pushes, runs the checks, submits, asks the server for the
 independent review the gate needs and waits for the verdict (`--reviewer
-H/M` names the reviewer, `--no-review` leaves the task submitted), then
-accepts and merges. Each step and how long it took are recorded on the
-task as `land.*` events, and a landing stopped partway is resumed by
-running the same command again, which takes its lease back. The same
+H/M` names the reviewer, `--no-review` leaves the task submitted) without
+the project's landing lease, beside any other task's landing. Only once
+the head is checked and approved does it take the lease, for the merge
+alone, so two sessions never merge at once: a second landing that reaches
+that point queues behind the first and merges in its turn. Under the
+lease it confirms main is still the commit the head was checked and
+reviewed against (if not, it releases the lease and goes round again from
+the merge of main), then accepts and merges. Each step and how long it
+took are recorded on the task as `land.*` events, and a landing stopped
+partway is resumed by running the same command again. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
 `cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
 `atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
@@ -305,7 +328,7 @@ loop, which matches its own command line and cannot see a death:
 `--for merged` (the default) ends when the task merges, `--for submitted`
 when its agent submits, `--for reviewed` when a review is recorded at its
 head and current acceptance criteria, and `--for any-change` at the first
-change of state, head, owner or review count. It prints one line and exits 0 when reached, 1 when the task
+change of state, head, holder or review count. It prints one line and exits 0 when reached, 1 when the task
 failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
 the task cannot be read. A task whose agent died stays claimed, so pair a
 long wait with `--timeout` and look at `atelier status` when it ends.
@@ -316,7 +339,23 @@ time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
 review by hand.
 
-**Report after each landing.** The report the owner gets after every landing
+To serve a review by hand, claim it as the reviewer with `atelier
+review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
+request number, the head, the criteria binding and the exact command that
+records the verdict, `atelier review ID --head SHA --request N --criteria
+BINDING --approve|--reject --note "…" --as HARNESS/MODEL`; run that command
+as printed. The claim's lease lasts 5 minutes, as a runner's does, and a
+reviewer that outlasts it loses the claim and its verdict is refused (t573's
+review, on 2026-10-13, ran about 6 minutes). While the review runs, renew
+the lease every 2 minutes with `atelier review-claim ID --renew --as
+HARNESS/MODEL`, naming the reviewer that claimed it, which uses the route a
+runner renews with. The server skips a renewal within 30 seconds of the
+last, so a renewal is sure of 4 minutes 30 seconds, not 5. This machine
+remembers the request it last claimed for the task, so `--renew` and
+`atelier review` without `--request` both use that request, and `review`
+names it; it does not remember the reviewer, so each still needs `--as`.
+
+**Report after each landing.** The report the developer gets after every landing
 is `atelier status --brief`, under 20 lines: the recent merges, the commit
 the server is deployed at, live builds, reviews and the landing running, and
 the last 24 hours' spend against the daily limit. Give it as it prints; do
@@ -380,9 +419,12 @@ whose output is kept in a file (`docs/runners.md` sets them up):
 
 Restart a runner when:
 
-- **the server was deployed with a change the runner's code depends on**:
-  a runner keeps the code it started with (t265 makes it reload);
-- **its log says `atelier/tN needs the owner's attention after 2 failures;
+- **its checkout is behind the deploy**: an idle runner reloads itself in
+  place once its checkout holds the deployed commit (t265), and says once in
+  its log when the checkout is behind; update the checkout (the post-merge
+  steps do on this Mac and the Studio) rather than restarting. A reload
+  starts a fresh process, which forgets the tasks it gave up on;
+- **its log says `atelier/tN needs the developer's attention after 2 failures;
   skipped for this process`**: the runner will not take tN again until it
   restarts. First read the two failures above that line and fix their cause;
   restarting without a fix only repeats them;
@@ -496,6 +538,70 @@ barrier cleared. `LAND_QUEUE_POST_MERGE=/absolute/path/to/hook` may replace
 the step only with an executable that performs all the same operations;
 zero means they all finished, any other status holds the queue.
 
+### Pre-review while the lease is busy
+
+While one landing holds the project's lease, Atelier pre-reviews the next
+two landings queued behind it (t524; `src/dispatch/prereview.ts`), so a
+defect is found before a task's turn rather than after it spends the lease.
+This replaces the orchestrator's hand-run `prereview.brief`. Every ask of the
+landing queue, by an `atelier land` (every landing queues, `--wait` or
+not) or a landing Workflow, and every
+renewal of the lease asks what is missing: one request per waiter and
+binding (its recorded head, the criteria binding, its contributors, main's
+actual SHA and how many merges main has had), never a second for the same
+binding. Polling reads the baseline again, so a push without a recorded
+merge gives a settled pre-review a fresh binding. If that read is unavailable,
+the last observation remains; claims and verdicts still require a fresh read.
+A waiter whose landing stops asking, gives up its place or closes is no longer
+pre-reviewed: the queue's list of jobs and the claim check this themselves,
+so a waiter that expired is never offered to a runner even when no landing
+call has come since. While no lease is live, a pending pre-review waits.
+
+The reviewer is picked as a gate reviewer is picked: from the pool's models
+(an admitted reviewer included), of another family than every contributor,
+or a different model of the one company in single-family mode. Only models
+that a live runner offers for the `prereview` job count. A runner whose config takes
+`review` advertises `prereview` too. While no live runner advertises it,
+nothing is asked. A task with a gate review request open gets no
+pre-review, and a runner takes the gate's reviews before any pre-review.
+Pool changes withdraw open pre-reviews for models held from reviewing;
+claims and verdicts recheck that standing before they can affect the queue.
+
+The claim binds the request to main's head as the server reads it from the
+baseline then; a claim made while it cannot be read is refused and the
+request stays open. The runner clones the task's recorded head into a
+scratch folder of its own, merges that main into it as `atelier land` does
+(a baseline that moved before the merge makes the pre-review stale), raising the route level
+and regenerating the fixtures, and records the main head it merged and the
+tree it prepared. The reviewer's brief names the merged tree's tests for the
+changed files, the project's required checks to run there, the task's
+recorded results (from its own tree, not the merged one) and the evidence
+that is missing. Nothing is pushed, and the builder's workspace is never touched.
+
+The result is pre-review evidence only. It does not satisfy or reject the
+gate, answer a review request or count a round, and the landing never waits
+for it. It is checked before it is applied: a verdict whose head, main,
+criteria or contributors moved, or that came after its claim was lost, is
+recorded as stale and changes nothing. Main counts as moved when the
+baseline's head, read again when the verdict arrives, is not the main the
+tree was prepared from, whatever moved it (a merge, or `atelier sync`
+pushing without one). A rejection that names no blocking finding, or an
+approval that names one, is a malformed reply, however it was posted.
+
+| Result | What it does | Next step |
+| --- | --- | --- |
+| pass | Nothing: the task keeps its place | None |
+| blocking findings | The task leaves the queue and its landing is fenced (`prereview_blocked`, for the CLI and the Workflow alike). The builder and head stay; a runner's builder gets the claim back with the findings in its rework brief | Once they are fixed, `atelier unblock tN`, then `atelier land tN` again |
+| blocking, builder unavailable | As above, but the inbox says developer action is needed | Hand the task over (`atelier handoff`) or dispatch it, then unblock |
+| conflict, preparation failed | Recorded apart from a result; the task keeps its place | The landing will meet the same conflict or failure: resolve it ahead |
+| unavailable (no reviewer, skipped, timed out, malformed reply, runner failure) | Nothing: the task keeps its place and lands normally | None; it is tried at most three times in all, and after no reviewer qualified, not again for five minutes |
+| task took the lease first | The result is kept as evidence and controls nothing | None |
+
+The task detail (`GET /api/projects/P/items/tN`) carries `prereviews`, each
+with its state, binding, reviewer, findings and recovery, and
+`prereviewFence`. The landing status (`GET …/landing-lease`) adds each
+waiting row's newest `prereview`.
+
 ### Landing outcomes
 
 | `LANDQ tN:` says | What happened | Next step |
@@ -602,7 +708,7 @@ that verification after deployment; a local pass cannot stand in for it.
    in the log and run it a second time; a failure that does not repeat is a
    flaky test to file, one that repeats is a break on main to send back to
    the task that caused it.
-3. Deploy once the suite passes (the owner's decision d6: landed changes are
+3. Deploy once the suite passes (the developer's decision d6: landed changes are
    deployed after main's full suite passes, not only when a capability is
    added):
 
@@ -646,7 +752,7 @@ that verification after deployment; a local pass cannot stand in for it.
    value goes back to its task. Output from c: the file must be removed from every outgoing
    commit that contains it. Deleting it at the tip does not remove it from
    published history. Stop publication and coordinate history repair with
-   the owner; do not rewrite shared main casually. Re-audit the entire
+   the developer; do not rewrite shared main casually. Re-audit the entire
    outgoing range after any repair. The `-m --root` scans include merge
    changes and initial commits. Review commit messages, metadata and binary
    files as well as added lines for private details, including spend figures.
@@ -663,19 +769,201 @@ that verification after deployment; a local pass cannot stand in for it.
 5. Report to the lead developer: what merged, what was deployed, what is
    landing and what went back.
 
+### After a deploy
+
+A Durable Object keeps running the code it started with until it goes
+idle, so a deploy leaves a busy Ledger on the older code. On 2026-10-13
+from 09:35 to 10:05 EDT, after the deploys of t578 and t585, the atelier
+Ledger answered "The RPC receiver does not implement the method" for
+`showcaseCounts` and `mode`, and the showcase showed zeros. Stopping every
+runner for about 70 s let it go idle and start again on the new code.
+
+Since t586 the Worker handles this itself (src/ledger-stub.ts):
+
+- The first time a Worker isolate addresses a Ledger, it sends its own
+  `DEPLOYED_MAIN` (`ledgerVersion`). A Ledger reads the `DEPLOYED_MAIN` of
+  the deploy whose code it runs, so a Ledger on older code sees the two
+  differ and restarts (`ctx.abort()`) once no call is in flight
+  (src/restart-gate.ts), or after 30 s if it is never idle. New methods are
+  served within a minute, with the runners left running.
+- A call the Ledger lacks asks it to restart (`restartForUpdate`) and
+  answers 503 `server_updating`, "the server is updating; try again in a
+  minute", instead of a 500. The showcase says "The server is updating" and
+  is kept for ten seconds only.
+- A Ledger restarts at most once a minute (`ledgerRestart` in
+  src/rules.ts), and not again for a Worker whose restart brought the same
+  code back, so an old Worker isolate lingering after a deploy cannot keep
+  restarting it. `npm run deploy` sets `DEPLOYED_MAIN`; a deploy without it
+  restarts a Ledger only when a method is missing.
+- The Worker log says which Ledger restarted and why (`Ledger restarting
+  for an update: ...`).
+
+The first deploy of t586 still needs the manual step once. A Ledger built
+before t586 has no `ledgerVersion` and no `restartForUpdate`, and nothing it
+already does resets it safely: it never calls `ctx.abort()` or
+`blockConcurrencyWhile`, and an error from a call, the missing-method error
+included, does not reset a Durable Object. The only other
+resets are its running out of memory or CPU, which are not safe to provoke.
+So after deploying t586, if a page or the CLI says the server is updating,
+or the Worker log says a Ledger "predates ledgerVersion", stop every runner
+for 70 s and start them again. From then on every Ledger runs code that
+restarts itself on the first call after a deploy.
+
+## Fast mode
+
+Atelier has two modes. Full mode is the default: every task is claimed,
+built on its fork, checked, reviewed and landed one at a time, as above.
+Fast mode is the developer's, for when that path cannot run. On 2026-10-13
+Artifacts failed every new fork, so no task could be claimed, and four
+finished tasks (t575 to t578) were merged by hand, outside the record. Fast
+mode makes that path a recorded one.
+
+Only the developer switches. `atelier mode fast --reason TEXT` puts the project
+in fast mode; the switch is recorded as a standing decision with the
+reason, so every review brief carries it. Fast mode has no end time.
+
+Fast mode lands tasks without the gate, so it is held to what an override
+of the independent review is (Astra's audit of 2026-10-13, finding 3). The
+developer's direction switches to it: the developer's own words in
+`--quote` and the model acting on them in `--as H/M`, with the developer
+token, on any project (t629, the developer's decision of 2026-10-13: their
+recorded direction suffices):
+
+```text
+atelier mode fast --reason "Artifacts fails every new fork" --quote "go to fast mode" --as claude-code/opus-5.5 --project demo
+```
+
+Both are required and both are recorded: on the mode, its standing
+decision and its `mode.fast` event, and in each fast landing's receipt.
+Without them the developer token alone does not switch: the developer
+first presses "Allow fast mode from the command line" on the project's
+Settings page, under their Cloudflare Access sign-in or giving the
+server's confirmation secret (OVERRIDE_SECRET), and then runs `atelier mode
+fast` within 15 minutes; one permission allows one switch. Without either
+the command is refused and says so. A project set up with `atelier init
+--no-override` refuses the switch to fast mode and every fast landing.
+Switching back with `atelier mode full` needs no confirmation. A server
+without `projects.developer-direction.v1` takes no `--quote`; the command
+says so, and the Settings page is the way until it is deployed.
+`atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`,
+followed for a switch on the developer's direction by their words and the
+model that relayed them, and the project's Overview says so while fast
+mode stands.
+
+### Runner builds in fast mode
+
+A build that begins with a claim forks main, and in fast mode the forks are
+what fails. On 2026-10-13 at 10:35 EDT, in fast mode (decision d14), every
+runner build still began with such a claim, the forks of cloudflare-git
+failed (Artifacts INTERNAL_ERROR), and the builds were run by hand in local
+clones (PAVI: aren't we in fast mode? why are we creating forks?). So while
+the project is in fast mode a runner takes a dispatched build without a
+fork:
+
+- The queue marks a plain build `fast` (src/rules.ts `fastBuildRefusal`).
+  A plan job, a part, a merge-main job and a task whose fork already holds
+  work keep the claim; the claim of the last needs no new fork.
+- The runner calls `atelier fast take tN` in place of `atelier claim`
+  (POST items/tN/fast-take). The server records the holder as a claim does,
+  with the same checks and an `item.claimed` event, then `item.fast_taken`.
+  It makes no fork and records no write token, and answers a read token
+  for the baseline. The CLI clones main with it into the runner's cache
+  (`fast/PROJECT/tN`), keeps no remote, and writes the project's commit
+  identity.
+- The harness builds and commits there with its Agent line, from the same
+  brief a build gets plus a "Fast mode" section.
+- The runner calls `atelier fast ready tN` in the clone (POST
+  items/tN/fast-ready): the commit, the main it was built on, the builder
+  its Agent line names and the clone's path. The task stays claimed by its
+  builder and its dispatch is cleared, so no runner takes it again. Nothing
+  is pushed, checked or submitted; the developer's batch does that.
+- A run that committed but could not report keeps its claim; the next take
+  keeps the clone and reports the commit without the harness. A run that
+  committed nothing releases the task.
+
+A fast take the server refuses because the project is back in full mode
+falls back to the claim. Back in full mode runners claim with forks, push
+and submit as before. The routes are the named capability
+`runners.fast-build.v1`; `atelier fast take`, `ready` and `status` ask for
+it.
+
+In fast mode, from a clean checkout of main:
+
+    atelier fast land t575=SHA t576=SHA --reviewer H/M
+
+merges each SHA in order with `git merge --no-ff`, regenerates the
+generated files and commits them, runs the typecheck, scans every file
+each of the batch's commits adds or changes for credentials with the
+server's own scanner (a file it cannot read as text stops the batch, as it
+blocks a push), and runs the tests once for the whole batch. After the
+tests, every commit of the batch and every tree and blob in its whole
+tree (those it holds unchanged from main included), and every object the
+scan read, must still be there and hash to its id; a missing or changed
+one stops the batch, named by its path. If any step
+fails, main is reset to where it started and nothing is recorded; if main
+cannot be put back, fast land says so, with main's head and the command
+that restores it.
+
+Fast land runs the project's commands (regeneration, typecheck, tests)
+with the developer's own filesystem access, after merging agents' changes
+to them: their environment holds no tokens or keys, but a hostile command
+could still tamper with the checkout, Git or the atelier CLI itself, so
+fast mode is for batches the developer trusts, and a check that no agent
+can forge needs the sandbox (`atelier init --sandbox-only`). On success each task gets a landed-fast
+receipt: the commit merged, the merge commit, the builder its Agent line
+names, the test command and the sha256 of its output, and the mode's
+reason. The task is marked merged, and its post-merge review is asked of
+the reviewer named. It never pushes or deploys; publish main and deploy as
+after any landing, so the reviewer can read the merge. A commit a runner
+built on this machine and reported ready is fetched from its clone when the
+checkout lacks it.
+
+Before posting any receipt, fast land writes the batch's receipts (task,
+commit, merge commit, builder, tests) to
+`.git/atelier-fast-land/START..HEAD.json` in the checkout, marks each one
+as the server records it, and removes the file when all are. If a receipt
+fails (the network or the server), main already holds the batch, so
+landing again would refuse every task; fast land says which receipts were
+recorded and prints the command that records the rest:
+
+    atelier fast record .git/atelier-fast-land/START..HEAD.json --project P
+
+`atelier fast record` (with no file, the only one waiting) posts only the
+receipts not yet recorded and never merges. It refuses, posting nothing,
+when main no longer holds a receipt's merge commit, the merge is not of
+that task's commit, or any object the batch's commits reference (their
+whole trees included) is missing or no longer hashes to its id. The server answers a receipt it already holds for the
+same merge commit with the one it recorded, so posting again is safe.
+
+The post-merge review of a fast landing may come from a model of the
+builder's family (PAVI: fast mode permits single-family models), never
+from the builder itself; the review record says "same-family (fast mode)".
+A merge that went through the gate keeps the family rule for its post-merge
+review. A rejection files a fix task, "Fix after fast landing of tN: ...",
+whose criteria are the review's findings.
+
+`atelier fast status` lists every fast landing with its review's state,
+then every build reported ready as a `tN=SHA` line, which `atelier fast
+land` takes as it stands, and the command that lands them all.
+`atelier mode full` (or `atelier fast close`) returns the project to full
+mode, withdraws the decision and prints the same list. The task page names
+a fast landing as "Landed in fast mode" with its receipt, and a ready build
+as "Ready for fast land at SHA"; the showcase counts fast landings apart
+from gated merges.
+
 ## Judging a review
 
 A reviewer's finding is a claim about the code, and it can be wrong. On
 6 October about half of one reviewer's blocking findings did not hold: code
 it could not see, a language feature it thought missing, a decision by the
-owner it read as a defect. The other half were real, and some were serious.
+developer it read as a defect. The other half were real, and some were serious.
 
 - Check each blocking finding against the code before acting on it.
 - When it holds, fix it in a new commit with a test that fails without the
   fix, and send the task back to the same reviewer.
 - When it does not, say why in the review's context, with the file and line
   that show it, and ask for the review again. Do not override the review
-  quietly, and never let a reviewer overrule the owner's decision.
+  quietly, and never let a reviewer overrule the developer's decision.
 - A rejection is bound to the revision it read. Another reviewer's approval
   of the same revision does not clear it: the gate still sees a reviewer who
   asked for changes with no push since. So a refuted finding is answered
@@ -707,7 +995,7 @@ owner it read as a defect. The other half were real, and some were serious.
 ## Keeping the record honest
 
 - The task's holder is who the ledger says did the work. Before another
-  model works on a task, hand it off (`atelier handoff`). The project owner
+  model works on a task, hand it off (`atelier handoff`). The developer
   can send an accepted task back to building with `atelier handoff ID --to H/M`
   or `atelier dispatch ID --job merge-main` after a merge conflict. The earlier
   reviews and acceptance stay in the history; the new revision is submitted,
@@ -731,8 +1019,8 @@ next session nothing. Each kind of lesson has a place in Atelier:
   the workaround does; `atelier land` began as such a script.
 - **A rule about how to work** (a failure and what prevents it): change this
   handbook through a task, so the change is reviewed like code.
-- **A decision by the owner**: record it where the project keeps its
-  decisions and cite the owner's words; never infer one.
+- **A decision by the developer**: record it where the project keeps its
+  decisions and cite the developer's words; never infer one.
 
 ## What to record
 

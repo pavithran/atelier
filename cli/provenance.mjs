@@ -21,7 +21,7 @@ export function provenanceNote({ name, id, item, view, reviews, events, policy =
     familyModeLine(modeAtAcceptance(item, events, policy, acceptanceFamily)),
     ...contributors.map((c) => `CONTRIBUTOR ${c.actor} (${c.company})`),
     ...view.map((e) => `${e.grade.toUpperCase()} ${e.passed === true ? "pass " : e.passed === false ? "FAIL " : ""}${e.claim} — ${e.by} ${e.at}`),
-    ...reviews.map((r) => `REVIEW ${r.approve ? "approve" : "reject"} by ${r.by} at ${r.head}, recorded by ${r.recordedBy ?? "an unrecorded actor"}${r.proved === false ? ` with the owner token${r.claimed ? ", answering a claimed review request" : ""}` : ""}`),
+    ...reviews.map((r) => `REVIEW ${r.approve ? "approve" : "reject"} by ${r.by} at ${r.head}, recorded by ${r.recordedBy ?? "an unrecorded actor"}${r.proved === false ? ` with the developer's token${r.claimed ? ", answering a claimed review request" : ""}` : ""}`),
     ...(override ? [`REVIEW OVERRIDDEN by ${override.by} at ${override.head}`] : []),
     ...events.slice().reverse().map((e) => `${e.at} ${e.actor} ${e.kind}`),
   ].join("\n");

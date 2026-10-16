@@ -7,7 +7,7 @@ import { landingJournalFile, oldLandingJournalFile } from "../landing.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { runCommand, ship as runShip, shipSecrets } from "../ship.mjs";
-import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, workspaceTokens } from "../atelier.mjs";
+import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landingHome, project, redact, request, saveConfig, workspaceTokens } from "../atelier.mjs";
 
 // The project owner runs the project's ship order in its registered
 // checkout (cli/ship.mjs): each protected step only with an approval at the
@@ -15,7 +15,7 @@ import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landing
 export default async function shipCommand() {
   if (args._.length !== 1) die(COMMAND_USAGE.ship);
   const name = project(), as = await actor(OWNER);
-  if (as !== OWNER) die(`only the project owner ships: run ship as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
+  if (as !== OWNER) die(`only the developer ships: run ship as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) die(`ship runs in ${name}'s registered checkout, and this machine has none; run atelier init in that checkout first`);
   const top = git(["rev-parse", "--show-toplevel"], { allowFail: true });
@@ -26,6 +26,9 @@ export default async function shipCommand() {
   const inProgress = () => [...new Set(Object.keys(WRAP_MARKERS).filter((marker) => (marker === "landing"
     ? [landingJournalFile(landingHome(gitDir)), oldLandingJournalFile(gitDir)]
     : [resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))]).some((file) => existsSync(file))).map((marker) => WRAP_MARKERS[marker]))];
+  // The push reads the project's commit identity, whose public mirrors take
+  // the privacy check before anything is pushed (cli/mirror.mjs).
+  const identity = args.push === true ? (await call("GET", P(name), undefined, OWNER)).project?.policy?.commitIdentity ?? null : null;
   await runShip({
     name, cwd, branch: p.branch, baselineHead, inProgress,
     paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
@@ -41,5 +44,6 @@ export default async function shipCommand() {
     redact,
     dryRun: args["dry-run"] === true,
     push: args.push === true,
+    identity,
   });
 }

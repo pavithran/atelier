@@ -84,3 +84,14 @@ it("every claim answers the project's commit identity, or null for a project tha
   expect(set.status, await set.clone().text()).toBe(200);
   expect(await claim()).toEqual({ ...OWNER, agentEmails: [] });
 });
+
+it("init stores mirror destinations and privacy rules in the same registered identity policy", async () => {
+  const fields = { publicMirrors: ["github"], publicMirrorDestinations: { github: "https://example.org/public.git" }, privatePaths: ["private/**"], privatePatterns: ["INTERNAL-[0-9]+"] };
+  const res = await call("PUT", "/projects/mirror-policy", { commitName: OWNER.name, commitEmail: OWNER.email, ...fields });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ project: { policy: { commitIdentity: fields } } });
+  const keep = await call("PUT", "/projects/mirror-policy", { title: "Kept" });
+  expect(await keep.json()).toMatchObject({ project: { policy: { commitIdentity: fields } } });
+  const bad = await call("PUT", "/projects/mirror-policy", { privatePatterns: ["("] });
+  expect(bad.status).toBe(400);
+});

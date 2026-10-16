@@ -31,14 +31,14 @@ it("renders without a session, with or without a server token, and says it is pu
     expect(body).toContain("public · reads no project data");
     expect(body).not.toContain("<script");
     expect(body).not.toContain("<form");
-    expect(body).not.toContain('class="rail"');
+    expect(body).not.toContain('class="owner-bar"');
     expect(body).not.toContain('href="/p/');
   }
 });
 
 it("states that coordinated review requires a different contributor model under any harness", async () => {
   const { body } = await page();
-  const coordinatedRule = "Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from a model different from every contributor's, under any harness name, and the owner's approval is not that review either.";
+  const coordinatedRule = "Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from a model different from every contributor's, under any harness name, and the developer's approval is not that review either.";
   expect(body).toContain(escapeText(coordinatedRule));
   expect(body).not.toContain("any agent who did not contribute");
 });
@@ -98,7 +98,7 @@ it("the orchestrator section describes the flow as it runs: plans, routing, auto
   for (const said of [
     '<code>atelier plan "goal"</code>', "plan job", "by its hash, once", "<code>routeParts</code>", "another model family",
     "review request", "<code>runReview</code>", "<code>cli/agy-review.mjs</code>", "integration branch", "<code>atelier runner --integrate</code>",
-    "owner's acceptance and merge", "<code>atelier land</code>", "landing lease",
+    "developer's acceptance and merge", "<code>atelier land</code>", "landing lease",
     "Every home runner offers build and plan jobs", "A rejection with blocking findings", "the integrator submits the plan task",
   ]) expect(prose, said).toContain(said);
   for (const stale of ["nothing else calls it", "pure functions with tests", "by hand"]) expect(prose).not.toContain(stale);
@@ -132,7 +132,7 @@ it("the orchestrator section draws the plan flow from goal to merge as an inline
   expect(PLAN_FLOW.at(-1)).toMatchObject({ lane: "owner", name: "Accept and merge" });
   for (const note of Object.values(PLAN_FLOW_RETURNS)) expect(text).toContain(`>${note}</text>`);
   expect(svg.match(/class="pf-return"/g)).toHaveLength(3);
-  for (const lane of ["Owner", "Home runners and their agents", "Atelier"]) expect(svg).toContain(`>${lane}</text>`);
+  for (const lane of ["Developer", "Home runners and their agents", "Atelier"]) expect(svg).toContain(`>${lane}</text>`);
   // Every arrowhead resolves inside the fragment.
   for (const id of svg.match(/url\(#([a-z-]+)\)/g) ?? []) expect(svg).toContain(`id="${id.slice(5, -1)}"`);
   // The frame scrolls sideways on a narrow screen: the drawing keeps a
@@ -226,19 +226,22 @@ it("is linked from the sign-in page and the public showcase, which stay free of 
   expect((await (await get("/login")).text())).toContain('href="/how"');
 });
 
-it("the How page and the showcase draw where Atelier runs, layer by layer", async () => {
-  const pages: [string, string][] = [["/how", (await page()).body], ["/showcase", renderShowcase([], undefined as never, "pavi", "PAVI")]];
-  for (const [path, body] of pages) {
-    expect(body, path).toContain('class="lay-fig"');
-    expect(body, path).toContain("normally reach Cloudflare through the CLI");
-    expect(body, path).toContain("its token limits what it can do");
-    expect(body, path).not.toContain("one path to Cloudflare");
-    expect(body, path).not.toContain("internet off;");
-    expect(body, path).toContain("reaches only the npm registry, read-only");
-    expect(body, path).toContain(">Check container<");
-    expect(body, path).toContain(">npm registry only, read-only<");
-  }
-  expect(pages[0][1].indexOf('id="where-it-runs"')).toBeLessThan(pages[0][1].indexOf('id="the-loop"'));
+it("the How page draws where Atelier runs, layer by layer, and the showcase names the layers in short", async () => {
+  const how = (await page()).body;
+  expect(how).toContain('class="lay-fig"');
+  expect(how).toContain("normally reach Cloudflare through the CLI");
+  expect(how).toContain("its token limits what it can do");
+  expect(how).not.toContain("one path to Cloudflare");
+  expect(how).not.toContain("internet off;");
+  expect(how).toContain("reaches only the npm registry, read-only");
+  expect(how).toContain(">Check container<");
+  expect(how).toContain(">npm registry only, read-only<");
+  expect(how.indexOf('id="where-it-runs"')).toBeLessThan(how.indexOf('id="the-loop"'));
+  // The showcase's short form (the d29 canvas): one row per layer.
+  const showcase = renderShowcase([], undefined as never, "pavi", "PAVI");
+  const where = showcase.split('id="where-h"')[1].split("</section>")[0];
+  expect([...where.matchAll(/<dt>([^<]+)<\/dt>/g)].map((m) => m[1])).toEqual(["Who acts", "Your Mac", "Agents", "Cloudflare"]);
+  expect(where).toContain("<span>Check container · npm registry only</span>");
 });
 
 it("the rules say who produces a check result, which routes a token opens and what acceptance needs (t216)", () => {
@@ -247,5 +250,5 @@ it("the rules say who produces a check result, which routes a token opens and wh
   expect(rule("Observed evidence only").why).toContain("only a container result is produced by Atelier itself");
   const tokens = rule("Tokens scoped to an actor").enforced;
   for (const route of ["block", "unblock", "queue", "sandbox", "plan", "integrated", "integration-failed"]) expect(tokens).toContain(`\`${route}\``);
-  expect(rule("Owner acceptance and merge").enforced).toContain("the task is in the submitted state");
+  expect(rule("Developer acceptance and merge").enforced).toContain("the task is in the submitted state");
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
+import { AGY_MODELS, VERDICT_DEMAND } from "./harness/adapter.mjs";
 
 // An adapter a runner's config names as the review command for the antigravity
 // harness (docs/orchestrator.md, section 4). The review job hands it the brief
@@ -13,11 +14,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 // request as it does for any harness failure. The executable is `agy` on the
 // PATH, or ATELIER_AGY when that is set, so tests can use a stand-in.
 
-// Atelier's model ids mapped to Antigravity's; any other id passes through.
-const MODEL_MAP = {
-  "gemini-3.1-pro": "gemini-3.1-pro-high",
-  "gpt-oss-120b": "gpt-oss-120b-medium",
-};
+// Atelier's model ids mapped to Antigravity's, from the one table the build
+// path reads too (a copy here lacked gemini-3.8-flash, so every Flash review
+// exited 1: t573); any other id passes through.
+const MODEL_MAP = AGY_MODELS;
 
 const value = (name) => {
   const at = process.argv.indexOf(`--${name}`);
@@ -46,6 +46,7 @@ const prompt = [
   fence,
   "",
   "In the current folder you may read files and run the project's tests; do not push, do not run any atelier command, and verify a blocking finding before you state it.",
+  VERDICT_DEMAND,
 ].join("\n");
 
 const agy = process.env.ATELIER_AGY || "agy";

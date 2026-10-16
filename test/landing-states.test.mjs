@@ -99,7 +99,7 @@ async function landing(t, { fresh = false } = {}) {
   // A new revision of the task, pushed to its fork.
   const revise = (text) => { writeFileSync(join(workspace, 'work.txt'), text); git(workspace, 'commit', '-q', '-am', `Task: ${text.trim()}`); git(workspace, 'push', '-q', 'origin', 'main'); return git(workspace, 'rev-parse', 'HEAD'); };
   const H1 = revise('changed\n');
-  const box = { state: 'accepted', head: H1, acceptedHead: H1, lease: null, gate: null, withdraw: false, failLanding: false, failMerge: false, requests: [] };
+  const box = { state: 'accepted', head: H1, acceptedHead: H1, lease: null, gate: null, withdraw: false, failLanding: false, failMerge: false, failItemAfterMerge: false, requests: [] };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -109,6 +109,8 @@ async function landing(t, { fresh = false } = {}) {
     if (path === '/api/version') return reply(200, { capabilities: SERVER_CAPABILITIES });
     box.requests.push({ method: req.method, path, body });
     const item = () => ({ id: 't1', title: 'Fixture task', state: box.state, owner: 'codex/test', head: box.head, acceptedHead: box.acceptedHead });
+    // A ledger that stops answering once the merge is recorded (t561).
+    if (path === '/api/projects/proj/items/t1' && req.method === 'GET' && box.failItemAfterMerge && box.state === 'merged') return reply(503, { error: 'temporary', detail: 'ledger down' });
     if (path === '/api/projects/proj/items/t1' && req.method === 'GET') return reply(200, { item: item(), policy: { checks: [], protected: [], commitIdentity: { name: 'Fixture', email: 'fixture@example.invalid', agentEmails: [] } }, gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews: [], events: [] });
     if (path.endsWith('/baseline-token')) return reply(200, { remote: baseline, token: 'fixture', defaultBranch: 'main' });
     if (path.endsWith('/read-token')) return reply(200, { remote: fork, token: 'fixture', head: box.head, defaultBranch: 'main' });
@@ -160,7 +162,7 @@ async function landing(t, { fresh = false } = {}) {
     git(other, 'push', '-q', 'origin', 'main');
     return git(other, 'rev-parse', 'HEAD');
   };
-  return { p, git, baseline, fork, checkout, workspace, box, run, revise, H1, start, at, tip, journal, journalFile, rewrite, asked, begin, dir, mergeElsewhere };
+  return { p, cache, git, baseline, fork, checkout, workspace, box, run, revise, H1, start, at, tip, journal, journalFile, rewrite, asked, begin, dir, mergeElsewhere };
 }
 
 // ── a merge on the baseline ─────────────────────────────────────────────────
@@ -205,6 +207,46 @@ for (const fresh of [false, true]) {
     assert.equal(f.journal(), null);
   });
 }
+
+// A merge removes the task's workspace on this Mac once its HEAD is in main
+// or the head Atelier recorded (t561); one with a changed tracked file is
+// kept and named, and a later merge run removes it once it is clean.
+test('a merge removes the task\'s workspace once its work is in main, and keeps one holding more', async (t) => {
+  const f = await landing(t);
+  const ws = join(f.cache, 'work', 'proj', 't1');
+  mkdirSync(join(f.cache, 'work', 'proj'), { recursive: true });
+  f.git(f.p, 'clone', '-q', f.fork, ws);
+  f.git(ws, 'config', 'atelier.project', 'proj'); f.git(ws, 'config', 'atelier.item', 't1');
+  writeFileSync(join(ws, 'work.txt'), 'not committed\n');
+  const first = await f.run('merge', 't1');
+  assert.equal(first.status, 0, first.output);
+  assert.equal(f.box.state, 'merged');
+  assert.ok(first.output.includes(`Kept t1's workspace ${ws}: contains changed or untracked files`), first.output);
+  assert.ok(existsSync(ws));
+  // Behind the accepted head, its HEAD is in main.
+  f.git(ws, 'reset', '-q', '--hard', 'HEAD~1');
+  const again = await f.run('merge', 't1');
+  assert.equal(again.status, 0, again.output);
+  assert.ok(again.output.includes(`Removed t1's workspace ${ws}`), again.output);
+  assert.ok(!existsSync(ws));
+});
+
+// The ledger failed the read that comes before the workspace's removal, and
+// the merge, already made, exited 4 before what follows it (t561 pre-review).
+test('a ledger that fails after the merge leaves the workspace and does not fail the merge', async (t) => {
+  const f = await landing(t);
+  const ws = join(f.cache, 'work', 'proj', 't1');
+  mkdirSync(join(f.cache, 'work', 'proj'), { recursive: true });
+  f.git(f.p, 'clone', '-q', f.fork, ws);
+  f.git(ws, 'config', 'atelier.project', 'proj'); f.git(ws, 'config', 'atelier.item', 't1');
+  f.box.failItemAfterMerge = true;
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.box.state, 'merged');
+  assert.ok(r.output.includes("t1's workspace was left in place: temporary: ledger down"), r.output);
+  assert.ok(r.output.includes('The project branch was not pushed to its own remotes.'), r.output);
+  assert.ok(existsSync(ws));
+});
 
 // The server recorded the merge and the process stopped before it removed
 // the journal. merge --cancel removes it and keeps the merge.
@@ -379,7 +421,7 @@ test('stopped before the Git merge: merge goes on, cancel ends it, and another t
   f.begin(f.H1);
   const cancelled = await f.run('merge', 't1', '--cancel');
   assert.equal(cancelled.status, 0, cancelled.output);
-  assert.equal(cancelled.output, 't1: the merge is cancelled; its owner can push a new revision.\n');
+  assert.equal(cancelled.output, 't1: the merge is cancelled; its holder can push a new revision.\n');
   assertRestored(f);
   assert.ok(f.asked('/landing', true));
 
@@ -425,7 +467,7 @@ test('stopped inside the Git merge: cancel keeps it unless asked, then aborts it
   const cancelled = await f.run('merge', 't1', '--cancel', '--discard-local');
   assert.equal(cancelled.status, 0, cancelled.output);
   assert.match(cancelled.output, /Aborted the unfinished Git merge; main is at [0-9a-f]{8}, where the merge began\.\n/);
-  assert.match(cancelled.output, /t1: the merge is cancelled; its owner can push a new revision\./);
+  assert.match(cancelled.output, /t1: the merge is cancelled; its holder can push a new revision\./);
   assertRestored(f);
   assert.ok(f.asked('/landing', true));
 });
@@ -559,4 +601,58 @@ test('a landing overtaken by a merge made elsewhere: cancel restores the checkou
   assert.ok(!f.asked('/landing', true));
   assert.equal(f.box.lease, f.H1);
   assert.equal(f.tip(), other);
+});
+
+// ── generated outputs and records on the baseline (t463) ───────────────────
+
+// The project declares gen.txt as generated from in/*.txt and routes.tsv as
+// records keyed by their first word, on the baseline and in the task.
+function declareMerges(f) {
+  const manifest = JSON.stringify({ version: 1, generators: [{ name: 'gen', command: ['sh', '-c', 'cat in/*.txt > gen.txt'], inputs: ['in/**'], outputs: ['gen.txt'] }], records: [{ path: 'routes.tsv', key: '^(\\S+)\\t' }] });
+  mkdirSync(join(f.checkout, 'bin')); mkdirSync(join(f.checkout, 'in'));
+  writeFileSync(join(f.checkout, 'bin', 'merge-manifest.json'), manifest);
+  writeFileSync(join(f.checkout, '.gitattributes'), 'gen.txt merge=atelier-generated\nroutes.tsv merge=atelier-records\n');
+  writeFileSync(join(f.checkout, 'in', 'base.txt'), 'base\n'); writeFileSync(join(f.checkout, 'gen.txt'), 'base\n');
+  writeFileSync(join(f.checkout, 'routes.tsv'), '/a\tA\n');
+  f.git(f.checkout, 'add', '.'); f.git(f.checkout, 'commit', '-q', '-m', 'Declare merges');
+  f.git(f.checkout, 'push', '-q', f.baseline, 'HEAD:main');
+  f.git(f.workspace, 'fetch', '-q', f.baseline, 'main'); f.git(f.workspace, 'merge', '-q', '--no-edit', 'FETCH_HEAD');
+}
+// One side's commit: files written, committed and sent where that side lives.
+function side(f, dir, files, message) {
+  for (const [path, text] of Object.entries(files)) writeFileSync(join(dir, path), text);
+  f.git(dir, 'add', '.'); f.git(dir, 'commit', '-q', '-m', message);
+  if (dir === f.checkout) f.git(dir, 'push', '-q', f.baseline, 'HEAD:main');
+  else { f.git(dir, 'push', '-q', 'origin', 'main'); f.box.head = f.box.acceptedHead = f.git(dir, 'rev-parse', 'HEAD'); }
+}
+
+test('a merge onto the baseline that would regenerate outputs nobody checked or reviewed is refused, and nothing is merged', async (t) => {
+  const f = await landing(t);
+  declareMerges(f);
+  side(f, f.workspace, { 'in/task.txt': 'task\n', 'gen.txt': 'base\ntask\n' }, 'Task adds an input');
+  side(f, f.checkout, { 'in/main.txt': 'main\n', 'gen.txt': 'base\nmain\n' }, 'Main adds an input');
+  const before = { at: f.at(), tip: f.tip() };
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /merging t1 would regenerate gen\.txt, since the baseline and the accepted revision both changed what its generator reads \(gen\)\. The regenerated outputs were never checked or reviewed, so nothing was merged and t1 stays accepted\. The developer can send it back to a runner with atelier dispatch t1 --job merge-main, or hand it to a builder with atelier handoff t1 --to H\/M: main is merged into its workspace there/);
+  // Not atelier land, which refuses an accepted task (cli/land.mjs).
+  assert.doesNotMatch(r.output, /atelier land t1/);
+  assert.deepEqual({ at: f.at(), tip: f.tip() }, before);
+  assert.equal(existsSync(join(f.checkout, '.git', 'MERGE_HEAD')), false);
+  assert.equal(f.journal(), null);
+  assert.equal(f.box.state, 'accepted');
+});
+
+test('records both sides added merge onto the baseline by key, with the union recorded in the merge commit', async (t) => {
+  const f = await landing(t);
+  declareMerges(f);
+  side(f, f.workspace, { 'routes.tsv': '/a\tA\n/task\tT\n' }, 'Task adds a route');
+  side(f, f.checkout, { 'routes.tsv': '/a\tA\n/main\tM\n' }, 'Main adds a route');
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.equal(readFileSync(join(f.checkout, 'routes.tsv'), 'utf8'), '/a\tA\n/main\tM\n/task\tT\n');
+  assert.match(f.git(f.checkout, 'log', '-1', '--format=%B'), /Worked by: [^\n]*\nAtelier-Records-Merged: routes\.tsv, united by key$/);
+  assert.equal(f.tip(), f.at());
+  // The checkout's Git configuration now names the driver, copied under .git.
+  assert.match(f.git(f.checkout, 'config', 'merge.atelier-records.driver'), /\/\.git\/atelier\/merge-driver\.mjs' records %O %A %B %P$/);
 });

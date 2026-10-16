@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 3, slot: 30,
       form: 'block [ID] "what it is waiting on"',
-      about: "The holder or the project owner blocks the task with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed, submitted, reviewed, handed off or released, and sits in the owner's inbox with the reason until it is unblocked.",
+      about: "The holder or the developer blocks the task with what it is waiting on. It keeps its holder and workspace, leaves the runner queue and stuck detection, cannot be pushed, submitted, reviewed, handed off or released, and sits in the developer's inbox with the reason until it is unblocked.",
     },
   ],
   flags: {},

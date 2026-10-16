@@ -67,7 +67,7 @@ export function receiptJson(project, id, detail) {
 // One line for each event of the story, or null for an event the receipt
 // does not tell (the plumbing named above). A review answers with more lines:
 // each finding of its own, and under a finding the owner's verdict on it.
-function linesFor(e, verdicts, used, owner) {
+function linesFor(e, verdicts, used, owner, events) {
   const d = e.data ?? {};
   switch (e.kind) {
     case "item.created":
@@ -108,12 +108,16 @@ function linesFor(e, verdicts, used, owner) {
       // owner token in the reviewer's name. An event from before the ledger
       // recorded that says nothing.
       const recorded = recordedText({ by: e.actor, recordedBy: d.recordedBy, proved: e.proved === true, claimed: d.claimed === true }, owner);
-      const out = [`${d.tier ? "tier review " : ""}${verdict} by ${flat(e.actor)} at ${short(d.head)}${recorded ? ` (${flat(recorded)})` : ""}: ${flat(d.note) || "(no note)"}`];
+      // A review recorded after the merge is marked postMerge on its event
+      // (addReview in src/ledger.ts); its line says so, as the task page
+      // does, beside the tier mark when the review was one.
+      const marks = [d.postMerge ? "post-merge" : null, d.tier ? "tier" : null].filter(Boolean).join(" ");
+      const out = [`${marks ? `${marks} review ` : ""}${verdict} by ${flat(e.actor)} at ${short(d.head)}${recorded ? ` (${flat(recorded)})` : ""}: ${flat(d.note) || "(no note)"}`];
       (d.findings ?? []).forEach((f, i) => {
         out.push(`${i + 1}. ${flat(f.severity)} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
         const key = findingKey(d.head, e.actor, i + 1, { file: String(f.file ?? ""), text: String(f.text ?? "") });
         const v = verdicts.get(key);
-        if (v) { used.add(key); out.push(`owner's verdict: ${flat(v.verdict)}${v.note ? `. ${flat(v.note)}` : ""}${verdictPlace(v.seq, v.acting)}`); }
+        if (v) { used.add(key); out.push(`developer's verdict: ${flat(v.verdict)}${v.note ? `. ${flat(v.note)}` : ""}${verdictPlace(v.seq, v.acting)}`); }
       });
       return out;
     }
@@ -126,14 +130,52 @@ function linesFor(e, verdicts, used, owner) {
     case "item.submitted":
       return [`submitted by ${flat(e.actor)} at ${short(d.head)}${d.summary ? `: ${flat(d.summary)}` : ""}`];
     case "review.overridden":
-      return [`independent review overridden by ${flat(e.actor)}${typeof d.acting === "string" && d.acting ? `, declared acting ${flat(d.acting)}` : ""}: ${flat(d.reason)}`];
+      return [`independent review overridden by ${flat(e.actor)}${typeof d.acting === "string" && d.acting ? `, declared acting ${flat(d.acting)}` : ""}: ${flat(d.reason)}${typeof d.quote === "string" && d.quote ? `; on the developer's words: “${flat(d.quote)}”` : ""}`];
     // t407: the reply itself is kept on the task; show ID --reviews prints it.
     case "review.unparsable":
       return [`unparsable review reply from ${flat(e.actor)} at ${short(d.head)}, kept on the task${d.note ? `: ${flat(d.note)}` : ""}`];
+    // A fast landing (t585) with its receipt: what merged, the builder, the
+    // tests and where they ran, the mode's reason and, for fast mode switched
+    // on the developer's direction (t629), their words and the acting model.
+    case "item.landed_fast": {
+      const tests = d.tests ?? {};
+      const where = tests.where ? ` in a ${flat(tests.where)}` : "";
+      const words = typeof d.quote === "string" && d.quote ? `; on the developer's words: \u201c${flat(d.quote)}\u201d, relayed by ${flat(d.acting ?? "an unnamed model")}` : "";
+      return [`landed in fast mode by ${flat(e.actor)}: ${short(d.commit)} built by ${flat(d.builder)}, merge commit ${short(d.mergeCommit)}; ${flat(tests.command)} passed${where}, output sha256 ${String(tests.sha256 ?? "").slice(0, 12)}; fast mode: ${flat(d.reason)}${words}`];
+    }
     case "item.accepted":
       return [`accepted by ${flat(e.actor)} at ${short(d.head)}${d.note ? `: ${flat(d.note)}` : ""}`];
-    case "item.merged":
-      return [`merged by ${flat(e.actor)}: ${short(d.head)} accepted, merge commit ${short(d.mergeCommit)} on the baseline`];
+    // A merge made outside Atelier and recorded afterwards (t653): the
+    // reviews as the developer gave them, never a gated landing.
+    case "item.merge_recorded":
+      return [
+        `merged outside Atelier, recorded afterwards by ${flat(e.actor)}: ${short(d.commit)} merged as ${short(d.mergeCommit)} on main; no checks or test receipt recorded${d.recordedHead ? `; the task's recorded head was ${short(d.recordedHead)}` : ""}${d.note ? `: ${flat(d.note)}` : ""}`,
+        ...(Array.isArray(d.reviews) ? d.reviews : []).map((v) => `review as given: ${v.verdict === "approve" ? "approved" : "rejected"} by ${flat(v.by)} at ${short(v.head)}${v.at ? ` (${flat(v.at)})` : ""}`),
+      ];
+    // A fast landing (t585) records its merge with neither an acceptance nor
+    // a baseline observation: the developer publishes main after the record
+    // (landedFast in src/ledger.ts). Its line says what happened, in the
+    // words of the task page's fast-landing block (fastLandingBlock in
+    // src/ui.ts), and says "on the baseline" only when the event recorded
+    // that observation (t660). The gated line too says the observation only
+    // when the event recorded it (t671): a plan's part, marked merged
+    // through its plan when the plan lands (merged in src/ledger.ts), and an
+    // older event from before observedOnBaseline was, record none.
+    case "item.merged": {
+      // A merge recorded after the fact (t653) is told by its item.merge_recorded line.
+      if (d.outside === true) return null;
+      const fast = d.fast === true || events.some((x) => x.kind === "item.landed_fast" && x.data?.mergeCommit === d.mergeCommit && (x.seq ?? 0) <= (e.seq ?? 0));
+      // A plan's part was integrated onto the plan's branch and never took an
+      // acceptance of its own; its event records the integrated head and the
+      // plan it landed through, and the line says only that.
+      if (typeof d.via === "string" && d.via) return [`merged by ${flat(e.actor)} through plan ${flat(d.via)}: ${d.head ? `${short(d.head)} integrated onto the plan's branch` : "integrated onto the plan's branch"}, no acceptance recorded on the part; merge commit ${short(d.mergeCommit)}`];
+      if (!fast) return [`merged by ${flat(e.actor)}: ${short(d.head)} accepted, merge commit ${short(d.mergeCommit)}${d.observedOnBaseline === true ? " on the baseline" : ""}`];
+      const after = events.filter((x) => (x.seq ?? 0) > (e.seq ?? 0));
+      const reviewed = after.some((x) => x.kind === "review.approved" || x.kind === "review.rejected");
+      const requested = after.some((x) => x.kind === "review.requested");
+      const review = reviewed ? "it skipped the gate; its post-merge review is recorded" : requested ? "it skipped the gate; a post-merge review was requested and is not recorded yet" : "it skipped the gate, and no post-merge review was requested";
+      return [`merged in fast mode by ${flat(e.actor)}: ${short(d.head)} merged as ${short(d.mergeCommit)}, ${d.observedOnBaseline === true ? "on the baseline" : "no baseline observation recorded"}; ${review}`];
+    }
     case "item.abandoned":
       return [`abandoned by ${flat(e.actor)}${d.note ? `: ${flat(d.note)}` : ""}${d.deliveredBy ? `; delivered by ${flat(d.deliveredBy)}` : ""}`];
     case "item.blocked":
@@ -162,7 +204,7 @@ export function receiptText(project, id, detail, origin = null) {
   ];
   const pad = " ".repeat(22);
   for (const e of events) {
-    const own = linesFor(e, verdicts, used, owner);
+    const own = linesFor(e, verdicts, used, owner, events);
     if (!own) continue;
     lines.push(...own.map((line, i) => (i ? pad + line : `${at(e.at)}  ${line}`)));
   }

@@ -7,7 +7,7 @@
 
 import type { LedgerEvent, ProjectRecord } from "./ledger.ts";
 import type { Item } from "./rules.ts";
-import { DECISIONS, isAtelier, QUIET, vendorOf, type Vendor } from "./graph.ts";
+import { DECISIONS, isAtelier, QUIET, vendorOf, type ShowcaseCounts, type Vendor } from "./graph.ts";
 import { dayOf } from "./time.ts";
 
 export const PULSE_DAYS = 14;
@@ -24,6 +24,7 @@ export interface Pulse {
   moves: number;
   decisions: number;
   merges: number;                        // merges recorded in the window
+  sentBack: number;                      // reviews in the window that sent the work back
   agents: string[];                      // every agent that moved in the window, first appearance first
   byVendor: Partial<Record<Vendor, number>>;
   lastAt: string | null;                 // the newest event read, of any kind
@@ -55,7 +56,7 @@ export function buildPulse(events: LedgerEvent[], owner: string, now: Date, cut 
   const oldest = sorted.reduce<string | null>((m, ev) => (m === null || ev.at < m ? ev.at : m), null);
   const pulse: Pulse = {
     days: keys.map((day) => ({ day, byVendor: {}, moves: 0, decisions: 0 })),
-    moves: 0, decisions: 0, merges: 0, agents: [], byVendor: {},
+    moves: 0, decisions: 0, merges: 0, sentBack: 0, agents: [], byVendor: {},
     lastAt: sorted.reduce<string | null>((m, ev) => (m === null || ev.at > m ? ev.at : m), null),
     // Read up to the limit and the oldest event read is inside the window:
     // older events in the window went unread.
@@ -66,6 +67,7 @@ export function buildPulse(events: LedgerEvent[], owner: string, now: Date, cut 
     if (slot === undefined) continue;
     const day = pulse.days[slot];
     if (ev.kind === "item.merged") pulse.merges++;
+    if (ev.kind === "review.rejected") pulse.sentBack++;
     if (QUIET.has(ev.kind) || isAtelier(ev.actor)) continue;
     if (ev.actor === owner) {
       if (DECISIONS.has(ev.kind)) { day.decisions++; pulse.decisions++; }
@@ -77,6 +79,37 @@ export function buildPulse(events: LedgerEvent[], owner: string, now: Date, cut 
     pulse.byVendor[v] = (pulse.byVendor[v] ?? 0) + 1;
     pulse.moves++;
     if (!pulse.agents.includes(ev.actor)) pulse.agents.push(ev.actor);
+  }
+  return pulse;
+}
+
+// The same pulse from the Ledger's counts (Ledger.showcaseCounts), which
+// cover every event of the window however busy the record is, so nothing
+// in it is cut. The Ledger has already placed each count on its day in the owner's zone.
+export function pulseFromCounts(c: ShowcaseCounts, owner: string, now: Date, days = PULSE_DAYS): Pulse {
+  const keys = windowDays(now, days);
+  const index = new Map(keys.map((k, i) => [k, i]));
+  const pulse: Pulse = {
+    days: keys.map((day) => ({ day, byVendor: {}, moves: 0, decisions: 0 })),
+    moves: 0, decisions: 0, merges: 0, sentBack: 0, agents: [], byVendor: {}, lastAt: c.last, cut: false,
+  };
+  for (const r of [...c.days].sort((a, b) => a.day.localeCompare(b.day))) {
+    const slot = index.get(r.day);
+    if (slot === undefined) continue;
+    const day = pulse.days[slot];
+    if (r.kind === "item.merged") pulse.merges += r.n;
+    if (r.kind === "review.rejected") pulse.sentBack += r.n;
+    if (QUIET.has(r.kind) || isAtelier(r.actor)) continue;
+    if (r.actor === owner) {
+      if (DECISIONS.has(r.kind)) { day.decisions += r.n; pulse.decisions += r.n; }
+      continue;
+    }
+    const v = vendorOf(r.actor, owner);
+    day.byVendor[v] = (day.byVendor[v] ?? 0) + r.n;
+    day.moves += r.n;
+    pulse.byVendor[v] = (pulse.byVendor[v] ?? 0) + r.n;
+    pulse.moves += r.n;
+    if (!pulse.agents.includes(r.actor)) pulse.agents.push(r.actor);
   }
   return pulse;
 }
