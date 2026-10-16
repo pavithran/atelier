@@ -38,14 +38,14 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { modelKey } from "../rules.ts";
-import { ASSIGNMENT_ROLES, type Assignment, type AssignmentRole } from "./assignments.ts";
+import { ASSIGNMENT_ROLES, type Assignment, type AssignmentRole, type ReviewRole } from "./assignments.ts";
 import type { CardClaim, CardDisagreement, CardView } from "./cards.ts";
 import { buildJudgement, canonicalModel, judgementWindow, type JudgementRecord, type PoolNames } from "./judgement.ts";
 import { buildPairwise, type PairRef, type PairwiseRecord, type PairSide } from "./pairwise.ts";
 import { buildPrecision, PRECISION_MIN_JUDGED, precisionOf, precisionWindow, type PrecisionRecord } from "./precision.ts";
 import type { ModelEvidence } from "./registry.ts";
 import { buildReliability, runTotal, type ProjectEvents, type Reliability, type RunReport } from "./reliability.ts";
-import { buildSpeed, pace, SPEED_MIN_SAMPLES, type Measure, type SpeedRecord } from "./speed.ts";
+import { buildSpeed, pace, SPEED_MIN_SAMPLES, type Measure, type RoleSpeed, type SpeedRecord, type SpeedRole } from "./speed.ts";
 
 // Thresholds for the shares no reader gave one: below them the counts are
 // shown and no share. Five, as review precision ranks from five judged.
@@ -258,10 +258,18 @@ export function compareModel(input: CompareInput): ModelComparison {
   const pairWindow: FigureWindow = { ...input.pairwise.window };
   const speedWindow: FigureWindow = { from: input.speed.since, to: input.speed.until, days: input.speed.days };
   const judgementWindow: FigureWindow = { ...input.judgement.window };
-  const speedRuns = (role: "build" | "review") => {
-    const runs = spd.reduce((t, x) => t + x.row[role].runs, 0), stalled = spd.reduce((t, x) => t + x.row[role].stalled, 0);
-    return share(`${role}-stalled`, `${role === "build" ? "Build" : "Review"} runs that stalled or timed out`, "speed", speedWindow, stalled, runs, RUNS_MIN);
+  const roleSpeed = (x: (typeof spd)[number], role: "build" | SpeedRole): RoleSpeed => role === "build" ? x.row.build : x.row.byRole[role];
+  const speedRuns = (role: "build" | SpeedRole) => {
+    const runs = spd.reduce((t, x) => t + roleSpeed(x, role).runs, 0), stalled = spd.reduce((t, x) => t + roleSpeed(x, role).stalled, 0);
+    return share(`${role}-stalled`, `${role === "build" ? "Build" : role === "plan" ? "Plan" : "Review"} runs that stalled or timed out`, "speed", speedWindow, stalled, runs, RUNS_MIN);
   };
+  // A review role's figures (t663), read from the verdicts that name the role;
+  // an event from before the role was recorded counts as review.
+  const reviewRoleFigures = (role: ReviewRole): Figure[] => [
+    share(`${role}-approvals-contradicted`, "Its approvals of a revision a defect was later traced to", "reliability", ALL_HISTORY, sum((r) => r.reviewRoles[role].contradicted), sum((r) => r.reviewRoles[role].approvals), APPROVALS_MIN),
+    median(`${role}-time`, "Review claim to verdict", speedWindow, spd.map((x) => ({ name: x.name, m: x.row.byRole[role] }))),
+    count(`${role}-verdicts`, "Verdicts it recorded", "reliability", ALL_HISTORY, sum((r) => r.reviewRoles[role].approvals + r.reviewRoles[role].rejections)),
+  ];
 
   const figures: Partial<Record<CompareRole, Figure[]>> = {
     build: [
@@ -276,10 +284,17 @@ export function compareModel(input: CompareInput): ModelComparison {
       share("review-precision", "Its blocking findings that held up (confirmed or fixed) of those the developer judged", "precision", precisionWindow, p?.upheld ?? 0, p?.judged ?? 0, PRECISION_MIN_JUDGED),
       { ...share("pairwise-catches", "Revisions another model approved in which it found a blocking problem that held up, of the eligible pairs", "pairwise", pairWindow, catches.caught, catches.eligible, input.pairwise.minPairs, pairNote(catches) || undefined), refs: catches.refs.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10).map(pairRef) },
       { ...share("pairwise-misses", "Revisions it approved in which another model found a blocking problem that held up, of the eligible pairs", "pairwise", pairWindow, misses.caught, misses.eligible, input.pairwise.minPairs, pairNote(misses) || undefined), refs: misses.refs.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10).map(pairRef) },
-      share("approvals-contradicted", "Its approvals of a revision a defect was later traced to", "reliability", ALL_HISTORY, sum((r) => r.contradicted.length), sum((r) => r.approvals), APPROVALS_MIN),
-      median("review-time", "Review claim to verdict", speedWindow, spd.map((x) => ({ name: x.name, m: x.row.review }))),
+      share("approvals-contradicted", "Its approvals of a revision a defect was later traced to", "reliability", ALL_HISTORY, sum((r) => r.reviewRoles.review.contradicted), sum((r) => r.reviewRoles.review.approvals), APPROVALS_MIN),
+      median("review-time", "Review claim to verdict", speedWindow, spd.map((x) => ({ name: x.name, m: x.row.byRole.review }))),
       speedRuns("review"),
       count("reviews-unfinished", "Reviews that never reached a verdict", "reliability", ALL_HISTORY, sum((r) => r.unfinishedReviews)),
+    ],
+    "security-review": reviewRoleFigures("security-review"),
+    "claims-review": reviewRoleFigures("claims-review"),
+    plan: [
+      median("plan-time", "Planner claim to its plan", speedWindow, spd.map((x) => ({ name: x.name, m: x.row.byRole.plan }))),
+      speedRuns("plan"),
+      count("plan-runs-failed", "Plan runs a runner reported ending without a plan", "reliability", ALL_HISTORY, sum((r) => r.runsByRole.plan)),
     ],
     acting: [
       share("judgement-upheld", "Its verdicts on findings, recorded for the developer, that a later verdict by another named model agreed with", "judgement", judgementWindow, jsum("upheld"), jsum("verdicts"), JUDGEMENT_MIN, jsum("unresolved") ? `${jsum("unresolved")} unresolved: no later verdict or defect says either way` : undefined),
@@ -288,11 +303,14 @@ export function compareModel(input: CompareInput): ModelComparison {
       count("overrides", "Missing reviews it overrode for the developer", "judgement", judgementWindow, jsum("overrides")),
     ],
   };
-  // Roles Atelier has no figure of its own for, and why.
-  const unmeasured: Partial<Record<CompareRole, string>> = {
-    "security-review": "A review's events do not say which review role it answered, so security reviews are counted with every review in the review row.",
-    "claims-review": "A review's events do not say which review role it answered, so claims reviews are counted with every review in the review row.",
-    plan: "Atelier does not yet measure planning: a plan's outcome is not traced to the model that wrote it.",
+  // A role with no event of its own yet, and why: only where no figure has a
+  // sample. Events from before t663 do not say a review's role, so they
+  // count as review, and a plan run has no sample until a plan is proposed.
+  const unmeasured = (role: CompareRole): string | undefined => {
+    const rows = figures[role];
+    if (!rows || rows.some((f) => f.n > 0)) return undefined;
+    if (role !== "plan" && role !== "security-review" && role !== "claims-review") return undefined;
+    return role === "plan" ? "No plan run has been recorded for this model yet." : "No review has been recorded for this model in this role yet; reviews from before t663 do not say their role and count as review.";
   };
 
   const projectNames = input.projectNames ?? {};
@@ -317,7 +335,7 @@ export function compareModel(input: CompareInput): ModelComparison {
       disagreements: cards?.disagreements ?? [],
       priors: cards?.priors ?? [],
     },
-    roles: COMPARE_ROLES.map((role) => ({ role, assignments: assignmentsFor(role), figures: figures[role] ?? [], ...(unmeasured[role] ? { unmeasured: unmeasured[role] } : {}) })),
+    roles: COMPARE_ROLES.map((role) => ({ role, assignments: assignmentsFor(role), figures: figures[role] ?? [], ...(unmeasured(role) ? { unmeasured: unmeasured(role) } : {}) })),
     leftOut,
     coverage: { projects: input.coverage.projects, events: input.coverage.events, unread: [...input.coverage.unread].sort() },
   };

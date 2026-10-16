@@ -17,6 +17,7 @@ for `land.sh` and `queue.sh` (default `atelier`).
 | `queue.sh TASK CONTEXT NOTE` | Takes this machine's landing lock for the project, merges main into the task, and hands it to `land.sh` when the merge is clean and type-checks. |
 | `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits and reviews the head it read before the review; records the verdict with the reviewer's own summary and its findings either way, and on approval accepts at that head with NOTE on the acceptance and merges, then type-checks main. `REVIEW_MODEL` is `gemini-3.1-pro-high` (recorded as `antigravity/gemini-3.1-pro`) or `gpt-oss-120b-medium` (`antigravity/gpt-oss-120b`); any other is refused. |
 | `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON; `land.sh` records them. |
+| `review-bake.sh run\|score` | A reviewer bake-off (t699): gives each reviewer the same blind brief and diff of every build in a sample of judged model-bake-off builds, read-only, and scores the replies against the judge's verdicts with `review-bake-score.mjs`. See "Measuring reviewers". |
 | `regen-fixtures.sh` | Runs `node cli/regenerate.mjs`, rewriting the command indexes and the CLI's help fixtures in the current directory. |
 | `land-queue.sh [TASK:H/M ...]` | Lands queued tasks one after another with `atelier land --workflow --wait --reviewer`, each once the five-minute load average is under `LAND_QUEUE_LOAD` (25), printing one `LANDQ tN: OUTCOME` line per landing for a watcher. Run it once in the background from the project's checkout; add a task with `land-queue.sh --add tN:harness/model`, which takes the queue's lock (a bare append to the queue file is not safe). `docs/orchestrating.md`, "The loop with runners", says how its outcomes are handled. It is a workaround until the server keeps a queue of landings itself (t460). |
 
@@ -473,6 +474,54 @@ the supervisor restarts the same command from the updated checkout, without
 a duplicate. `XPC_SERVICE_NAME` alone does not enable this mode; supervisors
 own startup failures. Details:
 docs/runners.md, "Reload on deploy".
+
+## Measuring reviewers
+
+`review-bake.sh` measures how well each reviewer judges a build, on builds a
+judge has already graded and whose defects the judge confirmed and
+reproduced (the model bake-off's builds, kept in a data folder outside the
+repository). The script's header documents every option.
+
+```sh
+bin/orchestrate/review-bake.sh run --sample sample.txt --out DIR \
+  --reviewers codex/gpt-6-astra,antigravity/gemini-4-argon,claude-code/opus-5.5 \
+  --skip claude-code/opus-5.5
+bin/orchestrate/review-bake.sh score --out DIR --truth truth.json
+```
+
+- **Reviewers** are `codex/MODEL` (`codex exec -s read-only`, brief and diff on
+  standard input), `antigravity/MODEL` (`cli/agy-review.mjs`) and
+  `claude-code/MODEL` (`~/.local/bin/atelier-claude` in its review mode, which
+  needs `claude -p` signed in; `--skip` leaves such a reviewer out and says so
+  in `DIR/skipped.txt`).
+- **The sample** lists one build per line (`SLUG-TASK`, its grade, why). Each
+  build is reviewed in a clean clone at its head, with no `.scratch/` of the
+  builder; its brief is the blind brief the model bake-off gave its reviewers
+  (rebuilt from the task's brief when the build has none) and its diff is the
+  build's change from the task's base. Every reviewer gets the identical files,
+  kept in `DIR/inputs/`.
+- **Concurrency** is per family: at most 2 Codex, 2 Antigravity and 1 Claude
+  Code review at a time. A reply with no `VERDICT:` line is tried once more
+  after `--retry-sleep` seconds; a second miss is recorded as failed. Rerunning
+  keeps the reviews that have a verdict.
+- **Ground truth** (`truth.json`, described at the top of
+  `review-bake-score.mjs`) is written by hand from the judge's verdicts: per
+  build its grade, each confirmed defect with a regular expression that
+  recognises a `FINDING` line naming it, and the findings the judge ruled
+  false or outside the review bar. A blocking finding that matches nothing is
+  unjudged: read it, and say what it is in `labels.json`, which the scorer
+  reads from the output folder (`"REVIEWER|BUILD|N": defect id | false | real |
+  none`).
+- **The score**, per build: defects caught and missed, blocking findings the
+  judge ruled false, approvals of a C or D build, rejections of an A build.
+  Per reviewer: the totals, precision (true blocking findings over all) and
+  recall (confirmed defects caught over those in the builds it reviewed).
+
+It reads builds and judge verdicts that the bake-off kept; it changes none of
+them and runs reviewers only in throwaway clones under
+`~/Library/Caches/ai-projects/atelier-review-bake`. `node --test
+bin/orchestrate/review-bake.test.mjs` tests the scorer and the script against
+stand-ins for the reviewers' CLIs.
 
 ## What the agents may and may not do
 

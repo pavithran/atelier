@@ -1720,6 +1720,34 @@ it("the planner's, a part's and a task's job briefs and the review claim carry t
   expect((await bare.jobBrief(other.id, OPUS)).text).not.toContain("Prose standard");
 });
 
+// t663: a review request and its verdict say which review role they served
+// (security-review for security or gate work, claims-review for docs, else
+// review), so the Models page can measure each role.
+it("a review request and its verdict carry the review role they served", async () => {
+  const cases: [string, PlanPart, string][] = [
+    ["role-security", part("auth"), "security-review"],
+    ["role-claims", part("d", { kind: "docs", taskKind: "docs" }), "claims-review"],
+    ["role-plain", part("a"), "review"],
+  ];
+  for (const [name, spec, role] of cases) {
+    const L = await setup(name);
+    const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", PLANNER, []);
+    await L.claim(item.id, PLANNER, RUNNER);
+    const post = await L.postPlan(item.id, PLANNER, doc(spec));
+    if (!post.valid) throw new Error(post.errors.join("; "));
+    await L.release(item.id, PLANNER, "proposed");
+    const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+    const partId = parts[0].id, head = "a".repeat(40);
+    await submitPart(L, partId, head);
+    const requested = (await events(L, partId)).find((e) => e.kind === "review.requested")!;
+    expect(requested.data.role, name).toBe(role);
+    const lease = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+    await L.addReview({ request: lease.request, itemId: partId, criteria: await L.criteria(partId), by: GPT, head, approve: true, note: "Looks good", at: new Date().toISOString() });
+    const verdict = (await events(L, partId)).find((e) => e.kind === "review.approved")!;
+    expect(verdict.data.role, name).toBe(role);
+  }
+});
+
 // t659: a plan's review request naming only a model (no harness) was skipped
 // by the standing check, so a reviewer the owner paused kept the request.
 it("an open review request naming only a model is withdrawn when the owner pauses that model, and asked of another", async () => {

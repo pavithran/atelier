@@ -147,6 +147,29 @@ test("update stopped on a conflict names the same push as a finished update", (t
   assert.deepEqual(f.pushes(), []);
 });
 
+test("update after a committed conflict merge of the baseline does nothing and says so (t686: it rebased the task's commit again)", (t) => {
+  const f = fixture(t);
+  const seed = join(f.dir, "seed");
+  f.commit(seed, "base.txt", "Main: base changed");
+  f.git(seed, "push", "-q", "origin", "main");
+  // The workspace is in step with the fork, then changes base.txt too.
+  f.git(f.workspace, "fetch", "-q", "origin");
+  f.git(f.workspace, "reset", "-q", "--hard", f.h2);
+  f.commit(f.workspace, "base.txt", "A: base changed");
+  // The agent resolves the conflict by merging the baseline by hand, as update asked.
+  f.git(f.workspace, "fetch", "-q", join(f.dir, "baseline.git"), "main");
+  assert.throws(() => f.git(f.workspace, "merge", "--no-edit", "FETCH_HEAD"));
+  writeFileSync(join(f.workspace, "base.txt"), "resolved\n");
+  f.git(f.workspace, "add", "base.txt");
+  f.git(f.workspace, "commit", "-qm", "Merge baseline");
+  const head = f.git(f.workspace, "rev-parse", "HEAD");
+  const r = f.run(["update"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^t3 already holds baseline \w+; nothing to update\.$/m);
+  assert.equal(f.git(f.workspace, "rev-parse", "HEAD"), head);
+  assert.ok(!existsSync(join(f.workspace, ".git", "rebase-merge")), "update started a rebase");
+});
+
 test("push --force refuses to drop commits Atelier recorded, whatever the lease would allow", (t) => {
   const f = fixture(t);
   // The old claim's fetch alone: origin/main is H2, the workspace still ends at H1.
