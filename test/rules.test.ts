@@ -1434,6 +1434,28 @@ test("an explicit rejection override waives only the recorded reviews and never 
   assert.equal(gate(item({ head: H2, reviewOverride: made.override }), policy, evidence, [rejected]).ready, false);
 });
 
+// t693 (found reviewing t686 at 8534105d): an override recorded beside an
+// independent approval, to waive a rejection, also stood in for the review
+// once that approval was withdrawn.
+test("an override that waived a rejection beside an approval does not stand in for the review once the approval is withdrawn", () => {
+  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const approval = review("codex/gpt-6");
+  const rejected = review("antigravity/gemini-4-argon", { approve: false, note: "environment only" });
+  const made = reviewOverrideFor(item(), policy, evidence, [approval, rejected], "owner", "Override environment-only rejection", T);
+  assert.equal(made.override.rejectionsOnly, true);
+  const accepted = item({ reviewOverride: made.override });
+  assert.equal(gate(accepted, policy, evidence, [approval, rejected]).ready, true);
+  // The approval is no longer counted; the rejection the override named stays waived, the review is missing.
+  const withdrawn = gate(accepted, policy, evidence, [rejected]);
+  assert.equal(withdrawn.ready, false);
+  assert.equal(withdrawn.needsAssessor, true);
+  assert.equal(withdrawn.overridden?.rejectionsOnly, true);
+  // An override made while the review was missing too still waives both.
+  const both = reviewOverrideFor(item(), policy, evidence, [rejected], "owner", "No reviewer qualifies", T);
+  assert.equal(both.override.rejectionsOnly, undefined);
+  assert.equal(gate(item({ reviewOverride: both.override }), policy, evidence, [rejected]).ready, true);
+});
+
 // t653: the tasks t590-t651 were merged into main outside Atelier under the
 // 2026-10-13 freeze, and the ledger still showed them open or claimed. The
 // record names the merge, the commit merged and the reviews as given, and is
