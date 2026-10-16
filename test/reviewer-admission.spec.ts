@@ -142,6 +142,19 @@ it("named aliases dispatch the canonical registered model only to a live runner 
   expect((await detail(L)).gate.ready).toBe(true);
 });
 
+it("a hand-served request opens for an admitted reviewer although no live runner offers the review job", async () => {
+  // ikon-weblog t75, round 2: review-request refused no_runner for a review
+  // the developer serves by hand (review-claim --runner home:hand).
+  const L = await setup("admission-hand");
+  await admit(L);
+  await refusal(L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, []), "no_runner");
+  const asked = await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, [], true);
+  expect(asked).toMatchObject({ requested: true, reviewer: REVIEWER });
+  const claim = await L.claimReview("t1", REVIEWER, { runner: "home:hand", kind: "home" }) as unknown as ReviewClaim;
+  await L.addReview({ ...await review(L), request: claim.request }, undefined, false);
+  expect((await detail(L)).gate.ready).toBe(true);
+});
+
 it("withdrawal cancels an outstanding claim and readmission never revives its verdict", async () => {
   const L = await setup("admission-withdraw-claim");
   await admit(L);

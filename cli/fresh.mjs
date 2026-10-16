@@ -47,6 +47,21 @@ export function loadPairs(gitDir, project) {
   return all[project] ?? {};
 }
 
+// The project commit a baseline commit is paired with, in whichever project's
+// pairs hold it; null when this checkout has no pair for it (t695: a runner
+// whose server names the baseline's main asks whether its checkout holds it).
+export function pairedProjectCommit(gitDir, baselineCommit) {
+  const file = mapFile(gitDir);
+  if (!existsSync(file)) return null;
+  let all;
+  try { all = JSON.parse(readFileSync(file, "utf8")); } catch { return null; }
+  for (const pairs of Object.values(all ?? {})) {
+    const paired = pairs?.[baselineCommit];
+    if (typeof paired === "string") return paired;
+  }
+  return null;
+}
+
 export function savePairs(gitDir, project, pairs) {
   const file = mapFile(gitDir);
   const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};

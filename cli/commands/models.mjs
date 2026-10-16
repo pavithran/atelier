@@ -7,6 +7,7 @@ import { cleanCard, cleanCardModel, cleanWithdrawal, conditionText } from "../..
 import { modelKey } from "../../src/rules.ts";
 import { comparisonLines } from "../../src/models/compare.ts";
 import { trendLines } from "../../src/models/snapshot.ts";
+import { reviewLines } from "../../src/models/review.ts";
 import { assignCommand, rolesCommand } from "../model-roles.mjs";
 
 // The model pool. With no subcommand, lists it. `models add ID --harness H
@@ -85,6 +86,15 @@ export default async function modelsCommand() {
     const note = await call("POST", `/models/${encodeURIComponent(id)}/notes`, body, OWNER);
     return console.log(`${id} has a new note, ${note.at.slice(0, 10)} by ${note.by}${note.item ? ` on ${taskOf(note)}` : ""}: ${note.text}`);
   }
+  // The recurring review (t624): the server's read-only projection, printed
+  // as it comes. Nothing is recorded, assigned or dispatched.
+  if (sub === "review") {
+    if (id || args._.length > 2) die("atelier models review [--as-of TIME]");
+    const asOf = args["as-of"];
+    if (asOf !== undefined && !/^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2}))?$/.test(asOf)) die("--as-of is an ISO date or time, such as 2026-10-14 or 2026-10-14T09:00:00Z");
+    for (const line of reviewLines(await call("GET", `/model-review${asOf === undefined ? "" : `?as-of=${encodeURIComponent(asOf)}`}`, undefined, OWNER))) console.log(line);
+    return;
+  }
   if (sub === "card") return cardCommand(id);
   if (sub === "show") {
     if (!id) die("atelier models show ID [--trend]");
@@ -143,7 +153,7 @@ export default async function modelsCommand() {
     return;
   }
   if (sub) die(`${COMMAND_USAGE.models}
-unknown models command "${sub}"; use add, set, remove, note, card, show, admit, withdraw, reviewers, assign, roles, or nothing to list`);
+unknown models command "${sub}"; use add, set, remove, note, card, show, review, admit, withdraw, reviewers, assign, roles, or nothing to list`);
   const pool = await call("GET", "/models", undefined, OWNER);
   if (args.json) return console.log(JSON.stringify(pool, null, 2));
   if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");

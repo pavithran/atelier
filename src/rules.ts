@@ -166,6 +166,11 @@ export function samePlan(a: Pick<Item, "id" | "kind" | "plan">, b: Pick<Item, "i
 export interface ReviewOverride {
   // Only the rejections present when the developer explicitly overrode them.
   rejections?: { by: string; at: string }[];
+  // Set when an independent approval stood at the head as this was recorded,
+  // so it waived only the rejections above and never the review. If that
+  // approval is later withdrawn, the review is missing again and this does
+  // not stand in for it (t693).
+  rejectionsOnly?: true;
   head: string;
   by: string;
   reason: string;
@@ -415,6 +420,12 @@ export interface UnparsableReply {
   note: string;    // why no verdict could be read, as the parser said it
   reply: string;   // the reply itself, its last 100 KB
   at: string;
+  // The request the reply answered, and whether it released that request's
+  // claim (t613). A reply from a claim that had lapsed releases nothing, so
+  // it must not stand for a stall of the request that replaced it. Absent
+  // on replies kept before this and on runners that send no request number.
+  request?: number;
+  released?: boolean;
 }
 
 // What a review is bound to: the head it read and the binding of the
@@ -689,6 +700,12 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
     // A task landed in fast mode (t585) names its builder from the merged
     // commit's Agent line: that builder is a contributor, as a pusher is.
     if (event.kind === "item.landed_fast" && typeof event.data.builder === "string" && validActor(event.data.builder)) actors.add(event.data.builder);
+    // So is every agent whose commit is in the range the landing merged (t603):
+    // a model that wrote an earlier commit of the range is a contributor
+    // though the tip's Agent line names another.
+    if (event.kind === "item.landed_fast" && Array.isArray(event.data.contributors)) {
+      for (const c of event.data.contributors) if (typeof c === "string" && validActor(c) && c.includes("/")) actors.add(c);
+    }
     if (event.kind === "push.observed") {
       const by = event.actor === "atelier/events" ? holder : event.actor;
       if (by) actors.add(by);
@@ -1426,7 +1443,7 @@ export function reviewOverrideFor(
   const waived = rejections.length
     ? `Recorded rejections by ${rejections.map((r) => r.by).join(", ")}${g.needsAssessor ? `; ${requirement}` : ""}`
     : requirement;
-  return { override: { head: item.head, by: owner, reason: text, at, ...(rejections.length ? { rejections } : {}) }, waived, contributors: contributorsOf(item) };
+  return { override: { head: item.head, by: owner, reason: text, at, ...(rejections.length ? { rejections } : {}), ...(!g.needsAssessor ? { rejectionsOnly: true as const } : {}) }, waived, contributors: contributorsOf(item) };
 }
 
 // An item holds its scope against other claims while it is claimed,
@@ -1538,7 +1555,19 @@ export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: st
   const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
     Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   const changedPaths = measured?.changedPaths ?? null;
-  const applies = (claim: string) => checkApplies(policy, claim, changedPaths) !== false;
+  // A check's applicability at a head is settled once, by the newest counting
+  // record of it there: a record that the check does not apply stands, judged
+  // by the paths it measured, however the paths measured since read, since main
+  // moving under an unchanged head lists other tasks' paths and must not turn a
+  // check `done` called not applicable into one review-request waits for (t562).
+  // A run of the check after that record, or a record the current policy no
+  // longer supports, leaves the paths measured now to decide.
+  const recordedNotApplicable = (claim: string) => {
+    const last = atHead.filter((e) => counts(e) && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    const paths = last?.notApplicable ? measuredPaths(last.changedPaths) : null;
+    return !!paths && checkApplies(policy, claim, paths) === false;
+  };
+  const applies = (claim: string) => !recordedNotApplicable(claim) && checkApplies(policy, claim, changedPaths) !== false;
   const checks = policy.checks.filter(applies).map((claim) => {
     const e = latest(claim);
     return e
@@ -1575,8 +1604,8 @@ export function mergedRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: 
 
 export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, mainNow: string | null): MergedCheckView {
   const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox")) : [];
-  const changed = evidenceAt(policy, evidence, head).changedPaths;
-  const checks = policy.checks.filter((claim) => checkApplies(policy, claim, changed) !== false).map((claim) => {
+  const notApplicable = new Set(evidenceAt(policy, evidence, head).notApplicable);
+  const checks = policy.checks.filter((claim) => !notApplicable.has(claim)).map((claim) => {
     const e = mergedRunsAt(policy, runs, head, claim).pop();
     return e
       ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", mainHead: e.mainHead, stale: !!mainNow && e.mainHead !== mainNow, at: e.at, by: e.by }
@@ -1882,7 +1911,10 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       // A project that forbids overrides (t371) counts none, an override
       // recorded before the prohibition included: the change waits for its
       // review as if the override had never been made.
-      overridden = policy.noOverride ? null : overrideAt(item, owner);
+      // An override recorded beside an approval waived only the rejections it
+      // named (rejectionsOnly), so it never stands in for the review.
+      const forReview = policy.noOverride ? null : overrideAt(item, owner);
+      overridden = forReview?.rejectionsOnly ? null : forReview;
       if (!overridden) {
         needsAssessor = true;
         blockers.push(governed ? requirement : protectedNeed(single));
@@ -2327,6 +2359,9 @@ export interface FastReceipt {
   commit: string;
   mergeCommit: string;
   builder: string;
+  // Every agent whose Agent line is in the commits the landing merged, the
+  // builder among them (t603). A receipt from an older CLI has none.
+  contributors?: string[];
   tests: { command: string; sha256: string; where?: FastTestWhere };
   reason: string;
   at: string;
@@ -2337,6 +2372,7 @@ export interface FastReceipt {
 }
 
 const SHA = /^[a-f0-9]{40,64}$/;
+export const FAST_CONTRIBUTORS_MAX = 50;
 export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, actor: string, at: string): FastReceipt {
   assertFastMode(mode);
   const tests = body.tests as { command?: unknown; sha256?: unknown; where?: unknown } | undefined;
@@ -2347,7 +2383,13 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
   if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
   if (tests.where !== undefined && !FAST_TEST_WHERE.includes(tests.where as FastTestWhere)) throw new RuleError("bad_receipt", `the receipt says where the tests ran: ${FAST_TEST_WHERE.join(" or ")}`, 400);
   const where = tests.where as FastTestWhere | undefined;
-  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
+  let contributors: string[] | undefined;
+  if (body.contributors !== undefined) {
+    const list = body.contributors;
+    if (!Array.isArray(list) || list.length > FAST_CONTRIBUTORS_MAX || !list.every((c) => typeof c === "string" && c.includes("/") && validActor(c))) throw new RuleError("bad_receipt", `the receipt names the contributors as harness/model, from the Agent lines of the commits merged, at most ${FAST_CONTRIBUTORS_MAX}`, 400);
+    contributors = [...new Set([body.builder, ...(list as string[])])];
+  }
+  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, ...(contributors ? { contributors } : {}), tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
 }
 
 // ── merges recorded after the fact (t653) ──────────────────────────────────
@@ -2419,6 +2461,20 @@ export function agentOfMessage(message: string): string | null {
   const lines = message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l));
   const last = lines.at(-1)?.replace(/^Agent:\s*/i, "").trim() ?? "";
   return last.includes("/") && validActor(last) ? last : null;
+}
+
+// Every agent the commit messages of a range name: all their Agent lines,
+// as harness/model, once each (t603). The tip's last line is the builder
+// (agentOfMessage); an earlier commit's agent contributed as well.
+export function agentsOfMessages(messages: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const message of messages) {
+    for (const line of message.split("\n").map((l) => l.trim()).filter((l) => /^Agent:\s*/i.test(l))) {
+      const a = line.replace(/^Agent:\s*/i, "").trim();
+      if (a.includes("/") && validActor(a)) out.add(a);
+    }
+  }
+  return [...out];
 }
 
 // The family rule for a post-merge review. Outside fast mode a reviewer of

@@ -35,7 +35,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
   askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
@@ -69,7 +69,7 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
-import { aheadOfAssignments, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
+import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
 import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -81,7 +81,7 @@ import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick }
 import { offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
-import { exactEntry } from "./models/identity.ts";
+import { exactEntry, reviewerEntries } from "./models/identity.ts";
 import { ACTING_EVENTS, linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
 import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
@@ -811,6 +811,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS agent_artifacts_tokens (agent_id TEXT NOT NULL, repo TEXT NOT NULL, token_id TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (agent_id, token_id));
       CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -1106,6 +1107,28 @@ export class Ledger extends DurableObject<Env> {
     return true;
   }
 
+  // The Artifacts tokens an agent token's requests minted (t598), so revoking
+  // the agent token can revoke them too. Recording is refused (false) when the
+  // agent token is unknown or already revoked: the caller then revokes the
+  // token it just minted. A token past its expiry needs no revoking, so its
+  // row is dropped whenever another is recorded.
+  recordArtifactsToken(agentId: string, repo: string, tokenId: string, expiresAt: string): boolean {
+    const row = this.sql.exec(`SELECT json FROM agent_tokens WHERE id = ?`, agentId).toArray()[0];
+    if (!row || (JSON.parse(row.json as string) as AgentToken).revokedAt) return false;
+    this.sql.exec(`DELETE FROM agent_artifacts_tokens WHERE expires_at <= ?`, new Date().toISOString());
+    this.sql.exec(`INSERT OR REPLACE INTO agent_artifacts_tokens (agent_id, repo, token_id, expires_at) VALUES (?, ?, ?, ?)`, agentId, repo, tokenId, expiresAt);
+    return true;
+  }
+
+  agentArtifactsTokens(agentId: string): { repo: string; tokenId: string }[] {
+    return this.sql.exec(`SELECT repo, token_id FROM agent_artifacts_tokens WHERE agent_id = ? ORDER BY rowid`, agentId).toArray()
+      .map((r) => ({ repo: r.repo as string, tokenId: r.token_id as string }));
+  }
+
+  forgetArtifactsToken(agentId: string, tokenId: string): void {
+    this.sql.exec(`DELETE FROM agent_artifacts_tokens WHERE agent_id = ? AND token_id = ?`, agentId, tokenId);
+  }
+
   // Browser sessions. Signing in stores the SHA-256 of a random session id
   // with when it ends; the id itself travels only in the cookie, so a copy of
   // this storage holds no usable session. A session past its expiry is as
@@ -1267,6 +1290,11 @@ export class Ledger extends DurableObject<Env> {
   private cardRecords(): CardRecord[] {
     return this.sql.exec(`SELECT id, json FROM model_cards ORDER BY id`).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as CardRecord), id: `c${r.id as number}` }));
+  }
+
+  // Every card record, for the model review (t624) to read as of a time.
+  modelCardRecords(): CardRecord[] {
+    return this.cardRecords();
   }
 
   modelCards(named: string): CardView {
@@ -1479,9 +1507,20 @@ export class Ledger extends DurableObject<Env> {
   // head measured, and a part's spec from its approved plan, so every caller
   // reads the same roles (gpt-6-astra's twentieth review of t622, finding 2).
   private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): Assignment[] {
+    return applicableAssignments(this.heldAssignments(), null, this.reviewRolesOf(item, part, changed));
+  }
+
+  private reviewRolesOf(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): AssignmentRole[] {
     const measured = changed ?? (item.head ? evidenceAt(this.project().policy, this.evidenceFor(item.id), item.head).changedPaths ?? [] : []);
-    const spec = part ?? this.partSpec(item);
-    return applicableAssignments(this.heldAssignments(), null, reviewRolesFor(item, measured, spec));
+    return reviewRolesFor(item, measured, part ?? this.partSpec(item));
+  }
+
+  // The review role a request or a verdict serves (t663): the most specific
+  // of the roles the review reads, as reviewAssigned reads them. Recorded on
+  // review.requested and on the verdict so the Models page can measure each
+  // role; an event from before it has none and counts as review.
+  private reviewRoleOf(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] | null = null): ReviewRole {
+    return this.reviewRolesOf(item, part, changed)[0] as ReviewRole;
   }
 
   // A part's spec from its plan's approved document, or null for a task or a
@@ -2274,7 +2313,7 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
         id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
       this.log(id, ORCHESTRATOR, "review.requested", {
-        head: need.head, reviewer, round: need.round, via: "criteria-changed",
+        head: need.head, reviewer, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: "criteria-changed",
         ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
       }, at);
       // The tier is judged against the live offers this ledger holds, as
@@ -2605,14 +2644,19 @@ export class Ledger extends DurableObject<Env> {
   // the conflicts for it to resolve, where a plain rework would reset the
   // workspace to a head that cannot reach main.
   //
-  // With overlapOk, a task already dispatched keeps its offer: omitted fields
+  // With overlapOk, a task still waiting on its dispatch keeps its offer: omitted fields
   // stay as they were (overrideDispatch in src/dispatch/rules.ts), and the
   // answer names the core-file hold the override released, if one held it.
   // `why`: what chose the builder, the role assignments applied or skipped
   // included, set by the dispatch route and kept on item.dispatched.
   dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
     const item = this.checkDispatch(id, actor);
-    const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, item.dispatch);
+    // Only a dispatch still waiting in the queue is an offer to keep. One a
+    // runner has since claimed is spent: a held or submitted task dispatched
+    // again with an override starts a fresh build, so an earlier merge-main
+    // job and head are not carried over (t517).
+    const waiting = waitingDispatch(item);
+    const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waiting);
     // Under single-family mode a dispatch names only the company's models:
     // one for another company's model would hand the work to a builder no
     // reviewer of the company could then be shown independent of (t394).
@@ -2624,7 +2668,7 @@ export class Ledger extends DurableObject<Env> {
     const items = this.items();
     assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
     this.assertCriteriaReviewed(item, d, "dispatched");
-    const retained = input.overlapOk === true && !!item.dispatch;
+    const retained = input.overlapOk === true && !!waiting;
     const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
     if (held) {
@@ -2686,7 +2730,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) {
-      const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, item.dispatch);
+      const d = this.standingDispatch(input, "build", actor, new Date().toISOString(), undefined, waitingDispatch(item));
       this.assertMergeMainWorkspace(item, d);
       assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
       this.assertCriteriaReviewed(item, d, "dispatched");
@@ -3313,7 +3357,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, role: this.reviewRoleOf(item), ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
@@ -5501,7 +5545,7 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
+    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -6556,7 +6600,7 @@ export class Ledger extends DurableObject<Env> {
       const namedOutcome = named ? aheadOfAssignments(this.reviewAssigned(p, part, need.changedPaths), "the developer's named reviewer") : null;
       const reason = namedOutcome ? ["Named by the developer for this part", ...namedOutcome.lines].join(" ") : pick!.reviewer!.reasons.join(" ");
       const assignment = namedOutcome ?? pick?.assignment;
-      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, reason, ...(assignment ? { assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
+      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, role: this.reviewRoleOf(p, part, need.changedPaths), reason, ...(assignment ? { assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
       // The tier is the project's, judged against the developer's pool as it is
       // now (the default), with the offers the tick read.
       this.askTierReview(p, need, reviewer, ORCHESTRATOR, at, false, undefined, tickOffers);
@@ -6905,7 +6949,10 @@ export class Ledger extends DurableObject<Env> {
   // One transaction (t627): a request the developer's named reviewer
   // redirects is withdrawn only if the new one is asked, so a refusal after
   // the withdrawal (the gate blocked, no runner) leaves the old one standing.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): ReviewAsked {
+  // `hand` (t694): the developer serves this review by hand (review-claim
+  // --runner home:hand), so no live runner need offer it; only the check that
+  // one does is waived, every other check on the reviewer stands.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[], hand = false): ReviewAsked {
     // The offers and the pool are kept whatever the answer, as they were
     // before the transaction: the ticks read them.
     offers = this.ownOffers(offers);
@@ -6914,7 +6961,7 @@ export class Ledger extends DurableObject<Env> {
     this.reviewItem(id);
     this.keepPool(pool);
     try {
-      return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers));
+      return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers, hand));
     } catch (err) {
       // Rolled back: the requests the redirect would have withdrawn stand.
       if (!(err instanceof KeptRequests)) throw err;
@@ -6923,7 +6970,7 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: (SuggestionRecords & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined): ReviewAsked {
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: (SuggestionRecords & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false): ReviewAsked {
     const item = this.reviewItem(id);
     if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
@@ -6951,8 +6998,8 @@ export class Ledger extends DurableObject<Env> {
       if (single && actorFamily(admission?.active ? admissionActor(reviewer, admission) : reviewer) !== single) {
         throw new RuleError("single_family", `${reviewer} is not one of ${single}'s models, and this project runs in single-family mode (${single}): name one of ${single}'s models with --reviewer, or return to cross-family review with atelier init --cross-family`, 409);
       }
-      const entries = pool.filter((m) => [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(reviewer!)));
-      if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models`, 409);
+      const entries = reviewerEntries(pool.filter((m) => [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(reviewer!))), reviewer);
+      if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models: ${entries.map((m) => `${m.harness}/${m.id}`).join(", ")}; name one by its exact harness/id`, 409);
       if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
       if ((!admission && !entries.length) || !mayAssess(reviewer, policy, this.owner)) {
         throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the developer can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403);
@@ -6964,7 +7011,7 @@ export class Ledger extends DurableObject<Env> {
         const refusal = familyRefusal(reviewer, contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy));
         if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403);
         const dispatch = { ...this.standingDispatch({ to: entry.where, agent: entry.harness, model: entry.id }, "review", ORCHESTRATOR, new Date().toISOString(), pool), job: "review" as const };
-        if (!liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+        if (!hand && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
           throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; start a runner with its registered harness and endpoint`, 409);
         }
       }
@@ -7101,12 +7148,12 @@ export class Ledger extends DurableObject<Env> {
     const chosenEntry = exactEntry(pool, chosen) ?? (reviewer !== null ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen)) : undefined);
     const where = records || reviewerAdmission(chosen, policy)?.active ? chosenEntry?.where ?? "home" : "home";
     const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
-    if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+    if (!hand && reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
       throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
     }
     const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved, pool, offers);
     return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number, ...(withdrew.length ? { withdrew } : {}) };
   }
@@ -7193,7 +7240,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
     // What the role assignments said of this choice, kept on the request
     // (gpt-6-astra's review of t622, finding 7).
-    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, tier: true, ...(pick.reasons.length ? { reason: pick.reasons.join(" ") } : {}) }, at, proved);
+    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), tier: true, ...(pick.reasons.length ? { reason: pick.reasons.join(" ") } : {}) }, at, proved);
   }
 
   // Withdraws an item's live tier requests (open ones only, with `only`), so
@@ -7271,7 +7318,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
       itemId, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
     this.log(itemId, ORCHESTRATOR, "review.requested", {
-      head: need.head, reviewer, round: need.round, via: "head-moved", from: last.head as string,
+      head: need.head, reviewer, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: "head-moved", from: last.head as string,
       ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}),
     }, at);
     this.askTierReview(item, need, reviewer, ORCHESTRATOR, at, false, undefined, this.heldOffers());
@@ -7406,13 +7453,16 @@ export class Ledger extends DurableObject<Env> {
     // gate's unparsable replies.
     if (isPrereviewRequest(request)) return this.prereviewOutcome(itemId, actor, request, { outcome: "malformed", detail: `${note}: …${reply.slice(-1500)}` }, proved, head);
     const at = new Date().toISOString();
-    this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at } satisfies UnparsableReply));
+    this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at, ...(request === undefined ? {} : { request }) } satisfies UnparsableReply));
     this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
     // Keeping an unusable reply is harmless; releasing a successor is not.
     this.expireReviewClaims();
     if (request === undefined) return { released: false };
     const row = this.sql.exec(`SELECT id FROM review_requests WHERE id = ? AND item = ? AND head = ? AND state = 'claimed' AND claimedBy = ?`, request, itemId, head, actor).toArray()[0];
     if (!row) return { released: false };
+    // The reply released the request it answered (t613): only such a reply
+    // stalls a landing, and the record says so.
+    this.sql.exec(`UPDATE unparsable SET json = json_set(json, '$.released', json('true')) WHERE id = (SELECT MAX(id) FROM unparsable WHERE item_id = ?)`, itemId);
     this.replaceReviewClaim(row.id as number);
     this.log(itemId, actor, "review.released", { note, request }, at, proved);
     return { released: true };

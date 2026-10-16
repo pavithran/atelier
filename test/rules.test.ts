@@ -1085,7 +1085,7 @@ test("only the project owner can port to an open unclaimed task", () => {
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
 // its pure rules.
-import { projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
+import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
 
 test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
   assert.deepEqual(projectMode(null), { mode: "full" });
@@ -1168,6 +1168,27 @@ test("a landed-fast receipt needs both commits, the builder, the test command an
   assert.equal(agentOfMessage("no trailer"), null);
   // The builder becomes a contributor, as a pusher is.
   assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5" } }]), ["claude-code/opus-5.5"]);
+});
+
+// Finding it would have caught (Astra finding 10, 2026-10-16): fast land took
+// the builder from the tip commit's Agent line only, so a model that wrote an
+// earlier commit of the range could later review the change.
+test("a fast landing's contributors are every agent of the range, and gate review independence (t603)", () => {
+  const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
+  const tests = { command: "npm test", sha256: "c".repeat(64) };
+  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", contributors: ["codex/gpt-6"], tests };
+  assert.deepEqual(fastReceipt(body, fast, "owner", "x").contributors, ["claude-code/opus-5.5", "codex/gpt-6"]);
+  assert.equal("contributors" in fastReceipt({ ...body, contributors: undefined }, fast, "owner", "x"), false);
+  for (const bad of ["codex", ["nobody"], [7], Array(51).fill("codex/gpt-6")]) {
+    assert.throws(() => fastReceipt({ ...body, contributors: bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
+  }
+  assert.deepEqual(agentsOfMessages(["a\n\nAgent: codex/gpt-6", "b\n\nAgent: claude-code/opus-5.5\nAgent: codex/gpt-6", "none"]), ["codex/gpt-6", "claude-code/opus-5.5"]);
+  const landed = [{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5", contributors: ["claude-code/opus-5.5", "codex/gpt-6"] } }];
+  const contributors = contributorsOf({ owner: null, pushActors: pushActors(landed) });
+  assert.deepEqual(contributors, ["claude-code/opus-5.5", "codex/gpt-6"]);
+  // The earlier commit's model no longer passes as an independent reviewer.
+  assert.equal(contributed("codex/gpt-6", contributors), true);
+  assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5", contributors: ["nobody", 3] } }]), ["claude-code/opus-5.5"]);
 });
 
 test("a same-family post-merge review is accepted only for a task landed in fast mode, and says so", () => {
@@ -1435,6 +1456,28 @@ test("an explicit rejection override waives only the recorded reviews and never 
   assert.equal(gate(item({ head: H2, reviewOverride: made.override }), policy, evidence, [rejected]).ready, false);
 });
 
+// t693 (found reviewing t686 at 8534105d): an override recorded beside an
+// independent approval, to waive a rejection, also stood in for the review
+// once that approval was withdrawn.
+test("an override that waived a rejection beside an approval does not stand in for the review once the approval is withdrawn", () => {
+  const evidence = [pass({ changedPaths: ["AGENTS.md"] })];
+  const approval = review("codex/gpt-6");
+  const rejected = review("antigravity/gemini-4-argon", { approve: false, note: "environment only" });
+  const made = reviewOverrideFor(item(), policy, evidence, [approval, rejected], "owner", "Override environment-only rejection", T);
+  assert.equal(made.override.rejectionsOnly, true);
+  const accepted = item({ reviewOverride: made.override });
+  assert.equal(gate(accepted, policy, evidence, [approval, rejected]).ready, true);
+  // The approval is no longer counted; the rejection the override named stays waived, the review is missing.
+  const withdrawn = gate(accepted, policy, evidence, [rejected]);
+  assert.equal(withdrawn.ready, false);
+  assert.equal(withdrawn.needsAssessor, true);
+  assert.equal(withdrawn.overridden?.rejectionsOnly, true);
+  // An override made while the review was missing too still waives both.
+  const both = reviewOverrideFor(item(), policy, evidence, [rejected], "owner", "No reviewer qualifies", T);
+  assert.equal(both.override.rejectionsOnly, undefined);
+  assert.equal(gate(item({ reviewOverride: both.override }), policy, evidence, [rejected]).ready, true);
+});
+
 // t653: the tasks t590-t651 were merged into main outside Atelier under the
 // 2026-10-13 freeze, and the ledger still showed them open or claimed. The
 // record names the merge, the commit merged and the reviews as given, and is
@@ -1493,4 +1536,28 @@ test("a model named as the listing prints it, harness/model, is the model; a mod
   assert.deepEqual(splitHarness("Opencode/z-ai/glm-5"), { harness: "opencode", model: "z-ai/glm-5" });
   assert.deepEqual(splitHarness("gemini-4-argon"), { model: "gemini-4-argon" });
   assert.deepEqual(splitHarness("z-ai/glm-5"), { model: "z-ai/glm-5" });
+});
+
+// t562, found on ikon-weblog t33: `done` recorded a check as not applicable at a
+// head, then a later measurement at that head (main had moved, so it listed
+// another task's paths) made the same check required, and review-request
+// waited on a check `done` had called not applicable.
+test("a check recorded not applicable at a head stays so when a later measurement of that head lists its paths", () => {
+  const p: ProjectPolicy = { checks: ["npm test", "npm run e2e"], checkPaths: [{ command: "npm run e2e", paths: ["e2e/**"] }] };
+  const na = pass({ claim: "npm run e2e", passed: null, notApplicable: true, changedPaths: ["src/a.ts"], where: "runner", at: "2026-10-03T12:00:00.000Z" });
+  const ran = pass({ at: "2026-10-03T12:00:00.000Z", where: "runner" });
+  const later = pass({ at: "2026-10-03T13:00:00.000Z", where: "runner", changedPaths: ["src/a.ts", "e2e/other.spec.ts"] });
+  const view = evidenceAt(p, [na, ran, later], H1);
+  assert.deepEqual(view.notApplicable, ["npm run e2e"]);
+  assert.deepEqual(view.checks.map((c) => c.claim), ["npm test"]);
+  assert.deepEqual(mergedChecksAt(p, [na, ran, later], H1, null).checks.map((c) => c.claim), ["npm test"]);
+  // Without the record, the later measurement makes the check required and pending.
+  const bare = evidenceAt(p, [ran, later], H1);
+  assert.deepEqual(bare.checks.map((c) => c.claim), ["npm test", "npm run e2e"]);
+  // A run of the check after the record leaves the paths measured to decide.
+  const reran = pass({ claim: "npm run e2e", at: "2026-10-03T14:00:00.000Z", changedPaths: ["src/a.ts", "e2e/other.spec.ts"] });
+  assert.deepEqual(evidenceAt(p, [na, ran, later, reran], H1).notApplicable, []);
+  // A record the policy no longer supports (its paths now include the measured ones) does not stand.
+  const widened: ProjectPolicy = { ...p, checkPaths: [{ command: "npm run e2e", paths: ["e2e/**", "src/**"] }] };
+  assert.deepEqual(evidenceAt(widened, [na, ran, later], H1).notApplicable, []);
 });
