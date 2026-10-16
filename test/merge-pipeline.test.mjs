@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MANIFEST_PATH, mergeRecords, parseManifest } from "../cli/merge-driver.mjs";
-import { describeConflicts, installMergeConfig, mergeConfigProblems, mergeThrough, previewMerge, withProvenance } from "../cli/merge-pipeline.mjs";
+import { atelierGitDir, describeConflicts, installMergeConfig, mergeConfigProblems, mergeThrough, previewMerge, stableNode, withProvenance } from "../cli/merge-pipeline.mjs";
 import { conflictsSection, pipelineMerge } from "../cli/runner.mjs";
 
 // t463: generated outputs and record files merge through one pipeline. The
@@ -322,6 +322,54 @@ test("a fresh clone lacking the merge configuration has it installed before its 
   assert.deepEqual(installMergeConfig(clone), [], "installing again changes nothing");
   // The driver it runs is the copy in the clone's Git directory, not a work-tree file.
   assert.match(git(clone, "config", "merge.atelier-records.driver"), /\.git\/atelier\/merge-driver\.mjs' records %O %A %B %P$/);
+});
+
+test("a Homebrew Cellar node is never written, with the stable link present or absent", (t) => {
+  const f = fixture(t);
+  const prefix = join(f.root, "brew");
+  const cellar = join(prefix, "Cellar", "node", "26.9.0", "bin", "node");
+  const other = join(f.root, "usr-bin"), cellarOnPath = join(prefix, "Cellar", "node", "26.9.0", "bin");
+  for (const p of [cellar, join(other, "node")]) { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, ""); }
+  const written = (clone) => ["generated", "records"].map((k) => git(clone, "config", `merge.atelier-${k}.driver`)).join("\n");
+  const cloneOf = (name) => { const c = join(f.root, name); git(f.root, "clone", "-q", f.dir, c); return c; };
+  // Link present: the prefix's bin/node is named.
+  mkdirSync(join(prefix, "bin"), { recursive: true }); writeFileSync(join(prefix, "bin", "node"), "");
+  let clone = cloneOf("c1");
+  installMergeConfig(clone, { node: stableNode(cellar, existsSync, [cellarOnPath, other]) });
+  assert.ok(!written(clone).includes("/Cellar/"), written(clone));
+  assert.ok(written(clone).includes(join(prefix, "bin", "node")));
+  assert.deepEqual(mergeConfigProblems(clone, { node: stableNode(cellar, existsSync, [cellarOnPath, other]) }), []);
+  // Link absent: a node on PATH outside the Cellar, else the bare command.
+  unlinkSync(join(prefix, "bin", "node"));
+  clone = cloneOf("c2");
+  installMergeConfig(clone, { node: stableNode(cellar, existsSync, [cellarOnPath, other]) });
+  assert.ok(!written(clone).includes("/Cellar/"), written(clone));
+  assert.ok(written(clone).includes(join(other, "node")));
+  clone = cloneOf("c3");
+  const bare = stableNode(cellar, existsSync, [cellarOnPath]);
+  assert.equal(bare, "node");
+  installMergeConfig(clone, { node: bare });
+  assert.ok(!written(clone).includes("/Cellar/"), written(clone));
+  assert.match(written(clone), /^'node' /);
+  assert.deepEqual(mergeConfigProblems(clone, { node: bare }), [], "a bare command is not reported missing");
+  assert.equal(stableNode("/usr/local/bin/node", () => true), "/usr/local/bin/node");
+});
+
+test("a driver naming a node that no longer exists is reported and rewritten", (t) => {
+  const f = fixture(t);
+  const clone = join(f.root, "clone");
+  git(f.root, "clone", "-q", f.dir, clone);
+  installMergeConfig(clone);
+  assert.deepEqual(mergeConfigProblems(clone), []);
+  const gone = join(f.root, "Cellar", "node", "1.0.0", "bin", "node");
+  for (const kind of ["generated", "records"]) {
+    git(clone, "config", "--local", `merge.atelier-${kind}.driver`, `'${gone}' '${join(atelierGitDir(clone), "merge-driver.mjs")}' ${kind} %O %A %B %P`);
+  }
+  assert.ok(mergeConfigProblems(clone, { node: gone }).length >= 2, "the missing node is a problem");
+  const changed = installMergeConfig(clone);
+  assert.deepEqual(changed.sort(), ["merge.atelier-generated.driver", "merge.atelier-records.driver"]);
+  assert.ok(!git(clone, "config", "merge.atelier-records.driver").includes(gone));
+  assert.deepEqual(mergeConfigProblems(clone), []);
 });
 
 test("a declared path .gitattributes does not route to its driver stops the merge", async (t) => {

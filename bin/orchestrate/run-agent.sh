@@ -35,9 +35,32 @@ else
 fi
 cd "$ws"
 export XDG_DATA_HOME="$ws/.scratch/xdg-data"
+dir=${OPENCODE_WRAPPER_DIR:-$HOME/.local/bin}
 case $which in
-  glm) exec "$HOME/.local/bin/opencode-glm" run --model zai-coding/glm-5.3 < "$brief" > "$out" 2>&1 ;;
-  deepseek) exec "$HOME/.local/bin/opencode-deepseek" run --model deepseek-api/deepseek-v4-pro < "$brief" > "$out" 2>&1 ;;
-  openrouter:*) exec "$HOME/.local/bin/opencode-openrouter" run --model "openrouter-api/${which#openrouter:}" < "$brief" > "$out" 2>&1 ;;
+  glm) wrapper=$dir/opencode-glm model=zai-coding/glm-5.3 ;;
+  deepseek) wrapper=$dir/opencode-deepseek model=deepseek-api/deepseek-v4-pro ;;
+  openrouter:*) wrapper=$dir/opencode-openrouter model="openrouter-api/${which#openrouter:}" ;;
   *) echo "run-agent.sh: unknown agent $which (glm, deepseek or openrouter:VENDOR/MODEL)" >&2; exit 64 ;;
 esac
+# opencode 2's run connects to a background service that all runs share, with
+# a data folder of its own, unless it is given --standalone; opencode 1 may
+# reject the flag, so the major version decides (t683). opencode 2 also asks
+# before it reads outside the workspace, and `run` approves what it is asked,
+# so a deny rule for external_directory goes in through
+# OPENCODE_CONFIG_CONTENT, which opencode merges over the wrapper's config.
+# A version that cannot be read is refused: it might be opencode 2, and
+# opencode 1 rejects both the flag and the rule.
+major=
+if version=$("$wrapper" --version 2>/dev/null); then
+  major=$(print -r -- "$version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1 || true)
+fi
+if [[ -z $major ]]; then
+  echo "run-agent.sh: could not read the version of $wrapper (--version failed or printed no version), so it is not known whether it needs --standalone and the external_directory deny; no run was started" >&2
+  exit 69
+fi
+flags=()
+if [[ $major -ge 2 ]]; then
+  flags=(--standalone)
+  export OPENCODE_CONFIG_CONTENT='{"permissions":[{"action":"external_directory","resource":"*","effect":"deny"}]}'
+fi
+exec "$wrapper" run "${flags[@]}" --model "$model" < "$brief" > "$out" 2>&1

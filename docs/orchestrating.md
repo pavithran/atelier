@@ -169,7 +169,11 @@ This is a developer rollout step; a task build does not register the project.
 The runner prepares build and plan workspaces after reset and automatic
 merges, before starting the harness or finishing resumed work. Manual claims
 print the command and directory for the caller to run. Reviews, integration
-and refresh jobs do not prepare.
+and refresh jobs do not run that preparation policy. Before a code reviewer
+starts, the runner links available Node dependencies from the task workspace
+into the review clone, including nested packages. Otherwise it installs
+package dependencies on the host, using npm ci when a lockfile exists.
+The reviewer’s sandbox remains read-only.
 
 The declared inputs are the manifest, lockfile and Wrangler configuration;
 `src` is not an input. A cached success also depends on the command and runtime,

@@ -64,3 +64,18 @@ test("real slots CLI changes an isolated occupied pool and reports draining with
   assert.match(help.stdout, /slots set N/);
   assert.match(help.stdout, /slots status/);
 });
+
+
+test("a refused ps runs the command without accounting and preserves its exit status", (t) => {
+  const root = mkdtempSync(join(tmpdir(), ".slots-denied-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "ps"), "#!/bin/sh\necho 'ps: Operation not permitted' >&2\nexit 1\n", { mode: 0o755 });
+  for (const code of [0, 7]) {
+    const result = spawnSync(process.execPath, ["cli/load.mjs", "--", process.execPath, "-e", `console.log('command executed'); process.exit(${code})`], {
+      env: { ...process.env, PATH: root }, encoding: "utf8", timeout: 10000,
+    });
+    assert.equal(result.status, code, result.stderr);
+    assert.match(result.stdout, /command executed/);
+    assert.match(result.stderr, /running without process-tree accounting/);
+  }
+});
