@@ -136,6 +136,234 @@ export function runnerDenied(token: AgentToken): RuleError {
   return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403);
 }
 
+// Every HTTP call the home runner makes against the server, declared once
+// (t478): its method, its path, the body fields it may send and the kind of
+// credential it goes with. The runner's own calls (`via: "runner"`) go
+// through runnerTransport in cli/runner.mjs, which refuses a name not
+// declared here and a body field the call does not declare; the calls an
+// atelier command makes for the runner (`via: "cli"`: claim, finish and the
+// rest, which the runner spawns as children) go through request() in
+// cli/atelier.mjs, and runRunner spawns no command this table does not
+// name. test/runner-routes.test.mjs holds one authorization case for each
+// name, exercised through the real gateway and Ledger, and a source check
+// that finds a call made outside the transport or a name not declared;
+// test/runner-routes-helpers.test.mjs reads the spawned commands and the
+// helpers they import, and fails one that calls an undeclared route, sends
+// an undeclared field, bypasses the CLI's transport or calls a route its
+// credential kind may not.
+//
+// The credential kinds are kept apart on purpose: a `runner` call is made
+// with the runner's own token (cli/credentials.mjs), which runnerRoute above
+// must allow; an `agent` call is made with a model's own agent token (a
+// review job records its verdict as the reviewer, t346) or the integrator's
+// (`--integrate` runs the integrate and refresh jobs under the reserved
+// actor's token), which agentRoute must allow and runnerRoute refuses; a
+// `public` call needs no token at all. An `owner` call is one a spawned
+// command makes only under the developer's own token (atelier push
+// --owner-port, which no runner passes): runnerRoute and agentRoute both
+// refuse it, so a runner or agent token that sent it would be turned away at
+// the gateway, and the helper transport refuses it to a runner token before
+// it is sent. `integrator: true` marks a runner
+// call the integrate and refresh jobs make too, under the integrator's
+// token. `jobs` says which jobs make the call.
+//
+// A `preflight` call is made by every atelier command the runner spawns,
+// before the command's handler runs: the capability check (t458,
+// requireCapabilities in cli/atelier.mjs) reads the server's version through
+// serverVersion, which builds its URL from this declaration. It is public,
+// so it carries no token and names no command;
+// test/runner-routes-helpers.test.mjs fails a fetch in serverVersion that
+// does not go to a declared preflight call.
+export type CallCredential = "runner" | "agent" | "public" | "owner";
+export type RunnerJob = "build" | "plan" | "review" | "criteria-review" | "integrate" | "refresh" | "task-refresh" | "task-resolve";
+export interface RunnerCall {
+  name: string;
+  method: "GET" | "POST";
+  // A path under /api, with {project}, {item} and {run} standing for the
+  // encoded path parameters (callPath).
+  path: string;
+  credential: CallCredential;
+  // "none" for a call that sends no X-Atelier-Actor: the config read, which
+  // asks the token who it is. The gateway refuses an agent token whose
+  // declared actor is not its own (actor_mismatch, 403), so a runner under
+  // an agent token (docs/runners.md) must name none; a runner token answers
+  // with its runner whatever actor is named, and the owner's token with
+  // neither. Every other call names the actor it is sent as.
+  actor?: "none";
+  // The body fields a POST may carry; "document" when the body is a whole
+  // plan document rather than fields; [] for no body, as every GET.
+  body: readonly string[] | "document";
+  via: "runner" | "cli" | "preflight";
+  // The atelier command that makes a `cli` call.
+  command?: string;
+  jobs: readonly RunnerJob[];
+  integrator?: true;
+}
+
+const ITEM = "/projects/{project}/items/{item}";
+const PLAN: readonly RunnerJob[] = ["plan"], REVIEW: readonly RunnerJob[] = ["review"];
+const INTEGRATE: readonly RunnerJob[] = ["integrate", "refresh"];
+const CRITERIA: readonly RunnerJob[] = ["criteria-review"];
+// The task refresh (t462) runs as the integrator, under its token.
+const TASK_REFRESH: readonly RunnerJob[] = ["task-refresh", "task-resolve"];
+
+export const RUNNER_CALLS: readonly RunnerCall[] = [
+  // The runner's own calls, before and between jobs.
+  { name: "version", method: "GET", path: "/version", credential: "public", body: [], via: "runner", jobs: [] },
+  // The capability check every spawned command makes first (t458).
+  { name: "capabilities", method: "GET", path: "/version", credential: "public", body: [], via: "preflight", jobs: ["build", "plan", "review", "criteria-review", "integrate", "refresh", "task-refresh", "task-resolve"], integrator: true },
+  // The runner's identity, read once before its first poll: a runner
+  // token's runner, an agent token's actor, neither for the owner's. It
+  // names no actor, as the CLI's own resolveTokenActor names none.
+  { name: "config", method: "GET", path: "/config", credential: "runner", actor: "none", body: [], via: "runner", jobs: [] },
+  // The poll: what the runner can run and when it started (t420), answered
+  // with the tasks it may claim. GET /queue is the owner's listing, which
+  // runnerRoute refuses a runner token (test/runner-routes.test.mjs).
+  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started"], via: "runner", jobs: [] },
+  // The same poll asked with `why` (t420), when a poll offered nothing: the
+  // server answers the listing GET gives, cut to the token's projects, each
+  // waiting dispatch with why it is not being taken. The same route, the
+  // same credential, a body field more: declared apart so the idle path is
+  // its own authorization case.
+  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why"], via: "runner", jobs: [] },
+  // A busy runner's heartbeat (t537): its offer marked as one, which renews
+  // its last poll while a job runs and is offered nothing back.
+  { name: "queue-heartbeat", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "heartbeat"], via: "runner", jobs: [] },
+  // The baseline's head, for a post-merge review the runner keeps waiting on
+  // a merge commit no source held (t591).
+  { name: "baseline-head", method: "GET", path: "/projects/{project}/baseline-head", credential: "runner", body: [], via: "runner", jobs: REVIEW },
+  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
+  { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "note"], via: "runner", jobs: REVIEW },
+  // The runner's word that it gives up a build or plan job under its
+  // dispatch (t420), after failed runs or infrastructure failures in a row:
+  // taken as a run report for the job is, under the job's actor. The actor
+  // in the body is read under the owner's token alone; a runner token's
+  // report is the header's actor, checked at the gateway.
+  { name: "run-skip", method: "POST", path: `${ITEM}/run-skip`, credential: "runner", body: ["actor", "role", "kind", "failures", "note"], via: "runner", jobs: ["build", "plan"] },
+  // The project's record, read for its preparation policy (t378) before a
+  // build whose last run left a validation marker.
+  { name: "project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "runner", jobs: ["build"] },
+  // The plan job's own calls: the brief it reads, the document it posts. A
+  // part reads its brief the same way, as a build.
+  { name: "job-brief", method: "GET", path: `${ITEM}/job-brief`, credential: "runner", body: [], via: "runner", jobs: ["build", "plan"] },
+  { name: "plan", method: "POST", path: `${ITEM}/plan`, credential: "runner", body: "document", via: "runner", jobs: PLAN },
+  // The build and plan jobs' helpers: the atelier commands the runner spawns.
+  { name: "claim", method: "POST", path: `${ITEM}/claim`, credential: "runner", body: [], via: "cli", command: "claim", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  // The claim reads the project's preparation policy (t378) into the
+  // workspace's Git config.
+  { name: "claim-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "claim", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  { name: "release", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["note"], via: "cli", command: "release", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  // A release that reports a provider limit is sent by the runner itself
+  // (leaseCall), so shutdown can give it a deadline of its own.
+  { name: "release-provider-limit", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["providerLimit", "note"], via: "runner", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  { name: "item", method: "GET", path: ITEM, credential: "runner", body: [], via: "cli", command: "finish", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "push", method: "POST", path: `${ITEM}/push`, credential: "runner", body: ["head", "rebasedFrom"], via: "cli", command: "push", jobs: ["build", "integrate", "refresh"], integrator: true },
+  // The developer's push of a released task's fork from their own checkout
+  // (atelier push --owner-port, t571). The runner never passes the flag;
+  // it is declared because the push command makes the call.
+  { name: "owner-port-token", method: "POST", path: `${ITEM}/owner-port-token`, credential: "owner", body: [], via: "cli", command: "push", jobs: [] },
+  { name: "read-token", method: "POST", path: `${ITEM}/read-token`, credential: "runner", body: [], via: "cli", command: "read-token", jobs: ["build", "integrate"], integrator: true },
+  { name: "base-token", method: "POST", path: `${ITEM}/base-token`, credential: "runner", body: ["scope"], via: "cli", command: "base-token", jobs: ["build", "refresh"], integrator: true },
+  // The build job's merge of main before it submits (t435) reads the project's
+  // baseline: a read token and the regenerate command, never a write scope.
+  { name: "baseline-token", method: "POST", path: "/projects/{project}/baseline-token", credential: "runner", body: ["scope"], via: "cli", command: "baseline-token", jobs: ["build"] },
+  // The same command reads the project's regenerate command from its record.
+  { name: "baseline-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "baseline-token", jobs: ["build"] },
+  { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "merged", "mainHead", "notApplicable", "load"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "sandbox", method: "POST", path: `${ITEM}/sandbox`, credential: "runner", body: ["merged"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "sandbox-run", method: "GET", path: `${ITEM}/sandbox/{run}`, credential: "runner", body: [], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  // Fast mode (t589): a build taken without a fork, and the report of the
+  // commit it built. atelier fast take also reads the baseline it clones.
+  { name: "fast-take", method: "POST", path: `${ITEM}/fast-take`, credential: "runner", body: [], via: "cli", command: "fast", jobs: ["build"] },
+  { name: "fast-ready", method: "POST", path: `${ITEM}/fast-ready`, credential: "runner", body: ["commit", "base", "builder", "workspace"], via: "cli", command: "fast", jobs: ["build"] },
+  { name: "submit", method: "POST", path: `${ITEM}/submit`, credential: "runner", body: ["summary"], via: "cli", command: "submit", jobs: ["build", "integrate", "refresh"], integrator: true },
+  // The review job's helpers, under the reviewer's own agent token.
+  { name: "review-claim", method: "POST", path: `${ITEM}/review-claim`, credential: "agent", body: [], via: "cli", command: "review-claim", jobs: REVIEW },
+  // A hand-served claim is renewed by atelier review-claim --renew (t575),
+  // with the request number alone; the runner renews with leaseCall.
+  { name: "review-claim-renew", method: "POST", path: `${ITEM}/review-renew`, credential: "agent", body: ["request"], via: "cli", command: "review-claim", jobs: REVIEW },
+  { name: "review-release", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["note", "request"], via: "cli", command: "review-release", jobs: REVIEW },
+  { name: "review-unparsable", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["head", "note", "reply"], via: "cli", command: "review-unparsable", jobs: REVIEW },
+  // The review lease (t351): a claim with a request number is renewed, and
+  // released or kept as unparsable, by the runner itself (leaseCall in
+  // cli/runner.mjs), under the reviewer's agent token, so shutdown can give
+  // each its own deadline.
+  { name: "review-renew", method: "POST", path: `${ITEM}/review-renew`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
+  { name: "review-release-lease", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
+  { name: "review-unparsable-lease", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["request", "note", "head", "reply"], via: "runner", jobs: REVIEW },
+  // The criteria review job (t438), under the reviewer's own agent token:
+  // the claim, the verdict (atelier criteria-verdict) and the failure.
+  { name: "criteria-review-claim", method: "POST", path: `${ITEM}/criteria-review-claim`, credential: "agent", body: [], via: "cli", command: "criteria-review-claim", jobs: CRITERIA },
+  { name: "criteria-review", method: "POST", path: `${ITEM}/criteria-review`, credential: "agent", body: ["approve", "rev", "criteria", "request", "note", "findings", "checks"], via: "cli", command: "criteria-verdict", jobs: CRITERIA },
+  { name: "criteria-review-failed", method: "POST", path: `${ITEM}/criteria-review-failed`, credential: "agent", body: ["request", "note"], via: "cli", command: "criteria-review-failed", jobs: CRITERIA },
+  { name: "review", method: "POST", path: `${ITEM}/review`, credential: "agent", body: ["head", "criteria", "request", "approve", "note", "findings"], via: "cli", command: "review", jobs: REVIEW },
+  // The integrate and refresh jobs' own helpers, under the integrator's token.
+  { name: "integrated", method: "POST", path: `${ITEM}/integrated`, credential: "agent", body: ["part", "mergeCommit"], via: "cli", command: "integrated", jobs: ["integrate"] },
+  { name: "integration-failed", method: "POST", path: `${ITEM}/integration-failed`, credential: "agent", body: ["part", "reason", "kind"], via: "cli", command: "integration-failed", jobs: ["integrate"] },
+  { name: "refreshed", method: "POST", path: `${ITEM}/refreshed`, credential: "agent", body: ["mainHead", "mergeCommit", "lease", "expectedHead", "head", "diffBefore", "diffAfter", "transformations"], via: "cli", command: "refreshed", jobs: ["refresh", ...TASK_REFRESH] },
+  { name: "refresh-failed", method: "POST", path: `${ITEM}/refresh-failed`, credential: "agent", body: ["mainHead", "reason", "kind", "lease", "expectedHead", "outcome", "report"], via: "cli", command: "refresh-failed", jobs: [...INTEGRATE, ...TASK_REFRESH] },
+  // The task refresh's lease (t462): taken, renewed, read and given back; the
+  // push announced before it is made; the checks reported at the head it
+  // recorded.
+  { name: "refresh-lease", method: "POST", path: `${ITEM}/refresh-lease`, credential: "agent", body: ["job", "runner", "renew", "release", "status", "reason", "providerLimit"], via: "cli", command: "refresh-lease", jobs: TASK_REFRESH },
+  { name: "refresh-pushing", method: "POST", path: `${ITEM}/refresh-pushing`, credential: "agent", body: ["lease", "mainHead", "expectedHead", "head"], via: "cli", command: "refresh-pushing", jobs: TASK_REFRESH },
+  { name: "refresh-checked", method: "POST", path: `${ITEM}/refresh-checked`, credential: "agent", body: ["lease", "mainHead", "expectedHead", "passed", "reason"], via: "cli", command: "refresh-checked", jobs: TASK_REFRESH },
+];
+
+// The declared call under `name`, or an error naming it: a call nobody
+// declared is made nowhere.
+export function declaredCall(name: string): RunnerCall {
+  const call = RUNNER_CALLS.find((c) => c.name === name);
+  if (!call) throw new Error(`${name} is not a call the runner declares (RUNNER_CALLS in src/tokens.ts)`);
+  return call;
+}
+
+// The atelier commands the runner spawns for its `cli` calls.
+export const RUNNER_COMMANDS: ReadonlySet<string> = new Set(RUNNER_CALLS.flatMap((c) => c.command ? [c.command] : []));
+
+// Resolve the legacy CLI transport's method/path to a named declaration
+// before it sends anything. Helpers share reads and finish composes other
+// commands, so the boundary is the declared CLI operations, not command
+// ownership. Exact segment matching rejects queries and extra path segments.
+export function declaredHelperCall(method: string, path: string, body: unknown, runnerOnly = false): RunnerCall {
+  const parts = path.split("/");
+  const call = RUNNER_CALLS.find((c) => {
+    if (c.via !== "cli" && c.name !== "config") return false;
+    if (runnerOnly && c.credential !== "runner") return false;
+    const pattern = c.path.split("/");
+    return c.method === method && pattern.length === parts.length && pattern.every((part, i) =>
+      /^\{\w+\}$/.test(part) ? !!parts[i] && !/[?#]/.test(parts[i]) : part === parts[i]);
+  });
+  if (!call) throw new Error(`${method} ${path} is not a call the runner helpers declare (RUNNER_CALLS in src/tokens.ts)`);
+  if (method === "GET") {
+    if (body !== undefined) throw new Error(`${call.name} is a GET and sends no body`);
+  } else {
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new Error(`${call.name} sends an object`);
+    const fields = call.body;
+    const undeclared = Object.keys(body).filter((key) => fields === "document" || !fields.includes(key));
+    if (undeclared.length) throw new Error(`${call.name} does not send ${undeclared.join(", ")}`);
+    if (runnerOnly && "scope" in body && body.scope !== "read") throw new Error(`${call.name} only requests read scope for a runner`);
+  }
+  return call;
+}
+
+// A declared call's path under /api with its parameters filled in, each
+// encoded as a path segment; a parameter the path names and the caller
+// leaves out is an error, never an empty segment.
+export function callPath(call: RunnerCall, params: Record<string, string> = {}): string {
+  return call.path.replace(/\{(project|item|run)\}/g, (_, key: string) => {
+    const value = params[key];
+    if (typeof value !== "string" || !value) throw new Error(`${call.name} needs ${key}`);
+    return encodeURIComponent(value);
+  });
+}
+
+// The path's segments as the gateway splits them, for runnerRoute and
+// agentRoute: the declared path with sample parameters.
+export function callParts(call: RunnerCall, params: Record<string, string> = { project: "p", item: "t1", run: "p:t1:abc:1" }): string[] {
+  return callPath(call, params).split("/").filter(Boolean).map((s) => decodeURIComponent(s));
+}
+
 // Dedicated CLI exits carry the exact state through nested finish steps.
 // Neither accepted, integrated nor blocked means the task is terminal.
 export const TERMINAL_TASK_EXITS = { merged: 5, abandoned: 6 } as const;

@@ -25,10 +25,119 @@ import { BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
+import { callPath, declaredCall, RUNNER_COMMANDS } from "../src/tokens.ts";
 import { mergeMainAndRegenerate } from "./land.mjs";
 import { runTaskRefresh } from "./task-refresh.mjs";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
+
+// The runner's one way to the server (t478): every call the runner process
+// makes itself goes through `send`, under a name RUNNER_CALLS in
+// src/tokens.ts declares, with the method and path the declaration gives
+// and no body field it does not name. A public call (the version) carries
+// no credential; every other carries the runner's token, the actor the
+// caller names and the runner's own name, so a runner token is checked
+// against the name it was issued for on every call. A call declared with
+// no actor (the config read) carries the token and no X-Atelier-Actor, and
+// refuses one: the gateway answers an agent token 403 when the header
+// names anyone but its own actor, so a runner polling under an agent token
+// (docs/runners.md) would die on its first poll if the read named the
+// owner. The answer is the status, the parsed JSON (null when the body is
+// not JSON) and the X-Atelier-Incomplete header; a server that cannot be
+// reached throws, and the caller decides what either means. `identity`
+// reads GET /config once: a runner token answers with its runner, an agent
+// token with its actor, the owner's token with neither.
+// cli/commands/runner.mjs wires it.
+export function runnerTransport({ server, credential, runner, fetch = globalThis.fetch }) {
+  const base = String(server).replace(/\/$/, "");
+  let identity;
+  const send = async (name, params = {}, { body, actor, signal, timeoutMs = 30_000, redirect } = {}) => {
+    const call = declaredCall(name);
+    if (call.via !== "runner") throw new Error(`${name} is a call atelier ${call.command} makes for the runner, not one the runner sends itself`);
+    if (call.method === "GET" && body !== undefined) throw new Error(`${name} is a GET and sends no body`);
+    if (call.method === "POST") {
+      if (call.body === "document") { if (typeof body !== "string") throw new Error(`${name} sends a document as text`); }
+      else {
+        if (typeof body !== "object" || body === null || Array.isArray(body)) throw new Error(`${name} sends an object`);
+        const undeclared = Object.keys(body).filter((key) => !call.body.includes(key));
+        if (undeclared.length) throw new Error(`${name} does not send ${undeclared.join(", ")}`);
+      }
+    }
+    if (call.actor === "none") { if (actor !== undefined) throw new Error(`${name} names no actor: the token answers for itself`); }
+    else if (call.credential !== "public" && (typeof actor !== "string" || !actor)) throw new Error(`${name} needs the actor it is sent as`);
+    const headers = call.credential === "public" ? {}
+      : { authorization: `Bearer ${credential}`, ...(call.actor === "none" ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" };
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const res = await fetch(`${base}/api${callPath(call, params)}`, {
+      method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(redirect ? { redirect } : {}),
+      ...(call.method === "POST" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* an answer that is not JSON carries no detail */ }
+    return { status: res.status, ok: res.ok, data, incomplete: res.headers.get("x-atelier-incomplete") };
+  };
+  return {
+    send,
+    async identity(signal) {
+      if (identity) return identity;
+      const res = await send("config", {}, { signal });
+      // A refused credential throws with its status, so the caller can tell
+      // a token the server refuses from a server it cannot reach.
+      if (!res.ok) throw Object.assign(new Error(`config: ${res.status}${res.data?.detail ? ` ${res.data.detail}` : ""}`), { status: res.status });
+      identity = { runner: typeof res.data?.runner === "string" ? res.data.runner : null, actor: typeof res.data?.actor === "string" ? res.data.actor : null };
+      return identity;
+    },
+  };
+}
+
+// The atelier command a job helper runs, checked against the commands
+// RUNNER_CALLS declares: the runner spawns no command the table does not
+// name, so a helper added without a declared call is refused here before it
+// runs, as the source check in test/runner-routes.test.mjs refuses it
+// before it is committed.
+export function helperCommand(argv) {
+  const command = argv[0];
+  if (!RUNNER_COMMANDS.has(command)) throw new Error(`atelier ${command} is not a command the runner declares (RUNNER_CALLS in src/tokens.ts)`);
+  // atelier fast also lands and records, which are the developer's: the
+  // runner spawns fast take and fast ready alone.
+  if (command === "fast" && !["take", "ready"].includes(argv[1])) throw new Error(`atelier fast ${argv[1]} is not a command the runner declares (RUNNER_CALLS in src/tokens.ts)`);
+  return command;
+}
+
+// A lease call, made by the runner itself rather than spawned: a review
+// job's review-renew, and review-release or review-unparsable when they
+// carry the claim's --request (t351), and a release that reports a provider
+// limit (providerLimit). Each goes through runnerTransport as the call
+// RUNNER_CALLS declares for it, with a five-second deadline of its own and
+// no redirect followed; the review calls under the reviewer's own agent
+// token (options.token), the release under the runner's (credential). Any
+// other argv answers undefined, and the caller spawns it.
+// The CLI hands its own server() in (api): inside `atelier runner`, a
+// dynamic import of atelier.mjs waits on that module's unfinished top-level
+// await, and Node exits 13 with nothing left to run (t505).
+export function leaseCall(argv, options = {}, api, credential) {
+  const send = argv[0] === "release" ? (options.providerLimit ? (t, params, init) => t.send("release-provider-limit", params, init) : undefined) : {
+    "review-renew": (t, params, init) => t.send("review-renew", params, init),
+    "review-release": (t, params, init) => t.send("review-release-lease", params, init),
+    "review-unparsable": (t, params, init) => t.send("review-unparsable-lease", params, init),
+  }[argv[0]];
+  if (!send || (argv[0] !== "release" && !argv.includes("--request"))) return undefined;
+  return (async () => {
+    const { server } = api ?? await import("./atelier.mjs");
+    const value = (flag) => argv[argv.indexOf(flag) + 1];
+    const note = argv.includes("--note") ? value("--note") : "";
+    const body = argv[0] === "release" ? { providerLimit: true, note } : { request: Number(value("--request")), note };
+    if (argv[0] === "review-unparsable") {
+      body.head = value("--head");
+      body.reply = readFileSync(value("--reply-file"), "utf8");
+    }
+    const transport = runnerTransport({ server: server(), credential: options.token ?? credential });
+    const params = { project: value("--project"), item: argv[1] };
+    const res = await send(transport, params, { body, actor: value("--as"), timeoutMs: 5000, redirect: "error" });
+    if (!res.ok) throw Object.assign(new Error(`${argv[0]}: ${res.status}`), { status: res.status });
+    return JSON.stringify(res.data ?? {});
+  })();
+}
 
 // ── commit identity (t451) ────────────────────────────────────────────────
 
@@ -3153,32 +3262,16 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
     // child's environment, which wins over the owner's stored token; it is
     // never an argument, which any local user could read.
-    cli: async (argv, cwd, options = {}) => {
-      // Lease control calls stay in the runner so shutdown can give each
-      // request its own deadline, independent of the aborted child signal.
-      if ((argv[0] === "release" && options.providerLimit) || (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request"))) {
-        // The CLI hands its own helpers in (api): inside `atelier runner`, a
-        // dynamic import of atelier.mjs waits on that module's unfinished
-        // top-level await, and Node exits 13 with nothing left to run (t505).
-        const { server, I } = api ?? await import("./atelier.mjs");
-        const value = (flag) => argv[argv.indexOf(flag) + 1];
-        const body = { ...(options.providerLimit ? { providerLimit: true } : { request: Number(value("--request")) }), note: argv.includes("--note") ? value("--note") : "" };
-        if (argv[0] === "review-unparsable") {
-          body.head = value("--head");
-          body.reply = readFileSync(value("--reply-file"), "utf8");
-        }
-        const response = await fetch(`${server()}/api${I(value("--project"), argv[1])}/${argv[0]}`, {
-          method: "POST", redirect: "error", headers: { authorization: `Bearer ${options.token ?? credential}`, "x-atelier-actor": value("--as"), "content-type": "application/json" },
-          body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
-        });
-        if (!response.ok) throw Object.assign(new Error(`${argv[0]}: ${response.status}`), { status: response.status });
-        return response.text();
-      }
-      return checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim" || (argv[0] === "fast" && argv[1] === "take"),
-        env: runnerChildEnv(process.env, offer.runner, credential, options.token),
-        step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed" || (argv[0] === "refresh-lease" && argv.includes("--release"))) && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
-    },
+    // Lease control calls (review-renew, and review-release and
+    // review-unparsable with --request, t351, and a release that reports a
+    // provider limit) stay in the runner so shutdown
+    // can give each request its own deadline, independent of the aborted
+    // child signal; they go through the transport (leaseCall), every other
+    // helper is a child the table declares.
+    cli: (argv, cwd, options = {}) => leaseCall(argv, options, api, credential) ?? checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: helperCommand(argv) === "claim" || (argv[0] === "fast" && argv[1] === "take"),
+      env: runnerChildEnv(process.env, offer.runner, credential, options.token),
+      step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
+      ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed" || (argv[0] === "refresh-lease" && argv.includes("--release"))) && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     prepareSubmission: (assignment, workspace, resolve) => prepareBuildSubmission(assignment, workspace, io, resolve),
     // Git as the landing's merge of main calls it (mergeMainAndRegenerate in
     // cli/land.mjs, run by prepareBuildSubmission): each command a runner
