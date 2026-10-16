@@ -26,6 +26,7 @@ import type { LedgerEvent } from "../ledger.ts";
 import { familyOf, redactKeys, type PoolFamily } from "./pool.ts";
 import { matchesAny, modelKey, pushAuthors, RuleError, sameActor, validActor } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
+import { reviewRoleOfEvent, REVIEW_ROLES, type ReviewRole } from "./assignments.ts";
 import { reviewerOf, SERVED, servedActor, servedBy } from "./served.ts";
 
 export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "harness_failed", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge", "validation_blocked"] as const;
@@ -150,6 +151,10 @@ export interface ModelReliability {
   // Runs the runners reported.
   runs: Record<RunOutcome, number>;
   unfinishedReviews: number;      // review runs among them: reviews that never reached a verdict
+  runsByRole: Record<RunRole, number>; // the same runs by the role the runner ran them in (t663); validation_blocked included, as runs is
+  // Its verdicts by the review role they served (t663); a verdict whose event
+  // names none is review. The totals above hold every role together.
+  reviewRoles: Record<ReviewRole, { approvals: number; rejections: number; contradicted: number }>;
   runCauses: Cause[];
 }
 
@@ -168,6 +173,8 @@ const empty = (model: string): ModelReliability => ({
   checkMismatches: 0, outOfScope: 0, integrations: [],
   kinds: [],
   runs: emptyRuns(), unfinishedReviews: 0, runCauses: [],
+  runsByRole: { build: 0, plan: 0, review: 0 },
+  reviewRoles: Object.fromEntries(REVIEW_ROLES.map((role) => [role, { approvals: 0, rejections: 0, contradicted: 0 }])) as ModelReliability["reviewRoles"],
 });
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -230,6 +237,7 @@ export function buildReliability(projects: readonly ProjectEvents[], runs: reado
     if (!isAgent(run.actor, owner) || isInfrastructureOutcome(run.outcome)) continue;
     const r = get(run.actor, run.project ?? undefined);
     r.runs[run.outcome]++;
+    r.runsByRole[run.role]++;
     if (run.role === "review" && run.outcome !== "validation_blocked") r.unfinishedReviews++;
     r.runCauses.push({ project: run.project ?? "", item: run.item, by: run.runner, note: `${run.role} run ${run.outcome}${run.detail ? `: ${run.detail}` : ""}`, at: run.at });
     if (run.project && run.item) binOf(run.actor, kindsByProject.get(run.project)?.get(run.item) ?? "unknown").runs[run.outcome]++;
@@ -283,7 +291,7 @@ function replay(
   const lastBuilder = new Map<string, string>();               // item: who submitted or merged it last
   const reviewedHeads = new Map<string, Set<string>>();        // item: revisions a model reviewed
   const landed = new Set<string>();
-  const approvedAt = new Map<string, { reviewer: string; head: string }[]>();
+  const approvedAt = new Map<string, { reviewer: string; head: string; role: ReviewRole }[]>();
   const firstReview = new Set<string>();                       // item and builder model already counted
   const ownerSeen = new Set<string>();                         // item and revision the owner approved
   // Timing state, one task at a time.
@@ -412,12 +420,15 @@ function replay(
       }
       if (!isAgent(actor, owner)) continue;
       const reviewer = get(actor, project);
+      const role = reviewRoleOfEvent(data);
       if (approve) {
         reviewer.approvals++;
-        approvedAt.set(item, [...(approvedAt.get(item) ?? []), { reviewer: actor, head }]);
+        reviewer.reviewRoles[role].approvals++;
+        approvedAt.set(item, [...(approvedAt.get(item) ?? []), { reviewer: actor, head, role }]);
         binOf(actor, k).approvals++;
       } else {
         reviewer.rejectionsGiven++;
+        reviewer.reviewRoles[role].rejections++;
         // Rework runs from a rejection to the next submission; an approval
         // asks for none.
         if (builder) reworkFrom.set(item, { at: event.at, model: builder });
@@ -482,6 +493,7 @@ function replay(
       for (const a of approvedAt.get(item) ?? []) {
         if (a.head === head || a.head === data.mergeCommit) {
           get(a.reviewer, project).contradicted.push(cause);
+          get(a.reviewer, project).reviewRoles[a.role].contradicted++;
           binOf(a.reviewer, k).contradicted++;
         }
       }
