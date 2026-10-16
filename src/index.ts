@@ -1802,6 +1802,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const to = projectNameArg(body.to);
     if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    // The standard reviewer set is found by this project's name (t687):
+    // moving the name away would strand the admissions every other project
+    // inherited, and moving it onto another project would hand that project
+    // the standing without a broadcast.
+    if (project === STANDARD_REVIEWER_PROJECT || to === STANDARD_REVIEWER_PROJECT) {
+      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} cannot be renamed, or taken as a new name: reviewers admitted there are every project's reviewers, and the other projects find them by that name`, 409);
+    }
     // Renaming back to one of the project's own names is not a new name.
     if (!ref.names.includes(to)) assertNewName(to);
     if (project === to) {
