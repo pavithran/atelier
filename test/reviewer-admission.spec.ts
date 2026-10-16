@@ -271,3 +271,35 @@ it("binding an admitted request enforces a changed company even before request w
   await refusal(L.claimReview("t1", ALIAS, runner), "not_independent");
   expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("open");
 });
+
+// t687: ikon-weblog never admitted gemini-4-argon, so asking antigravity/gemini-4-argon
+// for a review there was refused as ineligible; admit and withdraw refused the form
+// atelier models prints with "not registered".
+it("a model admitted in atelier reviews in every project until a project withdraws it; admit takes harness/model", async () => {
+  const home = await setup("atelier"), other = await setup("standard-other"), late = await setup("standard-late");
+  const sendStandard = async () => {
+    const standard = (await home.reviewerAdmissions()).filter((a) => a.active);
+    for (const L of [other, late]) await L.setStandardReviewers(standard);
+  };
+  const asked = () => other.requestReview("t1", "owner", REVIEWER, POOL, false, false, undefined, offers());
+  await refusal(asked(), "ineligible");
+  const admitted = await home.admitReviewer(`opencode/${POOL[0].id}`, true, "Qualified", "owner", POOL);
+  expect(admitted).toMatchObject({ id: POOL[0].id, active: true });
+  await sendStandard();
+  expect(await asked()).toMatchObject({ requested: true, reviewer: REVIEWER });
+  expect((await other.reviewerListing())[0]).toMatchObject({ id: POOL[0].id, inherited: "atelier" });
+  expect((await other.reviewerAdmissions())).toEqual([]);
+  // A project withdraws it for itself alone; the request open there is withdrawn.
+  await other.admitReviewer(`opencode/${POOL[0].id}`, false, "Not for this project", "owner", POOL);
+  expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
+  expect(await other.reviewWaiting()).toEqual([]);
+  expect(hasRole(REVIEWER, (await late.project()).policy, "assessor")).toBe(true);
+  await sendStandard();
+  expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
+  // The harness must be the entry's own.
+  await refusal(home.admitReviewer(`codex/${POOL[0].id}`, true, "wrong harness", "owner", POOL), "no_model");
+  // Atelier withdrawing ends the sharing for projects with no record of their own.
+  await home.admitReviewer(POOL[0].id, false, "Retired", "owner", POOL);
+  await sendStandard();
+  expect(hasRole(REVIEWER, (await late.project()).policy, "assessor")).toBe(false);
+});
