@@ -286,6 +286,55 @@ brief then states that bar in place of the default. `atelier init --review-bar
 ""` clears it and restores the default, and an init that does not name the bar
 leaves the recorded one as it is.
 
+## How review rounds converge
+
+A review that rejects, a rework and a review again can go on for many rounds,
+each finding a narrower variant of the last. Four rules end it, all in
+[`src/rules.ts`](../src/rules.ts) as pure functions (section "Review
+convergence"), each failing safe: where a rule cannot tell, the finding blocks
+and the round is asked again.
+
+- **A round cap.** A round is a head a model rejected; the developer's own
+  rejections are not rounds. After `REVIEW_ROUND_CAP` rejected rounds no
+  further round starts. The task is blocked for the developer with the rounds
+  listed (the head, the reviewer and the note of each), the developer is
+  notified, and the task shows in the inbox as an unblock. The review is not
+  asked for by `atelier land` either, and says why. The developer decides
+  whether the approach should change, unblocks the task, and asks another
+  round with `atelier land ID --reviewer H/M`; a named reviewer is the
+  developer's request and passes the cap. A plan's part is held by its plan,
+  which blocks it when the builder's attempts run out.
+- **A re-review reads the diff since the last reviewed head.** From the second
+  round the reviewer is given the diff from the last head a review judged to
+  this one, with the earlier findings, and the brief says the rest of the
+  change was judged. When that diff is empty or larger than the whole change
+  (main was merged in), or its commit is not in the clone, the whole change is
+  read. A blocking finding the developer marked fixed or refuted
+  (`atelier finding`) that the reviewer raises again word for word is dropped
+  before the review is recorded; a reworded one is not.
+- **A finding on code the change did not touch is pre-existing.** The runner
+  reads the whole change's diff. A blocking finding that names a line, in a
+  file the change did not touch or more than `PRE_EXISTING_MARGIN` lines from
+  any line the change touched, becomes a follow-up labelled `pre-existing`.
+  A finding with no line, or in a file the diff lists with no hunk, is not
+  placed and keeps blocking. The review records one follow-up task with each
+  pre-existing finding as a criterion, so nothing found is lost.
+- **A blocking finding blocks only when a second check confirms it.** The
+  runner asks another model on the runner, of another family than the
+  reviewer where there is one and never a contributor, to read the code and
+  confirm each blocking finding by line or by a test (`src/review/verify.ts`).
+  With no other model the reviewer checks in a fresh run. A finding the check
+  does not confirm is a follow-up labelled `unverified`. A check that cannot
+  run or answers nothing records no review: the request is released and asked
+  again.
+
+A rejection left with no blocking finding is recorded as an approval with the
+labelled follow-ups, and only when the reply proves every acceptance
+criterion as an approval must; otherwise the request is released with the
+reason. The review's note says how many findings were answered, pre-existing
+and unverified. A review recorded by hand (`atelier review`) is not settled:
+its blocking findings block as before.
+
 ## Check classes
 
 Atelier runs a check in a clean clone of an item's head whenever anyone asks,

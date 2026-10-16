@@ -7,7 +7,8 @@ import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
-  type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
+  applyVerification, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
+  type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
 
 const H1 = "a".repeat(40);
@@ -1560,4 +1561,114 @@ test("a check recorded not applicable at a head stays so when a later measuremen
   // A record the policy no longer supports (its paths now include the measured ones) does not stand.
   const widened: ProjectPolicy = { ...p, checkPaths: [{ command: "npm run e2e", paths: ["e2e/**", "src/**"] }] };
   assert.deepEqual(evidenceAt(widened, [na, ran, later], H1).notApplicable, []);
+});
+
+// ── review convergence (t717) ────────────────────────────────────────────────
+// The loop these end: t363, t478 and t705 each ran round after round on
+// 2026-10-15/16, every round a narrower variant of the last (t717).
+
+const rv = (by: string, approve: boolean, head: string, at: string, note = ""): Review => ({ itemId: "t1", by, head, approve, note, at, criteria: "c" } as Review);
+const sha = (c: string) => c.repeat(40);
+
+test("round cap: a task is held after REVIEW_ROUND_CAP rejected heads, with the rounds listed, and not before", () => {
+  const reviews = Array.from({ length: REVIEW_ROUND_CAP }, (_, i) => rv("codex/gpt-6-astra", false, sha(String(i + 1)), `2026-10-16T0${i}:00:00.000Z`, `variant ${i + 1} of the same defect`));
+  const rounds = rejectedRounds(reviews, "owner");
+  assert.equal(rounds.length, REVIEW_ROUND_CAP);
+  assert.equal(roundCapHold(rounds.slice(0, -1)), null, "one round short of the cap starts another round");
+  const hold = roundCapHold(rounds, "t363");
+  assert.ok(hold);
+  for (let i = 0; i < rounds.length; i++) assert.ok(hold.includes(`round ${i + 1}, ${rounds[i].head.slice(0, 8)}, rejected by codex/gpt-6-astra: variant ${i + 1} of the same defect`), hold);
+  assert.ok(hold.includes("atelier land t363 --reviewer H/M"), "it says how the developer asks another round");
+});
+
+test("round cap: a round is a head, the developer's rejections and approvals are none, and two rejections of one head are one round", () => {
+  const reviews = [
+    rv("codex/gpt-6-astra", false, sha("1"), "2026-10-16T01:00:00.000Z"),
+    rv("gemini/gemini-4-argon", false, sha("1"), "2026-10-16T02:00:00.000Z"),
+    rv("owner", false, sha("2"), "2026-10-16T03:00:00.000Z"),
+    rv("codex/gpt-6-astra", true, sha("3"), "2026-10-16T04:00:00.000Z"),
+  ];
+  const rounds = rejectedRounds(reviews, "owner");
+  assert.deepEqual(rounds.map((r) => [r.head, r.by]), [[sha("1"), "codex/gpt-6-astra"]]);
+});
+
+test("re-review diff: the head the last review judged, and the diff since it only when that is smaller and not empty", () => {
+  const prior = [rv("codex/gpt-6-astra", false, sha("1"), "2026-10-16T01:00:00.000Z"), rv("gemini/gemini-4-argon", false, sha("2"), "2026-10-16T02:00:00.000Z"), rv("owner", true, sha("3"), "2026-10-16T03:00:00.000Z")];
+  assert.equal(reviewedSince(prior, sha("4"), "owner"), sha("2"), "the newest model review of an earlier head");
+  assert.equal(reviewedSince(prior, sha("2"), "owner"), sha("1"), "never the head under review");
+  assert.equal(reviewedSince([], sha("4"), "owner"), null);
+  const whole = "d".repeat(500);
+  assert.deepEqual(reReviewDiff(whole, "small change"), { diff: "small change", incremental: true });
+  assert.deepEqual(reReviewDiff(whole, ""), { diff: whole, incremental: false }, "an empty diff leaves nothing to read");
+  assert.deepEqual(reReviewDiff(whole, "e".repeat(900)), { diff: whole, incremental: false }, "a merge of main makes the diff since larger than the change");
+  assert.deepEqual(reReviewDiff(whole, null), { diff: whole, incremental: false });
+});
+
+test("a finding the developer marked fixed or refuted is not raised again, but a reworded one is", () => {
+  const settled = [{ file: "src/a.ts", text: "A lapsed claim is never retried." }];
+  const raised = [
+    { file: "src/a.ts", line: 10, severity: "blocking", text: "a lapsed claim is never   retried" },
+    { file: "./src/a.ts", line: 11, severity: "blocking", text: "A lapsed claim is never retried!" },
+    { file: "src/a.ts", line: 10, severity: "blocking", text: "A lapsed claim is never retried when the runner restarts mid-claim, see needed.ts:88." },
+    { file: "src/b.ts", line: 3, severity: "blocking", text: "A lapsed claim is never retried." },
+  ] satisfies Finding[];
+  assert.deepEqual(dropSettled(raised, settled).map((f) => f.line), [10, 3]);
+});
+
+const DIFF = [
+  "diff --git a/src/a.ts b/src/a.ts", "index 1..2 100644", "--- a/src/a.ts", "+++ b/src/a.ts",
+  "@@ -10,3 +10,4 @@ function x() {", " keep", "+added at 11", " keep", " keep",
+  "@@ -100,2 +101,1 @@", "--- a deleted line that begins with dashes", " keep",
+  "diff --git a/docs/b.md b/docs/b.md", "--- a/docs/b.md", "+++ b/docs/b.md", "@@ -1 +1 @@", "-old", "+new",
+  "diff --git a/img.png b/img.png", "Binary files a/img.png and b/img.png differ",
+  "diff --git a/bin.dat b/bin.dat", "--- a/bin.dat", "+++ b/bin.dat",
+].join("\n");
+
+test("touchedLines reads the added and deleted positions in the new file, and a deleted line that looks like a header is not one", () => {
+  const touched = touchedLines(DIFF)!;
+  assert.deepEqual([...touched.get("src/a.ts")!].sort((a, b) => a - b), [11, 101]);
+  assert.deepEqual([...touched.get("docs/b.md")!], [1]);
+  assert.deepEqual([...touched.get("bin.dat")!], [], "a file listed with no hunk is listed, with nothing to place a finding by");
+  assert.equal(touchedLines("not a diff at all"), null);
+});
+
+test("a blocking finding on lines the change did not touch is a pre-existing follow-up; one it may have touched, or cannot be placed, keeps blocking", () => {
+  const f = (file: string, line: number | null): Finding => ({ file, line, severity: "blocking", text: `about ${file}:${line}` });
+  const near = 11 + PRE_EXISTING_MARGIN, far = 11 + PRE_EXISTING_MARGIN + 1;
+  const labelled = labelPreExisting([
+    f("src/a.ts", 11), f("src/a.ts", near), f("src/a.ts", far), f("src/a.ts", 300), f("src/untouched.ts", 4),
+    f("src/a.ts", null), f("bin.dat", 9), f("see the docs", 3), f("", 3),
+  ], DIFF);
+  assert.deepEqual(labelled.map((x) => x.label ?? "blocks"), ["blocks", "blocks", "pre-existing", "pre-existing", "pre-existing", "blocks", "blocks", "blocks", "blocks"]);
+  for (const x of labelled) assert.equal(x.severity, x.label ? "follow-up" : "blocking", "a labelled finding never blocks");
+  // A follow-up stays as it is; it is not turned into a task of its own.
+  assert.deepEqual(labelPreExisting([{ file: "src/untouched.ts", line: 4, severity: "follow-up", text: "t" }], DIFF), [{ file: "src/untouched.ts", line: 4, severity: "follow-up", text: "t" }]);
+  // A diff nothing can be read from labels nothing.
+  assert.equal(labelPreExisting([f("src/untouched.ts", 4)], "").at(0)?.label, undefined);
+  assert.equal(isPreExisting({ file: "src/a.ts", line: 0 }, touchedLines(DIFF)!), false);
+});
+
+test("a blocking finding blocks only when an independent check confirmed it; the rest are recorded as unverified", () => {
+  const findings: Finding[] = [
+    { file: "a.ts", line: 1, severity: "blocking", text: "one" },
+    { file: "b.ts", line: 2, severity: "blocking", text: "two" },
+    { file: "c.ts", line: 3, severity: "follow-up", text: "three" },
+    { file: "d.ts", line: 4, severity: "blocking", text: "four" },
+  ];
+  const out = applyVerification(findings, new Set([2]));
+  assert.deepEqual(out.map((f) => [f.severity, f.label ?? null]), [["follow-up", "unverified"], ["blocking", null], ["follow-up", null], ["follow-up", "unverified"]]);
+  assert.deepEqual(applyVerification(findings, new Set()).filter((f) => f.severity === "blocking"), [], "a check that confirmed nothing leaves nothing blocking");
+  assert.deepEqual(findings[0], { file: "a.ts", line: 1, severity: "blocking", text: "one" }, "the reviewer's own findings are not changed");
+});
+
+test("the follow-up task for pre-existing findings names each, and there is none without one", () => {
+  const findings: Finding[] = [
+    { file: "src/untouched.ts", line: 4, severity: "follow-up", label: "pre-existing", text: "Reads a stale value." },
+    { file: "src/a.ts", line: 11, severity: "follow-up", label: "unverified", text: "Maybe wrong." },
+    { file: "src/a.ts", line: 12, severity: "follow-up", text: "Naming." },
+  ];
+  const task = preExistingTask("t717", "Review rounds converge", { by: "codex/gpt-6-astra", head: sha("a"), findings })!;
+  assert.deepEqual(task.accept, ["src/untouched.ts:4: Reads a stale value."]);
+  assert.match(task.title, /t717/);
+  assert.equal(preExistingTask("t717", "x", { by: "a/b", head: sha("a"), findings: findings.slice(1) }), null);
 });

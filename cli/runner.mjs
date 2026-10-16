@@ -15,7 +15,9 @@ import { pairedProjectCommit } from "./fresh.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
-import { REVIEW_RENEW_MS, fastJobRefusal } from "../src/rules.ts";
+import { REVIEW_RENEW_MS, fastJobRefusal, applyVerification, contributorsOf, dropSettled, labelPreExisting, reReviewDiff, reviewedSince } from "../src/rules.ts";
+import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
+import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
 import { submission } from "../src/brief.ts";
@@ -2029,6 +2031,11 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     if (io.stopped()) throw new Error("interrupted");
     if (merged?.skipped) io.log(`merge-main review read as a plain diff: ${merged.skipped}`);
     const diff = merged?.diff ?? await io.diff(workspace, compare.from, claimed.head);
+    // A re-review after the first round reads the diff since the last head a
+    // review judged (t717), not the whole change again; the whole change is
+    // still what finding placement and verification are judged against.
+    const since = claimed.landed || merged ? null : await sinceLastReview(io, workspace, claimed, diff);
+    const shown = since?.incremental ? since.diff : diff;
     // A task outside a plan is approved as a whole at this head, and its own
     // change may never have been reviewed (its landing stopped on the
     // conflict before any review), so its review also carries that change,
@@ -2052,11 +2059,15 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     // it, and the reviewer reads it in the clone's .scratch/ file as ever.
     // An older server that stored no reference keeps the inline cut, and a
     // small diff is carried inline as it always was.
-    const large = diff.length > BRIEF_LIMITS.diff;
-    if (large && claimed.diffRef) io.log(`review diff kept in R2 by reference: ${claimed.diffRef.key} (${claimed.diffRef.bytes} bytes)`);
+    // The stored reference is of the whole change, so a diff since an earlier
+    // head is carried inline or read in the clone, never by that reference.
+    const large = shown.length > BRIEF_LIMITS.diff;
+    const byRef = large && !since?.incremental && claimed.diffRef;
+    if (byRef) io.log(`review diff kept in R2 by reference: ${claimed.diffRef.key} (${claimed.diffRef.bytes} bytes)`);
     const text = reviewBrief({
       need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan,
-      diff: large && claimed.diffRef ? null : diff, diffRef: large ? claimed.diffRef ?? null : null,
+      diff: byRef ? null : shown, diffRef: byRef ? claimed.diffRef : null,
+      since: since?.incremental ? { from: since.from } : null,
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
       // The project's prose standard (t675), as the claim carries it; an
@@ -2076,7 +2087,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       evidence: claimed.evidence ?? null,
     });
     brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare, claimed.singleFamily ?? null)}\n\n${testSlotNote}\n\n${text}`, claimed.proseStandard ?? null);
-    diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
+    diffFile = await io.writeDiff(workspace, ownDiff === null ? shown : `${shown}${shown && !shown.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     // A review gets its own data folder for the length of the harness, as a
@@ -2139,17 +2150,37 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       }
       return { phase: "failed", reason: parsed.error, taskFailure: true };
     }
-    const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
+    // A rejection is settled before it is posted (t717): findings the
+    // developer already answered are dropped, blocking ones on code the
+    // change did not touch become pre-existing follow-ups, and the rest
+    // block only when an independent check confirms them. A rejection with
+    // nothing left to block on is posted as the approval it comes to. A
+    // post-merge audit is not settled: its findings open defect tasks.
+    let posted = parsed;
+    if (parsed.verdict === "reject" && !claimed.landed) {
+      if (renewalFailure) throw renewalFailure;
+      const settled = await settleRejection(io, {
+        parsed, reply, claimed, config, entry, diff, merged: !!merged, workspace, diffFile, verdictFile, name, project, actor, model,
+        criteria: criteriaCount(claimed.item, claimed.plan), deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0),
+      });
+      if (settled.failed) {
+        await release(settled.failed);
+        io.log(`review released: ${settled.failed}`);
+        return { phase: "failed", reason: settled.failed, taskFailure: true };
+      }
+      posted = settled.parsed;
+    }
+    const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, posted.verdict === "approve" ? "--approve" : "--reject", "--note", posted.summary];
     // The verdict is bound to the criteria the brief carried and to the
     // request claimed, as the claim gave them, so a verdict on criteria that
     // changed while the harness ran is refused rather than counted.
     if (claimed.criteria) argv.push("--criteria", claimed.criteria);
     if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
-    if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    if (posted.findings.length) argv.push("--findings", JSON.stringify(posted.findings));
     if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
-    io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${parsed.verdict}`);
-    return { phase: "reviewed", verdict: parsed.verdict };
+    io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${posted.verdict}`);
+    return { phase: "reviewed", verdict: posted.verdict };
   } catch (error) {
     io.log(`failed: ${error.message}`);
     if (claimedRequest && !released) await release(error.message);
@@ -2531,6 +2562,94 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     if (diffFile) io.removeDiff(diffFile);
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
+  }
+}
+
+// The diff since the last head a review judged, for a re-review (t717), or
+// null in round one, with no earlier head, or when that head is not in the
+// clone (reReviewDiff then keeps the whole change). `from` is that head.
+export async function sinceLastReview(io, workspace, claimed, whole) {
+  if (!claimed.need || claimed.need.round <= 1) return null;
+  const from = reviewedSince(claimed.need.previous ?? [], claimed.head, claimed.owner);
+  if (!from) return null;
+  try {
+    return { from, ...reReviewDiff(whole, await io.diff(workspace, from, claimed.head)) };
+  } catch (error) {
+    io.log(`the diff since ${from.slice(0, 8)} could not be read, so the whole change is reviewed: ${error.message}`);
+    return null;
+  }
+}
+
+// Settles a rejection's findings (t717, the four rules in "Review
+// convergence" of src/rules.ts). Returns the verdict to post as `parsed`, or
+// `failed` with why nothing can be posted yet: the check could not run, or
+// no blocking finding stood and the reply cannot stand as an approval. The
+// request is then released and asked again, which is the safe thing.
+export async function settleRejection(io, ctx) {
+  const { parsed, reply, claimed } = ctx;
+  let findings = dropSettled(parsed.findings, settledFindings(claimed.need?.previous ?? [], ownerVerdicts(claimed.events ?? [])));
+  const answered = parsed.findings.length - findings.length;
+  // Placement is judged against the whole change, never a diff since an
+  // earlier head, and not at all against a merge's conflict resolution.
+  if (!ctx.merged) findings = labelPreExisting(findings, ctx.diff);
+  const blockers = findings.flatMap((f, i) => (f.severity === "blocking" ? [i] : []));
+  let confirmed = new Set(blockers.map((i) => i + 1));
+  if (blockers.length) {
+    const checked = await verifyBlockers(io, ctx, blockers.map((i) => findings[i]));
+    if (checked.failed) return { failed: checked.failed };
+    confirmed = new Set(blockers.filter((_, k) => checked.confirmed.has(k + 1)).map((i) => i + 1));
+  }
+  findings = applyVerification(findings, confirmed);
+  if (answered === 0 && JSON.stringify(findings) === JSON.stringify(parsed.findings)) return { parsed };
+  const count = (label) => findings.filter((f) => f.label === label).length;
+  const result = parseVerdict(reply, ctx.criteria, { deferred: ctx.deferred, settled: findings });
+  const account = `${answered} already answered, ${count("pre-existing")} pre-existing, ${count("unverified")} unverified`;
+  if (!result.ok) return { failed: `no blocking finding stood (${account}) and the reply cannot be recorded as an approval: ${result.error}` };
+  if (result.verdict === "approve") {
+    return { parsed: { ...result, summary: `The reviewer rejected, but no blocking finding stood (${account}), so this is recorded as an approval with follow-ups. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } };
+  }
+  return { parsed: result };
+}
+
+// The independent check of blocking findings (t717, src/review/verify.ts): a
+// model other than the reviewer and the change's contributors where the
+// runner has one, else the reviewer in a fresh run. Returns the positions it
+// confirmed among `blockers`, one based, or `failed` when it could not run or
+// said nothing a verdict can be read from: a check that did not happen is not
+// a refutation, so the request is released and asked again.
+export async function verifyBlockers(io, ctx, blockers) {
+  const { claimed, config, workspace, actor } = ctx;
+  const candidates = config.agents.flatMap((a) => a.models.map((m) => `${a.agent}/${m}`));
+  const choice = pickVerifier(candidates, actor, contributorsOf(claimed.item));
+  const slash = choice.actor.indexOf("/");
+  const agent = choice.actor.slice(0, slash), model = choice.actor.slice(slash + 1);
+  const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+  if (!entry) return { failed: `the verifier ${choice.actor} is not in this runner's config` };
+  io.log(`verifying ${blockers.length} blocking finding(s): ${choice.why}`);
+  const brief = await io.brief(workspace, verifierBrief({ item: claimed.item, head: claimed.head, findings: blockers, diffFile: ctx.diffFile?.file ?? null, bar: claimed.reviewBar ?? null }), null);
+  try {
+    io.removeFile?.(ctx.verdictFile);
+    const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    try {
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: ctx.diffFile?.file, verdictFile: ctx.verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, claimed.item.id, "review", ctx.name, ctx.project, choice.actor));
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.timedOut) return { failed: `the verification by ${choice.actor} timed out` };
+    if (result.code !== 0) return { failed: `the verification by ${choice.actor} exited ${result.code}` };
+    let said;
+    try { said = io.readVerdict(ctx.verdictFile); } catch { said = ""; }
+    const read = parseVerification(said, blockers.length);
+    if (!read.ok) return { failed: `the verification by ${choice.actor} gave no answer: ${read.error}` };
+    return { confirmed: read.confirmed };
+  } finally {
+    await io.removeBrief(brief);
   }
 }
 

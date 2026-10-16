@@ -34,9 +34,18 @@ export type ParsedVerdict =
 // the brief numbers them, that a criteria review flagged as checks after
 // deploy, whose CRITERION line may say deferred instead of met; deferred on
 // any other criterion is refused, as unmet is.
+//
+// `settled` (t717) replaces a rejection's findings with the ones that stand
+// after the runner settled them: those answered before dropped, those on
+// code the change did not touch labelled pre-existing, those no independent
+// check confirmed labelled unverified. A rejection left with no blocking
+// finding is then an approval, and read as one: it needs every CRITERION
+// line, met. The reply the reviewer wrote is not changed, and an approval
+// stays an approval.
 export interface VerdictOptions {
   checks?: boolean;
   deferred?: readonly number[];
+  settled?: readonly Finding[];
 }
 
 // A reply longer than `reply` is refused rather than scanned. A list of more
@@ -192,12 +201,12 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   // in prose, a quotation or a finding, makes the reply ambiguous.
   for (const match of reply.matchAll(/\b(APPROVED?|REJECT(?:ED)?)\b/g)) verdicts.add(match[1].startsWith("A") ? "approve" : "reject");
   if (verdicts.size > 1) refuse("the reply says both APPROVE and REJECT, so it is not a verdict");
-  const verdict = [...verdicts][0];
+  let verdict = [...verdicts][0];
 
   if (json.length && lines.findings.length) refuse("the reply gives findings both as JSON and as FINDING lines");
   if (json.length && lines.checks.length) refuse("the reply gives checks both as JSON and as CHECK lines");
   if (new Set(json.map((s) => JSON.stringify(s))).size > 1) refuse(`the reply has ${json.length} JSON verdicts that differ`);
-  const findings = json.length ? json[0].findings : lines.findings;
+  let findings = json.length ? json[0].findings : lines.findings;
   const checks = json.length ? json[0].checks : lines.checks;
   const summary = json.length ? json[0].summary : clip(lines.summary.join(" "), VERDICT_LIMITS.summary);
   if (findings.length > VERDICT_LIMITS.findings) refuse(`the reply has ${findings.length} findings, over the limit of ${VERDICT_LIMITS.findings}`);
@@ -206,6 +215,10 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   // readings of the same check, not two checks.
   const twice = checks.map((c) => c.criterion).filter((n, i, all) => all.indexOf(n) !== i);
   if (twice.length) refuse(`the reply flags criterion ${twice[0]} as a check after deploy twice; write one CHECK line per criterion`);
+  if (verdict === "reject" && options.settled) {
+    findings = [...options.settled];
+    if (!findings.some((f) => f.severity === "blocking")) verdict = "approve";
+  }
   const blocking = findings.filter((f) => f.severity === "blocking").length;
   if (verdict === "reject" && !blocking) refuse("a rejection must name at least one blocking finding; every other finding is a follow-up");
   if (verdict === "approve" && blocking) refuse(`an approval cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`);
