@@ -7,7 +7,8 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete, lostToHold } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete, lostToHold, _unsavedFailures } from "../cli/runner.mjs";
+import { MAX_HARNESS_RERUNS } from "../cli/runner-failure.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -200,8 +201,14 @@ function fixture(options = {}) {
       calls.push({ harness: argv, cwd, env });
       homes.push({ ran: env?.XDG_DATA_HOME });
       if (options.throwHarness) throw new Error("ENOENT");
-      return { code: options.code ?? 0, timedOut: options.timedOut };
+      return { code: "code" in options ? options.code : 0, timedOut: options.timedOut };
     },
+    // The failed harness's marker (t363), kept in memory when a test asks.
+    ...(options.marker !== undefined ? {
+      async readHarnessFailure() { return options.marker; },
+      async writeHarnessFailure(cwd, failure) { calls.push({ wrote: failure, cwd }); options.marker = failure; },
+      async clearHarnessFailure() { calls.push({ cleared: true }); options.marker = null; },
+    } : {}),
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
     // The builder's commit identity (t451): allowed unless the test says otherwise.
     async identityRefusals() { return options.identityRefusals ?? []; },
@@ -441,9 +448,12 @@ test("a harness that changes nothing on a head that is not pushed work ahead of 
     const { io, calls, logs } = fixture(options);
     const state = await runTask({ ...assignment, item: { ...assignment.item, head: "before", base: "base" } }, config, "home:studio", io);
     assert.equal(state.phase, "failed");
-    assert.ok(calls.some((c) => c.argv?.[0] === "release"));
+    // The pushed head is work, so the failure says the head moved and keeps
+    // the claim; it never reads "no new commit" (t363).
+    assert.ok(!calls.some((c) => c.argv?.[0] === "release"));
     assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
-    assert.ok(!logs.some((l) => l.startsWith("already complete:")));
+    assert.ok(!logs.some((l) => l.startsWith("already complete:") || l.includes("no new commit")));
+    assert.ok(logs.some((l) => l.includes("claim preserved")));
     assert.equal(runOutcome(state), options.code === 1 ? "refused" : "timed-out");
   }
 });
@@ -1128,11 +1138,29 @@ test("a second interrupt kills a harness that ignores SIGTERM before the runner 
   assert.ok(await gone(harness), "the harness is killed, not left running after the runner exits");
 });
 
+// t363: a harness that failed after the head moved left commits behind. The run
+// says the head moved, never "no new commit", and keeps the claim.
+test("a harness that fails after moving the head says so and keeps the claim", async () => {
+  const moved = nextStep({ phase: "working" }, { type: "exit", code: 1, before: "aaaaaaaa11", head: "bbbbbbbb22" });
+  assert.equal(moved.reason, "harness exited 1 after the head moved to bbbbbbbb");
+  assert.equal(moved.head, "bbbbbbbb22");
+  assert.doesNotMatch(moved.reason, /no new commit/);
+  assert.equal(nextStep({ phase: "working" }, { type: "exit", code: 1, before: "a", head: "a" }).reason, "harness exited 1");
+  const { io, calls, logs } = fixture({ head: "after", code: 1 });
+  const state = await runTask(assignment, config, "home:studio", io);
+  assert.match(state.reason, /^harness exited 1 after the head moved to after/);
+  assert.equal(runOutcome(state), "refused");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"));
+  assert.ok(logs.some((s) => s.includes("claim preserved")));
+  assert.ok(!logs.some((s) => s.includes("no new commit")));
+});
+
 test("timed out tasks release only uncommitted work", async () => {
   for (const head of ["before", "after"]) {
     const { io, calls, logs } = fixture({ head, timedOut: true });
     const state = await runTask(assignment, config, "home:studio", io);
-    assert.equal(state.reason, "harness timed out");
+    assert.equal(state.reason, head === "before" ? "harness timed out" : "harness timed out after the head moved to after");
+    assert.equal(runOutcome(state), "timed-out");
     assert.equal(calls.some((c) => c.argv?.[0] === "release"), head === "before");
     assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
     assert.ok(logs.some((s) => s.includes(head === "before" ? "released: no new commit" : "claim preserved")));
@@ -2148,7 +2176,7 @@ test("a run that timed out, stalled or was refused is reported under the runner'
   t.after(() => { process.exitCode = previous; });
   const cases = [
     [{ head: "before", timedOut: true }, "timed-out", "harness timed out"],
-    [{ head: "after", timedOut: true }, "timed-out", "harness timed out"],
+    [{ head: "after", timedOut: true }, "timed-out", "harness timed out after the head moved to after"],
     [{ head: "before" }, "stalled", "harness made no new commit: the task has no pushed head ahead of its base"],
     [{ head: "before", code: 1 }, "refused", "harness exited 1"],
     [{}, null],
@@ -2639,3 +2667,496 @@ test('atelier queue prints why a queued job is unclaimed (no runner offers it, o
 });
 
 
+
+
+// t363, round 2.
+test("a harness killed by a signal is a failure, not a success", async () => {
+  const killed = nextStep({ phase: "working" }, { type: "exit", code: null, before: "a", head: "b" });
+  assert.equal(killed.phase, "failed");
+  assert.match(killed.reason, /^harness exited null after the head moved to b/);
+  const { io, calls, logs } = fixture({ head: "after", code: null });
+  const state = await runTask(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /^harness exited null after the head moved to after/);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "finish"), "a killed harness's commit is not submitted");
+  assert.ok(logs.some((l) => l.includes("claim preserved")));
+  const unmoved = await runTask(assignment, config, "home:studio", fixture({ head: "before", code: null }).io);
+  assert.equal(unmoved.reason, "harness exited null");
+});
+
+test("a harness that fails on a pushed head ahead of the base says the head moved and keeps the claim", async () => {
+  const item = { ...assignment.item, head: "before", base: "base" };
+  const { io, calls, logs } = fixture({ head: "before", code: 1 });
+  const state = await runTask({ ...assignment, item }, config, "home:studio", io);
+  assert.equal(state.reason, "harness exited 1 after the head moved to before");
+  assert.equal(state.head, "before");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"));
+  assert.ok(!logs.some((l) => l.includes("no new commit")));
+  // Not ahead of the base: nothing was pushed, so the old release stands.
+  const behind = fixture({ head: "before", code: 1, ancestor: false });
+  const rolled = await runTask({ ...assignment, item }, config, "home:studio", behind.io);
+  assert.equal(rolled.reason, "harness exited 1");
+  assert.ok(behind.calls.some((c) => c.argv?.[0] === "release"));
+});
+
+test("a harness that times out after moving the head says so and records the head", async () => {
+  const moved = nextStep({ phase: "working" }, { type: "exit", code: null, timedOut: true, before: "aaaaaaaa11", head: "bbbbbbbb22" });
+  assert.equal(moved.reason, "harness timed out after the head moved to bbbbbbbb");
+  assert.equal(moved.head, "bbbbbbbb22");
+  const { io, logs } = fixture({ head: "after", code: null, timedOut: true });
+  const state = await runTask(assignment, config, "home:studio", io);
+  assert.equal(state.head, "after");
+  assert.equal(runOutcome(state), "timed-out");
+  assert.ok(logs.some((l) => l.includes("claim preserved")));
+});
+
+test("a held job after a failed harness runs the harness again, not the dead run's finish", async () => {
+  const held = heldItem({ head: "recorded" });
+  // The failed run leaves a marker for the head it left.
+  const failed = fixture({ head: "after", code: 1, marker: null });
+  await runTask({ ...assignment, item: { ...held, head: "before" } }, config, "home:studio", failed.io);
+  const writes = failed.calls.filter((c) => c.wrote).map((c) => c.wrote);
+  assert.deepEqual(writes[0], { actor: assignment.actor, head: null, from: "before", reason: null, reruns: 0 }, "the marker is written the moment the harness fails, before the head is read or a reason made");
+  assert.deepEqual(writes.at(-1), { actor: assignment.actor, head: "after", from: "before", reason: "harness exited 1 after the head moved to after", reruns: 0 });
+  // Without the marker the workspace is ahead of the recorded head and is finished unchecked by a harness.
+  const dead = fixture();
+  await runTask({ ...assignment, item: held }, config, "home:studio", dead.io);
+  assert.ok(!dead.calls.some((c) => c.harness));
+  // With it the harness runs again from that head.
+  const marker = { actor: assignment.actor, head: "before", from: "origin", reason: "harness exited 1" };
+  const again = fixture({ marker: { ...marker }, head: "better" });
+  const state = await runTask({ ...assignment, item: held }, config, "home:studio", again.io);
+  assert.ok(again.calls.some((c) => c.harness), "the harness runs");
+  assert.ok(again.logs.some((l) => l.startsWith("a harness run failed in this workspace and none has succeeded since")));
+  assert.ok(!again.logs.some((l) => l.startsWith("resumed:")));
+  assert.equal(state.phase, "submitted");
+  assert.ok(again.calls.some((c) => c.cleared), "a harness that finishes clears the marker");
+  // A harness that adds nothing finishes the failed run's commit; the checks decide.
+  const idle = fixture({ marker: { ...marker }, head: "before" });
+  const done = await runTask({ ...assignment, item: held }, config, "home:studio", idle.io);
+  assert.equal(done.phase, "submitted");
+  assert.equal(done.head, "before");
+  // Any marker holds the harness owing: another head, another actor, no head.
+  for (const other of [{ ...marker, head: "elsewhere" }, { ...marker, actor: "codex/other" }, { ...marker, head: null }]) {
+    const owed = fixture({ marker: other, ancestor: false });
+    await runTask({ ...assignment, item: held }, config, "home:studio", owed.io);
+    assert.ok(owed.calls.some((c) => c.harness), "the harness runs again whatever the marker names");
+  }
+});
+
+// t363, round 3.
+test("a rerun after a failed harness that fails again without a commit keeps the original start and the claim", async () => {
+  const held = heldItem({ head: "recorded" });
+  for (const [label, options, reason] of [
+    ["exit 1", { code: 1 }, "harness exited 1 after the head moved to before"],
+    ["a signal", { code: null }, "harness exited null after the head moved to before"],
+    ["a timeout", { code: null, timedOut: true }, "harness timed out after the head moved to before"],
+  ]) {
+    const marker = { actor: assignment.actor, head: "before", from: "origin", reason: "harness exited 1" };
+    const { io, calls, logs } = fixture({ marker, head: "before", ...options });
+    const state = await runTask({ ...assignment, item: held }, config, "home:studio", io);
+    assert.equal(state.reason, reason, label);
+    assert.equal(state.head, "before", label);
+    assert.ok(!calls.some((c) => c.argv?.[0] === "release"), `${label}: the claim is kept`);
+    assert.ok(!logs.some((l) => l.includes("no new commit")), label);
+    assert.deepEqual(calls.filter((c) => c.wrote).at(-1).wrote, { actor: assignment.actor, head: "before", from: "origin", reason, reruns: 1 }, `${label}: the marker keeps the original start`);
+  }
+});
+
+test("a resolver harness that commits and then fails leaves a marker for the new head", async () => {
+  const held = heldItem({ head: "recorded" });
+  const { io, calls } = fixture({ marker: null });
+  const heads = ["before", "built", "resolved"];
+  io.head = async () => heads.shift() ?? "resolved";
+  let harnesses = 0;
+  const run = io.harness;
+  io.harness = async (...args) => { const r = await run(...args); return ++harnesses === 1 ? r : { code: 1 }; };
+  io.prepareSubmission = async (a, ws, resolve) => { await resolve({ state: "conflicts", mainHead: "mainmainmain", files: ["a.txt"] }); };
+  const state = await runTask({ ...assignment, item: { ...held, head: "before" } }, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /resolving main/);
+  assert.deepEqual(calls.filter((c) => c.wrote).at(-1)?.wrote, { actor: assignment.actor, head: "resolved", from: "before", reason: state.reason, reruns: 0 });
+});
+
+test("a resolver that fails without committing leaves a marker, and the next poll runs the harness instead of submitting (t363, round 5)", async () => {
+  const held = heldItem({ head: "recorded" });
+  let marker = null, harnesses = 0;
+  const poll = async (resolverFails) => {
+    const { io, calls } = fixture({ marker });
+    io.readHarnessFailure = async () => marker;
+    io.writeHarnessFailure = async (cwd, failure) => { marker = failure; };
+    io.clearHarnessFailure = async () => { marker = null; };
+    io.head = async () => "built";
+    const run = io.harness;
+    io.harness = async (...args) => { harnesses++; const r = await run(...args); return resolverFails ? { code: 1 } : r; };
+    io.prepareSubmission = async (a, ws, resolve) => { await resolve({ state: "conflicts", mainHead: "mainmainmain", files: ["a.txt"] }); };
+    return { state: await runTask({ ...assignment, item: { ...held, head: "before" } }, config, "home:studio", io), calls };
+  };
+  const first = await poll(true);
+  assert.equal(first.state.phase, "failed");
+  assert.equal(marker?.head, "built", "a resolver that fails writes a marker though it made no commit");
+  assert.ok(!first.calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  const before = harnesses;
+  const second = await poll(false);
+  assert.ok(harnesses > before, "the harness runs again; the run is not resumed to submission");
+  assert.equal(second.state.phase, "submitted");
+  assert.equal(marker, null, "a successful run clears the obligation");
+});
+
+// t363, round 6: the recovery obligation fails closed. Each test reproduces a
+// review finding; zero harness calls must never reach "submitted".
+const heldPoll = async ({ marker: initial = null, ancestor, readMarker, failWrite, failClear, headAfter = "built", heads, harnessFails = false, state = {} }) => {
+  const held = heldItem({ head: "recorded" });
+  const box = { marker: initial, harnesses: 0, wrote: [] };
+  const { io, calls } = fixture({ marker: initial });
+  io.readHarnessFailure = async () => (readMarker ? readMarker() : box.marker);
+  io.writeHarnessFailure = async (cwd, failure) => { if (failWrite) throw new Error("EROFS"); box.marker = failure; box.wrote.push(failure); };
+  io.clearHarnessFailure = async () => { if (failClear) throw new Error("EBUSY"); box.marker = null; };
+  const seq = heads ? [...heads] : null;
+  io.head = async () => (seq ? seq.shift() ?? headAfter : headAfter);
+  io.isAncestor = async () => { if (ancestor instanceof Error) throw ancestor; return ancestor ?? true; };
+  const run = io.harness;
+  io.harness = async (...args) => { box.harnesses++; const r = await run(...args); return harnessFails ? { code: 1 } : r; };
+  const result = await runTask({ ...assignment, item: { ...held, head: "before", ...state } }, config, "home:studio", io);
+  return { result, calls, box };
+};
+
+test("a marker whose head is not in history, or whose ancestry cannot be read, still owes the harness, and nothing is submitted without it (t363, round 7)", async () => {
+  const marker = { actor: assignment.actor, head: "failedcommit", from: "start" };
+  for (const ancestor of [new Error("git timed out"), false, true]) {
+    const { result, box, calls } = await heldPoll({ marker: { ...marker }, ancestor });
+    assert.ok(box.harnesses > 0 && calls.some((c) => c.harness), "the harness ran");
+    assert.equal(result.phase, "submitted");
+  }
+});
+
+test("a marker that is unreadable or malformed counts as present, and the harness runs (t363, round 6)", async () => {
+  const { box, result } = await heldPoll({ marker: { invalid: true }, state: { base: "base" } });
+  assert.ok(box.harnesses > 0);
+  assert.equal(result.phase, "submitted");
+  assert.equal(box.marker, null, "a harness that passes clears it");
+  const thrown = await heldPoll({ readMarker: async () => { throw new Error("EACCES"); }, state: { base: "base" } });
+  assert.ok(thrown.box.harnesses > 0, "a read that throws is a live obligation too");
+});
+
+test("a harness that commits and fails, with a marker that cannot be saved, keeps the claim and cannot be submitted harness-free on the next poll (t363, round 6)", async () => {
+  const first = await heldPoll({ marker: null, failWrite: true, harnessFails: true, heads: ["before", "built"] });
+  assert.equal(first.result.phase, "failed");
+  assert.match(first.result.reason, /could not be saved/);
+  assert.ok(!first.calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  // The next poll finds the workspace ahead of the recorded head with no
+  // marker file: the in-memory obligation makes it run the harness.
+  const second = await heldPoll({ marker: null });
+  assert.ok(second.box.harnesses > 0, "the harness reruns; the run is not resumed to submission");
+  assert.equal(second.result.phase, "submitted");
+  // Once a harness passed, the obligation is gone: the next unmarked poll resumes.
+  const third = await heldPoll({ marker: null });
+  assert.equal(third.box.harnesses, 0, "a satisfied obligation does not repeat");
+});
+
+test("a timed-out harness whose head cannot be read leaves a marker with no head, and that marker is live (t363, round 6)", async () => {
+  const held = heldItem({ head: "before" });
+  const { io } = fixture({ marker: null, timedOut: true, code: null });
+  let marker = null, reads = 0;
+  io.readHarnessFailure = async () => marker;
+  io.writeHarnessFailure = async (cwd, failure) => { marker = failure; };
+  io.head = async () => { if (++reads > 1) throw new Error("unreadable HEAD"); return "before"; };
+  const state = await runTask({ ...assignment, item: { ...held, head: "before" } }, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(marker?.head, null, "the marker names no head");
+  const next = await heldPoll({ marker });
+  assert.ok(next.box.harnesses > 0, "a marker without a head is live");
+});
+
+test("a failed check-result post is retried with a growing wait before the command gives up", async () => {
+  const { createServer } = await import("node:http");
+  let posts = 0;
+  const server = createServer((req, res) => {
+    req.resume();
+    if (req.url === "/api/config") { res.setHeader("content-type", "application/json"); return res.end("{}"); }
+    posts++;
+    const ok = posts > Number(process.env.T363_FAILS);
+    res.statusCode = ok ? 200 : 503; res.setHeader("content-type", "application/json"); res.end(ok ? '{"ok":true}' : '{"error":"unavailable"}');
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const run = (fails) => {
+      posts = 0; process.env.T363_FAILS = String(fails);
+      const script = `import("./cli/atelier.mjs").then(async (m) => { const waits = []; const d = await m.postEvidence("/x", { claim: "c" }, "a", async (ms) => { waits.push(ms); }); console.log(JSON.stringify({ waits, d })); })`;
+      return new Promise((resolve) => {
+        const child = spawn(process.execPath, ["-e", script], { env: { ...process.env, ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ATELIER_TOKEN: "api", ATELIER_ACTOR: "a", ATELIER_CONFIG_DIR: tmpdir() }, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = ""; child.stdout.on("data", (c) => out += c); child.stderr.on("data", (c) => err += c);
+        child.on("close", (code) => resolve({ code, out, err }));
+      });
+    };
+    const three = await run(3);
+    assert.equal(three.code, 0, three.err);
+    assert.deepEqual(JSON.parse(three.out).waits, [1000, 2000, 4000]);
+    assert.equal(posts, 4);
+    const never = await run(99);
+    assert.notEqual(never.code, 0);
+    assert.equal(posts, 4, "the retries are bounded");
+    assert.match(never.err, /failed/);
+  } finally { server.close(); }
+});
+
+// t363, round 4.
+test("a second failure on a pushed head ahead of the base still says the head moved, and a part goes back to its plan", async () => {
+  for (const kind of ["task", "part"]) {
+    const item = { ...assignment.item, kind, head: "before", base: "base" };
+    const marker = null;
+    const first = fixture({ head: "before", code: 1, marker });
+    first.io.jobBrief = async () => ({ text: "SERVER BRIEF" });
+    const one = await runTask({ ...assignment, item }, config, "home:studio", first.io);
+    assert.equal(one.reason, "harness exited 1 after the head moved to before", kind);
+    // The marker records the base as the start, never the head itself.
+    const wrote = first.calls.filter((c) => c.wrote).at(-1).wrote;
+    assert.equal(wrote.from, "base", kind);
+    const second = fixture({ head: "before", code: 1, marker: { ...wrote } });
+    second.io.jobBrief = async () => ({ text: "SERVER BRIEF" });
+    const two = await runTask({ ...assignment, item: { ...item, state: "claimed", owner: assignment.actor } }, config, "home:studio", second.io);
+    assert.equal(two.reason, "harness exited 1 after the head moved to before", `${kind}: the second failure`);
+    assert.equal(two.head, "before", kind);
+    assert.equal(second.calls.some((c) => c.argv?.[0] === "release"), kind === "part", `${kind}: only a part goes back to its plan`);
+  }
+});
+
+// t363, round 7: one rule. A harness run failed in this workspace and none has
+// succeeded since; any marker, or the in-memory obligation, means the harness
+// runs before anything is finished. Every test below fails without the rework,
+// and zero harness calls never reach "submitted".
+
+test("a failed builder whose head cannot be read still records the marker and keeps the claim (t363, round 7, finding 1)", async () => {
+  const held = heldItem({ head: "before" });
+  const { io, calls } = fixture({ marker: null, code: 1 });
+  let marker = null, reads = 0;
+  io.readHarnessFailure = async () => marker;
+  io.writeHarnessFailure = async (cwd, failure) => { marker = failure; };
+  io.head = async () => { if (++reads > 1) throw new Error("unreadable HEAD"); return "before"; };
+  const state = await runTask({ ...assignment, item: held }, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.ok(marker, "the marker exists though HEAD was unreadable");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  assert.equal(runOutcome(state), "refused");
+  const next = await heldPoll({ marker });
+  assert.ok(next.box.harnesses > 0, "the next poll runs the harness");
+  assert.equal(next.result.phase, "submitted");
+});
+
+test("a failed resolver whose head cannot be read still records the marker (t363, round 7, finding 2)", async () => {
+  let marker = null, reads = 0;
+  const { io, calls } = fixture({ marker: null });
+  io.readHarnessFailure = async () => marker;
+  io.writeHarnessFailure = async (cwd, failure) => { marker = failure; };
+  io.clearHarnessFailure = async () => { marker = null; };
+  io.head = async () => { if (++reads > 2) throw new Error("unreadable HEAD"); return reads === 1 ? "before" : "built"; };
+  let harnesses = 0;
+  const run = io.harness;
+  io.harness = async (...args) => { const r = await run(...args); return ++harnesses === 1 ? r : { code: 1 }; };
+  io.prepareSubmission = async (a, ws, resolve) => { await resolve({ state: "conflicts", mainHead: "mainmainmain", files: ["a.txt"] }); };
+  const state = await runTask({ ...assignment, item: heldItem({ head: "before" }) }, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.ok(marker, "the resolver's failure is recorded without a readable head");
+  assert.equal(marker.head, null);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  const next = await heldPoll({ marker });
+  assert.ok(next.box.harnesses > 0, "the next poll runs the harness");
+});
+
+test("an older marker file does not mask a freshly saved fallback marker, and one success clears both (t363, round 7, finding 3)", async () => {
+  // The older file is still there and the new failure could not be saved to it:
+  // the obligation is the file or the memory, and both are cleared together.
+  const older = { actor: assignment.actor, head: "old", from: "start", reason: "harness exited 1", reruns: 0 };
+  const failing = await heldPoll({ marker: { ...older }, failWrite: true, harnessFails: true, heads: ["before", "built"] });
+  assert.equal(failing.result.phase, "failed");
+  assert.ok(!failing.calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  // The older file names a head Git says is gone, which used to make it stale and
+  // mask the fresher marker in memory; now either one owes the harness.
+  const memoryOnly = await heldPoll({ marker: { ...older }, ancestor: false });
+  assert.ok(memoryOnly.box.harnesses > 0);
+  assert.equal(memoryOnly.result.phase, "submitted");
+  // And a success cleared both, so nothing is owed any more.
+  const clear = await heldPoll({ marker: null });
+  assert.equal(clear.box.harnesses, 0, "the satisfied obligation does not repeat");
+});
+
+test("a marker that cannot be saved after a timeout does not change what the run reports (t363, round 7, finding 4)", async () => {
+  const { io, calls } = fixture({ marker: null, timedOut: true, code: null, head: "after" });
+  io.writeHarnessFailure = async () => { throw new Error("EROFS"); };
+  const state = await runTask(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /could not be saved/, "the diagnostic is appended");
+  assert.deepEqual(state.harnessExit, { kind: "timed-out" });
+  assert.equal(runOutcome(state), "timed-out", "appended text never changes the classification");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  // The same for a refusal and a signal.
+  for (const [options, outcome] of [[{ code: 2 }, "refused"], [{ code: null }, "refused"]]) {
+    const other = fixture({ marker: null, head: "after", ...options });
+    other.io.writeHarnessFailure = async () => { throw new Error("EROFS"); };
+    assert.equal(runOutcome(await runTask(assignment, config, "home:studio", other.io)), outcome);
+  }
+  const mine = await heldPoll({ marker: null });
+  assert.ok(mine.box.harnesses > 0, "the memory obligation holds the harness owing"); // cleared by this success
+});
+
+test("a marker of any shape runs the harness before anything is finished or submitted (t363, round 7)", async () => {
+  const shapes = {
+    readable: { actor: assignment.actor, head: "failedcommit", from: "start", reruns: 0 },
+    "foreign actor": { actor: "codex/other", head: "failedcommit", from: "start", reruns: 0 },
+    headless: { actor: assignment.actor, head: null, from: null, reruns: 0 },
+    unreadable: { invalid: true },
+  };
+  for (const [name, marker] of Object.entries(shapes))
+    for (const state of [{}, { base: "base" }]) {
+      const { box, result } = await heldPoll({ marker: { ...marker }, state });
+      assert.ok(box.harnesses > 0, `${name}: the harness ran`);
+      assert.equal(result.phase, "submitted", name);
+      assert.equal(box.marker, null, `${name}: a passing run at the same head clears it`);
+    }
+});
+
+test("after three failed reruns the runner stops, keeps the claim and says the task needs the developer; a success resets the count (t363, round 7)", async () => {
+  let marker = null;
+  const poll = async (harnessFails) => {
+    const { io, calls } = fixture({ marker });
+    io.readHarnessFailure = async () => marker;
+    io.writeHarnessFailure = async (cwd, failure) => { marker = failure; };
+    io.clearHarnessFailure = async () => { marker = null; };
+    // The first poll starts at the recorded head and the harness commits; later polls start at that commit.
+    let reads = 0;
+    const fresh = !marker;
+    io.head = async () => (fresh && ++reads === 1 ? "before" : "built");
+    let harnesses = 0;
+    const run = io.harness;
+    io.harness = async (...args) => { harnesses++; const r = await run(...args); return harnessFails ? { code: 1 } : r; };
+    const state = await runTask({ ...assignment, item: heldItem({ head: "before" }) }, config, "home:studio", io);
+    return { state, calls, harnesses };
+  };
+  const first = await poll(true);
+  assert.equal(first.harnesses, 1);
+  assert.equal(marker.reruns, 0, "the first failure is not a rerun");
+  for (let rerun = 1; rerun <= MAX_HARNESS_RERUNS; rerun++) {
+    const again = await poll(true);
+    assert.equal(again.harnesses, 1, `rerun ${rerun} runs the harness`);
+    assert.equal(marker.reruns, rerun);
+  }
+  const stopped = await poll(false);
+  assert.equal(stopped.harnesses, 0, "the limit stops the reruns");
+  assert.notEqual(stopped.state.phase, "submitted");
+  assert.equal(stopped.state.needsDeveloper, true);
+  assert.match(stopped.state.reason, /needs the developer/);
+  assert.equal(stopped.state.taskFailure, false, "it is not the model's failure");
+  assert.ok(!stopped.calls.some((c) => c.argv?.[0] === "release" || c.argv?.[0] === "finish"), "the claim is kept");
+  // A success resets the count: after it a new failure starts again at zero.
+  marker = { actor: assignment.actor, head: "h", from: "s", reruns: MAX_HARNESS_RERUNS - 1 };
+  assert.equal((await poll(false)).state.phase, "submitted");
+  assert.equal(marker, null);
+  assert.equal((await poll(true)).harnesses, 1, "after a success the harness is not blocked");
+  assert.equal(marker.reruns, 0);
+  _unsavedFailures.clear();
+  // A count held only in memory stops the reruns too.
+  const mem = [];
+  for (let i = 0; i <= MAX_HARNESS_RERUNS + 1; i++) mem.push(await heldPoll({ marker: null, failWrite: true, harnessFails: true, heads: ["before", "built"] }));
+  assert.deepEqual(mem.map((m) => m.box.harnesses), [1, 1, 1, 1, 0], "the fifth poll runs no harness: the count lived in memory");
+  assert.equal(mem.at(-1).result.needsDeveloper, true);
+  assert.equal((await heldPoll({ marker: null, state: { head: "before" } })).box.harnesses, 0, "the stopped task is not finished harness-free either");
+  _unsavedFailures.clear(); // the shared workspace name is not left owing a harness
+});
+
+test("only a passing run that leaves HEAD where it ended clears the marker; if HEAD moved the obligation stays and the harness runs once more (t363, round 7)", async () => {
+  const marker = { actor: assignment.actor, head: "failed", from: "s", reruns: 0 };
+  const box = { marker: { ...marker }, cleared: 0 };
+  const { io, calls } = fixture({ marker: { ...marker } });
+  io.readHarnessFailure = async () => box.marker;
+  io.writeHarnessFailure = async (cwd, failure) => { box.marker = failure; };
+  io.clearHarnessFailure = async () => { box.cleared++; box.marker = null; };
+  const heads = ["before", "built", "moved"]; // before the harness, when it exits, when the marker would clear
+  io.head = async () => heads.shift() ?? "moved";
+  const state = await runTask({ ...assignment, item: heldItem({ head: "before" }) }, config, "home:studio", io);
+  assert.notEqual(state.phase, "submitted");
+  assert.equal(box.cleared, 0, "a head that moved after the pass leaves the marker");
+  assert.ok(box.marker, "the obligation stands");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "finish"), "nothing is finished");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  const next = await heldPoll({ marker: box.marker });
+  assert.ok(next.box.harnesses > 0, "the harness runs once more");
+  assert.equal(next.result.phase, "submitted");
+});
+
+// t363, round 8: the rework's regressions.
+
+test("a failed resolver that moved the head says so, carries the new head and is reported as a refusal (t363, round 8)", async () => {
+  const run = async (resolverCommits) => {
+    const { io, calls } = fixture({ marker: null });
+    const heads = ["before", "built", ...(resolverCommits ? ["resolved"] : ["built"])];
+    io.head = async () => heads.shift() ?? "resolved";
+    let harnesses = 0;
+    const first = io.harness;
+    io.harness = async (...args) => { const r = await first(...args); return ++harnesses === 1 ? r : { code: 1 }; };
+    io.prepareSubmission = async (a, ws, resolve) => { await resolve({ state: "conflicts", mainHead: "mainmainmain", files: ["a.txt"] }); };
+    return { state: await runTask({ ...assignment, item: heldItem({ head: "before" }) }, config, "home:studio", io), calls };
+  };
+  const moved = await run(true);
+  assert.equal(moved.state.head, "resolved", "the state names the resolver's head");
+  assert.match(moved.state.reason, /harness exited 1 resolving main after the head moved to resolved/);
+  assert.equal(moved.calls.filter((c) => c.wrote).at(-1).wrote.reason, moved.state.reason);
+  assert.equal(runOutcome(moved.state), "refused", "the reliability report is made");
+  assert.ok(!moved.calls.some((c) => c.argv?.[0] === "release"));
+  const still = await run(false);
+  assert.equal(still.state.reason, "harness exited 1 resolving main");
+  assert.equal(runOutcome(still.state), "refused");
+});
+
+test("a rerun that passes ends its obligation: a resolver failing at finish starts a new one at reruns 0 (t363, round 8)", async () => {
+  const marker = { actor: assignment.actor, head: "x", from: "s", reruns: MAX_HARNESS_RERUNS - 1 };
+  const box = { marker: { ...marker }, wrote: [] };
+  const { io } = fixture({ marker: { ...marker } });
+  io.readHarnessFailure = async () => box.marker;
+  io.writeHarnessFailure = async (cwd, failure) => { box.marker = failure; box.wrote.push(failure); };
+  io.clearHarnessFailure = async () => { box.marker = null; };
+  const heads = ["before", "built", "built", "resolved"];
+  io.head = async () => heads.shift() ?? "resolved";
+  let harnesses = 0;
+  const first = io.harness;
+  io.harness = async (...args) => { const r = await first(...args); return ++harnesses === 1 ? r : { code: 1 }; };
+  io.prepareSubmission = async (a, ws, resolve) => { await resolve({ state: "conflicts", mainHead: "mainmainmain", files: ["a.txt"] }); };
+  const state = await runTask({ ...assignment, item: heldItem({ head: "before" }) }, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(harnesses, 2, "the rerun and the resolver both ran");
+  assert.equal(box.wrote.at(-1).reruns, 0, "a new obligation, not the cleared one's count plus one");
+  assert.notEqual(state.needsDeveloper, true);
+});
+
+test("a marker that cannot be cleared after a pass counts toward the rerun limit, in files and in memory alone (t363, round 8)", async () => {
+  _unsavedFailures.clear();
+  let marker = { actor: assignment.actor, head: "built", from: "s", reason: "harness exited 1", reruns: 0 };
+  const files = [];
+  for (let i = 0; i <= MAX_HARNESS_RERUNS; i++) {
+    const poll = await heldPoll({ marker: marker && { ...marker }, failClear: true });
+    marker = poll.box.marker;
+    files.push(poll);
+  }
+  assert.deepEqual(files.map((p) => p.box.harnesses), [1, 1, 1, 0], "the harness stops at the limit instead of looping");
+  assert.equal(files.at(-1).result.needsDeveloper, true);
+  assert.equal(files[0].result.taskFailure, false, "an uncleared marker is not the model's failure");
+  assert.ok(files.every((p) => !p.calls.some((c) => c.argv?.[0] === "release" || c.argv?.[0] === "finish")), "the claim is kept");
+  _unsavedFailures.clear();
+  // With nothing writable the count lives in memory and still stops it.
+  const mem = [];
+  for (let i = 0; i <= MAX_HARNESS_RERUNS; i++) mem.push(await heldPoll({ marker: { actor: assignment.actor, head: "built", from: "s", reruns: 0 }, failClear: true, failWrite: true }));
+  assert.deepEqual(mem.map((p) => p.box.harnesses), [1, 1, 1, 0]);
+  assert.equal(mem.at(-1).result.needsDeveloper, true);
+  _unsavedFailures.clear();
+});
+
+test("a part whose marker could only be held in memory keeps its claim instead of going back to its plan (t363, round 8)", async () => {
+  _unsavedFailures.clear();
+  const item = { ...assignment.item, kind: "part", head: "before", base: "base" };
+  const { io, calls } = fixture({ head: "before", code: 1, marker: null });
+  io.jobBrief = async () => ({ text: "SERVER BRIEF" });
+  io.writeHarnessFailure = async () => { throw new Error("EROFS"); };
+  const state = await runTask({ ...assignment, item }, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
+  _unsavedFailures.clear();
+});

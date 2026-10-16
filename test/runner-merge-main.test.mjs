@@ -423,3 +423,43 @@ test("a merge-main task whose harness leaves the conflicted merge uncommitted is
   assert.equal((await runTask(job, config, "home:studio", io)).phase, "submitted");
   assert.ok(calls.findIndex((c) => c.prepare) < calls.findIndex((c) => c.argv?.[0] === "finish"));
 });
+
+// t363, round 4: a merge-main harness that committed an unfinished conflict
+// resolution and failed left a marker; a clean merge of main on top of that
+// commit on the next poll is not that work finished.
+test("a clean merge on top of a failed harness's commit runs the harness instead of finishing it", async (t) => {
+  let harnesses = 0;
+  const { r, job, io, calls } = fixture(t, { conflict: false, harness: (cwd) => { harnesses++; commit(cwd, "c.txt", "resolved\n", "resolved"); return { code: 0 }; } });
+  let marker = { actor: ACTOR, head: git(r.workspace, "rev-parse", "HEAD"), from: "origin", reason: "harness exited 1 after the head moved to x" };
+  io.readHarnessFailure = async () => marker;
+  io.clearHarnessFailure = async () => { calls.push({ cleared: true }); marker = null; };
+  io.writeHarnessFailure = async (cwd, failure) => { marker = failure; };
+  const state = await runTask(job, config, "home:studio", io);
+  assert.equal(harnesses, 1, "the harness ran");
+  assert.equal(state.phase, "submitted", JSON.stringify(state));
+  assert.ok(calls.some((c) => c.cleared), "the harness passed, so the marker is cleared");
+  assert.ok(calls.some((c) => c.argv?.[0] === "finish"));
+});
+
+test("a failed preparation after a clean merge keeps the failure marker, and the next poll runs the harness (t363, round 5)", async (t) => {
+  let harnesses = 0;
+  const { r, job, io, calls } = fixture(t, { conflict: false, kind: "task", harness: (cwd) => { harnesses++; commit(cwd, "c.txt", "fixed\n", "fixed"); return { code: 0 }; } });
+  job.item.state = "claimed"; job.item.owner = ACTOR; // a held job: without the marker the next poll would resume it
+  let marker = { actor: ACTOR, head: git(r.workspace, "rev-parse", "HEAD"), from: "origin", reason: "harness exited 1 after the head moved to x" };
+  io.readHarnessFailure = async () => marker;
+  io.clearHarnessFailure = async () => { marker = null; };
+  io.writeHarnessFailure = async (cwd, failure) => { marker = failure; };
+  const prepare = io.prepare;
+  let fails = true;
+  io.prepare = async (cwd) => { if (fails) { fails = false; throw new Error("registry unreachable"); } return prepare(cwd); };
+  const first = await runTask(job, config, "home:studio", io);
+  assert.equal(first.phase, "failed");
+  assert.equal(harnesses, 0);
+  assert.notEqual(git(r.workspace, "rev-parse", "HEAD"), marker.head, "the runner's merge moved the head over the marker");
+  assert.ok(marker, "the marker survives the failed preparation");
+  const second = await runTask(job, config, "home:studio", io);
+  assert.equal(harnesses, 1, "the harness ran: the marker's head is an ancestor of the merge");
+  assert.equal(second.phase, "submitted", JSON.stringify(second));
+  assert.equal(marker, null);
+  assert.ok(calls.some((c) => c.argv?.[0] === "finish"));
+});

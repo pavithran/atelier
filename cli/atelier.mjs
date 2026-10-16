@@ -1331,15 +1331,23 @@ export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, gr
 const interrupted = (sig) => () => process.exit(128 + osConstants.signals[sig]);
 
 // Posts one check's result. A server that cannot answer (no connection, a
-// 5xx, 408 or 429) is asked once more; a failure then ends the command with
-// the step named, and the clone is removed on the way out.
-export async function postEvidence(path, body, as) {
+// 5xx, 408 or 429) is asked again after a growing wait, EVIDENCE_RETRY_MS
+// each time (1, 2 and 4 seconds); a failure after the last wait ends the
+// command with the step named, and the clone is removed on the way out.
+// `sleep` is the wait, so a test does not take the seconds.
+export const EVIDENCE_RETRY_MS = [1000, 2000, 4000];
+export async function postEvidence(path, body, as, sleep = (ms) => new Promise((r) => setTimeout(r, ms))) {
   const step = `posting the result of \`${body.claim}\``;
-  for (let attempt = 1; ; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     try { return await request("POST", path, body, as); }
     catch (error) {
       if (!(error instanceof RequestError)) die(`${step} failed: ${error.message}`, 4);
-      if (error.code === 4 && attempt === 1) { process.stderr.write(`atelier: ${step} failed (${error.message}); trying once more\n`); await new Promise((r) => setTimeout(r, 1000)); continue; }
+      if (error.code === 4 && attempt < EVIDENCE_RETRY_MS.length) {
+        const wait = EVIDENCE_RETRY_MS[attempt];
+        process.stderr.write(`atelier: ${step} failed (${error.message}); trying again in ${wait / 1000}s (${attempt + 1} of ${EVIDENCE_RETRY_MS.length})\n`);
+        await sleep(wait);
+        continue;
+      }
       die(`${step} failed: ${error.message}`, error.code);
     }
   }
