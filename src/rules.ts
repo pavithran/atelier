@@ -2322,7 +2322,7 @@ export interface FastReceipt {
 }
 
 const SHA = /^[a-f0-9]{40,64}$/;
-const FAST_CONTRIBUTORS_MAX = 50;
+export const FAST_CONTRIBUTORS_MAX = 50;
 export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, actor: string, at: string): FastReceipt {
   assertFastMode(mode);
   const tests = body.tests as { command?: unknown; sha256?: unknown; where?: unknown } | undefined;
