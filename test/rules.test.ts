@@ -1084,7 +1084,7 @@ test("only the project owner can port to an open unclaimed task", () => {
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
 // its pure rules.
-import { projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
+import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
 
 test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
   assert.deepEqual(projectMode(null), { mode: "full" });
@@ -1167,6 +1167,27 @@ test("a landed-fast receipt needs both commits, the builder, the test command an
   assert.equal(agentOfMessage("no trailer"), null);
   // The builder becomes a contributor, as a pusher is.
   assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5" } }]), ["claude-code/opus-5.5"]);
+});
+
+// Finding it would have caught (Astra finding 10, 2026-10-16): fast land took
+// the builder from the tip commit's Agent line only, so a model that wrote an
+// earlier commit of the range could later review the change.
+test("a fast landing's contributors are every agent of the range, and gate review independence (t603)", () => {
+  const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
+  const tests = { command: "npm test", sha256: "c".repeat(64) };
+  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", contributors: ["codex/gpt-6"], tests };
+  assert.deepEqual(fastReceipt(body, fast, "owner", "x").contributors, ["claude-code/opus-5.5", "codex/gpt-6"]);
+  assert.equal("contributors" in fastReceipt({ ...body, contributors: undefined }, fast, "owner", "x"), false);
+  for (const bad of ["codex", ["nobody"], [7], Array(51).fill("codex/gpt-6")]) {
+    assert.throws(() => fastReceipt({ ...body, contributors: bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
+  }
+  assert.deepEqual(agentsOfMessages(["a\n\nAgent: codex/gpt-6", "b\n\nAgent: claude-code/opus-5.5\nAgent: codex/gpt-6", "none"]), ["codex/gpt-6", "claude-code/opus-5.5"]);
+  const landed = [{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5", contributors: ["claude-code/opus-5.5", "codex/gpt-6"] } }];
+  const contributors = contributorsOf({ owner: null, pushActors: pushActors(landed) });
+  assert.deepEqual(contributors, ["claude-code/opus-5.5", "codex/gpt-6"]);
+  // The earlier commit's model no longer passes as an independent reviewer.
+  assert.equal(contributed("codex/gpt-6", contributors), true);
+  assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5", contributors: ["nobody", 3] } }]), ["claude-code/opus-5.5"]);
 });
 
 test("a same-family post-merge review is accepted only for a task landed in fast mode, and says so", () => {
