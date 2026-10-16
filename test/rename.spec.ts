@@ -312,3 +312,16 @@ it("the standard reviewer project cannot be renamed, and no project can be renam
   expect(into.status).toBe(409);
   expect(((await (await call("GET", "/projects", "owner")).json()) as { name: string }[]).map((p) => p.name)).toContain("atelier");
 });
+
+// t687, astra's round-4 finding: removing atelier left its ledger but not its
+// registration, so standardReviewers() read an empty set at version 0 and a
+// withdrawal never reached the other projects.
+it("the standard reviewer project cannot be removed, with or without --force, and stays registered", async () => {
+  await project("atelier");
+  for (const body of [{}, { force: true }]) {
+    const out = await call("DELETE", "/projects/atelier", "owner", body);
+    expect(out.status).toBe(409);
+    expect(JSON.stringify(await out.json())).toContain("atelier cannot be removed");
+  }
+  expect(((await (await call("GET", "/projects", "owner")).json()) as { name: string }[]).map((p) => p.name)).toContain("atelier");
+});

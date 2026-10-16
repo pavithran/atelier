@@ -1777,6 +1777,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 2 && m === "DELETE") {
     requireOwner(env, actor);
     if (!ref.registered) throw new RuleError("no_project", `no project ${project}`, 404);
+    // The standard reviewer set is found by this project's registration
+    // (t687): without it standardReviewers() reads an empty set at version 0,
+    // which other projects drop as stale, so a withdrawal would never reach
+    // them and new projects would inherit nothing.
+    if (ref.name === STANDARD_REVIEWER_PROJECT || ref.key === STANDARD_REVIEWER_PROJECT) {
+      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} cannot be removed: reviewers admitted there are every project's reviewers, and the other projects find them through its registration`, 409);
+    }
     const items = await L.items();
     // A task queued for a runner is live work too: removing the project would drop it from the queue while it stays claimable.
     if (body.force !== true && items.some((i) => i.state === "open" && i.dispatch)) {
