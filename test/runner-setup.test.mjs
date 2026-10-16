@@ -205,3 +205,37 @@ test("the gateway and the harnesses on the PATH are read from the environment", 
   assert.equal(onPath("claude", { PATH: "/x:/y" }, (p) => p === "/y/claude"), "/y/claude");
   assert.equal(onPath("claude", { PATH: "/x" }, () => false), null);
 });
+
+// t698: the pool's OpenRouter entries are recorded as cloud with ids that carry
+// no vendor; a home runner runs them through the gateway's openrouter/v1.
+const ROUTED = [
+  { id: "qwen3.8-max", harness: "opencode", where: "cloud", provider: "openrouter" },
+  { id: "mimo-v2.6-pro", harness: "opencode", where: "cloud", provider: "openrouter" },
+  { id: "anthropic-claude-sonnet-5.5", harness: "opencode", where: "cloud", provider: "openrouter" },
+];
+const served = { context_length: 1_000_000, top_provider: { context_length: 1_000_000, max_completion_tokens: 131072 } };
+const ROUTED_LISTS = { [OPENROUTER_MODELS]: { data: ["qwen/qwen3.8-max-0902", "xiaomi/mimo-v2.6-pro", "anthropic/claude-sonnet-5.5"].map((id) => ({ id, ...served })) } };
+
+test("a home runner is set up for opencode/qwen3.8-max and opencode/mimo-v2.6-pro through the gateway's OpenRouter route", async () => {
+  const p = await planSetup({ configPath: "/cfg/runner.json", pool: ROUTED, env: { ATELIER_GATEWAY: "acct123/atelier" }, which: everything, fetchJson: async (u) => ROUTED_LISTS[u] ?? null, major: 2 });
+  assert.deepEqual(p.config.agents, [{ agent: "opencode", models: ["qwen3.8-max", "mimo-v2.6-pro"] }]);
+  const config = file(p, ["opencode", "runner.json", "openrouter-api.json"]);
+  const provider = config.provider["openrouter-api"];
+  assert.equal(provider.options.baseURL, "https://gateway.ai.cloudflare.com/v1/acct123/atelier/openrouter/v1");
+  assert.equal(provider.options.apiKey, "{env:OPENROUTER_API_KEY}");
+  assert.equal(provider.options.headers["cf-aig-authorization"], "Bearer {env:CF_AIG_TOKEN}");
+  assert.deepEqual(Object.keys(provider.models), ["qwen/qwen3.8-max-0902", "xiaomi/mimo-v2.6-pro"]);
+  assert.deepEqual(provider.models["qwen/qwen3.8-max-0902"].limit, { context: 1_000_000, output: 32000 });
+  assert.equal(config.permissions[0].effect, "deny", "opencode 2's deny stays");
+  const index = file(p, ["opencode", "runner.json", "models.json"]).models;
+  assert.deepEqual(index["qwen3.8-max"], { provider: "openrouter-api", providerModel: "qwen/qwen3.8-max-0902", config: "openrouter-api.json", key: "openrouter.API_KEY", keyVar: "OPENROUTER_API_KEY", gateway: true, limit: { context: 1_000_000, output: 32000 } });
+  assert.equal(index["mimo-v2.6-pro"].providerModel, "xiaomi/mimo-v2.6-pro");
+  assert.doesNotMatch(JSON.stringify(p.files), /sk-or|Bearer [A-Za-z0-9]{20}/, "no key is written");
+});
+
+test("setup refuses a Claude model through OpenRouter, naming claude-code", async () => {
+  const p = await planSetup({ configPath: "/cfg/runner.json", pool: ROUTED, env: {}, which: everything, fetchJson: async (u) => ROUTED_LISTS[u] ?? null });
+  assert.ok(!p.config.agents[0].models.includes("anthropic-claude-sonnet-5.5"));
+  const refusal = p.refused.find((r) => r.id === "anthropic-claude-sonnet-5.5");
+  assert.match(refusal.why, /no prompt caching.*claude-code/);
+});

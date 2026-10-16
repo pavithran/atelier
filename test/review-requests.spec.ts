@@ -1747,3 +1747,18 @@ it("a review request and its verdict carry the review role they served", async (
     expect(verdict.data.role, name).toBe(role);
   }
 });
+
+// t659: a plan's review request naming only a model (no harness) was skipped
+// by the standing check, so a reviewer the owner paused kept the request.
+it("an open review request naming only a model is withdrawn when the owner pauses that model, and asked of another", async () => {
+  const L = await setup("review-held-bare-model");
+  const { partId, builder } = await approved(L);
+  await submitPart(L, partId, "a".repeat(40));
+  expect(await routedReviewer(L, partId)).toBe(GPT);
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE review_requests SET dispatch = json_set(dispatch, '$.agent', NULL) WHERE state = 'open'`);
+  });
+  await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, state: "paused" as const, stateAt: AT } : e));
+  expect((await events(L, partId)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: "gpt-6-astra", reason: expect.stringMatching(/paused since 2026-10-06/) } });
+  expect(await routedReviewer(L, partId)).toBe([OPUS, GLM].find((a) => a !== builder));
+});

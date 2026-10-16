@@ -1,7 +1,10 @@
 // Model identity for role assignments and the readers they order (t622):
 // which pool entry a name is. It reads names only, and enforces nothing:
 // the owner's standing is src/models/pool.ts's (actorStanding,
-// withStanding), unchanged, and every reader that needs it calls those.
+// withStanding). They read an entry's own state and roles before any alias
+// owner's, hold an actor when any entry running its model is held, and check
+// a dispatch naming only a model (t649); every reader that needs the
+// standing calls those.
 //
 // A pool alias is a name a person types: on a CLI flag, in the project's
 // policy text (its review tier, triage, resolvers), as --as. It is
