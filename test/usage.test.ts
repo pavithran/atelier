@@ -89,12 +89,13 @@ test("a crossing is a window, a day's spend or a balance past its threshold, key
   assert.deepEqual(crossings(codex, DEFAULT_THRESHOLDS, NOW).map((c) => [c.key, c.title]), [
     ["codex/home:studio/window:weekly", "codex: weekly window 81% used"],
     ["codex/home:studio/window:5-hour", "codex: 5-hour window 91% used"],
+    ["codex/home:studio/shortage:90-minute", "codex: 90-minute window may run short"],   // no threshold of the owner's covers it
   ]);
   assert.match(crossings(codex, DEFAULT_THRESHOLDS, NOW)[0].body, /codex on home:studio has used 81% of its weekly window, past 80%; it resets at 2026-10-09T21:00:00.000Z\./);
-  // At the threshold is not past it; a window that has reset is not in use; an alert turned off never fires.
-  assert.deepEqual(crossings(report({ tool: "codex", windows: [{ name: "weekly", usedPercent: 80, resetsAt: LATER, at: AT }] }), DEFAULT_THRESHOLDS, NOW), []);
+  // At the threshold is not past it (the shortage warning, at 80 percent, is the next test); a window that has reset is not in use; an alert turned off never fires.
+  assert.deepEqual(crossings(report({ tool: "codex", windows: [{ name: "weekly", usedPercent: 80, resetsAt: LATER, at: AT }] }), DEFAULT_THRESHOLDS, NOW).map((c) => c.key), ["codex/home:studio/shortage:weekly"]);
   assert.deepEqual(crossings(report({ tool: "codex", windows: [{ name: "weekly", usedPercent: 99, resetsAt: new Date(NOW - 1000).toISOString(), at: AT }] }), DEFAULT_THRESHOLDS, NOW), []);
-  assert.deepEqual(crossings(codex, { ...DEFAULT_THRESHOLDS, weeklyPercent: null, windowPercent: null }, NOW), []);
+  assert.deepEqual(crossings(codex, { ...DEFAULT_THRESHOLDS, weeklyPercent: null, windowPercent: null }, NOW).map((c) => c.key), ["codex/home:studio/shortage:90-minute"]);
 
   const opencode = report({ models: [
     { model: "gemini-3.1-pro", provider: "google", spans: { "5h": span(1, 10, 2), "24h": span(9, 90, 7.5), "7d": span(20, 200, 30) } },
@@ -126,4 +127,21 @@ test("a report is stale after three hours, and money reads as the page shows it"
 test("the usage routes are the owner's: an agent token reaches neither", () => {
   assert.equal(agentRoute("GET", ["usage"]), false);
   assert.equal(agentRoute("POST", ["usage", "codex"]), false);
+});
+
+// t727: a vendor ran out of its window with nothing said, because no alert fired
+// below the owner's threshold and none looked at the pace. The shortage warning
+// is the rule's (usageShortages); here it reaches the alerts once per window.
+test("t727: a window heading for its limit alerts once, in the rule's words, and not twice beside a threshold alert", () => {
+  const day = 86_400_000;
+  // 40% used with 3 of 7 days gone is a pace of 93% by the reset, so no warning; 50% is a pace of 117%.
+  const at = (used: number) => report({ tool: "claude-code", windows: [{ name: "weekly", usedPercent: used, resetsAt: new Date(NOW + 4 * day).toISOString(), at: AT }] });
+  assert.deepEqual(crossings(at(40), DEFAULT_THRESHOLDS, NOW), []);
+  const [c, ...rest] = crossings(at(50), DEFAULT_THRESHOLDS, NOW);
+  assert.equal(rest.length, 0);
+  assert.equal(c.key, "claude-code/home:studio/shortage:weekly");
+  assert.equal(c.title, "claude-code: weekly window may run short");
+  assert.match(c.body, /^claude-code: at the pace so far, the weekly window \(50% used\) runs out before it resets; it resets at 2026-10-09T21:00:00.000Z\. Reported by home:studio\.$/);
+  // Past the owner's threshold the threshold alert speaks and the shortage stays quiet.
+  assert.deepEqual(crossings(at(95), DEFAULT_THRESHOLDS, NOW).map((x) => x.key), ["claude-code/home:studio/window:weekly"]);
 });

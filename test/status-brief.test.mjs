@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatStatusBrief } from "../cli/status.mjs";
+import { formatStatusBrief, formatUsageWarnings } from "../cli/status.mjs";
 
 const spans = (cost) => ({ "5h": { requests: 0, tokens: 0, cost: null }, "24h": { requests: 1, tokens: 1, cost }, "7d": { requests: 0, tokens: 0, cost: null } });
 
@@ -93,4 +93,38 @@ test("the brief includes the single-family mode if set", () => {
   const standing = { ...brief().standing, familyMode: { single: "anthropic" } };
   const out = formatStatusBrief(brief({ standing }));
   assert.match(out, /single-family: anthropic/);
+});
+
+// t727: a vendor ran short with nothing in `atelier status` to say so.
+test("t727: status warns of a window near its limit, names a report not heard from as unknown, and says nothing when all is well", () => {
+  const now = Date.parse("2026-10-05T21:00:00.000Z");
+  const reading = (over) => ({ tool: "codex", runner: "home:studio", at: new Date(now - 60_000).toISOString(), windows: [], ...over });
+  const near = reading({ windows: [{ name: "weekly", usedPercent: 85, resetsAt: new Date(now + 86_400_000).toISOString() }] });
+  assert.deepEqual(formatUsageWarnings({ reports: [near] }, now), ["Usage warnings:", "  codex: the weekly window is 85% used; it resets at 2026-10-06T21:00:00.000Z."]);
+  const silent = reading({ at: new Date(now - 40 * 3_600_000).toISOString(), windows: near.windows });
+  assert.deepEqual(formatUsageWarnings({ reports: [silent] }, now), ["Usage warnings:", "  codex on home:studio: not reported since 2026-10-04T05:00Z, so its usage is not known"]);
+  assert.deepEqual(formatUsageWarnings({ reports: [reading({ windows: [{ name: "weekly", usedPercent: 5, resetsAt: near.windows[0].resetsAt }] })] }, now), []);
+  assert.deepEqual(formatUsageWarnings(null, now), []);
+});
+
+// t727 round 1: a fresh DeepSeek balance of USD 1 under the default floor of 10 showed nothing in status.
+test("t727: status warns of a low balance by the same floor the alerts use, and not when the floor is off or met", () => {
+  const now = Date.parse("2026-10-05T21:00:00.000Z");
+  const deepseek = { tool: "deepseek", runner: "home:studio", at: new Date(now - 60_000).toISOString(), windows: [], balances: [{ currency: "USD", amount: 1 }] };
+  const warn = ["Usage warnings:", "  deepseek on home:studio: balance 1 USD, below 10"];
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek] }, now), warn);
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: 10 } }, now), warn);
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: null } }, now), []);
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: 1 } }, now), []);
+});
+
+// t727 round 2: status printed a weekly warning the owner had turned off, while notifications stayed quiet.
+test("t727: status stays quiet for a 5-hour or weekly window whose own alert is off", () => {
+  const now = Date.parse("2026-10-05T21:00:00.000Z");
+  const resetsAt = new Date(now + 86_400_000).toISOString();
+  const r = (name) => ({ tool: "codex", runner: "home:studio", at: new Date(now - 60_000).toISOString(), windows: [{ name, usedPercent: 85, resetsAt }], balances: [] });
+  for (const [name, key] of [["weekly", "weeklyPercent"], ["5-hour", "windowPercent"]]) {
+    assert.equal(formatUsageWarnings({ reports: [r(name)], thresholds: {} }, now).length, 2, `${name} warns while on`);
+    assert.deepEqual(formatUsageWarnings({ reports: [r(name)], thresholds: { [key]: null } }, now), [], `${name} is quiet when ${key} is off`);
+  }
 });

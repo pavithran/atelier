@@ -683,16 +683,20 @@ other Keychain entry is listed or read.
 machine has used: Codex's 5-hour and weekly windows from its session logs
 (percent used and when each resets), the requests and tokens zcode's
 `model_usage` table records by served model, the requests, tokens and cost
-opencode's `message` table records by served model, each over the last 5
-hours, 24 hours and 7 days, and the DeepSeek account's balance. Each tool
+opencode's `message` table records by served model, the tokens Claude Code's
+session logs record by model (counts only, printed per day as well), each over
+the last 5 hours, 24 hours and 7 days, and the DeepSeek account's balance. Each tool
 goes to `POST /api/usage/TOOL` under the runner's name, the Usage page
 shows them, and the Worker alerts at the developer's thresholds (see [Usage, limits and balances](models-and-usage.md#usage-limits-and-balances)). It is a one-shot command, not a step in the runner
 loop: the loop polls every 30 seconds and must stay cheap, while this reads
 logs that can be gigabytes and asks DeepSeek for a balance, and it is just
 as useful on a machine that runs the tools but no runner. Schedule it
 hourly, for example from a LaunchAgent, with `--dry-run` to see what it
-would report first. Claude's plan limits and Gemini's spend have no record
-on the machine, so neither is reported, and the command says so.
+would report first. Claude's plan percent, Antigravity and Gemini's spend
+have no readable record on the machine, so each is listed under Not reported
+with the reason and the best figure there is, and the Worker and
+`atelier status` warn when a window is at 80 percent used or, at its pace so
+far, will run out before it resets.
 
 The DeepSeek balance needs its API key. The runner config names the
 Keychain entry that holds it, as `keychain` names a model's:

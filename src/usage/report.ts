@@ -9,7 +9,7 @@
 // stored. Reports are kept on the index Ledger, one per tool and runner.
 
 import { redactKeys } from "../models/pool.ts";
-import { RuleError } from "../rules.ts";
+import { RuleError, usageShortages } from "../rules.ts";
 
 export const SPANS = ["5h", "24h", "7d"] as const;
 export type Span = (typeof SPANS)[number];
@@ -188,6 +188,21 @@ export function daySpend(r: Pick<UsageReport, "models">): number | null {
   return costs.length ? costs.reduce((a, b) => a + b, 0) : null;
 }
 
+// The balances below the owner's floor; the one rule `crossings` and
+// `atelier status` both read. No floor (null) means none is low.
+export function lowBalances(r: Pick<UsageReport, "balances">, floor: number | null): Balance[] {
+  return floor === null ? [] : (r.balances ?? []).filter((b) => b.amount < floor);
+}
+
+// The shortages `crossings` and `atelier status` both read: a window whose own
+// alert the owner turned off stays quiet.
+export function windowShortages(r: Parameters<typeof usageShortages>[0], t: Pick<Thresholds, "weeklyPercent" | "windowPercent">, now: number) {
+  return usageShortages(r, now).filter((s) => {
+    const name = s.key.split("shortage:")[1];
+    return !((name === "weekly" && t.weeklyPercent === null) || (name === "5-hour" && t.windowPercent === null));
+  });
+}
+
 export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[] {
   const out: Crossing[] = [];
   const where = `${r.tool} on ${r.runner}`;
@@ -201,6 +216,13 @@ export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[
       body: `${where} has used ${pct(w.usedPercent)} of its ${w.name} window, past ${pct(limit)}${w.resetsAt ? `; it resets at ${w.resetsAt}` : ""}.`,
     });
   }
+  // A window heading for its limit, in the rule's words (usageShortages),
+  // unless the owner's threshold already alerts on that window.
+  for (const s of windowShortages(r, t, now)) {
+    const name = s.key.split("shortage:")[1];
+    if (out.some((c) => c.key === `${r.tool}/${r.runner}/window:${name}`)) continue;
+    out.push({ key: `${r.tool}/${r.runner}/shortage:${name}`, title: `${r.tool}: ${name} window may run short`, body: `${s.message} Reported by ${r.runner}.` });
+  }
   const spent = daySpend(r);
   if (t.dailySpend !== null && spent !== null && spent > t.dailySpend) {
     out.push({
@@ -209,8 +231,7 @@ export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[
       body: `${where} has spent ${money(spent)} in the last 24 hours, above ${money(t.dailySpend)}.`,
     });
   }
-  for (const b of r.balances) {
-    if (t.balanceFloor === null || b.amount >= t.balanceFloor) continue;
+  for (const b of lowBalances(r, t.balanceFloor)) {
     out.push({
       key: `${r.tool}/${r.runner}/balance:${b.currency}`,
       title: `${r.tool}: balance ${b.amount} ${b.currency}`,
