@@ -1504,7 +1504,7 @@ export async function refreshControlPlane(top, name, request = call, report = co
 // opened with O_NOFOLLOW, so the receipt never reads or writes outside the
 // checkout. merge refuses a tree with a symlink on these paths before the
 // checkout changes (landingSymlinks); these checks hold even if one is there.
-export function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass, sameTree }) {
+export function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass, riskClass, sameTree }) {
   const dir = join(cwd, RECEIPTS_DIR);
   const kind = (path) => lstatSync(join(cwd, path), { throwIfNoEntry: false });
   if (!["docs", "docs/control-plane", RECEIPTS_DIR].every((path) => kind(path)?.isDirectory())) return null;
@@ -1519,6 +1519,8 @@ export function writeReceipt(cwd, { name, id, item, owners, view, reviews, polic
     receipt_id: `atelier-${name}-${id}-${date}`,
     project_id: template.project_id ?? name,
     execution_class: changeClass ?? "coordinated",
+    // The risk class the gate counted this merge's approvals by (t631); absent in a project without riskReviews.
+    ...(riskClass ? { risk_class: riskClass } : {}),
     closure: "compact",
     implementation_commit: item.acceptedHead,
     delivery: {
