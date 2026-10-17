@@ -5354,6 +5354,15 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
       this.log(id, actor, "item.merge_recorded", { ...record, ...(item.head && item.head !== item.base && item.head !== record.commit ? { recordedHead: item.head } : {}) }, at);
       this.log(id, actor, "item.merged", { mergeCommit: record.mergeCommit, head: record.commit, observedOnBaseline: true, outside: true }, at);
+      // The developer says the declared protected actions already ran (t754):
+      // one run of each declared kind is recorded after the merge event, which
+      // is what retires the ship reminder, as a run of atelier ship does. It
+      // names no approval and no command, since none went through Atelier.
+      if (record.shipped) {
+        for (const kind of this.project().policy.shipKinds ?? []) {
+          this.recordActionRun({ step: "recorded", kind, approval: null, command: null, commit: record.mergeCommit, exitStatus: null, signal: null, durationMs: 0, passed: true, outputTail: "", ship: `recorded-${id}`, note: record.shipped }, actor);
+        }
+      }
     });
     this.afterPlanChange(id);
     return { item: this.item(id), record };
