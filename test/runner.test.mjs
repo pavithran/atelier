@@ -265,6 +265,15 @@ test("a refused run after a good claim logs the task, the reason and what became
   assert.deepEqual(empty.logs.slice(0, 1), ["nothing claimed"]);
 });
 
+// Round 1 finding: the recovery release after a throwing claim never set the
+// flag, so the summary said "claim kept" right after "released after claim step failed".
+test("a claim command that throws and is then released is summarised as released", async () => {
+  const { io, logs } = fixture({ failCommand: "claim" });
+  await runTask(assignment, config, "home:studio", io);
+  assert.ok(logs.includes("released after claim step failed"), logs.join(" | "));
+  assert.match(logs.find((l) => l.includes("run ended")), /claim released$/);
+});
+
 test("runTask preserves claims on committed work or uncertain HEAD", async () => {
   for (const options of [{ code: 1 }, { failCommand: "finish" }, { unknownHead: true }]) {
     const { io, calls, logs } = fixture(options);
