@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { GAVE_UP } from '../src/dispatch/rules.ts';
 import { stuckReport, reportLimits } from '../src/stuck/report.ts';
 import { FLAGS, HANDLERS, parseArgs } from './atelier.mjs';
 import stuckCommand from './commands/stuck.mjs';
@@ -289,4 +290,31 @@ test('stuck recoveries quote the project as one shell word', () => {
     const words = execFileSync('/bin/sh', ['-c', `set -- ${land}; printf '%s\\n' "$@"`], { encoding: 'utf8' }).trimEnd().split('\n');
     assert.deepEqual(words, ['land', 't1', '--project', name]);
   }
+});
+// 2026-10-12: a runner that gave up on t396 kept its claim, and its core-file
+// hold stopped fifteen dispatches for three hours with no word in this report
+// (t584). The runner now pushes, then releases with a note that starts GAVE_UP.
+test('a runner that pushed and then gave a task up is named with its reason, and holds nothing', () => {
+  const waiting = item({ id: 't2', state: 'open', owner: null, dispatch: { to: 'home', agent: null, model: null, by: 'owner', at: at(99999999), note: '' } });
+  const gone = item({ state: 'open', owner: null, dispatch: waiting.dispatch });
+  const s = snapshot({ items: [gone, waiting], events: [
+    event(1, 'item.claimed', 9000000, { runner: 'home:studio' }), event(2, 'push.observed', 8000000),
+    event(3, 'item.released', 7000000, { note: `${GAVE_UP}merge failed twice (its commits are pushed)` })] });
+  const r = report(s);
+  assert.deepEqual(kinds(r), ['runner-give-up']);
+  assert.equal(r.entries[0].subject, 't1');
+  assert.match(r.entries[0].reason, /^runner home:studio gave it up: merge failed twice/);
+  assert.match(r.entries[0].recovery, /dispatch t1/);
+  // The same release without the runner's word, after a push, is an ordinary release.
+  s.events[2].data = { note: 'handing back' };
+  assert.deepEqual(kinds(report(s)), []);
+});
+test('a give-up recorded after an ordinary release keeps the runner\'s reason in the report', () => {
+  const gone = item({ state: 'open', owner: null });
+  const s = snapshot({ items: [gone], events: [
+    event(1, 'item.claimed', 9000000, { runner: 'home:studio' }), event(2, 'item.released', 8000000, { note: 'harness made no new commit' }),
+    event(3, 'item.gave_up', 7000000, { runner: 'home:studio', kind: 'failures', note: 'harness made no new commit' })] });
+  const r = report(s);
+  assert.deepEqual(kinds(r), ['runner-give-up']);
+  assert.match(r.entries[0].reason, /^runner home:studio gave it up: harness made no new commit/);
 });

@@ -7,7 +7,8 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete, lostToHold, _unsavedFailures } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete, lostToHold, giveUpClaim, _unsavedFailures } from "../cli/runner.mjs";
+import { GAVE_UP } from "../src/dispatch/rules.ts";
 import { MAX_HARNESS_RERUNS } from "../cli/runner-failure.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
@@ -1452,8 +1453,82 @@ test("runner stops retrying after two failures even when the task revision chang
     // t420: the skip goes to the server under this runner's name, once, so
     // status and show name it however many run reports follow.
     assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "failures", 2]]);
+    // Each failed attempt claimed and released once (t584), and the one skip
+    // report is what tells the server the runner gave up.
+    const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
+    assert.equal(argvs.filter((x) => x[0] === "release" && x[1] === "t13").length, argvs.filter((x) => x[0] === "claim" && x[1] === "t13").length);
     assert.ok(skips[0][1].note);
   }
+});
+
+// 2026-10-12: home:studio-5 failed twice on a merge it had committed, logged
+// that the task needed the developer, and kept the claim: its core-file hold
+// stopped fifteen dispatches for three hours with nothing running (t584).
+test("a runner that gives a task up after two failed runs pushes its commit, releases the claim and says why (t584)", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-giveup-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const { io, calls, logs } = fixture({ head: "after", code: 1, marker: null });
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      if (++polls === 4) { process.emit("SIGINT"); return []; }
+      return [{ ...assignment, item: { ...assignment.item, updatedAt: String(polls) } }];
+    },
+  });
+  const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
+  const released = argvs.filter((a) => a[0] === "release");
+  assert.equal(released.length, 1, "released once, at the second failure");
+  assert.ok(released[0][released[0].indexOf("--note") + 1].startsWith(GAVE_UP));
+  assert.equal(argvs.filter((a) => a[0] === "push").length, 1);
+  assert.ok(argvs.findIndex((a) => a[0] === "push") < argvs.findIndex((a) => a[0] === "release"), "the commit is pushed before the claim is let go");
+  assert.ok(logs.some((l) => l.includes("needs the developer's attention after 2 failures")));
+});
+
+// Review of t584, round 1: the release changes the task's head and time, so
+// the refused key of the poll no longer matched and the runner took the task
+// again on every poll; the harness rerun cap kept its "claim is kept" wording.
+test("a task given up at the harness rerun cap is released once, with the runner's word, and passed by on later polls (t584)", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-giveup-cap-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const { io, calls } = fixture({ head: "before", code: 0, marker: { reruns: MAX_HARNESS_RERUNS, actor: assignment.actor, reason: "harness exited 1" } });
+  let polls = 0;
+  const skips = [];
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      if (++polls === 4) { process.emit("SIGINT"); return []; }
+      // Each poll shows the task as the release left it: a new time.
+      return [{ ...assignment, item: { ...assignment.item, head: String(polls).repeat(40).slice(0, 40), updatedAt: String(polls) } }];
+    },
+    reportRunSkip: async (body) => { skips.push(body); },
+  });
+  const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
+  assert.equal(argvs.filter((a) => a[0] === "claim").length, 1, "claimed once");
+  const released = argvs.filter((a) => a[0] === "release");
+  assert.equal(released.length, 1);
+  const note = released[0][released[0].indexOf("--note") + 1];
+  assert.ok(note.startsWith(GAVE_UP));
+  assert.doesNotMatch(note, /claim is kept/);
+  assert.equal(skips.length, 1);
+});
+
+test("giving a task up releases the claim even when the push fails, and the note says so (t584)", async () => {
+  const { io, calls, logs } = fixture({ failCommand: "push" });
+  const item = { id: "t13" };
+  assert.equal(await giveUpClaim({ io, project: "atelier", item, actor: assignment.actor, workspace: "/w", reason: "harness exited 1" }), true);
+  const release = calls.find((c) => c.argv?.[0] === "release").argv;
+  const note = release[release.indexOf("--note") + 1];
+  assert.match(note, /^the runner gave up: harness exited 1 \(its commits are not pushed: push refused\)$/);
+  assert.ok(logs.some((l) => l.includes("released atelier/t13")));
+  // A release that fails leaves the claim held, and says so.
+  const refused = fixture({ failCommand: "release" });
+  assert.equal(await giveUpClaim({ io: refused.io, project: "atelier", item, actor: assignment.actor, workspace: "/w", reason: "x" }), false);
+  assert.ok(refused.logs.some((l) => l.includes("claim preserved")));
 });
 
 test("finish timeout config has a sixty minute default and validates overrides", () => {
@@ -1912,7 +1987,10 @@ test("real runner caps reset, claim and finish failures while serving the next t
     assert.deepEqual(claims, [[1, "t13"], [1, "t14"], [2, "t13"], [2, "t14"], [3, "t13"], [3, "t14"], [4, "t14"]]);
     assert.equal(runs.filter(([, cwd]) => cwd === workspace).length, failure === "finish" ? 3 : 0);
     assert.equal(finishes.filter((id) => id === "t13").length, failure === "finish" ? 3 : 0);
-    assert.deepEqual(releases, failure === "finish" ? [] : ["t13", "t13", "t13"]);
+    // A finish that keeps failing leaves the commits and the claim until the
+    // runner gives the task up at the third failure, which pushes and releases
+    // it once (t584), where it used to keep the claim and its core-file hold.
+    assert.deepEqual(releases, failure === "finish" ? ["t13"] : ["t13", "t13", "t13"]);
     const attention = logs.filter((s) => s.includes("needs the developer's attention"));
     assert.equal(attention.length, 1);
     assert.match(attention[0], /atelier\/t13.*3 consecutive infrastructure failures/);

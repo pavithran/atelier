@@ -45,6 +45,7 @@ export const ALPHA_ITEMS: Item[] = [
   item("a12", "accepted", { owner: "codex/gpt-6", head: HEAD, acceptedHead: HEAD }),
   item("a13", "merged", { acceptedHead: HEAD }),
   item("a14", "submitted", { owner: "codex/gpt-6", head: HEAD, scope: ["wrangler.toml"] }),
+  item("a15", "open", { dispatch: dispatch("gpt-6") }),
 ];
 
 export const ALPHA_ENTRIES: InboxEntry[] = [
@@ -60,6 +61,7 @@ export const ALPHA_ENTRIES: InboxEntry[] = [
   entry("alpha", "a11", "ship", "merged with deploy declared by the ship files and not yet run"),
   entry("alpha", "a14", "assess", "a protected change needs an independent review; ask a reviewer with atelier land a14 --reviewer H/M, and override only as the owner's last resort", { reviewer: null, weight: 80 }),
   entry("alpha", "a12", "merge", "accepted; run `atelier merge` in the project checkout"),
+  entry("alpha", "a15", "gave-up", "the merge failed twice (its commits are pushed); run `atelier dispatch a15` to send it out again"),
 ];
 
 export const BETA_ITEMS: Item[] = [item("b1", "submitted", { owner: "codex/gpt-6", head: HEAD }), item("b2", "claimed", { owner: "codex/gpt-6" })];
@@ -72,7 +74,7 @@ export const ALL_ENTRIES = [...ALPHA_ENTRIES, ...BETA_ENTRIES];
 // owner, in the rule's order, and the pipeline's tasks.
 export const EXPECTED = {
   alpha: {
-    owner: [["a10", "clear-secret"], ["a4", "unblock"], ["a6", "decide-plan"], ["a5", "approve-plan"], ["a1", "accept"], ["a14", "override"], ["a11", "ship"], ["a8", "start-runner"]],
+    owner: [["a10", "clear-secret"], ["a4", "unblock"], ["a6", "decide-plan"], ["a5", "approve-plan"], ["a1", "accept"], ["a14", "override"], ["a11", "ship"], ["a15", "gave-up"], ["a8", "start-runner"]],
     pipeline: [["a2", "submitted"], ["a3", "building"], ["a7", "open"], ["a9", "queued"], ["a12", "accepted"]],
     overlaps: [["a2", "a3"]],
   },

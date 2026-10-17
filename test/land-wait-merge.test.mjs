@@ -521,13 +521,21 @@ test("where main and the task each raised the route level from one base, the lan
   sameMergeStep("routeLevel", merge.body);
 });
 
-test("named legacy mappings stop automatic renumbering until the builder resolves them", async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = await landFixture(t, { seedRouteLevel: 6 });
+// Since t522 the route level is frozen and a new capability declares no level
+// (t584). 2026-10-12: t396's merge-main job failed twice on this comparison
+// with no level added by either side, and stranded its claim.
+const named = (f, levels) => {
   for (const dir of [f.workspace("t1"), f.checkout]) {
     writeFileSync(join(dir, "src", "route-level.ts"), 'export const CAPABILITIES = buildCapabilities(CAPABILITY_DECLARATIONS);\nexport const ROUTE_LEVEL = 7;\n');
+    if (levels && dir === f.workspace("t1")) writeFileSync(join(dir, "src", "capability-declarations.ts"), 'export const CAPABILITY_DECLARATIONS = [\n  { name: "items.task.v1", level: 7, summary: "x" },\n];\n');
     git(dir, "add", "."); git(dir, "commit", "-m", "Raise with a named declaration"); git(dir, "push", "-q", "origin", "main");
   }
+};
+
+test("named legacy mappings with a level a side added stop automatic renumbering until the builder resolves them", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  named(f, true);
   const r = await f.run(f.checkout, "land", "t1");
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /named capability legacy mappings need manual resolution/);
@@ -535,6 +543,19 @@ test("named legacy mappings stop automatic renumbering until the builder resolve
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
   assert.notEqual(f.box.states.t1, "merged");
   assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging/);
+});
+
+test("named capabilities declared without levels are no failure where both sides raised the route level (t584)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  named(f, false);
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.doesNotMatch(r.output, /manual resolution/);
+  assert.match(r.output, /neither added a capability declaration with a level, so the merged level 7 stands/);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
+  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging/);
+  assert.equal(f.box.states.t1, "merged");
 });
 
 test("where only main raised the route level, the merge takes main's number and nothing is raised past it", async (t) => {

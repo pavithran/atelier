@@ -24,6 +24,7 @@ import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
+import { GAVE_UP } from "../src/dispatch/rules.ts";
 import { BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
@@ -1329,7 +1330,7 @@ export async function runTask(assignment, config, name, io) {
   io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
-  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, exitOutcome = null, failedRun = null;
+  let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, exitOutcome = null, failedRun = null;
   // The recovery obligation (t363): a harness run failed in this workspace and
   // none has since succeeded. `failedRun` is what the run found at its start;
   // the rest is what this run did to it.
@@ -1487,7 +1488,7 @@ export async function runTask(assignment, config, name, io) {
     resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
     if (failedRun) {
       if (failedRun.reruns >= MAX_HARNESS_RERUNS) {
-        throw Object.assign(new Error(`the harness failed ${failedRun.reruns} times in a row in this workspace, so the runner stops rerunning it; this task needs the developer (a broken environment or a corrupt failure marker); the claim is kept`), { needsDeveloper: true });
+        throw Object.assign(new Error(`the harness failed ${failedRun.reruns} times in a row in this workspace, so the runner stops rerunning it; this task needs the developer (a broken environment or a corrupt failure marker)`), { needsDeveloper: true });
       }
       io.log("a harness run failed in this workspace and none has succeeded since; running the harness again");
     }
@@ -1692,6 +1693,7 @@ export async function runTask(assignment, config, name, io) {
       // its own head; the claim goes back so the same work resumes after the reset.
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
+        released = true;
         io.log("released: the same work resumes when the provider's limit resets");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
     } else if (claimed && failedNow && (!savedOnce || headUnreadable)) {
@@ -1705,6 +1707,7 @@ export async function runTask(assignment, config, name, io) {
       // part back with the failing output in its next brief.
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace);
+        released = true;
         io.log("released: the part goes back to its plan with the failing output");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
     } else if (claimed && (exitOutcome?.keepClaim || state.head || resumed || failedRun || (failedNow && (!savedOnce || headUnreadable)))) {
@@ -1718,6 +1721,7 @@ export async function runTask(assignment, config, name, io) {
           // The task is released with nothing committed: nothing is owed.
           await io.clearHarnessFailure?.(workspace).catch((clearError) => io.log(`could not clear the failure marker: ${clearError.message}`));
           unsavedFailures.delete(obligationKey());
+          released = true;
           io.log("released: no new commit");
         }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
@@ -1728,10 +1732,37 @@ export async function runTask(assignment, config, name, io) {
         io.log("released after claim step failed");
       } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
     } else io.log("claim not released: claim or commit status is unknown");
+    // A claim this run still holds is the loop's to give up if it gives the
+    // task up (giveUpClaim), so the state says where the workspace is.
+    if (claimed && !released && workspace) state = { ...state, claimHeldAt: workspace };
   } finally {
     if (brief) await io.removeBrief(brief);
   }
   return state;
+}
+
+// A runner that gives a task up (t584) lets go of the claim, so the core-file
+// hold on other dispatches lifts at once and the developer's inbox, status and
+// stuck report carry the task (the note starts with GAVE_UP). It pushes what it
+// committed first, so the work is on the fork, not only on this Mac. Whatever
+// fails, the release is still tried: a hold with nobody working is worse than
+// work left in a workspace, and the note says if the push failed. A harness
+// that failed leaves its marker in the workspace, so a runner that claims the
+// task again runs the harness again.
+export async function giveUpClaim({ io, project, item, actor, workspace, reason }) {
+  const at = ["--project", project, "--as", actor];
+  let pushed = "";
+  try { await io.cli(["push", item.id, ...at], workspace); }
+  catch (error) { pushed = ` (its commits are not pushed: ${String(error.message).split("\n")[0].slice(0, 120)})`; }
+  const note = `${GAVE_UP}${String(reason ?? "").slice(-(NOTE_MAX - GAVE_UP.length - pushed.length))}${pushed}`;
+  try {
+    await io.cli(["release", item.id, ...at, "--note", note], workspace);
+    io.log(`released ${project}/${item.id}: the runner gave it up${pushed}`);
+    return true;
+  } catch (error) {
+    io.log(`claim preserved: giving up ${project}/${item.id} could not release it: ${error.message}`);
+    return false;
+  }
 }
 
 // The note a release carries when a provider's limit stopped the job.
@@ -3051,7 +3082,7 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), missing = new Map(), fetchFailures = new Map(), poll = 0 }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), poll = 0 }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   // A post-merge review whose merge commit no source held (t591) waits for
@@ -3065,6 +3096,10 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   // (t476) is not taken again by this process, whatever later polls say.
   const terminal = terminalTasks.get(taskKey(task));
   if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
+  // A task this runner gave up (t584) is released, which changes its head and
+  // its time, so refusedKey no longer matches: it is kept by dispatch instead,
+  // and the developer's new dispatch of it is what lets it through.
+  if (gaveUpTasks.has(taskKey(task))) return "Passed by: this runner gave it up and released it; it is tried again once the developer dispatches it again or this runner restarts.";
   if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
   const failed = failures.get(failureKey(task)) ?? 0;
   if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
@@ -3452,7 +3487,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
+  const refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -3886,7 +3921,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, missing, fetchFailures, poll: polls });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, poll: polls });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -3991,7 +4026,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // A task the server closed (t476) was not given up. A criteria
           // review (t438) records its own failure, criteria-review-failed,
           // as the code review has its skip, so neither goes to run-skip.
-          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : state.skipped ? "skipped" : null;
+          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : state.skipped || state.needsDeveloper ? "skipped" : null;
+          // The claim a given-up task still holds is let go at once (t584), and
+          // so is one the harness loop gave up on (needsDeveloper).
+          if (state.claimHeldAt && gaveUp) {
+            if (await giveUpClaim({ io, project: task.project, item: task.item, actor: task.actor, workspace: state.claimHeldAt, reason: state.reason })) gaveUpTasks.add(taskKey(task));
+          }
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
             await reportSkip(`run-skip:${gaveUp === "skipped" ? refusedKey(task) : key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : gaveUp === "infrastructure" ? infrastructureCount : 1, note: state.reason ?? "" }, 0, "run");
