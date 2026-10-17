@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatStatusBrief } from "../cli/status.mjs";
+import { formatStatusBrief, formatUsageWarnings } from "../cli/status.mjs";
 
 const spans = (cost) => ({ "5h": { requests: 0, tokens: 0, cost: null }, "24h": { requests: 1, tokens: 1, cost }, "7d": { requests: 0, tokens: 0, cost: null } });
 
@@ -93,4 +93,16 @@ test("the brief includes the single-family mode if set", () => {
   const standing = { ...brief().standing, familyMode: { single: "anthropic" } };
   const out = formatStatusBrief(brief({ standing }));
   assert.match(out, /single-family: anthropic/);
+});
+
+// t727: a vendor ran short with nothing in `atelier status` to say so.
+test("t727: status warns of a window near its limit, names a report not heard from as unknown, and says nothing when all is well", () => {
+  const now = Date.parse("2026-10-05T21:00:00.000Z");
+  const reading = (over) => ({ tool: "codex", runner: "home:studio", at: new Date(now - 60_000).toISOString(), windows: [], ...over });
+  const near = reading({ windows: [{ name: "weekly", usedPercent: 85, resetsAt: new Date(now + 86_400_000).toISOString() }] });
+  assert.deepEqual(formatUsageWarnings({ reports: [near] }, now), ["Usage warnings:", "  codex: the weekly window is 85% used; it resets at 2026-10-06T21:00:00.000Z."]);
+  const silent = reading({ at: new Date(now - 40 * 3_600_000).toISOString(), windows: near.windows });
+  assert.deepEqual(formatUsageWarnings({ reports: [silent] }, now), ["Usage warnings:", "  codex on home:studio: not reported since 2026-10-04T05:00Z, so its usage is not known"]);
+  assert.deepEqual(formatUsageWarnings({ reports: [reading({ windows: [{ name: "weekly", usedPercent: 5, resetsAt: near.windows[0].resetsAt }] })] }, now), []);
+  assert.deepEqual(formatUsageWarnings(null, now), []);
 });

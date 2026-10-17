@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
+import { usageShortages } from "../src/rules.ts";
 import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
@@ -1752,4 +1753,26 @@ test("a defect the check shows was at the base is a pre-existing follow-up, even
   const findings: Finding[] = [1, 2, 3, 4].map((n) => ({ file: "src/a.ts", line: n, severity: "blocking", text: `f${n}` }));
   const out = applyVerification(findings, new Set([1, 4]), new Set([2, 4]));
   assert.deepEqual(out.map((x) => [x.severity, x.label ?? null]), [["blocking", null], ["follow-up", "pre-existing"], ["follow-up", "unverified"], ["blocking", null]]);
+});
+
+// t727: a vendor's window ran out with nothing said before it did.
+test("t727: a window at 80 percent, or heading past 100 before it resets, is a shortage that names the vendor, window and reset", () => {
+  const now = Date.parse("2026-10-05T21:00:00.000Z");
+  const resets = (ms: number) => new Date(now + ms).toISOString();
+  const day = 86_400_000;
+  const win = (name: string, usedPercent: number, resetsAt: string | null) => ({ tool: "codex", windows: [{ name, usedPercent, resetsAt }] });
+  // At 80 percent, whatever the pace.
+  assert.deepEqual(usageShortages(win("weekly", 80, resets(6.9 * day)), now), [{ key: "codex/shortage:weekly", message: `codex: the weekly window is 80% used; it resets at ${resets(6.9 * day)}.` }]);
+  // Under 80: the pace over the window so far decides. 3 days of 7 gone, 40% used is 93% by the reset; 50% is 117%.
+  assert.deepEqual(usageShortages(win("weekly", 40, resets(4 * day)), now), []);
+  assert.match(usageShortages(win("weekly", 50, resets(4 * day)), now)[0].message, /^codex: at the pace so far, the weekly window \(50% used\) runs out before it resets; it resets at /);
+  assert.match(usageShortages(win("5-hour", 60, resets(2 * 3_600_000)), now)[0].message, /5-hour window \(60% used\) runs out/);
+  // A pace is not trusted in the first tenth of a window, a window with no used share has none, and an idle window says nothing.
+  assert.deepEqual(usageShortages(win("weekly", 30, resets(6.9 * day)), now), []);
+  assert.deepEqual(usageShortages(win("weekly", 0, resets(1 * day)), now), []);
+  // A reset time that is not known is said, not guessed; so is a window of no known length, which has no pace.
+  assert.equal(usageShortages(win("weekly", 90, null), now)[0].message, "codex: the weekly window is 90% used; its reset time is not known.");
+  assert.deepEqual(usageShortages(win("90-minute", 50, resets(day)), now), []);
+  // A window that has reset is not in use, whatever it read.
+  assert.deepEqual(usageShortages(win("weekly", 99, resets(-1000)), now), []);
 });

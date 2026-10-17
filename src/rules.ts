@@ -3026,3 +3026,41 @@ export function privateFolderMatches(project: string, folder: string): boolean {
 export function privateExcludeLine(path: string): string {
   return `/${path.replace(/[\\*?[\]]/g, "\\$&").replace(/ +$/, (spaces) => "\\ ".repeat(spaces.length))}`;
 }
+
+// ── usage shortage ─────────────────────────────────────────────────────────
+
+// How long the windows a tool reports last. A window of any other name has no
+// known length, so no pace is worked out for it.
+export const USAGE_WINDOW_MS: Record<string, number> = { "5-hour": 5 * 3_600_000, weekly: 7 * 86_400_000 };
+// A window at or past this percent used is a shortage whatever the pace.
+export const USAGE_SHORTAGE_PERCENT = 80;
+// A pace is trusted only after this share of the window has passed.
+const USAGE_PACE_MIN_SHARE = 0.1;
+
+export interface UsageShortage { key: string; message: string }
+
+// The shortages one tool's reading holds: each window not yet reset that is
+// at USAGE_SHORTAGE_PERCENT used, or that at the pace it has kept so far this
+// window (the used percent over the time elapsed; no snapshots are kept, so
+// no earlier pace is known) will pass 100 percent before it resets. Each
+// message names the tool, the window and its reset time, or says that the
+// reset time is not known. A window that has already reset says nothing,
+// whatever it read before.
+export function usageShortages(report: { tool: string; windows: { name: string; usedPercent: number; resetsAt: string | null }[] }, now: number): UsageShortage[] {
+  const out: UsageShortage[] = [];
+  for (const w of report.windows) {
+    const resets = w.resetsAt === null ? NaN : Date.parse(w.resetsAt);
+    if (resets <= now) continue;
+    const length = USAGE_WINDOW_MS[w.name];
+    const used = Math.round(w.usedPercent * 10) / 10;
+    const reset = Number.isFinite(resets) ? `it resets at ${new Date(resets).toISOString()}` : "its reset time is not known";
+    const elapsed = length !== undefined && Number.isFinite(resets) ? length - (resets - now) : NaN;
+    const key = `${report.tool}/shortage:${w.name}`;
+    if (w.usedPercent >= USAGE_SHORTAGE_PERCENT) {
+      out.push({ key, message: `${report.tool}: the ${w.name} window is ${used}% used; ${reset}.` });
+    } else if (elapsed >= length * USAGE_PACE_MIN_SHARE && w.usedPercent > 0 && (w.usedPercent * length) / elapsed >= 100) {
+      out.push({ key, message: `${report.tool}: at the pace so far, the ${w.name} window (${used}% used) runs out before it resets; ${reset}.` });
+    }
+  }
+  return out;
+}
