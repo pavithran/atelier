@@ -2365,6 +2365,11 @@ export type FastTestWhere = (typeof FAST_TEST_WHERE)[number];
 export interface FastReceipt {
   commit: string;
   mergeCommit: string;
+  // The head of the batch the tests ran at, and the batch as START..HEAD
+  // (the CLI's own name for it), so a receipt says what was tested and not
+  // only the output's hash (t601; Astra's audit of 2026-10-13, finding 8).
+  testedHead: string;
+  batch: string;
   builder: string;
   // Every agent whose Agent line is in the commits the landing merged, the
   // builder among them (t603). A receipt from an older CLI has none.
@@ -2385,6 +2390,9 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
   const tests = body.tests as { command?: unknown; sha256?: unknown; where?: unknown } | undefined;
   if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw new RuleError("bad_receipt", "the receipt names the commit merged, a full SHA", 400);
   if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw new RuleError("bad_receipt", "the receipt names the merge commit, a full SHA", 400);
+  if (typeof body.testedHead !== "string" || !SHA.test(body.testedHead)) throw new RuleError("bad_receipt", "the receipt names the head the batch's tests ran at, a full SHA", 400);
+  const batch = typeof body.batch === "string" ? /^([a-f0-9]{40,64})\.\.([a-f0-9]{40,64})$/.exec(body.batch) : null;
+  if (!batch || batch[2] !== body.testedHead) throw new RuleError("bad_receipt", "the receipt names its batch as START..HEAD, ending at the tested head", 400);
   if (typeof body.builder !== "string" || !body.builder.includes("/") || !validActor(body.builder)) throw new RuleError("bad_receipt", "the receipt names the builder as harness/model, from the commit's Agent line", 400);
   if (!tests || typeof tests.command !== "string" || !tests.command.trim() || tests.command.length > 2000) throw new RuleError("bad_receipt", "the receipt names the test command the batch ran", 400);
   if (typeof tests.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(tests.sha256)) throw new RuleError("bad_receipt", "the receipt carries the sha256 of the test output", 400);
@@ -2396,7 +2404,20 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
     if (!Array.isArray(list) || list.length > FAST_CONTRIBUTORS_MAX || !list.every((c) => typeof c === "string" && c.includes("/") && validActor(c))) throw new RuleError("bad_receipt", `the receipt names the contributors as harness/model, from the Agent lines of the commits merged, at most ${FAST_CONTRIBUTORS_MAX}`, 400);
     contributors = [...new Set([body.builder, ...(list as string[])])];
   }
-  return { commit: body.commit, mergeCommit: body.mergeCommit, builder: body.builder, ...(contributors ? { contributors } : {}), tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
+  return { commit: body.commit, mergeCommit: body.mergeCommit, testedHead: body.testedHead, batch: body.batch as string, builder: body.builder, ...(contributors ? { contributors } : {}), tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
+}
+
+// A receipt names commits the batch put in main, so the project's repository
+// holds them once the developer has published main. `found` is which of the
+// receipt's commits the server read there; `readable` is false when the
+// repository could not be read at all. A commit not found, or a repository
+// not read, refuses the receipt: it is posted again after the publish
+// (atelier fast record), never recorded on a guess (t601).
+export function fastReceiptRefusal(receipt: Pick<FastReceipt, "commit" | "mergeCommit" | "testedHead">, baseline: { readable: boolean; found: readonly string[] }): RuleError | null {
+  if (!baseline.readable) return new RuleError("baseline_unreadable", "the project's repository could not be read to check the receipt's commits, so nothing was recorded; try again", 503);
+  const missing = [...new Set([receipt.commit, receipt.mergeCommit, receipt.testedHead])].filter((c) => !baseline.found.includes(c));
+  if (!missing.length) return null;
+  return new RuleError("receipt_commits_unknown", `the project's repository does not hold ${missing.map((c) => c.slice(0, 12)).join(", ")}; publish main (atelier publish), then record the receipt again with atelier fast record`, 409);
 }
 
 // ── merges recorded after the fact (t653) ──────────────────────────────────

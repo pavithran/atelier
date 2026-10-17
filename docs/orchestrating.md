@@ -926,8 +926,8 @@ to them: their environment holds no tokens or keys, but a hostile command
 could still tamper with the checkout, Git or the atelier CLI itself, so
 fast mode is for batches the developer trusts, and a check that no agent
 can forge needs the sandbox (`atelier init --sandbox-only`). On success each task gets a landed-fast
-receipt: the commit merged, the merge commit, the builder its Agent line
-names, the test command and the sha256 of its output, and the mode's
+receipt: the commit merged, the merge commit, the head the tests ran at and
+its batch (START..HEAD), the builder its Agent line names, the test command and the sha256 of its output, and the mode's
 reason. The task is marked merged, and its post-merge review is asked of
 the reviewer named. It never pushes or deploys; publish main and deploy as
 after any landing, so the reviewer can read the merge. A commit a runner
@@ -950,6 +950,11 @@ when main no longer holds a receipt's merge commit, the merge is not of
 that task's commit, or any object the batch's commits reference (their
 whole trees included) is missing or no longer hashes to its id. The server answers a receipt it already holds for the
 same merge commit with the one it recorded, so posting again is safe.
+
+The server records a receipt only for commits it finds in the project's
+repository, so it refuses one posted before main is published, and one it
+cannot check because the repository cannot be read. Publish main, then run
+`atelier fast record`; a refused receipt stays in the file until it is.
 
 The post-merge review of a fast landing may come from a model of the
 builder's family (PAVI: fast mode permits single-family models), never
