@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runTask, runOutcome, fastBuildSection } from "../cli/runner.mjs";
@@ -60,7 +60,7 @@ test("in fast mode the runner takes the build without a fork, builds in the clea
   assert.equal(state.fast, true);
   assert.equal(state.head, BUILT);
   assert.deepEqual(verbs(), ["fast take", "fast ready"]);
-  assert.deepEqual(calls.find((c) => c.argv?.[1] === "take").argv, ["fast", "take", "t13", "--project", "atelier", "--as", ACTOR, "--runner", "home:studio", "--json"]);
+  assert.deepEqual(calls.find((c) => c.argv?.[1] === "take").argv, ["fast", "take", "t13", "--project", "atelier", "--as", ACTOR, "--runner", "home:studio", "--dispatch", item.dispatch.at, "--json"]);
   const ready = calls.find((c) => c.argv?.[1] === "ready");
   assert.deepEqual(ready.argv, ["fast", "ready", "t13", "--project", "atelier", "--as", ACTOR]);
   assert.equal(ready.cwd, FAST_DIR, "the report is made from the clone");
@@ -234,6 +234,62 @@ test("atelier fast take makes a clean clone of main with no remote, fast ready r
   assert.equal(gitIn(owner, "rev-parse", "HEAD^2"), built);
   assert.ok(logs.includes(`fetched t1's build from ${reported}`));
   assert.ok(existsSync(join(owner, "b.txt")));
+});
+
+// Review of t589 (codex/gpt-6-astra): a take for another model removed the
+// clone, the only copy of a fast build's unlanded commit, and a take for the
+// same model with new instructions reported the old commit and never built
+// the new assignment.
+test("a fast take never removes a clone with a commit: another holder or another dispatch moves it aside, and only the same dispatch resumes it", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-fast-park-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const baseline = join(root, "baseline");
+  execFileSync("git", ["init", "-q", "-b", "main", baseline]);
+  writeFileSync(join(baseline, "a.txt"), "a\n");
+  gitIn(baseline, "add", "-A"); gitIn(baseline, "commit", "-q", "-m", "start");
+  const server = await stub(t, {
+    "POST /api/projects/proj/items/t1/fast-take": { item: { id: "t1", state: "claimed", owner: ACTOR }, fast: true, baseline: { remote: baseline, token: "read-token-x", defaultBranch: "main" }, commitIdentity: { name: "Atelier Bot", email: "bot@example.com" } },
+    "GET /api/projects/proj": { project: { name: "proj", policy: {} } },
+  });
+  const env = { ATELIER_SERVER: server.origin, ATELIER_TOKEN: "fake", ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_ACTOR: ACTOR };
+  const take = async (as, dispatch) => {
+    const r = await run(["fast", "take", "t1", "--project", "proj", "--as", as, "--runner", "home:studio", ...(dispatch ? ["--dispatch", dispatch] : []), "--json"], { cwd: root, env });
+    assert.equal(r.status, 0, r.err);
+    return { ...JSON.parse(r.out.trim().split("\n").at(-1)), said: r.out };
+  };
+  const dir = join(root, "cache", "fast", "proj", "t1");
+  const parkedDirs = () => readdirSync(join(root, "cache", "fast", "proj")).filter((n) => n.startsWith("t1.parked-")).sort();
+  const first = await take(ACTOR, "d1");
+  assert.equal(first.resumed, false);
+  writeFileSync(join(dir, "b.txt"), "b\n");
+  gitIn(dir, "add", "-A"); gitIn(dir, "commit", "-q", "-m", `Add b\n\nAgent: ${ACTOR}`);
+  const built = gitIn(dir, "rev-parse", "HEAD");
+
+  // The same dispatch resumes the commit.
+  const same = await take(ACTOR, "d1");
+  assert.equal(same.resumed, true);
+  assert.equal(same.head, built);
+  assert.deepEqual(parkedDirs(), []);
+
+  // New instructions to the same model: a fresh clone, the old one parked with its commit.
+  const again = await take(ACTOR, "d2");
+  assert.equal(again.resumed, false);
+  assert.equal(again.head, again.base);
+  assert.equal(parkedDirs().length, 1);
+  const parked = join(root, "cache", "fast", "proj", parkedDirs()[0]);
+  assert.equal(gitIn(parked, "rev-parse", "HEAD"), built, "the commit is still in the parked clone");
+  assert.match(again.said, /kept, not removed/);
+  assert.ok(again.said.includes(parked));
+
+  // A commit made for d2, then a take as another model: that one is parked too.
+  writeFileSync(join(dir, "c.txt"), "c\n");
+  gitIn(dir, "add", "-A"); gitIn(dir, "commit", "-q", "-m", `Add c\n\nAgent: ${ACTOR}`);
+  const second = gitIn(dir, "rev-parse", "HEAD");
+  const other = await take("codex/gpt-6-astra", "d3");
+  assert.equal(other.resumed, false);
+  const all = parkedDirs();
+  assert.equal(all.length, 2);
+  assert.ok(all.some((n) => gitIn(join(root, "cache", "fast", "proj", n), "rev-parse", "HEAD") === second), "the second clone's commit survives too");
 });
 
 test("a fast build whose harness exits non-zero or times out is reported as a refusal or a timeout (t363, round 8)", async () => {

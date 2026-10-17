@@ -887,8 +887,15 @@ fork:
   builder and its dispatch is cleared, so no runner takes it again. Nothing
   is pushed, checked or submitted; the developer's batch does that.
 - A run that committed but could not report keeps its claim; the next take
-  keeps the clone and reports the commit without the harness. A run that
-  committed nothing releases the task.
+  of the same dispatch (the runner passes `--dispatch`, the assignment's
+  `at`) keeps the clone and reports the commit without the harness. A run
+  that committed nothing releases the task.
+- A fast build's commits exist only in its clone, so a take never removes
+  one. When the dispatch, the holder or the task differs, or the clone is
+  not a resumable one, the take moves it aside to
+  `fast/PROJECT/tN.parked-TIME`, says so, and builds in a fresh clone. The
+  developer removes parked clones by hand once their work is landed or
+  dropped.
 
 A fast take the server refuses because the project is back in full mode
 falls back to the claim. Back in full mode runners claim with forks, push
