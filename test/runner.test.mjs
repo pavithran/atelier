@@ -230,7 +230,7 @@ test("runTask claims with the assignment, runs the harness, finishes and removes
   const { io, calls, logs } = fixture();
   const state = await runTask(assignment, config, "home:studio", io);
   assert.equal(state.phase, "submitted");
-  assert.deepEqual(logs, ["nothing claimed", "claimed", "workspace reset to HEAD and untracked files removed", "working", "committed", "submitted"]);
+  assert.deepEqual(logs, ["claimed", "workspace reset to HEAD and untracked files removed", "working", "committed", "submitted"]);
   assert.deepEqual(calls[0].argv, ["claim", "t13", "--project", "atelier", "--as", assignment.actor, "--runner", "home:studio"]);
   assert.ok(calls[1].brief.includes(`Agent: ${assignment.actor}`));
   assert.equal(calls[2].cwd, "/cache/work/atelier/t13");
@@ -247,6 +247,22 @@ test("runTask releases only when failure leaves the original HEAD", async () => 
     assert.ok(calls.some((c) => c.argv?.[0] === "release"));
     assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
   }
+});
+
+// Finding (2026-10-14, ourai/t63): a claim succeeded, the build run was
+// refused, and the log said only "nothing claimed".
+test("a refused run after a good claim logs the task, the reason and what became of the claim, never 'nothing claimed'", async () => {
+  for (const [options, outcome] of [[{ head: "before", code: 1 }, "released"], [{ code: 1 }, "kept"]]) {
+    const { io, logs } = fixture(options);
+    assert.equal((await runTask(assignment, config, "home:studio", io)).phase, "failed");
+    assert.ok(!logs.includes("nothing claimed"));
+    const line = logs.find((l) => l.startsWith("atelier/t13: run ended"));
+    assert.ok(line, logs.join(" | "));
+    assert.match(line, new RegExp(`claim ${outcome}$`));
+  }
+  const empty = fixture();
+  await runTask(null, config, "home:studio", empty.io);
+  assert.deepEqual(empty.logs.slice(0, 1), ["nothing claimed"]);
 });
 
 test("runTask preserves claims on committed work or uncertain HEAD", async () => {
@@ -286,7 +302,7 @@ test("a held job whose workspace is ahead of the recorded head is finished, not 
   const finish = calls.find((c) => c.argv?.[0] === "finish");
   assert.deepEqual(finish.argv, ["finish", "t13", "--project", "atelier", "--as", assignment.actor]);
   assert.equal(finish.cwd, "/cache/work/atelier/t13");
-  assert.deepEqual(logs, ["nothing claimed", "claimed", "workspace reset to HEAD and untracked files removed",
+  assert.deepEqual(logs, ["claimed", "workspace reset to HEAD and untracked files removed",
     "resumed: an earlier run of this runner committed before and never submitted it; finishing it without the harness",
     "working", "committed", "submitted"]);
 });
