@@ -582,6 +582,17 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t1/edit", { nonGoals: ["no CSS"], stopWhen: [], nextGate: null }, "owner"]]);
   assert.match(edited.stdout, /^t1 edited\.\nNon-goals: no CSS\n$/);
   f.clear();
+  // --context sets, replaces and (empty) clears the reviewers' context, and is sent trimmed.
+  for (const [text, sent] of [["Keep the ledger column out.", "Keep the ledger column out."], ["  padded  ", "padded"], ["", ""]]) {
+    const ctx = f.run(f.checkout, ["edit", "t1", "--context", text, "--project", "demo"]);
+    assert.equal(ctx.status, 0, ctx.stderr);
+    assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/edit", { context: sent }]]);
+    f.clear();
+  }
+  const bare = f.run(f.checkout, ["edit", "t1", "--context", "--project", "demo"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--context needs text/);
+  assert.deepEqual(f.requests(), []);
   // --scope is repeatable; one empty value clears it.
   const scoped = f.run(f.checkout, ["edit", "t1", "--scope", "src/**", "--scope", "test/**", "--project", "demo"]);
   assert.equal(scoped.status, 0, scoped.stderr);

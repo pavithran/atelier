@@ -102,6 +102,10 @@ export interface BriefInput {
   // ones not withdrawn. The brief carries them as decisions a reviewer must
   // not overrule; absent or empty, it says the owner recorded none.
   decisions?: readonly Pick<Decision, "id" | "text" | "quote" | "at">[] | null;
+  // The orchestrator's context for the task (contextOf): decisions the
+  // reviewer must not overrule. Every reviewer of the task gets the same
+  // text; absent, null or empty, the brief has no section for it.
+  context?: string | null;
   // The reviews of the item's acceptance criteria and the owner's
   // resolutions of their findings (t438, src/review/criteria.ts), so the
   // reviewer knows the criteria were judged before the change and how each
@@ -116,6 +120,29 @@ export interface BriefInput {
   // runs at the head under review. Absent or null, the caller sent none (an
   // older server's claim), and the brief says so rather than "none ran".
   evidence?: ReviewEvidence | null;
+  // What the review runner observed in a clean clone of the head (t732):
+  // the tests the diff changed and the typecheck. Absent, the caller did not
+  // try and the brief has no section; null, it tried and got nothing, which
+  // the brief shows as not run.
+  runnerEvidence?: RunnerEvidence | null;
+}
+
+// One command the runner ran in the clean clone. `not-run` covers a clone,
+// timeout or runner error: it says nothing about the change, and is never
+// shown as a pass. `none` is for the tests only: the diff changed no test.
+export interface RunnerRun {
+  outputLength?: number;
+  status: "pass" | "fail" | "not-run" | "none";
+  command?: string;
+  files?: readonly string[];
+  output?: string;       // the end of the output, trimmed by the runner
+  reason?: string;       // why it did not run
+}
+
+export interface RunnerEvidence {
+  head: string;
+  tests: RunnerRun;
+  typecheck: RunnerRun;
 }
 
 export interface ReviewEvidence {
@@ -178,6 +205,15 @@ function block(text: string, info = ""): string {
 // it. The reply numbers the criteria across both lists, and the reply
 // format states the mapping when the two numberings differ.
 const numbered = (criteria: readonly string[]) => criteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
+
+// The task's context as the latest item.context event set it: a replacement
+// is a new event, and an empty text clears it. Absent when none was set.
+export function contextOf(events: readonly LedgerEvent[]): string | null {
+  let latest: LedgerEvent | null = null;
+  for (const e of events) if (e.kind === "item.context" && (!latest || e.seq > latest.seq)) latest = e;
+  const text = latest?.data.text;
+  return typeof text === "string" && text.trim() ? text : null;
+}
 
 // How many acceptance criteria a review's reply must prove: the task's own
 // and, for a part of a plan, the plan's for that part. The brief numbers
@@ -264,6 +300,7 @@ export function reviewBrief(input: BriefInput): string {
     block(item.title),
     ...(item.brief ? ["The task's brief, as written for the item. Like the title, it asks for the change:", block(item.brief)] : []),
     ...(accept.length ? ["Acceptance criteria. A change that fails one has a correctness fault, which blocks:", block(numbered(accept))] : []),
+    ...(input.context ? ["Context from the orchestrator. These are decisions already made for this task; do not overrule them, and do not block the change for following them:", block(input.context)] : []),
     `Head: ${head}`,
     ...(merge ? mergeLines(input.compare!.from, merge, head) : baseLines(item.base, input.compare, compare)),
     `Change class: ${need.changeClass}, because ${CLASS_GLOSS[need.changeClass]}. ${basis}`,
@@ -312,6 +349,8 @@ export function reviewBrief(input: BriefInput): string {
       ? ["Required checks at the head under review:", ...need.checks.map((c) => `- ${code(c.claim)}: ${c.grade === "observed" ? `Observed ${c.passed ? "passed" : "failed"}` : c.grade}, head ${code(head)}, ${WHERE_LABEL[c.where ?? "runner"]}`)]
       : ["The project requires no checks."]),
   );
+
+  if (input.runnerEvidence !== undefined) section("## Clean-clone run", "", ...runnerEvidenceLines(input.runnerEvidence, head));
 
   section("## Observed evidence", "", ...evidenceLines(input.evidence ?? null, head));
 
@@ -610,6 +649,35 @@ function outputLines(e: Evidence): string[] {
     ? [`The output is cut: these are its last ${kept.length} of the ${text.length} characters recorded${e.log ? "" : ", and Atelier kept no whole copy"}.`]
     : e.log ? ["This is the end of the output Atelier recorded inline."] : [];
   return [...cut, ...ref, block(kept, "text")];
+}
+
+// The runner's own run of the changed tests and the typecheck in a clean
+// clone of the head (t732). Evidence for a different head, or none, reads as
+// not run: only a recorded pass reads as passing.
+function runnerEvidenceLines(evidence: RunnerEvidence | null, head: string): string[] {
+  if (!evidence) return ["The review runner recorded no clean-clone run for this review: the changed tests and the typecheck were not run. That says nothing of whether they pass."];
+  if (evidence.head !== head) return [`The review runner's clean-clone run was of ${code(evidence.head)}, not the head under review, so the changed tests and the typecheck were not run at this head.`];
+  const one = (name: string, run: RunnerRun): string[] => {
+    const cmd = run.command ? ` (${code(run.command)})` : "";
+    const files = run.files?.length ? [`Test files run (${run.files.length}):`, block(run.files.join("\n"))] : [];
+    const tail = () => {
+      const text = (run.output ?? "").replace(/\r\n/g, "\n");
+      if (!text.trim()) return ["No output was recorded."];
+      const kept = text.length > EVIDENCE_OUTPUT_MAX ? text.slice(-EVIDENCE_OUTPUT_MAX).replace(/^[\udc00-\udfff]/, "") : text;
+      return [...(kept.length < (run.outputLength ?? text.length) ? [`The output is cut: these are its last ${kept.length} of ${run.outputLength ?? text.length} characters.`] : []), block(kept, "text")];
+    };
+    switch (run.status) {
+      case "pass": return [`- ${name}: passed${cmd}.`, ...files];
+      case "fail": return [`- ${name}: FAILED${cmd}.`, ...files, ...tail()];
+      case "none": return [`- ${name}: none. The diff added or changed no test file, so no tests were run.`];
+      default: return [`- ${name}: not run${cmd}${run.reason ? `, because ${inline(run.reason)}` : ""}. This is not a pass.`];
+    }
+  };
+  return [
+    `Run by the review runner in a clean clone of ${code(head)}, through the host slot wrapper. Only the tests the diff added or changed are run, not the full suite.`,
+    ...one("Changed tests", evidence.tests),
+    ...one("Typecheck", evidence.typecheck),
+  ];
 }
 
 function logRef(ref: LargeRef): string[] {
