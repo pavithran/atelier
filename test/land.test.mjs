@@ -1,7 +1,7 @@
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { git, landFixture, grantedTo, recordedAt, mainMovesDuringReview } from "./land-fixture.mjs";
 import { criteriaOf } from "../src/criteria.ts";
@@ -645,4 +645,21 @@ test("guard: another reviewer named, a withdrawn or tier approval, or a gate not
     { reviews: [{ by: "claude-code/sonnet-5.5", tier: true }] },
     { reviews: [{ by: "antigravity/gemini-3.1-pro" }], gate: { ready: false, needsAssessor: true, outOfScope: [], blockers: ["needs an independent approval"] } },
   ]);
+});
+
+// Finding t344: while t320 waited for review the video agent kept editing its
+// workspace, and the landing's regenerate step committed those half-finished
+// edits with `git add -A`. The stand-in server writes the other agent's file when the landing
+// records its merge step, after the landing began and before it regenerates.
+test("a landing whose workspace gains uncommitted edits after it began refuses before regenerating, naming them, and commits nothing of them (t344)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.onLand = (step) => { if (step.step === "merge") writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished narration\n"); };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /gained uncommitted changes since the landing began \(video\.md\)/);
+  assert.ok(!existsSync(join(f.workspace("t1"), "gen-fixtures.txt")), "the regenerate command ran anyway");
+  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Regenerate after merging/);
+  assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "?? video.md");
+  assert.notEqual(f.box.states.t1, "merged");
 });

@@ -1790,6 +1790,11 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
   // checks and the review are bound to holds it.
   if (regenerate) {
     guard();
+    // Another agent may have edited the workspace since the landing began
+    // (t344): refuse before the command runs, so nothing of theirs can be
+    // told apart from what the command writes or be committed with it.
+    const dirtyBefore = await git(["status", "--porcelain", "-uall"], { cwd: dir });
+    if (dirtyBefore) throw new StepError(`${id}'s workspace gained uncommitted changes since the landing began (${dirtyPaths(dirtyBefore).join(", ")}); the landing stops before regenerating so it does not commit them. Commit or set them aside, then run atelier land ${id} again`);
     const start = Date.now();
     print(`Regenerating with \`${regenerate}\`…`);
     const r = await runRegenerateIn(dir, regenerate, io);
@@ -1798,8 +1803,12 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
     }
     let changed = false;
-    if (await git(["status", "--porcelain"], { cwd: dir })) {
-      await git(["add", "-A"], { cwd: dir });
+    const after = await git(["status", "--porcelain", "-uall"], { cwd: dir });
+    if (after) {
+      // Only what the command wrote is committed: the tree was clean before
+      // it ran (checked above), so the files now dirty are the command's own
+      // paths, staged by name, never `git add -A`.
+      await git(["add", "--", ...dirtyPaths(after)], { cwd: dir });
       await git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
       changed = true;
       print("Committed what the regeneration changed.");
@@ -1807,6 +1816,11 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
     await record("regenerate", Date.now() - start, { command: regenerate, changed });
   }
   return { head: await git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn, target: read.defaultBranch };
+}
+
+// The paths a `git status --porcelain` listing names (a rename names its new path).
+function dirtyPaths(porcelain) {
+  return porcelain.split("\n").filter(Boolean).map((l) => l.slice(3).replace(/^.* -> /, "").replace(/^"(.*)"$/, "$1"));
 }
 
 // ── the landing as a Cloudflare Workflow (t280) ────────────────────────────
