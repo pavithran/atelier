@@ -1664,6 +1664,12 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
       const conflicts = r.source;
       print(`The merge stops on conflicts in ${conflicts.join(", ")}; taking either side and regenerating with \`${regenerate}\`…`);
       const shaOf = async (file) => (existsSync(join(dir, file)) ? await git(["hash-object", "--", file], { cwd: dir }) : "gone");
+      // Only what the command writes may be staged below, so a file that
+      // is dirty already (another agent's, t344) refuses the landing first.
+      // The merge's own state is not that: conflicted entries and what the
+      // merge staged have a blank or unmerged work-tree column.
+      const foreign = dirtyPaths(await git(["status", "--porcelain=v1", "-z", "-uall"], { cwd: dir, raw: true }), { unstaged: true }).filter((f) => !conflicts.includes(f));
+      if (foreign.length) throw new StepError(`${id}'s workspace gained uncommitted changes since the landing began (${foreign.join(", ")}); the landing stops before regenerating so it does not commit them. Commit or set them aside, then run atelier land ${id} again`);
       const taken = new Map();
       let either = true, regen = null, unwritten = null;
       for (const file of conflicts) {
@@ -1679,7 +1685,10 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
         }
       }
       if (regen?.ok && !unwritten.length) {
-        await git(["add", "-A", "--", ...conflicts], { cwd: dir });
+        // Everything the command wrote is staged, not only the conflicts: a
+        // file it changed outside them would otherwise stay dirty (t344).
+        const produced = dirtyPaths(await git(["status", "--porcelain=v1", "-z", "-uall"], { cwd: dir, raw: true }), { unstaged: true });
+        await git(["add", "-A", "--", ...new Set([...conflicts, ...produced])], { cwd: dir });
         await git(["commit", "--quiet", "--no-edit"], { cwd: dir });
         settled = "atelier land, taking either side and regenerating";
         settledConflicts = conflicts;
@@ -1798,6 +1807,11 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
   // checks and the review are bound to holds it.
   if (regenerate) {
     guard();
+    // Another agent may have edited the workspace since the landing began
+    // (t344): refuse before the command runs, so nothing of theirs can be
+    // told apart from what the command writes or be committed with it.
+    const dirtyBefore = await git(["status", "--porcelain=v1", "-z", "-uall"], { cwd: dir, raw: true });
+    if (dirtyBefore) throw new StepError(`${id}'s workspace gained uncommitted changes since the landing began (${dirtyPaths(dirtyBefore).join(", ")}); the landing stops before regenerating so it does not commit them. Commit or set them aside, then run atelier land ${id} again`);
     const start = Date.now();
     print(`Regenerating with \`${regenerate}\`…`);
     const r = await runRegenerateIn(dir, regenerate, io);
@@ -1806,8 +1820,13 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
     }
     let changed = false;
-    if (await git(["status", "--porcelain"], { cwd: dir })) {
-      await git(["add", "-A"], { cwd: dir });
+    const after = await git(["status", "--porcelain=v1", "-z", "-uall"], { cwd: dir, raw: true });
+    if (after) {
+      // Only what the command wrote is committed: the tree was clean before
+      // it ran (checked above), so the files now dirty are the command's own
+      // paths, staged by name, never `git add -A`.
+      const toStage = dirtyPaths(after, { unstaged: true });
+      if (toStage.length) await git(["add", "-A", "--", ...toStage], { cwd: dir });
       await git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
       changed = true;
       print("Committed what the regeneration changed.");
@@ -1815,6 +1834,23 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
     await record("regenerate", Date.now() - start, { command: regenerate, changed });
   }
   return { head: await git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn, target: read.defaultBranch };
+}
+
+// The paths a `git status --porcelain=v1 -z` listing names. Each record is
+// two status characters, a space and the path, ended by NUL; a rename or copy
+// is followed by a second record holding the old path, which is skipped. The
+// listing must be read untrimmed: its first record may start with a space.
+// With unstaged, a path whose work-tree column is blank is left out: it is
+// already staged, as `git rm` leaves a deletion, and `git add` refuses it.
+export function dirtyPaths(listing, { unstaged = false } = {}) {
+  const records = listing.split("\0"), paths = [];
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    if (r.length < 4) continue;
+    if (!unstaged || r[1] !== " ") paths.push(r.slice(3));
+    if (r[0] === "R" || r[0] === "C" || r[1] === "R" || r[1] === "C") i++;
+  }
+  return paths;
 }
 
 // ── the landing as a Cloudflare Workflow (t280) ────────────────────────────

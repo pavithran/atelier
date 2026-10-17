@@ -1,9 +1,10 @@
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { git, landFixture, grantedTo, recordedAt, mainMovesDuringReview } from "./land-fixture.mjs";
+import { dirtyPaths } from "../cli/land.mjs";
 import { criteriaOf } from "../src/criteria.ts";
 
 // atelier land (t187) against a stand-in server and local bare repositories,
@@ -645,4 +646,64 @@ test("guard: another reviewer named, a withdrawn or tier approval, or a gate not
     { reviews: [{ by: "claude-code/sonnet-5.5", tier: true }] },
     { reviews: [{ by: "antigravity/gemini-3.1-pro" }], gate: { ready: false, needsAssessor: true, outOfScope: [], blockers: ["needs an independent approval"] } },
   ]);
+});
+
+// Finding t344: while t320 waited for review the video agent kept editing its
+// workspace, and the landing's regenerate step committed those half-finished
+// edits with `git add -A`. The stand-in server writes the other agent's file when the landing
+// records its merge step, after the landing began and before it regenerates.
+test("a landing whose workspace gains uncommitted edits after it began refuses before regenerating, naming them, and commits nothing of them (t344)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.onLand = (step) => { if (step.step === "merge") writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished narration\n"); };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /gained uncommitted changes since the landing began \(video\.md\)/);
+  assert.ok(!existsSync(join(f.workspace("t1"), "gen-fixtures.txt")), "the regenerate command ran anyway");
+  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Regenerate after merging/);
+  assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "?? video.md");
+  assert.notEqual(f.box.states.t1, "merged");
+});
+
+test("a landing refuses a tracked edit made after it began, naming the file whole (t344, round 1: the status listing was trimmed)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.onLand = (step) => { if (step.step === "merge") writeFileSync(join(f.workspace("t1"), "work.txt"), "edited by another agent\n"); };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /since the landing began \(work\.txt\)/);
+  assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "M work.txt");
+});
+
+test("the regenerate step commits a tracked file its command modified, under its whole name (t344, round 1)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.regen = "echo regenerated >> work.txt";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  const commit = git(f.workspace("t1"), "log", "--grep=^Regenerate after merging", "--format=%H", "-1");
+  assert.ok(commit, "no regeneration commit");
+  assert.equal(git(f.workspace("t1"), "show", "--name-only", "--format=", commit), "work.txt");
+});
+
+test("dirtyPaths reads modified, staged, deleted, untracked, renamed, spaced and non-ASCII names from a NUL-delimited listing (t344, round 1)", () => {
+  const listing = [" M gen-fixtures.txt", "M  staged.txt", " D gone.txt", "?? new.txt", "R  new name.txt", "old name.txt", "?? my file.txt", '?? caf\u00e9 "q".txt'].join("\0") + "\0";
+  assert.deepEqual(dirtyPaths(listing), ["gen-fixtures.txt", "staged.txt", "gone.txt", "new.txt", "new name.txt", "my file.txt", 'caf\u00e9 "q".txt']);
+  assert.deepEqual(dirtyPaths(""), []);
+});
+
+for (const [how, command] of [["rm", "rm obsolete.json"], ["git rm", "git rm -q obsolete.json"]]) {
+  test(`a regenerate command that removes a tracked file with ${how} still has the deletion committed (t344, round 2)`, async (t) => {
+    if (!canInspectSlots(t)) return;
+    const f = await landFixture(t, { mainChange: { file: "obsolete.json", text: "{}\n", message: "Main adds a fixture" } });
+    f.box.regen = command;
+    const r = await f.run(f.checkout, "land", "t1");
+    assert.equal(r.status, 0, r.output);
+    assert.equal(git(f.workspace("t1"), "ls-files", "obsolete.json"), "");
+    assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "");
+  });
+}
+
+test("dirtyPaths with unstaged leaves out a path already staged, such as a deletion git rm made (t344, round 2)", () => {
+  assert.deepEqual(dirtyPaths("D  gone.json\0 D other.json\0?? new.txt\0M  staged.txt\0", { unstaged: true }), ["other.json", "new.txt"]);
 });
