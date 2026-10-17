@@ -164,7 +164,7 @@ test("npm test executes real runner-token routes and propagates a failed token a
   const dir = tree(t, []);
   rmSync(join(dir, "vitest.config.mjs"));
   for (const file of ["package.json", "vitest.config.ts", "wrangler.jsonc", "tsconfig.json", "src",
-    "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs"]) {
+    "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file), { recursive: true });
   }
@@ -195,7 +195,7 @@ test("npm test executes real runner-token routes and propagates a failed token a
 // exit is the worst status either ended with.
 test("npm test runs the vitest pool after a failed Node pool and exits with the worst status", (t) => {
   const dir = tree(t, []);
-  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs"]) {
+  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file));
   }

@@ -60,14 +60,14 @@ test("other errors pass through untouched", async () => {
   assert.equal(serverUpdating(boom), false);
 });
 
-test("the first call of an isolate tells the Ledger the Worker's DEPLOYED_MAIN, once, before that call", async () => {
+test("the first call of an isolate tells the Ledger the Worker's DEPLOYED_MAIN, once, after that call has settled (t744)", async () => {
   forgetToldLedgers();
   const { stub, calls } = staleStub({ ledgerVersion: () => ({ version: "a".repeat(40), restarting: true, why: "stale" }), items: () => [] });
   await guardLedger(stub, "project:r", NEW).items();
   await flush();
   await guardLedger(stub, "project:r", NEW).items();
-  assert.deepEqual(calls.map((c) => c.method), ["ledgerVersion", "items", "items"]);
-  assert.deepEqual(calls[0].args, [NEW]);
+  assert.deepEqual(calls.map((c) => c.method), ["items", "ledgerVersion", "items"]);
+  assert.deepEqual(calls[1].args, [NEW]);
 });
 
 test("a Ledger that cannot answer the version, or must wait, is told again a minute later", async () => {

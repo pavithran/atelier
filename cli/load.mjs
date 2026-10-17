@@ -25,6 +25,18 @@ export function slotCapacity(env = process.env, cores = coreCount()) {
   return Number(text);
 }
 
+// Workers one test pool may use (t744): the cores divided by the slots, so
+// every slot busy at once keeps the machine's load near its core count. A
+// slot covers one npm test, and that runs two pools (node --test and
+// vitest), each of which took a core-sized count of its own by default: on
+// 36 cores nine slots made load 68. An unset or invalid ATELIER_TEST_SLOTS
+// gives the default capacity's share, never an error in the middle of a test.
+export function poolSize(env = process.env, cores = coreCount()) {
+  let slots;
+  try { slots = slotCapacity(env, cores); } catch { slots = slotCapacity({}, cores); }
+  return Math.max(1, Math.floor(cores / slots));
+}
+
 export function slotPriority(value = "ordinary") {
   if (!Object.hasOwn(classes, value)) throw new Error("test priority must be release, landing, review or ordinary");
   return classes[value];
