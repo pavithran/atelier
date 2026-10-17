@@ -1504,7 +1504,7 @@ export async function refreshControlPlane(top, name, request = call, report = co
 // opened with O_NOFOLLOW, so the receipt never reads or writes outside the
 // checkout. merge refuses a tree with a symlink on these paths before the
 // checkout changes (landingSymlinks); these checks hold even if one is there.
-export function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass }) {
+export function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass, sameTree }) {
   const dir = join(cwd, RECEIPTS_DIR);
   const kind = (path) => lstatSync(join(cwd, path), { throwIfNoEntry: false });
   if (!["docs", "docs/control-plane", RECEIPTS_DIR].every((path) => kind(path)?.isDirectory())) return null;
@@ -1537,6 +1537,7 @@ export function writeReceipt(cwd, { name, id, item, owners, view, reviews, polic
       e.grade === "observed"
         ? `Observed by Atelier in a clean clone at ${short(e.head)}${e.merged ? ` merged with main at ${short(e.mainHead)}` : ""}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
         : `Reported, not verified: ${e.claim} (${e.by}, ${e.at})`),
+    ...(sameTree ? { checked_tree: { tree: sameTree.tree, claims: sameTree.claims, statement: `The merge produced tree ${sameTree.tree}, exactly the tree these checks passed on, so a deploy gate may accept them instead of running them again. This receipt file is the only addition to that tree.` } } : {}),
     next_gate: `${OWNER_NAME} chooses the next work. The merge is not deployed and not pushed to the project's own remotes.`,
     protected_actions_not_taken: [
       "deploy",

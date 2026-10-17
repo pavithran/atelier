@@ -16,6 +16,20 @@ import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, dir
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
+// t708: the tree the merge produced (the index, before the receipt is added)
+// and the observed passing checks that ran on exactly that tree, each at an
+// unmerged head. Anything that cannot be read or compared gives null, and a
+// null makes the receipt claim nothing, so the deploy gate runs its checks again.
+function checkedTreeMatch(cwd,view){
+  try{
+    const out=(...a)=>{const r=landingGit(a,{cwd,allowFail:true});return r.status===0?r.stdout.trim():'';};
+    const tree=out('write-tree');
+    if(!/^[0-9a-f]{40,64}$/.test(tree))return null;
+    const claims=view.filter(e=>e.grade==='observed'&&e.passed&&!e.merged&&e.head&&out('rev-parse','--verify','--quiet',`${e.head}^{tree}`)===tree).map(e=>e.claim);
+    return claims.length?{tree,claims}:null;
+  }catch{return null;}
+}
+
 export default async function mergeCommand() {
   const git = landingGit;
   // A merged task's workspace on this Mac goes once its work is in main or
@@ -279,7 +293,7 @@ export default async function mergeCommand() {
         const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false});
         if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
         if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
-        const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
+        const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass,sameTree:checkedTreeMatch(cwd,view)});
         if(receipt)git(['add',receipt],{cwd});
         // The merge commit is the landing's own, made under the project's
         // identity whatever this checkout or its environment would give,
