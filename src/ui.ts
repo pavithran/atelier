@@ -36,7 +36,7 @@ import { measureHeading, TREND_NONE, trendPointText, type ModelTrend } from "./m
 import { money, tokens } from "./usage/report.ts";
 import type { MainPreview } from "./preview/merge";
 import { addTally, buildStory, drawStory, emptyTally, isLocalRun, vendorOf as vendorFor, VENDOR_NAMES, type Story, type Tally, type Vendor } from "./graph";
-import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse } from "./pulse";
+import { buildPulse, buildTimeline, byDay, PULSE_DAYS, type Pulse, type ProjectShowcase } from "./pulse";
 import type { PlanPartView, PlanView } from "./plans/show.ts";
 import type { Attempt } from "./plans/phase.ts";
 import type { PartRoute } from "./plans/route.ts";
@@ -1993,7 +1993,7 @@ function overviewSection(p: ProjectRecord, board: Item[] | null, inbox: InboxEnt
       <section class="overview-block" aria-labelledby="merge-h">
         <h2 id="merge-h">Last five merges</h2>
         ${mergeRows.length ? list("merge-list", mergeRows) : mergesUnread ? unreadLine("The merges") : '<p class="empty">Nothing merged yet.</p>'}
-        <p class="overview-more"><a href="${href("p", p.name, "flow")}">Activity</a></p>
+        <p class="overview-more"><a href="${href("p", p.name, "flow")}">Activity</a> · <a href="${href("p", p.name, "showcase")}">Showcase</a></p>
       </section>
       ${shipSection}
     </div>
@@ -2028,7 +2028,7 @@ const PROJECT_TABS: [label: string, sub: string][] = [
   ["Activity", "flow"],
   ["Settings", "settings"],
 ];
-const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Ship: "Settings" };
+const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Ship: "Settings", Showcase: "" };
 // The pages a tab holds, linked under it while it is current, so each stays
 // one click from the bar (the shell's pre-review: without these links no
 // page reached /plans, /log or /ship).
@@ -2048,7 +2048,7 @@ export function projectTabs(p: ProjectRecord, active: string, crumb?: string): s
 // The page of a project's area an address names, for the row of a page
 // whose body drew none: `rest` is the path after /p/NAME, decoded. A task's
 // pages, its fork's browsing included, are under Tasks with its id.
-const PAGE_AT: Record<string, string> = { tasks: "Tasks", plans: "Plans", flow: "Flow", ship: "Ship", settings: "Settings", code: "Code", log: "Log", commit: "Code", history: "Code" };
+const PAGE_AT: Record<string, string> = { tasks: "Tasks", plans: "Plans", flow: "Flow", ship: "Ship", settings: "Settings", showcase: "Showcase", code: "Code", log: "Log", commit: "Code", history: "Code" };
 export function projectPageAt(rest: string[]): { active: string; crumb?: string } {
   const [first] = rest;
   if (!first) return { active: "Overview" };
@@ -2150,6 +2150,48 @@ export function renderProjectFlow(p: ProjectRecord, story: Story, owner: string,
     ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0))}${stages}${moments}`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
   return projectPage(p, "Flow", body, ownerName, `Flow · ${titleOf(p)}`, live);
+}
+
+// A project's showcase (t757): the page its record is proud of, for the
+// delight of it. Its name (the frame's heading), the last PULSE_DAYS days
+// as the Home cards draw them, one column a day stacked by the family of
+// the agents that moved, four figures and the newest merges with the model
+// that built each. Every number is the record's, by the global showcase's
+// own computations (projectShowcase); a project with nothing merged says so
+// in one quiet line.
+export function renderProjectShowcase(p: ProjectRecord, v: ProjectShowcase, ownerName: string | null = null, now = new Date()): string {
+  if (!v.recent.length) {
+    return projectPage(p, "Showcase", `<p class="pshow-quiet">Nothing has merged here yet. The first merge fills this page.</p>`, ownerName, `Showcase · ${titleOf(p)}`);
+  }
+  const window = `last ${PULSE_DAYS} days`;
+  const figures: [number, string][] = [
+    [v.mergedAllTime, "merged, all time"],
+    [v.pulse.merges, `merged, ${window}`],
+    [v.pulse.sentBack, `sent back, ${window}`],
+    [v.models, v.models === 1 ? "model built it" : "models built it"],
+  ];
+  const families = VENDOR_NAMES.filter(([f]) => f === "owner" ? v.pulse.decisions : v.pulse.byVendor[f])
+    .map(([f, label]) => `<li><i style="--c:var(--m-${f})"></i>${e(f === "owner" ? "You" : label)}</li>`).join("");
+  const thisYear = dayOf(now).slice(0, 4);
+  const rows = v.recent.map((m) => {
+    const day = dayOf(m.at);
+    const date = keyLabel(day, day.slice(0, 4) !== thisYear);
+    const by = m.model
+      ? `<ul class="legend-line pshow-by" aria-label="Built by"><li><i style="--c:var(--m-${m.vendor ?? "other"})"></i>${e(modelOf(m.model))}</li></ul>`
+      : `<span class="pshow-by none">builder not recorded</span>`;
+    return `<li><time datetime="${e(m.at)}">${e(date)}</time><span class="pshow-task">${idLink(p, m.id)} <span class="row-title">${e(m.title)}</span></span>${by}</li>`;
+  }).join("");
+  return projectPage(p, "Showcase", `
+  <section class="pshow" aria-label="Showcase">
+    <div class="pshow-card">
+      <p class="pshow-kicker">Moves a day, ${e(window)}</p>
+      ${pulseGraph(v.pulse, false)}
+      ${families ? `<ul class="legend-line" aria-label="Colours">${families}</ul>` : ""}
+      <dl class="pshow-figures">${figures.map(([n, label]) => `<div><dt>${e(label)}</dt><dd>${n.toLocaleString("en")}</dd></div>`).join("")}</dl>
+    </div>
+    <h2 class="pshow-h2">Latest merges</h2>
+    <ol class="pshow-merges">${rows}</ol>
+  </section>`, ownerName, `Showcase · ${titleOf(p)}`);
 }
 
 // Plans (task t17): each plan as one unit, with its parts, each part's state

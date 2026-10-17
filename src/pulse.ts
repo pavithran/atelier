@@ -6,7 +6,7 @@
 // that draw them and the tests that check them read the same model.
 
 import type { LedgerEvent, ProjectRecord } from "./ledger.ts";
-import type { Item } from "./rules.ts";
+import { modelKey, type Item } from "./rules.ts";
 import { DECISIONS, isAtelier, QUIET, vendorOf, type ShowcaseCounts, type Vendor } from "./graph.ts";
 import { dayOf } from "./time.ts";
 
@@ -167,4 +167,41 @@ export function byDay(entries: TimelineEntry[]): { day: string; entries: Timelin
     else groups.push({ day, entries: [x] });
   }
   return groups;
+}
+
+// ── a project's showcase ───────────────────────────────────────────────────
+
+// How many merged tasks the project's showcase page lists.
+export const SHOWCASE_MERGES = 8;
+
+export interface ShowcaseMerge {
+  id: string;
+  title: string;
+  at: string;                            // when it merged
+  model: string | null;                  // the model that built it, as its actor spells it; null when the record does not say
+  vendor: Vendor | null;
+}
+
+export interface ProjectShowcase {
+  pulse: Pulse;                          // the last PULSE_DAYS days, by family
+  mergedAllTime: number;                 // tasks merged through the gate, as the global showcase counts them
+  models: number;                        // distinct models that built the merged tasks (modelKey)
+  recent: ShowcaseMerge[];               // the newest SHOWCASE_MERGES merges, newest first
+}
+
+// What one project's page of the showcase draws, all from its own record
+// and by the computations the global showcase uses: the strip is
+// pulseFromCounts, the all-time figure is the merged tasks less those landed
+// in fast mode, and each merge's builder is the holder buildTimeline names.
+// `events` is the recent window of the record; a merge older than it still
+// lists, under the last contributor the task names, or under no model.
+export function projectShowcase(project: ProjectRecord, counts: ShowcaseCounts, items: Item[], events: LedgerEvent[], owner: string, now: Date): ProjectShowcase {
+  const merged = buildTimeline([{ project, items, events }], owner).filter((x) => x.ending === "merged");
+  const builders = new Set(merged.flatMap((x) => (x.holder ? [modelKey(x.holder)] : [])));
+  return {
+    pulse: pulseFromCounts(counts, owner, now),
+    mergedAllTime: items.filter((i) => i.state === "merged").length - (counts.landedFast ?? 0),
+    models: builders.size,
+    recent: merged.slice(0, SHOWCASE_MERGES).map((x) => ({ id: x.item.id, title: x.item.title, at: x.at, model: x.holder, vendor: x.vendor })),
+  };
 }

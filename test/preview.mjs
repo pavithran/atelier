@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const ENTRIES = ["ui", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view"];
+const ENTRIES = ["ui", "pulse", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view"];
 // The bundles are loaded once, then their folder is removed (t658: it was
 // left in the temp folder on every run).
 const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
@@ -23,6 +23,7 @@ try {
 } finally { rmSync(dir, { recursive: true, force: true }); }
 const load = (x) => modules[x];
 const ui = load("ui");
+const { projectShowcase } = load("pulse");
 const { buildFloor } = load("floor");
 const { renderHow } = load("how");
 const { attentionFor } = load("attention");
@@ -104,6 +105,15 @@ const entries = [
 ];
 
 const OWNER = "pavi";
+// The Ledger's counts of the fixture's events, by actor, kind and day, as showcaseCounts returns them.
+const showcaseCounts = (list) => {
+  const days = new Map();
+  for (const x of list) {
+    const k = `${x.actor}\n${x.kind}\n${x.at.slice(0, 10)}`;
+    days.set(k, { actor: x.actor, kind: x.kind, day: x.at.slice(0, 10), n: (days.get(k)?.n ?? 0) + 1 });
+  }
+  return { kinds: [], days: [...days.values()], merges: list.filter((x) => x.kind === "item.merged").length, taken: 0, first: null, last: null, story: null };
+};
 const attention = attentionFor(project.name, items, entries, [], now);
 const story = buildStory(project.name, items, events, OWNER, false, ui.titleOf(project));
 
@@ -268,6 +278,7 @@ export function route(url) {
     "/p/atelier/plans": () => ui.renderProjectPlans(project, empty ? [] : plans, "PAVI"),
     "/p/atelier/ship": () => ui.renderProjectShip(project, renderActions(project.name, [], [], HEAD), "PAVI"),
     "/p/atelier/settings": () => ui.renderProjectSettings(project, "PAVI"),
+    "/p/atelier/showcase": () => ui.renderProjectShowcase(project, projectShowcase(project, showcaseCounts(empty ? [] : events), empty ? [] : items, empty ? [] : events, OWNER, now), "PAVI", now),
   };
   let html = pages[path]?.() ?? null;
   if (!html && parts[0] === "p" && parts[1] === project.name) {

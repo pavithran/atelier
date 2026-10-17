@@ -1628,3 +1628,78 @@ it("a dispatch note at the limit posted with CRLF line breaks is taken and store
   expect(((await over.json()) as { error: string }).error).toBe("too_long");
   expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
 });
+
+// t757: a project's showcase page, read from the project's own record. Without
+// the route, a signed-in developer had no page that told what a project had
+// shipped, and the Overview linked to none.
+it("a project's showcase draws its figures and its eight latest merges from the record, links from the Overview, and answers a signed-out reader as the project page does", async () => {
+  const name = "pshow-route", GPT = "codex/gpt-6-astra", SONNET = "claude-code/sonnet-5.5";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  // Nine merged tasks, the first two by GPT and the rest by Sonnet, and one still open.
+  for (let i = 1; i <= 9; i++) {
+    const by = i <= 2 ? GPT : SONNET, head = String(i).repeat(40).slice(0, 40);
+    await L.newItem(`Shipped thing ${i}`, [], "owner");
+    await L.claim(`t${i}`, by);
+    await L.setFork(`t${i}`, `${name}--t${i}`, "0".repeat(40), by);
+    await L.recordPush(`t${i}`, by, head, head);
+    await L.addEvidence({ itemId: `t${i}`, claim: "npm test", grade: "observed", head, passed: true, by, at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+    await L.submit(`t${i}`, by);
+    await L.accept(`t${i}`, "owner", head);
+    await L.merged(`t${i}`, "owner", "d".repeat(40), true, head);
+  }
+  await L.newItem("Still open", [], "owner");
+  const signedIn = await signIn(TOKEN, testEnv);
+  const get = (path: string, cookie = signedIn) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: cookie ? { cookie } : {}, redirect: "manual" }), testEnv);
+
+  const res = await get(`/p/${name}/showcase`);
+  expect(res.status).toBe(200);
+  // The page's own markup: its stylesheet is inlined above it and names every class.
+  const body = await res.text();
+  const html = body.slice(body.indexOf("<main id=\"main\">"));
+  // Figures, counted from the record: nine merged all time and in the window, none sent back, two models.
+  expect(html).toContain("<dt>merged, all time</dt>");
+  expect(html).toContain("<div><dt>merged, all time</dt><dd>9</dd></div>");
+  expect(html).toContain("<div><dt>sent back, last 14 days</dt><dd>0</dd></div>");
+  expect(html).toContain("<div><dt>models built it</dt><dd>2</dd></div>");
+  // The strip is the family-coloured one, with the families that moved in its legend.
+  expect(html).toContain('class="pulse-graph bars"');
+  expect(html).toContain("--m-anthropic");
+  expect(html).toContain("--m-openai");
+  // The eight latest merges, newest first with the model that built each; the ninth is not listed.
+  const list = html.slice(html.indexOf('<ol class="pshow-merges">'), html.indexOf("</ol>", html.indexOf('<ol class="pshow-merges">')));
+  expect(list.match(/<time /g)).toHaveLength(8);
+  expect([...list.matchAll(/class="row-id" href="[^"]*\/(t\d+)"/g)].map((m) => m[1])).toEqual(["t9", "t8", "t7", "t6", "t5", "t4", "t3", "t2"]);
+  expect(list).toContain("Shipped thing 9");
+  expect(list).not.toContain("Shipped thing 1<");
+  expect(list).not.toContain("Still open");
+  expect(list).toContain("sonnet-5.5");
+  expect(list).toContain("gpt-6-astra");
+  // The reader came by a link, not a tab: the breadcrumb says Showcase and no tab is current.
+  expect(body).toContain("› <span>Showcase</span>");
+  const nav = body.slice(body.indexOf('<nav aria-label="Project">'), body.indexOf("</nav>", body.indexOf('<nav aria-label="Project">')));
+  expect(nav).toContain(`href="/p/${name}/tasks"`);
+  expect(nav).not.toContain("aria-current");
+  // The Overview links to it.
+  expect(await (await get(`/p/${name}`)).text()).toContain(`<a href="/p/${name}/showcase">Showcase</a>`);
+  // Signed out, it is answered as the project's own page is.
+  const page = await get(`/p/${name}`, "");
+  const showcase = await get(`/p/${name}/showcase`, "");
+  expect(showcase.status).toBe(page.status);
+  expect(showcase.status).not.toBe(200);
+  expect(showcase.headers.get("location")).toBe(page.headers.get("location"));
+});
+
+it("a project's showcase with nothing merged is one quiet line", async () => {
+  const name = "pshow-quiet";
+  await project(name);
+  await env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`)).newItem("Not yet", [], "owner");
+  const signedIn = await signIn(TOKEN, testEnv);
+  const res = await worker.fetch(new Request(`https://atelier.test/p/${name}/showcase`, { headers: { cookie: signedIn } }), testEnv);
+  expect(res.status).toBe(200);
+  const body = await res.text();
+  const html = body.slice(body.indexOf("<main id=\"main\">"));
+  expect(html).toContain('<p class="pshow-quiet">Nothing has merged here yet. The first merge fills this page.</p>');
+  expect(html).not.toContain("pshow-figures");
+  expect(html).not.toContain("pulse-graph");
+});

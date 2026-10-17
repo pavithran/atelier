@@ -19,7 +19,7 @@ import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -43,7 +43,7 @@ import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
-import { buildPulse, PULSE_DAYS, pulseFromCounts } from "./pulse";
+import { buildPulse, projectShowcase, PULSE_DAYS, pulseFromCounts } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
@@ -4259,7 +4259,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
 
 // The tabs a project's area holds beyond the pages that browse it. A task id
 // cannot clash with one (tN), so the order here decides.
-const PROJECT_AREA_TABS = new Set(["tasks", "flow", "plans", "ship", "settings"]);
+const PROJECT_AREA_TABS = new Set(["tasks", "flow", "plans", "ship", "settings", "showcase"]);
 
 async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refresh: number }, nonce: string): Promise<Response> {
   const { env } = c;
@@ -4314,6 +4314,14 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
       }
       case "settings":
         return html(renderProjectSettings(p, ownerName(env), ownerFactorOf(env)));
+      case "showcase": {
+        // The counts and the window the public showcase draws a project from.
+        const now = new Date();
+        const since = new Date(now.getTime() - (PULSE_DAYS + 1) * 86400_000).toISOString();
+        const [items, events] = await Promise.all([L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
+        const counts = await (L.showcaseCounts(since, timeZone()) as unknown as Promise<ShowcaseCounts>);
+        return html(renderProjectShowcase(p, projectShowcase(p, counts, items, events, ownerActor(env), now), ownerName(env), now));
+      }
     }
   }
   const res = await browse(env, c.url, ref, parts.slice(2));

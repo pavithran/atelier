@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildPulse, buildTimeline, byDay, windowDays } from "../src/pulse.ts";
+import { buildPulse, buildTimeline, byDay, projectShowcase, SHOWCASE_MERGES, windowDays } from "../src/pulse.ts";
 import { setTimeZone } from "../src/time.ts";
 
 const OWNER = "pavi";
@@ -119,5 +119,67 @@ test("the timeline groups by the day each task ended, in the owner's zone", () =
   const items = [item("t1", "merged"), item("t2", "merged"), item("t3", "merged")];
   const groups = byDay(buildTimeline([{ project, items, events }], OWNER));
   assert.deepEqual(groups.map((g) => [g.day, g.entries.map((x) => x.item.id)]), [["2026-10-06", ["t1", "t2"]], ["2026-10-05", ["t3"]]]);
+  setTimeZone(undefined);
+});
+
+// t757: the project's own showcase page, from a fixture record. The figures
+// and the merges come from the record by the global showcase's computations;
+// nothing is typed. Without the merge list and its builders this page would
+// have nothing to say about who built a task (the page did not exist).
+test("a project's showcase: the strip, four figures and the newest eight merges with the model that built each", () => {
+  setTimeZone("UTC");
+  seq = 0;
+  const builders = ["claude-code/opus-5.5", "antigravity/claude-opus-5-5", "zcode/glm-5.3", "codex/gpt-6"];
+  // Ten merged tasks, t1 the oldest, each claimed by a builder and merged an hour on from its claim, a day apart.
+  const items = Array.from({ length: 10 }, (_, i) => item(`t${i + 1}`, "merged", { title: `Task number ${i + 1}` }));
+  const events = items.flatMap((it, i) => [
+    ev(24 * (10 - i) + 2, builders[i % builders.length], "item.claimed", {}, it.id),
+    ev(24 * (10 - i) + 1, OWNER, "item.merged", { mergeCommit: "m" }, it.id),
+  ]).reverse();
+  // t0 merged long before the events read: listed last of all, so it is not among the newest eight.
+  items.push(item("t0", "merged", { updatedAt: "2026-01-01T00:00:00.000Z" }));
+  items.push(item("t11", "claimed", { owner: "codex/gpt-6" }));
+  const counts = {
+    kinds: [],
+    days: [
+      { actor: "claude-code/opus-5.5", kind: "item.submitted", day: "2026-10-06", n: 4 },
+      { actor: "zcode/glm-5.3", kind: "item.submitted", day: "2026-10-05", n: 2 },
+      { actor: OWNER, kind: "item.accepted", day: "2026-10-06", n: 1 },
+      { actor: OWNER, kind: "item.merged", day: "2026-10-06", n: 1 },
+      { actor: OWNER, kind: "item.merged", day: "2026-10-05", n: 2 },
+      { actor: "claude-code/opus-5.5", kind: "review.rejected", day: "2026-10-04", n: 3 },
+      { actor: OWNER, kind: "item.merged", day: "2026-08-01", n: 9 },   // before the window
+    ],
+    merges: 12, taken: 11, landedFast: 2, first: null, last: null, story: null,
+  };
+  const s = projectShowcase(project, counts, items, events, OWNER, NOW);
+  // The strip is the global showcase's: one column a day, by family.
+  assert.equal(s.pulse.days.length, 14);
+  assert.deepEqual(s.pulse.days.at(-1)!.byVendor, { anthropic: 4 });
+  assert.deepEqual(s.pulse.days.at(-2)!.byVendor, { zai: 2 });
+  // Figures: eleven items are merged (t0 to t10), two of them landed in fast mode.
+  assert.equal(s.mergedAllTime, 11 - 2);
+  assert.equal(s.pulse.merges, 3, "merges inside the window only");
+  assert.equal(s.pulse.sentBack, 3);
+  // Opus 5.5 under two harnesses is one model; with GLM and GPT, three models built it.
+  assert.equal(s.models, 3);
+  // The newest eight, newest first, each with its builder and family; t0 (the oldest) is not among them.
+  assert.equal(s.recent.length, SHOWCASE_MERGES);
+  assert.deepEqual(s.recent.map((m) => m.id), ["t10", "t9", "t8", "t7", "t6", "t5", "t4", "t3"]);
+  assert.deepEqual(s.recent.slice(0, 3).map((m) => [m.model, m.vendor]), [
+    ["antigravity/claude-opus-5-5", "anthropic"], ["claude-code/opus-5.5", "anthropic"], ["codex/gpt-6", "openai"],
+  ]);
+  assert.deepEqual([s.recent[3].model, s.recent[3].vendor], ["zcode/glm-5.3", "zai"]);
+  assert.equal(s.recent[0].title, "Task number 10");
+  assert.equal(s.recent[0].at, events.find((x) => x.kind === "item.merged" && x.itemId === "t10")!.at);
+  setTimeZone(undefined);
+});
+
+test("a project's showcase of a record with no merge has no merge to list and no model", () => {
+  setTimeZone("UTC");
+  const empty = { kinds: [], days: [], merges: 0, taken: 0, first: null, last: null, story: null };
+  const s = projectShowcase(project, empty, [item("t1", "claimed", { owner: "codex/gpt-6" })], [], OWNER, NOW);
+  assert.deepEqual([s.mergedAllTime, s.models, s.recent], [0, 0, []]);
+  assert.equal(s.pulse.merges, 0);
   setTimeZone(undefined);
 });
