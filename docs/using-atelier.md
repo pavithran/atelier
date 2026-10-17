@@ -192,6 +192,7 @@ that is how Atelier improves.
 | To | Run |
 | --- | --- |
 | see what waits | `atelier status` |
+| see where the time goes | `atelier flow` (see [flow.md](flow.md)) |
 | see one project | `atelier status --project NAME` |
 | read the full picture | `atelier unwrap` |
 | start something large | `atelier plan "goal" --scope GLOB --planner H/M` |
