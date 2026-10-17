@@ -1439,8 +1439,7 @@ export async function runTask(assignment, config, name, io) {
   }
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
-  io.log("nothing claimed");
-  if (!assignment) { advance({ type: "claim", empty: true }); return state; }
+  if (!assignment) { io.log("nothing claimed"); advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
   let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, exitOutcome = null, failedRun = null;
   // The recovery obligation (t363): a harness run failed in this workspace and
@@ -1841,9 +1840,13 @@ export async function runTask(assignment, config, name, io) {
     } else if (claimAttempted && !claimed) {
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
+        released = true;
         io.log("released after claim step failed");
       } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
     } else io.log("claim not released: claim or commit status is unknown");
+    // The one line that says what became of the task (t664): before it, a
+    // refused run after a good claim left only "nothing claimed" in the log.
+    if (claimed || claimAttempted) io.log(`${project}/${item.id}: run ended (${state.reason ?? error.message}); claim ${released ? "released" : "kept"}`);
     // A claim this run still holds is the loop's to give up if it gives the
     // task up (giveUpClaim), so the state says where the workspace is.
     if (claimed && !released && workspace) state = { ...state, claimHeldAt: workspace };
