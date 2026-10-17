@@ -35,6 +35,11 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
+import { ago } from "./floor.ts";
+
+// The note on the release a dispatch makes of a held task; the holder reads it
+// at its next push or finish (t391).
+const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
@@ -2649,7 +2654,8 @@ export class Ledger extends DurableObject<Env> {
   // answer names the core-file hold the override released, if one held it.
   // `why`: what chose the builder, the role assignments applied or skipped
   // included, set by the dispatch route and kept on item.dispatched.
-  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold; releasedClaim?: { from: string } } {
+    this.refuseLiveHolder(id, input);
     const item = this.checkDispatch(id, actor);
     // Only a dispatch still waiting in the queue is an offer to keep. One a
     // runner has since claimed is spent: a held or submitted task dispatched
@@ -2675,11 +2681,25 @@ export class Ledger extends DurableObject<Env> {
       this.dropToken(id, token);
       this.dropRunnerJobs(id);
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
-      this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the developer" }, d.at);
+      this.log(id, actor, "item.released", { from: item.owner, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
-    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}) };
+    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}), ...(held && item.state === "claimed" && item.owner ? { releasedClaim: { from: item.owner } } : {}) };
+  }
+
+  // A dispatch never ends a live claim by itself (t391: it did, silently, on
+  // t389, and the holder's finished work was refused). A task in the claimed
+  // state is refused unless the developer says --release; the refusal names
+  // the holder, how long ago they claimed, and the explicit ways to take the
+  // task over. A submitted or accepted task is still sent back by a dispatch,
+  // as before: its builder has stopped and handed it in.
+  refuseLiveHolder(id: string, input: Record<string, unknown>): void {
+    const item = this.item(id);
+    if (item.state !== "claimed" || !item.owner || input.release === true) return;
+    const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+    const since = row?.at ? `, who claimed it ${ago(row.at as string, new Date())}` : "";
+    throw new RuleError("held", `${id} is held by ${item.owner}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409);
   }
 
   // The owner's release of an overlap-held dispatch: only the overlap
@@ -2724,6 +2744,7 @@ export class Ledger extends DurableObject<Env> {
   // only for a dispatch that will be made.
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403);
+    if (input) this.refuseLiveHolder(id, input);
     const item = this.item(id);
     assertNotTerminal(item);
     this.assertNotPlanned(item);

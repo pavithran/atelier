@@ -93,7 +93,7 @@ for (const [standing, change] of held) {
       if (path === "merge-main claim") {
         await L.claim(id, ACTOR);
         await L.setFork(id, "task-fork", "a".repeat(40), ACTOR);
-        await L.dispatch(id, "owner", { ...dispatch, job: "merge-main", head: "a".repeat(40) });
+        await L.dispatch(id, "owner", { ...dispatch, job: "merge-main", head: "a".repeat(40), release: true });
       }
       if (path === "plan parts") {
         await L.dispatch(id, "owner", dispatch);
@@ -109,7 +109,7 @@ for (const [standing, change] of held) {
       const before = await L.item(id);
       const action = path === "handoff" ? L.handoff(id, FREE, ACTOR, "take over")
         : ["claim", "claim renewal", "plan parts", "merge-main claim"].includes(path) ? L.claim(id, ACTOR, ["plan parts", "merge-main claim"].includes(path) ? { runner: "home:test", kind: "home" } : null)
-        : L.dispatch(id, "owner", { ...dispatch, ...(path === "merge-main" ? { job: path, head: "a".repeat(40) } : {}) });
+        : L.dispatch(id, "owner", { ...dispatch, release: true, ...(path === "merge-main" ? { job: path, head: "a".repeat(40) } : {}) });
       await refused(action);
       expect((await L.item(id)).owner).toBe(before.owner);
     });
