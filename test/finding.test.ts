@@ -157,10 +157,22 @@ test("a rejection whose blocking findings are fixed is reviewed again once an ob
 
 test("a fixed rejection still counts as a round, so the round cap holds", () => {
   const T2 = "2026-10-05T12:30:00.000Z";
-  const reviews = [3, 4, 5].map((n) => ({ ...rejection(n, `${n}`.repeat(40)), at: `2026-10-05T0${n}:00:00.000Z` }));
+  const reviews = [3, 4].map((n) => ({ ...rejection(n, `${n}`.repeat(40)), at: `2026-10-05T0${n}:00:00.000Z` }));
   const here = { ...rejection(10), at: T };
   const verdicts = [verdict(20, "fixed", { review: 10 })];
   const capped = need({ reviews: [...reviews, here], verdicts, evidence: [pass(H1), { ...pass(H1), at: T2 }] });
   assert.equal(capped.needed, false);
-  assert.match(capped.needed ? "" : capped.reason, /review rounds were rejected/);
+  // Two earlier heads plus this one are the third rejected round: the cap holds only if this one counts.
+  assert.match(capped.needed ? "" : capped.reason, /^3 review rounds were rejected/);
+});
+
+test("the review brief explains a fixed rejection at this head and labels its round", () => {
+  const T2 = "2026-10-05T12:30:00.000Z";
+  const events = [verdict(20, "fixed", { review: 10 })];
+  const n = need({ item: item(), reviews: [rejection(10)], verdicts: events, evidence: [pass(H1), { ...pass(H1), at: T2 }] });
+  assert.ok(n.needed, n.needed ? "" : n.reason);
+  const brief = reviewBrief({ need: n, item: item(), events, diff: "diff --git a/src/a.ts b/src/a.ts\n+x\n", owner: OWNER });
+  assert.ok(brief.includes("A model rejected this head, and the developer refuted every blocking finding of that rejection, so it is reviewed again rather than reworked"), brief);
+  assert.ok(!brief.includes("A model rejected an earlier head"), brief);
+  assert.ok(brief.includes(`Round 1, at ${H1.slice(0, 8)} (this head)`), brief);
 });
