@@ -12,6 +12,7 @@ for `land.sh` and `queue.sh` (default `atelier`).
 
 | Script | What it does |
 | --- | --- |
+| `worktree.sh TASK` | Makes the Git worktree a builder works in (branch TASK from main, under `~/Library/Caches/ai-projects/atelier-worktrees/`) and sets the project's commit identity in that worktree's own Git config, read with `atelier identity`; the checkout's config is left alone. It stops before it makes anything when the project has no identity (t731). |
 | `run-agent.sh WHICH WORKSPACE OUTFILE BRIEF` | Runs an opencode agent (`glm`, `deepseek` or `openrouter:VENDOR/MODEL`) in a task's workspace, with its own data folder. BRIEF is the file holding the prompt, which reaches opencode on standard input; text that names no file is taken as the prompt and written to the workspace's `.scratch/` first. Pass the file, as in `run-agent.sh glm WS OUT brief.md`: `"$(cat brief.md)"` is itself an argument, and fails once the brief nears 1 MB. |
 | `review.sh WORKSPACE OUTBASE CONTEXT [MODEL]` | Has an Antigravity model review the task's commits in a throwaway clone where it may run commands, and writes its answer to `OUTBASE.md`. The prompt, written to `OUTBASE.prompt.md`, goes to `agy` on standard input. |
 | `queue.sh TASK CONTEXT NOTE` | Takes this machine's landing lock for the project, merges main into the task, and hands it to `land.sh` when the merge is clean and type-checks. |
