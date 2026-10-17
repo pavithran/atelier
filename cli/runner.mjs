@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { harnessReady } from "./harness/adapter.mjs";
 import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
-import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
+import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, lstatSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
@@ -1309,6 +1309,38 @@ export function validationBlockedReport(output) {
   return oneLine(report.slice(Math.max(start, match.index - 60), match.index + 240)).replace(/\s+/g, " ").trim();
 }
 
+// Files a finished build leaves behind (t365). On 2026-10-09 DeepSeek
+// committed all of t353 but left an empty, unreferenced src/review/skipped.ts
+// untracked; the finish refused ("commit your changes before finishing"), the
+// runner kept the claim, and the finished work sat until the developer removed
+// the file by hand. `status` is `git status --porcelain -z --untracked-files=all`;
+// the answer is every path with a change not committed, `untracked` marking
+// the ones git does not know.
+export function leftoverFiles(status) {
+  const parts = String(status ?? "").split("\0");
+  const files = [];
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (entry.length < 4) continue;
+    const code = entry.slice(0, 2);
+    // A rename or copy is followed by its source path, which is no file of its own.
+    if (/[RC]/.test(code)) i++;
+    files.push({ path: entry.slice(3), untracked: code === "??" });
+  }
+  return files;
+}
+
+// The one follow-up turn's brief: it names the files and asks for a commit or
+// a removal, in the plain commit commands every harness here allows (briefFor).
+export function leftoverBrief(files, actor) {
+  return [
+    "Your work is committed, but these files are still not committed:",
+    ...files.map((f) => `- ${oneLine(f.path)}${f.untracked ? " (untracked)" : " (changed)"}`), "",
+    "Commit each one that belongs to the task, or remove it if it does not (delete an untracked file; restore a changed one with git checkout -- FILE). Make no other change.",
+    `Commit with plain single commands: git add FILES, then git commit -m "subject" -m "Agent: ${actor}"; no heredoc, no -F -, no && chain. Do not push. Run no atelier command.`, "",
+  ].join("\n");
+}
+
 // Whether a build whose harness exited 0 and committed nothing has left the
 // task complete all the same (t453): the workspace head is the task's pushed
 // head, and that head is ahead of the task's base, so an earlier run's work
@@ -1495,6 +1527,49 @@ export async function runTask(assignment, config, name, io) {
     const context = await io.jobBrief(project, item.id, actor);
     if (!context || typeof context.text !== "string") throw new Error("the server's job brief has no text");
     return context;
+  };
+  // The leftovers of a build's harness (leftoverFiles); `leftovers` is what
+  // remains after the one follow-up turn, for the failure and the run report.
+  let leftovers = [];
+  const readLeftovers = async () => leftoverFiles(await io.git(["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: workspace, raw: true }));
+  const removeEmptyUntracked = async (files) => {
+    for (const file of files) {
+      if (!file.untracked || !io.isEmptyFile?.(join(workspace, file.path))) continue;
+      io.removeFile(join(workspace, file.path));
+      io.log(`removed the empty untracked file ${file.path} the harness left`);
+    }
+  };
+  const tidyLeftovers = async () => {
+    try {
+      if (!io.git) return { files: [] };
+      let files = await readLeftovers();
+      if (!files.length) return { files: [] };
+      io.log(`the harness committed but left ${files.length === 1 ? "this file" : "these files"} uncommitted: ${files.map((f) => f.path).join(", ")}`);
+      await removeEmptyUntracked(files);
+      files = await readLeftovers();
+      if (!files.length) return { files: [] };
+      io.log("sending the agent one follow-up turn to commit or remove them");
+      const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+      const turn = await io.brief(workspace, leftoverBrief(files, actor), null);
+      let dataHome = null;
+      try {
+        const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+        dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+        const again = await io.harness(commandFor(entry, { model, briefFile: turn.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        if (again.timedOut || again.code !== 0) io.log(`the follow-up turn ${again.timedOut ? "timed out" : `exited ${again.code}`}`);
+      } finally {
+        if (dataHome) await io.removeDataHome(dataHome).catch(() => {});
+        await io.removeBrief(turn);
+      }
+      files = await readLeftovers();
+      await removeEmptyUntracked(files);
+      files = await readLeftovers();
+      if (files.length) io.log(`still uncommitted after the follow-up: ${files.map((f) => f.path).join(", ")}`);
+      return { files, head: await io.head(workspace) };
+    } catch (error) {
+      io.log(`could not tidy the harness's leftover files: ${error.message}`);
+      return { files: [] };
+    }
   };
   const finish = async () => {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
@@ -1711,8 +1786,19 @@ export async function runTask(assignment, config, name, io) {
     // exit names that head as what the run moved from.
     // A failed run whose head cannot be read keeps its claim: the obligation
     // is recorded, and the head is information only.
-    const head = resumed ? before : harnessExit ? await io.head(workspace).catch((headError) => { headUnreadable = true; io.log(`the head could not be read after the failed harness: ${headError.message}`); return before; }) : await io.head(workspace);
+    let head = resumed ? before : harnessExit ? await io.head(workspace).catch((headError) => { headUnreadable = true; io.log(`the head could not be read after the failed harness: ${headError.message}`); return before; }) : await io.head(workspace);
     if (harnessExit && !headUnreadable) markHead = head;
+    // Files the harness left uncommitted beside its commits (t365). Empty
+    // untracked ones are removed and are no failure; anything else gets one
+    // follow-up turn to commit or remove it. Whatever is still there after
+    // that is named in the failure and the run report, and the finish refuses
+    // it as before. Any doubt (git unreadable, the follow-up failing) leaves
+    // the run as it was.
+    if (result && !resumed && !harnessExit && !result.timedOut && result.code === 0 && head !== before) {
+      const left = await tidyLeftovers();
+      leftovers = left.files;
+      if (left.head) head = left.head;
+    }
     // A harness that exited 0 and committed nothing (t453): when the head it
     // left is the task's pushed head, ahead of the base, the work is already
     // committed and pushed by an earlier run — a task sent back whose builder
@@ -1783,6 +1869,10 @@ export async function runTask(assignment, config, name, io) {
       return state;
     }
     if (state.phase !== "failed") advance({ error: error.message });
+    if (leftovers.length) {
+      const named = `files the harness left uncommitted after its commits and one follow-up turn: ${leftovers.map((f) => f.path).join(", ")}`;
+      state = { ...state, leftovers: leftovers.map((f) => f.path), detail: `${state.reason}; ${named}`.slice(0, 2000), reason: `${state.reason}; ${named}` };
+    }
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
     // The final record adds the head, the start and the reason as information.
     if (failedNow && claimed && !error.providerLimit) {
@@ -3381,6 +3471,7 @@ export function runOutcome(state) {
   // changes it.
   if (state.harnessExit?.kind === "timed-out") return "timed-out";
   if (state.harnessExit) return "refused";
+  if (state.leftovers?.length) return "harness_failed";
   if (state.reason === "harness made no new commit") return "stalled";
   if (/^the harness failed: /.test(state.reason ?? "")) return "harness_failed";
   return null;
@@ -3743,6 +3834,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   const io = {
     removeFile: (file) => rmSync(file, { force: true }),
+    isEmptyFile: (file) => { try { const s = lstatSync(file); return s.isFile() && s.size === 0; } catch { return false; } },
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     // The empty folder a criteria review job works in (runCriteriaReview).
     makeDir: (dir) => mkdirSync(dir, { recursive: true }),
