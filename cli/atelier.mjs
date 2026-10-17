@@ -1784,9 +1784,10 @@ export const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.local
 // reviews come the replies no verdict could be read from (t407), newest
 // first, each with the reason it was refused and the reply itself, whole and
 // flattened the same way: what the reviewer actually said is the evidence.
-export function formatReviews(reviews, owner = OWNER, unparsable = []) {
+export function formatReviews(reviews, owner = OWNER, unparsable = [], claims = []) {
   const ordered = newestReviews(reviews);
-  if (!ordered.length && !unparsable.length) return "No reviews are recorded.";
+  const held = claims.map((c) => `  Request ${flat(String(c.request))} at ${short(c.head)} is claimed by ${flat(c.reviewer)}, held by runner ${flat(c.runner ?? "") || "(none recorded)"} since ${at(c.claimedAt)}.`);
+  if (!ordered.length && !unparsable.length) return ["No reviews are recorded.", ...(held.length ? ["Open review claims:", ...held] : [])].join("\n");
   const lines = ordered.length ? ["Reviews:"] : [];
   for (const r of ordered) {
     const recorded = recordedText(r, owner);
@@ -1798,6 +1799,7 @@ export function formatReviews(reviews, owner = OWNER, unparsable = []) {
     lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);
     lines.push(`    Reply: ${flat(r.reply) || "(nothing written)"}`);
   }
+  if (held.length) lines.push("Open review claims:", ...held);
   return lines.join("\n");
 }
 

@@ -83,3 +83,25 @@ test("a runner leaves a signed-out harness out of its offer, says why once, and 
   assert.equal(logs.filter((l) => /claude-code is not offered: the Claude CLI is not signed in; run `claude auth login`/.test(l)).length, 1);
   assert.equal(logs.filter((l) => /claude-code is ready again/.test(l)).length, 1);
 });
+
+// t558: a review of codex/gpt-6-astra on ikon-weblog t33 was claimed again
+// at every lease by a runner that could not serve it. A task the queue still
+// lists for a harness the readiness check dropped is not taken, review or not.
+test("a runner takes no review for a harness it found not ready, even when the queue lists one", async () => {
+  const dir = mkdtempSync(join(root, "run-"));
+  const config = join(dir, "runner.json");
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["sonnet-5.5"], command: ["/x/atelier-claude", "{model}", "{brief_file}", "{verdict_file}"] }], jobs: ["review"] }));
+  const logs = [], skips = [];
+  let polls = 0;
+  const review = { project: "atelier", agent: "claude-code", model: "sonnet-5.5", actor: "claude-code/sonnet-5.5", item: { id: "t9", title: "x", head: "a".repeat(40), request: 7, dispatch: { to: "home", agent: "claude-code", model: "sonnet-5.5", job: "review", by: "owner", at: "2026-10-12T19:00:00.000Z", note: "" } } };
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config }, {
+    now: () => 1_000_000, limitFile: join(dir, "limits.json"),
+    taskIO: { log: (line) => logs.push(line), cli: async (argv) => { logs.push(`cli ${argv[0]}`); return "{}"; } },
+    harnessReady: async () => ({ ready: false, why: "the Claude CLI is not signed in" }),
+    reportReviewSkip: async (body) => { skips.push(body); },
+    wait: () => Promise.resolve(),
+    async queue() { if (++polls > 1) process.emit("SIGTERM"); return [review]; },
+  });
+  assert.equal(logs.some((l) => /^cli review-claim/.test(l)), false, "no claim was made");
+  assert.deepEqual(skips, [], "and nothing was skipped or reported");
+});

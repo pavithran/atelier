@@ -1546,6 +1546,17 @@ it("a claim records the binding of the task's stored, ordered criteria: equal fo
   expect(await L.criteria("t3")).toBe(claimed[2]);
 });
 
+it("the detail names the runner that holds each open review claim, and none once the claim is withdrawn (t558)", async () => {
+  const L = await setup("review-claim-runner", { ...policy, reviewTier: [GLM] });
+  await submittedWith(L, ONE);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
+  const claim = await L.claimReview("t1", GPT, RUNNER) as unknown as ReviewClaim;
+  const held = (await L.detail("t1") as unknown as { reviewClaims: { request: number; reviewer: string; runner: string | null }[] }).reviewClaims;
+  expect(held).toEqual([expect.objectContaining({ request: claim.request, reviewer: GPT, runner: "home:studio" })]);
+  await L.editItem("t1", "owner", { accept: TWO });
+  expect((await L.detail("t1") as unknown as { reviewClaims: unknown[] }).reviewClaims).toEqual([]);
+});
+
 it("changing criteria withdraws every standing review and live request, keeps their history and the head and checks, and changing back revives none", async () => {
   const L = await setup("criteria-withdraw", { ...policy, reviewTier: [GLM] });
   await submittedWith(L, ONE);
