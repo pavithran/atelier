@@ -1679,7 +1679,10 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
         }
       }
       if (regen?.ok && !unwritten.length) {
-        await git(["add", "-A", "--", ...conflicts], { cwd: dir });
+        // Everything the command wrote is staged, not only the conflicts: a
+        // file it changed outside them would otherwise stay dirty (t344).
+        const produced = dirtyPaths(await git(["status", "--porcelain=v1", "-z", "-uall"], { cwd: dir, raw: true }), { unstaged: true });
+        await git(["add", "-A", "--", ...new Set([...conflicts, ...produced])], { cwd: dir });
         await git(["commit", "--quiet", "--no-edit"], { cwd: dir });
         settled = "atelier land, taking either side and regenerating";
         settledConflicts = conflicts;
@@ -1816,7 +1819,8 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
       // Only what the command wrote is committed: the tree was clean before
       // it ran (checked above), so the files now dirty are the command's own
       // paths, staged by name, never `git add -A`.
-      await git(["add", "--", ...dirtyPaths(after)], { cwd: dir });
+      const toStage = dirtyPaths(after, { unstaged: true });
+      if (toStage.length) await git(["add", "-A", "--", ...toStage], { cwd: dir });
       await git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
       changed = true;
       print("Committed what the regeneration changed.");
@@ -1830,12 +1834,14 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
 // two status characters, a space and the path, ended by NUL; a rename or copy
 // is followed by a second record holding the old path, which is skipped. The
 // listing must be read untrimmed: its first record may start with a space.
-export function dirtyPaths(listing) {
+// With unstaged, a path whose work-tree column is blank is left out: it is
+// already staged, as `git rm` leaves a deletion, and `git add` refuses it.
+export function dirtyPaths(listing, { unstaged = false } = {}) {
   const records = listing.split("\0"), paths = [];
   for (let i = 0; i < records.length; i++) {
     const r = records[i];
     if (r.length < 4) continue;
-    paths.push(r.slice(3));
+    if (!unstaged || r[1] !== " ") paths.push(r.slice(3));
     if (r[0] === "R" || r[0] === "C" || r[1] === "R" || r[1] === "C") i++;
   }
   return paths;

@@ -691,3 +691,19 @@ test("dirtyPaths reads modified, staged, deleted, untracked, renamed, spaced and
   assert.deepEqual(dirtyPaths(listing), ["gen-fixtures.txt", "staged.txt", "gone.txt", "new.txt", "new name.txt", "my file.txt", 'caf\u00e9 "q".txt']);
   assert.deepEqual(dirtyPaths(""), []);
 });
+
+for (const [how, command] of [["rm", "rm obsolete.json"], ["git rm", "git rm -q obsolete.json"]]) {
+  test(`a regenerate command that removes a tracked file with ${how} still has the deletion committed (t344, round 2)`, async (t) => {
+    if (!canInspectSlots(t)) return;
+    const f = await landFixture(t, { mainChange: { file: "obsolete.json", text: "{}\n", message: "Main adds a fixture" } });
+    f.box.regen = command;
+    const r = await f.run(f.checkout, "land", "t1");
+    assert.equal(r.status, 0, r.output);
+    assert.equal(git(f.workspace("t1"), "ls-files", "obsolete.json"), "");
+    assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "");
+  });
+}
+
+test("dirtyPaths with unstaged leaves out a path already staged, such as a deletion git rm made (t344, round 2)", () => {
+  assert.deepEqual(dirtyPaths("D  gone.json\0 D other.json\0?? new.txt\0M  staged.txt\0", { unstaged: true }), ["other.json", "new.txt"]);
+});
