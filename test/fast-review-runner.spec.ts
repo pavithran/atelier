@@ -93,7 +93,7 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
     brief: async () => ({ file: "/work/brief.txt" }), removeBrief: async () => {},
     writeDiff: async () => ({ file: "/work/diff.txt" }), removeDiff: () => {},
     verdictPath: () => "/work/verdict.txt",
-    readVerdict: () => "VERDICT: APPROVE\nSUMMARY: The merge adds the task's change and nothing else.\nCRITERION 1: met — Read the diff against the merge's first parent.",
+    readVerdict: () => "VERDICT: APPROVE\nSUMMARY: The merge adds the task's change and nothing else.\nBLOCKING: 0\nCRITERION 1: met — Read the diff against the merge's first parent.",
     harness: async () => ({ code: 0, timedOut: false }),
     dataHome: async () => null, removeDataHome: async () => {},
   };

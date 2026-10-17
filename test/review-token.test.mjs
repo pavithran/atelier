@@ -57,7 +57,7 @@ function fixture(options = {}) {
     async brief(workspace, text) { calls.push({ brief: text, workspace }); return { file: "/cache/work/atelier/brief.txt" }; },
     async writeDiff(workspace, text) { calls.push({ writeDiff: text }); return { file: "/cache/work/atelier/diff.txt" }; },
     verdictPath: () => "/cache/work/atelier/verdict.txt",
-    readVerdict: () => "VERDICT: APPROVE\nSUMMARY: Checked the diff.",
+    readVerdict: () => "VERDICT: APPROVE\nSUMMARY: Checked the diff.\nBLOCKING: 0",
     async harness(argv, cwd, env) { calls.push({ harness: argv, cwd, env }); return { code: 0, timedOut: false }; },
     async removeBrief() {}, removeDiff: () => {},
     async dataHome(workspace) { return { dir: `${workspace}-opencode-data` }; },

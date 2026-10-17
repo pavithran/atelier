@@ -89,7 +89,7 @@ test("a runner with the README's generic wrapper hands its agents both rule text
   chmodSync(wrapper, 0o755);
   // my-agent stands in for the harness: it keeps what it was told and prints a verdict.
   const told = join(dir, "told.txt");
-  writeFileSync(join(dir, "my-agent"), `#!/bin/sh\ncat >> "${told}"\nprintf 'VERDICT: APPROVE\\nSUMMARY: ok.\\nCRITERION 1: met — ran it.\\n'\n`);
+  writeFileSync(join(dir, "my-agent"), `#!/bin/sh\ncat >> "${told}"\nprintf 'VERDICT: APPROVE\\nSUMMARY: ok.\\nBLOCKING: 0\\nCRITERION 1: met — ran it.\\n'\n`);
   chmodSync(join(dir, "my-agent"), 0o755);
   const config = { agents: [{ agent: "my-agent", models: ["m1"], command: [wrapper, "{model}", "{brief_file}", "{workspace}", "{plan_file}", "{diff_file}", "{verdict_file}"] }], tokens: { m1: "agent.m1" } };
   const workspace = join(dir, "ws");
