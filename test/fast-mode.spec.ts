@@ -71,6 +71,28 @@ it("the owner alone switches modes; fast is a standing decision until the switch
   expect((await api("POST", "/projects/fast-switch/items/t1/landed-fast", GPT, receipt(C1, M1))).status).toBe(403);
 });
 
+// Astra, 2026-10-13, finding 7: a landing with no reviewer, or whose ask was
+// refused, left nothing saying a review was still due.
+it("a fast landing is owed its post-merge review until one is asked, and the answer and the status say so", async () => {
+  const name = "fast-owed";
+  const L = await project(name);
+  const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  const none = await (await api("POST", `/projects/${name}/items/${item.id}/landed-fast`, "owner", receipt(C1, M1))).json() as { owed: boolean; review: unknown };
+  expect(none).toMatchObject({ owed: true, review: null });
+  expect((await L.fastLandings())[0]).toMatchObject({ owed: true, review: { state: "not requested" } });
+  // A refused ask (the builder reviewing its own landing) leaves it owed too, and says why.
+  const again = await (await api("POST", `/projects/${name}/items/${item.id}/landed-fast`, "owner", { ...receipt(C1, M1), reviewer: OPUS })).json() as { owed: boolean; review: { error: string } };
+  expect(again).toMatchObject({ owed: true, review: { error: "self_review" } });
+  // Back in full mode the obligation stays on the record.
+  expect((await L.setMode("owner", "full", undefined)).landed?.[0]).toMatchObject({ item: item.id, owed: true });
+  expect((await L.fastLandings())[0]).toMatchObject({ owed: true });
+  // Asking one settles the obligation for as long as the request stands.
+  await L.requestReview(item.id, "owner", SONNET, POOL);
+  expect((await L.fastLandings())[0]).toMatchObject({ owed: false, review: { state: "open" } });
+});
+
 it("a landing is refused in full mode, records its receipt in fast mode, and queues a same-family post-merge review", async () => {
   const L = await project("fast-land");
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });

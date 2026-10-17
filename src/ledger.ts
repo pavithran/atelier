@@ -25,7 +25,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
 } from "./rules";
@@ -104,6 +104,8 @@ export interface FastLanding {
   title: string;
   receipt: FastReceipt;
   review: { state: string; request: number | null; by: string | null };
+  // Whether the post-merge review is still due (rules.ts postMergeOwed).
+  owed: boolean;
   fix: string | null;
 }
 
@@ -5247,7 +5249,7 @@ export class Ledger extends DurableObject<Env> {
       const review = this.reviewsFor(id).filter((v) => v.head === receipt.mergeCommit).at(-1);
       const fix = this.sql.exec(`SELECT item_id FROM events WHERE kind = 'item.fix_of' AND json_extract(data, '$.itemId') = ? ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
       const reviewState = review ? (review.approve ? "approved" : "rejected") : req ? (req.state as string) : "not requested";
-      return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, fix: fix ? fix.item_id as string : null };
+      return { item: id, title: this.item(id).title, receipt, review: { state: reviewState, request: req ? req.id as number : null, by: review?.by ?? null }, owed: postMergeOwed(reviewState), fix: fix ? fix.item_id as string : null };
     });
   }
 
