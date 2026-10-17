@@ -23,7 +23,7 @@ import type { InboxEntry, Item } from "./rules.ts";
 // can review (its assess notice names no reviewer from the pool) waits on the
 // owner's override, or on the owner starting a reviewer that qualifies, so it
 // comes after the acceptance it stands in for.
-export const OWNER_CALLS = ["clear-secret", "unblock", "decide-plan", "approve-plan", "accept", "override", "ship", "start-runner"] as const;
+export const OWNER_CALLS = ["clear-secret", "unblock", "decide-plan", "approve-plan", "accept", "override", "ship", "gave-up", "start-runner"] as const;
 export type OwnerCall = typeof OWNER_CALLS[number];
 
 export const OWNER_CALL_LABEL: Record<OwnerCall, string> = {
@@ -34,6 +34,7 @@ export const OWNER_CALL_LABEL: Record<OwnerCall, string> = {
   accept: "Accept",
   override: "No reviewer",
   ship: "Ship",
+  "gave-up": "Runner gave up",
   "start-runner": "No runner",
 };
 
@@ -60,7 +61,7 @@ export interface OwnerTask {
 // aliases, not as a second rule.
 const LEGACY_KIND: Record<OwnerCall, InboxEntry["kind"]> = {
   "clear-secret": "blocked", unblock: "blocked", "decide-plan": "plan-blocked", "approve-plan": "approve-plan",
-  accept: "accept", override: "assess", ship: "ship", "start-runner": "blocked",
+  accept: "accept", override: "assess", ship: "ship", "gave-up": "gave-up", "start-runner": "blocked",
 };
 export interface LegacyFields { kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string }
 export function legacyFields(t: OwnerTask): LegacyFields {
@@ -131,6 +132,10 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   if (planBlocked) return own("decide-plan", "Read the blocked plan and decide how it goes on.", `atelier plan show ${item.id}${flag}`, planBlocked.reason);
   const proposed = has("approve-plan");
   if (proposed) return own("approve-plan", "Read the planner's split, then approve it by its hash or send it back with a note.", `atelier plan show ${item.id}${flag}`, proposed.reason);
+  // A runner gave the task up and released it (t584): the developer decides
+  // whether to send it out again or change it.
+  const gaveUp = item.state === "open" ? has("gave-up") : undefined;
+  if (gaveUp) return own("gave-up", "Read why a runner gave this task up and released it, then dispatch it again or change it.", `atelier dispatch ${item.id}${flag}`, gaveUp.reason);
   const ready = has("accept");
   // The owner's path for a submitted task is atelier land, which reviews,
   // accepts and merges it (t495).
@@ -197,7 +202,9 @@ export function attentionFor(
   const ordered = [...items].sort((a, b) => compare(a.createdAt, b.createdAt) || compare(a.id, b.id));
   for (const item of ordered) {
     const queued = taskStage(item) === "queued";
-    if (queued && !offers) unread++;
+    // A task a runner gave up is the developer's call whether or not a runner
+    // is offered (t584), so it is no queued task whose runner is unknown.
+    if (queued && !offers && !byItem.get(item.id)?.some((x) => x.kind === "gave-up")) unread++;
     const noRunner = queued && offers ? unoffered(item.dispatch!, offers, now, project) : undefined;
     const placed = placeTask(project, item, byItem.get(item.id) ?? [], noRunner);
     if (!placed) continue;

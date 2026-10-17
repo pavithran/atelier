@@ -291,12 +291,13 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
   failing: ["Checks failed", "bad"],
   "approve-plan": ["Plan to approve", "ask"],
   "plan-blocked": ["Plan blocked", "bad"],
+  "gave-up": ["Runner gave up", "bad"],
 };
 
 // The owner's calls and the pipeline's stages as the waiting lists tag them
 // (attentionFor in src/attention.ts places each task once).
 const CALL_TONE: Record<OwnerTask["call"], string> = {
-  "clear-secret": "bad", unblock: "ask", "decide-plan": "bad", "approve-plan": "ask", accept: "go", override: "bad", ship: "ask", "start-runner": "bad",
+  "clear-secret": "bad", unblock: "ask", "decide-plan": "bad", "approve-plan": "ask", accept: "go", override: "bad", ship: "ask", "gave-up": "bad", "start-runner": "bad",
 };
 const callTag = (t: OwnerTask) => tag(OWNER_CALL_LABEL[t.call], CALL_TONE[t.call]);
 
@@ -431,6 +432,7 @@ const CALL_STATE: Record<OwnerTask["call"], [string, string]> = {
   accept: ["Ready to accept", "go"],
   override: ["Needs review", "signal"],
   ship: ["To ship", "signal"],
+  "gave-up": ["Runner gave up", "bad"],
   "start-runner": ["No runner", "bad"],
 };
 
