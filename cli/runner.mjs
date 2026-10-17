@@ -1893,7 +1893,7 @@ export async function runFastBuild(assignment, config, name, io) {
     claimAttempted = true;
     let taken;
     try {
-      const out = String(await io.cli(["fast", "take", item.id, "--project", project, "--as", actor, "--runner", name, "--json"]) ?? "");
+      const out = String(await io.cli(["fast", "take", item.id, "--project", project, "--as", actor, "--runner", name, ...(item.dispatch?.at ? ["--dispatch", item.dispatch.at] : []), "--json"]) ?? "");
       taken = JSON.parse(out.trim().split("\n").filter(Boolean).at(-1) ?? "null");
     } catch (error) {
       if (FAST_FALLBACK.test(error.message ?? "")) {
