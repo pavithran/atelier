@@ -5640,7 +5640,7 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
+    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -6785,6 +6785,15 @@ export class Ledger extends DurableObject<Env> {
     if (!row) return null;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
     return { request: row.id as number, reviewer: `${dispatch.agent}/${dispatch.model}` };
+  }
+
+  // The review claims held on the task now, each with the runner the claim
+  // recorded (t558), for `atelier show --reviews`. A claim whose lease has
+  // lapsed is not held, so the expiry runs first.
+  openReviewClaims(item: string): { request: number; head: string; reviewer: string; runner: string | null; claimedAt: string }[] {
+    this.expireReviewClaims();
+    return this.sql.exec(`SELECT id, head, claimedBy, runner, claimedAt FROM review_requests WHERE item = ? AND state = 'claimed' AND superseded IS NULL ORDER BY id`, item).toArray()
+      .map((r) => ({ request: r.id as number, head: String(r.head), reviewer: String(r.claimedBy), runner: (r.runner as string | null) ?? null, claimedAt: String(r.claimedAt) }));
   }
 
   // The runners that have skipped review request `request`, as the landing's

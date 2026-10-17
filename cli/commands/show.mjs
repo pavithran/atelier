@@ -54,13 +54,13 @@ export default async function showCommand() {
   // only `start` printed, and `start` claims the task. Absent when the task
   // has none or the server sends no detail (t710).
   const filed = typeof d.item?.brief === "string" && d.item.brief ? d.item.brief : null;
-  if (args.json) return console.log(JSON.stringify({ ...brief, ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
+  if (args.json) return console.log(JSON.stringify({ ...brief, ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
   if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
   if (prereview || fence) blocks.push([...(prereview ? prereviewLines(prereview) : []), ...(fence ? [`Fenced: ${fenceText(id, fence)}`] : [])].join("\n"));
   if (failures.length) blocks.push(failureSummary(id, d.item.head, failures));
-  if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? []));
+  if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [], d?.reviewClaims ?? []));
   if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));
   console.log(blocks.join("\n\n"));
 }
