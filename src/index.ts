@@ -2734,14 +2734,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the owner names, which may be of the builder's family.
     case "landed-fast": {
       requireOwner(env, actor);
-      // The receipt's commits are looked for in the project's repository
-      // (t601); a repository that cannot be read refuses the receipt.
-      const baseline: { readable: boolean; found: string[] } = { readable: true, found: [] };
-      try {
-        using repo = await env.ARTIFACTS.get((await L.project()).repo);
-        for (const c of [body.commit, body.mergeCommit, body.testedHead]) if (typeof c === "string" && /^[a-f0-9]{40,64}$/.test(c) && await repo.readCommit(c)) baseline.found.push(c);
-      } catch (err) { console.error("fast receipt: repository unreadable", err); baseline.readable = false; }
-      const landed = await L.landedFast(id, actor, body, baseline);
+      const landed = await L.landedFast(id, actor, body);
       const reviewer = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
       let review: unknown = null;
       if (reviewer) {

@@ -10,7 +10,7 @@
 // command. Anything that fails resets main to where it started, so main is
 // never left half-merged. Only on success are the receipts recorded, one per
 // task, through `record`, after they are written under .git so a failed one
-// can be finished with recordPending (t602). It never deploys; the
+// can be finished with recordPending (t602). It never pushes or deploys; the
 // caller prints the owner's next commands.
 //
 // The default test run (t588) is in a temporary clean clone of the batch's
@@ -559,7 +559,7 @@ export async function fastLand(options) {
 // and the push refused them at the very end), and the commits fast land
 // makes are by the project. The command passes it always; without it,
 // nothing is checked and commits are made as Git decides.
-async function landBatch({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, project = null, identity = null, publish = null, log = () => {} }) {
+async function landBatch({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, project = null, identity = null, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -802,18 +802,6 @@ async function landBatch({ cwd, pairs, titles, reason, typecheck, test, regen, c
   // recorded, and recordPending finishes it (Astra's audit of 2026-10-13,
   // finding 9).
   const head = scanned;
-  // Main is published to the baseline before any receipt is posted, since the
-  // server records a receipt only for commits the baseline holds (t601), so a
-  // normal fast land records in one go. A publish that fails leaves the batch
-  // on main and the receipts in their file for atelier fast record.
-  if (publish) {
-    log(`publishing main; the receipts are kept in ${file}`);
-    try { await publish(head); }
-    catch (err) {
-      const ids = pending.receipts.map((x) => x.task);
-      return { ok: false, start, head, landed: [], already: [], recorded: [], unrecorded: ids, pending: file, failure: { step: "publish main", detail: err?.message ?? String(err), merged: true } };
-    }
-  }
   const done = await postReceipts(file, pending, record);
   return { start, head, ...done };
 }
