@@ -127,7 +127,7 @@ test("runReview puts the claim's criteria reviews and resolutions in the review 
     criteriaReviews: [{ id: 3, itemId: "t21", rev: 1, criteria: CRITERIA, authors: ["owner"], reviewer: `opencode/${model}`, state: "rejected", requestedAt: "2026-10-10T12:00:00.000Z", summary: "Vague.", findings: [{ file: "criterion-1", line: null, severity: "blocking", text: "Fast is not a measurement." }] }],
     criteriaResolutions: [{ review: 3, index: 1, verdict: "refuted", note: "200 ms is the measurement", by: "owner", at: "2026-10-10T12:30:00.000Z" }],
   };
-  const { io, calls } = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Fine.\nCRITERION 1: met — Ran the timing test; it fails without the change." });
+  const { io, calls } = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Fine.\nBLOCKING: 0\nCRITERION 1: met — Ran the timing test; it fails without the change." });
   io.cli = async (argv, cwd, callOptions) => { calls.push({ argv, cwd, token: callOptions?.token }); return argv[0] === "review-claim" ? JSON.stringify(claim) : "{}"; };
   io.clone = async () => {};
   io.diff = async () => "diff --git a/src/search.ts b/src/search.ts\n+fast\n";
@@ -194,7 +194,7 @@ test("runReview lets the code reviewer defer a criterion the claim's criteria re
     const state = await runReview({ ...assignment, item: { id: "t21", dispatch: { job: "review" } } }, config, "home:studio", io);
     return { state, calls, brief: calls.find((c) => c.brief).brief };
   };
-  const deferred = "VERDICT: APPROVE\nSUMMARY: Fine.\nCRITERION 1: met — Broke the timing test and watched it fail.\nCRITERION 2: deferred — The banner is wired to the session; the owner sees it once signed in.";
+  const deferred = "VERDICT: APPROVE\nSUMMARY: Fine.\nBLOCKING: 0\nCRITERION 1: met — Broke the timing test and watched it fail.\nCRITERION 2: deferred — The banner is wired to the session; the owner sees it once signed in.";
   const flagged = await run(claimWith([{ criterion: 2, by: "owner", text: "Signing in needs a real account." }]), deferred);
   assert.equal(flagged.state.phase, "reviewed", flagged.state.reason);
   assert.ok(flagged.brief.includes("### Checks after deploy"), flagged.brief);

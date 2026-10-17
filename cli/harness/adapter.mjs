@@ -125,7 +125,7 @@ export function verificationPrompt(brief, diff) {
 // review after review in prose with no VERDICT line, 48 replies released
 // overnight on 2026-10-13 ("the reply states no verdict"), yet answered at
 // once when the brief ended by demanding the line as the reply's last (t576).
-export const VERDICT_DEMAND = "Your reply MUST end with exactly one line, the last line of your reply, either VERDICT: APPROVE or VERDICT: REJECT, preceded by a SUMMARY: line on what you checked and one FINDING: blocking|follow-up PATH:LINE text line per finding.";
+export const VERDICT_DEMAND = "Your reply MUST end with exactly one line, the last line of your reply, either VERDICT: APPROVE or VERDICT: REJECT, preceded by a SUMMARY: line on what you checked, a BLOCKING: N line with the number of blocking findings (0 for none) and one FINDING: blocking|follow-up PATH:LINE text line per finding.";
 
 // The second ask, in the same opencode session, when the first reply states
 // no verdict: the lines alone, no new review (t576). A change with
@@ -140,7 +140,7 @@ export function verdictFollowUp(criteria) {
   if (!count) return VERDICT_FOLLOW_UP;
   return [
     VERDICT_FOLLOW_UP_HEAD,
-    `Reply with only these lines: a SUMMARY: line on what you checked, one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), one CRITERION line for each of the ${count} acceptance criteria, numbered as the brief's reply format numbers them, saying met or unmet (or deferred, only where the brief allows it) and then how you proved it: what you did and what you saw, from your review above (an approval needs every criterion met), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.`,
+    `Reply with only these lines: a SUMMARY: line on what you checked, a BLOCKING: N line with the number of blocking findings (0 for none), one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), one CRITERION line for each of the ${count} acceptance criteria, numbered as the brief's reply format numbers them, saying met or unmet (or deferred, only where the brief allows it) and then how you proved it: what you did and what you saw, from your review above (an approval needs every criterion met), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.`,
     "In this shape, with your own words after each colon and dash:",
     "SUMMARY: What you checked, in one sentence.",
     ...Array.from({ length: count }, (_, i) => `CRITERION ${i + 1}: met — What you did to prove criterion ${i + 1} met, and what you saw.`),
@@ -151,7 +151,7 @@ export function verdictFollowUp(criteria) {
 const VERDICT_FOLLOW_UP_HEAD = "Your reply above states no verdict, so Atelier cannot read it. Do not review again and run nothing.";
 export const VERDICT_FOLLOW_UP = [
   VERDICT_FOLLOW_UP_HEAD,
-  "Reply with only these lines: a SUMMARY: line on what you checked, one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.",
+  "Reply with only these lines: a SUMMARY: line on what you checked, a BLOCKING: N line with the number of blocking findings (0 for none), one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.",
 ].join("\n");
 
 // The prompt for the job, which goes to the harness on standard input.

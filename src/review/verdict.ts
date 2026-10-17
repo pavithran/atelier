@@ -42,7 +42,16 @@ export type ParsedVerdict =
 // finding is then an approval, and read as one: it needs every CRITERION
 // line, met. The reply the reviewer wrote is not changed, and an approval
 // stays an approval.
+//
+// `counted` (t718) is set for a code review, whose brief asks for a count line
+// (replyFormat's `counted`): the reply must give exactly one BLOCKING: N line,
+// N must equal the number of blocking findings the reply itself lists, and
+// every blocking finding must name a line, not only a file. A reply that does
+// not is refused, so the request is released and asked again. Unset, none of
+// this is read, which is how a criteria review, a pre-review and a
+// verification, whose briefs ask for no count, are read as they were.
 export interface VerdictOptions {
+  counted?: boolean;
   checks?: boolean;
   deferred?: readonly number[];
   settled?: readonly Finding[];
@@ -81,6 +90,18 @@ const FORMAT_EXAMPLES = [
   "SUMMARY: One sentence on what you checked and what you found.",
   "FINDING: follow-up src/example.ts:12 What is wrong, and why it matters.",
 ];
+
+// A code review's reply begins its findings with the count of the blocking
+// ones (t718, after the review guides of Anthropic's code owners): a count a
+// reader can check against the lines, so a reply that says "nothing to fix"
+// while listing a blocker, or lists a blocker with no line to look at, is
+// refused rather than posted.
+const COUNT_EXAMPLE = "BLOCKING: 0";
+const COUNT_RULE = "Write one BLOCKING line with the number of blocking findings you list, 0 when there are none; it must equal the number of FINDING lines marked blocking. A blocking finding names its file and its line, as PATH:LINE, so the developer can look at the code it means.";
+const examples = (counted: boolean) => counted
+  ? [...FORMAT_EXAMPLES.slice(0, 4), COUNT_EXAMPLE, ...FORMAT_EXAMPLES.slice(4)]
+  : FORMAT_EXAMPLES;
+const rules = (counted: boolean) => counted ? [...FORMAT_RULES, COUNT_RULE] : FORMAT_RULES;
 
 const FORMAT_RULES = [
   "The VERDICT line says APPROVE or REJECT and nothing else. Do not write APPROVE, APPROVED, REJECT or REJECTED in capitals anywhere else in your reply: a reply that says both is not read as a verdict.",
@@ -122,9 +143,9 @@ export const CRITERIA_REPLY_FORMAT = [...FORMAT_EXAMPLES, CHECK_EXAMPLE, "", ...
 // line may say deferred, with what the change built for them, since neither
 // the builder nor the reviewer can verify them in a workspace; parseVerdict
 // is handed the same numbers.
-export function replyFormat(criteria: number, own = 0, deferred: readonly number[] = []): string {
+export function replyFormat(criteria: number, own = 0, deferred: readonly number[] = [], counted = false): string {
   const count = Number.isSafeInteger(criteria) && criteria > 0 ? criteria : 0;
-  if (!count) return REPLY_FORMAT;
+  if (!count) return counted ? [...examples(true), "", ...rules(true), FORMAT_END].join("\n") : REPLY_FORMAT;
   const mine = Number.isSafeInteger(own) && own > 0 ? own : 0;
   const flagged = [...new Set(deferred.filter((n) => Number.isSafeInteger(n) && n >= 1 && n <= count))].sort((a, b) => a - b);
   // How the reply numbers the criteria: as the brief's one list numbers them
@@ -134,11 +155,11 @@ export function replyFormat(criteria: number, own = 0, deferred: readonly number
     ? `numbered across both lists above: the task's own acceptance criteria keep the numbers its list carries, 1 to ${mine}, and the plan's acceptance criteria for this part follow as criteria ${mine + 1} to ${count}, though the plan's list above numbers them from 1`
     : "numbered as the brief numbers them";
   return [
-    ...FORMAT_EXAMPLES,
+    ...examples(counted),
     "CRITERION 1: met — What you did to prove criterion 1 met, and what you saw.",
     ...(flagged.length ? [`CRITERION ${flagged[0]}: deferred — What the change built for criterion ${flagged[0]}, which is checked after deploy.`] : []),
     "",
-    ...FORMAT_RULES,
+    ...rules(counted),
     `${criteriaRule(count)}, ${numbering}: CRITERION n, then met or unmet, then how it was proved — what you did, and what you saw. Prefer breaking the change and watching a test fail over reading the code: say what you broke and which test failed. An approval needs every criterion met and proved; one you cannot prove met is unmet, and unmet blocks.`,
     ...(flagged.length ? [`${flagged.length === 1 ? `Criterion ${flagged[0]} was` : `Criteria ${flagged.join(", ")} were`} flagged by the review of the acceptance criteria as ${flagged.length === 1 ? "a check" : "checks"} after deploy: the builder could not verify ${flagged.length === 1 ? "it" : "them"} in a workspace and neither can you. For ${flagged.length === 1 ? "it" : "each"} write CRITERION n, then deferred, then what the change built for it and what the developer or the orchestrator checks after deploy; met is allowed only when you proved it. Deferred is refused on any other criterion: prove it met, or reject with a blocking finding.`] : []),
     FORMAT_END,
@@ -226,6 +247,18 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   // readings of the same check, not two checks.
   const twice = checks.map((c) => c.criterion).filter((n, i, all) => all.indexOf(n) !== i);
   if (twice.length) refuse(`the reply flags criterion ${twice[0]} as a check after deploy twice; write one CHECK line per criterion`);
+  // A counted reply (t718) says how many of its findings block, and each of
+  // those names a line. This reads the reply as written, before the runner's
+  // settling replaces its findings below: the count is the reviewer's own.
+  if (options.counted) {
+    const stated = [...new Set(lines.counts)];
+    if (!stated.length) refuse("the reply has no BLOCKING line: a review begins its findings with the count of blocking findings, as BLOCKING: 0");
+    if (stated.length > 1) refuse(`the reply gives different counts of blocking findings: ${stated.join(" and ")}`);
+    const written = findings.filter((f) => f.severity === "blocking");
+    if (stated[0] !== written.length) refuse(`the reply says BLOCKING: ${stated[0]} and lists ${written.length} blocking ${written.length === 1 ? "finding" : "findings"}`);
+    const unplaced = written.filter((f) => f.line === null);
+    if (unplaced.length) refuse(`a blocking finding names a line, as PATH:LINE; ${unplaced.length === 1 ? `the one in ${unplaced[0].file} does not` : `${unplaced.length} do not`}`);
+  }
   if (verdict === "reject" && options.settled) {
     findings = [...options.settled];
     if (!findings.some((f) => f.severity === "blocking")) verdict = "approve";
@@ -460,6 +493,10 @@ const BARE = new RegExp(`^(approved?|reject(?:ed)?)\\s*${E}\\s*[.!]?\\s*${E}\\s*
 const FINDING_COLON = new RegExp(`^finding${E}\\s*:`, "i");
 const findingHead = (line: string) => FINDING_COLON.test(line) || /^FINDING\s/.test(line);
 const FINDING_LINE = new RegExp(`^finding${E}\\s*:?\\s*${E}\\s*\\[?([a-z_-]+)\\]?${E}\\s*:?\\s+(\\S+)\\s+(.+)$`, "i");
+// The count line of a counted reply (t718): "BLOCKING: 2", decoration and a
+// closing full stop allowed. "FINDING: blocking ..." starts with FINDING and
+// is read as a finding before this is tried.
+const COUNT_LINE = new RegExp(`^blocking${E}\\s*:\\s*${E}\\s*(\\d{1,6})\\s*${E}\\s*[.!]?\\s*${E}\\s*$`, "i");
 const SUMMARY_LINE = new RegExp(`^summary${E}\\s*:\\s*${E}\\s*(.*?)\\s*${E}\\s*$`, "i");
 // A CRITERION line starts with "criterion" and its number, bracketed or not,
 // colon or not, in any case; "Criteria:" is a heading and "criterion" in
@@ -488,7 +525,8 @@ const CHECK_LINE = new RegExp(`^check${E}\\s*:?\\s*${E}\\s*(?:criterion[-\\s]*)?
 // check after deploy (t457).
 type CriterionState = "met" | "unmet" | "deferred";
 
-function lineStatements(reply: string, criteria: number, withChecks: boolean): { verdicts: Statement["verdict"][]; findings: Finding[]; checks: PostDeployCheck[]; summary: string[]; criteria: Map<number, CriterionState> } {
+function lineStatements(reply: string, criteria: number, withChecks: boolean): { verdicts: Statement["verdict"][]; findings: Finding[]; checks: PostDeployCheck[]; summary: string[]; counts: number[]; criteria: Map<number, CriterionState> } {
+  const counts: number[] = [];
   const verdicts: Statement["verdict"][] = [];
   const findings: Finding[] = [];
   const checks: PostDeployCheck[] = [];
@@ -504,6 +542,7 @@ function lineStatements(reply: string, criteria: number, withChecks: boolean): {
     // "Verdict:" must be the verdict alone, or the reply is refused.
     else if (VERDICT_HEAD.test(line) && !VERDICT_TITLE.test(line)) refuse(`${at}: a VERDICT line says APPROVE or REJECT and nothing else`);
     else if (findingHead(line)) findings.push(findingLine(line, at));
+    else if (COUNT_LINE.test(line)) counts.push(Number(COUNT_LINE.exec(line)![1]));
     else if (withChecks && checkHead(line)) checks.push(checkLine(line, at));
     else if (criteria && criterionHead(line)) {
       const c = criterionLine(line, at, criteria);
@@ -516,7 +555,7 @@ function lineStatements(reply: string, criteria: number, withChecks: boolean): {
       if (s && plain(s[1])) summary.push(plain(s[1]));
     }
   });
-  return { verdicts, findings, checks, summary, criteria: states };
+  return { verdicts, findings, checks, summary, counts, criteria: states };
 }
 
 // One CRITERION line: the criterion's number as the brief numbers it, met,
