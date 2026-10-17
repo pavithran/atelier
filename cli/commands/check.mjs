@@ -6,6 +6,8 @@ import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.
 import { appliesText, refusalOf, refusalText } from "../../src/checks.ts";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, checkInSandbox, cleanClone, cliState, die, doneChecks, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
+const FLAKE_NOTE = "failed once, then passed on a rerun at the same head";
+
 // Observed evidence: run each required check (or the given command) in a
 // clean clone of exactly the head Artifacts holds, and record the result.
 export default async function checkCommand() {
@@ -34,6 +36,16 @@ export default async function checkCommand() {
   // token in the workspace's Git settings.
   const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
   let failed = 0, recorded, mainHead, provenance = "";
+  const evidenceBody = (cmd, r, note) => {
+    const failureLines = !r.passed && r.output.length > LOCAL_OUTPUT_TAIL - provenance.length ? collectFailureLines(r.output) : "";
+    const lead = [note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
+    return {
+      kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
+      outputTail: lead ? `${lead}\n\n${r.output.slice(-Math.max(500, LOCAL_OUTPUT_TAIL - lead.length))}\n[sha256 of full output: ${r.sha}]` : `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
+      ...(failureLines ? { failureLines } : {}),
+      ...(mainHead ? { merged: true, mainHead } : {}),
+    };
+  };
   try {
     // --merged checks the would-be merge: the head merged with main's head,
     // in this clone. The evidence is bound to both revisions, and the
@@ -55,7 +67,20 @@ export default async function checkCommand() {
         console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
         continue;
       }
-      const r = await runCheck(cmd, dir, secrets, { project: name, task: id, actor: as });
+      let r = await runCheck(cmd, dir, secrets, { project: name, task: id, actor: as });
+      // A check that fails is run once more at the same head (t744): a
+      // result that changes with nothing else changed is the machine's, not
+      // the change's. Both results are recorded, the failure first, so the
+      // history shows the flake, and the gate counts the later pass. A check
+      // that fails twice stays failed, and one that timed out is not run again.
+      let flake = false;
+      if (!r.passed && !r.timedOut) {
+        process.stderr.write(`atelier: \`${cmd}\` failed; running it once more at the same head\n`);
+        const first = r;
+        r = await runCheck(cmd, dir, secrets, { project: name, task: id, actor: as });
+        flake = r.passed;
+        if (flake) await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, first, ""), as);
+      }
       // The Worker measures the changed paths from Artifacts and ignores this
       // list, which is sent only so a deployment without that measurement
       // still records one. The list printed below is the one the Worker
@@ -64,17 +89,11 @@ export default async function checkCommand() {
       // A failed run whose output is longer than the tail kept inline also
       // posts the lines naming its failure, read from the whole output
       // (t569): the tail of `npm test` can hold only stderr noise.
-      const failureLines = !r.passed && r.output.length > LOCAL_OUTPUT_TAIL - provenance.length ? collectFailureLines(r.output) : "";
-      const d = await postEvidence(`${I(name, id)}/evidence`, {
-        kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
-        outputTail: provenance ? `${provenance}\n\n${r.output.slice(-Math.max(500, LOCAL_OUTPUT_TAIL - provenance.length))}\n[sha256 of full output: ${r.sha}]` : `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
-        ...(failureLines ? { failureLines } : {}),
-        ...(mainHead ? { merged: true, mainHead } : {}),
-      }, as);
+      const d = await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, r, flake ? FLAKE_NOTE : ""), as);
       const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
       if (row) recorded = row.changedPaths;
       doneChecks.push({ claim: cmd, result: r.passed ? "passed" : "failed", where: CLEAN_CLONE });
-      console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}`);
+      console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}${flake ? `  (${FLAKE_NOTE})` : ""}`);
       if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
     }
   } finally {
