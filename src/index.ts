@@ -19,7 +19,7 @@ import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -42,9 +42,8 @@ import type { PrecisionRecord } from "./models/precision.ts";
 import type { JudgementRecord } from "./models/judgement.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
-import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
-import { buildPulse, projectShowcase, PULSE_DAYS, pulseFromCounts } from "./pulse";
-import { projectKind } from "./kind";
+import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } from "./graph";
+import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -69,7 +68,7 @@ import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed,
 import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
 import { triageSettingRefusal } from "./review/triage.ts";
-import { guardLedger, serverUpdating } from "./ledger-stub.ts";
+import { guardLedger } from "./ledger-stub.ts";
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
@@ -99,7 +98,7 @@ function sameString(a: string, b: string): boolean {
 }
 
 type Settings = {
-  CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; SHOWCASE?: string; TIMEZONE?: string;
+  CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; TIMEZONE?: string;
   // The usage alert thresholds (src/usage/report.ts); each a number, "off", or unset for the default.
   USAGE_WEEKLY_PERCENT?: string; USAGE_WINDOW_PERCENT?: string; USAGE_DAILY_SPEND?: string; USAGE_BALANCE_FLOOR?: string;
   // The main commit this deployment was built from, set by `npm run deploy`
@@ -157,188 +156,9 @@ function thresholds(env: Env): Thresholds {
   return thresholdsFrom(env as unknown as Record<string, string | undefined>);
 }
 
-// The projects the owner shows publicly at /showcase, and whether each is
-// shown by name or anonymised. The setting lives in the index Durable Object
-// (set from the signed-in Projects page or with `atelier showcase`); the
-// SHOWCASE variable seeds it the same way, comma separated, for a server
-// that sets it before any command has. An entry may say its mode after a
-// colon, `NAME:anonymous` or `NAME:named`; a bare name is shown named, as
-// the variable has always meant. Unset shows nothing.
-type ShowMode = "named" | "anonymous";
-function parseShowcaseSetting(raw: string | undefined): { name: string; mode: ShowMode }[] {
-  return (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((entry) => {
-    const at = entry.lastIndexOf(":");
-    const mode = at > 0 ? entry.slice(at + 1) : "";
-    return mode === "anonymous" || mode === "named" ? { name: entry.slice(0, at), mode } : { name: entry, mode: "named" as const };
-  });
-}
-
-// The showcase setting as it stands: the index's rows, with the variable's
-// entries over theirs, resolved onto the projects still registered. A name
-// the project has answered to before still reaches it, so a rename leaves
-// the setting working.
-async function liveShowcase(env: Env): Promise<{ project: ProjectRecord; mode: ShowMode }[]> {
-  const settings = new Map((await index(env).showcaseEntries().catch(() => [])).map((s) => [s.name, s.mode] as const));
-  for (const e of parseShowcaseSetting((env as unknown as Settings).SHOWCASE)) settings.set(e.name, e.mode);
-  if (!settings.size) return [];
-  const registered = await index(env).projects();
-  const byProject = new Map<string, { project: ProjectRecord; mode: ShowMode }>();
-  // An entry under the project's current name wins over one left under a
-  // name it answered to before, whatever order the entries come in.
-  for (const [name, mode] of settings) {
-    const project = projectNamed(registered, name);
-    if (!project) continue;
-    if (!byProject.has(project.name) || name === project.name) byProject.set(project.name, { project, mode });
-  }
-  return [...byProject.values()].sort((a, b) => a.project.name.localeCompare(b.project.name));
-}
-
-// The file names at a project's baseline root, for the neutral label an
-// anonymised project is titled by (src/kind.ts). Null when the repository
-// cannot be read; the label then falls back to the checks alone.
-async function rootFiles(env: Env, repo: string): Promise<string[] | null> {
-  try {
-    using r = await env.ARTIFACTS.get(repo);
-    const head = (await r.log({ limit: 1 }))[0];
-    if (!head) return [];
-    const tree = await r.readTree(head.treeHash).catch(() => null);
-    return tree ? tree.map((entry) => entry.name) : null;
-  } catch { return null; }
-}
-
-// The showcased projects as the public page draws them: each with its story,
-// redacted (graph.ts) and, when anonymous, titled by a neutral label from its
-// kind with each task titled by its kind of work, and with its two weeks of
-// moves for the card's bar graph. A project that cannot be read is left out,
-// and the caller sees fewer shown projects than the setting names.
-// `updating` says a Ledger a deploy left on older code lacked a method the
-// page reads (t586), so the page says the server is updating rather than
-// printing the figures it could not count.
-async function publicStories(env: Env, entries: { project: ProjectRecord; mode: ShowMode }[]): Promise<{ shown: ShownProject[]; cutoffs: Map<string, number | null>; updating: boolean }> {
-  const owner = ownerActor(env);
-  const cutoffs = new Map<string, number | null>();
-  let updating = false;
-  const found = await Promise.all(entries.map(async ({ project: p, mode }) => {
-    try {
-      const L = ledgerOf(env, p);
-      // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
-      // The threads are drawn from the most recent events; every figure the
-      // page prints is counted over the whole record by the Ledger (t578).
-      // When the counts or the told task cannot be read, the page falls back
-      // to what the recent events show, and the error is logged, rather than
-      // leaving the project out.
-      const now = new Date();
-      const since = new Date(now.getTime() - (PULSE_DAYS + 1) * 86400_000).toISOString();
-      const [record, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
-      const counts = await (L.showcaseCounts(since, timeZone()) as unknown as Promise<ShowcaseCounts>)
-        .catch((err: unknown) => {
-          if (serverUpdating(err)) updating = true;
-          else console.error(`showcase: the whole-record counts of ${p.name} could not be read: ${errorText(err)}`);
-          return null;
-        });
-      cutoffs.set(p.name, firstTaskAt(items));
-      const anon = mode === "anonymous";
-      const title = anon
-        ? projectKind(record.policy.checks, await rootFiles(env, record.repo))
-        : titleOf(record);
-      const opts = { redact: true, ownerLabel: ownerName(env) || "The developer", anon };
-      const cut = events.length >= STORY_EVENTS;
-      const story = buildStory(p.name, items, events, owner, cut, title, opts);
-      let pulse = buildPulse(events, owner, now, cut);
-      if (counts) {
-        try {
-          const tally = tallyFromCounts(counts, owner);
-          pulse = pulseFromCounts(counts, owner, now);
-          story.tally = tally;
-          story.counted = { from: counts.first, to: counts.last, taken: counts.taken };
-        } catch (err) { console.error(`showcase: the whole-record figures of ${p.name} could not be counted: ${errorText(err)}`); }
-      }
-      // The task told as it happened is a merged one, read from its own events.
-      let featured: Story | null = null;
-      if (counts?.story) {
-        try {
-          const told = (await L.events(counts.story, FEATURED_EVENTS)) as unknown as LedgerEvent[];
-          const one = buildStory(p.name, items, told, owner, false, title, opts);
-          const threads = one.threads.filter((th) => th.id === counts.story);
-          if (threads.length) featured = { ...one, threads };
-        } catch (err) { console.error(`showcase: task ${counts.story} of ${p.name} could not be read: ${errorText(err)}`); }
-      }
-      return {
-        project: record, mode, story, pulse,
-        ...(featured ? { featured } : {}),
-        // Gated merges and fast-mode landings (t585) are counted apart.
-        allTimeMerged: items.filter((i) => i.state === "merged").length - (counts?.landedFast ?? 0),
-        landedFast: counts?.landedFast ?? 0,
-        inProgress: items.filter((i) => ["claimed", "submitted", "accepted"].includes(i.state)).length,
-      };
-    } catch (err) {
-      // Left out; the page says a project could not be read, or that the
-      // server is updating, and the log says why.
-      if (serverUpdating(err)) updating = true;
-      else console.error(`showcase: ${p.name} could not be read: ${errorText(err)}`);
-      return null;
-    }
-  }));
-  const shown = found.filter((f): f is NonNullable<typeof f> => f !== null);
-  return { shown, cutoffs, updating };
-}
-
-// The public page, read without signing in. It reads only the projects the
-// owner's setting names, builds their stories redacted and anonymised as the
-// setting says, and may be cached for a minute.
-async function showcase(env: Env, url: URL): Promise<Response> {
-  // Read the setting before using a cached page. Removed projects must
-  // not remain visible through a previously cached showcase.
-  const entries = await liveShowcase(env);
-  if (!entries.length) return html(renderError("There is no public showcase on this server.", "/login"), 404);
-  const key = new Request(`${url.origin}/showcase?projects=${encodeURIComponent(JSON.stringify(entries.map((e) => [e.project.name, e.mode])))}&tz=${encodeURIComponent((env as unknown as Settings).TIMEZONE ?? "")}`);
-  const hit = await caches.default.match(key);
-  if (hit) return hit;
-  const owner = ownerActor(env);
-  const { shown, cutoffs, updating } = await publicStories(env, entries);
-  const imported = await importedAll(env, shown.map((s) => s.project), cutoffs);
-  const stories = shown.map((s) => s.story);
-  const res = html(renderShowcase(stories, stories.reduce((t, s) => addTally(t, s.tally), emptyTally()), owner, ownerName(env), updating ? "updating" : shown.length < entries.length, imported, shown));
-  // A page drawn while a Ledger is updating (t586) is held for ten seconds
-  // and kept out of the cache, so the figures return as soon as it restarts.
-  if (updating) {
-    res.headers.set("cache-control", "public, max-age=10, s-maxage=10");
-    res.headers.set("cdn-cache-control", "max-age=10");
-    return res;
-  }
-  // The zone and browsers may hold the page for a minute at most, so a
-  // project removed from the showcase disappears within a minute.
-  res.headers.set("cache-control", "public, max-age=60, s-maxage=60");
-  res.headers.set("cdn-cache-control", "max-age=60");
-  // A copy the cache refuses is not an error: the page is still served.
-  await caches.default.put(key, res.clone()).catch(() => undefined);
-  return res;
-}
-
-// The sign-in page. When the owner shows projects publicly, their stories
-// are drawn dimmed behind the form, anonymised as the setting says and as
-// the showcase draws them.
+// The sign-in page.
 async function loginPage(env: Env, error?: string, status = 200): Promise<Response> {
-  const shown = await liveShowcase(env).catch(() => []);
-  const backdrop = shown.length
-    ? { stories: await backdropStories(env, shown), owner: ownerActor(env), who: ownerName(env) || "The developer" }
-    : undefined;
-  return html(renderLogin(error, shown.length > 0, backdrop), status);
-}
-
-// The backdrop's stories, cached for a minute as the showcase page is: the
-// sign-in page is open to anyone, so a request to it must not cost a read
-// of every showcased project's record. The key names the projects shown,
-// how each is shown, and the owner's label, which the stories carry.
-async function backdropStories(env: Env, entries: { project: ProjectRecord; mode: ShowMode }[]): Promise<Story[]> {
-  const key = new Request(`https://atelier.internal/login-stories?projects=${encodeURIComponent(JSON.stringify(entries.map((e) => [e.project.name, e.mode])))}&who=${encodeURIComponent(ownerName(env) ?? "")}`);
-  const hit = await caches.default.match(key).catch(() => undefined);
-  if (hit) return (await hit.json()) as Story[];
-  const { shown, updating } = await publicStories(env, entries);
-  const stories = shown.map((s) => s.story);
-  // Stories drawn while a Ledger is updating (t586) are not kept.
-  if (!updating) await caches.default.put(key, new Response(JSON.stringify(stories), { headers: { "cache-control": "max-age=60" } })).catch(() => undefined);
-  return stories;
+  return html(renderLogin(error), status);
 }
 
 // Each project's imported history, read once per baseline head and format:
@@ -364,13 +184,8 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
   return out;
 }
 
-// An error as one line for the log: its message, never its data.
-const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 300);
-
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
-// How many of its own events the showcase's one task is told from.
-const FEATURED_EVENTS = 2000;
 // How many of each task's own events the "where it stands" view reads.
 const TASK_EVENTS = 300;
 
@@ -1327,36 +1142,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const revoked = await I.revokeAgentToken(parts[1]);
       if (revoked) await revokeAgentArtifacts(env, parts[1]);
       return json({ revoked });
-    }
-    throw new RuleError("not_found", "no such route", 404);
-  }
-  // The public showcase setting: which projects the owner shows, and whether
-  // each is named or anonymised. Reading and changing it are the owner's alone.
-  if (parts[0] === "showcase") {
-    const I = index(env);
-    if (parts.length === 1 && m === "GET") { requireOwner(env, actor); return json({ showcase: await I.showcaseEntries() }); }
-    if (parts.length === 2 && (m === "PUT" || m === "DELETE")) {
-      requireOwner(env, actor);
-      const name = parts[1];
-      const ref = await resolveProject(env, name);
-      if (!ref.registered) throw new RuleError("no_project", `no project ${name}`, 404);
-      if (m === "DELETE") {
-        // An entry kept under the name the request used and one under the
-        // current name are both removed.
-        const a = await I.removeShowcase(name);
-        const b = ref.name !== name ? await I.removeShowcase(ref.name) : false;
-        const removed = a || b;
-        return json({ removed, name: ref.name });
-      }
-      if (body.mode !== undefined && body.mode !== "named" && body.mode !== "anonymous") {
-        throw new RuleError("bad_mode", 'mode must be "named" or "anonymous"; omit it for anonymous', 400);
-      }
-      const mode: ShowMode = body.mode === "named" ? "named" : "anonymous";
-      // Kept under the current name only, so an entry under the name the
-      // request used cannot override it.
-      if (ref.name !== name) await I.removeShowcase(name);
-      await I.setShowcase(ref.name, mode);
-      return json({ name: ref.name, mode });
     }
     throw new RuleError("not_found", "no such route", 404);
   }
@@ -3884,27 +3669,6 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const reliability = { models: track.reliability, events: track.events, unread: track.unread.map(titleOf) };
     return html(renderUsage(reports as unknown as UsageReport[], thresholds(env), alerts, new Date(), ownerName(env), reliability));
   }
-  // The Home page's showcase form: the owner sets which projects the
-  // public page shows and whether each is named. Only the owner reaches a
-  // browser route, and the form is same-origin as every owner form is.
-  if (req.method === "POST" && parts[0] === "projects" && parts[1] === "showcase") {
-    if (req.headers.get("origin") !== c.url.origin) return html("Cross-origin form refused.", 403);
-    const form = Object.fromEntries((await req.formData()).entries());
-    const asked = String(form.project ?? "");
-    const ref = await resolveProject(env, asked);
-    if (!ref.registered) return html(renderError(`no project ${asked} is registered, so it cannot be shown publicly.`, "/home", ownerName(env)), 404);
-    const mode = String(form.mode ?? "");
-    if (mode === "") {
-      // The row may hold any of the project's names; take it under both.
-      await index(env).removeShowcase(asked);
-      if (ref.name !== asked) await index(env).removeShowcase(ref.name);
-    } else if (mode === "anonymous" || mode === "named") {
-      await index(env).setShowcase(ref.name, mode);
-    } else {
-      return html(renderError("The public showcase mode must be anonymous or named.", "/home", ownerName(env)), 400);
-    }
-    return Response.redirect(new URL("/home", c.url).toString(), 303);
-  }
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
     if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);
@@ -4061,7 +3825,7 @@ function failed(err: unknown, req: Request, url: URL, pathname: string, env: Env
   const rule = parseRuleError(err);
   // The error page keeps the owner's name on the pages only the owner
   // reads; the public pages keep it to themselves (finding 18).
-  const who = ["/", "/how", "/showcase", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
+  const who = ["/how", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
   // Go back leads the owner to Home and anyone else to the public front.
   const back = who === null ? "/" : "/home";
   if (rule) {
@@ -4118,11 +3882,10 @@ async function withShell(env: Env, url: URL, res: Response): Promise<Response> {
 }
 
 // Home, the portfolio: each project's card reads its recent record (the two
-// weeks of moves), its own inbox (what waits on the owner there) and the
-// showcase setting, which the card carries.
+// weeks of moves) and its own inbox (what waits on the owner there).
 async function homePage(c: Ctx): Promise<Response> {
   const { env } = c;
-  const { projects, views } = await projectViews(env);
+  const { views } = await projectViews(env);
   const now = new Date();
   const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const home: HomeView[] = await Promise.all(views.map(async (v) => {
@@ -4137,15 +3900,7 @@ async function homePage(c: Ctx): Promise<Response> {
     const waiting = attentionFor(v.project.name, v.items, inbox, offers, now);
     return events ? { ...v, events, cut: events.length >= STORY_EVENTS, waiting } : { ...v, eventsUnread: true, waiting };
   }));
-  // The showcase setting as the cards read it: a mode per project, under
-  // whichever of its names the setting's row holds.
-  const entries = await index(env).showcaseEntries().catch(() => [] as { name: string; mode: "named" | "anonymous" }[]);
-  const modes: Record<string, "named" | "anonymous"> = {};
-  for (const p of projects) {
-    const hit = entries.find((e) => namesOf(p).includes(e.name));
-    if (hit) modes[p.name] = hit.mode;
-  }
-  return html(renderHome(home, ownerName(env), now, ownerActor(env), modes));
+  return html(renderHome(home, ownerName(env), now, ownerActor(env)));
 }
 
 // Home and History read each project's recent record: the cards count the
@@ -4364,7 +4119,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
   // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
@@ -4416,12 +4171,10 @@ export default {
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
       if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS, waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined });
-      // The front door: atelier.zone itself is the public showcase, for a
-      // visitor or a judge who types the domain, answered before the sign-in
-      // check as every public page is. /showcase serves the same page, so the
-      // links already written to it keep working; / is the canonical address.
-      // The owner's Home is at /home.
-      if ((pathname === "/" || pathname === "/showcase") && (req.method === "GET" || req.method === "HEAD")) return await showcase(env, url);
+      // The front door and the old /showcase lead to the projects list at
+      // /home, answered before the sign-in check; a visitor who is not signed
+      // in meets the sign-in there, as at any owner page (t758).
+      if ((pathname === "/" || pathname === "/showcase") && (req.method === "GET" || req.method === "HEAD")) return Response.redirect(new URL("/home", url).toString(), 302);
       // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
       if (pathname === "/live.js" && (req.method === "GET" || req.method === "HEAD")) {
         return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });

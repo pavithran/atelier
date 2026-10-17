@@ -423,48 +423,6 @@ it('a protected revision awaiting an assessor shows a review tag under a review 
  expect(brief).toContain('Review t1 at aaaaaaaa');
 });
 
-// ── showcase ──
-import {renderShowcase} from '../src/ui';
-it('the showcase is read only: no forms, no links into signed-in pages, and no notes',()=>{
- const s=buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
-  ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','claude-code/opus-5.5','review.rejected',{note:'secret reviewer note'}),
-  ev(3,'t1','pavi','item.accepted'),ev(4,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
- const html=renderShowcase([s],s.tally,'pavi','PAVI');
- expect(html).toContain('PAVI made 1 decision.');
- expect(html).toContain('PAVI&#39;s decisions');
- expect(html).not.toContain('your decisions');
- expect(html).not.toMatch(/· you</);
- expect(html).not.toContain('<form');
- expect(html).not.toContain('href="/p/');
- expect(html).not.toContain('secret reviewer note');
- expect(html).not.toContain('class="owner-bar"');
- expect(html).toContain('https://github.com/pavithran/atelier');
-});
-it('the showcase route is public only when the owner names projects, and caches briefly',async()=>{
- const none=await worker.fetch(new Request('https://atelier.test/showcase'),{...env} as typeof env);
- expect(none.status).toBe(404);
- const record={name:'shown',repo:'shown',title:'Shown project',policy:{checks:[],protected:[]},createdAt:time};
- await env.LEDGER.get(env.LEDGER.idFromName('project:shown')).setProject(record,'owner');
- const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
- await index.registerProject(record);
- await index.registerProject({...record,name:'missing',repo:'missing'});
- const res=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown, missing'} as typeof env);
- expect(res.status).toBe(200);
- expect(res.headers.get('cache-control')).toBe('public, max-age=60, s-maxage=60');
- expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
- const body=await res.text();
- expect(body).toContain('Atelier · public showcase');
- expect(body).toContain('could not be read just now');
- // A second request inside the minute is the cached copy, whatever its query.
- const again=await worker.fetch(new Request('https://atelier.test/showcase?replay=x'),{...env,SHOWCASE:'shown, missing'} as typeof env);
- expect(await again.text()).toBe(body);
- // A different set of public projects has a different cached copy.
- const only=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'shown'} as typeof env);
- expect(await only.text()).not.toContain('could not be read just now');
- const login=await worker.fetch(new Request('https://atelier.test/login'),{...env,SHOWCASE:'shown'} as typeof env);
- expect(await login.text()).toContain('<a href="/">See the public showcase</a>');
-});
-
 it('the Models page lists the pool by where it runs, escapes it, and adds through a same-origin form',async()=>{
  const {renderModels}=await import('../src/ui');
  const html=renderModels([
@@ -522,64 +480,26 @@ it('the Models page shows a paused or reserved model with the date its state was
  // Available is not shown, nor its date; no roles or tier, no standing line.
  expect(card('opus-5.5')).not.toMatch(/tag ask">available|set 2026-10-09|the jobs it may take|<span class="meta">tier<\/span>/);
 });
-it('the front door: / is the public showcase for everyone, and the owner signs in to Home at /home',async()=>{
+it('the front door: / and /showcase lead to /home, where a visitor meets the sign-in and the owner meets Home',async()=>{
  const TOKEN='door-test-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
- const go=(path:string,extra:Record<string,string>={},signed=false,method='GET')=>worker.fetch(new Request(`https://atelier.test${path}`,{method,headers:signed?{cookie:signedIn}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,OWNER_NAME:'Door Owner',...extra} as typeof env);
- const record={name:'door',repo:'door',title:'Door project',policy:{checks:[],protected:[]},createdAt:time};
- const L=env.LEDGER.get(env.LEDGER.idFromName('project:door'));
- await L.setProject(record,'owner');
- await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
- await L.newItem('Door work',[],'owner');await L.claim('t1','codex/gpt-6');
- // No session at all: / answers the showcase itself, 200, as /showcase does,
- // anonymised and with none of the owner's pages or forms in it (the owner's
- // display name is public there by design), its header offering Sign in.
- const front=await go('/',{SHOWCASE:'door:anonymous'});
- expect(front.status).toBe(200);
- expect(front.headers.get('cache-control')).toBe('public, max-age=60, s-maxage=60');
- const page=await front.text();
- expect(page).toContain('<title>Atelier · public showcase</title>');
- expect(page).toContain('<a href="/login">Sign in</a>');
- expect(page).toContain('<a class="brand" href="/">Atelier</a>');
- for(const secret of ['Door project','Door work','class="owner-bar"','href="/home"','href="/p/','action="/projects/showcase"'])expect(page).not.toContain(secret);
- expect(await (await go('/showcase',{SHOWCASE:'door:anonymous'})).text()).toBe(page);
- expect((await go('/',{SHOWCASE:'door:anonymous'},false,'HEAD')).status).toBe(200);
- // Signed in, / is still the public front; Home moved to /home.
- const signedFront=await go('/',{SHOWCASE:'door:anonymous'},true);
- expect(signedFront.status).toBe(200);
- expect(await signedFront.text()).toBe(page);
+ const go=(path:string,signed=false,method='GET')=>worker.fetch(new Request(`https://atelier.test${path}`,{method,headers:signed?{cookie:signedIn}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,OWNER_NAME:'Door Owner'} as typeof env);
+ // No session and a session alike: 302 to /home, for GET and HEAD, whatever a server's old showcase setting says.
+ for(const path of ['/','/showcase'])for(const method of ['GET','HEAD'])for(const signed of [false,true]){
+  const res=await go(path,signed,method);
+  expect(res.status,`${method} ${path}`).toBe(302);
+  expect(res.headers.get('location')).toBe('https://atelier.test/home');
+ }
  // Home and the other owner pages send a visitor to sign in.
  expect((await go('/home')).headers.get('location')).toBe('https://atelier.test/login');
- expect((await go('/flow',{SHOWCASE:'door'})).headers.get('location')).toBe('https://atelier.test/login');
- const home=await go('/home',{},true);
+ expect((await go('/flow')).headers.get('location')).toBe('https://atelier.test/login');
+ const home=await go('/home',true);
  expect(home.status).toBe(200);
  expect(await home.text()).toContain('<title>Home · Atelier</title>');
- const decisions=await go('/decisions',{},true);
+ const decisions=await go('/decisions',true);
  expect(decisions.status).toBe(200);
  expect(await decisions.text()).toContain('<title>Decisions · Atelier</title>');
 });
-it('the showcase draws a named project that has work, and survives a cache that refuses it',async()=>{
- const record={name:'drawn',repo:'drawn',title:'Drawn project',policy:{checks:[],protected:[]},createdAt:time};
- const L=env.LEDGER.get(env.LEDGER.idFromName('project:drawn'));
- await L.setProject(record,'owner');
- await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
- await L.newItem('Visible work',[],'owner');await L.claim('t1','codex/gpt-6');
- await caches.default.delete(new Request('https://atelier.test/showcase'));
- const put=caches.default.put;
- (caches.default as {put:unknown}).put=async()=>{throw new Error('413')};
- try{
-  const res=await worker.fetch(new Request('https://atelier.test/showcase'),{...env,SHOWCASE:'drawn',OWNER_NAME:''} as typeof env);
-  expect(res.status).toBe(200);
-  const body=await res.text();
-  expect(body).toContain('Drawn project');
-  // Its open task is in the latest moves; only a merged task is told as it happened (t578).
-  expect(body).toContain('gpt-6 took t1');
-  expect(body).not.toContain('id="story-h"');
-  expect(body).toContain('The developer made 0 decisions.');
-  expect(body).toContain('Proven. Reviewed. Recorded.');
- }finally{(caches.default as {put:unknown}).put=put;}
-});
-
 // ── browsing ──
 import {renderTree,renderBlob,renderCommit,renderLog,codeHref} from '../src/browse/view';
 it('browsing pages escape names and contents and keep links inside the repository',()=>{
@@ -866,78 +786,8 @@ it('the merge preview without checks marks nothing green, since no pass has been
  }
 });
 
-it('the showcase sets a project known only from git beside Atelier\'s record, and says what git cannot show',async()=>{
- const {renderShowcase}=await import('../src/ui');
- const {buildStory}=await import('../src/graph');
- const {buildImported}=await import('../src/import/history');
- const at=(m:number)=>new Date(Date.UTC(2026,9,4,12,m)).toISOString();
- const evs=[
-  {seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}},
-  {seq:2,at:at(1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},
- ].reverse();
- const withs=buildStory('built',[{id:'t1',title:'Work',state:'claimed'}] as never,evs as never,'pavi',false,'Built',{redact:true,ownerLabel:'PAVI'});
- const before=buildStory('old',[],[],'pavi',false,'<Old> project',{redact:true,ownerLabel:'PAVI'});
- const h=buildImported([{hash:'a',committedAt:100,message:'x\n\nCo-Authored-By: Claude Opus 4.7 <n@x>'},{hash:'b',committedAt:200,message:'y'}],null,true);
- const html=renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',h]]));
- expect(html).toContain('class="compare"');
- expect(html).toContain('Before Atelier · from git');
- expect(html).toContain('&lt;Old&gt; project');
- expect(html).toContain('No agent has worked here yet.');
- expect(html).not.toContain('0 tasks taken');
- const card=(cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</article>')[0];
- expect(card('before')).toContain('&lt;Old&gt; project');
- expect(card('before')).not.toContain('<Old>');
- expect(card('with')).toContain('>Built<');
- expect(card('before')).toContain('<b>50%</b><span>of commits name an agent');
- expect(card('with')).not.toContain('class="compare-lead"');
- // A planned task nobody has claimed is still a task: that project is not "before".
- const planned=buildStory('planned',[{id:'t1',title:'Later',state:'open'}] as never,[{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Planned',{redact:true,ownerLabel:'PAVI'});
-  const both=renderShowcase([withs,planned,before],withs.tally,'pavi','PAVI',false,new Map([['old',h],['planned',h]]));
-  const beforeCard=both.split('class="compare-card before"')[1].split('</article>')[0];
-  expect(beforeCard).toContain('&lt;Old&gt; project');
-  expect(beforeCard).not.toContain('>Planned<');
- expect(renderShowcase([withs,planned],withs.tally,'pavi','PAVI',false,new Map([['planned',h]]))).not.toContain('class="compare"');
- // With nothing imported there is nothing to compare.
- expect(renderShowcase([withs],withs.tally,'pavi','PAVI',false,new Map())).not.toContain('class="compare"');
-});
-
-it('the comparison leads with the share of reviews that sent work back',async()=>{
- const {renderShowcase}=await import('../src/ui');
- const {buildStory}=await import('../src/graph');
- const {buildImported}=await import('../src/import/history');
- const at=(m:number)=>new Date(Date.UTC(2026,9,4,12,m)).toISOString();
- const evs=[
-  {seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}},
-  {seq:2,at:at(1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},
-  {seq:3,at:at(2),actor:'zcode/glm-5.3',kind:'review.rejected',itemId:'t1',data:{}},
-  {seq:4,at:at(3),actor:'zcode/glm-5.3',kind:'review.approved',itemId:'t1',data:{}},
-  {seq:5,at:at(4),actor:'opencode/gemini-3.1-pro-preview',kind:'review.approved',itemId:'t1',data:{}},
- ].reverse();
- const withs=buildStory('built',[{id:'t1',title:'Work',state:'claimed'}] as never,evs as never,'pavi',false,'Built',{redact:true,ownerLabel:'PAVI'});
- const before=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
- const h=buildImported([{hash:'a',committedAt:100,message:'x\n\nAgent: codex/gpt-6'}],null,true);
- const html=renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',h]]));
- const card=html.split('class="compare-card with"')[1].split('</article>')[0];
- expect(card).toContain('<b>33%</b><span>of reviews sent the work back: 1 of 3.');
-});
-
-it('a share that rounds to 0% or 100% without being exactly that says so',async()=>{
- const {renderShowcase}=await import('../src/ui');
- const {buildStory}=await import('../src/graph');
- const {buildImported}=await import('../src/import/history');
- const at=(m:number)=>new Date(Date.UTC(2026,9,4,12,m)).toISOString();
- const withs=buildStory('built',[{id:'t1',title:'Work',state:'claimed'}] as never,[{seq:2,at:at(1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Built',{redact:true,ownerLabel:'PAVI'});
- const before=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
- const commits=(named:number,total:number)=>Array.from({length:total},(_,i)=>({hash:`h${i}`,committedAt:i+1,message:i<named?'x\n\nAgent: codex/gpt-6':'x'}));
- const lead=(named:number,total:number)=>renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',buildImported(commits(named,total),null,true)]])).split('class="compare-lead"')[1].split('</p>')[0];
- expect(lead(1,300)).toContain('<b>&lt;1%</b>');
- expect(lead(299,300)).toContain('<b>&gt;99%</b>');
- expect(lead(300,300)).toContain('<b>100%</b>');
- expect(lead(0,300)).toContain('<b>0%</b>');
-});
-
-it('Flow offers time and family filters that keep each other, and the showcase has none',async()=>{
- const {renderFlow,renderShowcase}=await import('../src/ui');
+it('Flow offers time and family filters that keep each other',async()=>{
+ const {renderFlow}=await import('../src/ui');
  const {buildStory}=await import('../src/graph');
  const evs=[{seq:2,itemId:'t1',at:'2026-10-04T10:01:00Z',actor:'codex/gpt-6-astra',kind:'item.claimed',data:{}},{seq:1,itemId:'t1',at:'2026-10-04T10:00:00Z',actor:'pavi',kind:'item.created',data:{}}];
  const s=buildStory('p',[{id:'t1',title:'T',state:'claimed'}] as never,evs as never,'pavi');
@@ -956,133 +806,9 @@ it('Flow offers time and family filters that keep each other, and the showcase h
  // Replay is the scrubber the live script adds, not a second control beside it (finding 6).
  expect(html).not.toContain('class="replay"');
  expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).not.toContain('class="replay"');
- expect(renderShowcase([s],s.tally,'pavi','PAVI')).not.toContain('aria-label="Filters"');
 });
 
-it('the front door and the login link follow a showcase only while its project is registered',async()=>{
- const TOKEN='door-removed-token';
- const go=(path:string)=>worker.fetch(new Request(`https://atelier.test${path}`,{redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,SHOWCASE:'vanishing'} as typeof env);
- const index=env.LEDGER.get(env.LEDGER.idFromName('__index'));
- await index.registerProject({name:'vanishing',repo:'vanishing',policy:{checks:[],protected:[]},createdAt:time});
- expect((await go('/')).status).toBe(200);
- expect(await (await go('/login')).text()).toContain('See the public showcase');
- expect(await index.removeProject('vanishing')).toBe(true);
- expect((await go('/')).status).toBe(404);
- expect(await (await go('/login')).text()).not.toContain('See the public showcase');
- expect((await go('/showcase')).status).toBe(404);
-});
-
-function mergedShowcaseStory(){
- return buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
-  ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','pavi','item.accepted'),ev(3,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
-}
-it('the showcase labels its two-week figures and sets the all-time merges beside them',async()=>{
- const {renderShowcase}=await import('../src/ui');
- const s=mergedShowcaseStory();
- const card={project:{name:'example',repo:'example',policy:{checks:[],protected:[]},createdAt:''},mode:'named' as const,story:s};
- const html=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[{...card,allTimeMerged:215}]);
- expect(html).toContain(`<dt>merged, last two weeks</dt><dd>${s.tally.merges}</dd>`);
- expect(html).toContain('<dt>merged, all time</dt><dd>215</dd>');
- const unset=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[card]);
- expect(unset).not.toContain('merged, all time');
- expect(unset).not.toContain('all time, ');
-});
-it('the showcase names the owner\'s zone in its legend, and UTC when none is set',async()=>{
- const {renderShowcase}=await import('../src/ui');
- const {setTimeZone}=await import('../src/time');
- const s=mergedShowcaseStory();
- try{
-  setTimeZone('America/New_York');
-  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in ET');
-  setTimeZone(undefined);
-  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in UTC');
- }finally{setTimeZone(undefined);}
-});
-
-// ── the comparison of one project with itself ──
-async function sameParts(){
- const {renderShowcase}=await import('../src/ui');
- const {buildStory}=await import('../src/graph');
- const {buildImported}=await import('../src/import/history');
- const unix=(d:string)=>Math.floor(Date.parse(d)/1000);
- const at=(d:number,m=0)=>new Date(Date.UTC(2026,9,d,12,m)).toISOString();
- // Two tasks taken from 5 Oct; the second is sent back once and approved once.
- const evs=(p:string)=>[
-  {seq:1,at:at(5,0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}},
-  {seq:2,at:at(5,1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},
-  {seq:3,at:at(5,2),actor:'atelier/sandbox',kind:'evidence.observed',itemId:'t1',data:{claim:'npm test',passed:true,where:'sandbox'}},
-  {seq:4,at:at(6,0),actor:'claude-code/opus-5.5',kind:'item.claimed',itemId:'t2',data:{}},
-  {seq:5,at:at(6,1),actor:'zcode/glm-5.3',kind:'review.rejected',itemId:'t2',data:{}},
-  {seq:6,at:at(6,2),actor:'zcode/glm-5.3',kind:'review.approved',itemId:'t2',data:{}},
-  {seq:7,at:at(6,3),actor:'pavi',kind:'item.accepted',itemId:'t2',data:{}},
- ].reverse();
- const items=[{id:'t1',title:'One',state:'claimed'},{id:'t2',title:'Two',state:'accepted'}] as never;
- const story=(p:string,title:string,partial=false)=>buildStory(p,items,evs(p) as never,'pavi',partial,title,{redact:true,ownerLabel:'PAVI'});
- const history=(complete=true)=>buildImported([
-  {hash:'a',committedAt:unix('2026-09-04T12:00:00Z'),message:'x\n\nCo-Authored-By: Claude Opus 4.7 <n@x>'},
-  {hash:'b',committedAt:unix('2026-09-20T12:00:00Z'),message:'y'},
-  {hash:'c',committedAt:unix('2026-10-04T12:00:00Z'),message:'z\n\nAgent: codex/gpt-6'},
- ],unix('2026-10-05T00:00:00Z'),complete);
- return {renderShowcase,story,history};
-}
 const side=(html:string,cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</article>')[0];
-it('a project with history before its first task and tasks since is compared with itself',async()=>{
- const {renderShowcase,story,history}=await sameParts();
- const photo=story('photograph','<Photograph>');
- const html=renderShowcase([photo],photo.tally,'pavi','PAVI',false,new Map([['photograph',history()]]));
- const before=side(html,'before'),withs=side(html,'with');
- expect(html).toContain('class="compare"');
- expect(before).toContain('&lt;Photograph&gt;');expect(withs).toContain('&lt;Photograph&gt;');
- expect(before).not.toContain('<Photograph>');
- expect(before).toContain('<p class="compare-dates">4 Sept to 4 Oct</p>');
- expect(withs).toContain('since 5 Oct · the same project');
- expect(before).toContain('<b>67%</b><span>of commits name an agent');
- expect(before).toContain('<dt>3</dt><dd>commits');
- expect(withs).toContain('<b>50%</b><span>of reviews sent the work back: 1 of 2.');
- expect(withs).toContain('<dt>2</dt><dd>tasks taken');
- expect(withs).toContain('<dt>1</dt><dd>checks run');
- expect(withs).toContain('<dt>2</dt><dd>reviews, 1 sending work back');
- expect(withs).toContain('<dt>1</dt><dd>decisions by PAVI');
- expect(html).toContain('id="card-1"');
-});
-it('the comparison says when only the recent part of a history or record was read',async()=>{
- const {renderShowcase,story,history}=await sameParts();
- const photo=story('photograph','Photograph',true);
- const html=renderShowcase([photo],photo.tally,'pavi','PAVI',false,new Map([['photograph',history(false)]]));
- expect(side(html,'before')).toContain('4 Sept to 4 Oct · only the most recent part of the history was read');
- expect(side(html,'before')).toContain('<dt>3</dt><dd>commits (the most recent part)');
- expect(side(html,'with')).toContain('since 5 Oct · only the most recent part of the record was read · the same project');
- const whole=renderShowcase([story('photograph','Photograph')],photo.tally,'pavi','PAVI',false,new Map([['photograph',history(true)]]));
- expect(side(whole,'before')).not.toContain('only the most recent part');
- expect(side(whole,'with')).not.toContain('only the most recent part');
-});
-it('with no project holding both, the comparison stays across projects, and with several the busiest is chosen',async()=>{
- const {renderShowcase,story,history}=await sameParts();
- const {buildStory}=await import('../src/graph');
- const built=story('built','Built');
- const idle=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
- const cross=renderShowcase([built,idle],built.tally,'pavi','PAVI',false,new Map([['old',history()]]));
- expect(cross).not.toContain('class="compare-dates"');expect(cross).not.toContain('the same project');
- expect(side(cross,'before')).toContain('>Old<');
- // Two projects with both: the one with more tasks.
- const one=buildStory('small',[{id:'t1',title:'One',state:'claimed'}] as never,[
-  {seq:2,at:'2026-10-05T12:01:00Z',actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}}] as never,'pavi',false,'Small',{redact:true,ownerLabel:'PAVI'});
- const both=renderShowcase([one,built],one.tally,'pavi','PAVI',false,new Map([['small',history()],['built',history()]]));
- expect(side(both,'before')).toContain('>Built<');expect(side(both,'with')).toContain('>Built<');
- expect(side(both,'with')).toContain('<dt>2</dt><dd>tasks taken');
- expect(both.match(/class="compare-card before"/g)).toHaveLength(1);
-});
-it('the comparison dates follow the owner\'s time zone',async()=>{
- const {renderShowcase,story,history}=await sameParts();
- const {setTimeZone}=await import('../src/time');
- const photo=story('photograph','Photograph');
- try{
-  setTimeZone('Pacific/Kiritimati');
-  const html=renderShowcase([photo],photo.tally,'pavi','PAVI',false,new Map([['photograph',history()]]));
-  expect(side(html,'before')).toContain('5 Sept to 5 Oct');
- }finally{setTimeZone(undefined);}
-});
-
 // ── where a project stands ──
 async function standingFixture(over:Partial<{approval:string}>={}){
  const {buildStanding,renderProject,renderProjectSettings,renderProjectTasks}=await import('../src/ui');
@@ -1503,7 +1229,7 @@ it('History is a timeline of merges by day, each naming the model that held the 
  expect(renderHistory([{project,items:[]}],'PAVI','pavi')).not.toContain('class="legend-line"');
 });
 
-// ── Studio lanes in Flow's language, stripes by family, and sign-in over the showcase ──
+// ── Studio lanes in Flow's language, stripes by family, and the sign-in page ──
 it('a Studio lane is banded and threaded in each holder\'s family colour, with the marks and a breathing head',()=>{
  const base={id:'t1',title:'Lane',scope:[],state:'claimed' as const,owner:'opencode/glm-5.3-flash',fork:'example--t1',base:null,head:null,acceptedHead:null,createdAt:time,updatedAt:time,lastPushAt:null};
  const at=(m:number)=>`2026-10-03T12:${String(m).padStart(2,'0')}:00.000Z`;
@@ -1562,41 +1288,25 @@ it('Code and Log carry a stripe per entry and per commit in the family the commi
  expect(commit).toContain('<section class="commit-head" style="--c:var(--m-anthropic)">');
  expect(commit).toContain(' · fable-5.1 · &lt;A&gt; · ');
 });
-it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing focusable or private in it',async()=>{
- const s=buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
-  ev(1,'t1','codex/gpt-6','item.claimed'),ev(2,'t1','claude-code/opus-5.5','review.rejected',{note:'secret reviewer note'}),
-  ev(3,'t1','pavi','item.accepted'),ev(4,'t1','pavi','item.merged',{mergeCommit:'c'.repeat(40)})].reverse(),'pavi',false,'Example',{redact:true,ownerLabel:'PAVI'});
- const html=renderLogin(undefined,true,{stories:[s],owner:'pavi',who:'PAVI'});
- expect(html).toContain('<section class="login over-graph"><div class="login-backdrop" aria-hidden="true"><svg class="graph"');
- expect(html).not.toContain('tabindex="0"');expect(html).not.toContain('href="/p/');expect(html).not.toContain('secret reviewer note');
- expect(html).toContain('<a href="/">See the public showcase</a>');
+it('the sign-in page is a form and two links, with no graph behind it and no link to a showcase',async()=>{
+ const html=renderLogin();
  expect(html).toContain('<form method="post" action="/login" class="login-form">');
- const bare=buildStory('bare',[],[],'pavi',false,'Bare',{redact:true});
- expect(renderLogin(undefined,true,{stories:[bare],owner:'pavi',who:'PAVI'})).not.toContain('class="login-backdrop"');
- expect(renderLogin()).not.toContain('class="login-backdrop"');
- expect(renderLogin('That token is not this server\'s.',false)).toContain('role="alert"');
- // The route: with a showcased project that has work, the graph is drawn; without one, it is not.
+ expect(html).toContain('<section class="login">');
+ expect(html).not.toContain('login-backdrop');expect(html).not.toContain('over-graph');
+ expect(html).not.toContain('href="/showcase"');expect(html).not.toContain('See the public showcase');
+ expect(html).not.toContain('tabindex="0"');expect(html).not.toContain('href="/p/');
+ expect(renderLogin('That token is not this server\'s.')).toContain('role="alert"');
+ // A wrong token answers 401 and the same plain page, with a project that has work on the server.
  const record={name:'backdrop',repo:'backdrop',title:'Backdrop',policy:{checks:[],protected:[]},createdAt:time};
  const L=env.LEDGER.get(env.LEDGER.idFromName('project:backdrop'));
  await L.setProject(record,'owner');
  await env.LEDGER.get(env.LEDGER.idFromName('__index')).registerProject(record);
  await L.newItem('Shown work',[],'owner');await L.claim('t1','codex/gpt-6');
- const shown=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
- expect(shown.status).toBe(200);
- const body=await shown.text();
- expect(body).toContain('class="login-backdrop"');expect(body).toContain('Shown work');expect(body).not.toContain('href="/p/');
- // The stories are cached for a minute, as the showcase is: work taken since does not reach the open page until then.
- await L.newItem('Later work',[],'owner');await L.claim('t2','codex/gpt-6');
- const again=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
- const cached=await again.text();
- expect(cached).toContain('Shown work');expect(cached).not.toContain('Later work');
- const plain=await worker.fetch(new Request('https://atelier.test/login'),{...env,ATELIER_TOKEN:'x'} as typeof env);
- expect(await plain.text()).not.toContain('class="login-backdrop"');
- const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',headers:{origin:'https://atelier.test'},body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x',SHOWCASE:'backdrop'} as typeof env);
+ const wrong=await worker.fetch(new Request('https://atelier.test/login',{method:'POST',headers:{origin:'https://atelier.test'},body:new URLSearchParams({token:'no'})}),{...env,ATELIER_TOKEN:'x'} as typeof env);
  expect(wrong.status).toBe(401);
-  expect(await wrong.text()).toContain('class="login-backdrop"');
+ const body=await wrong.text();
+ expect(body).not.toContain('login-backdrop');expect(body).not.toContain('Shown work');
 });
-
 // ── the owner's bar (t543; docs/design/reimagined/, plan.md P1) ──
 const bar=(html:string)=>html.slice(html.indexOf('<header class="owner-bar">'),html.indexOf('</header>',html.indexOf('<header class="owner-bar">'))+9);
 const row1=(html:string)=>bar(html).split('<nav class="bar-nav" aria-label="Atelier">')[1]?.split('</nav>')[0]??'';

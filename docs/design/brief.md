@@ -88,7 +88,6 @@ draws its token form only on a server without Access.
 
 | Route | Renderer | Audience | Navigation drawn today |
 |---|---|---|---|
-| `/` | `renderShowcase` (src/ui.ts) | public | public bar: How it works, Source, Sign in |
 | `/how` | `renderHow` (src/how.ts) | public | public bar: Source, Sign in |
 | `/login` | `renderLogin` (src/ui.ts) | owner signed out | public bar: How it works, Source |
 | `/home` | `renderHome` | owner | rail: Home, Decisions, Studio, Settings ▸ (Models, Usage) |
@@ -112,7 +111,7 @@ draws its token form only on a server without Access.
 | `/p/NAME/tN/{code,log,commit,history}/…` | browse renderers on the task's fork | owner | rail + breadcrumb + tabs |
 | any error | `renderError` | anyone | **the owner's rail, even for a visitor** |
 
-Form posts (not pages): `/login`, `/logout`, `/projects/showcase`,
+Form posts (not pages): `/login`, `/logout`,
 `/models/add`, `/models/remove`, `/ui/NAME/new`, `/ui/NAME/tN/VERB`,
 `/ui/NAME/actions/VERB`. `/live.js` is the live script. `/api/*` is the CLI's.
 
@@ -120,7 +119,7 @@ Form posts (not pages): `/login`, `/logout`, `/projects/showcase`,
 
 | Address | Answers | Asserted in |
 |---|---|---|
-| `/showcase` | the same page as `/` (200) | fixture.spec.ts |
+| `/` and `/showcase` | 302 to `/home` | fixture.spec.ts |
 | `/projects` | 301 to `/home` | fixture.spec.ts |
 | `/flow?project=NAME` | 301 to `/p/NAME/flow` | fixture.spec.ts |
 | `/p/FORMER-NAME/…` | 301 to the project's current name | src/index.ts `movedTo` |
@@ -141,8 +140,6 @@ field-notes 70, open-tool 40), plus `blank-slate` (no tasks) and
 
 | State | Address | Audience | What it shows |
 |---|---|---|---|
-| `public-showcase` | `/` | public | Showcase, one project named (open-tool), one anonymised (field-notes) |
-| `public-showcase-none` | `/` | public | No project shown publicly (404) |
 | `public-how` | `/how` | public | The explainer |
 | `public-owner-route` | `/p/ledger-core` | public | A visitor on an owner URL without Access (401) |
 | `signin` | `/login` | no Access configured | Sign-in over the anonymised backdrop |

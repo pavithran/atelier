@@ -119,17 +119,12 @@ it("no one but the developer reaches it: anonymous, agent, runner and a declared
   expect(leaks(await visitor.text())).toEqual([]);
 });
 
-it("the showcase and the sign-in backdrop, cached or not, carry none of it", async () => {
+it("the public pages, cached or not, carry none of it", async () => {
   await seed();
-  await index().setShowcase(NAME, "anonymous");
-  try {
-    for (const path of ["/showcase", "/showcase", "/login", "/login"]) {
-      const res = await worker.fetch(new Request(`https://atelier.test${path}`), testEnv);
-      expect(res.status, path).toBe(200);
-      expect(leaks(await res.text()), path).toEqual([]);
-    }
-  } finally {
-    await index().removeShowcase(NAME);
+  for (const path of ["/how", "/how", "/login", "/login"]) {
+    const res = await worker.fetch(new Request(`https://atelier.test${path}`), testEnv);
+    expect(res.status, path).toBe(200);
+    expect(leaks(await res.text()), path).toEqual([]);
   }
 });
 

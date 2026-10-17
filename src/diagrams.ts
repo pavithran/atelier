@@ -1,7 +1,7 @@
 // Where Atelier runs, layer by layer: who acts, the owner's Mac, the agents,
 // their model providers, and Cloudflare. Inline SVG drawn here, not by a
 // script; every colour is a site token through the lay-* classes in
-// layout.css, so it follows light and dark. Shown on /how and the showcase.
+// layout.css, so it follows light and dark. Shown on /how.
 
 // Its own escape, so ui.ts can import this module without a cycle.
 const e = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");

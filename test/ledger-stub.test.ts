@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forgetToldLedgers, guardLedger, serverUpdating } from "../src/ledger-stub.ts";
+import { forgetToldLedgers, guardLedger } from "../src/ledger-stub.ts";
 import { parseRuleError, UPDATING_DETAIL } from "../src/rules.ts";
 
 // The Worker's side of a Ledger a deploy left on older code (t586). On
@@ -36,7 +36,6 @@ test("a call a stale Ledger lacks answers that the server is updating, and asks 
   const L = guardLedger(stub, "project:p", NEW);
   assert.deepEqual(await L.project(), { name: "p" });
   const err = await L.mode().then(() => null, (e: unknown) => e);
-  assert.ok(serverUpdating(err));
   assert.deepEqual(parseRuleError(err), { status: 503, code: "server_updating", detail: UPDATING_DETAIL });
   await flush();
   assert.deepEqual(calls.find((c) => c.method === "restartForUpdate")?.args, [NEW, "mode"]);
@@ -57,7 +56,7 @@ test("other errors pass through untouched", async () => {
   const { stub } = staleStub({ claim: () => { throw boom; } });
   const L = guardLedger(stub, "project:q", null);
   assert.equal(await L.claim("t1").then(() => null, (e: unknown) => e), boom);
-  assert.equal(serverUpdating(boom), false);
+  assert.notEqual(parseRuleError(boom)?.code, "server_updating");
 });
 
 test("the first call of an isolate tells the Ledger the Worker's DEPLOYED_MAIN, once, after that call has settled (t744)", async () => {

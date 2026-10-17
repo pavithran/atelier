@@ -12,8 +12,7 @@ import { LEDGER_RESTART_GAP_MS, missingLedgerMethod, RuleError, UPDATING_DETAIL 
 // Every call made through the stub this returns that fails because the
 // Ledger lacks the method asks the Ledger to restart (restartForUpdate) and
 // fails instead with a 503 RuleError saying the server is updating, which
-// the routes answer as they answer any rule, and which the showcase reads
-// to say so on the page.
+// the routes answer as they answer any rule.
 
 // The Ledgers this isolate has told its version: when it last tried, and
 // whether one answered.
@@ -75,11 +74,6 @@ export function guardLedger<T extends Stub>(stub: T, name: string, deployed: str
       };
     },
   });
-}
-
-// Whether an error is the answer of a stale Ledger, as guardLedger gives it.
-export function serverUpdating(err: unknown): boolean {
-  return err instanceof RuleError ? err.code === "server_updating" : /^503\|server_updating\|/.test(err instanceof Error ? err.message : "");
 }
 
 // For tests only: forget which Ledgers this isolate has told.

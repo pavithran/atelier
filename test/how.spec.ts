@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import how from "../src/how.css";
 import layout from "../src/layout.css";
-import { escapeText, renderLogin, renderShowcase } from "../src/ui";
+import { escapeText, renderLogin } from "../src/ui";
 import { HELP_FORMS, guideText } from "../src/usage.ts";
 import { LOOP, ORCHESTRATOR, RULES, STEPS, TAGLINE, TAKEAWAYS, USING_WELL, USING_WELL_DOC } from "../src/how-data.ts";
 import { REPO_URL } from "../src/ui";
@@ -205,7 +205,7 @@ it("reads no project and no setting: the same bytes whatever the server holds", 
   await env.LEDGER.get(env.LEDGER.idFromName(`project:${record.name}`)).setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   const plain = (await page()).body;
-  const loaded = (await page({ SHOWCASE: record.name, OWNER_NAME: "Zed Ownerson", OWNER_ACTOR: "zed-owner", ATELIER_TOKEN: "how-test-token", TIMEZONE: "Asia/Tokyo" })).body;
+  const loaded = (await page({ OWNER_NAME: "Zed Ownerson", OWNER_ACTOR: "zed-owner", ATELIER_TOKEN: "how-test-token", TIMEZONE: "Asia/Tokyo" })).body;
   expect(loaded).toBe(plain);
   for (const secret of [record.name, record.title, "Zed Ownerson", "zed-owner"]) expect(plain).not.toContain(secret);
 });
@@ -217,16 +217,13 @@ it("answers GET only, and only at /how", async () => {
   expect((await get("/how/more", { ATELIER_TOKEN: "how-test-token" })).headers.get("location")).toBe("https://atelier.test/login");
 });
 
-it("is linked from the sign-in page and the public showcase, which stay free of signed-in links", async () => {
+it("is linked from the sign-in page, which stays free of signed-in links", async () => {
   expect(renderLogin()).toContain('<a href="/how">how Atelier works</a>');
-  expect(renderLogin(undefined, true)).toContain('<a href="/">See the public showcase</a>, or read <a href="/how">');
-  const showcase = renderShowcase([], { planned: 0 } as never, "owner", null);
-  expect(showcase).toContain('<a href="/how">How it works</a>');
-  expect(showcase).not.toContain('href="/p/');
+  expect(renderLogin()).not.toContain('href="/p/');
   expect((await (await get("/login")).text())).toContain('href="/how"');
 });
 
-it("the How page draws where Atelier runs, layer by layer, and the showcase names the layers in short", async () => {
+it("the How page draws where Atelier runs, layer by layer", async () => {
   const how = (await page()).body;
   expect(how).toContain('class="lay-fig"');
   expect(how).toContain("normally reach Cloudflare through the CLI");
@@ -237,11 +234,6 @@ it("the How page draws where Atelier runs, layer by layer, and the showcase name
   expect(how).toContain(">Check container<");
   expect(how).toContain(">npm registry only, read-only<");
   expect(how.indexOf('id="where-it-runs"')).toBeLessThan(how.indexOf('id="the-loop"'));
-  // The showcase's short form (the d29 canvas): one row per layer.
-  const showcase = renderShowcase([], undefined as never, "pavi", "PAVI");
-  const where = showcase.split('id="where-h"')[1].split("</section>")[0];
-  expect([...where.matchAll(/<dt>([^<]+)<\/dt>/g)].map((m) => m[1])).toEqual(["Who acts", "Your Mac", "Agents", "Cloudflare"]);
-  expect(where).toContain("<span>Check container · npm registry only</span>");
 });
 
 it("the rules say who produces a check result, which routes a token opens and what acceptance needs (t216)", () => {

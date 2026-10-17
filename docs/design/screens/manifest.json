@@ -28,8 +28,7 @@
           "sentBack": 1,
           "accepted": 2,
           "scope": 1
-        },
-        "mode": null
+        }
       },
       {
         "name": "field-notes",
@@ -41,8 +40,7 @@
           "ready": 2,
           "failed": 1,
           "blocked": 1
-        },
-        "mode": "anonymous"
+        }
       },
       {
         "name": "open-tool",
@@ -51,88 +49,11 @@
           "open": 10,
           "working": 3,
           "ready": 2
-        },
-        "mode": "named"
+        }
       }
     ]
   },
   "screens": [
-    {
-      "id": "public-showcase",
-      "state": "Showcase with one project named and one anonymised",
-      "path": "/",
-      "url": "https://atelier.test/",
-      "audience": "public",
-      "status": 200,
-      "viewport": {
-        "width": 1440,
-        "height": 900
-      },
-      "colorScheme": "light",
-      "height": 4411,
-      "filename": "public-showcase-1440.png",
-      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
-      "sourceDirty": true,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Mono",
-          "IBM Plex Sans"
-        ],
-        "external": 5
-      }
-    },
-    {
-      "id": "public-showcase",
-      "state": "Showcase with one project named and one anonymised",
-      "path": "/",
-      "url": "https://atelier.test/",
-      "audience": "public",
-      "status": 200,
-      "viewport": {
-        "width": 390,
-        "height": 844
-      },
-      "colorScheme": "light",
-      "height": 6943,
-      "filename": "public-showcase-390.png",
-      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
-      "sourceDirty": true,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Mono",
-          "IBM Plex Sans"
-        ],
-        "external": 5
-      }
-    },
     {
       "id": "public-how",
       "state": "The explainer",
@@ -3663,80 +3584,6 @@
           "IBM Plex Sans"
         ],
         "external": 4
-      }
-    },
-    {
-      "id": "public-showcase-none",
-      "state": "No project shown publicly",
-      "path": "/",
-      "url": "https://atelier.test/",
-      "audience": "public",
-      "status": 404,
-      "viewport": {
-        "width": 1440,
-        "height": 900
-      },
-      "colorScheme": "light",
-      "height": 968,
-      "filename": "public-showcase-none-1440.png",
-      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
-      "sourceDirty": true,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Sans"
-        ],
-        "external": 3
-      }
-    },
-    {
-      "id": "public-showcase-none",
-      "state": "No project shown publicly",
-      "path": "/",
-      "url": "https://atelier.test/",
-      "audience": "public",
-      "status": 404,
-      "viewport": {
-        "width": 390,
-        "height": 844
-      },
-      "colorScheme": "light",
-      "height": 947,
-      "filename": "public-showcase-none-390.png",
-      "source": "b327bffb8d82c1da78aa1ecc4d9cc98f9606f8f2",
-      "sourceDirty": true,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Sans"
-        ],
-        "external": 3
       }
     }
   ]

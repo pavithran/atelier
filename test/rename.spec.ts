@@ -191,11 +191,8 @@ it("pages under a former name redirect to the current one with their path and qu
   const task = await get("/p/page-new/t1");
   expect(task.status).toBe(200);
   expect(await task.text()).toContain('action="/ui/page-new/t1/release"');
-  // Decisions selects the project by either name; the showcase setting may still use the old one.
+  // Decisions selects the project by either name.
   expect((await get("/decisions?project=page-old&task=t1")).status).toBe(200);
-  const show = await worker.fetch(new Request("https://atelier.test/showcase"), { ...testEnv, SHOWCASE: "page-old" } as typeof env);
-  expect(show.status).toBe(200);
-  expect(await show.text()).toContain("page-new");
   // A form from a page opened before the rename still acts, and lands on the page under the new name.
   const posted = await worker.fetch(new Request("https://atelier.test/ui/page-old/t1/release", {
     method: "POST", headers: { cookie: signedIn, origin: "https://atelier.test", "content-type": "application/x-www-form-urlencoded" }, body: "note=done&head=",

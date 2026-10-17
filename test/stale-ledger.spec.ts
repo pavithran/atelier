@@ -4,6 +4,7 @@ import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { Ledger } from "../src/ledger.ts";
 import { UPDATING_DETAIL } from "../src/rules.ts";
+import { signIn } from "./signin.ts";
 
 // A deploy leaves a busy Ledger running the old code (t586). On 2026-10-13
 // from 09:35 to 10:05 EDT, after the deploys of t578 and t585, the atelier
@@ -119,19 +120,15 @@ it("a stale Ledger's missing method leaves no unhandled rejection while the call
   expect(unhandled.map((r) => String(r instanceof Error ? r.message : r))).toEqual([]);
 });
 
-it("the showcase says the server is updating instead of printing figures it could not count", async () => {
+it("a project's showcase page says the server is updating instead of printing figures it could not count", async () => {
   await project("stale-show");
-  await I().setShowcase("stale-show", "named");
-  const res = await without("showcaseCounts", () => worker.fetch(new Request("https://atelier.test/showcase"), testEnv));
-  expect(res.status).toBe(200);
-  const body = await res.text();
-  expect(body).toContain("The server is updating; the figures return in a minute.");
-  expect(body).not.toContain("could not be read just now");
-  // Not kept for the full minute, so the figures return once it restarts.
-  expect(res.headers.get("cache-control")).toBe("public, max-age=10, s-maxage=10");
+  const signed = await signIn(TOKEN, testEnv);
+  const get = () => worker.fetch(new Request("https://atelier.test/p/stale-show/showcase", { headers: { cookie: signed } }), testEnv);
+  const res = await without("showcaseCounts", get);
+  expect(res.status).toBe(503);
+  expect(await res.text()).toContain("the server is updating");
   await wait(300);
-  const again = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(again).not.toContain("The server is updating");
+  expect((await get()).status).toBe(200);
 });
 
 it("a Ledger built for an older DEPLOYED_MAIN restarts when the Worker first addresses it, at most once a minute", async () => {

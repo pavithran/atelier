@@ -181,7 +181,7 @@ it("the public pages, the sign-out form and the API routes stand as before, with
   try {
     expect((await get("/how")).status).toBe(200);
     expect((await get("/live.js")).status).toBe(200);
-    expect((await get("/showcase")).status).toBe(404);
+    expect((await get("/showcase")).status).toBe(302);
     const out = await worker.fetch(new Request("https://atelier.test/logout", {
       method: "POST", headers: { origin: "https://atelier.test" }, redirect: "manual",
     }), bindings);
@@ -261,10 +261,10 @@ it("with Access set in part or unusably, the developer's routes are refused, nam
 });
 
 // The front door (t314): the whole domain is public at the edge, so the
-// Worker's own check is the guard. / is the showcase for anyone, with no
-// assertion and no session; every owner route, each method its forms use,
-// is refused without Access's vouching, even with a session cookie.
-it("with Access on, / is the public showcase to anyone, and every owner route still needs Access", async () => {
+// Worker's own check is the guard. / and /showcase lead to /home for anyone,
+// with no assertion and no session (t758); every owner route, each method its
+// forms use, is refused without Access's vouching, even with a session cookie.
+it("with Access on, / and /showcase lead to /home to anyone, and every owner route still needs Access", async () => {
   const send = serveKeys();
   try {
     const record = { name: "front-door", repo: "front-door", title: "Front door secret title", policy: { checks: [], protected: [] }, createdAt: "2026-10-08T00:00:00.000Z" };
@@ -273,24 +273,25 @@ it("with Access on, / is the public showcase to anyone, and every owner route st
     await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
     await L.newItem("Front door secret task", [], "owner");
     await L.claim("t1", "codex/gpt-6");
-    const shown = { ...bindings, SHOWCASE: "front-door:anonymous", OWNER_NAME: "Front Owner" } as typeof env;
+    const shown = { ...bindings, OWNER_NAME: "Front Owner" } as typeof env;
     const at = (path: string, method = "GET", headers: Record<string, string> = {}) =>
       worker.fetch(new Request(`https://atelier.test${path}`, { method, headers, redirect: "manual" }), shown);
     for (const method of ["GET", "HEAD"]) {
-      const front = await at("/", method);
-      expect(front.status, method).toBe(200);
+      for (const path of ["/", "/showcase"]) {
+        const front = await at(path, method);
+        expect(front.status, `${method} ${path}`).toBe(302);
+        expect(front.headers.get("location")).toBe("https://atelier.test/home");
+      }
     }
+    // The redirect carries nothing of any project.
     const page = await (await at("/")).text();
-    expect(page).toContain("<title>Atelier · public showcase</title>");
-    expect(page).toContain('<a href="/login">Sign in</a>');
-    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="owner-bar"', 'href="/home"']) expect(page).not.toContain(secret);
-    expect((await at("/showcase")).status).toBe(200);
+    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="owner-bar"']) expect(page).not.toContain(secret);
     const cookie = await signIn(TOKEN, shown, { "cf-access-jwt-assertion": await assertion() });
     const form = { origin: "https://atelier.test", cookie };
     const owner: [string, string][] = [
       ["GET", "/home"], ["GET", "/login"], ["POST", "/login"], ["GET", "/decisions"], ["GET", "/studio"],
       ["GET", "/flow"], ["GET", "/history"], ["GET", "/models"], ["POST", "/models/add"], ["GET", "/usage"],
-      ["GET", "/projects"], ["POST", "/projects/showcase"], ["POST", "/ui/front-door/t1/accept"],
+      ["GET", "/projects"], ["POST", "/ui/front-door/t1/accept"],
       ["GET", "/p/front-door"], ["GET", "/p/front-door/tasks"], ["GET", "/p/front-door/t1"], ["GET", "/p/front-door/code"], ["POST", "/"],
     ];
     for (const [method, path] of owner) {

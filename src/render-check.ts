@@ -30,19 +30,18 @@ import { FONTS } from "./ui.ts";
 // 2606, so it can never be a public site the sandbox could otherwise reach.
 export const RENDER_HOST = "render.atelier.test";
 
-// /how renders to about 180,000 characters and the showcase to about 95,000;
-// twice the larger leaves room to grow without letting a run send megabytes.
+// /how renders to about 180,000 characters; twice that leaves room to grow
+// without letting a run send megabytes.
 export const MAX_HTML = 400_000;
 // The JSON body around it: the HTML escaped, plus the page name.
 const MAX_BODY = 2 * MAX_HTML;
-const PAGES = ["/how", "/showcase"] as const;
+const PAGES = ["/how"] as const;
 export type Page = (typeof PAGES)[number];
 
 // The figures each page must draw, by the class of their <figure>: /how has
-// all three (src/how.ts), the showcase the layers one (src/ui.ts). Anything
-// else on the page — the cards' own small graphs — is not a diagram.
+// all three (src/how.ts). Anything else on the page is not a diagram.
 const FIGURES: [cls: string, name: string][] = [["how-fig", "loop"], ["lay-fig", "layers"], ["pf-fig", "plan-flow"]];
-const EXPECTED: Record<Page, string[]> = { "/how": FIGURES.map((f) => f[0]), "/showcase": ["lay-fig"] };
+const EXPECTED: Record<Page, string[]> = { "/how": FIGURES.map((f) => f[0]) };
 
 // Boxes that carry a label and belong to nothing but themselves: lanes and
 // bands hold nodes, so only nodes may not overlap each other.
@@ -317,7 +316,7 @@ export async function renderGateway(browser: RenderBrowser | undefined, request:
     return reply(400, { error: "bad_body", detail: "POST /check takes JSON: { page, html }" });
   }
   const page = body?.page;
-  if (page !== "/how" && page !== "/showcase") {
+  if (page !== "/how") {
     return reply(400, { error: "bad_page", detail: `page must be ${PAGES.map((p) => `"${p}"`).join(" or ")}` });
   }
   if (typeof body.html !== "string" || !body.html.trim()) {

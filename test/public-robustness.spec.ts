@@ -6,25 +6,30 @@ const call = async (method: string, path: string, headers: Record<string, string
   return worker.fetch(new Request(`https://atelier.test${path}`, { method, headers }), env);
 };
 
-// One project shown publicly, so /showcase answers a page in this file's own
-// storage: on a server that shows nothing it answers 404, as showcase.spec
-// tests, and "HEAD answers like GET" means the same answer GET would give.
+// One registered project, so the signed-out /p/<name> answers below can be
+// compared with an unknown name's.
 const time = new Date().toISOString();
 const shown = { name: "public-robustness", repo: "public-robustness", policy: { checks: [], protected: [] }, createdAt: time };
 await env.LEDGER.get(env.LEDGER.idFromName("project:public-robustness")).setProject(shown, "owner");
 await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(shown);
-await env.LEDGER.get(env.LEDGER.idFromName("__index")).setShowcase("public-robustness", "named");
 
 it("HEAD on public routes answers like GET, not redirecting", async () => {
-  for (const path of ["/showcase", "/how", "/live.js", "/api/version"]) {
+  for (const path of ["/how", "/live.js", "/api/version"]) {
     const res = await call("HEAD", path);
     expect(res.status).toBe(200);
     expect(res.status).toBe((await call("GET", path)).status);
   }
+  // The front door redirects the same way for HEAD as for GET (t758).
+  for (const path of ["/", "/showcase"]) {
+    const head = await call("HEAD", path), get = await call("GET", path);
+    expect(head.status).toBe(302);
+    expect(head.status).toBe(get.status);
+    expect(head.headers.get("location")).toBe(get.headers.get("location"));
+  }
 });
 
 it("trailing slash on a public page goes to the page", async () => {
-  for (const path of ["/showcase/", "/how/", "/live.js/"]) {
+  for (const path of ["/how/", "/live.js/"]) {
     const res = await call("GET", path);
     expect(res.status).toBe(200);
   }

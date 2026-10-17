@@ -41,7 +41,6 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
   const failures: string[] = [];
   const links = new Set<string>();
   for (const p of pageStates(seeded)) {
-    if (p.setup === "no-showcase") continue;
     const res = await draw(pages, p.path, p.audience, cookie);
     const body = await res.text();
     if (res.status !== p.status || !body.includes(p.marker)) failures.push(`${p.id} ${p.path}: ${res.status} (want ${p.status}), marker ${JSON.stringify(p.marker)} ${body.includes(p.marker) ? "found" : "missing"}`);
@@ -80,16 +79,6 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
     const location = res.headers.get("location") ?? "";
     if (res.status !== a.status || (a.location && !location.endsWith(a.location))) failures.push(`alias ${a.path}: ${res.status} ${location}`);
   }
-  // The named project's git history from before Atelier is the comparison's "before".
-  const shown = await (await draw(pages, "/", "public", cookie)).text();
-  expect(shown).toContain("Before Atelier, and with it");
-  expect(shown).toContain("of commits name an agent");
-  // The no-showcase state, with the setting cleared and put back.
-  const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));
-  for (const plan of PLANS) if (plan.mode) await I.removeShowcase(plan.name);
-  const none = await draw(pages, "/", "public", cookie);
-  expect(none.status).toBe(404);
-  for (const plan of PLANS) if (plan.mode) await I.setShowcase(plan.name, plan.mode);
   keys.mockRestore();
   expect(failures).toEqual([]);
 });
