@@ -2411,6 +2411,9 @@ export type RecordedReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 export interface RecordedReview { by: string; verdict: RecordedReviewVerdict; head: string; at?: string }
 export interface RecordedMerge {
   mergeCommit: string;
+  // The baseline commit paired with the merge, when the merge commit is the
+  // project's own (a baseline built with --history-since, t726).
+  baselineMerge?: string;
   commit: string;
   reviews: RecordedReview[];
   note?: string;
@@ -2430,6 +2433,7 @@ export function recordedMerge(body: Record<string, unknown>, actor: string, at: 
   const bad = (detail: string) => new RuleError("bad_record", detail, 400);
   if (typeof body.mergeCommit !== "string" || !SHA.test(body.mergeCommit)) throw bad("the record names the merge commit on main, a full SHA (--merge)");
   if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw bad("the record names the commit merged, a full SHA (--head, or the task's recorded head)");
+  if (body.baselineMerge !== undefined && (typeof body.baselineMerge !== "string" || !SHA.test(body.baselineMerge))) throw bad("the baseline commit paired with the merge is a full SHA");
   if (!Array.isArray(body.reviews) || !body.reviews.length) throw bad("the record names the reviews that approved the merge, one --review H/M=VERDICT@HEAD or more");
   if (body.reviews.length > RECORDED_REVIEWS_MAX) throw bad(`the record names at most ${RECORDED_REVIEWS_MAX} reviews`);
   const reviews = body.reviews.map((raw, n): RecordedReview => {
@@ -2446,18 +2450,27 @@ export function recordedMerge(body: Record<string, unknown>, actor: string, at: 
   }
   if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) throw bad("the note is text, at most 2000 characters");
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
-  return { mergeCommit: body.mergeCommit, commit: body.commit, reviews, ...(note ? { note } : {}), outside: true, at, by: actor };
+  return { mergeCommit: body.mergeCommit, ...(typeof body.baselineMerge === "string" ? { baselineMerge: body.baselineMerge } : {}), commit: body.commit, reviews, ...(note ? { note } : {}), outside: true, at, by: actor };
 }
 
 // What the baseline says of the merge: whether main holds it (null when its
 // history could not be read far enough to say) and the merge commit's
 // parents (null when the baseline has no such commit). The merge is recorded
 // only when main holds it and its second parent is the commit merged.
-export function recordedMergeRefusal(record: { mergeCommit: string; commit: string }, baseline: { parents: readonly string[] | null; holds: boolean | null }): RuleError | null {
-  const m = record.mergeCommit.slice(0, 8);
+//
+// A baseline built with --history-since rebuilds each commit with one parent,
+// so a merge there has lost its second parent (t726: record-merge refused
+// every merge made outside Atelier on such a baseline). The CLI then checks
+// the merge in the developer's checkout, where the second parent is intact,
+// and names the baseline commit paired with it (baselineMerge); the baseline
+// is asked only that it holds that commit. A merge the baseline cannot map is
+// refused as any other the baseline lacks, naming atelier sync.
+export function recordedMergeRefusal(record: { mergeCommit: string; commit: string; baselineMerge?: string }, baseline: { parents: readonly string[] | null; holds: boolean | null }): RuleError | null {
+  const m = (record.baselineMerge ?? record.mergeCommit).slice(0, 8);
   if (baseline.parents === null) return new RuleError("merge_not_on_main", `the baseline has no commit ${m}; bring main in first (atelier sync) and record again`, 409);
   if (baseline.holds === null) return new RuleError("merge_unconfirmed", `main's history could not be read far enough to find ${m}, so the merge is not recorded`, 409);
   if (!baseline.holds) return new RuleError("merge_not_on_main", `main does not hold ${m}; bring main in first (atelier sync) and record again`, 409);
+  if (record.baselineMerge) return null;
   if (baseline.parents.length < 2) return new RuleError("not_a_merge", `${m} has ${baseline.parents.length} parent${baseline.parents.length === 1 ? "" : "s"}, so it is not a merge`, 409);
   if (baseline.parents[1] !== record.commit) return new RuleError("second_parent_differs", `${m}'s second parent is ${baseline.parents[1].slice(0, 8)}, not ${record.commit.slice(0, 8)}, the commit named as the task's head`, 409);
   return null;
