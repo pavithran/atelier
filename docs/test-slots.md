@@ -27,6 +27,15 @@ stored capacity wins. An invalid or disagreeing environment value warns once
 per caller but cannot prevent admission; an absent value silently uses stored
 capacity.
 
+Inside a slot, `npm test` (test/run.mjs) gives its Node pool
+(`--test-concurrency`) and its Vitest pool (`--maxWorkers`) each the cores
+divided by the slot capacity, at least one, read from `ATELIER_TEST_SLOTS` or
+the default capacity. Slots busy together then keep the machine's load near its
+core count. A required check that fails is run once more at the same head by
+`atelier check`; failing then passing is recorded as a flake (the failure,
+then the pass, whose output starts with FLAKE), and a check that fails twice
+stays failed.
+
 Change capacity with `atelier slots set N` (or `node cli/load.mjs --set N`).
 Only positive safe integers are accepted. The change shares admission's SQLite transaction lock and
 preserves live leases and the priority/FIFO queue. Raising capacity lets

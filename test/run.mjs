@@ -15,6 +15,7 @@
 // worker-configuration.d.ts itself). No owner credential, login or live
 // service is needed.
 import { runGroup } from "../cli/group.mjs";
+import { poolSize } from "../cli/load.mjs";
 import { constants } from "node:os";
 import { plan, rejections } from "./suites.mjs";
 
@@ -33,9 +34,12 @@ if (listing) {
   for (const [name, list] of Object.entries(found.byRunner)) for (const file of list) console.log(`${name}\t${file}`);
   process.exit(0);
 }
-const node = [process.execPath, "--import", "./test/guard.mjs", "--test", "--test-timeout=180000"];
+// Each pool takes its share of the cores, so the slots busy together keep the
+// load under the core count (t744; poolSize in cli/load.mjs).
+const workers = poolSize();
+const node = [process.execPath, "--import", "./test/guard.mjs", "--test", "--test-timeout=180000", `--test-concurrency=${workers}`];
 const commands = files.length ? [[...node, ...files]]
-  : [...(found.byRunner.node.length ? [[...node, ...found.byRunner.node]] : []), ["node_modules/.bin/vitest", "run"]];
+  : [...(found.byRunner.node.length ? [[...node, ...found.byRunner.node]] : []), ["node_modules/.bin/vitest", "run", `--maxWorkers=${workers}`]];
 
 // runGroup SIGKILLs the group on the way out of process.exit.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => process.exit(128 + constants.signals[signal]));

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { acquireSlot, setSlotCapacity, releaseSlot, slotStatus, slotCapacity, slotPriority, parseSlotProcesses, formatSlots, poolTransaction, orderedWaiters, slotInvocation, SLOT_WRAPPER } from "../cli/load.mjs";
+import { acquireSlot, setSlotCapacity, releaseSlot, slotStatus, slotCapacity, poolSize, slotPriority, parseSlotProcesses, formatSlots, poolTransaction, orderedWaiters, slotInvocation, SLOT_WRAPPER } from "../cli/load.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 
 function fixture(t, capacity = 1) {
@@ -297,4 +297,16 @@ test("a waiting caller warns only once across polls, admission and release", asy
   assert.equal(polls, 4);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /requests 2; using stored capacity 1/);
+});
+
+// t744: on 36 cores nine slots each ran a node --test pool and a vitest pool
+// sized by the cores, and the load reached 68 while the one-minute timing of
+// test/stale-ledger.spec.ts failed. Each pool now takes its slot's share.
+test("a test pool takes its slot's share of the cores, at least one, whatever the setting", () => {
+  assert.equal(poolSize({}, 36), 4);
+  assert.equal(poolSize({ ATELIER_TEST_SLOTS: "6" }, 36), 6);
+  assert.equal(poolSize({ ATELIER_TEST_SLOTS: "100" }, 36), 1);
+  assert.equal(poolSize({ ATELIER_TEST_SLOTS: "nonsense" }, 36), 4);
+  assert.equal(poolSize({}, 0), 1);
+  for (const slots of [1, 2, 3, 5, 9, 12]) assert.ok(slots * poolSize({ ATELIER_TEST_SLOTS: String(slots) }, 36) <= 36);
 });
