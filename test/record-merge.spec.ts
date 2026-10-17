@@ -21,9 +21,9 @@ const T = "0".repeat(40);
 beforeAll(() => setRetryBaseMs(1));
 afterAll(() => setRetryBaseMs());
 
-async function setup(name: string) {
+async function setup(name: string, policy: Record<string, unknown> = {}) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const record = { name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: [] }, createdAt: AT };
+  const record = { name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: [], ...policy }, createdAt: AT };
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
   // main: LATER (main moved on since) <- MERGE (BASE, HEAD) <- BASE; OTHER is
@@ -372,4 +372,43 @@ it("still refuses a merge the baseline cannot map, naming atelier sync, and the 
   // A pairing is not a way past main: a commit only another branch holds is refused.
   await refusal(await call(item.id, { mergeCommit: "1".repeat(40), baselineMerge: OTHER, head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
   expect(await L.item(item.id)).toMatchObject({ state: "claimed" });
+});
+
+// t754: the 2026-10-17 status listed a ship for every merge whose deploy the
+// orchestrator's post-merge script had already run outside atelier ship, so
+// the waiting list was mostly noise. --shipped records that run with the merge.
+it("--shipped counts as the run of the declared protected actions, so no ship is owed for that merge", async () => {
+  const { L, call } = await setup("record-merge-shipped", { shipKinds: ["deploy", "install"] });
+  const ships = async () => (await L.inbox(new Date().toISOString())).filter((e) => e.kind === "ship").map((e) => e.itemId);
+  const owed = await L.newItem("Deployed before it was recorded", [], "owner");
+  const unshipped = await L.newItem("Recorded without saying it shipped", [], "owner");
+  // The note is text, not empty and not long; a refused record changes nothing.
+  for (const shipped of ["", "   ", 7, "x".repeat(501)]) await refusal(await call(owed.id, { mergeCommit: MERGE, head: HEAD, reviews, shipped }), 400, "bad_record", /what ran is a short note/);
+  expect((await L.item(owed.id)).state).not.toBe("merged");
+  expect((await call(owed.id, { mergeCommit: MERGE, head: HEAD, reviews, shipped: " deploy version 3f9a " })).status).toBe(200);
+  expect((await call(unshipped.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+  // Only the merge recorded without the note is still owed.
+  expect(await ships()).toEqual([unshipped.id]);
+  const runs = (await L.actionRuns()).filter((r) => r.ship === `recorded-${owed.id}`);
+  expect(runs.map((r) => [r.kind, r.step, r.approval, r.command, r.passed, r.note])).toEqual([["install", "recorded", null, null, true, "deploy version 3f9a"], ["deploy", "recorded", null, null, true, "deploy version 3f9a"]]);
+  expect(((await L.events(owed.id)) as unknown as LedgerEvent[]).find((e) => e.kind === "item.merge_recorded")?.data.shipped).toBe("deploy version 3f9a");
+  // A repeat of the same record adds no second run.
+  expect((await call(owed.id, { mergeCommit: MERGE, head: HEAD, reviews, shipped: "again" })).status).toBe(200);
+  expect((await L.actionRuns()).filter((r) => r.ship === `recorded-${owed.id}`)).toHaveLength(2);
+});
+
+it("a ship recorded after an older merge retires the ship that merge owed, and a merge recorded after the ship still owes one", async () => {
+  const { L, call } = await setup("record-merge-later-ship", { shipKinds: ["deploy"] });
+  const ships = async () => (await L.inbox(new Date().toISOString())).filter((e) => e.kind === "ship").map((e) => e.itemId);
+  const older = await L.newItem("Merged first", [], "owner");
+  const newer = await L.newItem("Merged after the ship", [], "owner");
+  expect((await call(older.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+  expect(await ships()).toEqual([older.id]);
+  // A deploy of a later main head, recorded as atelier ship records it.
+  await L.approveAction({ kind: "deploy", commit: LATER }, "owner");
+  await L.consumeAction({ kind: "deploy", commit: LATER }, "owner");
+  await L.recordActionRun({ step: "deploy", kind: "deploy", approval: "a1", command: "npx wrangler deploy", commit: LATER, exitStatus: 0, durationMs: 900, passed: true, outputTail: "", ship: "s-1" }, "owner");
+  expect(await ships()).toEqual([]);
+  expect((await call(newer.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+  expect(await ships()).toEqual([newer.id]);
 });

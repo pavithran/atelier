@@ -151,3 +151,20 @@ test("record-merge on a history-since baseline sends the head it checked, though
   assert.equal(r.status, 0, r.stderr);
   assert.equal(f.requests.find((x) => x.method === "POST").body.head, f.head);
 });
+
+// t754: --shipped says the merge's declared protected actions already ran.
+test("atelier record-merge --shipped sends what ran with the record, and an empty note is refused before any request", async (t) => {
+  const f = await fixture(t);
+  const args = ["record-merge", "t627", "--merge", MERGE, "--head", HEAD, "--review", `codex/gpt-6-astra=approve@${HEAD}`];
+  const r = await f.run([...args, "--shipped", "deploy version 3f9a"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(f.requests.find((q) => q.method === "POST").body.shipped, "deploy version 3f9a");
+  const plain = await f.run(args);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal("shipped" in f.requests.filter((q) => q.method === "POST")[1].body, false);
+  const before = f.requests.length;
+  const empty = await f.run([...args, "--shipped", "  "]);
+  assert.notEqual(empty.status, 0);
+  assert.match(empty.stderr, /--shipped needs a note of what ran/);
+  assert.equal(f.requests.length, before);
+});

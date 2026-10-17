@@ -46,6 +46,7 @@ export default async function recordMergeCommand() {
   if (!given.length) die("record-merge needs --review H/M=VERDICT@HEAD, once per review that approved the merge");
   const reviews = given.map((text) => parseReview(text) ?? die(`--review ${JSON.stringify(text)} is not H/M=approve@HEAD or H/M=reject@HEAD, with the full head and, optionally, @2026-10-13`));
   if (args.note !== undefined && (typeof args.note !== "string" || !args.note.trim())) die('--note needs text: atelier record-merge ID ... --note "TEXT"');
+  if (args.shipped !== undefined && (typeof args.shipped !== "string" || !args.shipped.trim())) die('--shipped needs a note of what ran: atelier record-merge ID ... --shipped "deploy version ID"');
   const name = project(), id = itemArg();
   const paired = await pairedMerge(name, id);
   const r = await call("POST", `${I(name, id)}/record-merge`, {
@@ -55,6 +56,7 @@ export default async function recordMergeCommand() {
     ...(paired ? { head: paired.head } : args.head !== undefined ? { head: args.head } : {}),
     reviews,
     ...(args.note !== undefined ? { note: args.note } : {}),
+    ...(args.shipped !== undefined ? { shipped: args.shipped } : {}),
   }, OWNER);
   const rec = r.record;
   const said = rec.reviews.map((v) => `${v.by} ${v.verdict === "approve" ? "approved" : "rejected"} ${v.head.slice(0, 8)}${v.at ? ` (${v.at})` : ""}`).join("; ");
