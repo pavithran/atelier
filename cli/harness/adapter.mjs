@@ -276,25 +276,30 @@ export const SIGN_IN_FIX = {
   "claude-code": `run \`claude auth login\` as this user, or put a \`claude setup-token\` token in ~/${CLAUDE_TOKEN_FILE}`,
 };
 
-// Claude Code's environment as atelier-claude gives it: the long-lived token
-// in the key file, when there is one, is the sign-in. It goes to the probe's
-// environment alone and is never printed.
-function claudeProbeEnv(env, home) {
+// The environment the job gives Claude Code, which `env` is (harnessEnv in
+// runner.mjs: no variable whose name says it holds a secret unless the entry
+// names it). The key file's token is added only when the job's own command
+// loads it: a wrapper script that mentions the file, as ~/.local/bin/atelier-
+// claude does. The shipped Node adapter does not, so a probe must not either.
+// The token goes to the probe's environment alone and is never printed.
+function claudeProbeEnv(env, command, home) {
   const out = { ...env };
   try {
+    const wrapper = command?.[0];
+    if (typeof wrapper !== "string" || !readFileSync(wrapper, "utf8").includes(CLAUDE_TOKEN_FILE)) return out;
     const token = readFileSync(join(home, CLAUDE_TOKEN_FILE), "utf8").replace(/\n/g, "");
     if (token) out.CLAUDE_CODE_OAUTH_TOKEN = token;
-  } catch { /* no key file: the CLI's own sign-in is what counts */ }
+  } catch { /* no wrapper script or key file: the CLI's own sign-in is what counts */ }
   return out;
 }
 
 // { ready, why }: `why` names the fix when the harness is not ready.
 // `run(exe, args, options)` resolves { code, stdout } and is replaceable.
-export async function harnessReady(harness, { env = process.env, home = homedir(), timeoutMs = SIGN_IN_TIMEOUT_MS, run = runProbe } = {}) {
+export async function harnessReady(harness, { env = process.env, command, home = homedir(), timeoutMs = SIGN_IN_TIMEOUT_MS, run = runProbe } = {}) {
   if (harness !== "claude-code") return { ready: true };
   const fix = SIGN_IN_FIX[harness];
   try {
-    const result = await run(executableFor(harness, env), ["auth", "status"], { env: claudeProbeEnv(env, home), timeout: timeoutMs });
+    const result = await run(executableFor(harness, process.env), ["auth", "status"], { env: claudeProbeEnv(env, command, home), timeout: timeoutMs });
     let signedIn = false;
     try { signedIn = result.code === 0 && JSON.parse(result.stdout)?.loggedIn === true; } catch { /* not JSON: not signed in */ }
     return signedIn ? { ready: true } : { ready: false, why: `the Claude CLI is not signed in; ${fix}` };
