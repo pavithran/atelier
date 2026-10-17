@@ -105,3 +105,27 @@ test("a process the check leaves behind is ended, and the clone is removed", { t
   assert.deepEqual(f.clones(), [], "the clone is removed");
   assert.doesNotMatch(r.stderr, /warning|\n\s+at /, r.stderr);
 });
+
+// t744: a required check failed on a runner at load 68 and passed on a rerun,
+// and the failed finish released two builds. A check that fails is run once
+// more at the same head; failing then passing is a flake, recorded as the
+// failure and then the pass, and a check that fails twice stays failed.
+test("a check that fails then passes on a rerun is recorded as a flake and passes", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await fixture(t, (root) => `if [ -e '${join(root, "ran")}' ]; then exit 0; fi; touch '${join(root, "ran")}'; echo first run failed; exit 1`);
+  const r = await f.run();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^PASS {2}.*failed once, then passed on a rerun at the same head/m);
+  assert.deepEqual(f.evidence.map((e) => e.passed), [false, true]);
+  assert.match(f.evidence[1].outputTail, /^FLAKE: failed once, then passed/);
+});
+
+test("a check that fails twice at the same head stays failed", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await fixture(t, (root) => `echo run >> '${join(root, "runs")}'; exit 1`);
+  const r = await f.run();
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.equal(readFileSync(join(f.root, "runs"), "utf8").trim().split("\n").length, 2);
+  assert.deepEqual(f.evidence.map((e) => e.passed), [false]);
+  assert.doesNotMatch(r.stdout, /flake/i);
+});

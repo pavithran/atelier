@@ -154,3 +154,22 @@ it("a Ledger built for an older DEPLOYED_MAIN restarts when the Worker first add
   await wait(100);
   expect((await look("stale-version")).marked).toBe(true);
 });
+
+// t744: the first call after the Worker's ledgerVersion met a Ledger that had
+// already restarted, answering 500, when the host was slow enough that the
+// call reached the Ledger more than the gate's settle time (50 ms) after
+// ledgerVersion left. A slow host is played by holding the lookup of mode.
+it("a slow host between ledgerVersion and the call that follows it does not fail the call", async () => {
+  await project("stale-slow");
+  await mark("stale-slow", (instance) => { instance.env = { ...(instance.env as object), DEPLOYED_MAIN: OLD }; });
+  const proto = Ledger.prototype as unknown as Record<string, unknown>;
+  const saved = Object.getOwnPropertyDescriptor(proto, "mode")!;
+  Object.defineProperty(proto, "mode", {
+    configurable: true,
+    get(this: object) { const f = (saved.value as (...a: unknown[]) => unknown).bind(this); return new Promise((r) => setTimeout(() => r(f), 300)); },
+  });
+  try {
+    const res = await api("GET", "/projects/stale-slow/mode");
+    expect(res.status).toBe(200);
+  } finally { Object.defineProperty(proto, "mode", saved); }
+});
