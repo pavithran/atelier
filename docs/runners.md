@@ -771,6 +771,16 @@ After fixing the harness and running the required checks successfully, the
 operator can remove this marker to resume. Changing the command configuration
 alone does not clear a blocked validation report or prove that checks passed.
 
+### Harnesses that are not signed in
+
+Before each poll, and at most once a minute, the runner asks Claude Code
+(`claude auth status`, with the token in `~/.config/api-keys/claude-code-auth.key`
+when there is one) whether it is signed in. If it is not, if the check cannot
+run, or if it takes more than 15 seconds, the runner leaves `claude-code` out of
+its offer and logs one line naming the fix. It offers the harness again, with
+one line, once the check passes. Only an entry that runs Atelier's shipped
+adapter is checked; a command of your own is not.
+
 ### Provider usage limits
 
 The shipped adapters (`bin/harness/atelier-*.mjs`) read a provider's usage
