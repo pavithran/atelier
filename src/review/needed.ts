@@ -37,6 +37,14 @@ export interface ReviewRequestView {
   tier?: boolean;
 }
 
+// The message for a rejection, built on the task's ordinary notification: the
+// same title, link and headers, the body saying who rejected which head and
+// the reviewer's note. The ledger sends it when the rejection is recorded.
+export function rejectionRequest(base: Request, r: Pick<Review, "by" | "head" | "note">): Request {
+  const note = (r.note ?? "").replace(/\s+/g, " ").trim();
+  return new Request(base, { body: `${r.by} rejected ${r.head.slice(0, 8)}${note ? `: ${note}` : ""}` });
+}
+
 // Compatibility export for callers scheduling the lease alarm.
 export { REVIEW_LEASE_MS as REVIEW_CLAIM_TIMEOUT_MS } from "../rules.ts";
 

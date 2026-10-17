@@ -1396,6 +1396,14 @@ async function pushRefreshing(io, ctx, push) {
   }
 }
 
+// The tail of the log of a generator that stopped the merge, so the stop
+// carries its output and not only the log's path.
+function generatorOutput(regenerated) {
+  const log = regenerated?.at(-1)?.log;
+  try { return log ? `\nThe generator's log:\n${readFileSync(log, "utf8").slice(-2000).trimEnd()}` : ""; }
+  catch { return ""; }
+}
+
 // The policy's regenerate command, run in the workspace the way a check
 // runs it, to bring every fixture current with the merged tree. Conflicts
 // are no longer settled through it: only the generators the project
@@ -1708,7 +1716,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
       throw new StepError(r.state === "conflicts"
         ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts; nothing was regenerated.\n${describeConflicts(r, r.manifest)}\n${unsettled ? `Taking either side and regenerating did not settle them: ${unsettled}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the sources, regenerate the outputs, git add, git commit, then atelier push to record the resolution. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve, commit and push with atelier push, and then atelier land ${id} again.`
         : r.state === "stopped"
-          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stopped: ${r.reason}\nNothing was merged; the merge was aborted and the workspace is where it was.`
+          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stopped: ${r.reason}\nNothing was merged; the merge was aborted and the workspace is where it was.${generatorOutput(r.regenerated)}`
           : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${r.reason}\nNothing was merged; git left the workspace as it was.`, data);
     }
     mergedIn = r.state === "merged";

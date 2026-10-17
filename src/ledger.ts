@@ -62,10 +62,10 @@ import { integrationBlockers, nextToIntegrate, planGate, type Integration, type 
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
-import { reviewBrief, type ReviewEvidence } from "./review/brief.ts";
+import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
-import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { rejectionRequest, reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
@@ -159,6 +159,8 @@ export interface ReviewClaim {
   // cross-company one; null under the default.
   singleFamily: PoolFamily | null;
   decisions: Decision[];
+  // The orchestrator's context for the task (contextOf), null when none.
+  context?: string | null;
   // The item's evidence at the head, for the brief's Observed evidence
   // section (t490).
   evidence: ReviewEvidence;
@@ -3218,6 +3220,21 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
+  // A rejection tells the owner when it is recorded. notify() speaks once per
+  // head of a submission, so a rejection at a head already notified would be
+  // silent there; this sends its own message through the same delivery.
+  private notifyRejection(r: Review, origin?: string): void {
+    try {
+      if (origin) this.setNotificationOrigin(r.itemId, origin);
+      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, r.itemId).toArray()[0];
+      if (!topic || !saved) return;
+      this.deliver(rejectionRequest(notificationRequest(topic, saved.origin as string, this.project().name, this.detail(r.itemId)), r));
+    } catch {
+      console.error("Atelier notification could not be scheduled");
+    }
+  }
+
   // Delivery runs in the background: a failure is logged without the
   // response body or the topic, and nothing is retried. It holds the
   // restart gate, so a restart after a deploy waits for it.
@@ -3402,6 +3419,7 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     this.notify(r.itemId, origin);
+    if (!r.approve) this.notifyRejection(r, origin);
     this.afterPlanChange(r.itemId);
   }
 
@@ -6627,7 +6645,7 @@ export class Ledger extends DurableObject<Env> {
       const brief = reviewBrief({
         need, item: p, events: this.briefEvents(p.id),
         plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null, singleFamily: single,
-        decisions: standingDecisions(this.decisionStore),
+        decisions: standingDecisions(this.decisionStore), context: this.taskContext(p.id),
         criteriaReviews: this.criteriaReviewsFor(p.id), criteriaResolutions: this.criteriaResolutionsFor(p.id), criteriaRev: this.criteriaRevision(p.id),
         evidence: this.reviewEvidence(p.id, need.head, policy),
       });
@@ -6918,7 +6936,7 @@ export class Ledger extends DurableObject<Env> {
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
       events: item.state === "merged" ? this.events(itemId, Number.MAX_SAFE_INTEGER).toReversed() : this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null, singleFamily: singleFamily(policy), tier,
-      decisions: standingDecisions(this.decisionStore),
+      decisions: standingDecisions(this.decisionStore), context: this.taskContext(itemId),
       evidence: this.reviewEvidence(itemId, head, policy),
       criteria, request: row.id as number,
       criteriaReviews: this.criteriaReviewsFor(itemId), criteriaResolutions: this.criteriaResolutionsFor(itemId), criteriaRev: this.criteriaRevision(itemId),
@@ -6935,6 +6953,22 @@ export class Ledger extends DurableObject<Env> {
     const runs = this.sql.exec(`SELECT id, json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as Evidence), seq: r.id as number }));
     return { runs: runs.filter((e) => e.head === head), required: [...policy.checks] };
+  }
+
+  // The orchestrator's context for a task: the latest item.context event.
+  private taskContext(id: string): string | null {
+    return contextOf(this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'item.context' ORDER BY seq`, id).toArray().map(eventOf));
+  }
+
+  // Sets or replaces the task's context, decisions the reviewer must not
+  // overrule; an empty text clears it. Each call is an event, the latest
+  // one read by every reviewer's brief. The owner or the orchestrator writes it.
+  setContext(id: string, actor: string, text: string): Item {
+    if (actor !== this.owner && actor !== ORCHESTRATOR) throw new RuleError("not_project_owner", "only the developer or the orchestrator sets a task's context", 403);
+    this.item(id);
+    assertLength(text, NOTE_MAX, "the task's context");
+    this.log(id, actor, "item.context", { text: text.trim() }, new Date().toISOString());
+    return this.item(id);
   }
 
   // The events a review brief reads: the item's latest, for the builder's

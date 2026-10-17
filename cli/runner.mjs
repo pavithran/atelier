@@ -718,6 +718,74 @@ export async function prepareReviewDependencies(workspace, source, { executeChil
   await visit(workspace, source);
 }
 
+// The runner's own run of the tests a task changed and the typecheck, in a
+// clean clone of the head (t732). `source` is the review's clone, which holds
+// the head; the run clones it into a folder of its own, so nothing the
+// reviewer's harness leaves behind reaches the result. Each command goes
+// through the host slot wrapper. Only a command that exits 0 is a pass and
+// only one that exits non-zero is a fail; a clone, a spawn error, a signal or
+// a timeout is 'not-run', never a pass. A diff that adds or changes no test
+// file records 'none' for the tests.
+export const RUNNER_EVIDENCE_TIMEOUT_MS = 20 * 60_000;
+export const RUNNER_EVIDENCE_OUTPUT = 4000;
+export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, prepare = prepareReviewDependencies, id = randomUUID().slice(0, 8) }) {
+  const dir = `${source}-evidence-${id}`;
+  const notRun = (reason) => ({ status: "not-run", reason });
+  const lost = (reason) => ({ head, tests: notRun(reason), typecheck: notRun(reason) });
+  const slot = (argv) => [process.execPath, SLOT_WRAPPER, "--", ...argv];
+  const trim = (text) => text.length > RUNNER_EVIDENCE_OUTPUT ? text.slice(-RUNNER_EVIDENCE_OUTPUT) : text;
+  const exec = async (command, argv) => {
+    let result;
+    try { result = await run(argv, { cwd: dir, capture: true, captureError: true, signal, timeoutMs, env: checkEnv(process.env) }); }
+    catch (error) {
+      if (signal?.aborted) throw error;
+      return { command, ...notRun(`the runner failed to start it: ${error.message}`) };
+    }
+    if (signal?.aborted) throw new Error("interrupted");
+    if (result.timedOut) return { command, ...notRun(`it timed out after ${Math.round(timeoutMs / 1000)} seconds`) };
+    if (result.code === null || result.code === undefined) return { command, ...notRun(`it ended on signal ${result.signal ?? "unknown"}`) };
+    const output = [result.output, result.stderr].filter(Boolean).join("\n");
+    return { command, status: result.code === 0 ? "pass" : "fail", output: trim(output), outputLength: output.length };
+  };
+  try {
+    const cloned = await run(["git", "clone", "--quiet", source, dir], { capture: true, captureError: true, signal, timeoutMs }).catch((error) => { if (signal?.aborted) throw error; return { code: 1, stderr: error.message }; });
+    if (signal?.aborted) throw new Error("interrupted");
+    if (cloned.timedOut || cloned.code !== 0) return lost(`the clean clone failed${cloned.timedOut ? " (timed out)" : cloned.stderr ? `: ${cloned.stderr.slice(0, 300)}` : ""}`);
+    const checkout = await run(["git", "checkout", "--quiet", "--detach", head], { cwd: dir, capture: true, captureError: true, signal, timeoutMs }).catch((error) => { if (signal?.aborted) throw error; return { code: 1, stderr: error.message }; });
+    if (signal?.aborted) throw new Error("interrupted");
+    if (checkout.timedOut || checkout.code !== 0) return lost(`the head could not be checked out in the clean clone${checkout.stderr ? `: ${checkout.stderr.slice(0, 300)}` : ""}`);
+    try { await prepare(dir, source); }
+    catch (error) { if (signal?.aborted) throw error; return lost(`dependencies could not be prepared: ${error.message}`); }
+    if (from) {
+      const names = await run(["git", "diff", "--name-only", "-z", "--diff-filter=ACMR", from, head], { cwd: dir, capture: true, captureError: true, signal, timeoutMs });
+      if (names.timedOut || names.code !== 0) return lost("the review diff's changed paths could not be read");
+      changedPaths = names.output.split("\0").filter(Boolean);
+    }
+    const files = changedPaths.filter((file) => /\.(test|spec)\.(mjs|ts)$/.test(file) && existsSync(join(dir, file)));
+    const nodeFiles = files.filter((file) => /\.test\.(mjs|ts)$/.test(file));
+    const vitestFiles = files.filter((file) => /\.spec\.(mjs|ts)$/.test(file));
+    const runs = [];
+    for (const argv of [
+      ...(nodeFiles.length ? [["npm", "test", "--", ...nodeFiles]] : []),
+      ...(vitestFiles.length ? [["node_modules/.bin/vitest", "run", ...vitestFiles]] : []),
+    ]) runs.push(await exec(argv.join(" "), slot(argv)));
+    const tests = runs.length ? {
+      status: runs.some((r) => r.status === "not-run") ? "not-run" : runs.some((r) => r.status === "fail") ? "fail" : "pass",
+      command: runs.map((r) => r.command).join("; "), files,
+      reason: runs.filter((r) => r.reason).map((r) => r.reason).join("; "),
+      output: runs.map((r) => r.output ?? "").join("\n"),
+      outputLength: runs.reduce((n, r) => n + (r.outputLength ?? 0), runs.length - 1),
+    } : { status: "none" };
+    const typecheck = await exec("npm run typecheck", slot(["npm", "run", "typecheck"]));
+    return { head, tests, typecheck };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return lost(`the runner failed: ${error.message}`);
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* a folder left behind costs only disk */ }
+  }
+}
+
 // A review job clones the part's fork read-only with an Artifacts read token,
 // which git sends as an Authorization header through its environment, as the
 // CLI's auth() does, never in an argument.
@@ -2064,7 +2132,20 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     const large = shown.length > BRIEF_LIMITS.diff;
     const byRef = large && !since?.incremental && claimed.diffRef;
     if (byRef) io.log(`review diff kept in R2 by reference: ${claimed.diffRef.key} (${claimed.diffRef.bytes} bytes)`);
+    // The changed tests and the typecheck in a clean clone (t732). A failure
+    // to collect it is 'not run' in the brief, never a pass; an io with no
+    // collector (an older wiring) leaves the section out.
+    let runnerEvidence;
+    if (io.runnerEvidence && !claimed.landed) {
+      try { runnerEvidence = await io.runnerEvidence({ source: workspace, head: claimed.head, from: compare.from }); }
+      catch (error) {
+        if (io.stopped()) throw new Error("interrupted");
+        io.log(`clean-clone run failed: ${error.message}`);
+        runnerEvidence = null;
+      }
+    }
     const text = reviewBrief({
+      runnerEvidence,
       need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan,
       diff: byRef ? null : shown, diffRef: byRef ? claimed.diffRef : null,
       since: since?.incremental ? { from: since.from } : null,
@@ -2079,6 +2160,8 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       // The owner's standing decisions (src/decisions.ts), as the claim
       // carries them; an older server sends none, and the brief says so.
       decisions: claimed.decisions ?? null,
+      // The orchestrator's context for the task; an older server sends none.
+      context: claimed.context ?? null,
       // The reviews of the acceptance criteria themselves and the owner's
       // resolutions of their findings (t438), as the claim carries them.
       criteriaReviews: claimed.criteriaReviews ?? null, criteriaResolutions: claimed.criteriaResolutions ?? null, criteriaRev: claimed.criteriaRev ?? null,
@@ -3604,6 +3687,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     harness: (argv, cwd, env, options = {}) => startHarness(argv, cwd, env, { ...options, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, executeChild),
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
     prepareReview: (cwd, source) => prepareReviewDependencies(cwd, source, { executeChild, signal: controller.signal }),
+    // The clean-clone run holds no token (checkEnv), so it runs outside executeChild.
+    runnerEvidence: (args) => collectRunnerEvidence({ ...args, run: execute, signal: controller.signal }),
     prepare: async (cwd) => {
       if (!existsSync(join(cwd, ".git"))) return null;
       const git = (argv) => checked(["git", ...argv], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
