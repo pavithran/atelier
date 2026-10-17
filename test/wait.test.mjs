@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { judge, waitFor } from "../cli/wait.mjs";
-import { duplicateRunners, formatProcesses, liveProcesses, parseLsof, parsePs, startRefusal } from "../cli/procs.mjs";
+import { duplicateRunners, formatProcesses, guardName, liveProcesses, parseLsof, parsePs, startRefusal } from "../cli/procs.mjs";
 
 import { criteriaOf } from "../src/criteria.ts";
 
@@ -348,4 +348,49 @@ test("status flags a runner name that two processes share (t581)", () => {
   assert.deepEqual(duplicateRunners(twins), [{ name: "home:mbp", pids: [11, 12] }]);
   assert.match(formatProcesses({ runners: twins, agents: [] }), /duplicate runner name home:mbp: pids 11, 12/);
   assert.doesNotMatch(formatProcesses({ runners: twins.slice(1), agents: [] }), /duplicate/);
+});
+
+// t581 review round 1.
+test("a runner started with its flags before the command is still seen (t581)", () => {
+  const ps = parsePs([
+    "  21     1 01:00 node /x/cli/atelier.mjs --name home:mbp runner",
+    "  22     1 01:00 node /x/atelier dir/cli/atelier.mjs --once --config /a/b.json --name=home:b runner --replace",
+    "  23     1 01:00 node /x/cli/atelier.mjs status --name runner",
+    "  24     1 01:00 node /x/cli/atelier.mjs --name runner status",
+  ].join("\n"));
+  const live = liveProcesses({ ps, lsof: new Map(), work: "/w" });
+  assert.deepEqual(live.runners.map((r) => [r.pid, r.name]), [[21, "home:mbp"], [22, "home:b"]]);
+});
+
+const guard = (over = {}) => {
+  const log = { killed: [], said: [] };
+  const run = (extra) => guardName({
+    runners: [{ pid: 11, name: "home:mbp" }, { pid: 12, name: "home:mbp" }], name: "Home:MBP", replace: false,
+    kill: (pid) => log.killed.push(pid), alive: () => false, sleep: async () => {}, say: (t) => log.said.push(t), ...over, ...extra,
+  });
+  return { log, run };
+};
+
+test("the start guard refuses without --replace and signals nothing (t581)", async () => {
+  const { log, run } = guard();
+  assert.match(await run(), /already running.*pid 11, 12/);
+  assert.deepEqual(log.killed, []);
+  assert.equal(await run({ runners: [] }), null);
+});
+
+test("the start guard stops each live runner, then lets the start go on (t581)", async () => {
+  const { log, run } = guard();
+  assert.equal(await run({ replace: true }), null);
+  assert.deepEqual(log.killed, [11, 12]);
+  assert.match(log.said[0], /stopped pid 11, 12/);
+});
+
+test("the start guard refuses when a signal fails or a process stays alive (t581)", async () => {
+  const failing = guard({ kill: () => { throw new Error("EPERM"); } });
+  assert.match(await failing.run({ replace: true }), /could not stop the runner with pid 11: EPERM/);
+  let slept = 0;
+  const stuck = guard({ alive: (pid) => pid === 12, sleep: async () => { slept++; } });
+  assert.match(await stuck.run({ replace: true }), /pid 12 did not stop within 10 seconds/);
+  assert.equal(slept, 50);
+  assert.deepEqual(stuck.log.said, []);
 });

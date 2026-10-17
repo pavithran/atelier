@@ -3160,3 +3160,14 @@ test("a part whose marker could only be held in memory keeps its claim instead o
   assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "the claim is kept");
   _unsavedFailures.clear();
 });
+
+// t581 review round 1: a malformed invocation must be found before any
+// signal is sent, so runnerUsage is what the command checks first.
+test("runnerUsage refuses a stray word, a repeated flag and a valued switch (t581)", async () => {
+  const { runnerUsage } = await import("../cli/runner.mjs");
+  const { parseArgs } = await import("../cli/atelier.mjs");
+  const ok = parseArgs(["runner", "--name", "home:mbp", "--replace"]);
+  assert.doesNotThrow(() => runnerUsage(ok));
+  for (const argv of [["runner", "--name", "home:mbp", "--replace", "extra"], ["runner", "--name", "home:a", "--name", "home:b", "--replace"], ["runner", "--name", "home:mbp", "--replace", "--replace"], ["runner", "--replace"]])
+    assert.throws(() => runnerUsage(parseArgs(argv)), /usage|home:NAME/, argv.join(" "));
+});

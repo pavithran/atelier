@@ -41,14 +41,35 @@ export function age(etime) {
   return `${s}s`;
 }
 
-// Whether the command line is the runner: atelier.mjs (or `atelier`) then the
-// word runner. The line is read whole, not split on spaces, since the
-// script's path may hold some (iCloud's Mobile Documents does). Behind an
-// interpreter the script may be any path ending in atelier[.mjs]; with none,
-// the command itself must be, so `grep atelier runner` is not a runner.
+// Whether the command line is the runner: atelier.mjs (or `atelier`), then
+// any flags, then the word runner, as the CLI's parser takes them (so
+// `atelier.mjs --name home:x runner` counts). The line is read whole, not
+// split on spaces, since the script's path may hold some (iCloud's Mobile
+// Documents does). Behind an interpreter the script may be any path ending
+// in atelier[.mjs]; with none, the command itself must be, so
+// `grep atelier runner` is not a runner. A flag that takes a value hides
+// that value from the search for the command word.
+const VALUE_FLAGS = new Set(["name", "config", "project", "as"]);
+const commandWord = (text) => {
+  const words = text.trim().split(/\s+/);
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w === "--" || !w) return null;
+    if (!w.startsWith("-")) return w;
+    if (w.startsWith("--") && !w.includes("=") && VALUE_FLAGS.has(w.slice(2))) i++;
+  }
+  return null;
+};
 const isRunner = (args) => {
   const m = /^(?:\S*\/)?(?:node|bun|deno)\s+(.*)$/.exec(args);
-  return m ? /^(?:.*\/)?atelier(?:\.mjs)? runner(?:\s|$)/.test(m[1]) : /^\S*atelier(?:\.mjs)? runner(?:\s|$)/.test(args);
+  const text = m ? m[1] : args;
+  // Each place that ends "atelier" or "atelier.mjs" could be the script, since
+  // its own path may hold the word and a space.
+  for (const hit of text.matchAll(/(?:^|\/)atelier(?:\.mjs)?(?=\s|$)/g)) {
+    if (!m && hit.index !== 0 && /\s/.test(text.slice(0, hit.index))) continue;
+    if (commandWord(text.slice(hit.index + hit[0].length)) === "runner") return true;
+  }
+  return false;
 };
 const runnerName = (args) => /\s--name(?:=|\s+)(\S+)/.exec(args)?.[1] ?? "runner";
 
@@ -101,6 +122,28 @@ export function startRefusal(runners, name) {
   const pids = runners.filter((r) => r.name.toLowerCase() === name.toLowerCase()).map((r) => r.pid);
   if (!pids.length) return null;
   return `a runner named ${name} is already running on this Mac (pid ${pids.join(", ")}). Stop it, or start this one with --replace to stop it first.`;
+}
+
+// The start guard, with its effects handed in so a test signals no process:
+// `kill(pid)` sends SIGTERM and may throw, `alive(pid)` says whether it still
+// runs, `sleep(ms)` waits, `say(text)` prints. Returns null to go on, or the
+// reason the runner must not start. Without `replace`, a live runner of the
+// name is a refusal; with it, each is stopped and given `waitMs` to go, and
+// any that stays, or cannot be signalled, is a refusal too (never a second
+// runner beside it).
+export async function guardName({ runners, name, replace, kill, alive, sleep, say, waitMs = 10_000 }) {
+  const refusal = startRefusal(runners, name);
+  if (!refusal) return null;
+  if (!replace) return refusal;
+  const pids = runners.filter((r) => r.name.toLowerCase() === name.toLowerCase()).map((r) => r.pid);
+  for (const pid of pids) {
+    try { kill(pid); } catch (error) { return `could not stop the runner with pid ${pid}: ${error.message}; this one was not started.`; }
+  }
+  for (let waited = 0; waited < waitMs && pids.some(alive); waited += 200) await sleep(200);
+  const left = pids.filter(alive);
+  if (left.length) return `the runner with pid ${left.join(", ")} did not stop within ${waitMs / 1000} seconds; this one was not started.`;
+  say(`runner: stopped pid ${pids.join(", ")}.`);
+  return null;
 }
 
 // The section: one line per runner, then one per task with its agents.
