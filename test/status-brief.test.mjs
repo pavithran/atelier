@@ -117,3 +117,14 @@ test("t727: status warns of a low balance by the same floor the alerts use, and 
   assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: null } }, now), []);
   assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: 1 } }, now), []);
 });
+
+// t727 round 2: status printed a weekly warning the owner had turned off, while notifications stayed quiet.
+test("t727: status stays quiet for a 5-hour or weekly window whose own alert is off", () => {
+  const now = Date.parse("2026-10-05T21:00:00.000Z");
+  const resetsAt = new Date(now + 86_400_000).toISOString();
+  const r = (name) => ({ tool: "codex", runner: "home:studio", at: new Date(now - 60_000).toISOString(), windows: [{ name, usedPercent: 85, resetsAt }], balances: [] });
+  for (const [name, key] of [["weekly", "weeklyPercent"], ["5-hour", "windowPercent"]]) {
+    assert.equal(formatUsageWarnings({ reports: [r(name)], thresholds: {} }, now).length, 2, `${name} warns while on`);
+    assert.deepEqual(formatUsageWarnings({ reports: [r(name)], thresholds: { [key]: null } }, now), [], `${name} is quiet when ${key} is off`);
+  }
+});

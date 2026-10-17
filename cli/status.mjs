@@ -18,8 +18,7 @@
 // each named runner's jobs said as the runner's own first line says them
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
-import { usageShortages } from "../src/rules.ts";
-import { DEFAULT_THRESHOLDS, isStale, lowBalances } from "../src/usage/report.ts";
+import { DEFAULT_THRESHOLDS, isStale, lowBalances, windowShortages } from "../src/usage/report.ts";
 import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import { directionText, mergedByOverride } from "../src/rules.ts";
@@ -495,8 +494,9 @@ export function formatUsageWarnings(usage, now = Date.now()) {
   const lines = [];
   for (const r of usage.reports) {
     if (isStale(r, now)) { lines.push(`${r.tool} on ${r.runner}: not reported since ${String(r.at).slice(0, 16)}Z, so its usage is not known`); continue; }
-    for (const s of usageShortages(r, now)) lines.push(s.message);
-    const floor = usage.thresholds?.balanceFloor === undefined ? DEFAULT_THRESHOLDS.balanceFloor : usage.thresholds.balanceFloor;
+    const t = { ...DEFAULT_THRESHOLDS, ...usage.thresholds };
+    for (const s of windowShortages(r, t, now)) lines.push(s.message);
+    const floor = t.balanceFloor;
     for (const b of lowBalances(r, floor)) lines.push(`${r.tool} on ${r.runner}: balance ${b.amount} ${b.currency}, below ${floor}`);
   }
   return lines.length ? ["Usage warnings:", ...lines.map((l) => `  ${l}`)] : [];
