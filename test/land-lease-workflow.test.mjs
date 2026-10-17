@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { runLand } from "../cli/land.mjs";
+import { runLand, readRetry, workflowIsGone } from "../cli/land.mjs";
 import { LANDING_LEASE_EXPIRY_MS, landingLeasePollMs } from "../src/landing-lease.ts";
 import { git, landFixture, recordedAt, CEILING_MS, until, settled, waitingLanding, holdingLanding, underLease, spawnLanding, scriptWorkflow, tokenLanding } from "./land-fixture.mjs";
 
@@ -1013,6 +1013,58 @@ for (const queued of [true, false]) test(`land --workflow exits non-zero on losi
   assert.match(r.output, /npx wrangler workflows instances describe landing/);
   assert.deepEqual(wf.events, []);
   assert.deepEqual(f.posts("/merged"), []);
+});
+
+// t368: on 2026-10-09 one failed read of a live instance ended a wait that
+// a minute later attached to the same instance.
+test("land --workflow reads a live instance again after failed reads, and recovers (t368)", async (t) => {
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  const tick = wf.tick;
+  let failed = 0;
+  wf.tick = (box) => {
+    if (wf.instance && failed < 3) { failed++; wf.unreadable = true; wf.readError = "Workflow binding unavailable"; }
+    else { wf.unreadable = false; wf.readError = null; }
+    tick(box);
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /the landing Workflow could not be read \(Workflow binding unavailable\); trying again in \d+s, for up to \d+s in all/);
+  assert.doesNotMatch(r.output, /can no longer be read/);
+});
+
+test("land --workflow gives up on a live instance after the read window, saying how long it tried (t368)", async (t) => {
+  const f = await landFixture(t);
+  f.env = { ATELIER_LAND_POLL_MS: "20", ATELIER_LAND_READ_WINDOW_MS: "1500" };
+  const wf = f.box.wf;
+  wf.tick = () => { if (wf.instance) { wf.unreadable = true; wf.readError = "Workflow binding unavailable"; } };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the read failed for [12]s; the landing Workflow of t1 can no longer be read/);
+});
+
+test("readRetry doubles its wait to a cap, ends at the window and starts afresh after a good read (t368)", () => {
+  let clock = 0;
+  const r = readRetry({ now: () => clock, windowMs: 100, baseMs: 10, maxMs: 30 });
+  const waits = [];
+  for (;;) {
+    const step = r.next();
+    if (step.giveUp) { assert.equal(step.tried, 100); break; }
+    waits.push(step.wait); clock += step.wait;
+  }
+  assert.deepEqual(waits, [10, 20, 30, 30, 10]);
+  r.ok();
+  assert.deepEqual(r.next(), { giveUp: false, tried: 0, wait: 10 });
+});
+
+test("workflowIsGone is true only for a definite answer that the instance is missing or ended (t368)", () => {
+  assert.equal(workflowIsGone({ instance: null }, "a"), true);
+  assert.equal(workflowIsGone({ instance: "b", status: { status: "running" } }, "a"), true);
+  assert.equal(workflowIsGone({ instance: "a", status: null, readError: "Workflow instance not found" }, "a"), true);
+  assert.equal(workflowIsGone({ instance: "a", status: null, lastStatus: { status: "terminated" } }, "a"), true);
+  assert.equal(workflowIsGone({ instance: "a", status: null, readError: "fetch failed" }, "a"), false);
+  assert.equal(workflowIsGone({ instance: "a", status: { status: "unknown" } }, "a"), false);
+  assert.equal(workflowIsGone({ instance: "a", status: null, lastStatus: { status: "running" } }, "a"), false);
 });
 
 test("Workflow lease polling bounds a three-hour queue's steps and refreshes even a slow poll before queue expiry", () => {
