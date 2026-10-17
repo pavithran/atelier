@@ -1,5 +1,5 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
+import { formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
@@ -7,6 +7,11 @@ import { serverFetch } from "../server-fetch.mjs";
 
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
+
+// Usage warnings come first, as the token-expiry warnings do; a server that
+// cannot answer leaves the text as it was.
+const usageWarnings = (as) => request("GET", "/usage", undefined, as).then((u) => formatUsageWarnings(u), () => []);
+const withUsage = (text, lines) => (lines.length ? `${lines.join("\n")}\n\n${text}` : text);
 
 // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
 export default async function statusCommand() {
@@ -48,7 +53,7 @@ export default async function statusCommand() {
     const mine = as === OWNER;
     const branches = mine ? await developerBranches(name, as) : null;
     if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
-    console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)));
+    console.log(withUsage(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
     pointToGuide([name]);
     return;
   }
@@ -84,7 +89,7 @@ export default async function statusCommand() {
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());
   const branches = formatAllDeveloperBranches(views);
-  console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")));
+  console.log(withUsage(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")), await usageWarnings(OWNER)));
   console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));
   pointToGuide(chosen.map((p) => p.name));

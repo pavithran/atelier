@@ -18,6 +18,7 @@
 // each named runner's jobs said as the runner's own first line says them
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
+import { DEFAULT_THRESHOLDS, isStale, lowBalances, windowShortages } from "../src/usage/report.ts";
 import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import { directionText, mergedByOverride } from "../src/rules.ts";
@@ -481,4 +482,22 @@ export function formatAllDeveloperBranches(views) {
   const unread = views.filter((v) => !Array.isArray(v.branches)).map((v) => v.name);
   if (unread.length) lines.push(`  not read for ${unread.join(", ")} (the server keeps none, or could not answer)`);
   return lines.length ? ["Developer branches", ...lines].join("\n") : "";
+}
+
+// The usage warnings `atelier status` prints first: each vendor window at 80
+// percent used or heading for its limit before it resets, from the usage
+// reports the server holds, in the rule's words (src/rules.ts usageShortages).
+// A report older than the stale limit is said to be stale instead of read as
+// healthy. null when the server could not answer.
+export function formatUsageWarnings(usage, now = Date.now()) {
+  if (!usage || !Array.isArray(usage.reports)) return [];
+  const lines = [];
+  for (const r of usage.reports) {
+    if (isStale(r, now)) { lines.push(`${r.tool} on ${r.runner}: not reported since ${String(r.at).slice(0, 16)}Z, so its usage is not known`); continue; }
+    const t = { ...DEFAULT_THRESHOLDS, ...usage.thresholds };
+    for (const s of windowShortages(r, t, now)) lines.push(s.message);
+    const floor = t.balanceFloor;
+    for (const b of lowBalances(r, floor)) lines.push(`${r.tool} on ${r.runner}: balance ${b.amount} ${b.currency}, below ${floor}`);
+  }
+  return lines.length ? ["Usage warnings:", ...lines.map((l) => `  ${l}`)] : [];
 }
