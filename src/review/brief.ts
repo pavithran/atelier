@@ -259,7 +259,7 @@ export function reviewBrief(input: BriefInput): string {
   // rejection at this head, so it is reviewed again rather than reworked; or
   // both.
   const pushedPast = need.previous.some((r) => !r.approve && r.by !== owner && r.head !== head);
-  const refutedHere = need.previous.some((r) => !r.approve && r.by !== owner && r.head === head && refutedRejection(r, verdicts));
+  const refutedHere = need.previous.some((r) => !r.approve && r.by !== owner && r.head === head && refutedRejection(r, verdicts, need.observedAt));
   const again = refutedHere
     ? pushedPast
       ? "A model rejected an earlier head and the builder has pushed since, and the developer refuted every blocking finding of a rejection at this head, so it is reviewed again rather than reworked"
@@ -362,7 +362,7 @@ export function reviewBrief(input: BriefInput): string {
   const criteriaSection = criteriaFindingsSection(input.criteriaReviews ?? [], input.criteriaResolutions ?? [], input.criteriaRev ?? 0);
   if (criteriaSection) section(criteriaSection, "", "Judge the change against the criteria as they stand above; a resolution the developer recorded on a criteria finding is their decision on that reading of the criterion.");
 
-  if (need.previous.length) section("## Earlier reviews", "", ...earlier(need.previous, head, owner, verdicts));
+  if (need.previous.length) section("## Earlier reviews", "", ...earlier(need.previous, head, owner, verdicts, need.observedAt));
   // Findings the developer answered in a review a later one of the same
   // reviewer replaced at its head are not among the reviews above (t717).
   const listed = new Set(need.previous.flatMap((r) => (r.findings ?? []).map(findingKey)));
@@ -532,9 +532,9 @@ function mergeLines(previous: string | null, merge: NonNullable<NonNullable<Brie
 // Each finding is numbered as `atelier finding --index` counts it, and the
 // owner's verdicts follow its review's block, outside it, since the owner
 // wrote them.
-function earlier(previous: readonly ReviewRecord[], head: string, owner: string, verdicts: Map<string, OwnerVerdict>): string[] {
+function earlier(previous: readonly ReviewRecord[], head: string, owner: string, verdicts: Map<string, OwnerVerdict>, observedAt?: string | null): string[] {
   const rounds = new Map<string, number>();
-  for (const r of previous) if (!r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts)) && !rounds.has(r.head)) rounds.set(r.head, rounds.size + 1);
+  for (const r of previous) if (!r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts, observedAt)) && !rounds.has(r.head)) rounds.set(r.head, rounds.size + 1);
   const lines = [previous.some((r) => r.head === head)
     ? `These are the reviews recorded before this one. One marked "this head" is of ${short(head)}, the head under review; the builder has pushed since each of the others.`
     : `Each of these is of an earlier head. The builder has pushed since, and this review is of ${short(head)}.`];
