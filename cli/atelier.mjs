@@ -298,10 +298,16 @@ export async function renewWorkspaceToken(name, id, as, why) {
   if (renewedThisCommand) die(`The server still refused this workspace's token after it was renewed. Run atelier start ${id} --as ${as}.`);
   let item, r;
   try {
-    item = (await request("GET", I(name, id), undefined, as)).item;
-    if (item.owner !== as) stuck(`${id} is held by ${item.owner ?? "nobody"} now, so it cannot be renewed for ${as}.`);
+    const read = await request("GET", I(name, id), undefined, as);
+    item = read.item;
+    if (item.owner !== as) {
+      const notice = takenBackNotice(read, as, id);
+      if (notice) die(notice);
+      stuck(`${id} is held by ${item.owner ?? "nobody"} now, so it cannot be renewed for ${as}.`);
+    }
     r = await request("POST", `${I(name, id)}/claim`, {}, as, item.runner ? { "x-atelier-runner": item.runner } : {});
   } catch (error) {
+    if (isRunnerForbidden(error)) die(noLongerHolds(id), error.code);
     if (error instanceof RequestError) stuck(`Renewing it failed: ${error.message}.`, error.code);
     throw error;
   }
@@ -989,13 +995,29 @@ export const P = (name) => `/projects/${encodeURIComponent(name)}`;
 export const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 
 // What a holder is told when the developer's dispatch took the task back
-// (t391): the release event's note, read at its next push or finish. Null
-// when the task was not taken that way or is still the holder's.
+// (t391), read from the events the task answers with, newest first (the
+// ledger's detail). The notice is given only when the most recent event that
+// ended this actor's claim is that release: a take-back followed by a new claim
+// and an ordinary release says nothing. Null when the task is still the
+// holder's.
 export function takenBackNotice(d, as, id) {
   if (d.item?.owner === as) return null;
-  const taken = (d.events ?? []).findLast((e) => e.kind === "item.released" && e.data?.from === as && String(e.data?.note ?? "").startsWith("taken back by the developer"));
-  return taken ? `${id} was ${taken.data.note}, so it is no longer yours. Stop work on it; your commits stay on its workspace for the next builder.` : null;
+  for (const e of d.events ?? []) {
+    if (e.kind === "item.released" && e.data?.from === as) {
+      const note = String(e.data?.note ?? "");
+      return note.startsWith("taken back by the developer") ? `${id} was ${note}, so it is no longer yours. Stop work on it; your commits stay on its workspace for the next builder.` : null;
+    }
+    if (e.kind === "item.handoff" && e.data?.from === as) return null;
+    if (e.kind === "item.abandoned") return null;
+    if (e.kind === "item.claimed" && e.actor !== as) return null;
+  }
+  return null;
 }
+
+// A runner's job is dropped when a task is taken back, so the task is refused
+// it (runner_forbidden); that, or a refused read, is said plainly (t391).
+export const noLongerHolds = (id) => `this workspace no longer holds ${id} (it may have been taken back by the developer's dispatch): run atelier show ${id}`;
+export const isRunnerForbidden = (error) => error instanceof RequestError && /^runner_forbidden\b/.test(error.message);
 export const short = (s) => (s ? s.slice(0, 8) : "—");
 
 // The reader readCheckLog (src/check-failure.ts) takes: a stored check log

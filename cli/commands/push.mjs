@@ -1,5 +1,5 @@
 // atelier push. Its forms, flags and help are declared in src/usage/commands/push.ts.
-import { I, OWNER, actor, args, call, cfg, count, die, forkBranch, git, hasCommit, holds, itemArg, project, renewWorkspaceToken, requireWorkspace, saveConfig, short, serverVersion, takenBackNotice, TOKEN_REFUSED, workspaceForkBranch, wsConfig } from "../atelier.mjs";
+import { I, OWNER, actor, args, call, cfg, count, die, forkBranch, git, hasCommit, holds, itemArg, project, renewWorkspaceToken, requireWorkspace, saveConfig, short, serverVersion, isRunnerForbidden, noLongerHolds, request, takenBackNotice, TOKEN_REFUSED, workspaceForkBranch, wsConfig } from "../atelier.mjs";
 import { guardedPush, remoteBases } from "../private.mjs";
 
 import { checkCapabilities, COMMAND_CAPABILITIES } from "../../src/route-level.ts";
@@ -160,7 +160,7 @@ export default async function pushCommand() {
     // task is merged or abandoned (src/runner-git.ts), so the task is read
     // before the refusal is reported: a closed task answers task_terminal
     // there, and the command ends with that state's exit (t476), not git's.
-    const read = await call("GET", I(name, id), undefined, as);
+    const read = await request("GET", I(name, id), undefined, as).catch((error) => die(isRunnerForbidden(error) ? noLongerHolds(id) : error.message, error.code));
     const takenBack = takenBackNotice(read, as, id);
     if (takenBack) die(takenBack);
     let said = (r.stderr || r.stdout || r.error?.message || "").trim();
