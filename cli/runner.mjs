@@ -718,6 +718,30 @@ export async function prepareReviewDependencies(workspace, source, { executeChil
   await visit(workspace, source);
 }
 
+// The evidence clone installs its own dependencies from the head (npm ci, then the
+// project's `types` script), never the review clone's node_modules, which can
+// itself point into the builder's workspace: an undeclared dependency
+// installed only there would pass the tests that a fresh install fails. An
+// install that fails or times out is 'not-run' (the caller catches the throw).
+export async function installEvidenceDependencies(dir, source, { run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS } = {}) {
+  const step = async (cwd, argv) => {
+    const result = await run(argv, { cwd, capture: true, captureError: true, signal, timeoutMs, env: checkEnv(process.env) });
+    if (result.timedOut) throw new Error(`${argv.slice(0, 2).join(" ")} timed out`);
+    if (result.code !== 0) throw new Error(`${argv.slice(0, 2).join(" ")} failed${result.stderr ? `: ${String(result.stderr).slice(-300)}` : ""}`);
+  };
+  async function visit(folder) {
+    const manifestPath = join(folder, "package.json");
+    if (existsSync(manifestPath)) {
+      await step(folder, ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"]);
+      if (folder === dir && JSON.parse(readFileSync(manifestPath, "utf8")).scripts?.types) await step(folder, ["npm", "run", "types"]);
+    }
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      if (entry.isDirectory() && ![".git", "node_modules"].includes(entry.name)) await visit(join(folder, entry.name));
+    }
+  }
+  await visit(dir);
+}
+
 // The runner's own run of the tests a task changed and the typecheck, in a
 // clean clone of the head (t732). `source` is the review's clone, which holds
 // the head; the run clones it into a folder of its own, so nothing the
@@ -728,7 +752,7 @@ export async function prepareReviewDependencies(workspace, source, { executeChil
 // file records 'none' for the tests.
 export const RUNNER_EVIDENCE_TIMEOUT_MS = 20 * 60_000;
 export const RUNNER_EVIDENCE_OUTPUT = 4000;
-export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, prepare = prepareReviewDependencies, id = randomUUID().slice(0, 8) }) {
+export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
   const dir = `${source}-evidence-${id}`;
   const notRun = (reason) => ({ status: "not-run", reason });
   const lost = (reason) => ({ head, tests: notRun(reason), typecheck: notRun(reason) });
@@ -754,7 +778,7 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
     const checkout = await run(["git", "checkout", "--quiet", "--detach", head], { cwd: dir, capture: true, captureError: true, signal, timeoutMs }).catch((error) => { if (signal?.aborted) throw error; return { code: 1, stderr: error.message }; });
     if (signal?.aborted) throw new Error("interrupted");
     if (checkout.timedOut || checkout.code !== 0) return lost(`the head could not be checked out in the clean clone${checkout.stderr ? `: ${checkout.stderr.slice(0, 300)}` : ""}`);
-    try { await prepare(dir, source); }
+    try { await prepare(dir, source, { run, signal, timeoutMs }); }
     catch (error) { if (signal?.aborted) throw error; return lost(`dependencies could not be prepared: ${error.message}`); }
     if (from) {
       const names = await run(["git", "diff", "--name-only", "-z", "--diff-filter=ACMR", from, head], { cwd: dir, capture: true, captureError: true, signal, timeoutMs });

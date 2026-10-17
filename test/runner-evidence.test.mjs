@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -210,4 +210,44 @@ test("the brief reports the original length of trimmed runner output", async () 
   const { run } = runner(() => ({ code: 1, output: "x".repeat(9000) }));
   const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.test.mjs"], run, prepare });
   assert.match(section(brief({ ...evidence, head: H1 })), /last 2000 of 9000 characters/);
+});
+
+// The clone installs its own dependencies from the head, with the review
+// clone's node_modules (which can point into the builder's workspace) never
+// linked in: an undeclared dependency present only there must not pass.
+const withManifest = { "package.json": JSON.stringify({ scripts: { types: "wrangler types", typecheck: "tsc" } }), "package-lock.json": "{}", "test/a.test.mjs": "x" };
+
+test("the evidence clone installs its dependencies itself and is never given the workspace's node_modules", async () => {
+  const { dir, head } = repo(withManifest);
+  const workspaceModules = mkdtempSync(join(tmpdir(), "builder-modules-"));
+  symlinkSync(workspaceModules, join(dir, "node_modules"), "dir");
+  const seen = [];
+  const clone = `${dir}-evidence-n1`;
+  const { run } = runner((command, options) => {
+    seen.push({ command, linked: existsSync(join(options.cwd, "node_modules")) && lstatSync(join(options.cwd, "node_modules")).isSymbolicLink() });
+    return {};
+  });
+  const calls = [];
+  const spy = async (argv, options) => {
+    if (argv[0] === "npm" && argv[1] !== "test" && !argv.includes("--")) { calls.push({ argv, cwd: options.cwd }); return { code: 0, output: "", stderr: "", timedOut: false }; }
+    return run(argv, options);
+  };
+  const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.test.mjs"], run: spy, id: "n1" });
+  assert.equal(evidence.tests.status, "pass");
+  assert.deepEqual(calls.map((c) => c.argv.join(" ")), ["npm ci --prefer-offline --no-audit --no-fund", "npm run types"]);
+  assert.ok(calls.every((c) => c.cwd === clone), "installed in the clone");
+  assert.ok(seen.length && seen.every((c) => !c.linked), "no node_modules symlink in the clone when the tests and typecheck run");
+});
+
+test("a failed or timed-out install makes the evidence not-run and runs no test", async () => {
+  const { dir, head } = repo(withManifest);
+  for (const [i, outcome] of [{ code: 1, stderr: "ERESOLVE" }, { code: null, timedOut: true }].entries()) {
+    const { run, npm } = runner(() => ({}));
+    const spy = async (argv, options) => argv[0] === "npm" && argv[1] === "ci" ? { output: "", stderr: "", signal: null, ...outcome } : run(argv, options);
+    const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.test.mjs"], run: spy, id: `n${i + 2}` });
+    assert.equal(evidence.tests.status, "not-run");
+    assert.equal(evidence.typecheck.status, "not-run");
+    assert.match(evidence.tests.reason, /dependencies could not be prepared: npm ci (failed|timed out)/);
+    assert.deepEqual(npm, [], "nothing is run on an unprepared clone");
+  }
 });

@@ -156,7 +156,7 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
   // new and edit assign a task to a function area (--area, t456); area manages them and board reads the snapshot.
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1", "areas.manage.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1", "items.context.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.area, ["areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
   // branch mints the developer's branches token and records each push (t641).
@@ -218,7 +218,7 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   // A prototype key is not a subcommand.
   assert.deepEqual(requiredForCommand("models", "constructor"), []);
   // The command's own are asked under every word.
-  assert.deepEqual(requiredForCommand("edit", "t1"), ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
+  assert.deepEqual(requiredForCommand("edit", "t1"), ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1", "items.context.v1"]);
 });
 
 test("a module that requires a name no declaration publishes is refused, naming the module", () => {

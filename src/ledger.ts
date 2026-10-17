@@ -2178,7 +2178,7 @@ export class Ledger extends DurableObject<Env> {
   // decided under the old ones (criteriaChanged), and the answer says what
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
-  editItem(id: string, actor: string, fields: ItemFields, scope?: string[]): Item & { criteriaChange?: CriteriaChange } {
+  editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string): Item & { criteriaChange?: CriteriaChange } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
@@ -2197,10 +2197,15 @@ export class Ledger extends DurableObject<Env> {
       if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409);
       set.scope = JSON.stringify(scope);
     }
-    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate", 400);
+    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context", 400);
+    if (context !== undefined) assertLength(context, NOTE_MAX, "the task's context");
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
     const at = new Date().toISOString();
+    // The context is an event, not a column: recorded only when its text
+    // changes, so setting the same text again leaves the history alone.
+    if (context !== undefined && context.trim() !== (this.taskContext(id) ?? "")) this.setContext(id, actor, context);
+    if (!Object.keys(set).length) return this.item(id);
     this.update(id, set, at);
     this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
     // Every change of the stored lists is a new revision, the editor its

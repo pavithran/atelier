@@ -2586,7 +2586,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const fields = { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) };
       if (fields.accept !== undefined) assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
-      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined));
+      if (body.context !== undefined && typeof body.context !== "string") throw new RuleError("bad_field", "context must be text; an empty text clears it", 400);
+      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined, body.context));
     }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":

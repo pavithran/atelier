@@ -1385,7 +1385,7 @@ it("the framing is stored with the item, carried by its brief, and edited only b
   expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
 
   await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the developer edits/);
-  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate/);
+  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context/);
   // A field given replaces; one left out is kept; an empty list or a null gate clears.
   const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
   expect(edited).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: ["a check fails twice"], nextGate: null });
