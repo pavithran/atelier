@@ -22,7 +22,19 @@ name=$(print -r -- "$json" | python3 -c 'import json,sys; print(json.load(sys.st
 email=$(print -r -- "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["email"])')
 [[ -n $name && -n $email ]] || { echo "worktree.sh: $ATELIER_PROJECT's commit identity is empty; no worktree was made or changed" >&2; exit 1; }
 wt=$root/$t
-if [[ ! -e $wt ]]; then
+if [[ -e $wt ]]; then
+  # The folder is keyed by the task id alone and shared by every project, so
+  # it may be another project's. It must be a worktree of this repository, on
+  # branch TASK; anything else is refused with nothing changed.
+  common() { (cd "$1" && cd "$(git rev-parse --git-common-dir)" && pwd -P); }
+  mine=$(common "$M") || mine=
+  there=$(common "$wt" 2>/dev/null) || there=
+  branch=$(git -C "$wt" symbolic-ref --short -q HEAD 2>/dev/null) || branch=
+  if [[ -z $mine || $there != "$mine" || $branch != "$t" ]]; then
+    echo "worktree.sh: $wt exists but is not a worktree of $M on branch $t (repository ${there:-none}, branch ${branch:-none}); nothing was changed" >&2
+    exit 1
+  fi
+else
   mkdir -p "$root"
   git -C "$M" worktree add -b "$t" "$wt" main
 fi
