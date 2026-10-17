@@ -13,9 +13,9 @@
 // the gateway token from the credential store at run time (credentials.mjs)
 // and gives them to opencode alone; the others use their harness's own login.
 
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 import { NO_VERDICT, VERIFY_BASE_LINE, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
@@ -261,6 +261,55 @@ export function opencodeMajor(exe, env, spawn = spawnSync) {
 const OVERRIDE = { "claude-code": "ATELIER_CLAUDE", codex: "ATELIER_CODEX", opencode: "ATELIER_OPENCODE", antigravity: "ATELIER_AGY" };
 export function executableFor(harness, env = process.env) {
   return env[OVERRIDE[harness]] || HARNESSES[harness].executable;
+}
+
+// Whether a harness can run a job at all, asked before a runner offers it
+// (the finding on ourai/t63, 2026-10-14, and on every claude-code job of
+// 2026-10-16: the build was claimed, then the CLI exited "Not logged in").
+// Only Claude Code has a probe; the other harnesses are taken as ready.
+// A probe that cannot run, times out, or prints anything but a clear
+// "signed in" counts as not signed in, so the harness is dropped, never
+// offered on a guess.
+export const SIGN_IN_TIMEOUT_MS = 15_000;
+const CLAUDE_TOKEN_FILE = ".config/api-keys/claude-code-auth.key";
+export const SIGN_IN_FIX = {
+  "claude-code": `run \`claude auth login\` as this user, or put a \`claude setup-token\` token in ~/${CLAUDE_TOKEN_FILE}`,
+};
+
+// Claude Code's environment as atelier-claude gives it: the long-lived token
+// in the key file, when there is one, is the sign-in. It goes to the probe's
+// environment alone and is never printed.
+function claudeProbeEnv(env, home) {
+  const out = { ...env };
+  try {
+    const token = readFileSync(join(home, CLAUDE_TOKEN_FILE), "utf8").replace(/\n/g, "");
+    if (token) out.CLAUDE_CODE_OAUTH_TOKEN = token;
+  } catch { /* no key file: the CLI's own sign-in is what counts */ }
+  return out;
+}
+
+// { ready, why }: `why` names the fix when the harness is not ready.
+// `run(exe, args, options)` resolves { code, stdout } and is replaceable.
+export async function harnessReady(harness, { env = process.env, home = homedir(), timeoutMs = SIGN_IN_TIMEOUT_MS, run = runProbe } = {}) {
+  if (harness !== "claude-code") return { ready: true };
+  const fix = SIGN_IN_FIX[harness];
+  try {
+    const result = await run(executableFor(harness, env), ["auth", "status"], { env: claudeProbeEnv(env, home), timeout: timeoutMs });
+    let signedIn = false;
+    try { signedIn = result.code === 0 && JSON.parse(result.stdout)?.loggedIn === true; } catch { /* not JSON: not signed in */ }
+    return signedIn ? { ready: true } : { ready: false, why: `the Claude CLI is not signed in; ${fix}` };
+  } catch (error) {
+    return { ready: false, why: `could not check whether the Claude CLI is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fix}` };
+  }
+}
+
+function runProbe(exe, args, { env, timeout }) {
+  return new Promise((resolve, reject) => {
+    execFile(exe, args, { env, timeout, encoding: "utf8", maxBuffer: 1 << 20 }, (error, stdout) => {
+      if (error && typeof error.code !== "number") reject(error);
+      else resolve({ code: error ? error.code : 0, stdout });
+    });
+  });
 }
 
 // Codex's features that bring their own MCP servers (plugins, apps, browser
