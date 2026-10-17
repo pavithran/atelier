@@ -178,7 +178,7 @@ for (const state of STATES) for (const transition of ["release", "other runner",
     } else if (transition === "owner claim") {
       expect((await t.request("POST", `${t.base}/claim`, OWNER, ACTOR, {}, "home:studio")).status).toBe(200);
     } else if (transition === "redispatch") {
-      await t.L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "other" });
+      await t.L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "other", release: true });
     } else if (transition === "unclaim") {
       await t.L.unclaim("t1", ACTOR, "fork failed");
     } else if (transition === "rework" || transition === "integration failure") {
