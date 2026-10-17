@@ -26,7 +26,16 @@ test("a signed-out Claude CLI, a probe that cannot run and a timeout are not rea
     assert.equal(answer.ready, false);
     assert.match(answer.why, /claude auth login|setup-token/);
   }
-  assert.deepEqual(await harnessReady("codex", { run: async () => { throw new Error("never asked"); } }), { ready: true });
+  // Codex is ready only when `codex login status` exits 0 (t558); anything else, a missing binary and a timeout included, is not.
+  let asked;
+  assert.deepEqual(await harnessReady("codex", { env: { A: "1" }, run: async (_exe, args, o) => { asked = [args, o.env.A]; return { code: 0, stdout: "" }; } }), { ready: true });
+  assert.deepEqual(asked, [["login", "status"], "1"]);
+  for (const run of [async () => ({ code: 1, stdout: "" }), async () => { throw new Error("spawn codex ENOENT"); }, async () => { throw Object.assign(new Error("timed out"), { killed: true }); }]) {
+    const answer = await harnessReady("codex", { run });
+    assert.equal(answer.ready, false);
+    assert.match(answer.why, /codex login/);
+  }
+  assert.deepEqual(await harnessReady("opencode", { run: async () => { throw new Error("never asked"); } }), { ready: true });
 });
 
 test("the key file counts only when the job's own wrapper loads it, and the job's environment decides the rest (the finding on 082d52b4)", async () => {
@@ -82,4 +91,48 @@ test("a runner leaves a signed-out harness out of its offer, says why once, and 
   assert.equal(asked, 2);
   assert.equal(logs.filter((l) => /claude-code is not offered: the Claude CLI is not signed in; run `claude auth login`/.test(l)).length, 1);
   assert.equal(logs.filter((l) => /claude-code is ready again/.test(l)).length, 1);
+});
+
+// t558: a review of codex/gpt-6-astra on ikon-weblog t33 was claimed again
+// at every lease by a runner that could not serve it. A task the queue still
+// lists for a harness the readiness check dropped is not taken, review or not.
+test("a runner takes no review for a harness it found not ready, even when the queue lists one", async () => {
+  const dir = mkdtempSync(join(root, "run-"));
+  const config = join(dir, "runner.json");
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["sonnet-5.5"], command: ["/x/atelier-claude", "{model}", "{brief_file}", "{verdict_file}"] }], jobs: ["review"] }));
+  const logs = [], skips = [];
+  let polls = 0;
+  const review = { project: "atelier", agent: "claude-code", model: "sonnet-5.5", actor: "claude-code/sonnet-5.5", item: { id: "t9", title: "x", head: "a".repeat(40), request: 7, dispatch: { to: "home", agent: "claude-code", model: "sonnet-5.5", job: "review", by: "owner", at: "2026-10-12T19:00:00.000Z", note: "" } } };
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config }, {
+    now: () => 1_000_000, limitFile: join(dir, "limits.json"),
+    taskIO: { log: (line) => logs.push(line), cli: async (argv) => { logs.push(`cli ${argv[0]}`); return "{}"; } },
+    harnessReady: async () => ({ ready: false, why: "the Claude CLI is not signed in" }),
+    reportReviewSkip: async (body) => { skips.push(body); },
+    wait: () => Promise.resolve(),
+    async queue() { if (++polls > 1) process.emit("SIGTERM"); return [review]; },
+  });
+  assert.equal(logs.some((l) => /^cli review-claim/.test(l)), false, "no claim was made");
+  assert.deepEqual(skips, [], "and nothing was skipped or reported");
+});
+
+// t558: Codex signed out (`codex login status` exits 1): the runner takes no codex review.
+test("a runner takes no codex review while codex login status fails", async () => {
+  const dir = mkdtempSync(join(root, "run-"));
+  const config = join(dir, "runner.json");
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["/x/atelier-codex", "{model}", "{brief_file}", "{verdict_file}"] }], jobs: ["review"] }));
+  const logs = [], skips = [], offers = [];
+  let polls = 0;
+  const review = { project: "atelier", agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra", item: { id: "t9", title: "x", head: "a".repeat(40), request: 7, dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", job: "review", by: "owner", at: "2026-10-12T19:00:00.000Z", note: "" } } };
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config }, {
+    now: () => 1_000_000, limitFile: join(dir, "limits.json"),
+    taskIO: { log: (line) => logs.push(line), cli: async (argv) => { logs.push(`cli ${argv[0]}`); return "{}"; } },
+    harnessReady: (harness, job) => harnessReady(harness, { ...job, run: async () => ({ code: 1, stdout: "" }) }),
+    reportReviewSkip: async (body) => { skips.push(body); },
+    wait: () => Promise.resolve(),
+    async queue(offer) { offers.push(offer.agents.length); if (++polls > 1) process.emit("SIGTERM"); return [review]; },
+  });
+  assert.equal(offers[0], 0, "codex is left out of the offer");
+  assert.ok(logs.some((l) => /codex is not offered: Codex is not signed in/.test(l)));
+  assert.equal(logs.some((l) => /^cli review-claim/.test(l)), false);
+  assert.deepEqual(skips, []);
 });

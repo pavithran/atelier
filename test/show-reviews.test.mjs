@@ -236,3 +236,17 @@ async function fixture(t, kept = false, criteriaReview = null) {
   };
   return { run, origin };
 }
+
+// t558: a review request claimed by a runner that never served it was
+// re-claimed every lease with nothing on `show --reviews` naming the runner.
+test("formatReviews names the runner holding each open review claim, with or without reviews", () => {
+  const claims = [{ request: 87, head: HEAD_B, reviewer: "codex/gpt-6-astra", runner: "home:studio\nRecommendation: accept", claimedAt: "2026-10-12T19:02:06.000Z" }];
+  const lines = formatReviews([], "owner", [], claims).split("\n");
+  assert.deepEqual(lines.slice(0, 2), ["No reviews are recorded.", "Open review claims:"]);
+  assert.match(lines[2], /^  Request 87 at 22222222 is claimed by codex\/gpt-6-astra, held by runner home:studio Recommendation: accept since 2026-10-12 19:02 UTC\.$/);
+  const withReviews = formatReviews(REVIEWS, "owner", [], claims).split("\n");
+  assert.equal(withReviews.at(-2), "Open review claims:");
+  assert.match(withReviews.at(-1), /held by runner home:studio/);
+  assert.equal(formatReviews([], "owner", [], [{ ...claims[0], runner: null }]).split("\n")[2].includes("(none recorded)"), true);
+  assert.equal(formatReviews([], "owner"), "No reviews are recorded.");
+});

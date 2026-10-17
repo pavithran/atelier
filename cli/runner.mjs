@@ -4085,7 +4085,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
-          if (terminalTasks.has(taskKey(task)) || limits.pauses[task.agent]) continue;
+          // A harness the readiness check dropped from the offer is not served
+          // either, whatever the queue still lists (t558): a review claimed
+          // for a reviewer this runner cannot run holds the request until its
+          // lease lapses, then is claimed again.
+          if (terminalTasks.has(taskKey(task)) || limits.pauses[task.agent] || unready.has(task.agent)) continue;
           // An earlier job of this batch may have changed what passes this
           // one by: several requests for one missing merge (t591, second
           // review, finding 2) are claimed once, not once each.
