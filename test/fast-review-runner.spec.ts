@@ -37,7 +37,6 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
 
   const minted: string[] = [];
   const artifacts = { get: async (repo: string) => ({
-    readCommit: async (hash: string) => ({ hash, parents: [], treeHash: "c".repeat(40) }),
     info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
     createToken: async (_scope: string, ttl: number) => { minted.push(repo); return { id: `tok-${minted.length}`, plaintext: `read-${repo}`, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }; },
     revokeToken: async () => true,

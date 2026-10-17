@@ -1086,7 +1086,7 @@ test("only the project owner can port to an open unclaimed task", () => {
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
 // its pure rules.
-import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, fastReceiptRefusal, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST, postMergeOwed, postMergeReviewLine, fastLandedLines } from "../src/rules.ts";
+import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST, postMergeOwed, postMergeReviewLine, fastLandedLines } from "../src/rules.ts";
 
 test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
   assert.deepEqual(projectMode(null), { mode: "full" });
@@ -1756,17 +1756,4 @@ test("a defect the check shows was at the base is a pre-existing follow-up, even
   const findings: Finding[] = [1, 2, 3, 4].map((n) => ({ file: "src/a.ts", line: n, severity: "blocking", text: `f${n}` }));
   const out = applyVerification(findings, new Set([1, 4]), new Set([2, 4]));
   assert.deepEqual(out.map((x) => [x.severity, x.label ?? null]), [["blocking", null], ["follow-up", "pre-existing"], ["follow-up", "unverified"], ["blocking", null]]);
-});
-
-// Astra, 2026-10-13, finding 8 (t601): a receipt for commits the repository
-// does not hold, or posted while it cannot be read, must not be recorded.
-test("a receipt is refused for a commit the repository does not hold, and when it cannot be read", () => {
-  const r = { commit: H1, mergeCommit: H2, testedHead: "c".repeat(40) };
-  assert.equal(fastReceiptRefusal(r, { readable: true, found: [H1, H2, r.testedHead] }), null);
-  const missing = fastReceiptRefusal(r, { readable: true, found: [H1] });
-  assert.equal(missing?.code, "receipt_commits_unknown");
-  assert.match(missing?.detail ?? "", /bbbbbbbbbbbb, cccccccccccc/);
-  const unread = fastReceiptRefusal(r, { readable: false, found: [H1, H2, r.testedHead] });
-  assert.equal(unread?.code, "baseline_unreadable");
-  assert.equal(unread?.status, 503);
 });

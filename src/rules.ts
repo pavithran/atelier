@@ -2407,19 +2407,6 @@ export function fastReceipt(body: Record<string, unknown>, mode: ProjectMode, ac
   return { commit: body.commit, mergeCommit: body.mergeCommit, testedHead: body.testedHead, batch: body.batch as string, builder: body.builder, ...(contributors ? { contributors } : {}), tests: { command: tests.command, sha256: tests.sha256, ...(where ? { where } : {}) }, reason: mode.reason, at, by: actor, ...(mode.quote ? { quote: mode.quote, acting: mode.acting } : {}) };
 }
 
-// A receipt names commits the batch put in main, so the project's repository
-// holds them once the developer has published main. `found` is which of the
-// receipt's commits the server read there; `readable` is false when the
-// repository could not be read at all. A commit not found, or a repository
-// not read, refuses the receipt: it is posted again after the publish
-// (atelier fast record), never recorded on a guess (t601).
-export function fastReceiptRefusal(receipt: Pick<FastReceipt, "commit" | "mergeCommit" | "testedHead">, baseline: { readable: boolean; found: readonly string[] }): RuleError | null {
-  if (!baseline.readable) return new RuleError("baseline_unreadable", "the project's repository could not be read to check the receipt's commits, so nothing was recorded; try again", 503);
-  const missing = [...new Set([receipt.commit, receipt.mergeCommit, receipt.testedHead])].filter((c) => !baseline.found.includes(c));
-  if (!missing.length) return null;
-  return new RuleError("receipt_commits_unknown", `the project's repository does not hold ${missing.map((c) => c.slice(0, 12)).join(", ")}; publish main (atelier publish), then record the receipt again with atelier fast record`, 409);
-}
-
 // ── merges recorded after the fact (t653) ──────────────────────────────────
 // A task merged into main outside Atelier (the 2026-10-13 freeze merged
 // t590-t651 by hand, with no land or accept) is recorded afterwards by the

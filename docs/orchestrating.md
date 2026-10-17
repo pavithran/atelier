@@ -929,8 +929,8 @@ can forge needs the sandbox (`atelier init --sandbox-only`). On success each tas
 receipt: the commit merged, the merge commit, the head the tests ran at and
 its batch (START..HEAD), the builder its Agent line names, the test command and the sha256 of its output, and the mode's
 reason. The task is marked merged, and its post-merge review is asked of
-the reviewer named. It publishes main to the baseline before it posts any receipt,
-and never deploys; deploy as after any landing. The reviewer reads the merge from the baseline. A commit a runner
+the reviewer named. It never pushes or deploys; publish main and deploy as
+after any landing, so the reviewer can read the merge. A commit a runner
 built on this machine and reported ready is fetched from its clone when the
 checkout lacks it.
 
@@ -950,13 +950,6 @@ when main no longer holds a receipt's merge commit, the merge is not of
 that task's commit, or any object the batch's commits reference (their
 whole trees included) is missing or no longer hashes to its id. The server answers a receipt it already holds for the
 same merge commit with the one it recorded, so posting again is safe.
-
-The server records a receipt only for commits it finds in the project's
-repository, which is why fast land publishes main first, and it refuses one
-whose commits are missing, or that it cannot check because the repository
-cannot be read. If the publish or a post fails, main keeps the batch and the
-receipts stay in the file: publish main if it is not published, then run
-`atelier fast record`.
 
 The post-merge review of a fast landing may come from a model of the
 builder's family (PAVI: fast mode permits single-family models), never

@@ -26,8 +26,6 @@ const POOL = [entry("opus-5.5", "claude-code"), entry("sonnet-5", "claude-code")
 const policy: ProjectPolicy = { checks: ["npm test"], protected: [] };
 const C1 = "c".repeat(40), M1 = "d".repeat(40), M2 = "e".repeat(40);
 const START = "0".repeat(40);
-// The commits the repository holds, as the route reads them (t601).
-const HELD = { readable: true, found: [C1, M1, M2] };
 const receipt = (commit: string, mergeCommit: string) => ({ commit, mergeCommit, testedHead: mergeCommit, batch: `${START}..${mergeCommit}`, builder: OPUS, tests: { command: "npm test", sha256: "f".repeat(64) } });
 
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
@@ -42,17 +40,6 @@ function api(method: string, path: string, actor: string, body?: unknown) {
     method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
-}
-// A receipt posted through the route, with the project's repository holding
-// the given commits, or unreadable (t601).
-function post(path: string, body: unknown, repo: { holds: string[] } | "unreadable" = { holds: [C1, M1, M2] }) {
-  const artifacts = { get: async () => {
-    if (repo === "unreadable") throw new Error("INTERNAL_ERROR: Artifacts is unavailable");
-    return { readCommit: async (h: string) => repo.holds.includes(h) ? { hash: h, parents: [], treeHash: "0".repeat(40) } : null, [Symbol.dispose]() {} };
-  } };
-  return worker.fetch(new Request(`https://atelier.test/api${path}`, {
-    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
-  }), { ...testEnv, ARTIFACTS: artifacts } as unknown as typeof env);
 }
 async function refusal(p: Promise<unknown>, code: string, detail: RegExp): Promise<void> {
   const err = await p.then(() => new Error(`expected a ${code} refusal`), (e: unknown) => e as Error);
@@ -93,11 +80,11 @@ it("a fast landing is owed its post-merge review until one is asked, and the ans
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
   await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
-  const none = await (await post(`/projects/${name}/items/${item.id}/landed-fast`, receipt(C1, M1))).json() as { owed: boolean; review: unknown };
+  const none = await (await api("POST", `/projects/${name}/items/${item.id}/landed-fast`, "owner", receipt(C1, M1))).json() as { owed: boolean; review: unknown };
   expect(none).toMatchObject({ owed: true, review: null });
   expect((await L.fastLandings())[0]).toMatchObject({ owed: true, review: { state: "not requested" } });
   // A refused ask (the builder reviewing its own landing) leaves it owed too, and says why.
-  const again = await (await post(`/projects/${name}/items/${item.id}/landed-fast`, { ...receipt(C1, M1), reviewer: OPUS })).json() as { owed: boolean; review: { error: string } };
+  const again = await (await api("POST", `/projects/${name}/items/${item.id}/landed-fast`, "owner", { ...receipt(C1, M1), reviewer: OPUS })).json() as { owed: boolean; review: { error: string } };
   expect(again).toMatchObject({ owed: true, review: { error: "self_review" } });
   // Back in full mode the obligation stays on the record.
   expect((await L.setMode("owner", "full", undefined)).landed?.[0]).toMatchObject({ item: item.id, owed: true });
@@ -110,11 +97,11 @@ it("a fast landing is owed its post-merge review until one is asked, and the ans
 it("a landing is refused in full mode, records its receipt in fast mode, and queues a same-family post-merge review", async () => {
   const L = await project("fast-land");
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
-  await refusal(L.landedFast(item.id, "owner", receipt(C1, M1), HELD), "not_fast_mode", /full mode/);
+  await refusal(L.landedFast(item.id, "owner", receipt(C1, M1)), "not_fast_mode", /full mode/);
   await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
-  await refusal(L.landedFast(item.id, GPT, receipt(C1, M1), HELD), "not_project_owner", /only the developer/);
-  const landed = await L.landedFast(item.id, "owner", receipt(C1, M1), HELD);
+  await refusal(L.landedFast(item.id, GPT, receipt(C1, M1)), "not_project_owner", /only the developer/);
+  const landed = await L.landedFast(item.id, "owner", receipt(C1, M1));
   expect(landed.item).toMatchObject({ state: "merged", head: C1, acceptedHead: C1, pushActors: [OPUS] });
   expect(landed.receipt).toMatchObject({ commit: C1, mergeCommit: M1, builder: OPUS, reason: "forks fail", tests: { command: "npm test" } });
   const kinds = ((await L.events(item.id)) as unknown as LedgerEvent[]).map((e) => e.kind);
@@ -163,7 +150,7 @@ it("a rejected post-merge review of a fast landing files a fix task from its fin
   const item = await L.newItem("Risky", ["src/**"], "owner", { accept: ["Works"] });
   await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
-  await L.landedFast(item.id, "owner", receipt(C1, M2), HELD);
+  await L.landedFast(item.id, "owner", receipt(C1, M2));
   await L.requestReview(item.id, "owner", GPT, POOL);
   const claim = await L.claimReview(item.id, GPT, RUNNER) as unknown as ReviewClaim;
   const findings = [{ file: "src/a.ts", line: 3, severity: "blocking" as const, text: "Drops the record" }];
@@ -225,7 +212,7 @@ it("a project that forbids overrides refuses the switch to fast mode and every f
   await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
   await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, noOverride: true }, createdAt: AT }, "owner");
-  await refusal(L.landedFast(item.id, "owner", receipt(C1, M1), HELD), "fast_mode_forbidden", /forbids overrides.*--no-override/);
+  await refusal(L.landedFast(item.id, "owner", receipt(C1, M1)), "fast_mode_forbidden", /forbids overrides.*--no-override/);
   expect((await L.item(item.id)).state).toBe("open");
   expect((await api("POST", `/projects/${name}/items/${item.id}/landed-fast`, "owner", receipt(C1, M1))).status).toBe(403);
   await L.setMode("owner", "full", undefined);
@@ -279,7 +266,7 @@ it("the developer token switches to fast mode on the developer's quoted words an
   expect(standing.mode).toBe(fast.line);
   // A fast landing's receipt carries the words the mode was switched on.
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
-  const { receipt: landed } = await L.landedFast(item.id, "owner", receipt(C1, M1), HELD);
+  const { receipt: landed } = await L.landedFast(item.id, "owner", receipt(C1, M1));
   expect(landed).toMatchObject({ reason: "forks fail", quote: QUOTE, acting: OPUS });
 
   // The page's permission still works, with no words.
@@ -306,7 +293,7 @@ it("the task page's fast-landing summary names the developer's words and the act
   const QUOTE = `land <b>it</b> & "go" 'now'`;
   await L.setMode("owner", "fast", "forks fail", OPUS, QUOTE);
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
-  await L.landedFast(item.id, "owner", receipt(C1, M1), HELD);
+  await L.landedFast(item.id, "owner", receipt(C1, M1));
   const html = renderItem(await L.project(), await L.detail(item.id));
   expect(html).toContain(`Reason: forks fail; on the developer&#39;s words: “land &lt;b&gt;it&lt;/b&gt; &amp; &quot;go&quot; &#39;now&#39;”, relayed by ${OPUS}.</p>`);
   expect(html).not.toContain("<b>it</b>");
@@ -342,35 +329,10 @@ it("a fast landing with no recorded direction reads as before on the task page",
   await L.confirmFastMode("owner", "access");
   await L.setMode("owner", "fast", "forks fail");
   const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
-  await L.landedFast(item.id, "owner", receipt(C1, M1), HELD);
+  await L.landedFast(item.id, "owner", receipt(C1, M1));
   const html = renderItem(await L.project(), await L.detail(item.id));
   expect(html).toContain(`built by ${OPUS}. Reason: forks fail.</p>`);
   expect(html).not.toContain("words: “");
   expect(html).not.toContain("relayed by");
 });
 
-// Astra, 2026-10-13, finding 8: the server recorded merged on any receipt
-// shape, even for commits that do not exist. A receipt for a commit the
-// project's repository does not hold, or posted while it cannot be read,
-// records nothing; the same receipt is recorded once the repository holds it.
-it("a receipt is recorded only for commits the project's repository holds, and an unreadable repository refuses it", async () => {
-  const name = "fast-unknown";
-  const L = await project(name);
-  const item = await L.newItem("Finished elsewhere", ["src/**"], "owner", { accept: ["Works"] });
-  await L.confirmFastMode("owner", "access");
-  await L.setMode("owner", "fast", "forks fail");
-  const path = `/projects/${name}/items/${item.id}/landed-fast`;
-  const check = async (res: Response, status: number, code: string, detail?: RegExp) => {
-    const body = await res.json() as { error: string; detail: string };
-    expect([res.status, body.error], body.detail).toEqual([status, code]);
-    if (detail) expect(body.detail).toMatch(detail);
-    expect((await L.item(item.id)).state).not.toBe("merged");
-  };
-  await check(await post(path, receipt(C1, M1), { holds: [C1] }), 409, "receipt_commits_unknown", /does not hold d{12}.*atelier fast record/);
-  await check(await post(path, receipt(C1, M1), { holds: [M1] }), 409, "receipt_commits_unknown", /does not hold c{12}/);
-  await check(await post(path, receipt(C1, M1), "unreadable"), 503, "baseline_unreadable", /nothing was recorded/);
-  const ok = await post(path, receipt(C1, M1));
-  expect(ok.status, await ok.clone().text()).toBe(200);
-  expect((await ok.json() as { receipt: unknown }).receipt).toMatchObject({ commit: C1, mergeCommit: M1, testedHead: M1, batch: `${START}..${M1}` });
-  expect((await L.item(item.id)).state).toBe("merged");
-});

@@ -25,7 +25,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, fastReceiptRefusal, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
 } from "./rules";
@@ -5257,7 +5257,7 @@ export class Ledger extends DurableObject<Env> {
   // merged at the merge commit. Main on the server has not seen the commit
   // yet (the owner publishes after), so the merge is not observed on the
   // baseline, and the event says it landed fast.
-  landedFast(id: string, actor: string, body: Record<string, unknown>, baseline: { readable: boolean; found: readonly string[] }): { item: Item; receipt: FastReceipt } {
+  landedFast(id: string, actor: string, body: Record<string, unknown>): { item: Item; receipt: FastReceipt } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands in fast mode", 403);
     assertFastModeAllowed(this.project().policy);
     const at = new Date().toISOString();
@@ -5266,8 +5266,6 @@ export class Ledger extends DurableObject<Env> {
     const prior = this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "item.landed_fast");
     if (item.state === "merged" && prior?.data.mergeCommit === receipt.mergeCommit) return { item, receipt: prior.data as unknown as FastReceipt };
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`, 409);
-    const unfound = fastReceiptRefusal(receipt, baseline);
-    if (unfound) throw unfound;
     this.assertPostMergeFree(id);
     this.ctx.storage.transactionSync(() => {
       this.update(id, { head: receipt.commit, accepted_head: receipt.commit }, at);

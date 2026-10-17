@@ -2,7 +2,6 @@
 import { COMMAND_USAGE } from "../help.mjs";
 import { I, OWNER, P, actingHeaders, actor, args, call, cfg, die, fastTakeWorkspace, git, itemArg, landingGit, project, wsConfig } from "../atelier.mjs";
 import { behindRefusal } from "../pull.mjs";
-import { publishBaseline } from "./publish.mjs";
 import { DEFAULT_REGEN, fastCommands, fastLand, parsePairs, postPending, readPending, readySources, shellQuote } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
@@ -74,8 +73,6 @@ export default async function fastCommand() {
     project: name,
     identity,
     log: (line) => console.log(line),
-    // Published before the receipts are posted, which the server checks against the baseline (t601).
-    publish: () => publishBaseline(),
     record: recorder(name, args.reviewer),
   });
   printLanded(result.landed);
@@ -86,7 +83,7 @@ export default async function fastCommand() {
     if (result.failure.merged) die(unrecordedMessage(name, result));
     die(`fast land stopped at ${result.failure.step}; main is back at ${result.start.slice(0, 12)}, nothing was recorded.\n${result.failure.detail}`);
   }
-  console.log(`Main is at ${result.head.slice(0, 12)}. Main is published to the baseline; nothing was deployed. Next: deploy (npm run deploy) as you do after a landing.`);
+  console.log(`Main is at ${result.head.slice(0, 12)}. Nothing was pushed or deployed. Next: publish main (git push) and deploy (npm run deploy) as you do after a landing.`);
 }
 
 // Posts one landed-fast receipt; the server answers a receipt it already
@@ -112,7 +109,7 @@ function unrecordedMessage(name, result) {
   return [
     `${result.failure.step} failed: ${result.failure.detail}`,
     `Main holds the batch${result.head ? ` at ${result.head.slice(0, 12)}` : ""}. Recorded: ${list(result.recorded ?? [])}. Not recorded: ${list(result.unrecorded ?? [])}.`,
-    `Publish main if it is not published (atelier publish), then record the rest, without merging again: atelier fast record ${shellQuote(result.pending)} --project ${name}`,
+    `Record the rest, without merging again: atelier fast record ${shellQuote(result.pending)} --project ${name}`,
   ].join("\n");
 }
 
