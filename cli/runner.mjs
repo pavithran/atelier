@@ -1318,7 +1318,9 @@ export function validationBlockedReport(output) {
 // execute's trim of the output would eat (' M file' read as 'M file').
 export async function workspaceLeftovers(git, cwd) {
   const list = async (args) => (await git(args, { cwd, raw: true })).split("\0").filter(Boolean);
-  const changed = await list(["diff", "--name-only", "-z", "HEAD"]);
+  // Unstaged and staged apart: against HEAD alone, an edit staged and then
+  // restored in the working file cancels out and shows nothing (status: MM).
+  const changed = [...new Set([...await list(["diff", "--name-only", "-z"]), ...await list(["diff", "--cached", "--name-only", "-z"])])];
   const untracked = await list(["ls-files", "-z", "--others", "--exclude-standard"]);
   return [...changed.map((path) => ({ path, untracked: false })), ...untracked.map((path) => ({ path, untracked: true }))];
 }

@@ -95,3 +95,15 @@ test("git that cannot be read leaves the run as it was", async () => {
   assert.equal(runs(), 1);
   assert.ok(logs.some((l) => /could not tidy the harness's leftover files: not a repository/.test(l)));
 });
+
+test("workspaceLeftovers names a file whose staged edit was restored in the working tree, which diff against HEAD shows as nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "t365-"));
+  const sh = (cmd) => execSync(cmd, { cwd: dir, stdio: "ignore" });
+  writeFileSync(join(dir, "a.ts"), "1");
+  sh("git init -q && git add a.ts && git -c user.name=a -c user.email=a@b.c commit -q -m y");
+  writeFileSync(join(dir, "a.ts"), "2");
+  sh("git add a.ts");
+  writeFileSync(join(dir, "a.ts"), "1");
+  const git = async (args, { cwd, raw }) => { const r = await execute(["git", ...args], { cwd, capture: true, captureError: true }); return raw ? r.output : r.output.trim(); };
+  assert.deepEqual(await workspaceLeftovers(git, dir), [{ path: "a.ts", untracked: false }]);
+});
