@@ -2417,6 +2417,9 @@ export interface RecordedMerge {
   commit: string;
   reviews: RecordedReview[];
   note?: string;
+  // The developer says the merge's declared protected actions already ran
+  // (t754), with a short note of what ran, such as a deploy version id.
+  shipped?: string;
   outside: true;
   at: string;
   by: string;
@@ -2450,7 +2453,9 @@ export function recordedMerge(body: Record<string, unknown>, actor: string, at: 
   }
   if (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 2000)) throw bad("the note is text, at most 2000 characters");
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : undefined;
-  return { mergeCommit: body.mergeCommit, ...(typeof body.baselineMerge === "string" ? { baselineMerge: body.baselineMerge } : {}), commit: body.commit, reviews, ...(note ? { note } : {}), outside: true, at, by: actor };
+  if (body.shipped !== undefined && (typeof body.shipped !== "string" || !body.shipped.trim() || body.shipped.length > 500)) throw bad("what ran is a short note, at most 500 characters (--shipped), such as a deploy version id");
+  const shipped = typeof body.shipped === "string" ? body.shipped.trim() : undefined;
+  return { mergeCommit: body.mergeCommit, ...(typeof body.baselineMerge === "string" ? { baselineMerge: body.baselineMerge } : {}), commit: body.commit, reviews, ...(note ? { note } : {}), ...(shipped ? { shipped } : {}), outside: true, at, by: actor };
 }
 
 // What the baseline says of the merge: whether main holds it (null when its
