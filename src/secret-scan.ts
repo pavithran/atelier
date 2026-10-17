@@ -20,8 +20,7 @@ export interface SecretHit {
 }
 
 // A path whose head side the scan could not read as text (a binary blob, a
-// submodule, a blob over SCAN_BYTES, a text file whose diff exceeded the
-// memory budget), with why, and the hash of the object at the head as its
+// submodule, or a blob over SCAN_BYTES), with why, and the hash of the object at the head as its
 // fingerprint: a clearance of it holds while that object is unchanged, and a
 // changed object at the path blocks again. The reason names the kind of
 // object, never any of its content.
@@ -148,8 +147,7 @@ export function scanLine(text: string): boolean {
 //   scanned as raw bytes, all of it as added, and blocks only if a key
 //   pattern is in it (t554).
 // - A head side that is not text (any other binary content, a submodule, which is a
-//   commit in another repository, a blob over SCAN_BYTES, a text diff over
-//   the memory budget) is recorded unscanned with the reason and the
+//   commit in another repository, a blob over SCAN_BYTES) is recorded unscanned with the reason and the
 //   object's hash, so the owner clears it by content, like a hit.
 // - A deleted path has no head side and needs no scan. A path whose head
 //   object is the base object (a mode-only change) adds no content.
@@ -210,7 +208,15 @@ async function addedLines(r: Reader, base: Leaf | null, head: Leaf): Promise<{ a
   const before = base ? await readSide(r, base) : null;
   if (!before || "reason" in before || before.media || after.media) return { added: after.lines.map((text, i) => [i + 1, text]) };
   const ops = diffLines(before.lines, after.lines);
-  if (!ops) return { reason: "a text diff over the memory budget" };
+  // A diff too costly to compute is not a file too large to read (t469): the
+  // scan only needs the lines the head added, so it takes every head line
+  // whose text the base side does not hold. One pass over each side, no
+  // chunk boundary a key could straddle. A line the base also holds is
+  // already on main, so skipping it hides nothing the push adds.
+  if (!ops) {
+    const known = new Set(before.lines);
+    return { added: after.lines.flatMap((text, i): [number, string][] => (known.has(text) ? [] : [[i + 1, text]])) };
+  }
   const added: [number, string][] = [];
   let line = 1;
   for (const op of ops) {

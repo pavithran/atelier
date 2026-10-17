@@ -261,16 +261,44 @@ test("a fake key in the 61st added file is found, though the display diff trunca
   assert.deepEqual(where(scan), [{ file: "f60.ts", line: 1 }]);
 });
 
-test("a modified file too large to diff is reported unscanned, never passed silently", async () => {
+// A rewrite too different for the line diff's memory budget (t469, found on
+// t426: cli/atelier.mjs, 2,321 lines removed). Every line changes, so the
+// diff cannot be computed; the scan must still read the head's lines.
+const rewrite = (prefix: string, n: number, plant?: { at: number; text: string }) =>
+  Array.from({ length: n }, (_, i) => (plant && i === plant.at ? plant.text : `${prefix}${i}`)).join("\n") + "\n";
+
+test("a rewrite too large to diff is scanned, not reported unscanned, and a key in it is found", async () => {
   const s = store();
-  const left = Array.from({ length: 6_000 }, (_, i) => `l${i}`).join("\n") + "\n";
-  const right = Array.from({ length: 6_000 }, (_, i) => `r${i}`).join("\n") + "\n";
-  const after = s.blob(right);
-  const { hits, unscanned } = await fullScan(s, s.tree({ "huge.ts": { blob: s.blob(left) } }), s.tree({ "huge.ts": { blob: after } }));
-  assert.deepEqual(hits, []);
-  // The file is fingerprinted by its content's hash, so a clearance of it
-  // holds while it is unchanged and no more.
-  assert.deepEqual(unscanned, [{ file: "huge.ts", fingerprint: after, reason: "a text diff over the memory budget" }]);
+  const key = `const key = "${FAKE.openai}";`;
+  // Control: the same shape without a key is clean and unflagged.
+  const clean = await fullScan(s, s.tree({ "big.ts": { blob: s.blob(rewrite("l", 2_500)) } }), s.tree({ "big.ts": { blob: s.blob(rewrite("r", 2_500)) } }));
+  assert.deepEqual(clean.hits, []);
+  assert.deepEqual(clean.unscanned, []);
+  // Planted at the first line, in the middle, and on the last line.
+  for (const at of [0, 1_249, 2_499]) {
+    const scan = await fullScan(s, s.tree({ "big.ts": { blob: s.blob(rewrite("l", 2_500)) } }), s.tree({ "big.ts": { blob: s.blob(rewrite("r", 2_500, { at, text: key })) } }));
+    assert.deepEqual(where(scan), [{ file: "big.ts", line: at + 1 }]);
+    assert.deepEqual(scan.unscanned, []);
+  }
+});
+
+test("a key deep in a multi-megabyte rewrite is found, past any size the diff could hold", async () => {
+  const s = store();
+  const filler = (p: string) => Array.from({ length: 60_000 }, (_, i) => `${p}${i} ${"x".repeat(60)}`);
+  const left = filler("l").join("\n") + "\n";
+  const right = [...filler("r"), `const key = "${FAKE.openai}";`].join("\n") + "\n";
+  assert.ok(right.length > 3_000_000);
+  const scan = await fullScan(s, s.tree({ "big.ts": { blob: s.blob(left) } }), s.tree({ "big.ts": { blob: s.blob(right) } }));
+  assert.deepEqual(where(scan), [{ file: "big.ts", line: 60_001 }]);
+});
+
+test("in a rewrite too large to diff, a key line the base already holds is not a new finding", async () => {
+  const s = store();
+  const key = `const key = "${FAKE.openai}";`;
+  const left = rewrite("l", 2_500, { at: 10, text: key });
+  const right = rewrite("r", 2_500, { at: 20, text: key });
+  const scan = await fullScan(s, s.tree({ "big.ts": { blob: s.blob(left) } }), s.tree({ "big.ts": { blob: s.blob(right) } }));
+  assert.deepEqual(scan.hits, []);
 });
 
 // The scan reads through strictReader: an object the head or base names and
