@@ -8,7 +8,7 @@ const spec: CommandSpec = {
     {
       group: "Developer", line: 1, slot: 35,
       form: "record-merge ID --merge SHA [--head SHA] --review H/M=VERDICT@HEAD[@WHEN]... [--note TEXT]",
-      about: "The developer records a task that was merged into main outside Atelier, after the fact: the merge commit on main, the commit it merged and the reviews that approved it, as given (reviewer, approve or reject, the head it read and, when known, the day). The task is marked merged with a record that says the merge was made outside Atelier and recorded afterwards; no checks or test receipt are recorded, since none ran through Atelier. Refused unless the baseline's main holds the merge commit (`sync` brings it in) and its second parent is the task's head (`--head`, or the head the task last pushed), and unless one review approves that head.",
+      about: "The developer records a task that was merged into main outside Atelier, after the fact: the merge commit on main, the commit it merged and the reviews that approved it, as given (reviewer, approve or reject, the head it read and, when known, the day). The task is marked merged with a record that says the merge was made outside Atelier and recorded afterwards; no checks or test receipt are recorded, since none ran through Atelier. Refused unless the baseline's main holds the merge commit (`sync` brings it in) and its second parent is the task's head (`--head`, or the head the task last pushed), and unless one review approves that head. On a baseline begun with `--history-since`, which rebuilds merges with one parent, the second parent is checked in this checkout and the baseline need only hold the commit paired with the merge.",
     },
   ],
   flags: {

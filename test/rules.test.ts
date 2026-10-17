@@ -1512,6 +1512,21 @@ test("a merge is recorded only when main holds it and its second parent is the t
   assert.match(recordedMergeRefusal(record, { parents: [H1, P1], holds: true })!.detail, /second parent is eeeeeeee, not aaaaaaaa/);
 });
 
+// t726: a history-since baseline holds a merge with one parent; the CLI has
+// checked the second parent in the checkout and names the paired commit.
+test("a merge the baseline holds flattened is recorded when the CLI paired it, and still refused when the baseline cannot map it", () => {
+  const record = { mergeCommit: "c".repeat(40), baselineMerge: "9".repeat(40), commit: H1 };
+  assert.equal(recordedMergeRefusal(record, { parents: ["e".repeat(40)], holds: true }), null);
+  assert.equal(recordedMergeRefusal({ ...record, baselineMerge: undefined }, { parents: ["e".repeat(40)], holds: true })?.code, "not_a_merge");
+  for (const baseline of [{ parents: null, holds: false }, { parents: ["e".repeat(40)], holds: false }] as const) {
+    const refusal = recordedMergeRefusal(record, baseline)!;
+    assert.equal(refusal.code, "merge_not_on_main");
+    assert.match(refusal.detail, /atelier sync/);
+    assert.match(refusal.detail, /99999999/);
+  }
+  assert.equal(recordedMergeRefusal(record, { parents: ["e".repeat(40)], holds: null })?.code, "merge_unconfirmed");
+});
+
 // t687 (PAVI, 2026-10-15): ikon-weblog had never admitted gemini-4-argon, so
 // a review asked of antigravity/gemini-4-argon there was refused as ineligible.
 const admission = (id: string, active = true, aliases: string[] = []): ReviewerAdmission => ({ id, aliases, by: "owner", reason: "r", at: T, active });

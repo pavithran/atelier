@@ -3172,8 +3172,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const before = await L.item(id);
       // A fork's head starts at its base; only a head pushed since is the task's own.
       const pushed = before.head && before.head !== before.base ? before.head : null;
+      // A paired merge was checked by the CLI against one head; the record
+      // is of that head only, never one chosen here (t726 round 1).
+      if (typeof body.baselineMerge === "string" && typeof body.head !== "string") throw new RuleError("bad_record", "a merge named by its paired baseline commit also names the head the CLI checked (--head)", 400);
       const commit = body.head === undefined || body.head === null ? pushed : body.head;
-      const merge = typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null;
+      // On a baseline built with --history-since the project's merge is not
+      // on the baseline; the CLI names the baseline commit paired with it
+      // (t726), which is the one looked up.
+      const paired = typeof body.baselineMerge === "string" && /^[a-f0-9]{40,64}$/.test(body.baselineMerge) ? body.baselineMerge : null;
+      const merge = paired ?? (typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null);
       let parents: string[] | null = null, holds: boolean | null = false;
       if (merge) {
         using baseline = await env.ARTIFACTS.get(p.repo);
