@@ -5,7 +5,7 @@ import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeF
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  DEEPSEEK_BALANCE_SCRIPT, ROW_LIMIT, codexWindows, describeReport, gatherUsage, opencodeUsageSql, parseDeepseekBalance, parseOpencodeUsage,
+  CLAUDE_FILE_LIMIT, DEEPSEEK_BALANCE_SCRIPT, ROW_LIMIT, claudeDaily, parseClaudeLine, readClaudeSessions, codexWindows, describeReport, gatherUsage, opencodeUsageSql, parseDeepseekBalance, parseOpencodeUsage,
   parseZcodeUsage, runUsage, spansOf, usageOptions, zcodeUsageSql,
 } from "../cli/usage.mjs";
 import { readCodexSessions } from "../cli/discover.mjs";
@@ -238,7 +238,7 @@ test("every source present is read and reported in the shape the usage route tak
   assert.equal(by.opencode.models[0].spans["24h"].cost, 7.75);
   assert.deepEqual(by.deepseek, { windows: [], models: [], balances: [{ currency: "CNY", amount: 110 }, { currency: "USD", amount: 9.57 }], notes: [] });
   for (const r of reports) assert.doesNotThrow(() => cleanReport(r.tool, r.body, new Date(NOW).toISOString(), "home:test"), `${r.tool} is a report the server accepts`);
-  assert.deepEqual(skipped, []);
+  assert.deepEqual(skipped, ["gemini spend: Google serves no balance, so no figure"]);
   assert.deepEqual(calls.secrets, ["deepseek.API_KEY", "scrubbed:true"], "the key is read by the named entry only, and remembered for scrubbing");
   const child = calls.run[0];
   assert.deepEqual(child.argv.slice(0, 3), [process.execPath, "--input-type=module", "-e"]);
@@ -257,7 +257,8 @@ test("a record that is missing, cut or unreadable is named, and the others are s
   assert.deepEqual(reports[0].body.notes, [`only the newest ${ROW_LIMIT} requests were read; older ones in the week are not counted`, "zcode records no cost"]);
   assert.match(skipped[0], /^codex: no session logs at /);
   assert.match(skipped[1], /^opencode: no database at /);
-  assert.equal(skipped[2], "gemini: no balance source; only DeepSeek's balance can be asked for");
+  assert.equal(skipped[2], "gemini spend: Google serves no balance, so no figure");
+  assert.equal(skipped[3], "gemini: no balance source; only DeepSeek's balance can be asked for");
 
   const locked = await gatherUsage({ ...io, reader: async () => ({ via: "x", query: () => { throw new Error("database is locked"); } }) }, null, scrub);
   assert.deepEqual(locked.reports.map((r) => r.tool), []);
@@ -321,7 +322,7 @@ test("each tool is reported under the runner's name, alerts are printed, and no 
   assert.match(printed, /^Usage on home:test, as of 2026-10-05T21:00Z\.\nLocal databases are read only, through node:sqlite\./);
   assert.match(printed, /codex:\n  5-hour 12% used, resets 2026-10-05T22:00Z; as of 2026-10-05T20:19Z\n  weekly 81% used, resets 2026-10-09T21:00Z/);
   assert.match(printed, /deepseek:\n  balance 110 CNY\n  balance 9\.57 USD/);
-  assert.match(printed, /Not read here: Claude's plan limits \(the Claude app shows them\) and Gemini's spend \(Google serves no balance\)\./);
+  assert.match(printed, /Not reported:\n  gemini spend: Google serves no balance, so no figure/);
   assert.match(printed, /Reported 4 usage summaries to Atelier\.\nAlerts: codex: weekly window 81% used\.$/);
   assert.equal(printed.includes(SECRET), false);
   assert.equal(JSON.stringify(calls.report).includes(SECRET), false);
@@ -440,7 +441,7 @@ test("runner --usage --dry-run runs from the command line, reads nothing it does
   assert.equal(ok.code, 0, ok.stderr);
   assert.match(ok.stdout, /^Usage on home:test, as of /);
   assert.match(ok.stdout, /No runner config was found, so no balance is asked for\./);
-  assert.match(ok.stdout, /Not reported:\n  codex: no session logs at .*\n  zcode: no database at .*\n  opencode: no database at .*\n  deepseek: no Keychain entry named/);
+  assert.match(ok.stdout, /Not reported:\n  codex: no session logs at .*\n  zcode: no database at .*\n  opencode: no database at .*\n  claude-code: no session logs at .*\n  gemini spend: .*\n  deepseek: no Keychain entry named/);
   assert.match(ok.stdout, /Dry run: nothing was reported to Atelier\.\n$/);
   const bad = await run(["runner", "--usage", "--once"]);
   assert.equal(bad.code, 1);
@@ -449,4 +450,71 @@ test("runner --usage --dry-run runs from the command line, reads nothing it does
   assert.equal(help.code, 0);
   assert.match(help.stdout, /runner --usage \[--name home:NAME\] \[--dry-run\] \[--config PATH\]/);
   assert.match((await run(["help"])).stdout, /runner --usage/);
+});
+
+// ── Claude Code's session logs (t727) ──────────────────────────────────────
+
+// A line as Claude Code writes it, with everything that must not leave the machine.
+const PROMPT = "please rewrite secret-plan.txt for acme";
+const KEY = "sk-ant-TESTONLYclaude0123456789abcdefghij";
+const SESSION = "5f3a9c1e-7d2b-4c68-9a10-0b1c2d3e4f50";
+const claudeLine = (over = {}) => JSON.stringify({
+  type: "assistant", timestamp: new Date(hoursAgo(2)).toISOString(), sessionId: SESSION, cwd: "/Users/x/acme-secret", requestId: "req_" + KEY,
+  message: { id: "msg_1", model: "claude-opus-5-5", role: "assistant", content: [{ type: "text", text: PROMPT }], usage: { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 70, cache_read_input_tokens: 5000 } },
+  ...over,
+});
+
+function writeClaude(t) {
+  const root = join(tempDir(t), "projects");
+  const file = join(root, "-Users-x-acme-secret", `${SESSION}.jsonl`);
+  mkdirSync(dirname(file), { recursive: true });
+  const user = JSON.stringify({ type: "user", timestamp: new Date(hoursAgo(2)).toISOString(), message: { role: "user", content: PROMPT } });
+  const sonnet = claudeLine({ message: { id: "msg_2", model: "claude-sonnet-5-5", usage: { input_tokens: 1, output_tokens: 2 } }, timestamp: new Date(daysAgo(2)).toISOString() });
+  const hostile = claudeLine({ message: { id: "msg_3", model: PROMPT, usage: { input_tokens: 9, output_tokens: 9 } } });
+  // msg_1 is written twice, as a message of several blocks is; the later line is the one counted.
+  writeFileSync(file, [user, claudeLine({ message: { id: "msg_1", model: "claude-opus-5-5", usage: { input_tokens: 1, output_tokens: 1 } } }), claudeLine(), sonnet, hostile, "not json \"usage\"", ""].join("\n"));
+  utimesSync(file, hoursAgo(2) / 1000, hoursAgo(2) / 1000);
+  return root;
+}
+
+test("t727: Claude Code's logs give tokens by model per day, a repeated message once, and a line without a plain model name none", async (t) => {
+  const root = writeClaude(t);
+  const found = await readClaudeSessions(root, NOW - 7 * 86_400_000);
+  assert.deepEqual(found.calls.map((c) => [c.model, c.tokens]).sort(), [["claude-opus-5-5", 100], ["claude-sonnet-5-5", 3]], "input, output and cache creation; cache reads are not counted");
+  assert.deepEqual(claudeDaily(found.calls, NOW), ["  2026-10-05 claude-opus-5-5: 100 tokens", "  2026-10-03 claude-sonnet-5-5: 3 tokens"]);
+  assert.equal(parseClaudeLine(JSON.stringify({ type: "user", message: { usage: {} } })), null);
+  assert.deepEqual(await readClaudeSessions(join(root, "missing"), 0), { calls: [], cut: 0 });
+  const cut = await readClaudeSessions(root, NOW + 1);
+  assert.deepEqual(cut.calls, [], "a log last written before the week is not read");
+  assert.equal(typeof CLAUDE_FILE_LIMIT, "number");
+});
+
+// t727, criterion 3: a fixture log holding a prompt, a file name, a session id and a key.
+test("t727: what is printed and reported from Claude Code's logs holds no prompt, file name, session id or key", async (t) => {
+  const root = writeClaude(t);
+  const { io, calls } = fakeIo(t);
+  io.paths.claude = root;
+  io.readClaude = readClaudeSessions;
+  const reports = await runUsage(args("name=home:test"), io);
+  assert.ok(reports.some((r) => r.tool === "claude-code"));
+  const everything = JSON.stringify(calls.report) + calls.printed.join("\n");
+  for (const secret of [PROMPT, "secret-plan.txt", "acme", SESSION, KEY, "msg_1", "req_"]) assert.equal(everything.includes(secret), false, `${secret} stays on the machine`);
+  const claude = calls.report.find((r) => r.tool === "claude-code").body;
+  assert.deepEqual(claude.models.map((m) => [m.model, m.spans["24h"].tokens, m.spans["7d"].tokens]), [["claude-opus-5-5", 100, 100], ["claude-sonnet-5-5", 0, 3]]);
+  assert.doesNotThrow(() => cleanReport("claude-code", claude, new Date(NOW).toISOString(), "home:test"));
+  const printed = calls.printed.join("\n");
+  assert.match(printed, /claude-code, tokens by model per day \(UTC\):\n  2026-10-05 claude-opus-5-5: 100 tokens/);
+  assert.match(printed, /claude plan percent: no record on this machine, and the Claude app shows it; best figure: 100 tokens in the last 24 hours, from Claude Code's session logs/);
+});
+
+test("t727: an absent or unreadable Claude Code log is named, and antigravity and Gemini are listed with a reason", async (t) => {
+  const { io, paths } = fakeIo(t);
+  io.paths.claude = join(paths.codex, "no-such-claude");
+  io.paths.antigravity = paths.codex;
+  const gone = await gatherUsage(io, null, { add() {} });
+  assert.ok(gone.skipped.includes(`claude-code: no session logs at ${io.paths.claude}`));
+  assert.ok(gone.skipped.some((s) => /^antigravity: its records at .* are not read yet, so no figure$/.test(s)));
+  io.paths.claude = paths.codex;
+  io.readClaude = async () => ({ error: "could not read a session log: EACCES" });
+  assert.ok((await gatherUsage(io, null, { add() {} })).skipped.includes("claude-code: could not read a session log: EACCES"));
 });

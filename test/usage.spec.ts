@@ -229,7 +229,13 @@ it("the page shows one table per tool, marks stale reports and figures past a th
   expect(html).toContain("1 alert in force");
   expect(html).toContain("codex on home:studio: weekly window past its threshold, since 2027-02-01 21:00 UTC");
   expect(html).toContain("USAGE_WEEKLY_PERCENT");
-  expect(html).toContain("Claude's plan limits and Gemini's spend have no record");
+  expect(html).toContain("Claude's plan percent and Gemini's spend have no record");
+
+  // t727: a window heading for its limit is tagged and named in words.
+  const pace = { ...reports[0], windows: [{ name: "weekly", usedPercent: 50, resetsAt: LATER, at: AT }] } as typeof reports[number];
+  const heading = renderUsage([pace], DEFAULT_THRESHOLDS, [{ key: "codex/home:studio/shortage:weekly", since: fresh }], new Date(NOW), "PAVI");
+  expect(heading).toContain('<span class="tag bad">may run short</span>');
+  expect(heading).toContain("codex on home:studio: weekly window may run short, since");
 
   const empty = renderUsage([], { ...DEFAULT_THRESHOLDS, dailySpend: null }, [], new Date(NOW));
   expect(empty).toContain("No usage reported yet.");

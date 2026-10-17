@@ -23,9 +23,13 @@
 //             runner config names under balances.deepseek, read from the
 //             Keychain by credentials.mjs into one child process's
 //             environment and nowhere else. The child prints numbers.
-// Not read, because this machine holds no record of them: Claude's plan
-// limits (the Claude app shows them) and Gemini's spend (Google serves no
-// balance). The command says so each time it runs.
+//   Claude Code  ~/.claude/projects/**/*.jsonl, each assistant message's model,
+//             timestamp and token counts (input, output and cache creation;
+//             cache reads are not counted), read as counts only.
+// Listed with the reason, and the best figure there is, because this machine
+// holds no readable record of them: Claude's plan limits (the Claude app
+// shows them), Antigravity (its records are not read yet) and Gemini's spend
+// (Google serves no balance).
 //
 // What is reported is counts, windows, model names, costs and balances.
 // No prompt, file name, session id, key or header ever leaves the machine:
@@ -33,8 +37,10 @@
 // name a record supplies is cleaned before it is printed or reported
 // (cleanBody).
 
-import { existsSync } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { homedir, hostname, tmpdir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
 
 import { readSecret } from "./credentials.mjs";
 import { clean, defaultPaths, probeEnv, readCodexSessions, sqliteReader } from "./discover.mjs";
@@ -113,6 +119,80 @@ export function parseOpencodeUsage(rows, now) {
   return spansOf(calls, now, { cost: true });
 }
 
+// ── Claude Code: session logs, counts only ─────────────────────────────────
+
+const CLAUDE_MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
+const CLAUDE_DEPTH = 4;
+// Session files read at most; the newest are kept and the note says so.
+export const CLAUDE_FILE_LIMIT = 2000;
+
+// A line of a session log as a call, or null. Only the model's name, the
+// time and the token counts are taken: nothing else in the line is kept, so
+// no prompt, file name, session id or key can reach a report from here. The
+// id that tells one message's repeated lines apart is returned for the
+// reader to dedupe by and is never reported.
+export function parseClaudeLine(text) {
+  if (!text.includes('"usage"')) return null;
+  let line;
+  try { line = JSON.parse(text); } catch { return null; }
+  const message = line?.message;
+  const usage = message?.usage;
+  const at = Date.parse(line?.timestamp);
+  if (line?.type !== "assistant" || !usage || typeof message.model !== "string" || !CLAUDE_MODEL.test(message.model) || !Number.isFinite(at)) return null;
+  const n = (v) => Math.max(0, Number(v) || 0);
+  const tokens = n(usage.input_tokens) + n(usage.output_tokens) + n(usage.cache_creation_input_tokens);
+  return { id: typeof message.id === "string" ? message.id : null, call: { model: message.model, provider: "anthropic", at, tokens, cost: 0 } };
+}
+
+function claudeFiles(root, since) {
+  const found = [];
+  const walk = (dir, depth) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const path = join(dir, e.name);
+      if (e.isDirectory() && depth < CLAUDE_DEPTH) walk(path, depth + 1);
+      else if (e.isFile() && e.name.endsWith(".jsonl")) {
+        try { const mtime = statSync(path).mtimeMs; if (mtime >= since) found.push({ path, mtime }); } catch { /* removed since it was listed */ }
+      }
+    }
+  };
+  walk(root, 0);
+  return found.sort((a, b) => b.mtime - a.mtime);
+}
+
+// Calls in the week before `now`, from the logs written since `since`. A
+// message a log repeats (it writes one line per content block) counts once,
+// by its last line; the ids are held in memory only.
+export async function readClaudeSessions(root, since) {
+  const files = claudeFiles(root, since);
+  const byId = new Map();
+  const loose = [];
+  for (const { path } of files.slice(0, CLAUDE_FILE_LIMIT)) {
+    const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+    try {
+      for await (const text of lines) {
+        const found = parseClaudeLine(text);
+        if (!found) continue;
+        if (found.id) byId.set(found.id, found.call); else loose.push(found.call);
+      }
+    } catch (error) { return { error: `could not read a session log: ${error.code ?? "read failed"}` }; }
+  }
+  return { calls: [...byId.values(), ...loose], cut: Math.max(0, files.length - CLAUDE_FILE_LIMIT) };
+}
+
+// Tokens per model per UTC day over the span's week, newest day first, as lines.
+export function claudeDaily(calls, now) {
+  const days = new Map();
+  for (const c of calls) {
+    const age = now - c.at;
+    if (!Number.isFinite(age) || age < -60_000 || age > SPAN_MS["7d"]) continue;
+    const key = `${new Date(c.at).toISOString().slice(0, 10)} ${c.model}`;
+    days.set(key, (days.get(key) ?? 0) + c.tokens);
+  }
+  return [...days].sort((a, b) => b[0].localeCompare(a[0])).map(([key, tokens]) => `  ${key}: ${millions(tokens)} tokens`);
+}
+
 // ── Codex: the windows discover.mjs reads ──────────────────────────────────
 
 export function codexWindows(found) {
@@ -154,6 +234,7 @@ export function parseDeepseekBalance(text) {
 
 // ── what is gathered ───────────────────────────────────────────────────────
 
+// (claudeDay: Claude Code's tokens per model per day, as lines to print.)
 // Each tool with a record here, as a report body for POST /api/usage/TOOL,
 // and a line for each tool that could not be read or is not read at all.
 export async function gatherUsage(io, config, scrub) {
@@ -180,6 +261,24 @@ export async function gatherUsage(io, config, scrub) {
     } catch (error) { skipped.push(`${tool}: record not read: ${error.message}`); }
   }
 
+  // Claude Code: tokens by model, and the best figure for the plan percent no record holds.
+  let claudeDay = [];
+  if (io.paths.claude) {
+    const found = existsSync(io.paths.claude) ? await io.readClaude(io.paths.claude, now - LOOKBACK_MS) : { error: `no session logs at ${io.paths.claude}` };
+    if (found.error) skipped.push(`claude-code: ${found.error}`);
+    else {
+      const notes = ["cache reads are not counted"];
+      if (found.cut) notes.push(`only the newest ${CLAUDE_FILE_LIMIT} session logs were read; older ones in the week are not counted`);
+      const models = spansOf(found.calls, now);
+      reports.push({ tool: "claude-code", body: { windows: [], models, balances: [], notes } });
+      claudeDay = claudeDaily(found.calls, now);
+      const day = models.reduce((sum, m) => sum + m.spans["24h"].tokens, 0);
+      skipped.push(`claude plan percent: no record on this machine, and the Claude app shows it; best figure: ${millions(day)} tokens in the last 24 hours, from Claude Code's session logs`);
+    }
+  }
+  if (existsSync(io.paths.antigravity ?? "")) skipped.push(`antigravity: its records at ${io.paths.antigravity} are not read yet, so no figure`);
+  skipped.push("gemini spend: Google serves no balance, so no figure");
+
   for (const [provider, entryName] of Object.entries(config?.balances ?? {})) {
     if (provider !== "deepseek") { skipped.push(`${provider}: no balance source; only DeepSeek's balance can be asked for`); continue; }
     let key;
@@ -195,7 +294,7 @@ export async function gatherUsage(io, config, scrub) {
     } catch (error) { skipped.push(`deepseek: ${error.message}`); }
   }
   if (!config?.balances?.deepseek) skipped.push("deepseek: no Keychain entry named under balances.deepseek in the runner config, so its balance is not asked for");
-  return { reports, skipped, via };
+  return { reports, skipped, via, claudeDay };
 }
 
 // ── what leaves the machine ────────────────────────────────────────────────
@@ -303,8 +402,8 @@ export function usageOptions(args, host = hostname()) {
 function defaultIo() {
   let reader;
   return {
-    paths: defaultPaths(), env: process.env, cwd: tmpdir(), now: () => Date.now(), signal: undefined,
-    run: execute, readSecret, readConfig, readCodex: readCodexSessions,
+    paths: { ...defaultPaths(), claude: join(homedir(), ".claude", "projects"), antigravity: join(homedir(), ".gemini", "antigravity") }, env: process.env, cwd: tmpdir(), now: () => Date.now(), signal: undefined,
+    run: execute, readSecret, readConfig, readCodex: readCodexSessions, readClaude: readClaudeSessions,
     reader: async () => (reader ??= await sqliteReader()),
     print: (text) => console.log(text),
   };
@@ -329,7 +428,7 @@ export async function runUsage(args, given = {}) {
     configNote = "No runner config was found, so no balance is asked for.";
   }
 
-  const { reports: gathered, skipped, via } = await gatherUsage(io, config, scrub);
+  const { reports: gathered, skipped, via, claudeDay } = await gatherUsage(io, config, scrub);
   // Cleaned once, so what is printed and what is reported are the same values.
   // The skipped lines too: what a tool or an error returned reaches neither the
   // terminal nor Atelier as it was found, which withoutKeys alone would not do.
@@ -339,6 +438,7 @@ export async function runUsage(args, given = {}) {
   if (configNote) out.push(configNote);
   if (via) out.push(`Local databases are read only, through ${via}.`);
   for (const r of reports) out.push("", ...describeReport(r.tool, r.body, now));
+  if (claudeDay.length) out.push("", "claude-code, tokens by model per day (UTC):", ...claudeDay);
   if (skipped.length) out.push("", "Not reported:", ...skipped.map((s) => `  ${safe(s, 300)}`));
   // The gateway's figures are the server's, read once whatever this
   // machine records; a failed read is said and does not stop the report.
@@ -352,7 +452,6 @@ export async function runUsage(args, given = {}) {
     try { out.push("", ...describeSpeed(await io.speed(), safe)); }
     catch (error) { out.push("", `Speed: could not read: ${safe(error.message, 200)}`); }
   }
-  out.push("", "Not read here: Claude's plan limits (the Claude app shows them) and Gemini's spend (Google serves no balance).");
 
   const failed = [], alerts = [];
   let reported = 0;

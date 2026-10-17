@@ -41,7 +41,8 @@ function reportRows(r: UsageReport, t: Thresholds, now: number): string {
     const past = over.has(`${r.tool}/${r.runner}/window:${w.name}`) && limit !== null ? tag(`past ${pct(limit)}`, "bad") : "";
     const reset = w.resetsAt === null ? "" : Date.parse(w.resetsAt) <= now ? ` · reset at ${e(stamp(w.resetsAt))}` : ` · resets ${e(stamp(w.resetsAt))}`;
     const seen = w.at ? `<span class="meta">as the tool recorded it ${e(stamp(w.at))}</span>` : "";
-    rows.push(`<tr><th scope="row">${e(w.name)} window</th><td colspan="3" class="num">${e(pct(w.usedPercent))} used${reset}${past}${seen}</td>${reported}</tr>`);
+    const short = over.has(`${r.tool}/${r.runner}/shortage:${w.name}`) ? tag("may run short", "bad") : "";
+    rows.push(`<tr><th scope="row">${e(w.name)} window</th><td colspan="3" class="num">${e(pct(w.usedPercent))} used${reset}${past}${short}${seen}</td>${reported}</tr>`);
   }
   for (const m of r.models) {
     const who = `<code>${e(m.model)}</code>${m.provider ? `<span class="meta">${e(m.provider)}</span>` : ""}`;
@@ -97,7 +98,7 @@ function thresholdLine(t: Thresholds): string {
 export function describeAlert(key: string): string {
   const [tool, runner, figure = ""] = key.split("/");
   const [kind, name] = figure.split(":");
-  const what = kind === "window" ? `${name} window past its threshold` : kind === "spend" ? "spend over 24 hours above its threshold" : kind === "balance" ? `${name} balance below its threshold` : figure;
+  const what = kind === "shortage" ? `${name} window may run short` : kind === "window" ? `${name} window past its threshold` : kind === "spend" ? "spend over 24 hours above its threshold" : kind === "balance" ? `${name} balance below its threshold` : figure;
   return `${tool} on ${runner}: ${what}`;
 }
 
@@ -116,7 +117,7 @@ export function renderUsage(reports: UsageReport[], t: Thresholds, alerts: { key
   return page("Usage", `<div class="page-width usage">
   <header><h1>Usage</h1>
   <p class="lead">Where each tool stands: its rate-limit windows, the models it served and what they cost, and pay-per-use balances, as the home runners last reported them.</p>
-  <p class="meta">${thresholdLine(t)} A report older than ${STALE_MS / 3_600_000} hours is marked stale${stale ? `; ${plural(stale, "report is", "reports are")} stale now` : ""}. Claude's plan limits and Gemini's spend have no record on the runner's machine, so they are not reported.</p></header>
+  <p class="meta">${thresholdLine(t)} A report older than ${STALE_MS / 3_600_000} hours is marked stale${stale ? `; ${plural(stale, "report is", "reports are")} stale now` : ""}. Claude Code's tokens are read from its session logs. Claude's plan percent and Gemini's spend have no record on the runner's machine, so they are not reported.</p></header>
   ${inForce}
   ${body}
   ${reliability ? reliabilitySection(reliability.models, ownerName, reliability) : ""}

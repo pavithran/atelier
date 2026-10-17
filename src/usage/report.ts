@@ -9,7 +9,7 @@
 // stored. Reports are kept on the index Ledger, one per tool and runner.
 
 import { redactKeys } from "../models/pool.ts";
-import { RuleError } from "../rules.ts";
+import { RuleError, usageShortages } from "../rules.ts";
 
 export const SPANS = ["5h", "24h", "7d"] as const;
 export type Span = (typeof SPANS)[number];
@@ -200,6 +200,15 @@ export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[
       title: `${r.tool}: ${w.name} window ${pct(w.usedPercent)} used`,
       body: `${where} has used ${pct(w.usedPercent)} of its ${w.name} window, past ${pct(limit)}${w.resetsAt ? `; it resets at ${w.resetsAt}` : ""}.`,
     });
+  }
+  // A window heading for its limit, in the rule's words (usageShortages),
+  // unless the owner's threshold already alerts on that window.
+  for (const s of usageShortages(r, now)) {
+    const name = s.key.split("shortage:")[1];
+    // A window whose own alert the owner turned off stays quiet.
+    if ((name === "weekly" && t.weeklyPercent === null) || (name === "5-hour" && t.windowPercent === null)) continue;
+    if (out.some((c) => c.key === `${r.tool}/${r.runner}/window:${name}`)) continue;
+    out.push({ key: `${r.tool}/${r.runner}/shortage:${name}`, title: `${r.tool}: ${name} window may run short`, body: `${s.message} Reported by ${r.runner}.` });
   }
   const spent = daySpend(r);
   if (t.dailySpend !== null && spent !== null && spent > t.dailySpend) {
