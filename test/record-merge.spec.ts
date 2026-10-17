@@ -16,7 +16,7 @@ import type { LedgerEvent } from "../src/ledger.ts";
 const TOKEN = "record-merge-token";
 const AT = "2026-10-14T00:00:00.000Z";
 const BUILDER = "claude-code/opus-5.5", ASTRA = "codex/gpt-6-astra", ARGON = "antigravity/gemini-4-argon";
-const BASE = "a".repeat(40), HEAD = "b".repeat(40), MERGE = "c".repeat(40), OTHER = "d".repeat(40), LATER = "e".repeat(40), SOLO = "f".repeat(40);
+const BASE = "a".repeat(40), HEAD = "b".repeat(40), MERGE = "c".repeat(40), OTHER = "d".repeat(40), LATER = "e".repeat(40), SOLO = "f".repeat(40), FLAT = "9".repeat(40);
 const T = "0".repeat(40);
 beforeAll(() => setRetryBaseMs(1));
 afterAll(() => setRetryBaseMs());
@@ -32,6 +32,8 @@ async function setup(name: string) {
     { hash: LATER, parents: [MERGE], treeHash: T },
     { hash: MERGE, parents: [BASE, HEAD], treeHash: T },
     { hash: SOLO, parents: [BASE], treeHash: T },
+    // A merge as a history-since baseline rebuilds it: one parent (t726).
+    { hash: FLAT, parents: [BASE], treeHash: T },
     { hash: BASE, parents: [], treeHash: T },
   ];
   const elsewhere = [{ hash: OTHER, parents: [BASE, HEAD], treeHash: T }];
@@ -334,4 +336,35 @@ it("records a fast take, and refuses a claim in flight after it", async () => {
   await L.takeFast(other.id, ASTRA, runner);
   const r = await call(other.id, { mergeCommit: MERGE, head: HEAD, reviews });
   expect(r.status, await r.clone().text()).toBe(200);
+});
+
+// t726: on a baseline built with --history-since the merge commit is rebuilt
+// with one parent, so record-merge refused every merge made outside Atelier
+// (not_a_merge, or merge_not_on_main for the project's own hash). The CLI
+// checks the second parent in the checkout and names the baseline commit
+// paired with the merge; the baseline need only hold that commit.
+it("records a merge the baseline holds flattened, when the CLI names the baseline commit paired with it", async () => {
+  const { L, call } = await setup("record-merge-flat");
+  const item = await L.newItem("Merged on a history-since baseline", [], "owner");
+  const { generation } = await L.claim(item.id, BUILDER);
+  await L.setFork(item.id, "record-merge-flat--t1", BASE, BUILDER);
+  await L.recordToken(item.id, BUILDER, generation, null, "tok-flat");
+  const project = "1".repeat(40);
+  const r = await call(item.id, { mergeCommit: project, baselineMerge: FLAT, head: HEAD, reviews });
+  expect(r.status, await r.clone().text()).toBe(200);
+  expect((await r.json() as { record: Record<string, unknown> }).record).toMatchObject({ mergeCommit: project, baselineMerge: FLAT, commit: HEAD });
+  expect(await L.item(item.id)).toMatchObject({ state: "merged", head: HEAD });
+});
+
+it("still refuses a merge the baseline cannot map, naming atelier sync, and the project's hash without a pairing", async () => {
+  const { L, call } = await setup("record-merge-unmapped");
+  const item = await L.newItem("Unmapped", [], "owner");
+  const { generation } = await L.claim(item.id, BUILDER);
+  await L.setFork(item.id, "record-merge-unmapped--t1", BASE, BUILDER);
+  await L.recordToken(item.id, BUILDER, generation, null, "tok-unmapped");
+  await refusal(await call(item.id, { mergeCommit: "1".repeat(40), baselineMerge: "2".repeat(40), head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
+  await refusal(await call(item.id, { mergeCommit: "1".repeat(40), head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
+  // A pairing is not a way past main: a commit only another branch holds is refused.
+  await refusal(await call(item.id, { mergeCommit: "1".repeat(40), baselineMerge: OTHER, head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed" });
 });
