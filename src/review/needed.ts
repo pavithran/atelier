@@ -62,6 +62,9 @@ export interface ReviewRequired {
   outOfScope: string[];
   checks: EvidenceView["checks"];
   round: number;                    // 1, plus each head a model rejected that this review moves past: an earlier head by a push, this head by the owner's refutation of its rejection
+  // The newest observed passing check at this head, which answers a rejection
+  // here whose findings the developer marked fixed; an older server sends none.
+  observedAt?: string | null;
   previous: ReviewRecord[];         // counting reviews at any head, latest per reviewer and head, oldest first
   // The findings the developer marked fixed or refuted in any counting review,
   // however many later reviews replaced it in `previous`. An older server sends none.
@@ -116,9 +119,21 @@ export function ownerVerdicts(events: readonly LedgerEvent[]): Map<string, Owner
 // before findings were kept) has nothing to refute and still waits for
 // rework. A confirmed or fixed finding stands, so a rejection with one of
 // those among its blockers still blocks.
-export function refutedRejection(r: ReviewRecord, verdicts: ReadonlyMap<string, OwnerVerdict>): boolean {
+//
+// A finding the developer marked fixed answers a rejection at the same head
+// only when an observed check passed there after the rejection (`observedAt`,
+// the newest such record's time): a rejection for missing evidence is met by
+// the evidence, with no source commit to make (t535). Without that newer
+// record, or for a finding left confirmed, the rejection still waits for
+// rework. This only lets another independent review be asked; it approves
+// nothing.
+export function refutedRejection(r: ReviewRecord, verdicts: ReadonlyMap<string, OwnerVerdict>, observedAt?: string | null): boolean {
   const blocking = (r.findings ?? []).map((f, i) => ({ f, index: i + 1 })).filter(({ f }) => f.severity === "blocking");
-  return blocking.length > 0 && blocking.every(({ f, index }) => verdictOn(verdicts, r, index, f)?.verdict === "refuted");
+  const fresh = !!observedAt && observedAt > r.at;
+  return blocking.length > 0 && blocking.every(({ f, index }) => {
+    const v = verdictOn(verdicts, r, index, f)?.verdict;
+    return v === "refuted" || (v === "fixed" && fresh);
+  });
 }
 
 // The findings of earlier reviews the developer marked fixed or refuted
@@ -197,11 +212,14 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // override also meets.
   const reviews = [...input.reviews];
   const verdicts = ownerVerdicts(input.verdicts ?? []);
+  // The newest observed passing check at this head, which can answer a
+  // rejection whose findings the developer marked fixed (t535).
+  const observedAt = input.evidence.filter((e) => e.head === head && e.grade === "observed" && e.passed === true).map((e) => e.at).sort().pop() ?? null;
   // Only reviews bound to this head and to the item's criteria as they are
   // now stand: one withdrawn when the criteria changed, or recorded before
   // reviews were bound, neither ends the need nor blocks it.
   const atHead = countingReviews(reviews, bindingOf(item), policy, owner);
-  const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts));
+  const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts, observedAt));
   if (!input.postMerge && rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the developer" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);
   const single = singleFamily(policy);
@@ -253,7 +271,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // rejection the same reviewer later approved at its head would vanish from
   // the count and from the findings the developer answered (t717, round 3).
   const everyReview = reviews.filter(counts).sort((a, b) => a.at.localeCompare(b.at));
-  const modelRejections = everyReview.filter((r) => !r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts)));
+  const modelRejections = everyReview.filter((r) => !r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts, observedAt)));
   const round = new Set(modelRejections.map((r) => r.head)).size + 1;
   const last = modelRejections.at(-1);
   // After REVIEW_ROUND_CAP rejected rounds no further round starts on its own
@@ -282,6 +300,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     outOfScope: item.scope.length ? view.changedPaths.filter((p) => !matchesAny(p, item.scope)) : [],
     checks: view.checks,
     round,
+    observedAt,
     previous,
     settled: settledFindings(everyReview, verdicts),
     previousReviewer: last?.by ?? null,

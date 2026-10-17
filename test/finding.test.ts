@@ -133,3 +133,34 @@ test("precision places a legacy verdict on its review whatever order the events 
   const apart = of([verdict(21, "confirmed", { review: 10 }), verdict(20, "refuted"), reviewed(12), reviewed(10)]);
   assert.deepEqual([apart?.judged, apart?.refuted, apart?.upheld], [2, 1, 1]);
 });
+
+// t535: ourai/t59 review 2489 rejected da79dd62 only for absent observed full
+// verify evidence; a custom check then passed at that head and the finding was
+// marked fixed, yet landing refused review_blocked until a source commit.
+test("a rejection whose blocking findings are fixed is reviewed again once an observed check passed after it", () => {
+  const T2 = "2026-10-05T12:30:00.000Z";
+  const rejected = rejection(10);
+  const fixed = [verdict(20, "fixed", { review: 10 })];
+  const later: Evidence = { ...pass(H1), at: T2 };
+  const asked = need({ reviews: [rejected], verdicts: fixed, evidence: [pass(H1), later] });
+  assert.ok(asked.needed, asked.needed ? "" : asked.reason);
+  assert.equal(asked.needed && asked.round, 2);
+  assert.equal(asked.needed && asked.kind, "re-review");
+  // The evidence alone is not an answer, nor is the verdict alone, nor a confirmed finding.
+  const waits = (over: Partial<NeedInput>) => { const n = need({ reviews: [rejected], ...over }); assert.equal(n.needed, false); };
+  waits({ verdicts: [], evidence: [pass(H1), later] });
+  waits({ verdicts: fixed, evidence: [pass(H1)] });
+  waits({ verdicts: [verdict(20, "confirmed", { review: 10 })], evidence: [pass(H1), later] });
+  // A check observed passing at another head does not answer this head's rejection.
+  waits({ verdicts: fixed, evidence: [pass(H1), { ...pass(H2), at: T2 }] });
+});
+
+test("a fixed rejection still counts as a round, so the round cap holds", () => {
+  const T2 = "2026-10-05T12:30:00.000Z";
+  const reviews = [3, 4, 5].map((n) => ({ ...rejection(n, `${n}`.repeat(40)), at: `2026-10-05T0${n}:00:00.000Z` }));
+  const here = { ...rejection(10), at: T };
+  const verdicts = [verdict(20, "fixed", { review: 10 })];
+  const capped = need({ reviews: [...reviews, here], verdicts, evidence: [pass(H1), { ...pass(H1), at: T2 }] });
+  assert.equal(capped.needed, false);
+  assert.match(capped.needed ? "" : capped.reason, /review rounds were rejected/);
+});
