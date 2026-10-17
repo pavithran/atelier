@@ -202,7 +202,9 @@ export function attentionFor(
   const ordered = [...items].sort((a, b) => compare(a.createdAt, b.createdAt) || compare(a.id, b.id));
   for (const item of ordered) {
     const queued = taskStage(item) === "queued";
-    if (queued && !offers) unread++;
+    // A task a runner gave up is the developer's call whether or not a runner
+    // is offered (t584), so it is no queued task whose runner is unknown.
+    if (queued && !offers && !byItem.get(item.id)?.some((x) => x.kind === "gave-up")) unread++;
     const noRunner = queued && offers ? unoffered(item.dispatch!, offers, now, project) : undefined;
     const placed = placeTask(project, item, byItem.get(item.id) ?? [], noRunner);
     if (!placed) continue;

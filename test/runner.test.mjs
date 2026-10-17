@@ -1483,6 +1483,36 @@ test("a runner that gives a task up after two failed runs pushes its commit, rel
   assert.ok(logs.some((l) => l.includes("needs the developer's attention after 2 failures")));
 });
 
+// Review of t584, round 1: the release changes the task's head and time, so
+// the refused key of the poll no longer matched and the runner took the task
+// again on every poll; the harness rerun cap kept its "claim is kept" wording.
+test("a task given up at the harness rerun cap is released once, with the runner's word, and passed by on later polls (t584)", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-giveup-cap-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const { io, calls } = fixture({ head: "before", code: 0, marker: { reruns: MAX_HARNESS_RERUNS, actor: assignment.actor, reason: "harness exited 1" } });
+  let polls = 0;
+  const skips = [];
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      if (++polls === 4) { process.emit("SIGINT"); return []; }
+      // Each poll shows the task as the release left it: a new time.
+      return [{ ...assignment, item: { ...assignment.item, head: String(polls).repeat(40).slice(0, 40), updatedAt: String(polls) } }];
+    },
+    reportRunSkip: async (body) => { skips.push(body); },
+  });
+  const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
+  assert.equal(argvs.filter((a) => a[0] === "claim").length, 1, "claimed once");
+  const released = argvs.filter((a) => a[0] === "release");
+  assert.equal(released.length, 1);
+  const note = released[0][released[0].indexOf("--note") + 1];
+  assert.ok(note.startsWith(GAVE_UP));
+  assert.doesNotMatch(note, /claim is kept/);
+  assert.equal(skips.length, 1);
+});
+
 test("giving a task up releases the claim even when the push fails, and the note says so (t584)", async () => {
   const { io, calls, logs } = fixture({ failCommand: "push" });
   const item = { id: "t13" };

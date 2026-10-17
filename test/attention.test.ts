@@ -152,7 +152,7 @@ test("what was not read is labelled, never counted as nothing", () => {
   const noOffers = attentionFor("alpha", ALPHA_ITEMS, ALL_ENTRIES, null, NOW);
   assert.ok(!noOffers.owner.some((t) => t.call === "start-runner"), "a dispatch is not judged without the offers");
   assert.deepEqual(noOffers.pipeline.filter((t) => t.stage === "queued").map((t) => t.id), ["a8", "a9"]);
-  assert.ok(noOffers.unknown.some((x) => /runner offers could not be read, so whether a runner can take the 3 queued tasks is unknown/.test(x)));
+  assert.ok(noOffers.unknown.some((x) => /runner offers could not be read, so whether a runner can take the 2 queued tasks is unknown/.test(x)));
   // A notice naming a task the list does not hold is said.
   const stray = attentionFor("alpha", ALPHA_ITEMS, [...ALL_ENTRIES, entry("alpha", "a99", "accept")], OFFERS, NOW);
   assert.ok(stray.unknown.some((x) => x.includes("a99")));

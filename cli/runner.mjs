@@ -1488,7 +1488,7 @@ export async function runTask(assignment, config, name, io) {
     resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
     if (failedRun) {
       if (failedRun.reruns >= MAX_HARNESS_RERUNS) {
-        throw Object.assign(new Error(`the harness failed ${failedRun.reruns} times in a row in this workspace, so the runner stops rerunning it; this task needs the developer (a broken environment or a corrupt failure marker); the claim is kept`), { needsDeveloper: true });
+        throw Object.assign(new Error(`the harness failed ${failedRun.reruns} times in a row in this workspace, so the runner stops rerunning it; this task needs the developer (a broken environment or a corrupt failure marker)`), { needsDeveloper: true });
       }
       io.log("a harness run failed in this workspace and none has succeeded since; running the harness again");
     }
@@ -3082,7 +3082,7 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), missing = new Map(), fetchFailures = new Map(), poll = 0 }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), poll = 0 }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   // A post-merge review whose merge commit no source held (t591) waits for
@@ -3096,6 +3096,10 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   // (t476) is not taken again by this process, whatever later polls say.
   const terminal = terminalTasks.get(taskKey(task));
   if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
+  // A task this runner gave up (t584) is released, which changes its head and
+  // its time, so refusedKey no longer matches: it is kept by dispatch instead,
+  // and the developer's new dispatch of it is what lets it through.
+  if (gaveUpTasks.has(taskKey(task))) return "Passed by: this runner gave it up and released it; it is tried again once the developer dispatches it again or this runner restarts.";
   if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
   const failed = failures.get(failureKey(task)) ?? 0;
   if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
@@ -3476,7 +3480,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
+  const refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -3910,7 +3914,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, missing, fetchFailures, poll: polls });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, poll: polls });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4015,11 +4019,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // A task the server closed (t476) was not given up. A criteria
           // review (t438) records its own failure, criteria-review-failed,
           // as the code review has its skip, so neither goes to run-skip.
-          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : state.skipped ? "skipped" : null;
+          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : state.skipped || state.needsDeveloper ? "skipped" : null;
           // The claim a given-up task still holds is let go at once (t584), and
           // so is one the harness loop gave up on (needsDeveloper).
-          if (state.claimHeldAt && (gaveUp || state.needsDeveloper)) {
-            await giveUpClaim({ io, project: task.project, item: task.item, actor: task.actor, workspace: state.claimHeldAt, reason: state.reason });
+          if (state.claimHeldAt && gaveUp) {
+            if (await giveUpClaim({ io, project: task.project, item: task.item, actor: task.actor, workspace: state.claimHeldAt, reason: state.reason })) gaveUpTasks.add(taskKey(task));
           }
           if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
