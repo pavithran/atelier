@@ -19,7 +19,7 @@ const git = (cwd, ...args) => {
 
 // A checkout that commits as a private address, a config naming it, and a
 // stand-in `atelier` that answers `identity --json` with `identity` (or fails).
-function setup(identity) {
+function setup(identity, shared) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'atelier-worktree-')));
   const main = join(dir, 'main');
   mkdirSync(main);
@@ -31,8 +31,8 @@ function setup(identity) {
   const bin = join(dir, 'atelier');
   writeFileSync(bin, identity ? `#!/bin/sh\necho '${JSON.stringify(identity)}'\n` : '#!/bin/sh\necho "no commit identity" >&2\nexit 1\n');
   chmodSync(bin, 0o755);
-  const run = () => spawnSync(zsh, [script, 't9'], { encoding: 'utf8', env: { ...process.env, ATELIER_CONFIG_DIR: join(dir, 'config'), ATELIER_BIN: bin, ATELIER_WORKTREES: join(dir, 'wt'), ATELIER_PROJECT: 'atelier' } });
-  return { dir, main, wt: join(dir, 'wt', 't9'), run };
+  const run = () => spawnSync(zsh, [script, 't9'], { encoding: 'utf8', env: { ...process.env, ATELIER_CONFIG_DIR: join(dir, 'config'), ATELIER_BIN: bin, ATELIER_WORKTREES: join(shared ?? dir, 'wt'), ATELIER_PROJECT: 'atelier' } });
+  return { dir, main, wt: join(shared ?? dir, 'wt', 't9'), run };
 }
 
 test('a worktree commits as the project, and the checkout keeps its own identity (t731)', { skip: !zsh && 'zsh is not installed' }, (t) => {
@@ -53,4 +53,17 @@ test('a project with no identity gets no worktree (t731)', { skip: !zsh && 'zsh 
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /no worktree was made/);
   assert.equal(existsSync(wt), false);
+});
+
+// Finding it would have caught (astra, t731 round 1): the folder is keyed by
+// the task id alone, so project B's t9 overwrote project A's identity.
+test('another project\'s worktree of the same task id is refused and left as it was (t731)', { skip: !zsh && 'zsh is not installed' }, (t) => {
+  const a = setup({ name: 'Owner A', email: '1+a@users.noreply.github.com', agentEmails: [] });
+  const b = setup({ name: 'Owner B', email: '2+b@users.noreply.github.com', agentEmails: [] }, a.dir);
+  t.after(() => { rmSync(a.dir, { recursive: true, force: true }); rmSync(b.dir, { recursive: true, force: true }); });
+  assert.equal(a.run().status, 0);
+  const r = b.run();
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /not a worktree of/);
+  assert.equal(git(a.wt, 'config', 'user.email'), '1+a@users.noreply.github.com');
 });
