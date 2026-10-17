@@ -106,3 +106,14 @@ test("t727: status warns of a window near its limit, names a report not heard fr
   assert.deepEqual(formatUsageWarnings({ reports: [reading({ windows: [{ name: "weekly", usedPercent: 5, resetsAt: near.windows[0].resetsAt }] })] }, now), []);
   assert.deepEqual(formatUsageWarnings(null, now), []);
 });
+
+// t727 round 1: a fresh DeepSeek balance of USD 1 under the default floor of 10 showed nothing in status.
+test("t727: status warns of a low balance by the same floor the alerts use, and not when the floor is off or met", () => {
+  const now = Date.parse("2026-10-05T21:00:00.000Z");
+  const deepseek = { tool: "deepseek", runner: "home:studio", at: new Date(now - 60_000).toISOString(), windows: [], balances: [{ currency: "USD", amount: 1 }] };
+  const warn = ["Usage warnings:", "  deepseek on home:studio: balance 1 USD, below 10"];
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek] }, now), warn);
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: 10 } }, now), warn);
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: null } }, now), []);
+  assert.deepEqual(formatUsageWarnings({ reports: [deepseek], thresholds: { balanceFloor: 1 } }, now), []);
+});

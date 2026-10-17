@@ -188,6 +188,12 @@ export function daySpend(r: Pick<UsageReport, "models">): number | null {
   return costs.length ? costs.reduce((a, b) => a + b, 0) : null;
 }
 
+// The balances below the owner's floor; the one rule `crossings` and
+// `atelier status` both read. No floor (null) means none is low.
+export function lowBalances(r: Pick<UsageReport, "balances">, floor: number | null): Balance[] {
+  return floor === null ? [] : (r.balances ?? []).filter((b) => b.amount < floor);
+}
+
 export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[] {
   const out: Crossing[] = [];
   const where = `${r.tool} on ${r.runner}`;
@@ -218,8 +224,7 @@ export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[
       body: `${where} has spent ${money(spent)} in the last 24 hours, above ${money(t.dailySpend)}.`,
     });
   }
-  for (const b of r.balances) {
-    if (t.balanceFloor === null || b.amount >= t.balanceFloor) continue;
+  for (const b of lowBalances(r, t.balanceFloor)) {
     out.push({
       key: `${r.tool}/${r.runner}/balance:${b.currency}`,
       title: `${r.tool}: balance ${b.amount} ${b.currency}`,

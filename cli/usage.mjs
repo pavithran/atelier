@@ -148,7 +148,9 @@ function claudeFiles(root, since) {
   const found = [];
   const walk = (dir, depth) => {
     let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    // A folder that cannot be read (EACCES) stops the reading: an empty
+    // result would publish a zero report. One removed since it was listed is skipped.
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch (error) { if (error.code === "ENOENT") return; throw error; }
     for (const e of entries) {
       const path = join(dir, e.name);
       if (e.isDirectory() && depth < CLAUDE_DEPTH) walk(path, depth + 1);
@@ -165,7 +167,8 @@ function claudeFiles(root, since) {
 // message a log repeats (it writes one line per content block) counts once,
 // by its last line; the ids are held in memory only.
 export async function readClaudeSessions(root, since) {
-  const files = claudeFiles(root, since);
+  let files;
+  try { files = claudeFiles(root, since); } catch (error) { return { error: `could not read a session folder: ${error.code ?? "read failed"}` }; }
   const byId = new Map();
   const loose = [];
   for (const { path } of files.slice(0, CLAUDE_FILE_LIMIT)) {
