@@ -101,12 +101,20 @@ const SHORT_SECRET = 24;
 // `OPENAI_API_KEY=sk-…` matches and `API_KEY=your_key_here` does not.
 const ASSIGNMENT = new RegExp(`^\\s*(?:export\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(["'\`]?)([A-Za-z0-9+/_-]{${SHORT_SECRET},}={0,2})\\2\\s*(?:#.*)?$`);
 
+// A name ending in one of these holds a place on disk, not a secret, when its
+// value is an absolute or home-relative path: `CHROME_PATH=/Users/me/.../bin`
+// is long and token-shaped but not a key (t554). The value must also start
+// with a path root, so a long token assigned to a `_PATH` name still matches.
+const LOCATION_SEGMENTS = new Set(["path", "dir", "directory", "file", "home", "root"]);
+
 function secretAssignment(text: string): boolean {
   const m = ASSIGNMENT.exec(text);
   if (!m) return false;
   const value = m[3];
+  const segments = m[1].split("_");
+  if (LOCATION_SEGMENTS.has(segments[segments.length - 1].toLowerCase()) && /^(?:\/|~\/)/.test(value)) return false;
   if (value.length >= LONG_VALUE) return true;
-  return m[1].split("_").some((segment) => SECRET_SEGMENTS.has(segment.toLowerCase()));
+  return segments.some((segment) => SECRET_SEGMENTS.has(segment.toLowerCase()));
 }
 
 // Whether one added line holds a key pattern. It reports only whether, so no
@@ -136,7 +144,10 @@ export function scanLine(text: string): boolean {
 //   added lines against the base side when the base side is text of a
 //   readable size, and otherwise (no base side, a binary, a submodule, an
 //   oversized base, a base of another type) its whole text as added.
-// - A head side that is not text (binary content, a submodule, which is a
+// - A head side that is an ordinary image or font (MEDIA_SIGNATURES) is
+//   scanned as raw bytes, all of it as added, and blocks only if a key
+//   pattern is in it (t554).
+// - A head side that is not text (any other binary content, a submodule, which is a
 //   commit in another repository, a blob over SCAN_BYTES, a text diff over
 //   the memory budget) is recorded unscanned with the reason and the
 //   object's hash, so the owner clears it by content, like a hit.
@@ -151,8 +162,27 @@ export const SCAN_BYTES = 8 * 1024 * 1024;
 const SUBMODULE = "160000";
 const decoder = new TextDecoder();
 
-// The head-side object as the scan read it: text lines, or why not.
-type Side = { lines: string[] } | { reason: string };
+// The head-side object as the scan read it: text lines, or why not. `media`
+// marks an ordinary image or font, whose bytes were read as Latin-1 text so
+// that a key pasted into it is still found (t554).
+type Side = { lines: string[]; media?: true } | { reason: string };
+
+// The signatures of the ordinary binaries a task commits: PNG, JPEG, GIF, WebP
+// and WOFF/WOFF2 fonts. A file that starts with one is scanned for key
+// patterns as raw bytes instead of blocking as unreadable; any other binary
+// still blocks, as does a file that merely claims the name of an image.
+const MEDIA_SIGNATURES: number[][] = [
+  [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  [0xff, 0xd8, 0xff],
+  [0x47, 0x49, 0x46, 0x38],
+  [0x77, 0x4f, 0x46, 0x46],
+  [0x77, 0x4f, 0x46, 0x32],
+];
+function isMedia(b: Uint8Array): boolean {
+  if (MEDIA_SIGNATURES.some((sig) => sig.every((v, i) => b[i] === v))) return true;
+  // WebP: "RIFF", a size, then "WEBP".
+  return [0x52, 0x49, 0x46, 0x46].every((v, i) => b[i] === v) && [0x57, 0x45, 0x42, 0x50].every((v, i) => b[8 + i] === v);
+}
 
 async function readSide(r: Reader, leaf: Leaf): Promise<Side> {
   if (leaf.mode === SUBMODULE) return { reason: "a submodule, whose content is in another repository" };
@@ -161,7 +191,10 @@ async function readSide(r: Reader, leaf: Leaf): Promise<Side> {
   // guard keeps the type honest without reading a hole as empty.
   if (!bytes) throw new Error(`secret scan: blob ${leaf.hash.slice(0, 8)} is missing from the repositories`);
   if (bytes.length > SCAN_BYTES) return { reason: `${bytes.length} bytes, over the ${SCAN_BYTES} the scan reads` };
-  if (isBinary(bytes)) return { reason: "binary content" };
+  if (isBinary(bytes)) {
+    if (isMedia(bytes)) return { lines: splitLines(new TextDecoder("latin1").decode(bytes)), media: true };
+    return { reason: "binary content" };
+  }
   return { lines: splitLines(decoder.decode(bytes)) };
 }
 
@@ -174,7 +207,7 @@ async function addedLines(r: Reader, base: Leaf | null, head: Leaf): Promise<{ a
   // other base side (absent, binary, a submodule, oversized) makes every
   // head line an added one.
   const before = base ? await readSide(r, base) : null;
-  if (!before || "reason" in before) return { added: after.lines.map((text, i) => [i + 1, text]) };
+  if (!before || "reason" in before || before.media || after.media) return { added: after.lines.map((text, i) => [i + 1, text]) };
   const ops = diffLines(before.lines, after.lines);
   if (!ops) return { reason: "a text diff over the memory budget" };
   const added: [number, string][] = [];
