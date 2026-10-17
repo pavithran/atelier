@@ -2537,6 +2537,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }, await namedBuilderReasons(env, ref.key, body, actor)));
         }
       }
+      // A live claim is not ended by a dispatch unless --release says so; refused
+      // first, before a builder is suggested for a task nobody may take (t391).
+      await L.refuseLiveHolder(id, body);
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch
       // that names no agent without asking stays open to any runner's agent.

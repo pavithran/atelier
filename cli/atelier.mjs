@@ -987,6 +987,15 @@ export async function requestText(path, as) {
 
 export const P = (name) => `/projects/${encodeURIComponent(name)}`;
 export const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
+
+// What a holder is told when the developer's dispatch took the task back
+// (t391): the release event's note, read at its next push or finish. Null
+// when the task was not taken that way or is still the holder's.
+export function takenBackNotice(d, as, id) {
+  if (d.item?.owner === as) return null;
+  const taken = (d.events ?? []).findLast((e) => e.kind === "item.released" && e.data?.from === as && String(e.data?.note ?? "").startsWith("taken back by the developer"));
+  return taken ? `${id} was ${taken.data.note}, so it is no longer yours. Stop work on it; your commits stay on its workspace for the next builder.` : null;
+}
 export const short = (s) => (s ? s.slice(0, 8) : "—");
 
 // The reader readCheckLog (src/check-failure.ts) takes: a stored check log
