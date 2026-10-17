@@ -161,6 +161,34 @@ test("a commit without an Agent line is refused before anything lands", async ()
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Finding it would have caught (t731, 2026-10-16): 61 builder commits carried
+// a private checkout address and the push refused them at the very end.
+const POLICY = { name: "Project Owner", email: "owner@users.noreply.github.com", agentEmails: [] };
+
+test("a task whose commits are by an author outside the project's identity is refused before it merges (t731)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", identity: POLICY, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false);
+    assert.equal(r.failure.step, "merge t1");
+    assert.ok(r.failure.detail.includes(`commit ${one.slice(0, 12)}`), r.failure.detail);
+    assert.match(r.failure.detail, /t@example\.com/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("with the builders' address allowed, the merge commits are by the project whatever the checkout's config says (t731)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    git(dir, "config", "user.name", "Checkout Dev"); git(dir, "config", "user.email", "dev@atelier.zone");
+    const identity = { ...POLICY, agentEmails: ["t@example.com"] };
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", identity, record: () => ({ ok: true }) });
+    assert.equal(r.ok, true, JSON.stringify(r.failure));
+    for (const c of ["HEAD", "HEAD~1"]) assert.equal(git(dir, "log", "-1", "--format=%an <%ae> %cn <%ce>", c), "Project Owner <owner@users.noreply.github.com> Project Owner <owner@users.noreply.github.com>");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // t587: a project whose command entries live one per file under cmds/ and
 // whose declared generator writes out/index.txt from them, as
 // test/fixtures/cli/{usage.json,help.txt} are written from cli/ and src/.

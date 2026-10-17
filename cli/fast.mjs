@@ -34,6 +34,7 @@ import { agentOfMessage, agentsOfMessages, FAST_CONTRIBUTORS_MAX } from "../src/
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { privateGuardFor, privateRefusal } from "./private.mjs";
+import { commitRefusals, IDENTITY_LOG_FORMAT, parseIdentityLog } from "../src/commit-identity.ts";
 
 const SHA = /^[0-9a-f]{7,64}$/;
 
@@ -69,8 +70,15 @@ const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 // harmless one in every read the scan makes, while the history that lands
 // still holds the original.
 function runGit(cwd, args, { encoding = "utf8", env, input } = {}) {
-  return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, input, env: { ...gitEnv(), GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
+  return spawnSync("git", ["--no-replace-objects", ...NO_HOOKS, ...args], { cwd, encoding, input, env: { ...gitEnv(), ...commitAs, GIT_NO_REPLACE_OBJECTS: "1", ...env }, maxBuffer: 1024 * 1024 * 1024 });
 }
+
+// Who the commits fast land makes (each merge, the regeneration) are by: the
+// project's commit identity while a batch lands (t731), set from the policy
+// and cleared when the batch ends, never whatever this checkout's Git
+// config or environment says. Empty outside a landing.
+let commitAs = {};
+const identityEnv = (i) => ({ GIT_AUTHOR_NAME: i.name, GIT_AUTHOR_EMAIL: i.email, GIT_COMMITTER_NAME: i.name, GIT_COMMITTER_EMAIL: i.email });
 
 // A string quoted for a POSIX shell: single quotes, each ' written as '\''.
 // Every path in a command fast land prints for the developer to run goes
@@ -540,7 +548,18 @@ function rangeAgents(cwd, from, to) {
 // (the project and reviewer, for atelier fast record). Returns { ok, start,
 // head, landed, failure }, and once the batch landed, the tasks recorded
 // and unrecorded and `pending`, the receipts file while any is unrecorded.
-export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, project = null, log = () => {} }) {
+export async function fastLand(options) {
+  commitAs = options.identity ? identityEnv(options.identity) : {};
+  try { return await landBatch(options); } finally { commitAs = {}; }
+}
+
+// `identity` is the project's commitIdentity policy. With it, a task whose
+// commits carry an author or committer outside it is refused before it
+// merges (t731: on 2026-10-16 61 builder commits carried a private address
+// and the push refused them at the very end), and the commits fast land
+// makes are by the project. The command passes it always; without it,
+// nothing is checked and commits are made as Git decides.
+async function landBatch({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, sources = {}, note = {}, project = null, identity = null, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -621,6 +640,10 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         log(`fetched ${id}'s build from ${sources[id]}`);
       }
       const commit = git(cwd, "rev-parse", "--verify", `${sha}^{commit}`);
+      if (identity) {
+        const refused = commitRefusals(identity, parseIdentityLog(git(cwd, "log", `--format=${IDENTITY_LOG_FORMAT}`, `HEAD..${commit}`)));
+        if (refused.length) { failure = { step: `merge ${id}`, detail: `${id}'s commits carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nNothing of ${id} was merged. Its holder rewrites those commits under an allowed identity, or the developer allows the address with atelier init --agent-email EMAIL.` }; break; }
+      }
       const builder = agentOfMessage(git(cwd, "log", "-1", "--format=%B", commit));
       if (!builder) { failure = { step: `merge ${id}`, detail: `${commit.slice(0, 12)} has no Agent: line naming its builder` }; break; }
       // Everyone with a commit in the range this merge brings, not the tip

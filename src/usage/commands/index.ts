@@ -36,6 +36,7 @@ import command_gc from "./gc.ts";
 import command_guide from "./guide.ts";
 import command_handoff from "./handoff.ts";
 import command_help from "./help.ts";
+import command_identity from "./identity.ts";
 import command_inbox from "./inbox.ts";
 import command_init from "./init.ts";
 import command_integrated from "./integrated.ts";
@@ -133,6 +134,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/guide.ts", spec: command_guide },
   { path: "src/usage/commands/handoff.ts", spec: command_handoff },
   { path: "src/usage/commands/help.ts", spec: command_help },
+  { path: "src/usage/commands/identity.ts", spec: command_identity },
   { path: "src/usage/commands/inbox.ts", spec: command_inbox },
   { path: "src/usage/commands/init.ts", spec: command_init },
   { path: "src/usage/commands/integrated.ts", spec: command_integrated },
