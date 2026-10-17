@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -517,4 +517,21 @@ test("t727: an absent or unreadable Claude Code log is named, and antigravity an
   io.paths.claude = paths.codex;
   io.readClaude = async () => ({ error: "could not read a session log: EACCES" });
   assert.ok((await gatherUsage(io, null, { add() {} })).skipped.includes("claude-code: could not read a session log: EACCES"));
+});
+
+// t727 round 1: an unreadable folder was read as an empty one and a zero report published.
+test("t727: a session folder that cannot be read is an error, so nothing is reported for Claude Code", { skip: process.getuid?.() === 0 }, async (t) => {
+  const root = writeClaude(t);
+  const locked = join(root, "-Users-x-acme-secret");
+  chmodSync(locked, 0o000);
+  try {
+    assert.deepEqual(await readClaudeSessions(root, 0), { error: "could not read a session folder: EACCES" });
+    const { io, calls } = fakeIo(t);
+    io.paths.claude = root;
+    io.readClaude = readClaudeSessions;
+    const gathered = await gatherUsage(io, null, { add() {} });
+    assert.equal(gathered.reports.some((r) => r.tool === "claude-code"), false);
+    assert.ok(gathered.skipped.includes("claude-code: could not read a session folder: EACCES"));
+    assert.equal(calls.report.length, 0);
+  } finally { chmodSync(locked, 0o755); }
 });
