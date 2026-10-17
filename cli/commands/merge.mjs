@@ -297,7 +297,7 @@ export default async function mergeCommand() {
         const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false});
         if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
         if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
-        const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass,sameTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead)});
+        const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass,riskClass:d.gate.riskClass,sameTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead)});
         if(receipt)git(['add',receipt],{cwd});
         // The merge commit is the landing's own, made under the project's
         // identity whatever this checkout or its environment would give,

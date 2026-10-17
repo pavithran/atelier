@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  riskClass, riskNeed, parseRiskReviews,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
   type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
@@ -1779,4 +1780,82 @@ test("t727: a window at 80 percent, or heading past 100 before it resets, is a s
   assert.deepEqual(usageShortages(win("90-minute", 50, resets(day)), now), []);
   // A window that has reset is not in use, whatever it read.
   assert.deepEqual(usageShortages(win("weekly", 99, resets(-1000)), now), []);
+});
+
+// t631: review by risk. The core list is Atelier's own, the one the
+// orchestrator's tier.sh reads (PAVI, 2026-10-17).
+const ATELIER_CORE = [
+  "src/rules.ts", "src/ledger.ts", "src/index.ts", "src/tokens.ts", "src/secret-scan.ts", "src/checks.ts", "src/landing-workflow.ts",
+  "src/runner-token.ts", "src/restart-gate.ts", "src/token-expiry.ts", "src/review/**", "src/dispatch/**",
+  "cli/land.mjs", "cli/landing.mjs", "cli/runner.mjs", "cli/runner-failure.mjs", "cli/fast.mjs", "cli/push-steps.mjs", "cli/atelier.mjs",
+  "cli/harness/**", "wrangler.jsonc", "package.json", "package-lock.json",
+];
+const riskPolicy: ProjectPolicy = { ...policy, riskReviews: { core: ATELIER_CORE, reviews: { "docs-or-tests": 0, other: 1, core: 2 } } };
+
+test("riskClass: docs and tests only, core, or other, over real path lists; an unreadable change is core", () => {
+  assert.equal(riskClass(["docs/orchestrating.md", "test/rules.test.ts", "README.md", "src/notes.md"], ATELIER_CORE), "docs-or-tests");
+  assert.equal(riskClass(["src/ui.ts", "src/theme.css"], ATELIER_CORE), "other");
+  assert.equal(riskClass(["test/rules.test.ts", "src/ui.ts"], ATELIER_CORE), "other");
+  assert.equal(riskClass(["docs/a.md", "src/rules.ts"], ATELIER_CORE), "core");
+  assert.equal(riskClass(["cli/harness/codex.mjs"], ATELIER_CORE), "core");
+  assert.equal(riskClass(["src/review/needed.ts", "test/x.test.ts"], ATELIER_CORE), "core");
+  // Case and Unicode variants of a core path are core; of a docs path they are not docs.
+  assert.equal(riskClass(["SRC/Rules.ts"], ATELIER_CORE), "core");
+  assert.equal(riskClass(["Docs/a.txt"], ATELIER_CORE), "other");
+  // Nothing measured, or nothing readable, is never taken for a small change.
+  assert.equal(riskClass([], ATELIER_CORE), "core");
+  assert.equal(riskClass(null, ATELIER_CORE), "core");
+  assert.equal(riskClass(undefined, ATELIER_CORE), "core");
+});
+
+test("riskNeed: the files the checks run and the ship files are core beside the project's list", () => {
+  const p: ProjectPolicy = { ...riskPolicy, checks: ["node test/run.mjs"] };
+  assert.deepEqual(riskNeed(["test/run.mjs"], p), { risk: "core", reviews: 2 });
+  assert.deepEqual(riskNeed(["docs/atelier/ship.sh"], p), { risk: "core", reviews: 2 });
+  assert.deepEqual(riskNeed(["docs/a.md"], p), { risk: "docs-or-tests", reviews: 0 });
+  assert.equal(riskNeed(["docs/a.md"], policy), null);
+});
+
+// This would have caught a docs-only edit inside a protected path asking for
+// the full cross-company review (t631's finding), and a core change landing on one.
+test("the gate counts the approvals a risk class needs; a project without riskReviews keeps today's rule", () => {
+  const base: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T };
+  const second: Review = { ...base, by: "gemini/gemini-3" };
+  const sameFamily: Review = { ...base, by: "claude-code/sonnet-5.5" };
+  const protectedDocs = pass({ changedPaths: ["AGENTS.md"] });
+  const protectedPolicy: ProjectPolicy = { ...riskPolicy, protected: ["AGENTS.md", "wrangler.*"] };
+  // Docs only: protected today, but the class needs no review.
+  assert.equal(gate(item(), policy, [protectedDocs], []).ready, false);
+  const docs = gate(item(), protectedPolicy, [protectedDocs], []);
+  assert.deepEqual([docs.ready, docs.riskClass, docs.needsAssessor], [true, "docs-or-tests", false]);
+  // Other: one review; a same-family one is not independent of a protected change, but is of an unprotected one.
+  const other = pass({ changedPaths: ["src/ui.ts"] });
+  assert.equal(gate(item(), protectedPolicy, [other], []).ready, false);
+  assert.match(gate(item(), protectedPolicy, [other], []).blockers.join(), /other change: needs 1 independent review/);
+  assert.equal(gate(item(), protectedPolicy, [other], [base]).ready, true);
+  // Core: two reviewers, each counted once.
+  const core = pass({ changedPaths: ["src/rules.ts"] });
+  assert.match(gate(item(), riskPolicy, [core], [base]).blockers.join(), /core change: needs 2 independent reviews.*1 so far/);
+  assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, note: "again" }]).ready, false);
+  assert.equal(gate(item(), riskPolicy, [core], [base, sameFamily]).ready, false);
+  const both = gate(item(), riskPolicy, [core], [base, second]);
+  assert.deepEqual([both.ready, both.riskClass], [true, "core"]);
+  // An empty change is core.
+  assert.equal(gate(item(), riskPolicy, [pass({ changedPaths: [] })], [base]).ready, false);
+  // No riskReviews: one approval for a protected change, none for another, and no class named.
+  const today = gate(item(), policy, [pass({ changedPaths: ["wrangler.jsonc"] })], [base]);
+  assert.deepEqual(today, { ready: true, blockers: [], needsAssessor: false, outOfScope: ["wrangler.jsonc"] });
+  assert.equal(gate(item(), policy, [other], []).riskClass, undefined);
+  // The landing's count follows the same need.
+  assert.equal(gateApprovals(item(), riskPolicy, [core], [base, second]).length, 2);
+  assert.equal(gateApprovals(item(), riskPolicy, [pass({ changedPaths: ["docs/a.md"] })], [base]).length, 0);
+  assert.equal(gateApprovals(item(), policy, [other], [base]).length, 0);
+});
+
+test("parseRiskReviews accepts the field and refuses what cannot be read", () => {
+  const ok = { core: ["src/rules.ts"], reviews: { "docs-or-tests": 0, other: 1, core: 2 } };
+  assert.deepEqual(parseRiskReviews({ ...ok, core: [" src/rules.ts "] }), ok);
+  for (const bad of [null, "x", { ...ok, core: "src" }, { ...ok, core: [""] }, { core: [] }, { ...ok, reviews: { ...ok.reviews, core: 4 } }, { ...ok, reviews: { ...ok.reviews, other: 1.5 } }, { ...ok, reviews: { other: 1, core: 2 } }]) {
+    assert.throws(() => parseRiskReviews(bad), (e: unknown) => e instanceof RuleError && e.code === "bad_risk_reviews" && e.status === 400);
+  }
 });

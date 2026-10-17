@@ -14,7 +14,7 @@ import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -1790,6 +1790,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("requireCriteriaReview") ? { requireCriteriaReview: Boolean(body.requireCriteriaReview) } : {}),
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
+      // The independent reviews each risk class needs (t631); null clears them.
+      ...(has("riskReviews") ? { riskReviews: body.riskReviews === null ? null : parseRiskReviews(body.riskReviews) } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
       // Overrides of the independent review refused in this project (t371).
       ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
