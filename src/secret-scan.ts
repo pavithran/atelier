@@ -99,7 +99,7 @@ const SHORT_SECRET = 24;
 // A value shorter than LONG_VALUE counts only when the name is itself a
 // secret name, and any value counts once it is at least SHORT_SECRET, so
 // `OPENAI_API_KEY=sk-…` matches and `API_KEY=your_key_here` does not.
-const ASSIGNMENT = new RegExp(`^\\s*(?:export\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(["'\`]?)([A-Za-z0-9+/_-]{${SHORT_SECRET},}={0,2})\\2\\s*(?:#.*)?$`);
+const ASSIGNMENT = new RegExp(`^\\s*(?:export\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(["'\`]?)(~?[A-Za-z0-9+/_-]{${SHORT_SECRET},}={0,2})\\2\\s*(?:#.*)?$`);
 
 // A name ending in one of these holds a place on disk, not a secret, when its
 // value is an absolute or home-relative path: `CHROME_PATH=/Users/me/.../bin`
@@ -167,14 +167,15 @@ const decoder = new TextDecoder();
 // that a key pasted into it is still found (t554).
 type Side = { lines: string[]; media?: true } | { reason: string };
 
-// The signatures of the ordinary binaries a task commits: PNG, JPEG, GIF, WebP
+// The complete signatures of the ordinary binaries a task commits: PNG, JPEG, GIF, WebP
 // and WOFF/WOFF2 fonts. A file that starts with one is scanned for key
 // patterns as raw bytes instead of blocking as unreadable; any other binary
 // still blocks, as does a file that merely claims the name of an image.
 const MEDIA_SIGNATURES: number[][] = [
   [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
   [0xff, 0xd8, 0xff],
-  [0x47, 0x49, 0x46, 0x38],
+  [0x47, 0x49, 0x46, 0x38, 0x37, 0x61],       // GIF87a
+  [0x47, 0x49, 0x46, 0x38, 0x39, 0x61],       // GIF89a
   [0x77, 0x4f, 0x46, 0x46],
   [0x77, 0x4f, 0x46, 0x32],
 ];

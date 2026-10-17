@@ -182,12 +182,45 @@ test("a key inside an image's bytes is still a hit, and other binaries and image
   assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["s.png", "x.bin"]);
 });
 
+test("a false or truncated image signature still blocks, whatever the format", async () => {
+  const s = store();
+  const enc = new TextEncoder();
+  const files: Record<string, Uint8Array> = {
+    "gif1.gif": new Uint8Array([...enc.encode("GIF8"), 0]),
+    "gif2.gif": new Uint8Array([...enc.encode("GIF8xx"), 0]),
+    "png.png": new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0]),
+    "jpg.jpg": new Uint8Array([0xff, 0xd8, 0, 1]),
+    "webp.webp": new Uint8Array([...enc.encode("RIFF"), 0, 0, 0, 0, ...enc.encode("WEB"), 0]),
+    "woff.woff": new Uint8Array([...enc.encode("wOF"), 0, 1]),
+    "woff2.woff2": new Uint8Array([...enc.encode("wOF1"), 0, 1]),
+  };
+  const entries = Object.fromEntries(Object.entries(files).map(([n, b]) => [n, { blob: s.bytes(b) }]));
+  const scan = await fullScan(s, s.tree({}), s.tree(entries));
+  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), Object.keys(files).sort());
+  // The complete signatures of GIF87a, GIF89a, WebP and both fonts read.
+  const good = { "a.gif": [..."GIF87a"].map((c) => c.charCodeAt(0)), "b.gif": [..."GIF89a"].map((c) => c.charCodeAt(0)),
+    "c.webp": [...enc.encode("RIFF"), 0, 0, 0, 0, ...enc.encode("WEBP")], "d.woff": [...enc.encode("wOFF"), 0], "e.woff2": [...enc.encode("wOF2"), 0] };
+  const ok = await fullScan(s, s.tree({}), s.tree(Object.fromEntries(Object.entries(good).map(([n, b]) => [n, { blob: s.bytes(new Uint8Array([...b, 0, 1])) }]))));
+  assert.deepEqual(ok, { hits: [], unscanned: [] });
+});
+
+test("a modified image keeps a retained key reported, because the whole image is scanned", async () => {
+  const s = store();
+  const enc = new TextEncoder();
+  const png = (tail: number) => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, ...enc.encode(`\n${FAKE.openai}\n`), tail]);
+  const scan = await fullScan(s, s.tree({ "k.png": { blob: s.bytes(png(1)) } }), s.tree({ "k.png": { blob: s.bytes(png(2)) } }));
+  assert.deepEqual(scan.hits.map((h) => h.file), ["k.png"]);
+});
+
 test("an environment variable assigned a filesystem path is not a secret, a long token under a path name still is", () => {
   const path = "/Users/pavi/Library/Caches/ms-playwright/chromium_headless_shell-1248/chrome-headless-mac-arm64/chrome-headless-shell";
   assert.ok(!scanLine(`export CHROME_PATH="${path}"`));
   assert.ok(!scanLine(`SSH_KEY_FILE=${path}`));
   assert.ok(!scanLine(`TOKEN_DIR=~/${"a".repeat(40)}`));
   assert.ok(scanLine(`CHROME_PATH=${"x".repeat(40)}`));        // not a path
+  // A `~` value reaches the path test: home-relative is a path, `~token` under any name is not.
+  assert.ok(scanLine(`CHROME_PATH=~${"x".repeat(40)}`));
+  assert.ok(scanLine(`SECRET=~${"x".repeat(30)}`));
   assert.ok(scanLine(`OPENAI_API_KEY=${FAKE.openai}`));
 });
 
