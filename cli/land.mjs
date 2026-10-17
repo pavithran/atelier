@@ -1664,6 +1664,12 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
       const conflicts = r.source;
       print(`The merge stops on conflicts in ${conflicts.join(", ")}; taking either side and regenerating with \`${regenerate}\`…`);
       const shaOf = async (file) => (existsSync(join(dir, file)) ? await git(["hash-object", "--", file], { cwd: dir }) : "gone");
+      // Only what the command writes may be staged below, so a file that
+      // is dirty already (another agent's, t344) refuses the landing first.
+      // The merge's own state is not that: conflicted entries and what the
+      // merge staged have a blank or unmerged work-tree column.
+      const foreign = dirtyPaths(await git(["status", "--porcelain=v1", "-z", "-uall"], { cwd: dir, raw: true }), { unstaged: true }).filter((f) => !conflicts.includes(f));
+      if (foreign.length) throw new StepError(`${id}'s workspace gained uncommitted changes since the landing began (${foreign.join(", ")}); the landing stops before regenerating so it does not commit them. Commit or set them aside, then run atelier land ${id} again`);
       const taken = new Map();
       let either = true, regen = null, unwritten = null;
       for (const file of conflicts) {
