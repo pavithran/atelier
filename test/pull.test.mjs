@@ -96,6 +96,7 @@ async function serve(t, f) {
       else if (req.method === "PUT" && req.url === "/api/projects/demo") body = { ok: true };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t2") body = { item: { id: "t2", title: "Two", state: "accepted", head: f.accepted, acceptedHead: f.accepted, owner: "codex/test" }, policy: { commitIdentity: IDENTITY, checks: [], protected: [] }, events: [], evidence: [], reviews: [], gate: {} };
       else if (req.method === "POST" && req.url === "/api/projects/demo/items/t2/read-token") body = { remote: f.bare, token: TOKEN };
+      else if (req.method === "GET" && req.url === "/api/projects/demo/items/t5") body = { item: { id: "t5", title: "Five", state: "accepted" } };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t1") body = { item: { id: "t1", title: "One", state: "merged" } };
       else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
       res.writeHead(status, { "content-type": "application/json" });
@@ -792,4 +793,59 @@ test("pull of a project with no private files links nothing and reads no iCloud 
   assert.doesNotMatch(r.output, /[Pp]rivate/);
   assert.ok(!existsSync(join(dir, "PROJECT.md")));
   assert.ok(!a.projects.demo.privateFromList && !a.projects.demo.privateHome);
+});
+
+// t731 (astra, round 2): the commands' own lookup of the project's commit
+// identity and its hand-off to fast land, run through the real CLI. Finding
+// they would have caught: dropping `identity` from the command's fastLand
+// call switched the author check off with every fastLand test still passing.
+const personal = (f, dir) => {
+  f.git(dir, "checkout", "-q", "-b", "task", "main");
+  writeFileSync(join(dir, "task.txt"), "task\n");
+  f.git(dir, "add", ".");
+  execFileSync("git", ["commit", "-q", "-m", "task\n\nAgent: codex/test"], { cwd: dir, env: { ...f.env, GIT_AUTHOR_NAME: "Personal", GIT_AUTHOR_EMAIL: "personal@me.test", GIT_COMMITTER_NAME: "Personal", GIT_COMMITTER_EMAIL: "personal@me.test" } });
+  const sha = f.git(dir, "rev-parse", "HEAD");
+  f.git(dir, "checkout", "-q", "main");
+  return sha;
+};
+const land = (t, f, a, dir, sha) => run(t, f, a, ["fast", "land", `t5=${sha}`, "--typecheck", "true", "--test", "true", "--project", "demo"], { cwd: dir });
+
+test("atelier fast land hands the project's commit identity to the landing: a task commit from outside it is refused, main untouched (t731)", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const sha = personal(f, dir);
+  const before = f.git(dir, "rev-parse", "HEAD");
+  const r = await land(t, f, a, dir, sha);
+  assert.notEqual(r.code, 0);
+  assert.ok(r.output.includes(`commit ${sha.slice(0, 12)}`) && r.output.includes("personal@me.test"), r.output);
+  assert.match(r.output, /Nothing of t5 was merged/);
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), before);
+});
+
+test("atelier fast land refuses a project with no commit identity before it reads a task or merges (t731)", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const sha = personal(f, dir);
+  f.noIdentity = true;
+  const before = f.git(dir, "rev-parse", "HEAD");
+  const r = await land(t, f, a, dir, sha);
+  assert.notEqual(r.code, 0);
+  assert.match(r.output, /demo has no commit identity in its policy.*Nothing was merged\./);
+  assert.ok(!r.seen.some((s) => s.route.includes("/items/")), "no task is read");
+  assert.equal(f.git(dir, "rev-parse", "HEAD"), before);
+});
+
+test("the real atelier identity prints the project's identity as JSON, and fails clearly when it has none (t731)", async (t) => {
+  const f = setup(t);
+  const a = mac(f, "a");
+  await cloneOn(t, f, a);
+  const ok = await run(t, f, a, ["identity", "--json", "--project", "demo"]);
+  assert.equal(ok.code, 0, ok.output);
+  assert.deepEqual(JSON.parse(ok.output), IDENTITY);
+  f.noIdentity = true;
+  const none = await run(t, f, a, ["identity", "--json", "--project", "demo"]);
+  assert.notEqual(none.code, 0);
+  assert.match(none.output, /demo has no commit identity in its policy/);
 });

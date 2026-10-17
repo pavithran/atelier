@@ -5,6 +5,7 @@ import { behindRefusal } from "../pull.mjs";
 import { DEFAULT_REGEN, fastCommands, fastLand, parsePairs, postPending, readPending, readySources, shellQuote } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
 import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
+import { NO_IDENTITY } from "../../src/commit-identity.ts";
 
 export default async function fastCommand() {
   const [, sub, ...rest] = args._;
@@ -40,6 +41,9 @@ export default async function fastCommand() {
   const gitDir = landingGit(["rev-parse", "--absolute-git-dir"], { cwd });
   const behind = behindRefusal(landingGit, cwd, { gitDir, name, fresh: cfg.projects?.[name]?.fresh === true, branch: "main", baselineHead, nothing: "Nothing was merged.", command: `atelier fast land ${rest.join(" ")} --project ${name}` });
   if (behind) die(behind);
+  // Fast land refuses a task whose commits are by anyone outside the
+  // project's commit identity, so a project with none lands nothing (t731).
+  const identity = (await call("GET", P(name), undefined, OWNER))?.project?.policy?.commitIdentity ?? die(`${NO_IDENTITY(name)}. Nothing was merged.`);
   const titles = {};
   for (const { id } of pairs) {
     const item = await call("GET", I(name, id), undefined, OWNER);
@@ -67,6 +71,7 @@ export default async function fastCommand() {
     note: { project: name, ...(args.reviewer ? { reviewer: args.reviewer } : {}) },
     // The project's private files (t645), refused in what the batch lands.
     project: name,
+    identity,
     log: (line) => console.log(line),
     record: recorder(name, args.reviewer),
   });
