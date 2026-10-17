@@ -55,7 +55,7 @@ function fixture(options = {}) {
   const claim = options.claim ?? claimed;
   const criteria = (claim.item.accept?.length ?? 0) + (claim.plan?.part?.acceptance?.length ?? 0);
   const proofs = Array.from({ length: criteria }, (_, i) => `CRITERION ${i + 1}: met — Ran the clone's tests; test ${i + 1} fails without the change.`);
-  const verdict = options.verdict ?? ["VERDICT: APPROVE", "SUMMARY: Checked the diff.", ...proofs].join("\n");
+  const verdict = options.verdict ?? ["VERDICT: APPROVE", "SUMMARY: Checked the diff.", "BLOCKING: 0", ...proofs].join("\n");
   const io = {
     prepare: () => assert.fail("this job must not prepare"),
     log: (s) => logs.push(s), stopped: () => false,
@@ -127,7 +127,7 @@ test("runReview claims the request, clones read-only, writes the brief and diff,
 });
 
 test("runReview posts a rejection with its findings, and releases the request when no valid verdict is written", async () => {
-  const rejecting = "VERDICT: REJECT\nSUMMARY: One bug.\nFINDING: blocking src/review/needed.ts:88 A lapsed claim is never retried.";
+  const rejecting = "VERDICT: REJECT\nSUMMARY: One bug.\nBLOCKING: 1\nFINDING: blocking src/review/needed.ts:88 A lapsed claim is never retried.";
   const { io, calls } = fixture({ verdict: rejecting });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.phase, "reviewed");
@@ -149,7 +149,7 @@ test("runReview posts a rejection with its findings, and releases the request wh
 // each with a CRITERION line; an approval without the proofs is not a verdict,
 // and the request is released with the reason for another reviewer to take.
 test("runReview releases the request when an approval proves no acceptance criterion, and posts one that does", async () => {
-  const bare = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Read the diff; it looks right." });
+  const bare = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Read the diff; it looks right.\nBLOCKING: 0" });
   const state = await runReview(assignment, config, "home:studio", bare.io);
   assert.equal(state.phase, "failed");
   assert.match(state.reason, /an approval needs a CRITERION line for each of the 1 acceptance criteria: criterion 1 has none/);
@@ -225,6 +225,44 @@ test("runReview keeps an unparsable reply on the task and releases the request",
   assert.match(failed.reason, /the reply states no verdict/);
   assert.ok(refused.calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is still released");
   assert.ok(refused.logs.some((l) => l.includes("could not keep the unparsable reply")), refused.logs.join("\n"));
+});
+
+test("runReview carries the project's REVIEW.md, read at the base, and a missing or failing read changes nothing (t718)", async () => {
+  const asked = [];
+  const guided = fixture();
+  guided.io.reviewGuide = async (dir, base) => { asked.push([dir, base]); return "Block on data loss. Leave naming as a follow-up."; };
+  assert.equal((await runReview(assignment, config, "home:studio", guided.io)).phase, "reviewed");
+  const withGuide = guided.calls.find((c) => c.brief).brief;
+  assert.match(withGuide, /## Review guide/);
+  assert.ok(withGuide.includes("Block on data loss. Leave naming as a follow-up."));
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0][1], H0, "read at the base of the change, not its head");
+
+  const plain = fixture();
+  await runReview(assignment, config, "home:studio", plain.io);
+  const bare = plain.calls.find((c) => c.brief).brief;
+  for (const reviewGuide of [async () => null, async () => { throw new Error("git failed"); }]) {
+    const run = fixture();
+    run.io.reviewGuide = reviewGuide;
+    assert.equal((await runReview(assignment, config, "home:studio", run.io)).phase, "reviewed");
+    assert.equal(run.calls.find((c) => c.brief).brief, bare, "the brief is the brief a project without a guide gets");
+  }
+  assert.ok(!bare.includes("Review guide"));
+});
+
+test("runReview releases and retries a reply with no count line, a wrong count or a blocking finding with no line (t718)", async () => {
+  const replies = {
+    "no count line": "VERDICT: APPROVE\nSUMMARY: Nothing to fix.\nCRITERION 1: met — Ran the clone's tests; they fail without the change.",
+    "a wrong count": "VERDICT: REJECT\nSUMMARY: One bug.\nBLOCKING: 2\nFINDING: blocking src/review/needed.ts:88 A lapsed claim is never retried.",
+    "a blocking finding with no line": "VERDICT: REJECT\nSUMMARY: One bug.\nBLOCKING: 1\nFINDING: blocking src/review/needed.ts A lapsed claim is never retried.",
+  };
+  for (const [what, verdict] of Object.entries(replies)) {
+    const { io, calls } = fixture({ verdict });
+    const state = await runReview(assignment, config, "home:studio", io);
+    assert.equal(state.phase, "failed", what);
+    assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), `${what}: the request is released to be asked again`);
+    assert.ok(!calls.some((c) => c.argv && c.argv[0] === "review"), `${what}: no review is posted`);
+  }
 });
 
 test("runReview carries a diff too large for the brief by its R2 reference, not inline (t284)", async () => {
@@ -669,7 +707,7 @@ async function serveReview(t, dir, claim, answers = {}) {
         seen.cwd = options.cwd;
         seen.head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8" }).trim();
         seen.status = execFileSync("git", ["status", "--porcelain", "--ignored=no"], { cwd: options.cwd, encoding: "utf8" });
-        writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.\nCRITERION 1: met — Ran the tests in the clone; they pass.");
+        writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.\nBLOCKING: 0\nCRITERION 1: met — Ran the tests in the clone; they pass.");
         return { code: 0 };
       }
       posted.push(argv[2]);
@@ -1854,9 +1892,11 @@ const verifierBriefs = (calls) => calls.filter((c) => c.brief?.includes("# Verif
 // A diff that changes lines 10 to 12 of src/review/needed.ts.
 const HUNK = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n--- a/src/review/needed.ts\n+++ b/src/review/needed.ts\n@@ -10,1 +10,3 @@\n-old\n+new one\n+new two\n+new three\n";
 const blockingAt = (line, text) => `FINDING: blocking src/review/needed.ts:${line} ${text}`;
+// A rejection's reply states its count of blocking findings (t718).
+const withCount = ([verdict, summary, ...rest]) => [verdict, summary, `BLOCKING: ${rest.filter((l) => l.startsWith("FINDING: blocking")).length}`, ...rest].join("\n");
 
 test("a blocking finding the independent check confirms still rejects, and the check reads only the blocking findings", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), "FINDING: follow-up README.md Mention it."].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), "FINDING: follow-up README.md Mention it."]);
   const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "reject");
@@ -1870,7 +1910,7 @@ test("a blocking finding the independent check confirms still rejects, and the c
 });
 
 test("a blocking finding the check does not confirm is recorded as unverified and the rejection becomes an approval with follow-ups", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), PROOF].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), PROOF]);
   for (const verification of ["FINDING 1: NOT CONFIRMED because the test passes.", "Nothing wrong here.\nFINDING 1: UNSURE"]) {
     const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification });
     const state = await runReview(assignment, config, "home:studio", io);
@@ -1886,7 +1926,7 @@ test("a blocking finding the check does not confirm is recorded as unverified an
 });
 
 test("with two blocking findings, the one the check confirms keeps the rejection and the other is unverified", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: Two bugs.", blockingAt(11, "First."), blockingAt(12, "Second.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: Two bugs.", blockingAt(11, "First."), blockingAt(12, "Second.")]);
   const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: NOT CONFIRMED because x.\nFINDING 2: CONFIRMED because y." });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "reject");
@@ -1894,7 +1934,7 @@ test("with two blocking findings, the one the check confirms keeps the rejection
 });
 
 test("a check that gives no answer, fails or times out releases the request and posts nothing: silence is not a refutation", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")]);
   const cases = [{ verification: "I could not tell." }, { verification: "" }];
   for (const options of cases) {
     const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, ...options });
@@ -1916,7 +1956,7 @@ test("a check that gives no answer, fails or times out releases the request and 
 });
 
 test("a rejection no blocking finding of which stands cannot be recorded as an approval unless it proves the criteria, and is released with why", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")]);
   const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: NOT CONFIRMED because x." });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.phase, "failed");
@@ -1925,7 +1965,7 @@ test("a rejection no blocking finding of which stands cannot be recorded as an a
 });
 
 test("a blocking finding on lines the change did not touch is a pre-existing follow-up that blocks nothing and needs no check", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried."), blockingAt(300, "Drops a row."), PROOF].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried."), blockingAt(300, "Drops a row."), PROOF]);
   const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "approve");
@@ -1936,14 +1976,14 @@ test("a blocking finding on lines the change did not touch is a pre-existing fol
 });
 
 test("a finding a diff cannot place keeps blocking: the stand-in diff has no hunk, and the finding is checked, not waved through", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(88, "A lapsed claim is never retried.")]);
   const { io, calls } = fixture({ verdict: reply });
   assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
   assert.equal(verifierBriefs(calls).length, 1);
 });
 
 test("the check is run by another model of another family when the runner has one, and by the reviewer in a fresh run when it has not", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")]);
   const two = { ...config, agents: [{ ...config.agents[0], models: [model, "gemini-4-argon"] }] };
   const withOther = fixture({ verdict: reply, diff: () => HUNK, claim: { ...claimed, item: { ...claimed.item, owner: "claude-code/opus-5.5", pushActors: ["claude-code/opus-5.5"] } } });
   await runReview(assignment, two, "home:studio", withOther.io);
@@ -1992,7 +2032,7 @@ test("a re-review reads the diff since the last reviewed head, and the whole cha
 
 test("a re-review does not raise again a finding the developer marked fixed or refuted, and its other findings stand", async () => {
   const answered = (verdict) => ({ head: H_EARLIER, index: 1, verdict, by: earlier.by, finding: earlier.findings[0] });
-  const again = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), blockingAt(12, "A new defect in the retry.")].join("\n");
+  const again = withCount(["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), blockingAt(12, "A new defect in the retry.")]);
   for (const verdict of ["fixed", "refuted"]) {
     const { io, calls } = fixture({ claim: reReviewClaim([answered(verdict)]), verdict: again, diff: () => HUNK });
     assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject", verdict);
@@ -2004,7 +2044,7 @@ test("a re-review does not raise again a finding the developer marked fixed or r
   await runReview(assignment, config, "home:studio", confirmed.io);
   assert.equal(findingsOf(posted(confirmed.calls)).length, 2);
   // Every finding answered and the reply proves the criteria: the re-review approves.
-  const only = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), PROOF].join("\n");
+  const only = withCount(["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), PROOF]);
   const done = fixture({ claim: reReviewClaim([answered("refuted")]), verdict: only, diff: () => HUNK });
   assert.equal((await runReview(assignment, config, "home:studio", done.io)).verdict, "approve");
   assert.match(posted(done.calls)[posted(done.calls).indexOf("--note") + 1], /1 already answered/);
@@ -2014,7 +2054,7 @@ test("a re-review does not raise again a finding the developer marked fixed or r
 test("the check of a re-review reads the whole change, not the diff the reviewer was given since the last head", async () => {
   const since = "diff --git a/src/review/needed.ts b/src/review/needed.ts\n@@ -1 +1 @@\n+only what changed since\n";
   const whole = `${HUNK}${"+more of the whole change\n".repeat(20)}`;
-  const reply = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried.")]);
   const { io, calls } = fixture({ claim: reReviewClaim(), verdict: reply, diff: (base) => (base === H_EARLIER ? since : whole) });
   assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
   assert.deepEqual(calls.filter((c) => c.writeDiff !== undefined).map((c) => c.writeDiff), [since, whole], "the reviewer's file holds the diff since, the verifier's the whole change");
@@ -2026,7 +2066,7 @@ test("the check of a re-review reads the whole change, not the diff the reviewer
 });
 
 test("the check is never given a model the project's single-family policy refuses, and falls back to the reviewer", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")]);
   const openai = { agents: [{ agent: "codex", models: ["gpt-6-astra", "gpt-6-pro", "sonnet-5.5"], command: ["codex", "--model", "{model}", "--file", "{brief_file}", "--diff", "{diff_file}", "--verdict", "{verdict_file}"] }], tokens: { "gpt-6-astra": "agent.astra" } };
   const who = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" };
   const builtBy = { ...claimed.item, owner: "codex/gpt-6-pro", pushActors: ["codex/gpt-6-pro"] };
@@ -2050,7 +2090,7 @@ test("the check of a standalone merge task reads the conflict resolution and the
   const claim = { ...claimed, plan: null, item: { ...claimed.item, accept: undefined, kind: "task", dispatch: { job: "merge-main" } },
     events: [{ seq: 1, itemId: "t21", at: "2026-10-05T10:00:00.000Z", actor: "x", kind: "item.submitted", data: { head: H1, summary: `Merged main at ${MAIN}` } }],
     target: { remote: "https://artifacts.example/p", token: "t", branch: "main" } };
-  const reply = ["VERDICT: REJECT", "SUMMARY: The own change is wrong.", "FINDING: blocking src/own.ts:1 The task's own change drops a row."].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: The own change is wrong.", "FINDING: blocking src/own.ts:1 The task's own change drops a row."]);
   const { io, calls } = fixture({ claim, verdict: reply, diff: (base) => (base === BASE ? own : resolution) });
   Object.assign(io, {
     fetch: async () => {}, revParse: async () => MAIN, mergeBase: async () => BASE, parents: async () => `${H1} ${PREV} ${MAIN}`,
@@ -2071,7 +2111,7 @@ test("the check of a standalone merge task reads the conflict resolution and the
 // of a surviving blocker says whether the defect is already at the base.
 
 test("a defect the check shows is present at the base is a pre-existing follow-up even in a touched file, and the check is told the base", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), PROOF].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried."), PROOF]);
   const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: PRE-EXISTING because git show base:src/review/needed.ts:11 reads the same." });
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.verdict, "approve");
@@ -2084,7 +2124,7 @@ test("a defect the check shows is present at the base is a pre-existing follow-u
 });
 
 test("a caller the change broke in a file it never touched is checked, not demoted, and blocks when the check confirms it", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: A caller breaks.", "FINDING: blocking src/caller.ts:7 The caller still passes the old argument."].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: A caller breaks.", "FINDING: blocking src/caller.ts:7 The caller still passes the old argument."]);
   const { io, calls } = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: CONFIRMED because the call at line 7 fails at the head; at the base it passed." });
   assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
   assert.equal(verifierBriefs(calls).length, 1, "an untouched file is not demoted by the line rule");
@@ -2092,7 +2132,7 @@ test("a caller the change broke in a file it never touched is checked, not demot
 });
 
 test("when the check cannot tell whether the defect was at the base, the finding blocks; a base it was not given cannot be answered", async () => {
-  const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")].join("\n");
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: One bug.", blockingAt(11, "A lapsed claim is never retried.")]);
   const undecided = fixture({ verdict: reply, diff: () => HUNK, verification: "FINDING 1: CONFIRMED because line 11 is wrong; I could not read the base." });
   assert.equal((await runReview(assignment, config, "home:studio", undecided.io)).verdict, "reject");
   // Without a base in the verifier's brief a PRE-EXISTING answer is not one it can give.
@@ -2116,7 +2156,7 @@ test("when the check cannot tell whether the defect was at the base, the finding
 test("a finding the developer refuted is not raised again on a later head even when the reviewer's later approval replaced the rejection in the claim's history", async () => {
   const refutedFinding = earlier.findings[0];
   const claim = { ...reReviewClaim(), need: { ...reReviewClaim().need, previous: [{ ...earlier, approve: true, note: "", findings: [] }], settled: [refutedFinding] } };
-  const again = ["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), blockingAt(12, "A new defect in the retry.")].join("\n");
+  const again = withCount(["VERDICT: REJECT", "SUMMARY: Still there.", blockingAt(11, "A lapsed claim is never retried."), blockingAt(12, "A new defect in the retry.")]);
   const { io, calls } = fixture({ claim, verdict: again, diff: () => HUNK });
   assert.equal((await runReview(assignment, config, "home:studio", io)).verdict, "reject");
   assert.deepEqual(findingsOf(posted(calls)).map((f) => f.text), ["A new defect in the retry."]);

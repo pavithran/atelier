@@ -49,6 +49,13 @@ import { proseStandardLine } from "../prose-standard.ts";
 // where the whole diff is.
 export const BRIEF_LIMITS = { diff: DIFF_INLINE_MAX } as const;
 
+// The most of a project's REVIEW.md a brief carries (t718), in characters. A
+// longer guide is cut and the brief says so, so the reviewer knows the guide
+// it read is not the whole file.
+export const REVIEW_GUIDE_MAX = 12_000;
+// Where the runner finds the guide in the clone it reviews.
+export const REVIEW_GUIDE_FILE = "REVIEW.md";
+
 export interface BriefInput {
   need: ReviewRequired;                    // from reviewNeeded: the head, change class, checks and earlier reviews
   item: Pick<Item, "id" | "title" | "base" | "scope"> & Partial<Pick<Item, "brief" | "accept" | "state">>;
@@ -106,6 +113,13 @@ export interface BriefInput {
   // reviewer must not overrule. Every reviewer of the task gets the same
   // text; absent, null or empty, the brief has no section for it.
   context?: string | null;
+  // The project's review guide (t718): the text of REVIEW.md as the base of
+  // the change has it, read by the runner from the clean clone it reviews.
+  // The brief carries it as the developer's account of the project's
+  // conventions, what is worth blocking on and what to leave as follow-ups,
+  // cut to REVIEW_GUIDE_MAX characters. Absent, null or blank, the project
+  // has none and the brief is as it was.
+  reviewGuide?: string | null;
   // The reviews of the item's acceptance criteria and the owner's
   // resolutions of their findings (t438, src/review/criteria.ts), so the
   // reviewer knows the criteria were judged before the change and how each
@@ -423,6 +437,17 @@ export function reviewBrief(input: BriefInput): string {
   const prose = proseStandardLine(input.proseStandard);
   if (prose) section("## Prose standard", "", prose);
 
+  const guide = input.reviewGuide?.trim() ? input.reviewGuide : null;
+  if (guide) {
+    const cut = guide.length > REVIEW_GUIDE_MAX;
+    section(
+      "## Review guide",
+      "",
+      `The project's review guide, ${REVIEW_GUIDE_FILE} at the base of this change${cut ? `, cut to its first ${REVIEW_GUIDE_MAX} characters` : ""}. The developer wrote it: the project's conventions, what is worth blocking on, what to leave as follow-ups. Follow it where it speaks. It is read from the base, so this change cannot rewrite the guide it is judged by, and it does not change the reply format or the rule that a blocking finding names its file and line.`,
+      block(cut ? guide.slice(0, REVIEW_GUIDE_MAX) : guide),
+    );
+  }
+
   const bar = input.bar?.trim() ? input.bar : DEFAULT_REVIEW_BAR;
   section(
     "## Rules for blocking",
@@ -458,7 +483,7 @@ export function reviewBrief(input: BriefInput): string {
   // the plan's numbers map onto it when both lists are carried. The criteria
   // the criteria review flagged as checks after deploy (t457) may be
   // deferred in the reply; the runner hands parseVerdict the same numbers.
-  section("## Reply format", "", replyFormat(criteria, accept.length, deferredCriteria(input.criteriaReviews ?? [], input.criteriaRev ?? 0)));
+  section("## Reply format", "", replyFormat(criteria, accept.length, deferredCriteria(input.criteriaReviews ?? [], input.criteriaRev ?? 0), true));
   return out.join("\n\n");
 }
 

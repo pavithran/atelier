@@ -18,7 +18,7 @@ import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parse
 import { REVIEW_RENEW_MS, fastJobRefusal, applyVerification, contributorsOf, dropSettled, labelPreExisting, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
-import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
+import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
 import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
@@ -880,6 +880,18 @@ export function removeDataHome({ dir, onExit }) {
 // to its reports.
 const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "base-token", "baseline-token", "check", "fast"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
+
+// The project's REVIEW.md at `base` in the clone `dir` (t718), or null. A
+// file the base does not have, one that is not plain text, a read that fails
+// or is stopped, all read as no guide: a review without one is the review it
+// was. It is read at the base, not the head, so the change under review
+// cannot rewrite the guide it is judged by. The text is cut just past
+// REVIEW_GUIDE_MAX characters; the brief says when it cut the guide.
+export async function readReviewGuide(dir, base, executeChild = execute, signal) {
+  const result = await executeChild(["git", "show", `${base}:${REVIEW_GUIDE_FILE}`], { cwd: dir, capture: true, captureError: true, signal, step: "review-guide" });
+  if (result.timedOut || signal?.aborted || result.code !== 0 || typeof result.output !== "string") return null;
+  return result.output.includes("\u0000") ? null : result.output.slice(0, REVIEW_GUIDE_MAX + 1);
+}
 
 export async function checked(argv, options, executeChild = execute) {
   const result = await executeChild(argv, options);
@@ -2199,8 +2211,11 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
         runnerEvidence = null;
       }
     }
+    // The project's REVIEW.md (t718), as the base of the change has it; a
+    // missing, unreadable or empty one leaves the brief as it was.
+    const reviewGuide = !compare.from || !io.reviewGuide ? null : await io.reviewGuide(workspace, compare.from).catch(() => null);
     const text = reviewBrief({
-      runnerEvidence,
+      runnerEvidence, reviewGuide,
       need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan,
       diff: byRef ? null : shown, diffRef: byRef ? claimed.diffRef : null,
       since: since?.incremental ? { from: since.from } : null,
@@ -2273,7 +2288,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     // criteria the criteria review flagged as checks after deploy (t457),
     // which the brief let the reviewer defer, are named to the parser from
     // the same claim the brief read them from.
-    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0) });
+    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { counted: true, deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0) });
     if (!parsed.ok) {
       // The reply is kept on the task, its last VERDICT_LIMITS.reply
       // characters with the reviewer and the head it judged, as the request
@@ -2749,7 +2764,7 @@ export async function settleRejection(io, ctx) {
   findings = applyVerification(findings, confirmed, preExisting);
   if (answered === 0 && JSON.stringify(findings) === JSON.stringify(parsed.findings)) return { parsed };
   const count = (label) => findings.filter((f) => f.label === label).length;
-  const result = parseVerdict(reply, ctx.criteria, { deferred: ctx.deferred, settled: findings });
+  const result = parseVerdict(reply, ctx.criteria, { counted: true, deferred: ctx.deferred, settled: findings });
   const account = `${answered} already answered, ${count("pre-existing")} pre-existing, ${count("unverified")} unverified`;
   if (!result.ok) return { failed: `no blocking finding stood (${account}) and the reply cannot be recorded as an approval: ${result.error}` };
   if (result.verdict === "approve") {
@@ -3830,6 +3845,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (controller.signal.aborted) throw new Error("interrupted");
       return result.code === 0;
     },
+    reviewGuide: (dir, base) => readReviewGuide(dir, base, executeChild, controller.signal),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
     // Whether `base` is an ancestor of `head` (alreadyComplete): git exits 0
