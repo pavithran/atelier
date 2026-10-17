@@ -136,3 +136,22 @@ it("a claim a runner gives up lifts the core-file hold at once and reaches the i
   await L.release(live.id, A, "handing back");
   expect((await L.inbox(new Date().toISOString())).some((e) => e.kind === "gave-up")).toBe(false);
 });
+
+// Review of t584, round 2: a stall releases the task with an ordinary note, and
+// only the second stall makes the runner give up, so the give-up has no release
+// of its own to carry the reason.
+it("a give-up reported for a task the runner already released reaches the inbox once, with its reason", async () => {
+  const name = "core-gave-up-late";
+  const L = await project(name, ["src/ledger.ts"]);
+  const item = await L.newItem("Stalls", ["docs/**"], "owner");
+  await L.dispatch(item.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  await L.claim(item.id, A, { runner: "home:studio", kind: "home" });
+  await L.release(item.id, A, "harness made no new commit");
+  expect((await L.inbox(new Date().toISOString())).some((e) => e.kind === "gave-up")).toBe(false);
+  expect(await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit")).toBe(true);
+  await L.recordRunSkip(item.id, "home:studio", A, "failures", 2, "harness made no new commit");
+  const entries = (await L.inbox(new Date().toISOString())).filter((e) => e.kind === "gave-up");
+  expect(entries.map((e) => e.reason)).toEqual([`harness made no new commit; run \`atelier dispatch ${item.id}\` to send it out again`]);
+  const events = (await L.events(item.id)) as unknown as { kind: string }[];
+  expect(events.filter((e) => e.kind === "item.gave_up")).toHaveLength(1);
+});

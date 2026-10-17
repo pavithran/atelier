@@ -309,3 +309,12 @@ test('a runner that pushed and then gave a task up is named with its reason, and
   s.events[2].data = { note: 'handing back' };
   assert.deepEqual(kinds(report(s)), []);
 });
+test('a give-up recorded after an ordinary release keeps the runner\'s reason in the report', () => {
+  const gone = item({ state: 'open', owner: null });
+  const s = snapshot({ items: [gone], events: [
+    event(1, 'item.claimed', 9000000, { runner: 'home:studio' }), event(2, 'item.released', 8000000, { note: 'harness made no new commit' }),
+    event(3, 'item.gave_up', 7000000, { runner: 'home:studio', kind: 'failures', note: 'harness made no new commit' })] });
+  const r = report(s);
+  assert.deepEqual(kinds(r), ['runner-give-up']);
+  assert.match(r.entries[0].reason, /^runner home:studio gave it up: harness made no new commit/);
+});

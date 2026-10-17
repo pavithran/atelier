@@ -1453,6 +1453,10 @@ test("runner stops retrying after two failures even when the task revision chang
     // t420: the skip goes to the server under this runner's name, once, so
     // status and show name it however many run reports follow.
     assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "failures", 2]]);
+    // Each failed attempt claimed and released once (t584), and the one skip
+    // report is what tells the server the runner gave up.
+    const argvs = calls.filter((c) => c.argv).map((c) => c.argv);
+    assert.equal(argvs.filter((x) => x[0] === "release" && x[1] === "t13").length, argvs.filter((x) => x[0] === "claim" && x[1] === "t13").length);
     assert.ok(skips[0][1].note);
   }
 });

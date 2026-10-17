@@ -137,11 +137,11 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     // the push of what it had committed.
     for (const item of live.filter((i) => !["merged", "abandoned", "accepted"].includes(i.state))) {
       const mine = ordered.filter((e) => e.itemId === item.id);
-      const release = mine.filter((e) => e.kind === "item.released").pop();
+      const release = mine.filter((e) => e.kind === "item.released" || e.kind === "item.gave_up").pop();
       if (!release) continue;
       const claim = mine.filter((e) => ["item.claimed", "item.handoff"].includes(e.kind) && e.seq < release.seq).pop();
       if (!claim?.data.runner || mine.some((e) => e.seq > release.seq && ["item.claimed", "item.handoff", "push.observed", "item.submitted", "item.dispatched"].includes(e.kind))) continue;
-      const said = typeof release.data.note === "string" && release.data.note.startsWith(GAVE_UP) ? release.data.note.slice(GAVE_UP.length) : null;
+      const said = typeof release.data.note !== "string" ? null : release.kind === "item.gave_up" ? release.data.note : release.data.note.startsWith(GAVE_UP) ? release.data.note.slice(GAVE_UP.length) : null;
       if (said === null && mine.some((e) => e.seq > claim.seq && e.seq < release.seq && e.kind === "push.observed")) continue;
       add("runner-give-up", item.id, said === null ? `runner ${claim.data.runner} released without a push` : `runner ${claim.data.runner} gave it up: ${said}`, release.at, requeue(item.id), `${base}/${item.id}`);
     }
