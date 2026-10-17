@@ -241,7 +241,7 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       // that take by naming the queued task here.
       if (box.takeOverOnMerged) box.lease = { item: box.takeOverOnMerged, holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
     }
-    else if (url.endsWith("/land")) answer = { item: { id: item, state: box.states[item] } };
+    else if (url.endsWith("/land")) { box.onLand?.(body); answer = { item: { id: item, state: box.states[item] } }; }
     else if (req.method === "POST") answer = {};
     res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
   });

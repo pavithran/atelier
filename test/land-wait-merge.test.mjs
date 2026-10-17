@@ -358,6 +358,39 @@ test("a conflict only in files the regenerate command rewrites is settled by tak
   assert.equal(events.find((x) => x.body.step === "regenerate").body.changed, false);
 });
 
+// Finding (t344 round 2): the legacy settlement staged only the conflicts, so
+// a file the command also wrote stayed dirty and tripped the regenerate step's
+// refusal of a dirty workspace.
+test("the legacy settlement commits every file the regenerate command wrote, not only the conflicts (t344)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
+  f.box.regen = "echo generated > gen-fixtures.txt; echo extra > extra-gen.txt";
+  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "");
+  assert.equal(git(f.workspace("t1"), "ls-files", "extra-gen.txt"), "extra-gen.txt");
+});
+
+// Finding (t344 round 3): another agent's file that appears after the
+// preflight, before the legacy settlement runs the command, was staged with
+// the command's output and committed.
+test("the legacy settlement refuses a file that became dirty before the command ran, naming it, and commits nothing of it (t344)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
+  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  // The second token request comes after the preflight's clean-tree check and before the merge.
+  let tokens = 0;
+  f.box.holdOn = (url) => { if (url.endsWith("/base-token") && ++tokens === 2) { writeFileSync(join(f.workspace("t1"), "video.md"), "half-finished\n"); } return false; };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /since the landing began \(video\.md\)/);
+  assert.equal(git(f.workspace("t1"), "log", "--all", "--format=", "--name-only", "-S", "half-finished"), "");
+  assert.notEqual(f.box.states.t1, "merged");
+});
+
 test("a conflict that also touches a file the regenerate command does not rewrite still stops, naming what regeneration left", async (t) => {
   const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
   // Both sides also regenerate the fixture, so one conflict is generated and one is not.
