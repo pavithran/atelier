@@ -309,8 +309,6 @@ export default async function initCommand() {
   console.log(`Resolvers:  ${pol.resolvers?.length ? `${pol.resolvers.join(", ")}, the first eligible of which resolves a refresh's mechanical conflicts` : "none; a refresh's mechanical conflict waits for one (atelier init --resolver H/M)"}`);
   if (typeof args.resolver === "string" && args.resolver.trim() && !pol.resolvers?.length) console.log("Warning: the server did not record the resolvers; deploy the server, then run atelier init --resolver again.");
   if (pol.riskReviews) console.log(`Risk reviews: ${pol.riskReviews.reviews["docs-or-tests"]} for docs or tests, ${pol.riskReviews.reviews.other} for other changes, ${pol.riskReviews.reviews.core} for core (${pol.riskReviews.core.join(", ") || "no extra core globs"}), each independent review counted by the change's paths`);
-  // A server older than review by risk ignores it and answers without it.
-  if (riskReviews && !pol.riskReviews) console.log("Warning: the server did not record the reviews by risk; deploy the server, then run atelier init --risk-reviews again.");
   console.log(`Models:     ${familyModeText(pol)}`);
   // A server older than single-family mode ignores it and answers without one.
   if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
