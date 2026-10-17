@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { I, OWNER, actor, args, call, die, itemArg, project } from "../atelier.mjs";
 
-// The project owner queues an open task for a kind of runner. A held task
-// (claimed, or submitted and perhaps rejected) is released and queued in
-// the same step, keeping its workspace and commits for the next builder.
+// The project owner queues an open task for a kind of runner. A task a
+// builder has submitted (perhaps rejected) is released and queued in the same
+// step, keeping its workspace and commits for the next builder. A task a
+// builder holds live (claimed) is refused unless --release is given, which
+// ends that claim first (t391).
 // --job merge-main sends a task whose landing conflicted with main back to
 // its builder (t243): the runner claims it, merges main at the named head
 // into its workspace and leaves the conflicts for the builder to resolve
@@ -16,7 +18,7 @@ export default async function dispatchCommand() {
   if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
   if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
   const note = noteFromFile(id) ?? args.note;
-  const body = { to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
+  const body = { to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}), ...(args.release === true ? { release: true } : {}) };
   // With no --agent the server chooses the builder from the pool and the
   // models' records (t370), and says which and why.
   // --overlap-ok with no destination, note or job releases a waiting
@@ -33,6 +35,7 @@ export default async function dispatchCommand() {
   if (suggest) body.suggest = true;
   const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
   const d = item.dispatch;
+  if (item.releasedClaim) console.log(`${id}: released the claim of ${item.releasedClaim.from}, by ${d.by ?? OWNER}; their next push or finish is told the task was taken back by the developer's dispatch.`);
   if (item.suggestion) console.log(`Builder: ${item.suggestion.actor}. ${item.suggestion.reasons.join(" ")}`);
   // A server older than the suggestion ignores the ask and leaves the dispatch open.
   else if (suggest && !item.retainedDispatch && !d.agent) console.log("Warning: the server chose no builder; deploy the server, then dispatch again, or name one with --agent.");
