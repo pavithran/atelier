@@ -149,6 +149,7 @@ export function nextCommand(entry, project) {
   if (entry.kind === "accept" || entry.kind === "assess") return `atelier land ${entry.itemId} --reviewer ${entry.reviewer ?? "H/M"}${flag}`;
   if (entry.kind === "merge") return `atelier merge ${entry.itemId}${flag}`;
   if (entry.kind === "ship") return `atelier ship --dry-run${flag}`;
+  if (entry.kind === "gave-up") return `atelier dispatch ${entry.itemId}${flag}`;
   if (entry.kind === "stale") return `atelier release ${entry.itemId}${flag}`;
   // A plan's entries are answered from what the plan shows.
   if (entry.kind === "approve-plan" || entry.kind === "plan-blocked") return `atelier plan show ${entry.itemId}${flag}`;

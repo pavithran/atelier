@@ -498,6 +498,12 @@ export function isRunSkipKind(kind: unknown): kind is RunSkipKind {
 // be busy again.
 export const RUNNER_IDLE_MS = 90_000;
 
+// What a release note starts with when a runner gives a task up (t584): it has
+// pushed what it committed and let the claim go, so the core-file hold lifts
+// at once. The stuck report, the inbox and the status page read the task's last
+// release for this prefix; the rest of the note is the runner's reason.
+export const GAVE_UP = "the runner gave up: ";
+
 export function idleMarked(at: string | null | undefined, now: number): boolean {
   return typeof at === "string" && Number.isFinite(Date.parse(at)) && now - Date.parse(at) < RUNNER_IDLE_MS;
 }

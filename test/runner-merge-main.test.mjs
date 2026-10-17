@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFLICTS_ARGS, conflictsSection, mergeMainArgs, mergeMainSection, rescueWork, runTask } from "../cli/runner.mjs";
+import { CONFLICTS_ARGS, conflictsSection, giveUpClaim, mergeMainArgs, mergeMainSection, rescueWork, runTask } from "../cli/runner.mjs";
+import { GAVE_UP } from "../src/dispatch/rules.ts";
 
 // A merge-main part's build (docs/orchestrator.md, section 5): after the
 // claim and the workspace's reset, the runner fetches the baseline branch
@@ -462,4 +463,27 @@ test("a failed preparation after a clean merge keeps the failure marker, and the
   assert.equal(second.phase, "submitted", JSON.stringify(second));
   assert.equal(marker, null);
   assert.ok(calls.some((c) => c.argv?.[0] === "finish"));
+});
+
+// 2026-10-12: t396's merge-main job committed the merge, failed twice on the
+// route-level comparison, kept its claim and never pushed (t584). The state of
+// a failed run says the claim is still held and where the workspace is; the
+// runner's loop then pushes the merge and releases the claim with the reason.
+test("a merge-main task whose finish fails keeps the claim until the runner gives it up, then pushes the merge and releases it (t584)", async (t) => {
+  const { r, job, io, calls } = fixture(t, { kind: "task", conflict: false, harness: () => assert.fail("no harness") });
+  const refuse = io.cli;
+  io.cli = async (argv, ...rest) => {
+    if (argv[0] === "finish") { calls.push({ argv }); throw new Error("main and t9 each raised the route level from 17; named capability legacy mappings need manual resolution"); }
+    return refuse(argv, ...rest);
+  };
+  const state = await runTask(job, config, "home:studio", io);
+  assert.equal(state.phase, "failed", JSON.stringify(state));
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "one failure is not a give-up");
+  assert.equal(state.claimHeldAt, r.workspace);
+  const argv = calls.length;
+  assert.equal(await giveUpClaim({ io, project: "atelier", item: job.item, actor: ACTOR, workspace: state.claimHeldAt, reason: state.reason }), true);
+  const [push, release] = calls.slice(argv).map((c) => c.argv);
+  assert.deepEqual(push, ["push", "t9", "--project", "atelier", "--as", ACTOR]);
+  assert.equal(release[0], "release");
+  assert.ok(release[release.indexOf("--note") + 1].startsWith(`${GAVE_UP}main and t9 each raised the route level`));
 });
