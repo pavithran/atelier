@@ -43,7 +43,6 @@ const ROUTES: [path: string, nav: string | null, tab: string | null][] = [
   [`/p/${NAME}/plans`, "/home", `/p/${NAME}/tasks`],
   [`/p/${NAME}/ship`, "/home", `/p/${NAME}/settings`],
   [`/p/${NAME}/settings`, "/home", `/p/${NAME}/settings`],
-  [`/p/${NAME}/showcase`, "/home", `/p/${NAME}`],
   [`/p/${NAME}/t1`, "/home", `/p/${NAME}/tasks`],
 ];
 

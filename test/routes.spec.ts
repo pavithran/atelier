@@ -1675,6 +1675,11 @@ it("a project's showcase draws its figures and its eight latest merges from the 
   expect(list).not.toContain("Still open");
   expect(list).toContain("sonnet-5.5");
   expect(list).toContain("gpt-6-astra");
+  // The reader came by a link, not a tab: the breadcrumb says Showcase and no tab is current.
+  expect(body).toContain("› <span>Showcase</span>");
+  const nav = body.slice(body.indexOf('<nav aria-label="Project">'), body.indexOf("</nav>", body.indexOf('<nav aria-label="Project">')));
+  expect(nav).toContain(`href="/p/${name}/tasks"`);
+  expect(nav).not.toContain("aria-current");
   // The Overview links to it.
   expect(await (await get(`/p/${name}`)).text()).toContain(`<a href="/p/${name}/showcase">Showcase</a>`);
   // Signed out, it is answered as the project's own page is.

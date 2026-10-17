@@ -2028,7 +2028,7 @@ const PROJECT_TABS: [label: string, sub: string][] = [
   ["Activity", "flow"],
   ["Settings", "settings"],
 ];
-const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Ship: "Settings", Showcase: "Overview" };
+const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Ship: "Settings", Showcase: "" };
 // The pages a tab holds, linked under it while it is current, so each stays
 // one click from the bar (the shell's pre-review: without these links no
 // page reached /plans, /log or /ship).
