@@ -1398,9 +1398,9 @@ export function unpausedOffer(offer, pauses) {
 // How often a harness's readiness is asked again (t665).
 export const READY_RECHECK_MS = 60_000;
 
-// Whether an agent runs Atelier's shipped adapter for its harness; a command
-// of the developer's own is theirs to keep working, and is not probed.
-const runsShippedAdapter = (agent) => agent.command?.some((arg) => /(^|\/)atelier-(claude|codex|opencode|agy)\.mjs$/.test(arg));
+// Whether an agent runs an atelier-NAME adapter (Atelier's shipped one, or the
+// wrapper script of that name); a command of the developer's own is theirs to keep working, and is not probed.
+const runsShippedAdapter = (agent) => agent.command?.some((arg) => /(^|\/)atelier-(claude|codex|opencode|agy)(\.mjs)?$/.test(arg));
 
 // The obligation this process holds for failures it could not save anywhere,
 // by workspace and task: a read of the obligation is the files or this map,
@@ -3658,7 +3658,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (!runsShippedAdapter(agent) || now() - (readyChecked.get(agent.agent) ?? -Infinity) < READY_RECHECK_MS) continue;
       readyChecked.set(agent.agent, now());
       let answer;
-      try { answer = await readyCheck(agent.agent); } catch (error) { answer = { ready: false, why: `its readiness check failed (${error.message})` }; }
+      try {
+        // The environment the job's harness gets (harnessEnv, as runTask builds it), so the check sees the credentials the job will.
+        const env = harnessEnv(taskIO.env ?? process.env, agent.env, agent.env?.length ? (taskIO.ownerTokens ?? ownerTokens)() : []).env;
+        answer = await readyCheck(agent.agent, { env, command: agent.command });
+      } catch (error) { answer = { ready: false, why: `its readiness check failed (${error.message})` }; }
       if (controller.signal.aborted) return;
       if (!answer?.ready && !unready.has(agent.agent)) io.log(`${agent.agent} is not offered: ${answer?.why ?? "it is not ready"}. Its models are offered again once it is.`);
       if (answer?.ready && unready.has(agent.agent)) io.log(`${agent.agent} is ready again; its models are offered.`);
