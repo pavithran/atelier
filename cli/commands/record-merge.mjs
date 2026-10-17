@@ -36,7 +36,7 @@ async function pairedMerge(name, id) {
   const line = realHistory(git)(["rev-list", "--parents", "-n", "1", args.merge], { cwd }).split(/\s+/);
   if (line.length < 3) die(`${args.merge.slice(0, 8)} is not a merge in ${cwd}`);
   if (line[2] !== head) die(`${args.merge.slice(0, 8)}'s second parent is ${line[2].slice(0, 8)}, not ${head.slice(0, 8)}, the commit named as the task's head`);
-  return baselineMerge;
+  return { baselineMerge, head };
 }
 
 export default async function recordMergeCommand() {
@@ -47,11 +47,12 @@ export default async function recordMergeCommand() {
   const reviews = given.map((text) => parseReview(text) ?? die(`--review ${JSON.stringify(text)} is not H/M=approve@HEAD or H/M=reject@HEAD, with the full head and, optionally, @2026-10-13`));
   if (args.note !== undefined && (typeof args.note !== "string" || !args.note.trim())) die('--note needs text: atelier record-merge ID ... --note "TEXT"');
   const name = project(), id = itemArg();
-  const baselineMerge = await pairedMerge(name, id);
+  const paired = await pairedMerge(name, id);
   const r = await call("POST", `${I(name, id)}/record-merge`, {
     mergeCommit: args.merge,
-    ...(baselineMerge ? { baselineMerge } : {}),
-    ...(args.head !== undefined ? { head: args.head } : {}),
+    ...(paired ? { baselineMerge: paired.baselineMerge } : {}),
+    // The head checked here is the head sent, never one chosen later.
+    ...(paired ? { head: paired.head } : args.head !== undefined ? { head: args.head } : {}),
     reviews,
     ...(args.note !== undefined ? { note: args.note } : {}),
   }, OWNER);
