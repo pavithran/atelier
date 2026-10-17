@@ -266,7 +266,7 @@ export function executableFor(harness, env = process.env) {
 // Whether a harness can run a job at all, asked before a runner offers it
 // (the finding on ourai/t63, 2026-10-14, and on every claude-code job of
 // 2026-10-16: the build was claimed, then the CLI exited "Not logged in").
-// Only Claude Code has a probe; the other harnesses are taken as ready.
+// Claude Code and Codex have a probe; the other harnesses are taken as ready.
 // A probe that cannot run, times out, or prints anything but a clear
 // "signed in" counts as not signed in, so the harness is dropped, never
 // offered on a guess.
@@ -274,6 +274,7 @@ export const SIGN_IN_TIMEOUT_MS = 15_000;
 const CLAUDE_TOKEN_FILE = ".config/api-keys/claude-code-auth.key";
 export const SIGN_IN_FIX = {
   "claude-code": `run \`claude auth login\` as this user, or put a \`claude setup-token\` token in ~/${CLAUDE_TOKEN_FILE}`,
+  codex: "run `codex login` as this user",
 };
 
 // The environment the job gives Claude Code, which `env` is (harnessEnv in
@@ -296,8 +297,18 @@ function claudeProbeEnv(env, command, home) {
 // { ready, why }: `why` names the fix when the harness is not ready.
 // `run(exe, args, options)` resolves { code, stdout } and is replaceable.
 export async function harnessReady(harness, { env = process.env, command, home = homedir(), timeoutMs = SIGN_IN_TIMEOUT_MS, run = runProbe } = {}) {
-  if (harness !== "claude-code") return { ready: true };
   const fix = SIGN_IN_FIX[harness];
+  // Codex (t558): `codex login status` exits 0 only when signed in. A non-zero
+  // exit, a missing binary or a timeout is not ready.
+  if (harness === "codex") {
+    try {
+      const result = await run(executableFor(harness, process.env), ["login", "status"], { env: { ...env }, timeout: timeoutMs });
+      return result.code === 0 ? { ready: true } : { ready: false, why: `Codex is not signed in; ${fix}` };
+    } catch (error) {
+      return { ready: false, why: `could not check whether Codex is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fix}` };
+    }
+  }
+  if (harness !== "claude-code") return { ready: true };
   try {
     const result = await run(executableFor(harness, process.env), ["auth", "status"], { env: claudeProbeEnv(env, command, home), timeout: timeoutMs });
     let signedIn = false;
