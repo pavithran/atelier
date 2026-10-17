@@ -1840,6 +1840,7 @@ export async function runTask(assignment, config, name, io) {
     } else if (claimAttempted && !claimed) {
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
+        released = true;
         io.log("released after claim step failed");
       } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
     } else io.log("claim not released: claim or commit status is unknown");
