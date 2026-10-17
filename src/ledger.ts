@@ -78,7 +78,7 @@ import {
   pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
 import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick } from "./review/tier.ts";
-import { offering } from "./dispatch/rules.ts";
+import { GAVE_UP, offering } from "./dispatch/rules.ts";
 import { paidPerToken } from "./plans/route.ts";
 import type { LargeRef } from "./large.ts";
 import { exactEntry, reviewerEntries } from "./models/identity.ts";
@@ -5598,7 +5598,7 @@ export class Ledger extends DurableObject<Env> {
     // override, not the placeholder alone (t395), or null when none in the pool
     // qualifies, which attentionFor places under the owner's override. With no
     // pool given the reviewer is left unset: not read, never "none qualifies".
-    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p), ...this.prereviewEntries(p.name)]
+    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p), ...this.prereviewEntries(p.name), ...this.gaveUpEntries(p.name)]
       .map((e) => (e.kind === "assess" && pool ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
@@ -5623,6 +5623,21 @@ export class Ledger extends DurableObject<Env> {
         reason: `merged at ${data.mergeCommit.slice(0, 8)} with ${kinds.join(", ")} declared by the ship files and not yet run; in the registered checkout run atelier ship --dry-run, then approve and ship`,
         weight: 75,
       }] : [];
+    });
+  }
+
+  // A task a runner gave up (t584): its last claim, release or dispatch is a
+  // release whose note starts with GAVE_UP. The runner pushed what it had
+  // committed and let go of the claim, so nothing holds the core files for it
+  // and nothing is working on it. The entry stays until the task is claimed or
+  // dispatched again.
+  private gaveUpEntries(project: string): InboxEntry[] {
+    return this.items().filter((i) => i.state === "open" && i.dispatch).flatMap((i) => {
+      const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched') ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
+      if (last?.kind !== "item.released") return [];
+      const note = (JSON.parse(last.data as string) as { note?: unknown }).note;
+      return typeof note === "string" && note.startsWith(GAVE_UP)
+        ? [{ project, itemId: i.id, title: i.title, kind: "gave-up" as const, reason: `${note.slice(GAVE_UP.length)}; run \`atelier dispatch ${i.id}\` to send it out again`, weight: 72 }] : [];
     });
   }
 

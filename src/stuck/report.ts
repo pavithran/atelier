@@ -1,7 +1,7 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
-import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
+import { GAVE_UP, coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { inScope } from "../tokens.ts";
@@ -132,15 +132,18 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       if (!e.itemId || e.kind !== "evidence.observed" || e.data.passed !== false || age(e.at) < 0 || age(e.at) >= 86_400_000) continue;
       checks.push({ kind: "check", subject: e.itemId ?? "project", reason: `failed observed command: ${String(e.data.claim ?? "unnamed command")} at ${String(e.data.head ?? "unknown head")}`, since: e.at, ageMs: age(e.at), evidence: `${base}/${e.itemId}`, recovery: command(`check ${e.itemId}`) });
     }
-    // A release without a push during that attempt is a runner give-up.
+    // A release without a push during that attempt is a runner give-up, and so
+    // is a release whose note says the runner gave up (t584), which comes after
+    // the push of what it had committed.
     for (const item of live.filter((i) => !["merged", "abandoned", "accepted"].includes(i.state))) {
       const mine = ordered.filter((e) => e.itemId === item.id);
       const release = mine.filter((e) => e.kind === "item.released").pop();
       if (!release) continue;
       const claim = mine.filter((e) => ["item.claimed", "item.handoff"].includes(e.kind) && e.seq < release.seq).pop();
       if (!claim?.data.runner || mine.some((e) => e.seq > release.seq && ["item.claimed", "item.handoff", "push.observed", "item.submitted", "item.dispatched"].includes(e.kind))) continue;
-      if (mine.some((e) => e.seq > claim.seq && e.seq < release.seq && e.kind === "push.observed")) continue;
-      add("runner-give-up", item.id, `runner ${claim.data.runner} released without a push`, release.at, requeue(item.id), `${base}/${item.id}`);
+      const said = typeof release.data.note === "string" && release.data.note.startsWith(GAVE_UP) ? release.data.note.slice(GAVE_UP.length) : null;
+      if (said === null && mine.some((e) => e.seq > claim.seq && e.seq < release.seq && e.kind === "push.observed")) continue;
+      add("runner-give-up", item.id, said === null ? `runner ${claim.data.runner} released without a push` : `runner ${claim.data.runner} gave it up: ${said}`, release.at, requeue(item.id), `${base}/${item.id}`);
     }
     for (const run of runs ?? []) {
       if (run.project !== project || !run.item || run.runner === "owner") continue;

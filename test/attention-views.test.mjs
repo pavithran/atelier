@@ -89,7 +89,7 @@ test("atelier inbox --json keeps the entry fields older clients read, one entry 
 test("atelier inbox prints only what waits on the owner, by project, and what was not read", () => {
   const out = formatInbox(views(), waiting);
   const lines = out.split("\n");
-  assert.equal(lines[0], "Alpha (alpha): 8 waiting on you");
+  assert.equal(lines[0], "Alpha (alpha): 9 waiting on you");
   assert.deepEqual(listedUnder(["h", ...lines.slice(1)], 0, "h").filter((id) => id.startsWith("a")), ownerIds("alpha"));
   assert.ok(!out.includes("Beta (beta)"), "a project with nothing waiting is left out");
   assert.ok(!out.includes("a2 and a3"));
