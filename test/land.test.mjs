@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { git, landFixture, grantedTo, recordedAt, mainMovesDuringReview } from "./land-fixture.mjs";
+import { dirtyPaths } from "../cli/land.mjs";
 import { criteriaOf } from "../src/criteria.ts";
 
 // atelier land (t187) against a stand-in server and local bare repositories,
@@ -662,4 +663,31 @@ test("a landing whose workspace gains uncommitted edits after it began refuses b
   assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s", "-3"), /Regenerate after merging/);
   assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "?? video.md");
   assert.notEqual(f.box.states.t1, "merged");
+});
+
+test("a landing refuses a tracked edit made after it began, naming the file whole (t344, round 1: the status listing was trimmed)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.onLand = (step) => { if (step.step === "merge") writeFileSync(join(f.workspace("t1"), "work.txt"), "edited by another agent\n"); };
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /since the landing began \(work\.txt\)/);
+  assert.equal(git(f.workspace("t1"), "status", "--porcelain"), "M work.txt");
+});
+
+test("the regenerate step commits a tracked file its command modified, under its whole name (t344, round 1)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.regen = "echo regenerated >> work.txt";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  const commit = git(f.workspace("t1"), "log", "--grep=^Regenerate after merging", "--format=%H", "-1");
+  assert.ok(commit, "no regeneration commit");
+  assert.equal(git(f.workspace("t1"), "show", "--name-only", "--format=", commit), "work.txt");
+});
+
+test("dirtyPaths reads modified, staged, deleted, untracked, renamed, spaced and non-ASCII names from a NUL-delimited listing (t344, round 1)", () => {
+  const listing = [" M gen-fixtures.txt", "M  staged.txt", " D gone.txt", "?? new.txt", "R  new name.txt", "old name.txt", "?? my file.txt", '?? caf\u00e9 "q".txt'].join("\0") + "\0";
+  assert.deepEqual(dirtyPaths(listing), ["gen-fixtures.txt", "staged.txt", "gone.txt", "new.txt", "new name.txt", "my file.txt", 'caf\u00e9 "q".txt']);
+  assert.deepEqual(dirtyPaths(""), []);
 });
