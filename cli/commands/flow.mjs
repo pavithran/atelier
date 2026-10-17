@@ -38,7 +38,7 @@ export default async function flowCommand() {
   const report = computeFlow(tasks, now);
   if (args.json) return console.log(JSON.stringify({ project: name, since: new Date(since).toISOString(), observedAt: new Date(now).toISOString(), ...report }, null, 2));
 
-  console.log(`Flow in ${name} for tasks created since ${new Date(since).toISOString()}: ${report.tasks.length} tasks (${report.counted} with a complete record, ${report.merged} merged)`);
+  console.log(`Flow in ${name} for tasks created since ${new Date(since).toISOString()}: ${report.tasks.length} tasks, ${report.measured} with at least one measured phase, ${report.counted} with a complete record, ${report.merged} merged`);
   console.log("Minutes per phase, summed (tasks where it is unknown, tasks where it is still open):");
   for (const p of PHASES) {
     const t = report.totals[p];

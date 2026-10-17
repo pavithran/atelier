@@ -46,6 +46,9 @@ Nothing is guessed. For one task and one phase:
 - The ledger records no event when a merge begins. When a task merges out of
   the wait to land with no check recorded on the merge, the wait to land runs to
   `item.merged` and the merge phase is unknown for that task.
+- A review verdict recorded after the merge (`postMerge`) is outside the phases.
+- A verdict on accepted work takes the acceptance back, as the ledger does; a rejection ends the wait to land and the task waits for review again.
+- The minutes of a phase that is unknown for a task are left out of the totals.
 - A phase a task never entered adds nothing. A task landed outside the flow
   (`atelier record-merge`, or a fast landing) has no phase events, so its row
   is empty rather than unknown.

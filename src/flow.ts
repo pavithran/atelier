@@ -44,6 +44,8 @@ export interface FlowReport {
   totals: Record<Phase, PhaseTotal>;
   // Tasks counted in the rates: those whose record is complete.
   counted: number;
+  // Tasks with at least one phase that was entered and is known.
+  measured: number;
   merged: number;
   // Submissions per merged task; null when none merged.
   attemptsPerMerge: number | null;
@@ -92,12 +94,16 @@ export function taskFlow(id: string, events: readonly FlowEvent[], now: number):
       if (phase !== "reviewWait") enter("reviewWait", at);
       landingChecks = false;
     }
+    else if ((kind === "review.approved" || kind === "review.rejected") && e.data?.postMerge === true) { /* a review of merged work is outside the phases */ }
     else if (kind === "review.approved") {
-      if (phase === "reviewWait") enter("accept", at);
+      if (phase === "reviewWait" || phase === "waitToLand" || landingChecks && phase === "checks") { landingChecks = false; enter("accept", at); }
       else if (phase === null) { unknown("reviewWait"); enter("accept", at); }
     }
     else if (kind === "review.rejected") {
-      if (phase === "reviewWait" || phase === "accept") enter("build", at);
+      // A verdict on accepted work takes the acceptance back (the ledger
+      // returns the task to submitted), so the task is waiting for review.
+      if (phase === "waitToLand" || landingChecks && phase === "checks") { landingChecks = false; enter("reviewWait", at); }
+      else if (phase === "reviewWait" || phase === "accept") enter("build", at);
       else if (phase === null) { unknown("reviewWait"); enter("build", at); }
     }
     else if (kind === "item.accepted") {
@@ -135,8 +141,8 @@ export function computeFlow(tasks: readonly { id: string; events: readonly FlowE
   const totals = Object.fromEntries(PHASES.map((p) => [p, { ms: 0, unknownTasks: 0, openTasks: 0 }])) as Record<Phase, PhaseTotal>;
   for (const f of flows) {
     for (const p of PHASES) {
-      totals[p].ms += f.phases[p].ms;
       if (f.phases[p].unknown) totals[p].unknownTasks++;
+      else totals[p].ms += f.phases[p].ms;
       if (f.phases[p].open) totals[p].openTasks++;
     }
   }
@@ -144,7 +150,8 @@ export function computeFlow(tasks: readonly { id: string; events: readonly FlowE
   const merged = counted.filter((f) => f.merged);
   const share = (has: (f: TaskFlow) => boolean) => (counted.length ? counted.filter(has).length / counted.length : null);
   return {
-    tasks: flows, totals, counted: counted.length, merged: merged.length,
+    tasks: flows, totals, counted: counted.length,
+    measured: flows.filter((f) => PHASES.some((p) => !f.phases[p].unknown && (f.phases[p].ms > 0 || f.phases[p].open))).length, merged: merged.length,
     attemptsPerMerge: merged.length ? merged.reduce((n, f) => n + f.submissions, 0) / merged.length : null,
     conflictRate: share((f) => f.conflicts > 0),
     rejectionRate: share((f) => f.rejections > 0),
