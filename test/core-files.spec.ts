@@ -120,7 +120,7 @@ it("a claim a runner gives up lifts the core-file hold at once and reaches the i
   const waiting = await L.newItem("Core edit", ["src/ledger.ts"], "owner");
   await L.dispatch(waiting.id, "owner", { to: "home", agent: "opencode" });
   expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toMatchObject({ id: live.id, state: "claimed" });
-  const gone = await L.dispatch(live.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra", overlapOk: true });
+  const gone = await L.dispatch(live.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra", overlapOk: true, release: true });
   expect(gone.state).toBe("open");
   await L.claim(live.id, A, { runner: "home:studio", kind: "home" });
   expect((await L.waiting()).find((i) => i.id === waiting.id)?.held).toBeDefined();

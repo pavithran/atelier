@@ -733,6 +733,26 @@ it("HTTP review and acceptance preserve the displayed revision through successfu
  expect((await L.reviewsFor('t1')).map((r)=>[r.by,r.head,r.approve])).toEqual([['owner',H1,true]]);
 });
 
+// t391: on t389 a dispatch ended a live claim, silently, and the holder's
+// finished work was refused. A claimed task now refuses the dispatch, naming
+// the holder; --release takes it over and says whose claim went.
+it("a dispatch to a task a builder holds live is refused unless --release says to take it", async () => {
+  const L = await setup("dispatch-held-live");
+  const item = await L.newItem("Held", ["docs/**"], "owner");
+  await L.claim(item.id, A);
+  await refusal(L.dispatch(item.id, "owner", { to: "home" }), "held", new RegExp(`${item.id} is held by ${A.replace("/", "\\/")}, who claimed it .*atelier dispatch ${item.id} --release`));
+  await refusal(L.checkDispatch(item.id, "owner", { to: "home" }), "held", /is held by/);
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: A, dispatch: null });
+  expect(kinds(await L.events(item.id))).not.toContain("item.released");
+
+  const taken = await L.dispatch(item.id, "owner", { to: "home", release: true });
+  expect(taken).toMatchObject({ state: "open", owner: null, releasedClaim: { from: A } });
+  const released = ((await L.events(item.id)) as unknown as LedgerEvent[]).find((e) => e.kind === "item.released");
+  expect(released?.data).toMatchObject({ from: A, note: expect.stringMatching(/^taken back by the developer's dispatch/) });
+  // A task nobody holds, or one submitted for review, is dispatched as before.
+  expect((await L.dispatch(item.id, "owner", { to: "home" })).releasedClaim).toBeUndefined();
+});
+
 it("dispatch queues an open task for a kind of runner, and only a matching runner claims it", async () => {
   const L = await setup("dispatch-flow");
   const item = await L.newItem("Tidy the guide", ["docs/**"], "owner");
@@ -753,7 +773,7 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   const events = (await L.events(item.id)) as unknown as LedgerEvent[];
   expect(events.find((e) => e.kind === "item.claimed")?.data).toEqual({ runner: "home:studio", criteria: NO_CRITERIA });
   // A refused dispatch leaves the holder in place.
-  await refusal(L.dispatch(item.id, "owner", { to: "mars" }), "bad_dispatch", /send to cloud, home or any/);
+  await refusal(L.dispatch(item.id, "owner", { to: "mars", release: true }), "bad_dispatch", /send to cloud, home or any/);
   expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: "opencode/glm-5.3-flash" });
 
   // A runner that gives up releases the task, and it waits in the queue again.
@@ -1385,7 +1405,7 @@ it("the framing is stored with the item, carried by its brief, and edited only b
   expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
 
   await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the developer edits/);
-  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate/);
+  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context/);
   // A field given replaces; one left out is kept; an empty list or a null gate clears.
   const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
   expect(edited).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: ["a check fails twice"], nextGate: null });

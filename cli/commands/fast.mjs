@@ -132,7 +132,7 @@ async function fastTake(name) {
   const id = itemArg(2);
   const as = await actor();
   const runner = typeof args.runner === "string" ? args.runner : null;
-  const r = await fastTakeWorkspace(name, id, as, runner);
+  const r = await fastTakeWorkspace(name, id, as, runner, typeof args.dispatch === "string" ? args.dispatch : null);
   if (args.json) return console.log(JSON.stringify({ item: r.item, dir: r.dir, base: r.base, head: r.head, resumed: r.resumed }));
   console.log(`${id} is yours, ${as}, in fast mode: no fork, no write token. Work here, in a clean clone of main at ${r.base.slice(0, 12)}:\n  cd ${shellQuote(r.dir)}`);
   if (r.resumed) console.log(`The clone holds ${r.head.slice(0, 12)}, a commit never reported; report it with atelier fast ready ${id}.`);

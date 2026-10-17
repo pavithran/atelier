@@ -35,6 +35,11 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
+import { ago } from "./floor.ts";
+
+// The note on the release a dispatch makes of a held task; the holder reads it
+// at its next push or finish (t391).
+const TAKEN_BACK = "taken back by the developer's dispatch (atelier dispatch --release)";
 import { assign, idleMarked, isRunSkipKind, offersFor, RUN_SKIP_KINDS, servesProject, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, orphanedBy, overrideDispatch, retainDispatch, waitingDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
@@ -62,10 +67,10 @@ import { integrationBlockers, nextToIntegrate, planGate, type Integration, type 
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
-import { reviewBrief, type ReviewEvidence } from "./review/brief.ts";
+import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
-import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import { rejectionRequest, reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
@@ -159,6 +164,8 @@ export interface ReviewClaim {
   // cross-company one; null under the default.
   singleFamily: PoolFamily | null;
   decisions: Decision[];
+  // The orchestrator's context for the task (contextOf), null when none.
+  context?: string | null;
   // The item's evidence at the head, for the brief's Observed evidence
   // section (t490).
   evidence: ReviewEvidence;
@@ -2176,7 +2183,7 @@ export class Ledger extends DurableObject<Env> {
   // decided under the old ones (criteriaChanged), and the answer says what
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
-  editItem(id: string, actor: string, fields: ItemFields, scope?: string[]): Item & { criteriaChange?: CriteriaChange } {
+  editItem(id: string, actor: string, fields: ItemFields, scope?: string[], context?: string): Item & { criteriaChange?: CriteriaChange } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
@@ -2195,10 +2202,15 @@ export class Ledger extends DurableObject<Env> {
       if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409);
       set.scope = JSON.stringify(scope);
     }
-    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate", 400);
+    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context", 400);
+    if (context !== undefined) assertLength(context, NOTE_MAX, "the task's context");
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
     const at = new Date().toISOString();
+    // The context is an event, not a column: recorded only when its text
+    // changes, so setting the same text again leaves the history alone.
+    if (context !== undefined && context.trim() !== (this.taskContext(id) ?? "")) this.setContext(id, actor, context);
+    if (!Object.keys(set).length) return this.item(id);
     this.update(id, set, at);
     this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
     // Every change of the stored lists is a new revision, the editor its
@@ -2649,7 +2661,8 @@ export class Ledger extends DurableObject<Env> {
   // answer names the core-file hold the override released, if one held it.
   // `why`: what chose the builder, the role assignments applied or skipped
   // included, set by the dispatch route and kept on item.dispatched.
-  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null, why?: string): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold; releasedClaim?: { from: string } } {
+    this.refuseLiveHolder(id, input);
     const item = this.checkDispatch(id, actor);
     // Only a dispatch still waiting in the queue is an offer to keep. One a
     // runner has since claimed is spent: a held or submitted task dispatched
@@ -2675,11 +2688,25 @@ export class Ledger extends DurableObject<Env> {
       this.dropToken(id, token);
       this.dropRunnerJobs(id);
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
-      this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the developer" }, d.at);
+      this.log(id, actor, "item.released", { from: item.owner, note: TAKEN_BACK }, d.at);
     }
     this.setDispatch(id, d, d.at);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}), ...(why ? { reason: why } : {}) }, d.at);
-    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}) };
+    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}), ...(held && item.state === "claimed" && item.owner ? { releasedClaim: { from: item.owner } } : {}) };
+  }
+
+  // A dispatch never ends a live claim by itself (t391: it did, silently, on
+  // t389, and the holder's finished work was refused). A task in the claimed
+  // state is refused unless the developer says --release; the refusal names
+  // the holder, how long ago they claimed, and the explicit ways to take the
+  // task over. A submitted or accepted task is still sent back by a dispatch,
+  // as before: its builder has stopped and handed it in.
+  refuseLiveHolder(id: string, input: Record<string, unknown>): void {
+    const item = this.item(id);
+    if (item.state !== "claimed" || !item.owner || input.release === true) return;
+    const row = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+    const since = row?.at ? `, who claimed it ${ago(row.at as string, new Date())}` : "";
+    throw new RuleError("held", `${id} is held by ${item.owner}${since}; dispatching it would end their claim. To take it over, run atelier dispatch ${id} --release (it releases the claim and queues the task), or hand it on with atelier handoff, or end the claim with atelier release`, 409);
   }
 
   // The owner's release of an overlap-held dispatch: only the overlap
@@ -2724,6 +2751,7 @@ export class Ledger extends DurableObject<Env> {
   // only for a dispatch that will be made.
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer dispatches", 403);
+    if (input) this.refuseLiveHolder(id, input);
     const item = this.item(id);
     assertNotTerminal(item);
     this.assertNotPlanned(item);
@@ -3226,6 +3254,21 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
+  // A rejection tells the owner when it is recorded. notify() speaks once per
+  // head of a submission, so a rejection at a head already notified would be
+  // silent there; this sends its own message through the same delivery.
+  private notifyRejection(r: Review, origin?: string): void {
+    try {
+      if (origin) this.setNotificationOrigin(r.itemId, origin);
+      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, r.itemId).toArray()[0];
+      if (!topic || !saved) return;
+      this.deliver(rejectionRequest(notificationRequest(topic, saved.origin as string, this.project().name, this.detail(r.itemId)), r));
+    } catch {
+      console.error("Atelier notification could not be scheduled");
+    }
+  }
+
   // Delivery runs in the background: a failure is logged without the
   // response body or the topic, and nothing is retried. It holds the
   // restart gate, so a restart after a deploy waits for it.
@@ -3410,6 +3453,7 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     this.notify(r.itemId, origin);
+    if (!r.approve) this.notifyRejection(r, origin);
     this.afterPlanChange(r.itemId);
   }
 
@@ -6650,7 +6694,7 @@ export class Ledger extends DurableObject<Env> {
       const brief = reviewBrief({
         need, item: p, events: this.briefEvents(p.id),
         plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null, singleFamily: single,
-        decisions: standingDecisions(this.decisionStore),
+        decisions: standingDecisions(this.decisionStore), context: this.taskContext(p.id),
         criteriaReviews: this.criteriaReviewsFor(p.id), criteriaResolutions: this.criteriaResolutionsFor(p.id), criteriaRev: this.criteriaRevision(p.id),
         evidence: this.reviewEvidence(p.id, need.head, policy),
       });
@@ -6941,7 +6985,7 @@ export class Ledger extends DurableObject<Env> {
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
       events: item.state === "merged" ? this.events(itemId, Number.MAX_SAFE_INTEGER).toReversed() : this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, proseStandard: policy.proseStandard ?? null, singleFamily: singleFamily(policy), tier,
-      decisions: standingDecisions(this.decisionStore),
+      decisions: standingDecisions(this.decisionStore), context: this.taskContext(itemId),
       evidence: this.reviewEvidence(itemId, head, policy),
       criteria, request: row.id as number,
       criteriaReviews: this.criteriaReviewsFor(itemId), criteriaResolutions: this.criteriaResolutionsFor(itemId), criteriaRev: this.criteriaRevision(itemId),
@@ -6958,6 +7002,22 @@ export class Ledger extends DurableObject<Env> {
     const runs = this.sql.exec(`SELECT id, json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as Evidence), seq: r.id as number }));
     return { runs: runs.filter((e) => e.head === head), required: [...policy.checks] };
+  }
+
+  // The orchestrator's context for a task: the latest item.context event.
+  private taskContext(id: string): string | null {
+    return contextOf(this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind = 'item.context' ORDER BY seq`, id).toArray().map(eventOf));
+  }
+
+  // Sets or replaces the task's context, decisions the reviewer must not
+  // overrule; an empty text clears it. Each call is an event, the latest
+  // one read by every reviewer's brief. The owner or the orchestrator writes it.
+  setContext(id: string, actor: string, text: string): Item {
+    if (actor !== this.owner && actor !== ORCHESTRATOR) throw new RuleError("not_project_owner", "only the developer or the orchestrator sets a task's context", 403);
+    this.item(id);
+    assertLength(text, NOTE_MAX, "the task's context");
+    this.log(id, actor, "item.context", { text: text.trim() }, new Date().toISOString());
+    return this.item(id);
   }
 
   // The events a review brief reads: the item's latest, for the builder's

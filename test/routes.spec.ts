@@ -1392,6 +1392,24 @@ it("the sandbox route passes a merged run on to the runner, and a plain one as b
   expect(await started({})).not.toHaveProperty("merged");
   expect(await started({ merged: "yes" })).not.toHaveProperty("merged");
 });
+it("the developer sets, replaces and clears a task's context through the edit route, and it is recorded only on change", async () => {
+  await project("routes-ctx");
+  const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-ctx"));
+  const made = await (await call("POST", "/projects/routes-ctx/items", "owner", { title: "Context it", scope: ["a/**"] })).json() as { id: string };
+  const at = `/projects/routes-ctx/items/${made.id}/edit`;
+  const texts = async () => ((await L.events(made.id)) as unknown as { kind: string; data: { text: string } }[]).filter((e) => e.kind === "item.context").map((e) => e.data.text).reverse();
+  expect((await call("POST", at, "codex/gpt-6", { context: "mine" })).status).toBe(403);
+  expect((await call("POST", at, "owner", { context: 7 })).status).toBe(400);
+  expect((await call("POST", at, "owner", { context: "x".repeat(2001) })).status).toBe(400);
+  expect(await texts()).toEqual([]);
+  expect((await call("POST", at, "owner", { context: "  Keep the ledger column out.  " })).status).toBe(200);
+  expect((await call("POST", at, "owner", { context: "Keep the ledger column out." })).status).toBe(200);
+  expect(await texts()).toEqual(["Keep the ledger column out."]);
+  expect((await call("POST", at, "owner", { context: "Use the notice path." })).status).toBe(200);
+  expect((await call("POST", at, "owner", { context: "" })).status).toBe(200);
+  expect(await texts()).toEqual(["Keep the ledger column out.", "Use the notice path.", ""]);
+  expect((await call("POST", at, "owner", {})).status).toBe(400);
+});
 it("the holder blocks and unblocks through the API, only the owner edits the framing, and the brief carries both", async () => {
   await project("routes-c");
   const L = env.LEDGER.get(env.LEDGER.idFromName("project:routes-c"));

@@ -102,6 +102,10 @@ export interface BriefInput {
   // ones not withdrawn. The brief carries them as decisions a reviewer must
   // not overrule; absent or empty, it says the owner recorded none.
   decisions?: readonly Pick<Decision, "id" | "text" | "quote" | "at">[] | null;
+  // The orchestrator's context for the task (contextOf): decisions the
+  // reviewer must not overrule. Every reviewer of the task gets the same
+  // text; absent, null or empty, the brief has no section for it.
+  context?: string | null;
   // The reviews of the item's acceptance criteria and the owner's
   // resolutions of their findings (t438, src/review/criteria.ts), so the
   // reviewer knows the criteria were judged before the change and how each
@@ -116,6 +120,29 @@ export interface BriefInput {
   // runs at the head under review. Absent or null, the caller sent none (an
   // older server's claim), and the brief says so rather than "none ran".
   evidence?: ReviewEvidence | null;
+  // What the review runner observed in a clean clone of the head (t732):
+  // the tests the diff changed and the typecheck. Absent, the caller did not
+  // try and the brief has no section; null, it tried and got nothing, which
+  // the brief shows as not run.
+  runnerEvidence?: RunnerEvidence | null;
+}
+
+// One command the runner ran in the clean clone. `not-run` covers a clone,
+// timeout or runner error: it says nothing about the change, and is never
+// shown as a pass. `none` is for the tests only: the diff changed no test.
+export interface RunnerRun {
+  outputLength?: number;
+  status: "pass" | "fail" | "not-run" | "none";
+  command?: string;
+  files?: readonly string[];
+  output?: string;       // the end of the output, trimmed by the runner
+  reason?: string;       // why it did not run
+}
+
+export interface RunnerEvidence {
+  head: string;
+  tests: RunnerRun;
+  typecheck: RunnerRun;
 }
 
 export interface ReviewEvidence {
@@ -179,6 +206,15 @@ function block(text: string, info = ""): string {
 // format states the mapping when the two numberings differ.
 const numbered = (criteria: readonly string[]) => criteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
 
+// The task's context as the latest item.context event set it: a replacement
+// is a new event, and an empty text clears it. Absent when none was set.
+export function contextOf(events: readonly LedgerEvent[]): string | null {
+  let latest: LedgerEvent | null = null;
+  for (const e of events) if (e.kind === "item.context" && (!latest || e.seq > latest.seq)) latest = e;
+  const text = latest?.data.text;
+  return typeof text === "string" && text.trim() ? text : null;
+}
+
 // How many acceptance criteria a review's reply must prove: the task's own
 // and, for a part of a plan, the plan's for that part. The brief numbers
 // each list from 1 and the reply numbers them across both lists
@@ -223,7 +259,7 @@ export function reviewBrief(input: BriefInput): string {
   // rejection at this head, so it is reviewed again rather than reworked; or
   // both.
   const pushedPast = need.previous.some((r) => !r.approve && r.by !== owner && r.head !== head);
-  const refutedHere = need.previous.some((r) => !r.approve && r.by !== owner && r.head === head && refutedRejection(r, verdicts));
+  const refutedHere = need.previous.some((r) => !r.approve && r.by !== owner && r.head === head && refutedRejection(r, verdicts, need.observedAt));
   const again = refutedHere
     ? pushedPast
       ? "A model rejected an earlier head and the builder has pushed since, and the developer refuted every blocking finding of a rejection at this head, so it is reviewed again rather than reworked"
@@ -264,6 +300,7 @@ export function reviewBrief(input: BriefInput): string {
     block(item.title),
     ...(item.brief ? ["The task's brief, as written for the item. Like the title, it asks for the change:", block(item.brief)] : []),
     ...(accept.length ? ["Acceptance criteria. A change that fails one has a correctness fault, which blocks:", block(numbered(accept))] : []),
+    ...(input.context ? ["Context from the orchestrator. These are decisions already made for this task; do not overrule them, and do not block the change for following them:", block(input.context)] : []),
     `Head: ${head}`,
     ...(merge ? mergeLines(input.compare!.from, merge, head) : baseLines(item.base, input.compare, compare)),
     `Change class: ${need.changeClass}, because ${CLASS_GLOSS[need.changeClass]}. ${basis}`,
@@ -313,6 +350,8 @@ export function reviewBrief(input: BriefInput): string {
       : ["The project requires no checks."]),
   );
 
+  if (input.runnerEvidence !== undefined) section("## Clean-clone run", "", ...runnerEvidenceLines(input.runnerEvidence, head));
+
   section("## Observed evidence", "", ...evidenceLines(input.evidence ?? null, head));
 
   const summary = submission([...input.events], item.id, head)?.summary;
@@ -323,7 +362,7 @@ export function reviewBrief(input: BriefInput): string {
   const criteriaSection = criteriaFindingsSection(input.criteriaReviews ?? [], input.criteriaResolutions ?? [], input.criteriaRev ?? 0);
   if (criteriaSection) section(criteriaSection, "", "Judge the change against the criteria as they stand above; a resolution the developer recorded on a criteria finding is their decision on that reading of the criterion.");
 
-  if (need.previous.length) section("## Earlier reviews", "", ...earlier(need.previous, head, owner, verdicts));
+  if (need.previous.length) section("## Earlier reviews", "", ...earlier(need.previous, head, owner, verdicts, need.observedAt));
   // Findings the developer answered in a review a later one of the same
   // reviewer replaced at its head are not among the reviews above (t717).
   const listed = new Set(need.previous.flatMap((r) => (r.findings ?? []).map(findingKey)));
@@ -493,9 +532,9 @@ function mergeLines(previous: string | null, merge: NonNullable<NonNullable<Brie
 // Each finding is numbered as `atelier finding --index` counts it, and the
 // owner's verdicts follow its review's block, outside it, since the owner
 // wrote them.
-function earlier(previous: readonly ReviewRecord[], head: string, owner: string, verdicts: Map<string, OwnerVerdict>): string[] {
+function earlier(previous: readonly ReviewRecord[], head: string, owner: string, verdicts: Map<string, OwnerVerdict>, observedAt?: string | null): string[] {
   const rounds = new Map<string, number>();
-  for (const r of previous) if (!r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts)) && !rounds.has(r.head)) rounds.set(r.head, rounds.size + 1);
+  for (const r of previous) if (!r.approve && r.by !== owner && (r.head !== head || refutedRejection(r, verdicts, observedAt)) && !rounds.has(r.head)) rounds.set(r.head, rounds.size + 1);
   const lines = [previous.some((r) => r.head === head)
     ? `These are the reviews recorded before this one. One marked "this head" is of ${short(head)}, the head under review; the builder has pushed since each of the others.`
     : `Each of these is of an earlier head. The builder has pushed since, and this review is of ${short(head)}.`];
@@ -610,6 +649,35 @@ function outputLines(e: Evidence): string[] {
     ? [`The output is cut: these are its last ${kept.length} of the ${text.length} characters recorded${e.log ? "" : ", and Atelier kept no whole copy"}.`]
     : e.log ? ["This is the end of the output Atelier recorded inline."] : [];
   return [...cut, ...ref, block(kept, "text")];
+}
+
+// The runner's own run of the changed tests and the typecheck in a clean
+// clone of the head (t732). Evidence for a different head, or none, reads as
+// not run: only a recorded pass reads as passing.
+function runnerEvidenceLines(evidence: RunnerEvidence | null, head: string): string[] {
+  if (!evidence) return ["The review runner recorded no clean-clone run for this review: the changed tests and the typecheck were not run. That says nothing of whether they pass."];
+  if (evidence.head !== head) return [`The review runner's clean-clone run was of ${code(evidence.head)}, not the head under review, so the changed tests and the typecheck were not run at this head.`];
+  const one = (name: string, run: RunnerRun): string[] => {
+    const cmd = run.command ? ` (${code(run.command)})` : "";
+    const files = run.files?.length ? [`Test files run (${run.files.length}):`, block(run.files.join("\n"))] : [];
+    const tail = () => {
+      const text = (run.output ?? "").replace(/\r\n/g, "\n");
+      if (!text.trim()) return ["No output was recorded."];
+      const kept = text.length > EVIDENCE_OUTPUT_MAX ? text.slice(-EVIDENCE_OUTPUT_MAX).replace(/^[\udc00-\udfff]/, "") : text;
+      return [...(kept.length < (run.outputLength ?? text.length) ? [`The output is cut: these are its last ${kept.length} of ${run.outputLength ?? text.length} characters.`] : []), block(kept, "text")];
+    };
+    switch (run.status) {
+      case "pass": return [`- ${name}: passed${cmd}.`, ...files];
+      case "fail": return [`- ${name}: FAILED${cmd}.`, ...files, ...tail()];
+      case "none": return [`- ${name}: none. The diff added or changed no test file, so no tests were run.`];
+      default: return [`- ${name}: not run${cmd}${run.reason ? `, because ${inline(run.reason)}` : ""}. This is not a pass.`];
+    }
+  };
+  return [
+    `Run by the review runner in a clean clone of ${code(head)}, through the host slot wrapper. Only the tests the diff added or changed are run, not the full suite.`,
+    ...one("Changed tests", evidence.tests),
+    ...one("Typecheck", evidence.typecheck),
+  ];
 }
 
 function logRef(ref: LargeRef): string[] {

@@ -298,10 +298,16 @@ export async function renewWorkspaceToken(name, id, as, why) {
   if (renewedThisCommand) die(`The server still refused this workspace's token after it was renewed. Run atelier start ${id} --as ${as}.`);
   let item, r;
   try {
-    item = (await request("GET", I(name, id), undefined, as)).item;
-    if (item.owner !== as) stuck(`${id} is held by ${item.owner ?? "nobody"} now, so it cannot be renewed for ${as}.`);
+    const read = await request("GET", I(name, id), undefined, as);
+    item = read.item;
+    if (item.owner !== as) {
+      const notice = takenBackNotice(read, as, id);
+      if (notice) die(notice);
+      stuck(`${id} is held by ${item.owner ?? "nobody"} now, so it cannot be renewed for ${as}.`);
+    }
     r = await request("POST", `${I(name, id)}/claim`, {}, as, item.runner ? { "x-atelier-runner": item.runner } : {});
   } catch (error) {
+    if (isRunnerForbidden(error)) die(noLongerHolds(id), error.code);
     if (error instanceof RequestError) stuck(`Renewing it failed: ${error.message}.`, error.code);
     throw error;
   }
@@ -816,6 +822,10 @@ export function fieldsArg(cmd) {
     if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS[cmd][flag]);
     out[key] = values.map((v) => v.trim());
   }
+  if (cmd === "edit" && args.context !== undefined) {
+    if (typeof args.context !== "string") die(FLAGS.edit.context);
+    out.context = args.context.trim();
+  }
   const gate = args["next-gate"];
   if (gate !== undefined) {
     if (typeof gate !== "string" || (!gate.trim() && cmd !== "edit")) die(FLAGS[cmd]["next-gate"]);
@@ -987,6 +997,31 @@ export async function requestText(path, as) {
 
 export const P = (name) => `/projects/${encodeURIComponent(name)}`;
 export const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
+
+// What a holder is told when the developer's dispatch took the task back
+// (t391), read from the events the task answers with, newest first (the
+// ledger's detail). The notice is given only when the most recent event that
+// ended this actor's claim is that release: a take-back followed by a new claim
+// and an ordinary release says nothing. Null when the task is still the
+// holder's.
+export function takenBackNotice(d, as, id) {
+  if (d.item?.owner === as) return null;
+  for (const e of d.events ?? []) {
+    if (e.kind === "item.released" && e.data?.from === as) {
+      const note = String(e.data?.note ?? "");
+      return note.startsWith("taken back by the developer") ? `${id} was ${note}, so it is no longer yours. Stop work on it; your commits stay on its workspace for the next builder.` : null;
+    }
+    if (e.kind === "item.handoff" && e.data?.from === as) return null;
+    if (e.kind === "item.abandoned") return null;
+    if (e.kind === "item.claimed" && e.actor !== as) return null;
+  }
+  return null;
+}
+
+// A runner's job is dropped when a task is taken back, so the task is refused
+// it (runner_forbidden); that, or a refused read, is said plainly (t391).
+export const noLongerHolds = (id) => `this workspace no longer holds ${id} (it may have been taken back by the developer's dispatch): run atelier show ${id}`;
+export const isRunnerForbidden = (error) => error instanceof RequestError && /^runner_forbidden\b/.test(error.message);
 export const short = (s) => (s ? s.slice(0, 8) : "—");
 
 // The reader readCheckLog (src/check-failure.ts) takes: a stored check log
@@ -1081,6 +1116,16 @@ export async function claimWorkspace(name, id, as, runner) {
   return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
 }
 
+// Moves a fast clone aside to a name no later take uses, and answers it.
+function parkFastWorkspace(dir) {
+  for (let n = 0; ; n++) {
+    const parked = `${dir}.parked-${Date.now()}${n ? `-${n}` : ""}`;
+    if (existsSync(parked)) continue;
+    renameSync(dir, parked);
+    return parked;
+  }
+}
+
 // Where a fast build is made (t589): apart from the task's fork clone, which
 // a claim in full mode may have left with work in it.
 export function fastWorkspacePath(name, id) {
@@ -1090,19 +1135,26 @@ export function fastWorkspacePath(name, id) {
 // In fast mode, take a dispatched build without a fork (POST fast-take) and
 // make a clean clone of main for it: the baseline the take's read token
 // reads, at the project's branch. No write token exists, and the clone keeps
-// no remote, so nothing is pushed from it. A clone an earlier run of the same
-// holder left with commits past the main it was made at is kept instead, so
-// a commit made and never reported is reported, not lost.
-export async function fastTakeWorkspace(name, id, as, runner) {
+// no remote, so nothing is pushed from it: a fast build's commits live in
+// this clone alone until the developer lands them (t616). A clone an earlier
+// run of the same holder left with commits past the main it was made at, for
+// this same dispatch, is kept instead, so a commit made and never reported
+// is reported, not lost. `dispatch` is the dispatch the runner was assigned
+// (its `at`); a clone made for another dispatch is never resumed, since its
+// commit answers instructions that were replaced. Any other existing clone
+// is moved aside, never removed, and the move is said.
+export async function fastTakeWorkspace(name, id, as, runner, dispatch = null) {
   const r = await call("POST", `${I(name, id)}/fast-take`, {}, as, runner ? { "x-atelier-runner": runner } : {});
   const dir = fastWorkspacePath(name, id);
   if (existsSync(join(dir, ".git"))) {
     const base = wsConfig("base", dir), head = git(["rev-parse", "--verify", "-q", "HEAD"], { cwd: dir, allowFail: true });
     const at = head.status === 0 ? head.stdout.trim() : null;
-    if (base && at && at !== base && wsConfig("item", dir) === id && wsConfig("actor", dir) === as && holds(base, at, dir)) {
+    const same = dispatch === null || wsConfig("dispatch", dir) === dispatch;
+    if (base && at && at !== base && same && wsConfig("item", dir) === id && wsConfig("actor", dir) === as && holds(base, at, dir)) {
       return { item: r.item, dir, base, head: at, resumed: true };
     }
-    rmSync(dir, { recursive: true, force: true });
+    const parked = parkFastWorkspace(dir);
+    console.log(`The fast clone ${dir} of ${id} is kept, not removed: it was moved to ${parked}. Any commit it holds that was never landed is still there.`);
   }
   mkdirSync(join(CACHE, "fast", name), { recursive: true });
   const branch = r.baseline.defaultBranch;
@@ -1110,7 +1162,7 @@ export async function fastTakeWorkspace(name, id, as, runner) {
   git(["remote", "remove", "origin"], { cwd: dir });
   installMergeConfig(dir, { git });
   const base = git(["rev-parse", "HEAD"], { cwd: dir }).trim();
-  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, base, fast: "true" })) {
+  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, base, fast: "true", ...(dispatch === null ? {} : { dispatch }) })) {
     git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
   }
   const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
