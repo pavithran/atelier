@@ -2741,7 +2741,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try { review = await L.requestReview(id, actor, reviewer, await index(env).models(), true, false, undefined, await index(env).runnerOffers()); }
         catch (err) { const e = parseRuleError(err); review = { error: e?.code ?? "failed", detail: e?.detail ?? String(err) }; }
       }
-      return json({ ...landed, review });
+      // Whether the review is still due, read from the ledger after the ask
+      // (t600): no reviewer named, or a refused or failed ask, leaves it owed,
+      // and the answer says so rather than leaving the developer to infer it.
+      const owed = (await L.fastLandings()).find((l) => l.item === id)?.owed ?? true;
+      return json({ ...landed, review, owed });
     }
     case "review-request": {
       requireOwner(env, actor);

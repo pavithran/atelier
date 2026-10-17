@@ -97,6 +97,7 @@ async function serve(t, f) {
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t2") body = { item: { id: "t2", title: "Two", state: "accepted", head: f.accepted, acceptedHead: f.accepted, owner: "codex/test" }, policy: { commitIdentity: IDENTITY, checks: [], protected: [] }, events: [], evidence: [], reviews: [], gate: {} };
       else if (req.method === "POST" && req.url === "/api/projects/demo/items/t2/read-token") body = { remote: f.bare, token: TOKEN };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t5") body = { item: { id: "t5", title: "Five", state: "accepted" } };
+      else if (req.method === "POST" && req.url === "/api/projects/demo/items/t5/landed-fast" && f.landedFast) body = f.landedFast(JSON.parse(raw));
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t1") body = { item: { id: "t1", title: "One", state: "merged" } };
       else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
       res.writeHead(status, { "content-type": "application/json" });
@@ -848,4 +849,55 @@ test("the real atelier identity prints the project's identity as JSON, and fails
   const none = await run(t, f, a, ["identity", "--json", "--project", "demo"]);
   assert.notEqual(none.code, 0);
   assert.match(none.output, /demo has no commit identity in its policy/);
+});
+
+// t600 (astra, round 1): fast land's report of the post-merge review, run
+// through the real CLI against a stand-in server. Finding they would have
+// caught: removing printLanded's stderr OWED warning, or reading a missing
+// `owed` as settled, left every test passing.
+const inIdentity = (f, dir) => {
+  f.git(dir, "checkout", "-q", "-b", "task", "main");
+  writeFileSync(join(dir, "task.txt"), "task\n");
+  f.git(dir, "add", ".");
+  execFileSync("git", ["commit", "-q", "-m", "task\n\nAgent: codex/test"], { cwd: dir, env: { ...f.env, GIT_AUTHOR_NAME: IDENTITY.name, GIT_AUTHOR_EMAIL: IDENTITY.email, GIT_COMMITTER_NAME: IDENTITY.name, GIT_COMMITTER_EMAIL: IDENTITY.email } });
+  const sha = f.git(dir, "rev-parse", "HEAD");
+  f.git(dir, "checkout", "-q", "main");
+  return sha;
+};
+async function landAnswering(t, answer) {
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const sha = inIdentity(f, dir);
+  f.landedFast = (receipt) => ({ item: { id: "t5" }, receipt, ...answer });
+  const r = await run(t, f, a, ["fast", "land", `t5=${sha}`, "--typecheck", "true", "--test", "true", "--project", "demo"], { cwd: dir });
+  return { r, f };
+}
+const OWED_LINE = /OWED: the post-merge review of t5 is not asked\. Ask one now: atelier review-request t5 --reviewer H\/M --project demo/;
+
+test("fast land with no review asked says OWED and the command to ask one, and still succeeds (t600)", async (t) => {
+  const { r } = await landAnswering(t, { review: null, owed: true });
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /t5 landed in fast mode: .*no post-merge review asked/);
+  assert.match(r.output, OWED_LINE);
+});
+
+test("fast land whose review ask failed names the failure and says OWED, exit 0 (t600)", async (t) => {
+  const { r } = await landAnswering(t, { review: { error: "self_review", detail: "x contributed to t5" }, owed: true });
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /post-merge review NOT asked \(self_review\): x contributed to t5/);
+  assert.match(r.output, OWED_LINE);
+});
+
+test("fast land against an older server whose answer has no owed treats the review as owed (t600)", async (t) => {
+  const { r } = await landAnswering(t, { review: null });
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, OWED_LINE);
+});
+
+test("fast land with the review asked and owed false prints no warning (t600)", async (t) => {
+  const { r } = await landAnswering(t, { review: { requested: true, request: 7, reviewer: "claude-code/sonnet-5" }, owed: false });
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /post-merge review request 7 asked of claude-code\/sonnet-5/);
+  assert.doesNotMatch(r.output, /OWED/);
 });
