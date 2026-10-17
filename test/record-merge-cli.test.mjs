@@ -24,12 +24,15 @@ async function fixture(t, capabilities = ["land.record-merge.v1"], answer = null
   const checkout = join(root, "checkout");
   mkdirSync(checkout);
   const requests = [];
+  let gets = 0, checked = "";
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
     if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ commit: "abcdef0123", capabilities })); }
     requests.push({ method: req.method, path: req.url, actor: req.headers["x-atelier-actor"], body });
     let status = 200, data;
+    // The task's head moves on after the first read (t726 round 1).
+    if (req.method === "GET" && req.url === "/api/projects/atelier/items/t627") { gets++; [status, data] = [200, { item: { id: "t627", base: "0".repeat(40), head: gets === 1 ? checked : "9".repeat(40) } }]; res.writeHead(status, { "content-type": "application/json" }); return res.end(JSON.stringify(data)); }
     if (req.method === "POST" && req.url === "/api/projects/atelier/items/t627/record-merge") {
       [status, data] = answer ?? [200, { item: { id: "t627", state: "merged" }, record: { mergeCommit: body.mergeCommit, commit: body.head, reviews: body.reviews, outside: true } }];
     } else { status = 404; data = { error: "not_found", detail: "no such route" }; }
@@ -48,7 +51,7 @@ async function fixture(t, capabilities = ["land.record-merge.v1"], answer = null
     const status = await new Promise((done) => child.on("close", done));
     return { status, stdout, stderr };
   }
-  return { run, requests, checkout };
+  return { run, requests, checkout, taskHead: (h) => { checked = h; } };
 }
 
 test("atelier record-merge sends the merge, the head and each review parsed, and says it was recorded as merged outside Atelier", async (t) => {
@@ -139,4 +142,12 @@ test("record-merge on a history-since baseline refuses a merge whose second pare
   assert.equal(r.status, 1);
   assert.match(r.stderr, /no commit paired with .*atelier sync/);
   assert.deepEqual(f.requests, []);
+});
+
+test("record-merge on a history-since baseline sends the head it checked, though the task has advanced since (t726 round 1)", async (t) => {
+  const f = await historySince(t);
+  f.taskHead(f.head);
+  const r = await f.run(["record-merge", "t627", "--merge", f.merge, "--review", f.review]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(f.requests.find((x) => x.method === "POST").body.head, f.head);
 });

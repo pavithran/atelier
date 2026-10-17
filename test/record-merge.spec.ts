@@ -362,7 +362,12 @@ it("still refuses a merge the baseline cannot map, naming atelier sync, and the 
   const { generation } = await L.claim(item.id, BUILDER);
   await L.setFork(item.id, "record-merge-unmapped--t1", BASE, BUILDER);
   await L.recordToken(item.id, BUILDER, generation, null, "tok-unmapped");
-  await refusal(await call(item.id, { mergeCommit: "1".repeat(40), baselineMerge: "2".repeat(40), head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
+  // The task has a pushed head, which a missing head would otherwise pick up.
+  await L.recordPush(item.id, BUILDER, HEAD, HEAD);
+  // The project's hash is on the baseline, but its pairing is not: the pairing decides.
+  await refusal(await call(item.id, { mergeCommit: MERGE, baselineMerge: "2".repeat(40), head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
+  // A pairing without the head the CLI checked is refused, not completed with the task's current head.
+  await refusal(await call(item.id, { mergeCommit: "1".repeat(40), baselineMerge: FLAT, reviews }), 400, "bad_record", /paired baseline commit also names the head/);
   await refusal(await call(item.id, { mergeCommit: "1".repeat(40), head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
   // A pairing is not a way past main: a commit only another branch holds is refused.
   await refusal(await call(item.id, { mergeCommit: "1".repeat(40), baselineMerge: OTHER, head: HEAD, reviews }), 409, "merge_not_on_main", /atelier sync/);
