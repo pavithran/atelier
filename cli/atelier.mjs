@@ -816,6 +816,10 @@ export function fieldsArg(cmd) {
     if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS[cmd][flag]);
     out[key] = values.map((v) => v.trim());
   }
+  if (cmd === "edit" && args.context !== undefined) {
+    if (typeof args.context !== "string") die(FLAGS.edit.context);
+    out.context = args.context.trim();
+  }
   const gate = args["next-gate"];
   if (gate !== undefined) {
     if (typeof gate !== "string" || (!gate.trim() && cmd !== "edit")) die(FLAGS[cmd]["next-gate"]);
