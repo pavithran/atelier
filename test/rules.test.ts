@@ -1837,7 +1837,11 @@ test("the gate counts the approvals a risk class needs; a project without riskRe
   const core = pass({ changedPaths: ["src/rules.ts"] });
   assert.match(gate(item(), riskPolicy, [core], [base]).blockers.join(), /core change: needs 2 independent reviews.*1 so far/);
   assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, note: "again" }]).ready, false);
-  assert.equal(gate(item(), riskPolicy, [core], [base, sameFamily]).ready, false);
+  // One model under an alias, a profile or another harness is one reviewer, not two.
+  for (const variant of ["codex/gpt-5.5:high", "CODEX/GPT-5.5", "opencode/gpt-5.5"]) {
+    assert.equal(gate(item(), riskPolicy, [core], [base, { ...base, by: variant }]).ready, false, variant);
+    assert.equal(gateApprovals(item(), riskPolicy, [core], [base, { ...base, by: variant }]).length, 1, variant);
+  }
   const both = gate(item(), riskPolicy, [core], [base, second]);
   assert.deepEqual([both.ready, both.riskClass], [true, "core"]);
   // An empty change is core.
