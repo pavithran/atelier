@@ -1942,10 +1942,10 @@ export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evide
 // for a coordinated one under an execution policy), none for any other, each
 // tested as its class is. With them (t631): what the change's risk class
 // needs, each approval tested as a protected change's if the change is
-// protected or core and as a coordinated change's otherwise.
+// protected and as a coordinated change's otherwise.
 export function approvalsNeeded(policy: ProjectPolicy, kind: ChangeClass | null, paths: readonly string[] | null | undefined): { count: number; as: "protected" | "coordinated" | null; risk: RiskClass | null } {
   const risk = riskNeed(paths, policy);
-  if (risk) return { count: risk.reviews, as: kind === "protected" || risk.risk === "core" ? "protected" : "coordinated", risk: risk.risk };
+  if (risk) return { count: risk.reviews, as: kind === "protected" ? "protected" : "coordinated", risk: risk.risk };
   const as = kind === "protected" || (policy.execution !== undefined && kind === "coordinated") ? kind : null;
   return { count: as ? 1 : 0, as, risk: null };
 }
@@ -1956,7 +1956,10 @@ function approvalsCounted(item: Item, policy: ProjectPolicy, counting: Review[],
   if (options.reviewHeld || !need.as || !need.count) return [];
   const contributors = contributorsOf(item);
   const single = singleFamily(policy);
-  return counting.filter((r) => independentApproval(r, need.as!, contributors, owner, single));
+  // One approval per model (modelKey): an alias, a profile or another harness
+  // of one model is the same reviewer, not a second.
+  const seen = new Set<string>();
+  return counting.filter((r) => independentApproval(r, need.as!, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
 }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {
