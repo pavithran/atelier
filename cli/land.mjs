@@ -191,6 +191,11 @@ import { workspaceNotice } from "./review-notice.mjs";
 // writes nothing.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
+// How long a wait on a landing Workflow keeps reading it again after reads
+// fail, backing off between tries, before it gives up (t368: one failed read
+// of a live instance ended a wait that a minute later attached to it).
+const READ_WINDOW_MS = Number(process.env.ATELIER_LAND_READ_WINDOW_MS ?? 5 * 60_000);
+const READ_BACKOFF_MAX_MS = 30_000;
 // The review wait outlasts a build on the runner (its task timeout is 45
 // minutes), since a review queues behind every older build.
 const REVIEW_TIMEOUT_MS = Number(process.env.ATELIER_LAND_REVIEW_TIMEOUT ?? 60 * 60_000);
@@ -1882,6 +1887,36 @@ export function dirtyPaths(listing, { unstaged = false } = {}) {
 // It ends when the instance completes or fails. Closing the laptop stops
 // only this view: the Workflow keeps its place, and the same command run
 // again attaches and goes on from the stage it reached.
+// The retry of a failed read: every failure asks for the next wait, doubling
+// from baseMs up to maxMs and never past the window, and says when the
+// window has run out; one good read starts the window afresh. The clock is
+// injected so a test needs no real time.
+export function readRetry({ now = Date.now, windowMs = READ_WINDOW_MS, baseMs = POLL_MS, maxMs = READ_BACKOFF_MAX_MS } = {}) {
+  let since = null, attempt = 0;
+  return {
+    ok() { since = null; attempt = 0; },
+    next() {
+      const t = now();
+      since ??= t;
+      const tried = t - since;
+      if (tried >= windowMs) return { giveUp: true, tried };
+      return { giveUp: false, tried, wait: Math.min(baseMs * 2 ** attempt++, maxMs, windowMs - tried) };
+    },
+  };
+}
+
+// Whether the server has answered that the landing Workflow is gone: the
+// ledger remembers none, it names another instance, the read error says the
+// instance does not exist, or the last status it saw was an end. Any other
+// failed read (a network or 5xx error, an unknown status) says nothing about
+// the instance and is read again.
+export function workflowIsGone(read, startedInstance) {
+  if (!read?.instance) return true;
+  if (read.instance !== startedInstance) return true;
+  if (/not found|not_found|does not exist|no such/i.test(read.readError ?? "")) return true;
+  return !read.status && ["complete", "errored", "terminated"].includes(read.lastStatus?.status);
+}
+
 const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused", "rollingBack"];
 
 async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, moved }) {
@@ -1891,7 +1926,15 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
   const wfPath = `${itemPath}/landing-workflow`;
   const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
   const record = landRecorder(io, itemPath);
-  const sleep = () => new Promise((ok) => setTimeout(ok, POLL_MS));
+  const sleep = (ms = POLL_MS) => new Promise((ok) => setTimeout(ok, ms));
+  const reads = readRetry({ now: io.now });
+  const unreadable = async (why) => {
+    const step = reads.next();
+    if (step.giveUp) return step;
+    print(`Warning: the landing Workflow could not be read (${why}); trying again in ${Math.round(step.wait / 1000)}s, for up to ${Math.round(READ_WINDOW_MS / 1000)}s in all.`);
+    await sleep(step.wait);
+    return null;
+  };
   // Each event and lease call names the instance this command attached to,
   // so once the server replaces it (t430) they are refused rather than
   // advance the replacement or touch its lease.
@@ -1952,7 +1995,11 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
   for (;;) {
     let read;
     try { read = await request("GET", wfPath); }
-    catch (error) { print(`Warning: the landing Workflow could not be read (${error.message}); trying again.`); await sleep(); continue; }
+    catch (error) {
+      const over = await unreadable(error.message);
+      if (over) die(`the landing Workflow of ${id} could not be read for ${Math.round(over.tried / 1000)}s (last error: ${error.message}); instance ${lastInstance ?? "none"} is not known to have ended. Its lease lapses on its own. To attach again, run: atelier land ${id} --workflow.`, 1);
+      continue;
+    }
     const { instance, status, stage, round = 0, detail, files } = read ?? {};
     // A merged task reports no landing instance any more; when this CLI did
     // the merge itself, the landing is over, not lost (t308): say so and free
@@ -1962,9 +2009,15 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
       print(`${id} landed through the landing Workflow; the lease is released.`);
       return;
     }
+    let tried = "";
+    if (!workflowIsGone(read, started.instance) && (!status || status.status === "unknown") && !mergedHere) {
+      const over = await unreadable(read?.readError ?? "no status returned");
+      if (!over) continue;
+      tried = `the read failed for ${Math.round(over.tried / 1000)}s; `;
+    } else if (status && status.status !== "unknown") reads.ok();
     if (!instance || !status || status.status === "unknown" || instance !== started.instance) {
       const last = instance === started.instance ? read?.lastStatus ?? lastStatus : lastStatus;
-      die(`the landing Workflow of ${id} can no longer be read (instance ${lastInstance ?? "none"}); last status: ${last?.status ?? "unknown"}; last error: ${last?.error?.message ?? detail ?? "none recorded"}; read error: ${read?.readError ?? (instance && instance !== started.instance ? `replaced by ${instance}` : "no status returned")}; ${await queueState(read)}. Its lease lapses on its own. Inspect it with: npx wrangler workflows instances describe landing ${lastInstance}. To start or attach again, run: atelier land ${id} --workflow (a missing instance is cleared automatically; a live instance is reattached).`, 1);
+      die(`${tried}the landing Workflow of ${id} can no longer be read (instance ${lastInstance ?? "none"}); last status: ${last?.status ?? "unknown"}; last error: ${last?.error?.message ?? detail ?? "none recorded"}; read error: ${read?.readError ?? (instance && instance !== started.instance ? `replaced by ${instance}` : "no status returned")}; ${await queueState(read)}. Its lease lapses on its own. Inspect it with: npx wrangler workflows instances describe landing ${lastInstance}. To start or attach again, run: atelier land ${id} --workflow (a missing instance is cleared automatically; a live instance is reattached).`, 1);
     }
     lastStatus = status;
     lastInstance = instance;
