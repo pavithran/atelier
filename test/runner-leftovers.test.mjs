@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { leftoverFiles, runOutcome, runTask } from "../cli/runner.mjs";
+import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execute, runOutcome, runTask, workspaceLeftovers } from "../cli/runner.mjs";
 
 // t365: on 2026-10-09 DeepSeek committed all of t353 but left an empty,
 // unreferenced src/review/skipped.ts untracked. The finish refused, the claim
@@ -27,19 +31,30 @@ function fixture({ status, followUp = () => status, empty = [], finishFails = fa
     async brief(_w, text) { briefs.push(text); return { file: "/cache/work/atelier/brief.txt" }; },
     async harness() { harnessRuns++; if (harnessRuns > 1) current = followUp(current); return { code: 0, timedOut: false, output: "", stderr: "" }; },
     async removeBrief() {}, async dataHome() { return { dir: "/cache/data" }; }, async removeDataHome() {},
-    async git(args) { calls.push(`git ${args[0]}`); return current; },
+    async git(args) { calls.push(`git ${args[0]}`); return gitOutput(current, args); },
     isEmptyFile: (file) => empty.some((name) => file.endsWith(name)),
     removeFile: (file) => { const name = file.split("/").slice(-3).join("/"); current = current.split("\0").filter((e) => !e.endsWith(name)).join("\0"); calls.push("remove"); },
   };
   return { io, calls, logs, briefs, runs: () => harnessRuns };
 }
+// A porcelain-style fixture ("?? path" untracked, " M path" changed), answered
+// the way the two git listings answer it.
 const porcelain = (...entries) => entries.map((e) => `${e}\0`).join("");
+const gitOutput = (status, args) => status.split("\0").filter(Boolean)
+  .filter((e) => (args[0] === "ls-files") === e.startsWith("??")).map((e) => `${e.slice(3)}\0`).join("");
 
-test("leftoverFiles reads untracked and changed paths, and skips a rename's source", () => {
-  assert.deepEqual(leftoverFiles(porcelain("?? src/a.ts", " M src/b.ts", "R  src/new.ts", "src/old.ts")), [
-    { path: "src/a.ts", untracked: true }, { path: "src/b.ts", untracked: false }, { path: "src/new.ts", untracked: false },
-  ]);
-  assert.deepEqual(leftoverFiles(""), []);
+test("workspaceLeftovers through the real execute finds a changed tracked file first, which a trimmed porcelain listing misreads", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "t365-"));
+  const sh = (cmd) => execSync(cmd, { cwd: dir, stdio: "ignore" });
+  sh("git init -q && git -c user.name=a -c user.email=a@b.c commit -q --allow-empty -m x");
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "a.ts"), "1");
+  sh("git add a.ts && git -c user.name=a -c user.email=a@b.c commit -q -m y");
+  writeFileSync(join(dir, "a.ts"), "2");
+  writeFileSync(join(dir, "src", "new.ts"), "");
+  // io.git as runRunner builds it: execute, whose output is trimmed.
+  const git = async (args, { cwd, raw }) => { const r = await execute(["git", ...args], { cwd, capture: true, captureError: true }); return raw ? r.output : r.output.trim(); };
+  assert.deepEqual(await workspaceLeftovers(git, dir), [{ path: "a.ts", untracked: false }, { path: "src/new.ts", untracked: true }]);
 });
 
 test("a build whose only leftover is an empty untracked file removes it, and is no failure", async () => {

@@ -1313,21 +1313,14 @@ export function validationBlockedReport(output) {
 // committed all of t353 but left an empty, unreferenced src/review/skipped.ts
 // untracked; the finish refused ("commit your changes before finishing"), the
 // runner kept the claim, and the finished work sat until the developer removed
-// the file by hand. `status` is `git status --porcelain -z --untracked-files=all`;
-// the answer is every path with a change not committed, `untracked` marking
-// the ones git does not know.
-export function leftoverFiles(status) {
-  const parts = String(status ?? "").split("\0");
-  const files = [];
-  for (let i = 0; i < parts.length; i++) {
-    const entry = parts[i];
-    if (entry.length < 4) continue;
-    const code = entry.slice(0, 2);
-    // A rename or copy is followed by its source path, which is no file of its own.
-    if (/[RC]/.test(code)) i++;
-    files.push({ path: entry.slice(3), untracked: code === "??" });
-  }
-  return files;
+// the file by hand. `git` is io.git. The two lists are plain NUL-separated
+// paths, not `status --porcelain`, whose first line starts with a space that
+// execute's trim of the output would eat (' M file' read as 'M file').
+export async function workspaceLeftovers(git, cwd) {
+  const list = async (args) => (await git(args, { cwd, raw: true })).split("\0").filter(Boolean);
+  const changed = await list(["diff", "--name-only", "-z", "HEAD"]);
+  const untracked = await list(["ls-files", "-z", "--others", "--exclude-standard"]);
+  return [...changed.map((path) => ({ path, untracked: false })), ...untracked.map((path) => ({ path, untracked: true }))];
 }
 
 // The one follow-up turn's brief: it names the files and asks for a commit or
@@ -1531,7 +1524,7 @@ export async function runTask(assignment, config, name, io) {
   // The leftovers of a build's harness (leftoverFiles); `leftovers` is what
   // remains after the one follow-up turn, for the failure and the run report.
   let leftovers = [];
-  const readLeftovers = async () => leftoverFiles(await io.git(["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: workspace, raw: true }));
+  const readLeftovers = () => workspaceLeftovers(io.git, workspace);
   const removeEmptyUntracked = async (files) => {
     for (const file of files) {
       if (!file.untracked || !io.isEmptyFile?.(join(workspace, file.path))) continue;
