@@ -93,8 +93,12 @@ const recorder = (name, reviewer) => (id, receipt) => call("POST", `${I(name, id
 function printLanded(landed) {
   for (const l of landed) {
     const review = l.answer?.review;
-    const asked = review?.request !== undefined ? `post-merge review request ${review.request} asked of ${review.reviewer}` : review?.error ? `post-merge review not asked: ${review.detail}` : `no post-merge review asked; ask one with atelier review-request ${l.id} --reviewer H/M`;
+    const owed = l.answer?.owed !== false;
+    const asked = review?.request !== undefined ? `post-merge review request ${review.request} asked of ${review.reviewer}` : review?.error ? `post-merge review NOT asked (${review.error}): ${review.detail}` : "no post-merge review asked";
     console.log(`${l.id} landed in fast mode: ${l.commit.slice(0, 12)} merged as ${l.mergeCommit.slice(0, 12)}, built by ${l.builder}; ${asked}`);
+    // A fast landing skips the gate, so its review is owed until asked and
+    // answered (t600): said on stderr, and kept by atelier fast status.
+    if (owed) console.error(`OWED: the post-merge review of ${l.id} is not asked. Ask one now: atelier review-request ${l.id} --reviewer H/M --project ${project()}`);
   }
 }
 

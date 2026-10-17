@@ -1086,7 +1086,7 @@ test("only the project owner can port to an open unclaimed task", () => {
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
 // its pure rules.
-import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST } from "../src/rules.ts";
+import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST, postMergeOwed, postMergeReviewLine, fastLandedLines } from "../src/rules.ts";
 
 test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
   assert.deepEqual(projectMode(null), { mode: "full" });
@@ -1190,6 +1190,21 @@ test("a fast landing's contributors are every agent of the range, and gate revie
   // The earlier commit's model no longer passes as an independent reviewer.
   assert.equal(contributed("codex/gpt-6", contributors), true);
   assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5", contributors: ["nobody", 3] } }]), ["claude-code/opus-5.5"]);
+});
+
+// Astra, 2026-10-13, finding 7: a fast landing with no --reviewer, or whose
+// ask failed, printed "no post-merge review asked" and nothing owed it.
+test("a fast landing's post-merge review is owed until a verdict stands or a request is being served", () => {
+  for (const state of ["approved", "rejected", "open", "claimed"]) assert.equal(postMergeOwed(state), false, state);
+  for (const state of ["not requested", "withdrawn", "answered", "anything new"]) assert.equal(postMergeOwed(state), true, state);
+  assert.match(postMergeReviewLine("t9", { state: "not requested", by: null }), /^OWED: .*t9.*atelier review-request t9 --reviewer H\/M/);
+  assert.equal(postMergeReviewLine("t9", { state: "approved", by: "codex/gpt-6" }), "post-merge review approved by codex/gpt-6");
+  const landing = (item: string, state: string) => ({ item, receipt: { mergeCommit: "a".repeat(40), builder: "claude-code/opus-5.5" }, review: { state, by: null }, fix: null });
+  assert.deepEqual(fastLandedLines([]), ["Nothing landed in fast mode."]);
+  const lines = fastLandedLines([landing("t1", "approved"), landing("t2", "not requested"), landing("t3", "withdrawn")]);
+  assert.match(lines[1], /OWED/);
+  assert.equal(lines.at(-1), "Post-merge reviews still owed: t2, t3. A fast landing is not reviewed until one is asked and answered.");
+  assert.doesNotMatch(fastLandedLines([landing("t1", "open")]).join("\n"), /OWED|still owed/);
 });
 
 test("a same-family post-merge review is accepted only for a task landed in fast mode, and says so", () => {
