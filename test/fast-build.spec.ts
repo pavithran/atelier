@@ -109,7 +109,7 @@ it("in fast mode the runner takes the build with no fork and no write token, rep
   expect(html).toContain(`atelier fast land t1=${BUILT}`);
 
   // The owner's batch lands it; it is no longer listed as ready.
-  await t.L.landedFast("t1", "owner", { commit: BUILT, mergeCommit: "d".repeat(40), builder: ACTOR, tests: { command: "npm test", sha256: "e".repeat(64) } });
+  await t.L.landedFast("t1", "owner", { commit: BUILT, mergeCommit: "d".repeat(40), testedHead: "d".repeat(40), batch: `${"0".repeat(40)}..${"d".repeat(40)}`, builder: ACTOR, tests: { command: "npm test", sha256: "e".repeat(64) } });
   expect(await t.L.fastReadyList()).toEqual([]);
   expect(renderItem(await t.L.project(), await t.L.detail("t1"))).not.toContain("Ready for fast land");
 });

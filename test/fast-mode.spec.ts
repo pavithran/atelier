@@ -25,7 +25,8 @@ const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({
 const POOL = [entry("opus-5.5", "claude-code"), entry("sonnet-5", "claude-code"), entry("gpt-6-astra", "codex")];
 const policy: ProjectPolicy = { checks: ["npm test"], protected: [] };
 const C1 = "c".repeat(40), M1 = "d".repeat(40), M2 = "e".repeat(40);
-const receipt = (commit: string, mergeCommit: string) => ({ commit, mergeCommit, builder: OPUS, tests: { command: "npm test", sha256: "f".repeat(64) } });
+const START = "0".repeat(40);
+const receipt = (commit: string, mergeCommit: string) => ({ commit, mergeCommit, testedHead: mergeCommit, batch: `${START}..${mergeCommit}`, builder: OPUS, tests: { command: "npm test", sha256: "f".repeat(64) } });
 
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 async function project(name: string) {
@@ -334,3 +335,4 @@ it("a fast landing with no recorded direction reads as before on the task page",
   expect(html).not.toContain("words: “");
   expect(html).not.toContain("relayed by");
 });
+

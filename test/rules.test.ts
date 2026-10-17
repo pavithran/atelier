@@ -1153,11 +1153,15 @@ test("the developer's direction is their quoted words and the model acting on th
 
 test("a landed-fast receipt needs both commits, the builder, the test command and its output's sha256, in fast mode only", () => {
   const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
-  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };
+  const body = { commit: H1, mergeCommit: H2, testedHead: H2, batch: `${H1}..${H2}`, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };
   const r = fastReceipt(body, fast, "owner", "2026-10-13T01:00:00Z");
   assert.deepEqual(r, { ...body, reason: "forks fail", at: "2026-10-13T01:00:00Z", by: "owner" });
   assert.throws(() => fastReceipt(body, { mode: "full" }, "owner", "x"), (e: RuleError) => e.code === "not_fast_mode");
   for (const bad of [{ commit: "abc" }, { mergeCommit: null }, { builder: "nobody" }, { tests: { command: "npm test", sha256: "short" } }, { tests: { command: "", sha256: "c".repeat(64) } }, { tests: { command: "npm test", sha256: "c".repeat(64), where: "laptop" } }]) {
+    assert.throws(() => fastReceipt({ ...body, ...bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
+  }
+  // The tested head and the batch (t601): a receipt without them, or whose batch does not end at the tested head, is refused.
+  for (const bad of [{ testedHead: undefined }, { testedHead: "abc" }, { batch: undefined }, { batch: H2 }, { batch: `${H1}..${H1}` }, { batch: `${H1}..${H2}x` }]) {
     assert.throws(() => fastReceipt({ ...body, ...bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
   }
   // Where the tests ran (t588): the default run in a clean clone, a given --test in the checkout.
@@ -1177,7 +1181,7 @@ test("a landed-fast receipt needs both commits, the builder, the test command an
 test("a fast landing's contributors are every agent of the range, and gate review independence (t603)", () => {
   const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
   const tests = { command: "npm test", sha256: "c".repeat(64) };
-  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", contributors: ["codex/gpt-6"], tests };
+  const body = { commit: H1, mergeCommit: H2, testedHead: H2, batch: `${H1}..${H2}`, builder: "claude-code/opus-5.5", contributors: ["codex/gpt-6"], tests };
   assert.deepEqual(fastReceipt(body, fast, "owner", "x").contributors, ["claude-code/opus-5.5", "codex/gpt-6"]);
   assert.equal("contributors" in fastReceipt({ ...body, contributors: undefined }, fast, "owner", "x"), false);
   for (const bad of ["codex", ["nobody"], [7], Array(51).fill("codex/gpt-6")]) {
