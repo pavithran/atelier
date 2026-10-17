@@ -86,11 +86,29 @@ export function liveProcesses({ ps, lsof, work, skip = [], project = null }) {
   return { runners: runners.sort((a, b) => a.pid - b.pid), agents: agents.sort(byTask) };
 }
 
+// The runners that share a name (compared without case, as the server does),
+// as [{ name, pids }]. One name is one process: a second one polls the queue
+// as the first and the two race for the same tasks (t581).
+export function duplicateRunners(runners) {
+  const byName = new Map();
+  for (const r of runners) byName.set(r.name.toLowerCase(), [...(byName.get(r.name.toLowerCase()) ?? []), r.pid]);
+  return [...byName].filter(([, pids]) => pids.length > 1).map(([name, pids]) => ({ name, pids }));
+}
+
+// Why a runner called `name` may not start: another process with that name is
+// live on this Mac. null when none is. The caller leaves out its own pid.
+export function startRefusal(runners, name) {
+  const pids = runners.filter((r) => r.name.toLowerCase() === name.toLowerCase()).map((r) => r.pid);
+  if (!pids.length) return null;
+  return `a runner named ${name} is already running on this Mac (pid ${pids.join(", ")}). Stop it, or start this one with --replace to stop it first.`;
+}
+
 // The section: one line per runner, then one per task with its agents.
 export function formatProcesses({ runners, agents }) {
   const lines = ["Live on this Mac:"];
   for (const r of runners) lines.push(`  runner ${r.name}  pid ${r.pid}  up ${r.age}${r.tasks.length ? `  working on ${r.tasks.join(", ")}` : "  idle"}`);
   if (!runners.length) lines.push("  no runner process");
+  for (const d of duplicateRunners(runners)) lines.push(`  duplicate runner name ${d.name}: pids ${d.pids.join(", ")}; keep one and stop the rest`);
   const keys = [...new Set(agents.map((a) => `${a.project}/${a.id}`))];
   for (const key of keys) {
     const mine = agents.filter((a) => `${a.project}/${a.id}` === key);

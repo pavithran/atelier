@@ -1,5 +1,6 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { I, OWNER, apiToken, args, cfg, die, discoverModels, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
+import { startRefusal } from "../procs.mjs";
+import { I, OWNER, apiToken, args, cfg, die, discoverModels, liveHere, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // Queue polling has already resolved the runner's identity. A failed policy
 // read must reach the job's infrastructure handling, never the process.exit
@@ -25,7 +26,17 @@ export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { reexecSelf, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
+  const { RELOAD_HANDOFF, reexecSelf, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
+  // One name is one process (t581). A reload's replacement starts beside the
+  // runner it replaces, so it is let through; so is a start that cannot read
+  // the process table, which says so.
+  if (typeof args.name === "string" && !process.env[RELOAD_HANDOFF]) {
+    const live = liveHere();
+    if (!live) console.log("runner: the process table could not be read, so a second runner of this name is not ruled out.");
+    const refusal = live && startRefusal(live.runners, args.name);
+    if (refusal && args.replace !== true) die(refusal);
+    if (refusal) await stopNamed(live.runners.filter((r) => r.name.toLowerCase() === args.name.toLowerCase()).map((r) => r.pid));
+  }
   // The runner's own server calls, every one through the transport (t478):
   // the queue poll, the plan job's brief and document, the run reports and
   // the review skips, under the runner's token and the name it polls as,
@@ -176,4 +187,17 @@ export default async function runnerCommand() {
       },
     });
   } catch (error) { die(error.message); }
+}
+
+// SIGTERM each pid and wait up to ten seconds for it to go; one that stays is
+// a refusal, never a second runner beside it.
+async function stopNamed(pids) {
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGTERM"); } catch (error) { die(`could not stop the runner with pid ${pid}: ${error.message}`); }
+  }
+  for (let i = 0; i < 50 && pids.some(alive); i++) await new Promise((r) => setTimeout(r, 200));
+  const left = pids.filter(alive);
+  if (left.length) die(`the runner with pid ${left.join(", ")} did not stop within ten seconds; this one was not started.`);
+  console.log(`runner: stopped pid ${pids.join(", ")}.`);
 }

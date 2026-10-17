@@ -3414,9 +3414,9 @@ export async function reloadCheck(started, { version, checkout, signal }) {
 const targetLine = (check) => check.target === check.main ? `main is at ${short(check.target)}` : `the server runs ${short(check.target)}`;
 
 export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
-  if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
-      (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
-    throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
+  if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate", "replace"].includes(key) || args.multi[key].length !== 1) ||
+      (args.once !== undefined && args.once !== true) || (args.replace !== undefined && args.replace !== true) || (args.config !== undefined && typeof args.config !== "string")) {
+    throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate] [--replace]");
   }
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;

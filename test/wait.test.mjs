@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { judge, waitFor } from "../cli/wait.mjs";
-import { formatProcesses, liveProcesses, parseLsof, parsePs } from "../cli/procs.mjs";
+import { duplicateRunners, formatProcesses, liveProcesses, parseLsof, parsePs, startRefusal } from "../cli/procs.mjs";
 
 import { criteriaOf } from "../src/criteria.ts";
 
@@ -328,4 +328,24 @@ else process.exitCode = spawnSync("/bin/ps", process.argv.slice(2), { stdio: "in
   for (const secret of ["SECRETPROMPT", "/secret/cfg.json", "--config", "the brief"]) {
     assert.ok(!result.output.includes(secret), result.output);
   }
+});
+
+// t581: fifteen runners named home:mbp ran on one Mac for 13 hours.
+const twins = [
+  { pid: 11, name: "home:mbp", age: "1h", tasks: [] },
+  { pid: 12, name: "HOME:MBP", age: "2h", tasks: ["t7"] },
+  { pid: 13, name: "home:mbp-int", age: "2h", tasks: [] },
+];
+
+test("a start is refused, naming the pid, while a runner of that name lives (t581)", () => {
+  assert.match(startRefusal(twins, "home:mbp"), /already running on this Mac \(pid 11, 12\).*--replace/);
+  assert.match(startRefusal(twins, "Home:MBP-int"), /pid 13/);
+  assert.equal(startRefusal(twins, "home:other"), null);
+  assert.equal(startRefusal([], "home:mbp"), null);
+});
+
+test("status flags a runner name that two processes share (t581)", () => {
+  assert.deepEqual(duplicateRunners(twins), [{ name: "home:mbp", pids: [11, 12] }]);
+  assert.match(formatProcesses({ runners: twins, agents: [] }), /duplicate runner name home:mbp: pids 11, 12/);
+  assert.doesNotMatch(formatProcesses({ runners: twins.slice(1), agents: [] }), /duplicate/);
 });
