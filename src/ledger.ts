@@ -2927,6 +2927,14 @@ export class Ledger extends DurableObject<Env> {
     if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403);
     const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("run-skip", id, runner, d.at, skip);
+    // A task the runner released before it decided to give up (an ordinary
+    // stall, twice) carries no word of it (t584): the give-up is recorded here,
+    // once, so the inbox and the stuck report name the runner's reason.
+    if (!heldByRunner && kind !== "skipped") {
+      const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched', 'item.gave_up') ORDER BY seq DESC LIMIT 1`, id).toArray()[0];
+      const said = last?.kind === "item.released" && String((JSON.parse(last.data as string) as { note?: unknown }).note ?? "").startsWith(GAVE_UP);
+      if (last?.kind !== "item.gave_up" && !said) this.log(id, actor, "item.gave_up", { runner, kind, note: skip.note }, skip.at);
+    }
     return true;
   }
 
@@ -5633,11 +5641,11 @@ export class Ledger extends DurableObject<Env> {
   // dispatched again.
   private gaveUpEntries(project: string): InboxEntry[] {
     return this.items().filter((i) => i.state === "open" && i.dispatch).flatMap((i) => {
-      const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched') ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
-      if (last?.kind !== "item.released") return [];
+      const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched', 'item.gave_up') ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
+      if (last?.kind !== "item.released" && last?.kind !== "item.gave_up") return [];
       const note = (JSON.parse(last.data as string) as { note?: unknown }).note;
-      return typeof note === "string" && note.startsWith(GAVE_UP)
-        ? [{ project, itemId: i.id, title: i.title, kind: "gave-up" as const, reason: `${note.slice(GAVE_UP.length)}; run \`atelier dispatch ${i.id}\` to send it out again`, weight: 72 }] : [];
+      return typeof note === "string" && (last.kind === "item.gave_up" || note.startsWith(GAVE_UP))
+        ? [{ project, itemId: i.id, title: i.title, kind: "gave-up" as const, reason: `${last.kind === "item.gave_up" ? note : note.slice(GAVE_UP.length)}; run \`atelier dispatch ${i.id}\` to send it out again`, weight: 72 }] : [];
     });
   }
 
