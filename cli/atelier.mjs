@@ -1081,6 +1081,16 @@ export async function claimWorkspace(name, id, as, runner) {
   return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
 }
 
+// Moves a fast clone aside to a name no later take uses, and answers it.
+function parkFastWorkspace(dir) {
+  for (let n = 0; ; n++) {
+    const parked = `${dir}.parked-${Date.now()}${n ? `-${n}` : ""}`;
+    if (existsSync(parked)) continue;
+    renameSync(dir, parked);
+    return parked;
+  }
+}
+
 // Where a fast build is made (t589): apart from the task's fork clone, which
 // a claim in full mode may have left with work in it.
 export function fastWorkspacePath(name, id) {
@@ -1090,19 +1100,26 @@ export function fastWorkspacePath(name, id) {
 // In fast mode, take a dispatched build without a fork (POST fast-take) and
 // make a clean clone of main for it: the baseline the take's read token
 // reads, at the project's branch. No write token exists, and the clone keeps
-// no remote, so nothing is pushed from it. A clone an earlier run of the same
-// holder left with commits past the main it was made at is kept instead, so
-// a commit made and never reported is reported, not lost.
-export async function fastTakeWorkspace(name, id, as, runner) {
+// no remote, so nothing is pushed from it: a fast build's commits live in
+// this clone alone until the developer lands them (t616). A clone an earlier
+// run of the same holder left with commits past the main it was made at, for
+// this same dispatch, is kept instead, so a commit made and never reported
+// is reported, not lost. `dispatch` is the dispatch the runner was assigned
+// (its `at`); a clone made for another dispatch is never resumed, since its
+// commit answers instructions that were replaced. Any other existing clone
+// is moved aside, never removed, and the move is said.
+export async function fastTakeWorkspace(name, id, as, runner, dispatch = null) {
   const r = await call("POST", `${I(name, id)}/fast-take`, {}, as, runner ? { "x-atelier-runner": runner } : {});
   const dir = fastWorkspacePath(name, id);
   if (existsSync(join(dir, ".git"))) {
     const base = wsConfig("base", dir), head = git(["rev-parse", "--verify", "-q", "HEAD"], { cwd: dir, allowFail: true });
     const at = head.status === 0 ? head.stdout.trim() : null;
-    if (base && at && at !== base && wsConfig("item", dir) === id && wsConfig("actor", dir) === as && holds(base, at, dir)) {
+    const same = dispatch === null || wsConfig("dispatch", dir) === dispatch;
+    if (base && at && at !== base && same && wsConfig("item", dir) === id && wsConfig("actor", dir) === as && holds(base, at, dir)) {
       return { item: r.item, dir, base, head: at, resumed: true };
     }
-    rmSync(dir, { recursive: true, force: true });
+    const parked = parkFastWorkspace(dir);
+    console.log(`The fast clone ${dir} of ${id} is kept, not removed: it was moved to ${parked}. Any commit it holds that was never landed is still there.`);
   }
   mkdirSync(join(CACHE, "fast", name), { recursive: true });
   const branch = r.baseline.defaultBranch;
@@ -1110,7 +1127,7 @@ export async function fastTakeWorkspace(name, id, as, runner) {
   git(["remote", "remove", "origin"], { cwd: dir });
   installMergeConfig(dir, { git });
   const base = git(["rev-parse", "HEAD"], { cwd: dir }).trim();
-  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, base, fast: "true" })) {
+  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, base, fast: "true", ...(dispatch === null ? {} : { dispatch }) })) {
     git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
   }
   const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
