@@ -2,7 +2,7 @@ import { postMergeArgs } from "../post-merge-policy.mjs";
 // atelier init. Its forms, flags and help are declared in src/usage/commands/init.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkFiles, preparationPaths } from "../../src/rules.ts";
+import { checkFiles, parseRiskReviews, preparationPaths } from "../../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
@@ -55,6 +55,20 @@ export default async function initCommand() {
   // as it is. --reset starts the policy over from these options and the
   // defaults. A ControlPlane project always sends the policy ControlPlane holds.
   const reset = args.reset === true;
+  // --risk-reviews JSON replaces the reviews each risk class needs (t631,
+  // t756); off sends null, which clears them; omitted keeps them. An invalid
+  // value is refused here, before any request, by the rule the server applies.
+  let riskReviews;
+  if (args["risk-reviews"] !== undefined) {
+    if (args["risk-reviews"] === "off") riskReviews = null;
+    else {
+      let parsed;
+      try { parsed = JSON.parse(args["risk-reviews"]); }
+      catch { die(`--risk-reviews needs JSON or off: ${JSON.stringify(args["risk-reviews"])} is not valid JSON. Nothing was sent.`); }
+      try { riskReviews = parseRiskReviews(parsed); }
+      catch (error) { die(`--risk-reviews: ${error.message}. Nothing was sent.`); }
+    }
+  }
   const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
   const policy = {};
   const postMerge = postMergeArgs(args);
@@ -204,6 +218,7 @@ export default async function initCommand() {
     // (t462), harness/model actors separated by commas; omitted keeps
     // them, "" clears them.
     ...(args.resolver !== undefined ? { resolvers: args.resolver } : {}),
+    ...(riskReviews !== undefined ? { riskReviews } : {}),
     ...(singleFamily !== undefined ? { singleFamily } : {}),
     approval: args.approval,
     // Omitted keeps the current title; --title "" clears it.
@@ -293,6 +308,7 @@ export default async function initCommand() {
   if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
   console.log(`Resolvers:  ${pol.resolvers?.length ? `${pol.resolvers.join(", ")}, the first eligible of which resolves a refresh's mechanical conflicts` : "none; a refresh's mechanical conflict waits for one (atelier init --resolver H/M)"}`);
   if (typeof args.resolver === "string" && args.resolver.trim() && !pol.resolvers?.length) console.log("Warning: the server did not record the resolvers; deploy the server, then run atelier init --resolver again.");
+  if (pol.riskReviews) console.log(`Risk reviews: ${pol.riskReviews.reviews["docs-or-tests"]} for docs or tests, ${pol.riskReviews.reviews.other} for other changes, ${pol.riskReviews.reviews.core} for core (${pol.riskReviews.core.join(", ") || "no extra core globs"}), each independent review counted by the change's paths`);
   console.log(`Models:     ${familyModeText(pol)}`);
   // A server older than single-family mode ignores it and answers without one.
   if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
