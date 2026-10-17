@@ -835,7 +835,7 @@ async function postReceipts(file, data, record) {
   const tally = () => ({ recorded: data.receipts.filter((x) => x.recorded).map((x) => x.task), unrecorded: data.receipts.filter((x) => !x.recorded).map((x) => x.task) });
   for (const x of data.receipts) {
     if (x.recorded) continue;
-    const receipt = { commit: x.commit, mergeCommit: x.mergeCommit, builder: x.builder, ...(x.contributors ? { contributors: x.contributors } : {}), tests: x.tests };
+    const receipt = { commit: x.commit, mergeCommit: x.mergeCommit, testedHead: data.head, batch: `${data.start}..${data.head}`, builder: x.builder, ...(x.contributors ? { contributors: x.contributors } : {}), tests: x.tests };
     let answer;
     try { answer = await record(x.task, receipt); }
     catch (err) { return { ok: false, landed, already, ...tally(), pending: file, failure: { step: `record ${x.task}`, detail: err?.message ?? String(err), merged: true } }; }

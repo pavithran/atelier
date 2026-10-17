@@ -105,6 +105,8 @@ test("a passing batch merges in order with --no-ff and records each receipt with
     assert.match(git(dir, "log", "-1", "--format=%B"), /Landed fast: forks fail/);
     assert.equal(git(dir, "rev-parse", "HEAD^2"), two);
     assert.equal(recorded[1][1].mergeCommit, r.head);
+    // The receipt names the head the tests ran at and its batch (t601).
+    for (const [, x] of recorded) assert.deepEqual([x.testedHead, x.batch], [r.head, `${r.start}..${r.head}`]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

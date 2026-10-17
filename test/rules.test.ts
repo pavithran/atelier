@@ -1086,7 +1086,7 @@ test("only the project owner can port to an open unclaimed task", () => {
 // On 2026-10-13 Artifacts failed every new fork, so four finished tasks were
 // merged by hand outside the record. Fast mode records that path; these pin
 // its pure rules.
-import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST, postMergeOwed, postMergeReviewLine, fastLandedLines } from "../src/rules.ts";
+import { contributorsOf, contributed, projectMode, modeLine, modeSwitch, assertFastMode, fastReceipt, fastReceiptRefusal, recordedMerge, recordedMergeRefusal, agentOfMessage, agentsOfMessages, postMergeIndependence, fastFixTask, SAME_FAMILY_FAST, postMergeOwed, postMergeReviewLine, fastLandedLines } from "../src/rules.ts";
 
 test("the project is in full mode unless a fast record stands, and only the owner switches, fast with a reason", () => {
   assert.deepEqual(projectMode(null), { mode: "full" });
@@ -1153,11 +1153,15 @@ test("the developer's direction is their quoted words and the model acting on th
 
 test("a landed-fast receipt needs both commits, the builder, the test command and its output's sha256, in fast mode only", () => {
   const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
-  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };
+  const body = { commit: H1, mergeCommit: H2, testedHead: H2, batch: `${H1}..${H2}`, builder: "claude-code/opus-5.5", tests: { command: "npm test", sha256: "c".repeat(64) } };
   const r = fastReceipt(body, fast, "owner", "2026-10-13T01:00:00Z");
   assert.deepEqual(r, { ...body, reason: "forks fail", at: "2026-10-13T01:00:00Z", by: "owner" });
   assert.throws(() => fastReceipt(body, { mode: "full" }, "owner", "x"), (e: RuleError) => e.code === "not_fast_mode");
   for (const bad of [{ commit: "abc" }, { mergeCommit: null }, { builder: "nobody" }, { tests: { command: "npm test", sha256: "short" } }, { tests: { command: "", sha256: "c".repeat(64) } }, { tests: { command: "npm test", sha256: "c".repeat(64), where: "laptop" } }]) {
+    assert.throws(() => fastReceipt({ ...body, ...bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
+  }
+  // The tested head and the batch (t601): a receipt without them, or whose batch does not end at the tested head, is refused.
+  for (const bad of [{ testedHead: undefined }, { testedHead: "abc" }, { batch: undefined }, { batch: H2 }, { batch: `${H1}..${H1}` }, { batch: `${H1}..${H2}x` }]) {
     assert.throws(() => fastReceipt({ ...body, ...bad }, fast, "owner", "x"), (e: RuleError) => e.code === "bad_receipt", JSON.stringify(bad));
   }
   // Where the tests ran (t588): the default run in a clean clone, a given --test in the checkout.
@@ -1177,7 +1181,7 @@ test("a landed-fast receipt needs both commits, the builder, the test command an
 test("a fast landing's contributors are every agent of the range, and gate review independence (t603)", () => {
   const fast = projectMode({ mode: "fast", since: "2026-10-13T00:00:00Z", reason: "forks fail", by: "owner" });
   const tests = { command: "npm test", sha256: "c".repeat(64) };
-  const body = { commit: H1, mergeCommit: H2, builder: "claude-code/opus-5.5", contributors: ["codex/gpt-6"], tests };
+  const body = { commit: H1, mergeCommit: H2, testedHead: H2, batch: `${H1}..${H2}`, builder: "claude-code/opus-5.5", contributors: ["codex/gpt-6"], tests };
   assert.deepEqual(fastReceipt(body, fast, "owner", "x").contributors, ["claude-code/opus-5.5", "codex/gpt-6"]);
   assert.equal("contributors" in fastReceipt({ ...body, contributors: undefined }, fast, "owner", "x"), false);
   for (const bad of ["codex", ["nobody"], [7], Array(51).fill("codex/gpt-6")]) {
@@ -1752,4 +1756,17 @@ test("a defect the check shows was at the base is a pre-existing follow-up, even
   const findings: Finding[] = [1, 2, 3, 4].map((n) => ({ file: "src/a.ts", line: n, severity: "blocking", text: `f${n}` }));
   const out = applyVerification(findings, new Set([1, 4]), new Set([2, 4]));
   assert.deepEqual(out.map((x) => [x.severity, x.label ?? null]), [["blocking", null], ["follow-up", "pre-existing"], ["follow-up", "unverified"], ["blocking", null]]);
+});
+
+// Astra, 2026-10-13, finding 8 (t601): a receipt for commits the repository
+// does not hold, or posted while it cannot be read, must not be recorded.
+test("a receipt is refused for a commit the repository does not hold, and when it cannot be read", () => {
+  const r = { commit: H1, mergeCommit: H2, testedHead: "c".repeat(40) };
+  assert.equal(fastReceiptRefusal(r, { readable: true, found: [H1, H2, r.testedHead] }), null);
+  const missing = fastReceiptRefusal(r, { readable: true, found: [H1] });
+  assert.equal(missing?.code, "receipt_commits_unknown");
+  assert.match(missing?.detail ?? "", /bbbbbbbbbbbb, cccccccccccc/);
+  const unread = fastReceiptRefusal(r, { readable: false, found: [H1, H2, r.testedHead] });
+  assert.equal(unread?.code, "baseline_unreadable");
+  assert.equal(unread?.status, 503);
 });

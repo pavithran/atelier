@@ -37,6 +37,7 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
 
   const minted: string[] = [];
   const artifacts = { get: async (repo: string) => ({
+    readCommit: async (hash: string) => ({ hash, parents: [], treeHash: "c".repeat(40) }),
     info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
     createToken: async (_scope: string, ttl: number) => { minted.push(repo); return { id: `tok-${minted.length}`, plaintext: `read-${repo}`, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() }; },
     revokeToken: async () => true,
@@ -50,7 +51,7 @@ it("a landed-fast receipt's post-merge review is claimed, read from the baseline
 
   // atelier fast land's receipt, with the post-merge review asked of Astra.
   const landed = await request("POST", `/projects/${name}/items/${item.id}/landed-fast`, OWNER, "owner",
-    { commit: C1, mergeCommit: M1, builder: OPUS, tests: { command: "npm test", sha256: "f".repeat(64) }, reviewer: ASTRA });
+    { commit: C1, mergeCommit: M1, testedHead: M1, batch: `${"0".repeat(40)}..${M1}`, builder: OPUS, tests: { command: "npm test", sha256: "f".repeat(64) }, reviewer: ASTRA });
   expect(landed.status, await landed.clone().text()).toBe(200);
   expect((await landed.json() as { review: unknown }).review).toMatchObject({ requested: true, head: M1, reviewer: ASTRA });
 
