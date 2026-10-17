@@ -1,5 +1,6 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { I, OWNER, apiToken, args, cfg, die, discoverModels, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
+import { guardName } from "../procs.mjs";
+import { I, OWNER, apiToken, args, cfg, die, discoverModels, liveHere, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // Queue polling has already resolved the runner's identity. A failed policy
 // read must reach the job's infrastructure handling, never the process.exit
@@ -25,7 +26,22 @@ export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { reexecSelf, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
+  const { RELOAD_HANDOFF, reexecSelf, runnerUsage, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
+  // One name is one process (t581). A reload's replacement starts beside the
+  // runner it replaces, so it is let through; so is a start that cannot read
+  // the process table, which says so.
+  try { runnerUsage(args); } catch (error) { die(error.message); }
+  if (!process.env[RELOAD_HANDOFF]) {
+    const live = liveHere();
+    if (!live) console.log("runner: the process table could not be read, so a second runner of this name is not ruled out.");
+    const refusal = live && await guardName({
+      runners: live.runners, name: args.name, replace: args.replace === true, say: console.log,
+      kill: (pid) => process.kill(pid, "SIGTERM"),
+      alive: (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } },
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    if (refusal) die(refusal);
+  }
   // The runner's own server calls, every one through the transport (t478):
   // the queue poll, the plan job's brief and document, the run reports and
   // the review skips, under the runner's token and the name it polls as,
@@ -177,3 +193,4 @@ export default async function runnerCommand() {
     });
   } catch (error) { die(error.message); }
 }
+
