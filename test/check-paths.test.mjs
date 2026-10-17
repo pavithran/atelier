@@ -53,6 +53,24 @@ test("landing receipts record the computed class with the legacy fallback", () =
   assert.match(mergeSource, /writeReceipt\(cwd,\{[^\n]*changeClass:d\.gate\.changeClass/);
 });
 
+// t631: a merge's receipt names the risk class its approvals were counted by,
+// and a project without riskReviews records none.
+test("landing receipts name the risk class when the gate states one", () => {
+  const code = source.slice(source.indexOf("function writeReceipt("), source.indexOf("function writeReceipt(") + source.slice(source.indexOf("function writeReceipt(")).indexOf("\n}\n") + 3);
+  for (const risk of ["docs-or-tests", "other", "core", undefined]) {
+    let receipt;
+    const write = runInNewContext(`${code}; writeReceipt`, {
+      join: (...parts) => parts.join("/"), lstatSync: () => ({ isDirectory: () => true, isFile: () => true }), readJson: () => ({}),
+      RECEIPTS_DIR: "docs/control-plane/landing-receipts", RECEIPT_TEMPLATE: "docs/control-plane/landing-receipt.v1.json", fsConstants: constants,
+      short: (s) => s.slice(0, 8), OWNER_NAME: "owner", writeFileSync: (_, text) => { receipt = JSON.parse(text); },
+    });
+    write("checkout", { name: "p", id: "t1", item: { acceptedHead: "a".repeat(40) }, owners: [], view: [], reviews: [], policy: {}, branch: "main", changeClass: "protected", riskClass: risk });
+    assert.equal(receipt.risk_class, risk);
+    assert.equal("risk_class" in receipt, risk !== undefined);
+  }
+  assert.match(mergeSource, /writeReceipt\(cwd,\{[^\n]*riskClass:d\.gate\.riskClass/);
+});
+
 // PAVI's decision, 2026-10-06: an override is recorded with its reason, so a
 // landing receipt never says no review was required when one was overridden.
 test("landing receipts record the owner's override of the independent review at the accepted head", () => {

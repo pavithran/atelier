@@ -452,6 +452,11 @@ export function standingReview(r: Review, at: ReviewBinding): boolean {
 }
 
 export type ChangeClass = "direct" | "coordinated" | "protected";
+export type RiskClass = "docs-or-tests" | "other" | "core";
+export interface RiskReviews {
+  core: string[];                         // globs of the paths whose change is core
+  reviews: Record<RiskClass, number>;     // independent approvals each class needs
+}
 export type AgentRole = "assessor" | "consultant" | "designer" | "executor" | "planner" | "reconciler";
 export interface AgentPolicy {
   available: boolean;
@@ -604,6 +609,12 @@ export interface ProjectPolicy {
   // holds a dispatch whose scope overlaps a live item's within one of them
   // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
   coreFiles?: string[];
+  // The independent reviews a change needs by its risk class (t631, riskClass
+  // below): the globs that make a change core, and how many independent
+  // approvals each class needs. Absent, the rule is the one before: one
+  // approval for a protected change (and a coordinated one under an execution
+  // policy), none for any other.
+  riskReviews?: RiskReviews;
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
   // Which companies' models build and review (t394). Absent, or `single`
@@ -1170,6 +1181,56 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
   if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
   const direct = policy.execution?.direct;
   return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
+}
+
+// The files that are docs or tests: a change made only of them is the lowest
+// risk class. Matched as written, so a variant spelling falls outside them and
+// is "other", the safe side.
+export const DOCS_OR_TESTS = ["docs/**", "test/**", "**/*.md"];
+
+// The risk class of a change, from the paths Atelier measured itself (t631).
+// Core when any path matches a core glob (matched whatever the letter case or
+// Unicode form, as the guarded set is), and also for an empty or unreadable
+// list: a change that cannot be read is never taken for a small one. Docs or
+// tests when every path is one of DOCS_OR_TESTS. Otherwise other. This is the
+// rule of tier.sh, the orchestrator's review-by-risk script (PAVI,
+// 2026-10-17). A docs-only change under a protected glob would have been
+// reviewed in full before; the class lets the project say it needs less.
+export function riskClass(paths: readonly string[] | null | undefined, coreGlobs: readonly string[]): RiskClass {
+  if (!paths || !paths.length) return "core";
+  if (paths.some((p) => matchesFolded(p, [...coreGlobs]))) return "core";
+  return paths.every((p) => matchesAny(p, DOCS_OR_TESTS)) ? "docs-or-tests" : "other";
+}
+
+// The risk class and the approvals it needs under a project's riskReviews, or
+// null for a project without them. Beside the project's core globs, a path the
+// project runs as code is core too: the files its checks and ship order run
+// and the ship files (a test runner sits under test/ and must not pass as a
+// test).
+export function riskNeed(paths: readonly string[] | null | undefined, policy: ProjectPolicy): { risk: RiskClass; reviews: number } | null {
+  const r = policy.riskReviews;
+  if (!r) return null;
+  const risk = riskClass(paths, [...r.core, ...checkFiles(policy.checks), ...checkFiles(policy.shipRuns ?? []), ...SHIP_FILES]);
+  return { risk, reviews: r.reviews[risk] };
+}
+
+// riskReviews as a request states it, or a refusal that names what is wrong.
+export function parseRiskReviews(v: unknown): RiskReviews {
+  const bad = (m: string) => new RuleError("bad_risk_reviews", `${m}; riskReviews is { core: [globs], reviews: { "docs-or-tests": N, other: N, core: N } } with each N a whole number from 0 to 3`, 400);
+  const o = v as { core?: unknown; reviews?: Record<string, unknown> } | null;
+  if (!o || typeof o !== "object" || !Array.isArray(o.core) || o.core.some((g) => typeof g !== "string" || !g.trim())) throw bad("core must be a list of globs");
+  const reviews = {} as Record<RiskClass, number>;
+  for (const k of ["docs-or-tests", "other", "core"] as const) {
+    const n = o.reviews?.[k];
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 3) throw bad(`reviews.${k} is missing or out of range`);
+    reviews[k] = n;
+  }
+  return { core: o.core.map((g: string) => g.trim()), reviews };
+}
+
+// What the gate says a change of this risk class lacks (t631).
+function riskBlocker(risk: RiskClass, count: number, have: number, single: PoolFamily | null): string {
+  return `${risk} change: needs ${count} independent review${count === 1 ? "" : "s"}, each from ${independentReviewerText(single)}; ${have} so far`;
 }
 
 export function classRequirement(kind: ChangeClass, single: PoolFamily | null = null): string {
@@ -1826,6 +1887,7 @@ export function checkFiles(checks: string[]): string[] {
 
 export interface Gate {
   changeClass?: ChangeClass | null;
+  riskClass?: RiskClass;      // set when the project states riskReviews: the class its approvals were counted by
   requirement?: string;
   ready: boolean;
   blockers: string[];
@@ -1872,15 +1934,32 @@ export interface GateOptions { reviewHeld?: boolean }
 export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Review[] {
   const view = evidenceAt(policy, evidence, item.head);
   const kind = view.changedPaths === null ? null : changeClass(view.changedPaths, policy);
-  return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, owner, options);
+  return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, view.changedPaths, owner, options);
+}
+
+// How many independent approvals a change needs, and by which test each one
+// counts. Without the project's riskReviews: one for a protected change (and
+// for a coordinated one under an execution policy), none for any other, each
+// tested as its class is. With them (t631): what the change's risk class
+// needs, each approval tested as a protected change's if the change is
+// protected and as a coordinated change's otherwise.
+export function approvalsNeeded(policy: ProjectPolicy, kind: ChangeClass | null, paths: readonly string[] | null | undefined): { count: number; as: "protected" | "coordinated" | null; risk: RiskClass | null } {
+  const risk = riskNeed(paths, policy);
+  if (risk) return { count: risk.reviews, as: kind === "protected" ? "protected" : "coordinated", risk: risk.risk };
+  const as = kind === "protected" || (policy.execution !== undefined && kind === "coordinated") ? kind : null;
+  return { count: as ? 1 : 0, as, risk: null };
 }
 
 // gateApprovals over reviews already counted, for the gate that has them.
-function approvalsCounted(item: Item, policy: ProjectPolicy, counting: Review[], kind: ChangeClass | null, owner: string, options: GateOptions): Review[] {
-  if (options.reviewHeld || !(kind === "protected" || (policy.execution !== undefined && kind === "coordinated"))) return [];
+function approvalsCounted(item: Item, policy: ProjectPolicy, counting: Review[], kind: ChangeClass | null, paths: readonly string[] | null | undefined, owner: string, options: GateOptions): Review[] {
+  const need = approvalsNeeded(policy, kind, paths);
+  if (options.reviewHeld || !need.as || !need.count) return [];
   const contributors = contributorsOf(item);
   const single = singleFamily(policy);
-  return counting.filter((r) => independentApproval(r, kind, contributors, owner, single));
+  // One approval per model (modelKey): an alias, a profile or another harness
+  // of one model is the same reviewer, not a second.
+  const seen = new Set<string>();
+  return counting.filter((r) => independentApproval(r, need.as!, contributors, owner, single) && !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by)));
 }
 
 export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, options: GateOptions = {}): Gate {
@@ -1911,10 +1990,13 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   // model under another harness, case, profile or name is never independent of
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
-  if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
+  const need = approvalsNeeded(policy, kind, view.changedPaths);
+  if (!options.reviewHeld && need.as && need.count > 0) {
+    const kindNeeded = need.as;
     const contributors = contributorsOf(item);
     const single = singleFamily(policy);
-    if (!approvalsCounted(item, policy, reviews, kind, owner, options).length) {
+    const have = approvalsCounted(item, policy, reviews, kind, view.changedPaths, owner, options).length;
+    if (have < need.count) {
       // A project that forbids overrides (t371) counts none, an override
       // recorded before the prohibition included: the change waits for its
       // review as if the override had never been made.
@@ -1924,11 +2006,11 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       overridden = forReview?.rejectionsOnly ? null : forReview;
       if (!overridden) {
         needsAssessor = true;
-        blockers.push(governed ? requirement : protectedNeed(single));
+        blockers.push(need.risk ? riskBlocker(need.risk, need.count, have, single) : governed ? requirement : protectedNeed(single));
         // An approval that would count had the model's own token or a claimed
         // request shown it is named, so the owner sees why it does not.
-        if (kind === "protected") {
-          for (const r of reviews) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, kind, contributors, owner, single)) blockers.push(unprovedBlocker(r));
+        if (kindNeeded === "protected") {
+          for (const r of reviews) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, kindNeeded, contributors, owner, single)) blockers.push(unprovedBlocker(r));
         }
       }
     }
@@ -1944,6 +2026,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   return {
     ready: blockers.length === 0, blockers, needsAssessor, outOfScope,
     ...(governed ? { changeClass: kind, requirement } : {}),
+    ...(need.risk ? { riskClass: need.risk } : {}),
     ...(overridden ? { overridden } : {}),
   };
 }

@@ -323,6 +323,7 @@ export interface ProjectInit {
   refuseOverlap?: boolean;
   requireCriteria?: boolean;
   requireCriteriaReview?: boolean;  // builds need an approved criteria review (see ProjectPolicy.requireCriteriaReview)
+  riskReviews?: ProjectPolicy["riskReviews"] | null;  // replaces the reviews each risk class needs; null clears them (see ProjectPolicy.riskReviews)
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
   noOverride?: boolean;       // overrides of the independent review are refused (see ProjectPolicy.noOverride)
@@ -660,6 +661,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const resolvers = i.resolvers ?? p?.resolvers ?? [];
   const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
+  const riskReviews = i.riskReviews === undefined ? p?.riskReviews : i.riskReviews ?? undefined;
   // A switch of model policy is stamped with this init's time; an init that
   // names none keeps the recorded one, and reset drops it with the rest.
   const familyMode: FamilyMode | undefined = i.familyMode ? { single: i.familyMode.single, by: i.familyMode.by, at } : p?.familyMode;
@@ -696,6 +698,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
       ...((i.requireCriteriaReview ?? p?.requireCriteriaReview) ? { requireCriteriaReview: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
+      ...(riskReviews ? { riskReviews } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       // Carried only when set, so a project that allows overrides records nothing new.
       ...((i.noOverride ?? p?.noOverride) ? { noOverride: true } : {}),
