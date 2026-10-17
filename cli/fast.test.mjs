@@ -951,6 +951,33 @@ test("a blob the scan cannot read stops the batch, naming its path (finding 4)",
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// t601: the server records a receipt only for commits the baseline holds, so
+// fast land publishes main before it posts any receipt and a normal landing
+// records in one go, with no atelier fast record.
+test("fast land publishes main before it posts receipts, so a normal landing records in one go (t601)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const order = [];
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "echo ok", publish: (head) => { order.push(`publish ${head}`); }, record: (id) => { order.push(`record ${id}`); return { ok: true }; } });
+    assert.equal(r.ok, true);
+    assert.deepEqual(order, [`publish ${r.head}`, "record t1", "record t2"]);
+    assert.equal(r.pending, null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a publish that fails leaves main on the batch and every receipt kept for atelier fast record (t601)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "echo ok", publish: () => { throw new Error("push refused"); }, record: () => assert.fail("recorded before main was published") });
+    assert.equal(r.ok, false);
+    assert.deepEqual([r.failure.step, r.failure.detail, r.failure.merged], ["publish main", "push refused", true]);
+    assert.deepEqual(r.unrecorded, ["t1", "t2"]);
+    assert.equal(git(dir, "rev-parse", "HEAD"), r.head, "main still holds the batch");
+    const kept = JSON.parse(readFileSync(r.pending, "utf8"));
+    assert.deepEqual(kept.receipts.map((x) => x.recorded), [false, false]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Astra's audit of 2026-10-13, finding 9 (t602): receipts were posted one by
 // one after the merges, and when one failed main already held the batch, so
 // running fast land again refused the recorded task and the unrecorded one
