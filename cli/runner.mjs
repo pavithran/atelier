@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { harnessReady } from "./harness/adapter.mjs";
 import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
@@ -1405,6 +1406,13 @@ export const pauseLine = (p) => `${p.harness} paused until ${p.resetAt}${p.fallb
 export function unpausedOffer(offer, pauses) {
   return { ...offer, agents: offer.agents.filter(({ agent }) => !pauses[agent]) };
 }
+
+// How often a harness's readiness is asked again (t665).
+export const READY_RECHECK_MS = 60_000;
+
+// Whether an agent runs an atelier-NAME adapter (Atelier's shipped one, or the
+// wrapper script of that name); a command of the developer's own is theirs to keep working, and is not probed.
+const runsShippedAdapter = (agent) => agent.command?.some((arg) => /(^|\/)atelier-(claude|codex|opencode|agy)(\.mjs)?$/.test(arg));
 
 // The obligation this process holds for failures it could not save anywhere,
 // by workspace and task: a read of the obligation is the files or this map,
@@ -3580,7 +3588,7 @@ export function runnerUsage(args) {
   if (typeof args.name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(args.name)) throw new Error("use --name home:NAME");
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -3653,6 +3661,28 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     const lifted = Object.values(limits.pauses).filter((p) => Date.parse(p.resetAt) <= now());
     for (const p of lifted) { delete limits.pauses[p.harness]; io.log(`resumed: ${p.harness} usage limit reset at ${p.resetAt}; its models are offered again`); }
     if (lifted.length) saveLimits();
+  };
+  // Harnesses that cannot run a job (t665: Claude Code signed out), checked
+  // before the offer is made and again every READY_RECHECK_MS, so a claim is
+  // never made for a job the harness would refuse at once. A harness is
+  // dropped from the offer with one log line naming the fix, and offered again
+  // with one line when it is ready.
+  const unready = new Map(), readyChecked = new Map();
+  const checkReady = async () => {
+    for (const agent of config.agents ?? []) {
+      if (!runsShippedAdapter(agent) || now() - (readyChecked.get(agent.agent) ?? -Infinity) < READY_RECHECK_MS) continue;
+      readyChecked.set(agent.agent, now());
+      let answer;
+      try {
+        // The environment the job's harness gets (harnessEnv, as runTask builds it), so the check sees the credentials the job will.
+        const env = harnessEnv(taskIO.env ?? process.env, agent.env, agent.env?.length ? (taskIO.ownerTokens ?? ownerTokens)() : []).env;
+        answer = await readyCheck(agent.agent, { env, command: agent.command });
+      } catch (error) { answer = { ready: false, why: `its readiness check failed (${error.message})` }; }
+      if (controller.signal.aborted) return;
+      if (!answer?.ready && !unready.has(agent.agent)) io.log(`${agent.agent} is not offered: ${answer?.why ?? "it is not ready"}. Its models are offered again once it is.`);
+      if (answer?.ready && unready.has(agent.agent)) io.log(`${agent.agent} is ready again; its models are offered.`);
+      if (answer?.ready) unready.delete(agent.agent); else unready.set(agent.agent, answer?.why || "not ready");
+    }
   };
   const pauseHarness = (task, state) => {
     const limit = state.providerLimit, at = now();
@@ -4009,7 +4039,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       try {
         liftExpired();
         let tasks;
-        pollOffer = unpausedOffer(offer, limits.pauses);
+        await checkReady();
+        if (controller.signal.aborted) break;
+        pollOffer = unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) });
         try { tasks = await queue(pollOffer, controller.signal); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
