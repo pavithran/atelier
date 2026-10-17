@@ -102,6 +102,34 @@ test("CLI init sends the core files given with --core, clears them with --core \
   assert.match(blank.stderr, /--core needs a glob/);
 }));
 
+// t756: init had no flag for the riskReviews t631 added to the route, so a
+// developer could not turn review by risk on from the CLI.
+test("CLI init sends --risk-reviews JSON, sends null for off, keeps them otherwise and refuses a bad value before any request", () => fixture(({ command, calls }) => {
+  const put = () => JSON.parse(calls().filter((c) => c.method === "PUT").at(-1).body);
+  const risk = { core: ["src/rules.ts"], reviews: { "docs-or-tests": 0, other: 1, core: 2 } };
+  const given = command(["init", "--risk-reviews", JSON.stringify({ ...risk, core: [" src/rules.ts "] })]);
+  assert.equal(given.status, 0, given.stderr);
+  assert.deepEqual(put().riskReviews, risk);
+  assert.match(given.stdout, /^Risk reviews: 0 for docs or tests, 1 for other changes, 2 for core/m);
+  assert.equal(command(["init", "--title", "T"]).status, 0);
+  assert.equal("riskReviews" in put(), false, "a re-init without the flag keeps the recorded reviews");
+  assert.equal(command(["init", "--risk-reviews", "off"]).status, 0);
+  assert.equal(put().riskReviews, null);
+  const before = calls().length;
+  for (const bad of ["{not json", JSON.stringify({ core: [], reviews: { "docs-or-tests": 0, other: 1, core: 9 } }), "[]"]) {
+    const r = command(["init", "--risk-reviews", bad]);
+    assert.equal(r.status, 1, bad);
+    assert.match(r.stderr, /--risk-reviews/);
+    assert.match(r.stderr, /Nothing was sent/);
+  }
+  assert.match(command(["init", "--risk-reviews", "{not json"]).stderr, /not valid JSON/);
+  assert.match(command(["init", "--risk-reviews", "[]"]).stderr, /core must be a list of globs/);
+  const bare = command(["init", "--risk-reviews"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--risk-reviews needs JSON or off/);
+  assert.equal(calls().length, before, "no request went out for a refused value");
+}));
+
 test("CLI dispatch sends the owner's overlap override only with --overlap-ok", () => fixture(({ command, calls }) => {
   const posts = () => calls().filter((c) => c.method === "POST" && c.url.endsWith("/dispatch")).map((c) => JSON.parse(c.body));
   command(["dispatch", "t3", "--project", "weblog"]);
