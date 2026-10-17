@@ -1,7 +1,7 @@
 import { taskPage } from "../src/task-page.ts";
 import {expect,it} from 'vitest';
 import { NO_CRITERIA } from "../src/criteria.ts";
-import {fillShell,hasShell,projectPageAt,renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
+import {fillShell,hasShell,projectPageAt,renderProjectShowcase,renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
 import {attentionFor} from '../src/attention';
 import type {InboxEntry} from '../src/rules';
@@ -1897,4 +1897,28 @@ it('a first dispatch remains ready to start; a cleared head retains reports and 
  expect(taskPage(d).title).toBe('Ready to start');
  d.events.push(ev(3,'item.released',{note:'Returned to the queue'}));
  const html=renderItem(project,d);expect(html).toContain('Open again');expect(html).toContain('2 reports');
+});
+
+// t757: the project's showcase page draws what projectShowcase gives it, and
+// escapes it; a merge with no recorded builder says so, a lone model reads
+// in the singular, and a merge from another year carries its year. Without
+// the page none of these existed.
+it('the project showcase escapes titles, says when no builder is recorded, reads one model in the singular and dates an old merge with its year',()=>{
+ const day={day:'2026-10-03',byVendor:{anthropic:2},moves:2,decisions:0};
+ const view={
+  pulse:{days:[day],moves:2,decisions:0,merges:1,sentBack:0,agents:[],byVendor:{anthropic:2},lastAt:null,cut:false},
+  mergedAllTime:2,models:1,
+  recent:[
+   {id:'t2',title:'<b>Fast</b> path',at:'2026-10-03T12:00:00Z',model:'claude-code/sonnet-5.5',vendor:'anthropic' as const},
+   {id:'t1',title:'First',at:'2025-12-30T12:00:00Z',model:null,vendor:null},
+  ],
+ };
+ const html=renderProjectShowcase(project,view,'PAVI',new Date(time));
+ expect(html).toContain('&lt;b&gt;Fast&lt;/b&gt; path');
+ expect(html).not.toContain('<b>Fast</b>');
+ expect(html).toContain('<dt>model built it</dt>');
+ expect(html).toContain('<ul class="legend-line pshow-by" aria-label="Built by"><li><i style="--c:var(--m-anthropic)"></i>sonnet-5.5</li></ul>');
+ expect(html).toContain('<span class="pshow-by none">builder not recorded</span>');
+ expect(html).toContain('>3 Oct</time>');
+ expect(html).toContain('>30 Dec 2025</time>');
 });
