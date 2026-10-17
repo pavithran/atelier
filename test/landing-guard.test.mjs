@@ -34,7 +34,7 @@ function isolated(p) {
 // commit; `change` makes the accepted head in the task's workspace. Every
 // hook or script a test plants appends a line to `log`, outside the checkout,
 // so `ran()` says what ran.
-async function landFixture(t, { setup = () => {}, change, controlPlane = false, failLandingOnce = false }) {
+async function landFixture(t, { setup = () => {}, change, controlPlane = false, failLandingOnce = false, observed = null }) {
   const p = realpathSync(mkdtempSync(join(tmpdir(), 'atelier-guard-')));
   t.after(() => rmSync(p, { recursive: true, force: true }));
   const env = isolated(p), home = env.HOME, outside = join(p, 'outside'), log = join(outside, 'exec.log');
@@ -81,7 +81,7 @@ async function landFixture(t, { setup = () => {}, change, controlPlane = false, 
     const item = { id: 't1', title: 'Task one', scope: [], state: box.state, owner: 'codex/test', head, acceptedHead: head, base };
     let answer = {};
     if (path === '/api/projects/proj' && req.method === 'GET') answer = { project: { name: 'proj', policy: { protected: PROTECTED, eligible: [], refuseOverlap: false } }, items: [], events: [] };
-    else if (path === '/api/projects/proj/items/t1') answer = { item, policy: { checks: [], protected: [], commitIdentity: { name: 'Owner', email: 'owner@example.invalid', agentEmails: [] } }, gate: { ready: true, blockers: [], changeClass: 'coordinated' }, evidence: [], reviews: [], acceptanceProtected: PROTECTED, events: [{ kind: 'item.claimed', actor: 'codex/test', at: '2026-10-06T00:00:00Z', data: {} }] };
+    else if (path === '/api/projects/proj/items/t1') answer = { item, policy: { checks: [], protected: [], commitIdentity: { name: 'Owner', email: 'owner@example.invalid', agentEmails: [] } }, gate: { ready: true, blockers: [], changeClass: 'coordinated' }, evidence: observed ? [{ claim: 'npm test', grade: 'observed', head, by: 'codex/test', at: '2026-10-06T00:00:00Z', passed: true, ...observed }] : [], reviews: [], acceptanceProtected: PROTECTED, events: [{ kind: 'item.claimed', actor: 'codex/test', at: '2026-10-06T00:00:00Z', data: {} }] };
     else if (path.endsWith('/baseline-token')) answer = { remote: baseline, token: 'fixture', defaultBranch: 'main' };
     else if (path.endsWith('/read-token')) answer = { remote: fork, token: 'fixture', defaultBranch: 'main', head, base };
     else if (path.endsWith('/landing') && body.cancel !== true && box.failLanding) {
@@ -324,6 +324,23 @@ test('merge writes the receipt into the real receipts folder, from the real temp
   assert.equal(receipt.project_id, 'demo-from-template');
   assert.equal(receipt.implementation_commit, f.head);
 });
+
+// t708: ikon-weblog ran each task's checks three times on one tree. The
+// receipt says when the merge produced the tree a check passed on; a check
+// that failed, or ran on a merge with main, is never claimed for the tree.
+for (const [what, observed, claimed] of [['passed on the accepted head', {}, true], ['failed', { passed: false }, false], ['ran on a merge with main', { merged: true, mainHead: 'b'.repeat(40) }, false]]) {
+  test(`merge's receipt ${claimed ? 'names' : 'does not name'} the checked tree when the check ${what}`, async (t) => {
+    const f = await landFixture(t, { controlPlane: true, observed, change: ({ ws, write }) => write(ws, 'README.md', 'task\n') });
+    const r = await f.run('merge', 't1');
+    assert.equal(r.status, 0, r.output);
+    const file = f.git(f.checkout, 'diff', '--name-only', 'HEAD^1', 'HEAD').split('\n').find((name) => name.startsWith('docs/control-plane/landing-receipts/'));
+    const receipt = JSON.parse(readFileSync(join(f.checkout, file), 'utf8'));
+    if (!claimed) return assert.equal(receipt.checked_tree, undefined);
+    assert.equal(receipt.checked_tree.tree, f.git(f.checkout, 'rev-parse', `${f.head}^{tree}`));
+    assert.deepEqual(receipt.checked_tree.claims, ['npm test']);
+    assert.match(receipt.checked_tree.statement, /instead of running them again/);
+  });
+}
 
 // ── the parts ───────────────────────────────────────────────────────────────
 
