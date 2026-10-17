@@ -82,7 +82,6 @@ import command_runner from "./runner.mjs";
 import command_served from "./served.mjs";
 import command_ship from "./ship.mjs";
 import command_show from "./show.mjs";
-import command_showcase from "./showcase.mjs";
 import command_slots from "./slots.mjs";
 import command_start from "./start.mjs";
 import command_status from "./status.mjs";
@@ -181,7 +180,6 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/served.mjs", run: command_served },
   { path: "cli/commands/ship.mjs", run: command_ship },
   { path: "cli/commands/show.mjs", run: command_show },
-  { path: "cli/commands/showcase.mjs", run: command_showcase },
   { path: "cli/commands/slots.mjs", run: command_slots },
   { path: "cli/commands/start.mjs", run: command_start },
   { path: "cli/commands/status.mjs", run: command_status },

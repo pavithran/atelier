@@ -263,8 +263,8 @@ holds the pairs.
 ## Removing a project
 
 The developer can run `atelier projects remove NAME` to remove a project from
-the index and from the local config. It disappears from Projects, Flow,
-Decisions and the public showcase. Claimed, submitted or accepted items, and
+the index and from the local config. It disappears from Projects, Flow
+and Decisions. Claimed, submitted or accepted items, and
 open items queued for a runner, block removal unless the developer adds `--force`.
 The local config entry is deleted whole, and the command lists what it held,
 such as the checkout path, branch and `notesRemote`, so a setting made by hand
@@ -289,7 +289,7 @@ to the old name, a workspace clone that records it, and a command run with
 `--project OLD` all carry on; the answer carries an `X-Atelier-Project`
 header naming the project as it is called now. Pages under `/p/OLD/...`
 redirect to `/p/NEW/...`, and a form posted from a page opened before the
-rename still acts. The `SHOWCASE` setting may keep the old name.
+rename still acts.
 
 A name is refused when another project is registered under it or was called
 it before, or when a removed project's Ledger is kept under it. Renaming

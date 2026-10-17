@@ -219,20 +219,11 @@ const TEXT: Record<string, (t: Theme) => Pair[]> = {
   ".lay-band-cloud": (t) => onBand(t, ".lay-band-cloud"),
   ".pf-lane": (t) => onBand(t, ".pf-lane"),
   ".pf-lane-atelier": (t) => onBand(t, ".pf-lane-atelier"),
-  // The sign-in form's translucent sheet over the dimmed showcase graph:
-  // the brightest thread behind it, at the backdrop's opacity.
-  ".login.over-graph .login-form": (t) => {
-    const sheet = Number(/var\(--page\) (\d+)%/.exec(rule(".login.over-graph .login-form"))![1]) / 100;
-    const page = t.set.get("surface")!;
-    const behind = companies(t.own, t.set).map(([, c]) => over(over(c, opacityOf(".login-backdrop"), page), 1 - sheet, page));
-    return inks(t, ["text", "text-muted", "text-dim"], behind);
-  },
 };
 // Rules that fade or colour shapes only; none of them selects text.
 const SHAPES: Record<string, string> = {
   ".span-past": "the past holder's band; its label is measured over it",
   ".span-now": "the current holder's band; its label is measured over it",
-  ".login-backdrop": "the showcase graph dimmed behind sign-in, aria-hidden decoration",
   ".g-card": "a hidden card, shown at full opacity",
   ".graph:has(.g-task:hover) .g-task:not(:hover) > :not(text, a)": "the other tasks' threads and marks; their labels stay at full opacity",
   ".graph:has(.g-task:focus-within) .g-task:not(:focus-within) > :not(text, a)": "the other tasks' threads and marks; their labels stay at full opacity",
@@ -262,7 +253,6 @@ test("every faded, tinted or company-coloured rule is measured text or a shape w
     assert.doesNotMatch(selected, /\btext\b|tspan/, `${sel} is listed as a shape but selects text`);
     for (const c of selected.match(/\.[a-z][\w-]*/g) ?? []) assert.ok(!TEXT_CLASSES.has(c.slice(1)), `${sel} is listed as a shape but ${c} is drawn as text`);
   }
-  assert.match(readFileSync("src/ui.ts", "utf8"), /class="login-backdrop" aria-hidden="true"/);
   assert.match(rule(".g-card"), /visibility: hidden/);
   // Only dots breathe.
   for (const { sel, body } of rules) if (/animation:[^;]*\bbreathe\b/.test(body)) assert.match(sel, /\.pulse$|\.g-head$/, `${sel} breathes`);

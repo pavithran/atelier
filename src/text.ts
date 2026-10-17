@@ -4,9 +4,9 @@ import { RuleError } from "./rules.ts";
 export const TEXT_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\p{Default_Ignorable_Code_Point}]/gu;
 
 // An email address, in angle brackets or bare: text joined by an @ up to the
-// spaces, brackets, quotes or punctuation around it. The public showcase
-// draws names from commit trailers and titles from the Ledger, and an
-// address there is a person's, so it removes each one before drawing. Text
+// spaces, brackets, quotes or punctuation around it. Names read from commit
+// trailers and titles read from the Ledger can hold an address, which is a
+// person's, so a page removes each one before drawing. Text
 // with no @ is returned as it is.
 const ADDRESS = /<[^<>]*@[^<>]*>|[^\s<>()[\]"',;]*@[^\s<>()[\]"',;]+/g;
 export function withoutAddresses(text: string): string {

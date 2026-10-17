@@ -51,8 +51,8 @@ command line argument, and login prints no token.
 The developer's pages can also sit behind Cloudflare Access, so the person
 reaching them has signed in with whatever the Zero Trust account asks (a
 one-time code, a passkey, an identity provider) before the Worker is reached
-at all. The domain's root is the public front door (`/` serves the showcase,
-the developer's Home is at `/home`), and Access cannot exempt the root path alone,
+at all. The domain's root is the public front door (`/` answers 302 to the
+developer's Home at `/home`), and Access cannot exempt the root path alone,
 so the arrangement is the other way round: the whole domain is public at the
 edge, and the developer's paths are listed for Access. Access picks the
 application whose path is most specific, and a policy applies to its whole
@@ -90,8 +90,8 @@ dashboard, made before the secrets below so the developer is never locked out:
 
    These are every path the Worker serves to the signed-in developer: Home, the
    sign-in page, Decisions, Studio, Flow, History, the
-   Models and Usage pages and the Models form, the old `/projects` address and
-   the showcase form under it, the task forms under `/ui`, and each project's
+   Models and Usage pages and the Models form, the old `/projects` address,
+   the task forms under `/ui`, and each project's
    area under `/p`. A new developer page needs its path added here.
 
 Those paths then meet the sign-in at the edge. A path the list misses is
@@ -124,7 +124,7 @@ that vouching, even a request carrying a session cookie, so the pages hold
 even if the Access application stops covering the server. `/login` is behind
 the check too, and takes no server token there, which closes the open token
 form the 2026-10-06 audit noted.
-The public pages (`/`, `/showcase`, `/how`, `/live.js`), the sign-out form and
+The public paths (`/`, `/showcase`, `/how`, `/live.js`), the sign-out form and
 the `/api` routes stay open in the Worker. Behind Access the developer's verified
 assertion is the sign-in: `/login`, or any developer page opened without a session,
 starts the thirty-day session at once, with no token form. A request from

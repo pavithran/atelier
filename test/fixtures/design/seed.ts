@@ -34,7 +34,7 @@ export type Shape =
   | "merged" | "abandoned" | "open" | "working" | "stale" | "blocked" | "failed"
   | "ready" | "protected" | "sentBack" | "accepted" | "scope" | "overlap";
 
-export interface ProjectPlan { name: string; title: string; checks: string[]; protected: string[]; mode?: "named" | "anonymous"; shapes: Partial<Record<Shape, number>> }
+export interface ProjectPlan { name: string; title: string; checks: string[]; protected: string[]; shapes: Partial<Record<Shape, number>> }
 
 // The three projects with work. The counts are what fixture.spec.ts asserts.
 export const PLANS: ProjectPlan[] = [
@@ -43,11 +43,11 @@ export const PLANS: ProjectPlan[] = [
     shapes: { merged: 156, abandoned: 6, open: 14, working: 4, overlap: 2, stale: 3, blocked: 2, failed: 3, ready: 4, protected: 2, sentBack: 1, accepted: 2, scope: 1 },
   },
   {
-    name: "field-notes", title: "Field Notes", checks: ["xcodebuild -scheme FieldNotes test"], protected: [], mode: "anonymous",
+    name: "field-notes", title: "Field Notes", checks: ["xcodebuild -scheme FieldNotes test"], protected: [],
     shapes: { merged: 50, abandoned: 4, open: 8, working: 4, ready: 2, failed: 1, blocked: 1 },
   },
   {
-    name: "open-tool", title: "Open Tool", checks: ["npm test"], protected: [], mode: "named",
+    name: "open-tool", title: "Open Tool", checks: ["npm test"], protected: [],
     shapes: { merged: 25, open: 10, working: 3, ready: 2 },
   },
 ];
@@ -111,7 +111,7 @@ export async function seed(env: Env): Promise<Seeded> {
     files.set(plan.name, tree);
     let parent: string[] = [];
     // The named project has git history from before its first task, so the
-    // showcase's comparison has a "before" to draw: one commit a day, two in
+    // imported history has a "before" to draw: one commit a day, two in
     // three naming an agent the way commit messages do.
     if (plan.name === HISTORY_PROJECT) {
       for (let d = HISTORY_DAYS; d > 0; d--) {
@@ -271,8 +271,6 @@ export async function seed(env: Env): Promise<Seeded> {
   await I(env).putUsage({ tool: "codex", runner: "home:studio", at: new Date(clock).toISOString(), windows: [{ name: "5-hour", usedPercent: 41, resetsAt: new Date(clock + 3 * 3_600_000).toISOString(), at: new Date(clock).toISOString() }, { name: "weekly", usedPercent: 86, resetsAt: new Date(clock + 3 * 86_400_000).toISOString(), at: new Date(clock).toISOString() }], models: [{ model: "gpt-6-astra", provider: "openai", spans: { "5h": { requests: 41, tokens: 912_000, cost: null }, "24h": { requests: 160, tokens: 3_400_000, cost: null }, "7d": { requests: 820, tokens: 17_000_000, cost: null } } }], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 }, "https://atelier.test/api/usage/codex");
   await I(env).putUsage({ tool: "opencode", runner: "home:laptop", at: new Date(end - 9 * 3_600_000).toISOString(), windows: [], models: [{ model: "qwen-4", provider: "ai-studio", spans: { "5h": { requests: 0, tokens: 0, cost: 0 }, "24h": { requests: 12, tokens: 210_000, cost: 0.42 }, "7d": { requests: 90, tokens: 1_900_000, cost: 3.1 } } }], balances: [{ currency: "USD", amount: 6.5 }], notes: ["The 5-hour window could not be read from this tool."] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 }, "https://atelier.test/api/usage/opencode");
 
-  // The public setting: one project named, one anonymised.
-  for (const plan of PLANS) if (plan.mode) await I(env).setShowcase(plan.name, plan.mode);
   // One live task's workspace cannot be read: its page draws the "unavailable" diff.
   git.broken.add(`ledger-core--${seeded.byShape["ledger-core"].ready[0]}`);
   at(end);

@@ -102,7 +102,7 @@ const post = (browser: RenderBrowser | undefined, body: unknown | string, path =
 it("GET says the render check is here, and only POST /check renders", async () => {
   const probe = await renderGateway(undefined, new Request("https://render.atelier.test/"), grant());
   expect(probe.status).toBe(200);
-  expect(await probe.json()).toMatchObject({ render: "browser-run", pages: ["/how", "/showcase"], renders: MAX_RENDERS });
+  expect(await probe.json()).toMatchObject({ render: "browser-run", pages: ["/how"], renders: MAX_RENDERS });
   expect((await renderGateway(undefined, new Request("https://render.atelier.test/check", { method: "PUT" }), grant())).status).toBe(405);
   expect((await post(undefined, { page: "/how", html: HTML }, "/nope")).status).toBe(404);
 });
@@ -210,7 +210,7 @@ it("finds a figure that shrinks on a narrow screen, and a public bar that no lon
   const pages = healthy();
   pages.narrow.result!.find((g) => g.selector === ".lay-fig svg")!.results[0].width = 343;
   pages.narrow.result!.find((g) => g.selector === ".public-bar")!.results[0].height = 54;
-  expect(scrapeProblems("/showcase", pages.wide, pages.narrow, sentFor(pages))).toEqual([
+  expect(scrapeProblems("/how", pages.wide, pages.narrow, sentFor(pages))).toEqual([
     "the layers figure is 343px wide on a 375px screen, under the 880px its scroll frame holds, so it would shrink instead of scroll",
     "the public bar is as tall on a 375px screen as on a 1280px one, so it no longer wraps",
   ]);
@@ -298,12 +298,11 @@ async function runAs(runId: string, status: RunState["status"]) {
 it("the egress gateway answers the render host only for a running check, within its run's renders, and refuses every other reach", async () => {
   const browser = scraping(healthy);
   const withBrowser = { ...env, BROWSER: browser } as unknown as Env;
-  const render = (runId?: string) => routeEgress(withBrowser, checkRequest({ page: "/showcase", html: HTML }), runId);
+  const render = (runId?: string) => routeEgress(withBrowser, checkRequest({ page: "/how", html: HTML }), runId);
   await runAs("render-running", "running");
-  // /showcase needs only the layers figure, which the healthy scrape draws.
   const ok = await render("render-running");
   expect(ok.status).toBe(200);
-  expect(await ok.json()).toEqual({ page: "/showcase", problems: [] });
+  expect(await ok.json()).toEqual({ page: "/how", problems: [] });
   for (let i = 1; i < MAX_RENDERS / 2; i++) expect((await render("render-running")).status).toBe(200);
   expect((await render("render-running")).status).toBe(429);
   expect(browser.calls).toHaveLength(MAX_RENDERS);

@@ -158,34 +158,6 @@ export function applyServed(kindRows: CountRow[], dayRows: DayRow[], moves: Serv
   return { kinds: [...kinds.values()].filter((r) => r.n > 0), days: [...days.values()].filter((r) => r.n > 0) };
 }
 
-// The tally buildStory would count over every event of the record, from the
-// Ledger's counts: the same rules, applied to each actor's count of a kind.
-export function tallyFromCounts(c: ShowcaseCounts, owner: string): Tally {
-  const t = emptyTally();
-  for (const r of [...c.kinds].sort((a, b) => a.first - b.first)) {
-    if (r.actor === owner) { if (DECISIONS.has(r.kind)) t.decisions += r.n; }
-    else if (!QUIET.has(r.kind) && !isAtelier(r.actor)) {
-      t.agentMoves += r.n;
-      const v = vendorOf(r.actor, owner);
-      t.byVendor[v] = (t.byVendor[v] ?? 0) + r.n;
-      if (isLocalRun(r.actor)) t.localRuns += r.n;
-      if (!t.agents.includes(r.actor)) t.agents.push(r.actor);
-    }
-    switch (r.kind) {
-      case "item.created": t.planned += r.n; break;
-      case "item.claimed": t.claims += r.n; break;
-      case "item.handoff": t.handoffs += r.n; break;
-      case "push.observed": t.pushes += r.n; break;
-      case "evidence.observed": t.checks += r.n; t.inCloud += r.cloud; break;
-      case "review.approved": t.approvals += r.n; break;
-      case "review.rejected": t.sentBack += r.n; break;
-      case "item.accepted": t.accepts += r.n; break;
-    }
-  }
-  t.merges = c.merges;
-  return t;
-}
-
 const sha8 = (v: unknown) => (typeof v === "string" ? v.slice(0, 8) : "");
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);

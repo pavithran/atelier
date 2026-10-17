@@ -23,7 +23,7 @@
   // keys the team publishes, matching the issuer, the audience and the
   // owner's email claim. The issuer is the team's URL; the audience is the
   // Access application's AUD tag; the email is the one person the pages are
-  // for. Each public path (/api/*, /showcase, /how, /live.js) needs its own
+  // for. Each public path (/api/*, /how, /live.js) needs its own
   // Access application with a Bypass policy, since bearer tokens and visitors
   // never pass Access (docs/setup.md says how). Set all three or none: with
   // only some set, or one unusable, the owner's routes are refused.

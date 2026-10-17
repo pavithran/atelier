@@ -179,7 +179,7 @@ or a list of runs. A run is either
   the checkout, or
 - `{"request": URL, "status": 200}`: a GET of an http or https URL that must
   end with that status. Redirects are followed, so `https://atelier.zone`,
-  which sends a visitor who is not signed in to `/login` or `/showcase`,
+  which sends a visitor who is not signed in on to `/home` and its sign-in,
   answers 200 there.
 
 and may add `"timeout_seconds"` (20 minutes for a command and 30 seconds for

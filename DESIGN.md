@@ -40,18 +40,6 @@ only a list of tasks.
   named") is written beside it in words. An entry's stripe is the commit that
   last changed it; an entry none of the commits read changed gets a fainter
   stripe.
-- **The public showcase** is the owner's portfolio, read only: a card per
-  project the owner opted in, with its two weeks of activity as a bar per day
-  stacked by family, its tasks merged, sent back and in progress, and a few
-  task stories drawn as threads. An anonymised project is titled by a neutral
-  label from its kind and its stories by their kind of work; its name, task
-  titles, paths, commit messages, review notes, people and addresses are
-  left out on the server, before anything is rendered. Nothing is public
-  until the owner's setting says so, and a project may instead be shown
-  named.
-- **Sign in** stands over the portfolio's activity, dimmed and clipped to
-  the viewport, when the owner shows projects publicly; the graph is the
-  showcase's, anonymised as the setting says.
 - **Home** is the portfolio: a card per project with what needs the owner
   there, what is running, its two weeks of moves as a bar per day stacked by
   the family of the agent that made them, and its last merge. Projects with

@@ -2,11 +2,12 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { signIn } from "./signin.ts";
 
 // t578's first deploy (7c6086e2) emptied the live showcase: every project
 // came back unreadable on Atelier's own ledger, hundreds of thousands of
-// events deep. This seeds a ledger at that scale and times the showcase's
-// whole-record read.
+// events deep. This seeds a ledger at that scale and times the whole-record
+// read that a project's showcase page (/p/NAME/showcase) draws from.
 const testEnv = { ...env, ATELIER_TOKEN: "scale-token" } as typeof env;
 const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const L = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
@@ -45,7 +46,7 @@ async function seed(name: string) {
   });
 }
 
-it("the whole-record showcase counts read a ledger of 150,000 events quickly", { timeout: 120_000 }, async () => {
+it("the whole-record counts a project showcase draws from read a ledger of 150,000 events quickly", { timeout: 120_000 }, async () => {
   await seed("scale");
   const served = await runInDurableObject(L("scale"), async (_: unknown, s: DurableObjectState) => Number(s.storage.sql.exec(`SELECT COUNT(*) AS n FROM events WHERE kind = 'event.served'`).one().n));
   expect(served).toBeGreaterThanOrEqual(SERVED - 100);
@@ -64,12 +65,11 @@ it("the whole-record showcase counts read a ledger of 150,000 events quickly", {
   expect(counts.merges).toBe(MERGED);
   expect(counts.taken).toBe(ITEMS);
   expect(counts.story).not.toBeNull();
-  for (const e of await I().showcaseEntries()) await I().removeShowcase(e.name);
-  await I().setShowcase("scale", "named");
+  const cookie = await signIn("scale-token", testEnv);
   const t1 = performance.now();
-  const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
+  const body = await (await worker.fetch(new Request("https://atelier.test/p/scale/showcase", { headers: { cookie } }), testEnv)).text();
   const pageMs = performance.now() - t1;
-  console.log(`showcase page: ${pageMs.toFixed(0)} ms`);
+  console.log(`project showcase page: ${pageMs.toFixed(0)} ms`);
   expect(body).not.toContain("could not be read");
   expect(body).toContain(`<dt>merged, all time</dt><dd>${MERGED}</dd>`);
   expect(ms).toBeLessThan(2000);

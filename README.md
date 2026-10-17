@@ -13,12 +13,12 @@ theirs. It runs on Cloudflare Workers, Durable Objects and Artifacts, and is
 driven by a dependency-free command, `atelier`, that any agent able to run a
 shell command can use.
 
-It is live at [atelier.zone](https://atelier.zone). Two pages there are
+It is live at [atelier.zone](https://atelier.zone). One page there is
 public: [How it works](https://atelier.zone/how) states the rules the code
-enforces and lists every command, and the showcase, at the domain's root
-[atelier.zone](https://atelier.zone), draws Atelier's own work as it was
-built by agents of several model families: each task, who held it, its
-checks, reviews and decisions.
+enforces and lists every command. The domain's root leads to the developer's
+projects list, behind the sign-in, and each project's own page draws its work
+as it was built by agents of several model families: each task, who held it,
+its checks, reviews and decisions.
 
 ## What Atelier enforces, and why
 
@@ -122,7 +122,7 @@ change merged. Of the 365 merged by then (364 tasks and one plan), 317 carry
 an approval from another model family at the revision that merged, and every
 task merged from 22:11 UTC on 2026-10-06 to that reading does (228 tasks),
 since the project developer extended the rule to every path in the project
-that day. The public showcase at [atelier.zone](https://atelier.zone) counts
+that day. The public showcase that then stood at atelier.zone counted
 live, so its figures have moved on since: read on 2026-10-13 for Gemini 4
 Argon's claims audit, it showed 379 merged, all time, and, counted apart, 13
 landed in fast mode. Those 13 landed on 2026-10-13, when the developer had
@@ -144,7 +144,7 @@ the merge, not before it.
 | Workers Logs | `observability` is enabled in `wrangler.jsonc`, so the Worker's logs are kept. | Live |
 | Queues | A consumer for Artifacts push notices (`cf.artifacts.repo.pushed`) is written in `src/index.ts`, but `wrangler.jsonc` declares no consumer, so no notice is delivered; the CLI reports each push to the Worker instead. | Written, not configured |
 | Cloudflare Access | In front of the developer's pages: the Worker verifies the Access assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). | Live: Access applications on atelier.zone, with the Worker's own check on |
-| Browser Rendering | A render check (`src/render-check.ts`, `test/render-check.test.mjs`) builds `/how` and the showcase from the pushed tree, posts each page to the reserved host `render.atelier.test`, and the Worker's `BROWSER` binding renders it in Cloudflare's headless browser and reports the laid-out geometry; a label wider than its box, overlapping boxes or a figure that shrinks instead of scrolling fails the check. | Built and configured in `wrangler.jsonc` |
+| Browser Rendering | A render check (`src/render-check.ts`, `test/render-check.test.mjs`) builds `/how` from the pushed tree, posts the page to the reserved host `render.atelier.test`, and the Worker's `BROWSER` binding renders it in Cloudflare's headless browser and reports the laid-out geometry; a label wider than its box, overlapping boxes or a figure that shrinks instead of scrolling fails the check. | Built and configured in `wrangler.jsonc` |
 | R2 | Large check logs and review diffs (`src/large.ts`), kept in the bucket `atelier-large` (binding `LARGE`) and named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. The same bucket caches the pinned Debian git package the check container installs (`fetchPinned` in `src/sandbox/runner.ts`). | Live: the bucket `atelier-large` exists and is bound |
 | Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` runs the checks (in a container with `--checks container`), the submission and the review wait without the landing lease, then takes the lease for the acceptance and the merge alone, as durable steps with retries, and waits for the developer's machine to merge main, push, run the checks (by default) and merge. | Live behind `atelier land --workflow` (local checks by default) |
 
@@ -156,8 +156,8 @@ Node versions, see docs/runners.md), git, a Cloudflare account on the Workers
 Paid plan (Artifacts is in open beta there), and `wrangler` logged in.
 
 **Try it without an account.** Nothing below needs a Cloudflare account
-until step 2. The live server is at [atelier.zone](https://atelier.zone): its
-root is the public showcase, and [atelier.zone/how](https://atelier.zone/how)
+until step 2. The live server is at [atelier.zone](https://atelier.zone), and
+[atelier.zone/how](https://atelier.zone/how)
 states each rule the code enforces and lists every command. On your own
 machine, step 1 builds and tests everything, and
 
@@ -633,24 +633,11 @@ task to merge, states the rules the code enforces, marks which parts of the
 orchestrator are built, and lists every command. It reads no project and no
 setting, and its command reference is drawn from `src/usage.ts`, the table
 `atelier help` prints from; `test/how.test.ts` checks that the rules and
-labels it names still match the code. `/showcase` shows the projects the
-developer names, as the Flow page draws them, to anyone without signing in. It
-leaves out what anyone wrote (review notes, reports, check commands and
-closing notes), the diffs, every form and every link into the signed-in
-pages. Every email address goes too: from task and project titles, and from
-the agent names read from commit trailers in the history before Atelier,
-where a name that is only an address is not taken. The developer adds a project
-with `atelier showcase set NAME [--named|--anonymous]` or the form on the
-signed-in Home page, and takes it off with `atelier showcase remove NAME`.
-Anonymous is the default: the project's card and stories carry a neutral
-label from its kind, never its name, a task title, a path, a commit message
-or an address. The `SHOWCASE` variable (names separated by commas, each
-optionally followed by `:named` or `:anonymous`; a bare name is shown named)
-seeds the same setting and overrides it for the names it lists. Nothing is
-public until a project is named, and the page is cached for a minute. The
-showcase is the front door: `/` serves it to everyone, signed in or not
-(`/showcase` serves the same page), and its header's Sign in leads to
-`/login`, which opens the developer's Home at `/home`.
+labels it names still match the code. The domain's root and `/showcase`
+answer 302 to `/home`, the projects list, where a visitor who is not signed in
+meets the sign-in as at any owner page; `/login` opens the developer's Home.
+Each project has a showcase page of its own at `/p/NAME/showcase`, drawn from
+that project's record and read after signing in.
 
 **Protected actions.** An action whose effect reaches beyond the repository
 and cannot be taken back by a revert (a deploy, a device install, a push of

@@ -28,8 +28,7 @@
           "sentBack": 1,
           "accepted": 2,
           "scope": 1
-        },
-        "mode": null
+        }
       },
       {
         "name": "field-notes",
@@ -41,8 +40,7 @@
           "ready": 2,
           "failed": 1,
           "blocked": 1
-        },
-        "mode": "anonymous"
+        }
       },
       {
         "name": "open-tool",
@@ -51,152 +49,11 @@
           "open": 10,
           "working": 3,
           "ready": 2
-        },
-        "mode": "named"
+        }
       }
     ]
   },
   "pages": {
-    "public-showcase": {
-      "390": {
-        "structure": {
-          "height": 6943,
-          "navs": [
-            {
-              "label": "Elsewhere",
-              "links": [
-                "How it works",
-                "Source on GitHub",
-                "Sign in"
-              ]
-            }
-          ],
-          "h1": 1,
-          "headings": [
-            "h1 A Git platform for multiple coding agents",
-            "h2 Git keeps what a commit claims. Atelier keeps what happened.",
-            "h2 Owner made 79 decisions. 5 agents did the other 345 moves.",
-            "h2 The portfolio",
-            "h2 One task, as it happened",
-            "h2 How a task travels",
-            "h2 Latest moves",
-            "h2 Where it runs"
-          ],
-          "words": 873
-        },
-        "targets": {
-          "total": 6,
-          "small": [],
-          "smallCount": 0
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 4411,
-          "navs": [
-            {
-              "label": "Elsewhere",
-              "links": [
-                "How it works",
-                "Source on GitHub",
-                "Sign in"
-              ]
-            }
-          ],
-          "h1": 1,
-          "headings": [
-            "h1 A Git platform for multiple coding agents",
-            "h2 Git keeps what a commit claims. Atelier keeps what happened.",
-            "h2 Owner made 79 decisions. 5 agents did the other 345 moves.",
-            "h2 The portfolio",
-            "h2 One task, as it happened",
-            "h2 How a task travels",
-            "h2 Latest moves",
-            "h2 Where it runs"
-          ],
-          "words": 873
-        },
-        "targets": {
-          "total": 6,
-          "small": [],
-          "smallCount": 0
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 188,
-            "unknown": 0,
-            "failures": []
-          },
-          {
-            "scheme": "dark",
-            "checked": 188,
-            "unknown": 0,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 10,
-          "first": {
-            "tag": "a",
-            "label": "Atelier",
-            "href": "/",
-            "indicator": "outline 2px solid rgb(255, 223, 143)",
-            "onScreen": true,
-            "width": 68,
-            "height": 26
-          },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-09-12 12:14 UTC, pushed: gpt-6-astra pushed",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 19,
-              "height": 19
-            },
-            {
-              "tag": "g",
-              "label": "2026-09-12 12:18 UTC, check passed: Passed in a Cl",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 19,
-              "height": 19
-            },
-            {
-              "tag": "g",
-              "label": "2026-09-12 12:23 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 19,
-              "height": 19
-            },
-            {
-              "tag": "g",
-              "label": "2026-09-12 13:03 UTC, accepted: Owner accepted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 19,
-              "height": 19
-            }
-          ],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": []
-        }
-      },
-      "path": "/",
-      "status": 200,
-      "audience": "public"
-    },
     "public-how": {
       "390": {
         "structure": {
@@ -13320,100 +13177,6 @@
       "path": "/p/ledger-core/t168/code",
       "status": 404,
       "audience": "owner"
-    },
-    "public-showcase-none": {
-      "390": {
-        "structure": {
-          "height": 947,
-          "navs": [
-            {
-              "label": "Atelier",
-              "links": [
-                "Decisions",
-                "Projects",
-                "Activity"
-              ]
-            }
-          ],
-          "h1": 1,
-          "headings": [
-            "h1 Let’s resolve this."
-          ],
-          "words": 23
-        },
-        "targets": {
-          "total": 12,
-          "small": [],
-          "smallCount": 0
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 968,
-          "navs": [
-            {
-              "label": "Atelier",
-              "links": [
-                "Decisions",
-                "Projects",
-                "Activity"
-              ]
-            }
-          ],
-          "h1": 1,
-          "headings": [
-            "h1 Let’s resolve this."
-          ],
-          "words": 23
-        },
-        "targets": {
-          "total": 12,
-          "small": [],
-          "smallCount": 0
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 14,
-            "unknown": 0,
-            "failures": []
-          },
-          {
-            "scheme": "dark",
-            "checked": 14,
-            "unknown": 0,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 8,
-          "first": {
-            "tag": "a",
-            "label": "Skip to content",
-            "href": "#main",
-            "indicator": "outline 2px solid rgb(255, 223, 143)",
-            "onScreen": true,
-            "width": 132,
-            "height": 49
-          },
-          "noIndicator": [],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": [
-            {
-              "selector": "div",
-              "right": 384
-            }
-          ]
-        }
-      },
-      "path": "/",
-      "status": 404,
-      "audience": "public"
     }
   }
 }

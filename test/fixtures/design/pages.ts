@@ -31,7 +31,6 @@ export interface PageState {
   status: number;      // the status the page is drawn with
   marker: string;      // text the page must hold, so a wrong page is caught
   state: string;       // what this capture shows, in the brief's words
-  setup?: "no-showcase";
 }
 
 // The bindings the pages are drawn with: production code, the seeded Ledger,
@@ -87,11 +86,9 @@ export function pageStates(s: Seeded): PageState[] {
   const merged = lc("merged");
   return [
     // Public
-    { id: "public-showcase", path: "/", audience: "public", status: 200, marker: "Open Tool", state: "Showcase with one project named and one anonymised" },
-    { id: "public-showcase-none", path: "/", audience: "public", status: 404, marker: "There is no public showcase", state: "No project shown publicly", setup: "no-showcase" },
     { id: "public-how", path: "/how", audience: "public", status: 200, marker: "How", state: "The explainer" },
     { id: "public-owner-route", path: "/p/ledger-core", audience: "public", status: 401, marker: "behind Cloudflare Access", state: "A visitor on an owner URL without Access's sign-in" },
-    { id: "signin", path: "/login", audience: "token", status: 200, marker: "Sign in to Atelier", state: "Sign-in over the anonymised backdrop" },
+    { id: "signin", path: "/login", audience: "token", status: 200, marker: "Sign in to Atelier", state: "Sign-in" },
     // Cross-project
     { id: "home", path: "/home", audience: "owner", status: 200, marker: "Ledger Core", state: "Portfolio: dense, empty and unavailable projects" },
     { id: "decisions", path: "/decisions", audience: "owner", status: 200, marker: "aria-labelledby=\"sel-h\"", state: "Inbox with the first decision selected" },
@@ -144,7 +141,8 @@ export function pageStates(s: Seeded): PageState[] {
 // Addresses that answer with a redirect, asserted by fixture.spec.ts and
 // listed in the brief, not captured: the page they lead to is.
 export const ALIASES: { path: string; audience: Audience; status: number; location: string }[] = [
-  { path: "/showcase", audience: "public", status: 200, location: "" },
+  { path: "/", audience: "public", status: 302, location: "/home" },
+  { path: "/showcase", audience: "public", status: 302, location: "/home" },
   { path: "/projects", audience: "owner", status: 301, location: "/home" },
   { path: "/flow?project=ledger-core", audience: "owner", status: 301, location: "/p/ledger-core/flow" },
   { path: "/home", audience: "token", status: 303, location: "/login" },

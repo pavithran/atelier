@@ -515,18 +515,17 @@ it("removal refuses claimed, submitted and accepted work unless forced", async (
   }
 });
 
-it("removed projects disappear from signed-in pages and a cached showcase", async () => {
+it("removed projects disappear from signed-in pages", async () => {
   const name = "remove-visible";
   await project(name);
-  // The showcase draws a project only once an agent has taken a task.
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.newItem("Visible work", [], "owner");
   await L.claim("t1", "codex/gpt-6-astra");
   const signedIn = await signIn(TOKEN, testEnv);
-  const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), { ...testEnv, SHOWCASE: name } as typeof env);
-  expect(await (await get("/showcase")).text()).toContain(name);
+  const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), testEnv);
+  expect(await (await get("/home")).text()).toContain(name);
   expect((await call("DELETE", `/projects/${name}`, "owner", { force: true })).status).toBe(200);
-  for (const path of ["/projects", "/flow", "/decisions", "/showcase"]) {
+  for (const path of ["/home", "/projects", "/flow", "/decisions"]) {
     expect(await (await get(path)).text()).not.toContain(name);
   }
 });
@@ -1444,8 +1443,7 @@ it("the holder blocks and unblocks through the API, only the owner edits the fra
 });
 
 // t315: a task's short title on every list and page but its own, where the
-// brief and acceptance criteria follow the title; the public showcase draws
-// neither the brief nor, for an anonymous project, the title.
+// brief and acceptance criteria follow the title.
 const BRIEF = "Short titles for tasks (zebrafish marker): the whole brief, which only the task's own page and the agents' briefs carry, never a list.";
 
 it("an older CLI's long title still makes a task, and new and edit take a title, a brief and acceptance criteria apart", async () => {
@@ -1501,30 +1499,6 @@ it("the task page shows the title, then the brief and the criteria; every list s
     const html = (await get(path)).replace(/<pre>[^]*?<\/pre>/g, "");
     if (path === "/home" || path.endsWith("/tasks")) expect(html, path).toContain("Short titles");
     expect(html, path).not.toContain("zebrafish");
-  }
-});
-
-it("the showcase draws a named project's short title, never its brief, and neither for an anonymous project", async () => {
-  for (const [name, mode] of [["text-named", ""], ["text-anon", ":anonymous"]] as const) {
-    await project(name);
-    const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-    // One long text, as an older CLI sends it: the title is its first clause.
-    await L.newItem(`Fix the quokka parser (zebrafish marker): ${"the rest of the brief ".repeat(5)}`, [], "owner");
-    await L.claim("t1", "codex/gpt-6-astra");
-    // The story tells a merged task only (t578), so the task is merged.
-    const head = "2".repeat(40);
-    await L.setFork("t1", `${name}--t1`, "1".repeat(40), "codex/gpt-6-astra");
-    await L.recordPush("t1", "codex/gpt-6-astra", head, head);
-    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6-astra", at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
-    await L.submit("t1", "codex/gpt-6-astra");
-    await L.accept("t1", "owner", head);
-    await L.merged("t1", "owner", "d".repeat(40), true, head);
-    const html = await (await worker.fetch(new Request("https://atelier.test/showcase"), { ...testEnv, SHOWCASE: `${name}${mode}` } as typeof env)).text();
-    expect(html, name).not.toContain("zebrafish");
-    if (mode) {
-      expect(html, name).not.toContain("quokka");
-      expect(html, name).toContain("a fix");
-    } else expect(html, name).toContain("Fix the quokka parser");
   }
 });
 
