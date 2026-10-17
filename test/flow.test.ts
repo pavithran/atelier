@@ -108,3 +108,37 @@ test("the report sums phases over tasks and counts rates over tasks with a compl
   assert.equal(r.totals.build.unknownTasks, 1);
   assert.equal(computeFlow([], T0).attemptsPerMerge, null);
 });
+
+// astra's review of t467, round 1.
+test("totals leave out the minutes of a phase that is unknown for that task", () => {
+  const known = { id: "a", events: [made(), ev(1, "item.claimed"), ev(11, "item.submitted")] };
+  // Ten minutes of build, a rejection, then a merge out of the second build that no event left.
+  const unknownBuild = { id: "b", events: [made(), ev(1, "item.claimed"), ev(11, "item.submitted"), ev(21, "review.rejected"), ev(50, "item.merged")] };
+  const r = computeFlow([known, unknownBuild], T0 + 11 * MIN);
+  assert.equal(r.tasks[1].phases.build.unknown, true);
+  assert.equal(min(r.totals.build.ms), 10);
+  assert.equal(r.totals.build.unknownTasks, 1);
+});
+
+test("a post-merge verdict is outside the phases: it neither enters one nor marks one unknown", () => {
+  const f = taskFlow("t12", [made(), ev(1, "item.claimed"), ev(2, "item.submitted"), ev(3, "review.approved"), ev(4, "item.accepted"), ev(9, "item.merged"),
+    ev(20, "review.approved", { postMerge: true }), ev(30, "review.rejected", { postMerge: true })], T0 + 99 * MIN);
+  assert.equal(f.phases.reviewWait.unknown, false);
+  assert.equal(f.rejections, 1);
+  assert.ok(Object.values(f.phases).every((t) => !t.open));
+  assert.equal(min(f.phases.reviewWait.ms), 1);
+});
+
+test("a rejection of accepted work ends the wait to land and returns the task to waiting for review", () => {
+  const f = taskFlow("t13", [made(), ev(1, "item.claimed"), ev(2, "item.submitted"), ev(3, "review.approved"), ev(4, "item.accepted"), ev(14, "review.rejected")], T0 + 24 * MIN);
+  assert.equal(min(f.phases.waitToLand.ms), 10);
+  assert.equal(f.phases.waitToLand.open, false);
+  assert.equal(f.phases.reviewWait.open, true);
+  assert.equal(min(f.phases.reviewWait.ms), 1 + 10);
+});
+
+test("the report counts the tasks with a measured phase apart from those with a complete record", () => {
+  const r = computeFlow([{ id: "a", events: [made()] }, { id: "b", events: [made(), ev(1, "item.claimed"), ev(11, "item.submitted")] }], T0 + 11 * MIN);
+  assert.equal(r.counted, 2);
+  assert.equal(r.measured, 1);
+});
