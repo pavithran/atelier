@@ -194,6 +194,15 @@ export function lowBalances(r: Pick<UsageReport, "balances">, floor: number | nu
   return floor === null ? [] : (r.balances ?? []).filter((b) => b.amount < floor);
 }
 
+// The shortages `crossings` and `atelier status` both read: a window whose own
+// alert the owner turned off stays quiet.
+export function windowShortages(r: Parameters<typeof usageShortages>[0], t: Pick<Thresholds, "weeklyPercent" | "windowPercent">, now: number) {
+  return usageShortages(r, now).filter((s) => {
+    const name = s.key.split("shortage:")[1];
+    return !((name === "weekly" && t.weeklyPercent === null) || (name === "5-hour" && t.windowPercent === null));
+  });
+}
+
 export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[] {
   const out: Crossing[] = [];
   const where = `${r.tool} on ${r.runner}`;
@@ -209,10 +218,8 @@ export function crossings(r: UsageReport, t: Thresholds, now: number): Crossing[
   }
   // A window heading for its limit, in the rule's words (usageShortages),
   // unless the owner's threshold already alerts on that window.
-  for (const s of usageShortages(r, now)) {
+  for (const s of windowShortages(r, t, now)) {
     const name = s.key.split("shortage:")[1];
-    // A window whose own alert the owner turned off stays quiet.
-    if ((name === "weekly" && t.weeklyPercent === null) || (name === "5-hour" && t.windowPercent === null)) continue;
     if (out.some((c) => c.key === `${r.tool}/${r.runner}/window:${name}`)) continue;
     out.push({ key: `${r.tool}/${r.runner}/shortage:${name}`, title: `${r.tool}: ${name} window may run short`, body: `${s.message} Reported by ${r.runner}.` });
   }
