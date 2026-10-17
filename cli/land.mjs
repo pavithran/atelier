@@ -1913,7 +1913,7 @@ export function readRetry({ now = Date.now, windowMs = READ_WINDOW_MS, baseMs = 
 export function workflowIsGone(read, startedInstance) {
   if (!read?.instance) return true;
   if (read.instance !== startedInstance) return true;
-  if (/not found|does not exist|no such/i.test(read.readError ?? "")) return true;
+  if (/not found|not_found|does not exist|no such/i.test(read.readError ?? "")) return true;
   return !read.status && ["complete", "errored", "terminated"].includes(read.lastStatus?.status);
 }
 

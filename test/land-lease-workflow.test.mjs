@@ -1043,6 +1043,28 @@ test("land --workflow gives up on a live instance after the read window, saying 
   assert.match(r.output, /the read failed for [12]s; the landing Workflow of t1 can no longer be read/);
 });
 
+test("land --workflow reads again after a read that throws, and recovers within the window (t368)", async (t) => {
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  const start = wf.tick;
+  let armed = false;
+  wf.tick = (box) => { if (!armed) { armed = true; wf.dropReads = 3; } start(box); };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /the landing Workflow could not be read \(.*\); trying again in \d+s, for up to \d+s in all/);
+  assert.equal(wf.dropReads, 0);
+});
+
+test("land --workflow gives up on reads that keep throwing at the window's end, saying how long and that the instance is not known to have ended (t368)", async (t) => {
+  const f = await landFixture(t);
+  f.env = { ATELIER_LAND_POLL_MS: "20", ATELIER_LAND_READ_WINDOW_MS: "1500" };
+  const wf = f.box.wf;
+  wf.tick = () => { wf.dropReads = Infinity; };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the landing Workflow of t1 could not be read for [12]s \(last error: .*\); instance land-t1-1 is not known to have ended/);
+});
+
 test("readRetry doubles its wait to a cap, ends at the window and starts afresh after a good read (t368)", () => {
   let clock = 0;
   const r = readRetry({ now: () => clock, windowMs: 100, baseMs: 10, maxMs: 30 });
@@ -1061,6 +1083,7 @@ test("workflowIsGone is true only for a definite answer that the instance is mis
   assert.equal(workflowIsGone({ instance: null }, "a"), true);
   assert.equal(workflowIsGone({ instance: "b", status: { status: "running" } }, "a"), true);
   assert.equal(workflowIsGone({ instance: "a", status: null, readError: "Workflow instance not found" }, "a"), true);
+  assert.equal(workflowIsGone({ instance: "a", status: null, readError: "instance.not_found" }, "a"), true);
   assert.equal(workflowIsGone({ instance: "a", status: null, lastStatus: { status: "terminated" } }, "a"), true);
   assert.equal(workflowIsGone({ instance: "a", status: null, readError: "fetch failed" }, "a"), false);
   assert.equal(workflowIsGone({ instance: "a", status: { status: "unknown" } }, "a"), false);
