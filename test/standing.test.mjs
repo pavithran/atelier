@@ -230,7 +230,8 @@ test("status --project prints where it stands and says the checkout is in step, 
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   // The baseline's head is read from the server; no read token is minted.
   // The developer's branches (t641) are read last; the stand-in has none.
-  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/branches"]);
+  // The usage warnings (t727) are read after them.
+  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/branches", "GET /api/usage"]);
   assert.match(r.output, /\n  Developer branches: not read/);
 });
 
@@ -239,7 +240,8 @@ test("status --project with an agent token reads the baseline's head through a r
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   // An agent is not asked for the developer's branches, which are the developer's alone (t641).
-  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
+  // The usage warnings (t727) are still read; a refusal leaves the text as it was.
+  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/usage"]);
   assert.doesNotMatch(r.output, /Developer branches/);
 });
 
