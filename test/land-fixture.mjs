@@ -128,6 +128,8 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       // through `wf.tick` (after each read) and `wf.onEvent` (each event).
       const wf = box.wf;
       const view = () => ({ ...(wf.detail ? { detail: wf.detail } : {}), ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
+      // `wf.dropReads` reads of a started instance are cut off unanswered, as a network failure is (t368).
+      if (req.method === "GET" && wf.instance && wf.dropReads > 0) { wf.dropReads--; res.destroy(); return; }
       if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
       else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
       else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status) && !wf.replace) answer = { ...view(), created: false, ...(wf.attach ?? {}) };
