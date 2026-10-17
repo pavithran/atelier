@@ -1,12 +1,10 @@
 // atelier mode. Its forms, flags and help are declared in src/usage/commands/mode.ts.
 import { COMMAND_USAGE } from "../help.mjs";
+import { fastLandedLines } from "../../src/rules.ts";
 import { OWNER, P, RequestError, actingHeaders, args, call, die, directionArg, project, request } from "../atelier.mjs";
 
 // What landed in fast mode, one line per task, with its post-merge review.
-export function landedLines(landed) {
-  if (!landed?.length) return ["Nothing landed in fast mode."];
-  return landed.map((l) => `${l.item} landed in fast mode at ${l.receipt.mergeCommit.slice(0, 12)} (built by ${l.receipt.builder}): post-merge review ${l.review.state}${l.review.by ? ` by ${l.review.by}` : ""}${l.fix ? `; fix task ${l.fix}` : ""}`);
-}
+export const landedLines = fastLandedLines;
 
 // The switch to fast mode needs the developer's confirmation (Astra's audit
 // of 2026-10-13, finding 3): their direction, --quote with the acting model

@@ -2509,6 +2509,35 @@ export function postMergeIndependence(reviewer: string, contributors: readonly s
   return landedFast ? { refusal: null, independence: SAME_FAMILY_FAST } : { refusal, independence: null };
 }
 
+// A fast landing skips the gate, so its independent review comes after the
+// merge and is owed until a verdict stands (Astra, 2026-10-13, finding 7:
+// the review was asked only when --reviewer was given, a failed ask was
+// swallowed, and nothing recorded that one was still due). The state is read
+// from the ledger, never remembered: a review that is open or claimed is
+// being served, one with a verdict is settled, and every other state ("not
+// requested", withdrawn, anything unknown) is owed, so a doubt is shown.
+const POST_MERGE_SETTLED = ["approved", "rejected", "open", "claimed"];
+export function postMergeOwed(state: string): boolean {
+  return !POST_MERGE_SETTLED.includes(state);
+}
+
+// What the developer reads of a fast landing's review: the settled state, or
+// an OWED line with the command that asks for it.
+export function postMergeReviewLine(item: string, review: { state: string; by: string | null }): string {
+  if (postMergeOwed(review.state)) return `OWED: the post-merge review of ${item} is ${review.state}; ask one with atelier review-request ${item} --reviewer H/M`;
+  return `post-merge review ${review.state}${review.by ? ` by ${review.by}` : ""}`;
+}
+
+// The lines atelier fast status and the switch back to full print: each
+// landing, then, when any review is owed, a closing line naming them.
+export function fastLandedLines(landed: readonly { item: string; receipt: { mergeCommit: string; builder: string }; review: { state: string; by: string | null }; fix: string | null }[]): string[] {
+  if (!landed.length) return ["Nothing landed in fast mode."];
+  const lines = landed.map((l) => `${l.item} landed in fast mode at ${l.receipt.mergeCommit.slice(0, 12)} (built by ${l.receipt.builder}): ${postMergeReviewLine(l.item, l.review)}${l.fix ? `; fix task ${l.fix}` : ""}`);
+  const owed = landed.filter((l) => postMergeOwed(l.review.state)).map((l) => l.item);
+  if (owed.length) lines.push(`Post-merge reviews still owed: ${owed.join(", ")}. A fast landing is not reviewed until one is asked and answered.`);
+  return lines;
+}
+
 // The fix task a rejected post-merge review of a fast landing files: its
 // criteria are the review's findings, or the note when it gave none.
 export function fastFixTask(itemId: string, title: string, review: { by: string; head: string; note: string; request?: number; findings?: Finding[] }): { title: string; brief: string; accept: string[] } {
