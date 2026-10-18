@@ -561,3 +561,58 @@ it("the standard project is renamed only with releaseName, and other projects ke
   await fresh.admitReviewer("gemini-4-argon", true, "Back", "owner", pool);
   expect((await fresh.standardReviewersSnapshot()).version).toBeGreaterThan(copied.version);
 });
+
+// Task t774, round 3. keyFree compared names exactly, but a baseline is
+// named after repoName(key), which lowercases, sanitises and caps at 63.
+it("a released key is checked as the repository init would name it: Demo skips demo-2, and a name too long for a suffix refuses the release", async () => {
+  const record = (name: string, repo: string) => ({ name, repo, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() });
+  for (const [name, repo] of [["demo-2", "demo-2"], ["Demo", "demo"]]) { await L(name).setProject(record(name, repo) as never, "owner"); await I().registerProject(record(name, repo) as never); }
+  const res = await release("Demo", "demo-old");
+  expect(res.status).toBe(200);
+  expect(await I().resolveProject("Demo")).toMatchObject({ key: "Demo-3", registered: false });
+  const made = await call("PUT", "/projects/Demo", "owner", {}, withArtifacts({ forks: [], created: [] }));
+  expect(made.status).toBe(200);
+  expect(((await made.json()) as { project: unknown }).project).toMatchObject({ name: "Demo", repo: "demo-3" });
+  // 62 characters plus "-2" is 64, more than a repository can be named.
+  const long = "l".repeat(62);
+  await project(long);
+  const refused = await release(long, "short-new-name");
+  expect(refused.status).toBe(409);
+  expect(((await refused.json()) as { error: string }).error).toBe("release_name_too_long");
+  expect(await I().resolveProject(long)).toMatchObject({ name: long, key: long, registered: true });
+  expect((await I().projects()).some((p) => p.name === "short-new-name")).toBe(false);
+  // 61 characters plus "-2" is 63, which fits.
+  const edge = "e".repeat(61);
+  await project(edge);
+  expect((await release(edge, "edge-old")).status).toBe(200);
+  expect((await I().resolveProject(edge)).key).toBe(`${edge}-2`);
+});
+
+it("after a release and reuse, an old page link and an owner-token runner config naming the name reach the replacement project", async () => {
+  await project("reuse-a");
+  await L("reuse-a").newItem("Old task", [], "owner");
+  expect((await release("reuse-a", "reuse-a-old")).status).toBe(200);
+  expect((await call("PUT", "/projects/reuse-a", "owner", {}, withArtifacts({ forks: [], created: [] }))).status).toBe(200);
+  await L("reuse-a-2").newItem("Replacement task", [], "owner");
+  const signedIn = await cookie();
+  const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), testEnv);
+  // The link is not a redirect to the renamed project: it is the replacement's own page.
+  const page = await get("/p/reuse-a/tasks");
+  expect(page.status).toBe(200);
+  const html = await page.text();
+  expect(html).toContain("Replacement task");
+  expect(html).not.toContain("Old task");
+  expect(html).toContain('href="/p/reuse-a/t1"');
+  const old = await get("/p/reuse-a-old/tasks");
+  expect(old.status).toBe(200);
+  expect(await old.text()).toContain("Old task");
+  // A runner polling with the owner token and no scope is offered every project's queue, each entry under the name it answers to now:
+  // the name a config lists is the replacement's, and the renamed project's work is under its new name.
+  await L("reuse-a").dispatch("t1", "owner", { to: "home" });
+  await L("reuse-a-2").dispatch("t1", "owner", { to: "home" });
+  const polled = await call("POST", "/queue", "owner", { runner: "home:reuse-runner", agents: [{ agent: "opencode", models: ["glm-5.3"] }], projects: ["reuse-a"] });
+  expect(polled.status, await polled.clone().text()).toBe(200);
+  const queue = await polled.json() as { project: string; item: { title: string } }[];
+  expect(queue.filter((q) => q.project === "reuse-a").map((q) => q.item.title)).toEqual(["Replacement task"]);
+  expect(queue.filter((q) => q.project === "reuse-a-old").map((q) => q.item.title)).toEqual(["Old task"]);
+});

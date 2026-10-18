@@ -173,7 +173,8 @@ test("CLI rename --release-name asks the server to release the name, and says wh
   const renamed = command(["projects", "rename", "weblog", "ikon", "--release-name"]);
   assert.equal(renamed.status, 0, renamed.stderr);
   assert.deepEqual(JSON.parse(calls()[0].body), { to: "ikon", releaseName: true });
-  assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog, formerNames: ["weblog"] } });
+  // The entry moves, but the released name is not kept as one of its former names (t774).
+  assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog } });
   assert.match(renamed.stdout, /weblog is now ikon on https:\/\/atelier\.test\./);
   assert.match(renamed.stdout, /weblog is released: it no longer reaches ikon, and a project created under it is stored apart.*Tokens limited to weblog are limited to ikon now \(2 changed\)/);
   assert.doesNotMatch(renamed.stdout, /weblog still works/);

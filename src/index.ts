@@ -1714,7 +1714,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (body.releaseName === true) {
       for (let n = 2; releaseKey === undefined; n++) {
         const candidate = `${ref.name}-${n}`;
+        // Derived as init derives it: lowercased and sanitised, at most 63
+        // characters. A name too long for a suffix refuses the release with
+        // nothing recorded; a repository already taken by a baseline skips to
+        // the next suffix.
+        let repo: string;
+        try { repo = repoName(candidate); }
+        catch { throw new RuleError("release_name_too_long", `${ref.name} cannot be released: a project created under it would need a storage key ${candidate} that no repository can be named after; rename it without --release-name`, 409); }
         if (!await index(env).keyFree(candidate)) continue;
+        if (await index(env).assertRepoAvailable(candidate, repo).then(() => false, () => true)) continue;
         if (await ledger(env, candidate).project().then(() => true, () => false)) continue;
         releaseKey = candidate;
       }

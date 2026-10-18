@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
-import { moveConflict, moveProjectEntryOnDisk } from "../private-guard.mjs";
+import { moveConflict, moveProjectEntryOnDisk, releaseFormerName } from "../private-guard.mjs";
 
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {
@@ -47,6 +47,8 @@ export default async function projectsCommand() {
       return;
     }
     if (release) {
+      // The local entry must not answer to the released name either (t774).
+      releaseFormerName(cfg.projects, r.to, r.from);
       console.log(`${r.from} is released: it no longer reaches ${r.to}, and a project created under it is stored apart, with its own ledger and baseline repository. Tokens limited to ${r.from} are limited to ${r.to} now (${r.rescoped} changed). Page links and runner configs that name ${r.from} reach whatever project holds that name, so update them.`);
       return;
     }
