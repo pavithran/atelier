@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
 import { behindRefusal, realHistory } from "../pull.mjs";
-import { guardedPush } from "../private.mjs";
+import { guardedPush } from "../private-guard.mjs";
 import { OWNER, P, call, cfg, die, landingGit, landingHome, project, refreshControlPlane, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not

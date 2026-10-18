@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
-import { moveConflict, moveProjectEntryOnDisk } from "../private.mjs";
+import { moveConflict, moveProjectEntryOnDisk } from "../private-guard.mjs";
 
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {

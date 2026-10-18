@@ -292,40 +292,7 @@ function icloudFolder(f, name = "Demo") {
   return keep;
 }
 
-test("clone links the private files this Mac names from the project's iCloud folder, and Git ignores them", async (t) => {
-  const f = setup(t);
-  const keep = icloudFolder(f);
-  const dir = join(f.root, "checkouts", "demo");
-  const projects = { demo: { private: ["PROJECT.md", "notes/plan.md", "ghost.md", "file.txt"] } };
-  const r = await run(t, f, ["clone", "demo", dir], { projects });
-  assert.equal(r.code, 0, r.output);
-  for (const path of ["PROJECT.md", "notes/plan.md"]) {
-    assert.ok(lstatSync(join(dir, path)).isSymbolicLink(), path);
-    assert.equal(readlinkSync(join(dir, path)), join(keep, path));
-  }
-  assert.equal(readFileSync(join(dir, "PROJECT.md"), "utf8"), "the plan\n");
-  assert.match(r.output, new RegExp(`Private files linked from ${keep}: PROJECT\\.md, notes/plan\\.md\\.`));
-  // One missing from the folder is said and skipped; a file the baseline
-  // holds is not private there and is left as the clone checked it out.
-  assert.match(r.output, /ghost\.md: not in .*; not linked/);
-  assert.match(r.output, /file\.txt: Git tracks it in the checkout/);
-  assert.equal(readFileSync(join(dir, "file.txt"), "utf8"), "version 3\n");
-  assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
-  assert.equal(f.git(dir, "check-ignore", "--no-index", "PROJECT.md", "notes/plan.md"), "PROJECT.md\nnotes/plan.md");
-  assert.ok(!existsSync(join(dir, ".gitignore")), "nothing pushed says what is private");
-  assert.deepEqual(r.config.projects.demo.private, projects.demo.private);
-});
-
-test("clone of a project whose private folder is not on this Mac says so, clones and still ignores the files", async (t) => {
-  const f = setup(t);
-  const dir = join(f.root, "demo");
-  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"], privateHome: join(f.root, "not-synced-yet") } } });
-  assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /Private files not linked: .*not-synced-yet, the folder that keeps them, is not on this Mac/);
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), f.head);
-  assert.ok(!existsSync(join(dir, "PROJECT.md")));
-  writeFileSync(join(dir, "PROJECT.md"), "written before iCloud caught up\n");
-  assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
+test("clone --private-home that is not a folder is refused before anything is cloned", async (t) => {
   // --private-home that is not a folder is refused before anything is cloned.
   const g = setup(t), other = join(g.root, "demo");
   const refused = await run(t, g, ["clone", "demo", other, "--private-home", join(g.root, "nope")]);
@@ -334,14 +301,13 @@ test("clone of a project whose private folder is not on this Mac says so, clones
   assert.ok(!existsSync(other));
 });
 
-test("clone --private-home names the folder the private files are linked from", async (t) => {
+test("clone --private-home records the folder that keeps the private files and their list", async (t) => {
   const f = setup(t);
   const keep = icloudFolder(f, "Somewhere Else");
   const dir = join(f.root, "demo");
   const r = await run(t, f, ["clone", "demo", dir, "--private-home", keep], { projects: { demo: { private: ["PROJECT.md"] } } });
   assert.equal(r.code, 0, r.output);
   assert.equal(r.config.projects.demo.privateHome, keep);
-  assert.equal(readlinkSync(join(dir, "PROJECT.md")), join(keep, "PROJECT.md"));
 });
 
 test("sync never carries a private file to the baseline, even one committed by hand past the exclude", async (t) => {
@@ -351,8 +317,9 @@ test("sync never carries a private file to the baseline, even one committed by h
   const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"] } } });
   assert.equal(r.code, 0, r.output);
   const before = f.git(f.bare, "rev-parse", "main");
-  // The link itself, forced past the exclude: Git commits a link as a link,
-  // and Atelier refuses it as it would the file.
+  // The file, ignored as a developer would, then forced past the exclude.
+  writeFileSync(join(dir, ".git", "info", "exclude"), "PROJECT.md\n");
+  writeFileSync(join(dir, "PROJECT.md"), "the plan\n");
   f.git(dir, "add", "-f", "PROJECT.md");
   f.git(dir, "commit", "-q", "-m", "oops");
   const s = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
@@ -371,18 +338,14 @@ test("sync never carries a private file to the baseline, even one committed by h
 
 // The list of private files lives beside them in iCloud, so a second Mac,
 // whose config names nothing yet, links them with the clone alone.
-test("a Mac with a fresh config links the files .atelier-private lists with the clone alone, and a bad line is named and skipped", async (t) => {
+test("a Mac with a fresh config keeps a copy of the list .atelier-private holds with the clone alone, a bad line left out", async (t) => {
   const f = setup(t);
   const keep = icloudFolder(f);
   writeFileSync(join(keep, ".atelier-private"), "# private\nPROJECT.md\n../outside.md\nnotes/plan.md\n");
   const dir = join(f.home, "ai-projects", "demo");
   const r = await run(t, f, ["clone", "demo"]);
   assert.equal(r.code, 0, r.output);
-  assert.equal(readlinkSync(join(dir, "PROJECT.md")), join(keep, "PROJECT.md"));
-  assert.equal(readlinkSync(join(dir, "notes", "plan.md")), join(keep, "notes", "plan.md"));
-  assert.match(r.output, /\.atelier-private line 3: "\.\.\/outside\.md" has an empty, "\." or "\.\." part.*; skipped\./);
-  assert.ok(!existsSync(join(f.home, "ai-projects", "outside.md")));
-  assert.ok(!existsSync(join(dir, ".atelier-private")), "the list itself is never linked");
+  assert.ok(!existsSync(join(dir, ".atelier-private")), "the list itself is never in the checkout");
   assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
   assert.equal(r.config.projects.demo.private, undefined, "nothing had to be named on this Mac");
   // A copy of the list is kept, so the guards hold when iCloud cannot give it (Astra's review of t645, finding 4).
@@ -423,7 +386,7 @@ test("sync pushes what it scanned: a replacement ref cannot slip a private file 
 
 // Argon's seventeenth review of t645, finding 2: a clone whose project list
 // was there but could not be read said nothing and left the project unguarded.
-test("clone says when the project's list cannot be read, and opts the project in so pushes refuse", async (t) => {
+test("clone opts the project in when its list cannot be read, so pushes refuse", async (t) => {
   const f = setup(t);
   const keep = icloudFolder(f);
   const file = join(keep, ".atelier-private");
@@ -432,6 +395,5 @@ test("clone says when the project's list cannot be read, and opts the project in
   let r;
   try { r = await run(t, f, ["clone", "demo", join(f.root, "demo")]); } finally { chmodSync(file, 0o644); }
   assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /Warning: .*\.atelier-private cannot be read \(EACCES\)/);
   assert.equal(r.config.projects.demo.privateHome, keep, "opted in, so the guard refuses until the list can be read");
 });

@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { FRESH_TRAILER, savePairs } from "../fresh.mjs";
 import { installMergeConfig } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { linkPrivate, privateGuardFor } from "../private.mjs";
+import { privateGuardFor } from "../private-guard.mjs";
 import { OWNER, P, apiToken, args, call, cfg, die, landingGit, saveConfig, server, short } from "../atelier.mjs";
 
 // The developer, on a Mac that has no checkout of the project yet (t643):
@@ -15,7 +15,7 @@ import { OWNER, P, apiToken, args, call, cfg, die, landingGit, saveConfig, serve
 // baseline as origin. The checkout keeps no token: the developer's write
 // token, minted as sync mints it, is passed to the commands that reach the
 // baseline here and then dropped, and every later Atelier command that
-// reaches the baseline (sync, merge, publish) mints its own. A header
+// reaches the baseline (sync, merge, wrap) mints its own. A header
 // stored in the checkout would outlive its token, and Git sends a stored
 // header for the baseline's URL in place of the one those commands pass
 // (Astra's review of t643, finding 1).
@@ -94,19 +94,13 @@ export default async function cloneCommand() {
   cfg.projects ??= {};
   cfg.projects[name] = { ...kept, path: dir, branch, protect: record?.policy?.protected ?? [], ...(fresh ? { fresh: true } : {}), ...(privateHome ? { privateHome } : {}) };
   saveConfig(cfg);
-  // The private files this Mac names for the project, linked from the
-  // folder that keeps them and ignored by Git here (t645).
-  let linked = null;
-  try { linked = linkPrivate(dir, cfg.projects[name], { name }); } catch (error) { linked = { said: [`Private files not linked: ${error.message}`] }; }
-  // This Mac keeps a copy of the list it read, so the guards hold even when
-  // iCloud cannot give it later.
+  // This Mac keeps a copy of the list of private files it read, so the
+  // guards hold even when iCloud cannot give it later (t645).
   privateGuardFor(name, { discover: true });
 
   const head = git(["rev-parse", "HEAD"], { cwd: dir });
   console.log(`${name}: cloned ${branch} @ ${short(head)}, ${commits.length} commit${commits.length === 1 ? "" : "s"}${fresh ? " (the baseline holds part of the project's history)" : ""}, into ${dir}, now this Mac's checkout of ${name}.`);
   if (elsewhere) console.log(`This replaces ${elsewhere} as ${name}'s checkout on this Mac; that folder is left as it is.`);
   console.log(`origin is the baseline; ${notes ? "its receipts are on refs/notes/atelier" : "it holds no receipts yet"}. The checkout keeps no token: Atelier's commands that reach the baseline mint their own.`);
-  for (const line of linked.said) console.log(line);
-  if (privateHome && !linked.said?.length) console.log(`${name}'s private files are to be kept in ${privateHome}; name them with atelier private add PATH --project ${name}.`);
   console.log(identity?.email ? `Commits here are authored as ${identity.name} <${identity.email}>, as the project's policy names.` : `Warning: ${name}'s policy names no commit identity, so commits here use this Mac's global Git identity; set one with atelier init --commit-name NAME --commit-email EMAIL.`);
 }

@@ -36,7 +36,6 @@ test/landing.test.mjs 53
 test/pull.test.mjs 52
 test/agent-commands.test.mjs 51
 test/cli-flags-2.test.mjs 45
-test/mirror.test.mjs 45
 test/agent-commands-2.test.mjs 44
 test/cli-flags.test.mjs 44
 test/clone.test.mjs 43
@@ -47,7 +46,6 @@ test/land-runner-workspace.test.mjs 37
 test/merge-pipeline.test.mjs 36
 test/harness-adapters.test.mjs 36
 test/orphans.test.mjs 31
-test/private.test.mjs 31
 test/review-runner.test.mjs 30
 test/control-plane.test.mjs 30
 test/update-force-push.test.mjs 28
@@ -82,7 +80,6 @@ test/prereview.test.mjs 10
 test/record-merge-cli.test.mjs 10
 test/runner-closed-route.test.mjs 10
 test/show-compat.test.mjs 9
-cli/mirror-lfs.test.mjs 9
 test/load-cli.test.mjs 8
 test/reliability-cli.test.mjs 8
 test/ops.test.mjs 8

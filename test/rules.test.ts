@@ -3,7 +3,7 @@ import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
 import { usageShortages } from "../src/rules.ts";
 import { AREAS_REMOVED, itemFields } from "../src/rules.ts";
-import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
+import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateFolderMatches, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
@@ -1401,21 +1401,11 @@ test("a project's iCloud folder is the one named for it, case, spaces, hyphens a
   assert.ok(!privateFolderMatches("", ""));
 });
 
-test("each private path is excluded by an anchored line with its special characters escaped", () => {
-  assert.equal(privateExcludeLine("PROJECT.md"), "/PROJECT.md");
-  assert.equal(privateExcludeLine("notes/a*b?[c].md"), "/notes/a\\*b\\?\\[c\\].md");
-  assert.equal(privateExcludeLine("#plan!"), "/#plan!");
-  assert.equal(privateExcludeLine("trail  "), "/trail\\ \\ ");
-});
-
-test("the iCloud list of private files is read line by line as data, and written sorted with each path once", () => {
+test("the iCloud list of private files is read line by line as data", () => {
   assert.ok("error" in privatePath(".atelier-private"), "the list itself is never a private file");
   const r = parsePrivateList("# comment\nPROJECT.md\r\n\n  # indented comment\n../x\nnotes/\nPROJECT.md\n/abs\n.atelier-private\n");
   assert.deepEqual(r.paths, ["PROJECT.md", "notes"]);
   assert.deepEqual(r.refused.map((x) => [x.line, x.text]), [[5, "../x"], [8, "/abs"], [9, ".atelier-private"]]);
-  const text = privateListText(["notes", "PROJECT.md", "notes"]);
-  assert.deepEqual(text.split("\n").filter((l) => l && !l.startsWith("#")), ["PROJECT.md", "notes"]);
-  assert.deepEqual(parsePrivateList(text), { paths: ["PROJECT.md", "notes"], refused: [] });
 });
 
 import { gateApprovals } from "../src/rules.ts";

@@ -8,12 +8,12 @@ import { historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, P, args, call, cfg, die, gitEnv, identityEnv, landingGit, landingHome, project, short } from "../atelier.mjs";
 import { NO_IDENTITY } from "../../src/commit-identity.ts";
-import { linkPrivate, privateConfigured, privateGuardFor } from "../private.mjs";
+import { privateConfigured, privateGuardFor } from "../private-guard.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 
 // The developer, on one of the Macs that share a project's baseline (t644):
 // another Mac has carried commits to the baseline (atelier sync, merge or
-// publish there), and this checkout's main is brought up to it, with the
+// wrap there), and this checkout's main is brought up to it, with the
 // receipts on refs/notes/atelier. As atelier clone does (t643), it keeps no
 // token: it mints a read token, as sync mints its own, and passes it only to
 // the fetches, which read by URL and check nothing out. Every Git command
@@ -34,12 +34,9 @@ import { pinCheckoutIdentity } from "../identity.mjs";
 // from the commit the baseline matches.
 //
 // After a pull that succeeds (main already held the baseline, was
-// fast-forwarded or merged), the project's private files are linked as
-// atelier clone links them (t651): a name another Mac added to the list in
-// iCloud since this checkout was made is linked here, and pull says what it
-// linked, left alone or could not link. A refused or conflicting pull links
-// nothing, and a project with no private files on this Mac reads nothing
-// from iCloud.
+// fast-forwarded or merged), this Mac's copy of the project's list of private
+// files is brought up to the list in iCloud; a project with no private files
+// on this Mac reads nothing from iCloud.
 export default async function pullCommand() {
   // Every Git command here, and the commit rebuilds in cli/fresh.mjs, reads
   // the objects themselves, never a replacement or a graft of them
@@ -114,7 +111,7 @@ export default async function pullCommand() {
       pair();
       console.log(`${name}: ${p.branch} @ ${short(head)} already holds the baseline's ${p.branch} @ ${short(baselineHead)}; no commits to bring.`);
       console.log(receiptsLine);
-      return linkAfterPull(name, p);
+      return keepListAfterPull(name, p);
     }
     const count = (range) => Number(git(["rev-list", "--count", range], { cwd }));
     const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -167,7 +164,7 @@ export default async function pullCommand() {
       console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch}; ${p.branch} moved from ${short(head)} to ${short(target)}.`);
       console.log(subjects);
       console.log(receiptsLine);
-      return linkAfterPull(name, p);
+      return keepListAfterPull(name, p);
     }
     const merged = git(["merge-tree", "--write-tree", "--name-only", "--no-messages", head, target], { cwd, allowFail: true });
     if (merged.status === 1) {
@@ -188,22 +185,18 @@ export default async function pullCommand() {
     console.log(`${name}: brought ${plural(brought, "commit")} from the baseline's ${p.branch} and merged them with ${plural(local, "local commit")}; ${p.branch} is at ${short(commit)}.`);
     console.log(subjects);
     console.log(receiptsLine);
-    console.log(fresh ? `atelier sync --project ${name} carries the local commits to the baseline.` : `The local commits reach the baseline with atelier publish --project ${name} or the next atelier merge.`);
-    linkAfterPull(name, p);
+    console.log(fresh ? `atelier sync --project ${name} carries the local commits to the baseline.` : `The local commits reach the baseline with atelier wrap --project ${name} or the next atelier merge.`);
+    keepListAfterPull(name, p);
   } finally { unlock(); }
 }
 
-// The project's private files linked into its checkout after a pull, as
-// atelier clone links them, with what linkPrivate says printed. Opt-in, as
-// the guards are: with none configured on this Mac, nothing is read.
-function linkAfterPull(name, entry) {
+// This Mac's copy of the project's list of private files, brought up to the
+// one just read after a pull, as clone keeps it, so the guards hold when
+// iCloud cannot give it later. Opt-in, as the guards are: with none
+// configured on this Mac, nothing is read.
+function keepListAfterPull(name, entry) {
   if (!privateConfigured(entry)) return;
-  let linked;
-  try { linked = linkPrivate(entry.path, entry, { name }); } catch (error) { linked = { said: [`Private files not linked: ${error.message}`] }; }
-  // This Mac's copy of the list is brought up to the one just read, as
-  // clone keeps it, so the guards hold when iCloud cannot give it later.
   try { privateGuardFor(name, { discover: true }); } catch { /* the guards read it again when they run */ }
-  for (const line of linked.said) console.log(line);
 }
 
 // The baseline's receipts merged into this checkout's: copied when this

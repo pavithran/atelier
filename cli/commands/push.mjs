@@ -1,6 +1,6 @@
 // atelier push. Its forms, flags and help are declared in src/usage/commands/push.ts.
 import { I, OWNER, actor, args, call, cfg, count, die, forkBranch, git, hasCommit, holds, itemArg, project, renewWorkspaceToken, requireWorkspace, saveConfig, short, serverVersion, isRunnerForbidden, noLongerHolds, request, takenBackNotice, TOKEN_REFUSED, workspaceForkBranch, wsConfig } from "../atelier.mjs";
-import { guardedPush, remoteBases } from "../private.mjs";
+import { guardedPush, remoteBases } from "../private-guard.mjs";
 
 import { checkCapabilities, COMMAND_CAPABILITIES } from "../../src/route-level.ts";
 import { pushCommitsInTurn, refused413 } from "../push-steps.mjs";

@@ -3055,7 +3055,7 @@ export function parseLedgerRestart(raw: unknown): LedgerRestart | null {
 
 // Private files (t645): files a project keeps on the developer's Macs and
 // never pushes, such as PROJECT.md. Each is named by its path in the
-// checkout, kept in the project's iCloud folder and linked into the checkout.
+// checkout and kept in the project's iCloud folder.
 
 // A private path as the developer typed it, made plain: relative to the
 // checkout, no "." or ".." part, no empty part, nothing in .git. A trailing
@@ -3083,7 +3083,7 @@ export function privatePath(input: string): { path: string } | { error: string }
 // The list of a project's private files, kept beside them in the project's
 // iCloud folder so it follows the developer between Macs: one path per line,
 // relative to the checkout; # starts a comment. It is data from iCloud, so
-// every line is read as `private add` reads what the developer types.
+// every line is read as a path the developer types.
 export const PRIVATE_LIST = ".atelier-private";
 
 export function parsePrivateList(text: string): { paths: string[]; refused: { line: number; text: string; error: string }[] } {
@@ -3096,12 +3096,6 @@ export function parsePrivateList(text: string): { paths: string[]; refused: { li
     else if (!paths.includes(r.path)) paths.push(r.path);
   });
   return { paths, refused };
-}
-
-// The list's text: a comment saying what it is, then each path once, sorted.
-export function privateListText(paths: string[]): string {
-  const sorted = [...new Set(paths)].sort();
-  return `# Private files of this project (atelier private add): one path per line, relative to the checkout.\n# Atelier links each into the checkout on every Mac and never pushes them.\n${sorted.map((p) => `${p}\n`).join("")}`;
 }
 
 // The paths among `paths` that are private or inside a private folder,
@@ -3120,13 +3114,6 @@ export function privatePathsAmong(paths: string[], privates: string[]): string[]
 export function privateFolderMatches(project: string, folder: string): boolean {
   const plain = (s: string) => foldPath(s).replace(/[\s_-]+/g, "");
   return !!plain(project) && plain(project) === plain(folder);
-}
-
-// The line of .git/info/exclude that ignores one private path: anchored at
-// the checkout's root, so a leading # or ! is plain, with the characters a
-// pattern reads specially escaped, trailing spaces included.
-export function privateExcludeLine(path: string): string {
-  return `/${path.replace(/[\\*?[\]]/g, "\\$&").replace(/ +$/, (spaces) => "\\ ".repeat(spaces.length))}`;
 }
 
 // ── usage shortage ─────────────────────────────────────────────────────────

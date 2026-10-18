@@ -1,32 +1,29 @@
-// Private files (t645): files a project keeps on the developer's Macs and
-// never pushes anywhere, such as PROJECT.md, the developer's plan. Code moves
-// between Macs by Git, through a checkout outside iCloud on each Mac; the
-// private files stay in the project's iCloud folder, which iCloud syncs, and
-// each checkout holds a symbolic link to each of them. Git ignores them
-// through the checkout's .git/info/exclude, never .gitignore, which is
-// pushed. The folder keeps the list of them too, .atelier-private, so the
-// list follows the developer between Macs; the project's entry in this
-// Mac's config.json may name more (`private`) and the folder (`privateHome`;
-// by default the iCloud ai-projects folder named for the project). The list
-// is never linked into a checkout and never pushed.
+// The private-file guard (t645): files a project keeps on the developer's
+// Macs and never pushes anywhere, such as PROJECT.md, the developer's plan.
+// The project's iCloud folder keeps them and the list of them,
+// .atelier-private; the project's entry in this Mac's config.json may name
+// more (`private`) and the folder (`privateHome`; by default the iCloud
+// ai-projects folder named for the project). Since t770 no command links or
+// names them: the guard reads what the list and the config hold.
 //
 // Atelier never pushes them: wrap refuses to stage one, and every command
-// that pushes commits (sync, publish, merge, wrap --push and publish REMOTE)
-// refuses a commit that adds, changes or retypes
-// one (privateCommits). Git commits a symbolic link as a link, never the
-// file it points at, and the refusal covers the link too.
+// that pushes commits (sync, merge, wrap --push, ship --push, init, a task's
+// push, branch push and the task refresh) refuses a commit that adds,
+// changes or retypes one (privateCommits). Git commits a symbolic link as a
+// link, never the file it points at, and the refusal covers the link too.
+//
+// This file also holds how config.json is written: its lock, the whole-config
+// merge and the rename of a project's entry.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import { PRIVATE_LIST, foldPath, parsePrivateList, privateExcludeLine, privateFolderMatches, privateListText, privatePath, privatePathsAmong } from "../src/rules.ts";
+import { dirname, join, resolve } from "node:path";
+import { PRIVATE_LIST, parsePrivateList, privateFolderMatches, privatePath, privatePathsAmong } from "../src/rules.ts";
 
 // The iCloud folder that holds a folder per project.
 // ATELIER_PRIVATE_ROOT names another, so tests never read this Mac's own.
 export const privateRoot = () => process.env.ATELIER_PRIVATE_ROOT || join(homedir(), "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects");
-
-const EXCLUDE_HEADER = "# Private files Atelier links into this checkout (atelier private ls); never committed";
 
 function gitRead(cwd, args, { env } = {}) {
   const merged = { ...process.env, ...env };
@@ -71,11 +68,11 @@ function folderFor(name, root) {
     // No iCloud ai-projects folder on this Mac at all is no folder for the
     // project; one that is there and cannot be read hides what may be in it.
     if (error?.code === "ENOENT") return { error: `there is no ${root} on this Mac`, none: true, rootMissing: true };
-    return { error: `${root} cannot be read (${error?.code ?? error?.message}), so whether ${name} keeps private files there cannot be known; name its folder with atelier private add --home DIR --project ${name}`, unreadable: true };
+    return { error: `${root} cannot be read (${error?.code ?? error?.message}), so whether ${name} keeps private files there cannot be known; name its folder as privateHome in ${name}'s entry of this Mac's config`, unreadable: true };
   }
   if (found.length === 1) return { home: join(root, found[0]), named: false };
-  if (!found.length) return { error: `no folder in ${root} is named for ${name}; name one with atelier private add --home DIR --project ${name}`, none: true };
-  return { error: `more than one folder in ${root} is named for ${name} (${found.join(", ")}); name one with atelier private add --home DIR --project ${name}`, unreadable: true };
+  if (!found.length) return { error: `no folder in ${root} is named for ${name}; name one as privateHome in ${name}'s entry of this Mac's config`, none: true };
+  return { error: `more than one folder in ${root} is named for ${name} (${found.join(", ")}); name one as privateHome in ${name}'s entry of this Mac's config`, unreadable: true };
 }
 
 // The list in the folder that keeps the private files: its valid paths and
@@ -90,13 +87,13 @@ export function readPrivateList(home) {
   return { ...parsePrivateList(text), exists: true };
 }
 
-// Writes the list, sorted, each path once, whole or not at all: a reader on
-// another Mac never sees half of it.
-export function writePrivateList(home, paths) {
-  const file = join(home, PRIVATE_LIST), part = `${file}.${process.pid}.part`;
-  writeFileSync(part, privateListText(paths));
-  try { renameSync(part, file); } catch (error) { rmSync(part, { force: true }); throw error; }
-}
+// What is at a path, or null when nothing is: only ENOENT and ENOTDIR mean
+// nothing is there. Any other error (EACCES, EIO, …) is thrown, so what
+// cannot be read is never taken for absent.
+const lstat = (path) => {
+  try { return lstatSync(path); }
+  catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null; throw error; }
+};
 
 const plainPaths = (list) => {
   const out = [];
@@ -168,7 +165,7 @@ export function privateGuard(name, entry, { root, save, homes = [] } = {}) {
   }
   const paths = [...new Set([...list.paths, ...copy, ...more])];
   const refusal = list.unreadable && !kept
-    ? `${list.unreadable}, and this Mac keeps no copy of its list of private files, so what may not leave cannot be known. Make the folder available on this Mac (or name another with atelier private add --home DIR --project ${name}) and try again. Nothing was pushed.`
+    ? `${list.unreadable}, and this Mac keeps no copy of its list of private files, so what may not leave cannot be known. Make the folder available on this Mac (or name another as privateHome in ${name}'s entry of this Mac's config) and try again. Nothing was pushed.`
     : null;
   return { paths: [...paths, PRIVATE_LIST], refusal };
 }
@@ -183,8 +180,8 @@ export function privateConfigured(entry) {
 // named, and keeps a copy of it in the entry when the list is there and was
 // read. No read ever removes a name from the copy: what is read is joined to
 // it, so a name an older list, a merged entry or another Mac put there stays
-// guarded (Astra's eighth review of t645); only private remove removes one.
-// clone, private add and private ls run this, so a list in iCloud opts the
+// guarded (Astra's eighth review of t645). clone and init run this, so a
+// list in iCloud opts the
 // project in on this Mac. Returns what privateList returns.
 export function discoverPrivate(name, entry, { root, save } = {}) {
   const list = privateList(name, entry, root);
@@ -374,34 +371,6 @@ function releaseLock(lock, token) {
 export function withConfigLock(fn) {
   const file = configFile();
   return withLock(`${file}.lock`, file, fn);
-}
-
-// The lock for one project's list in iCloud, kept in this Mac's config
-// folder (never in iCloud), keyed by the list's path: two commands on this
-// Mac never lose each other's names. Two Macs writing the list at once
-// through iCloud are not covered; iCloud keeps one and makes a conflicted
-// copy of the other.
-export function withListLock(home, fn) {
-  const file = join(home, PRIVATE_LIST);
-  return withLock(join(dirname(configFile()), `private-list-${lockKey(file)}.lock`), file, fn);
-}
-
-// The key of a lock guarding a file: the file's path as the volume knows it
-// (Astra's eighteenth review of t645), so two spellings of one folder (a
-// symbolic link to it, another letter case on a volume that ignores case)
-// share one lock. The folder is resolved through its links when it exists,
-// else as written; on a volume that ignores case the path is folded.
-export function lockKey(file) {
-  let dir = resolve(dirname(file));
-  try { dir = realpathSync(dir); } catch { /* not made yet: as written */ }
-  let path = join(dir, basename(file));
-  if (ignoresCase(dir)) path = foldPath(path);
-  return createHash("sha256").update(path).digest("hex").slice(0, 16);
-}
-function ignoresCase(dir) {
-  const other = dir.replace(/[A-Za-z]/g, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
-  if (other === dir) return false;
-  try { const a = statSync(dir), b = statSync(other); return a.ino === b.ino && a.dev === b.dev; } catch { return false; }
 }
 
 const readConfigFile = (file) => {
@@ -605,7 +574,7 @@ export function moveConflict(projects, from, to) {
   // (Astra's twelfth review of t645).
   const { sourceHome, targetHome } = resolvedHomes(projects, from, to);
   if (sourceHome && targetHome && sourceHome !== targetHome) {
-    return `the local entries ${from} and ${to} name different folders for their private files (${sourceHome} and ${targetHome}); nothing was renamed and nothing in the local config was changed. Choose one with atelier private add --home DIR --project ${from} (or --project ${to}) so both name the same folder, then run this again`;
+    return `the local entries ${from} and ${to} name different folders for their private files (${sourceHome} and ${targetHome}); nothing was renamed and nothing in the local config was changed. Make both name the same privateHome in the config, then run this again`;
   }
   return null;
 }
@@ -648,211 +617,6 @@ export function joinPrivate(entry, other) {
   if (Array.isArray(other?.privateFromList) || Array.isArray(entry.privateFromList)) entry.privateFromList = union(entry.privateFromList, other?.privateFromList);
   if (!entry.privateHome && other?.privateHome) entry.privateHome = other.privateHome;
   return entry;
-}
-
-// The links Atelier made in a checkout, kept in its Git directory
-// (atelier-private-links, one JSON line each), so a later link to a moved
-// folder can be told from a developer's own.
-function linksFile(checkout) {
-  const r = gitRead(checkout, ["rev-parse", "--git-path", "atelier-private-links"]);
-  if (r.status !== 0) throw new Error(`${checkout} is not a Git checkout`);
-  return resolve(checkout, r.stdout.trim());
-}
-export function linkedBefore(checkout) {
-  const made = new Map();
-  let text = "";
-  try { text = readFileSync(linksFile(checkout), "utf8"); } catch { return made; }
-  for (const line of text.split("\n")) { try { const { path, target } = JSON.parse(line); made.set(path, target); } catch { /* not a record */ } }
-  return made;
-}
-function recordLink(checkout, path, target) {
-  appendFileSync(linksFile(checkout), `${JSON.stringify({ path, target })}\n`);
-}
-
-// The checkout's info/exclude file, wherever its Git directory keeps it.
-function excludeFile(checkout) {
-  const r = gitRead(checkout, ["rev-parse", "--git-path", "info/exclude"]);
-  if (r.status !== 0) throw new Error(`${checkout} is not a Git checkout`);
-  return resolve(checkout, r.stdout.trim());
-}
-
-// Adds a line to the checkout's info/exclude for each private path it does
-// not ignore yet. Returns the lines added.
-// Under a lock of its own (in this Mac's config folder, keyed by the
-// exclude file's path), and only by appending what is missing: the lines
-// already there, Atelier's or anyone's, are never rewritten, and two
-// commands at once never drop each other's (Astra's thirteenth review of
-// t645).
-export function excludePrivate(checkout, paths) {
-  return withCheckoutLock(checkout, () => excludeHeld(checkout, paths));
-}
-
-// The lock for one checkout's private-file changes: its ignore lines and its
-// links (Argon's eighteenth review of t645), keyed by its exclude file.
-export function withCheckoutLock(checkout, fn) {
-  const file = excludeFile(checkout);
-  return withLock(join(dirname(configFile()), `exclude-${lockKey(file)}.lock`), file, fn);
-}
-
-function excludeHeld(checkout, paths) {
-  const file = excludeFile(checkout);
-  {
-    const text = existsSync(file) ? readFileSync(file, "utf8") : "";
-    testHold("exclude");
-    const have = new Set(text.split("\n"));
-    const lines = [...new Set(paths.map(privateExcludeLine))].filter((line) => !have.has(line));
-    if (!lines.length) return [];
-    mkdirSync(dirname(file), { recursive: true });
-    const head = have.has(EXCLUDE_HEADER) ? [] : [EXCLUDE_HEADER];
-    appendFileSync(file, `${text && !text.endsWith("\n") ? "\n" : ""}${[...head, ...lines].join("\n")}\n`);
-    return lines;
-  }
-}
-
-// Whether Git, with every ignore rule the checkout has, ignores a private
-// path: a tracked .gitignore saying !PROJECT.md outweighs info/exclude
-// (Astra's third review of t645), so the line alone proves nothing.
-export function excludesPrivate(checkout, path) {
-  const r = gitRead(checkout, ["check-ignore", "-q", "--no-index", "--", path], { env: SCRUBBED });
-  return r.status === 0;
-}
-
-// The private paths Git tracks in the checkout, or holds files under,
-// compared as a Mac compares names (letter case and Unicode form aside), so
-// the whole index is read: a pathspec would match it byte for byte.
-export function trackedPrivate(checkout, paths) {
-  if (!paths.length) return [];
-  const r = gitRead(checkout, ["ls-files", "-z"], { env: SCRUBBED });
-  if (r.status !== 0) throw new Error(`git ls-files failed in ${checkout}: ${(r.stderr || "").trim().split("\n")[0]}`);
-  const tracked = r.stdout.split("\0").filter(Boolean);
-  return paths.filter((path) => privatePathsAmong(tracked, [path]).length);
-}
-
-// What is at a path, or null when nothing is: only ENOENT and ENOTDIR mean
-// nothing is there. Any other error (EACCES, EIO, …) is thrown, so what
-// cannot be read is never taken for absent (Astra's fifth review of t645).
-const lstat = (path) => {
-  try { return lstatSync(path); }
-  catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null; throw error; }
-};
-
-// A folder between the checkout and a private path that is a symbolic link:
-// a link made under it would land outside the checkout.
-function linkAbove(checkout, path) {
-  const parts = path.split("/");
-  for (let i = 1; i < parts.length; i++) {
-    const at = parts.slice(0, i).join("/"), stat = lstat(join(checkout, at));
-    if (!stat) return null;
-    if (stat.isSymbolicLink()) return at;
-  }
-  return null;
-}
-
-// The state of one private path in the checkout: "linked" to the file in
-// the home, "missing" from the home, "file" (something Atelier did not make
-// stands there), "other-link" (a link to elsewhere) or "absent".
-export function privateState(checkout, home, path) {
-  try { return stateOf(checkout, home, path); } catch { return "unreadable"; }
-}
-function stateOf(checkout, home, path) {
-  const target = join(home, path), stat = lstat(join(checkout, path));
-  if (stat?.isSymbolicLink()) return readlinkSync(join(checkout, path)) === target ? (lstat(target) ? "linked" : "missing") : "other-link";
-  if (stat) return "file";
-  return lstat(target) ? "absent" : "missing";
-}
-
-// Links each private path the project's entry names into the checkout, from
-// the folder that keeps them, and makes Git ignore each one. Run by clone
-// after it clones, by private add, and by atelier pull after a pull that
-// succeeds (t651). It never overwrites a file or folder: one standing where a link
-// would go is left as it is and reported. A link of its own pointing
-// elsewhere (a home that moved) is replaced. Returns what it did, with the
-// lines to print in `said`.
-export function linkPrivate(checkout, entry, { name, root } = {}) {
-  return withCheckoutLock(checkout, () => linkHeld(checkout, entry, { name, root }));
-}
-
-function linkHeld(checkout, entry, { name, root } = {}) {
-  const list = privateList(name, entry, root);
-  const paths = list.paths;
-  const result = { linked: [], kept: [], missing: [], refused: [], invalid: list.refused, said: [] };
-  const say = (line) => result.said.push(line);
-  // A line of the list that is no plain path in the checkout is named and
-  // skipped; the others are linked.
-  for (const r of list.refused) say(`${PRIVATE_LIST}${r.line ? ` line ${r.line}` : ""}: ${r.error}; skipped.`);
-  // A list or folder that is there but cannot be read is said, whatever
-  // else is named (Argon's seventeenth review of t645).
-  if (list.unreadable && !list.homeMissing && (list.listed || list.home)) say(`Warning: ${list.unreadable}; the private files it names cannot be known here, and Atelier refuses to push until it can be read.`);
-  if (!paths.length && !list.listed) return result;
-  excludeHeld(checkout, [...paths, PRIVATE_LIST]);
-  if (!paths.length) return result;
-  if (list.homeError) { say(`Private files not linked: ${list.homeError}. Git ignores ${paths.join(", ")} in ${checkout}.`); result.home = null; return result; }
-  const home = result.home = list.home;
-  let homeStat = null;
-  try { homeStat = lstat(home) && statSync(home); }
-  catch (error) { result.unreadableHome = true; say(`Private files not linked: ${home}, the folder that keeps them, cannot be read (${error.code ?? error.message}). Git ignores ${paths.join(", ")} in ${checkout} meanwhile.`); return result; }
-  if (!homeStat || !homeStat.isDirectory()) {
-    result.missingHome = true;
-    say(`Private files not linked: ${home}, the folder that keeps them, is not on this Mac. iCloud may not have brought it here yet; once it has, run atelier private add ${paths.join(" ")} --project ${name} to link them. Git ignores them in ${checkout} meanwhile.`);
-    return result;
-  }
-  if (realpathSync(home) === realpathSync(checkout)) {
-    result.inPlace = true;
-    say(`Private files stay where they are: this checkout is ${home}, the folder that keeps them. Git ignores ${paths.join(", ")} here.`);
-    return result;
-  }
-  const tracked = new Set(trackedPrivate(checkout, paths));
-  for (const path of paths) {
-    const target = join(home, path), link = join(checkout, path);
-    if (tracked.has(path)) { result.refused.push(path); say(`${path}: Git tracks it in the checkout, so it is not private there; not linked.`); continue; }
-    let above;
-    try { above = linkAbove(checkout, path); }
-    catch (error) { result.refused.push(path); say(`${path}: a folder above it in the checkout cannot be read (${error.code ?? error.message}); not linked.`); continue; }
-    if (above) { result.refused.push(path); say(`${path}: ${above} in the checkout is a symbolic link, so a link under it would land outside the checkout; not linked.`); continue; }
-    let there, stat;
-    try { there = lstat(target); stat = lstat(link); }
-    catch (error) { result.refused.push(path); say(`${path}: cannot be read (${error.code ?? error.message}); not linked.`); continue; }
-    if (!there) { result.missing.push(path); say(`${path}: not in ${home}; not linked.`); continue; }
-    if (stat?.isSymbolicLink()) {
-      const points = readlinkSync(link);
-      if (points === target) { result.kept.push(path); continue; }
-      // Only a link Atelier made is replaced: the one this checkout's record
-      // says Atelier made at this path, to this target (Astra's fourteenth
-      // and fifteenth reviews of t645). A developer's own link is left as it
-      // is, wherever it points, the project's folder included.
-      if (linkedBefore(checkout).get(path) !== points) {
-        result.refused.push(path);
-        say(`${path}: a link Atelier did not make is already in the checkout (to ${points}); it was left as it is, not linked. Remove it, then run atelier private add ${path} --project ${name} to link it.`);
-        continue;
-      }
-      unlinkSync(link);
-    } else if (stat) {
-      result.refused.push(path);
-      say(`${path}: a ${stat.isDirectory() ? "folder" : "file"} Atelier did not link is already in the checkout; it was left as it is, not linked. Move it into ${home}, then run atelier private add ${path} --project ${name} to link it.`);
-      continue;
-    }
-    mkdirSync(dirname(link), { recursive: true });
-    testHold("link");
-    try { symlinkSync(target, link); }
-    catch (error) {
-      // Another command made the same link meanwhile (Argon's eighteenth
-      // review of t645): it points where this one would, and is Atelier's.
-      let points = null;
-      try { points = readlinkSync(link); } catch { /* not a link */ }
-      if (error?.code === "EEXIST" && points === target) { recordLink(checkout, path, target); result.kept.push(path); continue; }
-      throw error;
-    }
-    recordLink(checkout, path, target);
-    result.linked.push(path);
-  }
-  const done = [...result.linked, ...result.kept];
-  if (done.length) say(`Private files linked from ${home}: ${done.join(", ")}. Atelier never stages or pushes them.`);
-  // Ignore rules are a convenience, not the guard: a tracked .gitignore can
-  // un-ignore a path (Astra's third review of t645), so each is checked.
-  const shown = done.filter((path) => !excludesPrivate(checkout, path));
-  result.notIgnored = shown;
-  if (shown.length) say(`Warning: Git does not ignore ${shown.join(", ")} here: a rule in the checkout (a !-line in a .gitignore) outweighs Atelier's. Atelier still refuses to stage or push ${shown.length === 1 ? "it" : "them"}, but git add would take ${shown.length === 1 ? "it" : "them"}; remove that rule.`);
-  return result;
 }
 
 // The paths wrap would stage that are private: tracked changes against HEAD,
@@ -935,7 +699,7 @@ export function privateRefusal(cwd, privates, tip, base, what) {
   let found;
   try { found = privateCommits(cwd, privates, tip, base); } catch (error) { return `${what}: ${error.message}`; }
   if (!found.length) return null;
-  return `${what} would carry private files: ${privateCommitsText(found)}. They are private to this Mac's iCloud folder (atelier private ls) and Atelier never pushes them. Take them out of those commits (git rm --cached PATH, then amend, or rewrite the commits) and try again.`;
+  return `${what} would carry private files: ${privateCommitsText(found)}. They are private to this Mac's iCloud folder and Atelier never pushes them. Take them out of those commits (git rm --cached PATH, then amend, or rewrite the commits) and try again.`;
 }
 
 // Every Atelier push of the developer's or a task's history goes through

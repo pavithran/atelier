@@ -178,78 +178,64 @@ test("a project with no commit identity fast-forwards, and a pull that would mer
 });
 
 
-// t651: a name another Mac adds to the project's list of private files in
-// iCloud after this checkout was cloned is linked by the next pull that
-// succeeds, never by one that is refused or conflicts. Before t651, pull
-// linked nothing, and the new file stayed out of the checkout until atelier
-// private add ran by hand.
-test("pull links a private file the iCloud list named since the clone, and a refused or conflicting pull links nothing", async (t) => {
+// A name another Mac adds to the project's list of private files in iCloud
+// after this checkout was cloned reaches this Mac's copy of the list at the
+// next pull that succeeds, never at one that is refused or conflicts, so the
+// push guards hold it.
+test("pull brings this Mac's copy of the iCloud list up to date, and a refused or conflicting pull does not", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
   const icloud = join(f.root, "icloud"), home = join(icloud, "demo");
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, ".atelier-private"), "PROJECT.md\n");
-  writeFileSync(join(home, "PROJECT.md"), "my plan\n");
   const env = { ATELIER_PRIVATE_ROOT: icloud };
   const dir = join(f.root, "checkout-a");
   const cloned = await run(t, f, a, ["clone", "demo", dir], { env });
   assert.equal(cloned.code, 0, cloned.output);
-  assert.equal(readlinkSync(join(dir, "PROJECT.md")), join(home, "PROJECT.md"));
+  assert.deepEqual(a.projects.demo.privateFromList, ["PROJECT.md"]);
 
   // Another Mac names NOTES.md private.
   writeFileSync(join(home, ".atelier-private"), "NOTES.md\nPROJECT.md\n");
-  writeFileSync(join(home, "NOTES.md"), "my notes\n");
 
-  // A conflicting pull links nothing.
+  // A conflicting pull does not read it.
   const local = commitIn(f, dir, "file.txt", "version mine\n");
   commitElsewhere(f, "file.txt", "version theirs\n");
   const conflict = await run(t, f, a, ["pull", "--project", "demo"], { env });
   assert.notEqual(conflict.code, 0);
   assert.match(conflict.output, /the changes conflict/);
-  assert.doesNotMatch(conflict.output, /Private files/);
-  assert.ok(!existsSync(join(dir, "NOTES.md")));
+  assert.deepEqual(a.projects.demo.privateFromList, ["PROJECT.md"]);
   assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
 
-  // A refused pull links nothing.
+  // A refused pull does not either.
   f.git(dir, "reset", "-q", "--hard", "HEAD~1");
   writeFileSync(join(dir, "file.txt"), "uncommitted\n");
   const refused = await run(t, f, a, ["pull", "--project", "demo"], { env });
   assert.notEqual(refused.code, 0);
   assert.match(refused.output, /uncommitted changes/);
-  assert.ok(!existsSync(join(dir, "NOTES.md")));
+  assert.deepEqual(a.projects.demo.privateFromList, ["PROJECT.md"]);
   f.git(dir, "checkout", "-q", "--", "file.txt");
 
-  // A fast-forward links it, says so, and Git ignores it.
+  // A fast-forward does.
   const pulled = await run(t, f, a, ["pull", "--project", "demo"], { env });
   assert.equal(pulled.code, 0, pulled.output);
   assert.match(pulled.output, /demo: brought 1 commit from the baseline's main/);
-  assert.match(pulled.output, new RegExp(`Private files linked from ${home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: NOTES\\.md, PROJECT\\.md\\.`));
-  assert.equal(readlinkSync(join(dir, "NOTES.md")), join(home, "NOTES.md"));
-  assert.equal(f.git(dir, "status", "--porcelain"), "");
   assert.deepEqual(a.projects.demo.privateFromList.sort(), ["NOTES.md", "PROJECT.md"]);
+  assert.equal(f.git(dir, "status", "--porcelain"), "");
 
-  // A merge with local commits links the next one too, and one that cannot
-  // be linked, a file standing where its link would go, is left alone and
-  // said.
+  // So does a merge with local commits.
   writeFileSync(join(home, ".atelier-private"), "NOTES.md\nPLAN.md\nPROJECT.md\nTODO.md\n");
-  writeFileSync(join(home, "PLAN.md"), "a plan\n");
-  writeFileSync(join(home, "TODO.md"), "to do\n");
-  writeFileSync(join(f.git(dir, "rev-parse", "--absolute-git-dir"), "info", "exclude"), "TODO.md\n", { flag: "a" });
-  writeFileSync(join(dir, "TODO.md"), "my own\n");
   commitIn(f, dir, "mine.txt", "mine\n");
   commitElsewhere(f, "theirs.txt", "theirs\n");
   const merged = await run(t, f, a, ["pull", "--project", "demo"], { env });
   assert.equal(merged.code, 0, merged.output);
   assert.match(merged.output, /merged them with 1 local commit/);
-  assert.equal(readlinkSync(join(dir, "PLAN.md")), join(home, "PLAN.md"));
-  assert.match(merged.output, /TODO\.md: a file Atelier did not link is already in the checkout; it was left as it is, not linked\./);
-  assert.equal(readFileSync(join(dir, "TODO.md"), "utf8"), "my own\n");
+  assert.deepEqual(a.projects.demo.privateFromList.sort(), ["NOTES.md", "PLAN.md", "PROJECT.md", "TODO.md"]);
 });
 
 
 // A project with no private files on this Mac: pull reads nothing from
-// iCloud and says nothing of them, though a folder there is named for it.
-test("pull of a project with no private files links nothing and reads no iCloud folder", async (t) => {
+// iCloud, though a folder there is named for it.
+test("pull of a project with no private files reads no iCloud folder", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
   const icloud = join(f.root, "icloud-later");

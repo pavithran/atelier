@@ -2,7 +2,7 @@
 import { hostname } from "node:os";
 import { developerBranch } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
-import { guardedPush, remoteBases } from "../private.mjs";
+import { guardedPush, remoteBases } from "../private-guard.mjs";
 import { branchLine, formatDeveloperBranches } from "../status.mjs";
 import { OWNER, P, actor, args, call, cfg, die, landingGit, project, request, short, wsConfig } from "../atelier.mjs";
 

@@ -27,7 +27,7 @@ export default async function shipCommand() {
     ? [landingJournalFile(landingHome(gitDir)), oldLandingJournalFile(gitDir)]
     : [resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))]).some((file) => existsSync(file))).map((marker) => WRAP_MARKERS[marker]))];
   // The push reads the project's commit identity, whose public mirrors take
-  // the privacy check before anything is pushed (cli/mirror.mjs).
+  // only commits under the project's own address (cli/checkout-push.mjs).
   const identity = args.push === true ? (await call("GET", P(name), undefined, OWNER)).project?.policy?.commitIdentity ?? null : null;
   await runShip({
     name, cwd, branch: p.branch, baselineHead, inProgress,

@@ -3,11 +3,11 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
-import { OWNER, P, actor, args, at, call, cfg, die, git, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
+import { OWNER, P, actor, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
-import { publishCheckoutRemote } from "../mirror.mjs";
-import { privateChanges, privateGuardFor } from "../private.mjs";
-import { publishBaseline } from "./publish.mjs";
+import { pushCheckoutRemote } from "../checkout-push.mjs";
+import { guardedPush, privateChanges, privateGuardFor, remoteBases } from "../private-guard.mjs";
+import { behindRefusal } from "../pull.mjs";
 import syncCommand from "./sync.mjs";
 
 export default async function wrapCommand() {
@@ -118,7 +118,7 @@ export default async function wrapCommand() {
   const privates = guard.paths;
   let held;
   try { held = privateChanges(cwd, privates); } catch (error) { die(`${error.message}; nothing was staged`); }
-  if (held.length) die(`wrap will not commit private files: ${held.map((p) => sessionText(p, 200)).join(", ")}. They stay in this Mac's iCloud folder and Atelier never pushes them (atelier private ls). Unstage them with git rm --cached PATH, and run atelier private add PATH to have Git ignore them again. Nothing was staged.`);
+  if (held.length) die(`wrap will not commit private files: ${held.map((p) => sessionText(p, 200)).join(", ")}. They stay in this Mac's iCloud folder and Atelier never pushes them. Unstage them with git rm --cached PATH, and have Git ignore them again through .git/info/exclude. Nothing was staged.`);
   git(["add", "-A"], { cwd });
   // Whitespace is checked on what the commit will hold, after staging: the
   // index against HEAD takes in staged changes and new files, which a diff of
@@ -137,9 +137,11 @@ export default async function wrapCommand() {
   data.pushes = [];
   for (const remote of remotes) {
     const identity = record.policy.commitIdentity;
-    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log, project: name });
-    data.pushes.push({ remote, passed: result.ok });
-    console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
+    const result = pushCheckoutRemote({ git, dir: cwd, branch, remote, identity, project: name });
+    if (result.refused) console.log(result.refused);
+    const passed = result.status === 0;
+    data.pushes.push({ remote, passed });
+    console.log(`Remote ${sessionText(remote, 200)}: ${passed ? "pushed" : "failed"}.`);
   }
   if (!args.push) console.log("Checkout remotes not pushed (no --push).");
   data.found = [];
@@ -161,4 +163,29 @@ export default async function wrapCommand() {
   // step; only now does a remote that did not take the push fail the command.
   const failed = data.pushes.filter((p) => !p.passed);
   if (failed.length) die(`the session is recorded, but the push failed for ${failed.length} remote${failed.length === 1 ? "" : "s"}: ${failed.map((p) => sessionText(p.remote, 200)).join(", ")}`);
+}
+
+// The baseline alone: the step `wrap` ends with for a baseline that holds the
+// whole history.
+async function publishBaseline() {
+  const name = project();
+  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
+  if (p.fresh === true) die(`${name}'s baseline holds part of its history; atelier sync carries new commits to it`);
+  const t = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+  // Another checkout may have moved the baseline on (t644): the push would be
+  // refused as a non-fast-forward, so wrap refuses first and names pull.
+  // A baseline without the branch yet takes the first push as it is.
+  const baselineHead = git(["ls-remote", t.remote, `refs/heads/${p.branch}`], { cwd: p.path, token: t.token, hooks: false }).split(/\s/)[0];
+  if (baselineHead) {
+    git(["fetch", "--quiet", "--no-tags", t.remote, p.branch], { cwd: p.path, token: t.token, hooks: false });
+    const behind = behindRefusal(landingGit, p.path, { name, fresh: false, branch: p.branch, baselineHead, nothing: "Nothing was pushed.", command: "atelier wrap" });
+    if (behind) die(behind);
+  }
+  // No commit the baseline lacks may carry a private file (t645). The
+  // baseline's head is read, and fetched when this checkout lacks it; the
+  // commit scanned is the one pushed.
+  const ref = `refs/heads/${p.branch}`;
+  guardedPush({ project: name, cwd: p.path, tip: ref, bases: () => remoteBases({ git, cwd: p.path, remote: t.remote, ref, opts: { token: t.token, ownerRemote: false } }), what: `Publishing ${p.branch} to ${name}'s baseline`, fail: die },
+    (sha) => git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${sha}:refs/heads/${p.branch}`], { cwd: p.path, token: t.token }));
+  console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
 }

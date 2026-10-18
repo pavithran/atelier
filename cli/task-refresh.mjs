@@ -49,7 +49,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TRANSFORMATIONS, classifyConflicts, conflictReport, verifyResolution } from "../src/refresh/mechanical.ts";
 import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/moved-code.ts";
-import { guardedPush } from "./private.mjs";
+import { guardedPush } from "./private-guard.mjs";
 import { proseStandardLine } from "../src/prose-standard.ts";
 
 const HASH = /^[a-f0-9]{40,64}$/;

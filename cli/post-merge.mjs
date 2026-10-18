@@ -5,7 +5,7 @@ import { currentStep, hash, redactedOutput } from "../src/post-merge.ts";
 import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
-import { guardedPush } from "./private.mjs";
+import { guardedPush } from "./private-guard.mjs";
 
 // No shell quoting is involved in publication: the owner approves a URL,
 // one ref and a privacy policy, not a shell program that could bypass it.

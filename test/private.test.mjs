@@ -8,13 +8,26 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, utimesSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { parsePrivateList, privateListText, privatePath } from "../src/rules.ts";
+import { parsePrivateList, privatePath } from "../src/rules.ts";
+// What a list in iCloud holds: one path a line.
+const privateListText = (paths) => `${[...new Set(paths)].sort().map((p) => `${p}\n`).join("")}`;
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, excludesPrivate, lockKey, mergeConfigForSave, moveProjectEntry, moveProjectEntryOnDisk, saveWholeConfig, savePrivateFields, guardedPush, linkPrivate, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private.mjs";
+import { discoverPrivate, mergeConfigForSave, moveProjectEntry, moveProjectEntryOnDisk, saveWholeConfig, savePrivateFields, guardedPush, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private-guard.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 const cli = resolve("cli/atelier.mjs");
+
+// What the project's private files looked like when a command linked them: a
+// link in the checkout to each file in the folder that keeps them, ignored
+// through .git/info/exclude.
+function linkByHand(f, names) {
+  for (const name of names) {
+    mkdirSync(dirname(join(f.checkout, name)), { recursive: true });
+    symlinkSync(join(f.keep, name), join(f.checkout, name));
+  }
+  writeFileSync(join(f.checkout, ".git", "info", "exclude"), names.map((n) => `/${n}\n`).join(""));
+}
 
 function setup(t, { folder = "Demo" } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "atelier-private-")));
@@ -46,124 +59,12 @@ function setup(t, { folder = "Demo" } = {}) {
   return { root, env, git, home, icloud, keep, checkout, write, read, run };
 }
 
-test("private add names the files, links them from the project's iCloud folder and has Git ignore them; ls reports them", (t) => {
-  const f = setup(t);
-  const r = f.run("private", "add", "PROJECT.md", "notes/plan.md", "./notes/plan.md");
-  assert.equal(r.code, 0, r.output);
-  assert.deepEqual(f.read().projects.demo.private, ["PROJECT.md", "notes/plan.md"]);
-  assert.equal(f.read().projects.demo.privateHome, undefined, "the folder is found by the project's name, not stored");
-  for (const path of ["PROJECT.md", "notes/plan.md"]) {
-    assert.ok(lstatSync(join(f.checkout, path)).isSymbolicLink(), path);
-    assert.equal(readlinkSync(join(f.checkout, path)), join(f.keep, path));
-  }
-  assert.equal(readFileSync(join(f.checkout, "PROJECT.md"), "utf8"), "the plan\n");
-  // Git ignores them through info/exclude, never .gitignore, which is pushed.
-  assert.equal(f.git(f.checkout, "status", "--porcelain", "--untracked-files=all"), "");
-  assert.ok(!existsSync(join(f.checkout, ".gitignore")));
-  assert.match(readFileSync(join(f.checkout, ".git", "info", "exclude"), "utf8"), /^\/PROJECT\.md$/m);
-  f.git(f.checkout, "add", "-A");
-  assert.equal(f.git(f.checkout, "diff", "--cached", "--name-only"), "", "git add -A stages none of them");
-  // A second add changes nothing and writes no second exclude line.
-  const again = f.run("private", "add", "PROJECT.md");
-  assert.equal(again.code, 0, again.output);
-  assert.equal(readFileSync(join(f.checkout, ".git", "info", "exclude"), "utf8").split("\n").filter((l) => l === "/PROJECT.md").length, 1);
-  const ls = f.run("private", "ls");
-  assert.equal(ls.code, 0, ls.output);
-  assert.match(ls.output, new RegExp(`kept in ${f.keep} \\(found by demo's name\\)`));
-  assert.match(ls.output, /PROJECT\.md \(listed in iCloud and on this Mac\): linked; ignored by Git/);
-  assert.match(ls.output, /notes\/plan\.md \(listed in iCloud and on this Mac\): linked; ignored by Git/);
-  // The list beside the files follows the developer to every Mac: sorted,
-  // each path once, and never linked into the checkout.
-  assert.equal(readFileSync(join(f.keep, ".atelier-private"), "utf8").split("\n").filter((l) => l && !l.startsWith("#")).join(","), "PROJECT.md,notes/plan.md");
-  assert.ok(!existsSync(join(f.checkout, ".atelier-private")));
-  assert.equal(f.run("private", "add", ".atelier-private").code, 1, "the list itself is never private-linked");
-});
-
-test("private add never overwrites a file in the checkout, refuses a tracked file and skips one missing from the folder", (t) => {
-  const f = setup(t);
-  writeFileSync(join(f.checkout, "PROJECT.md"), "a local copy\n");
-  const r = f.run("private", "add", "PROJECT.md", "ghost.md");
-  assert.equal(r.code, 1, r.output);
-  assert.match(r.output, /PROJECT\.md: a file Atelier did not link is already in the checkout; it was left as it is/);
-  assert.match(r.output, /ghost\.md: not in .*; not linked/);
-  assert.equal(readFileSync(join(f.checkout, "PROJECT.md"), "utf8"), "a local copy\n");
-  assert.ok(!lstatSync(join(f.checkout, "PROJECT.md")).isSymbolicLink());
-  // Still ignored, so git add -A does not take the local copy either.
-  assert.equal(f.git(f.checkout, "status", "--porcelain", "--untracked-files=all"), "");
-  const tracked = f.run("private", "add", "file.txt");
-  assert.equal(tracked.code, 1, tracked.output);
-  assert.match(tracked.output, /Git tracks file\.txt/);
-  assert.deepEqual(f.read().projects.demo.private, ["PROJECT.md", "ghost.md"], "the tracked file was not named");
-  const outside = f.run("private", "add", "../x.md");
-  assert.equal(outside.code, 1);
-  assert.match(outside.output, /nothing was changed/);
-});
-
-test("--home names the folder; a checkout that is that folder keeps its files in place and only ignores them", (t) => {
-  const f = setup(t, { folder: "Elsewhere" });
-  const missing = f.run("private", "add", "PROJECT.md");
-  assert.equal(missing.code, 0, missing.output);
-  assert.match(missing.output, /Private files not linked: no folder in .* is named for demo/);
-  assert.ok(!existsSync(join(f.checkout, "PROJECT.md")));
-  const r = f.run("private", "add", "PROJECT.md", "--home", f.keep);
-  assert.equal(r.code, 0, r.output);
-  assert.equal(f.read().projects.demo.privateHome, f.keep);
-  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "PROJECT.md"));
-  // The iCloud checkout of today: the checkout is the folder itself.
-  const g = setup(t);
-  g.git(g.keep, "init", "-q", "-b", "main");
-  g.write({ demo: { path: g.keep, branch: "main", protect: [] } });
-  const inPlace = g.run("private", "add", "PROJECT.md");
-  assert.equal(inPlace.code, 0, inPlace.output);
-  assert.match(inPlace.output, /Private files stay where they are/);
-  // There the list sits in the checkout itself, and Git ignores it too.
-  assert.ok(existsSync(join(g.keep, ".atelier-private")));
-  assert.equal(g.git(g.keep, "check-ignore", ".atelier-private"), ".atelier-private");
-  g.git(g.keep, "commit", "-q", "--allow-empty", "-m", "first");
-  g.git(g.keep, "add", "-f", ".atelier-private");
-  assert.deepEqual(privateChanges(g.keep, privateGuard("demo", g.read().projects.demo, { root: g.icloud }).paths), [".atelier-private"], "the list is never staged either");
-  assert.ok(lstatSync(join(g.keep, "PROJECT.md")).isFile());
-  assert.equal(g.git(g.keep, "status", "--porcelain", "--untracked-files=all").split("\n").filter((l) => l.includes("PROJECT.md")).length, 0);
-});
-
 test("a folder named for the project is found case-, space- and hyphen-insensitively, and two are refused", (t) => {
   const f = setup(t, { folder: "de mo" });
   assert.equal(privateHome("De-Mo", {}, f.icloud).home, join(f.icloud, "de mo"));
   mkdirSync(join(f.icloud, "DEMO"));
   assert.match(privateHome("demo", {}, f.icloud).error, /more than one folder .* \(DEMO, de mo\)/);
   assert.equal(privateHome("demo", { privateHome: "/x" }, f.icloud).home, "/x");
-});
-
-test("linkPrivate replaces a stale link of its own and leaves a link under a linked folder alone", (t) => {
-  const f = setup(t);
-  // Atelier linked it from a folder that has since moved.
-  const moved = join(f.root, "moved");
-  mkdirSync(moved);
-  writeFileSync(join(moved, "PROJECT.md"), "old\n");
-  assert.deepEqual(linkPrivate(f.checkout, { private: ["PROJECT.md"], privateHome: moved }, { name: "demo" }).linked, ["PROJECT.md"]);
-  rmSync(moved, { recursive: true });
-  const r = linkPrivate(f.checkout, { private: ["PROJECT.md"], privateHome: f.keep }, { name: "demo" });
-  assert.deepEqual(r.linked, ["PROJECT.md"]);
-  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "PROJECT.md"));
-  // A folder of the checkout that is itself a link would put the new link outside it.
-  const outside = join(f.root, "outside");
-  mkdirSync(outside);
-  symlinkSync(outside, join(f.checkout, "docs"));
-  mkdirSync(join(f.keep, "docs"));
-  writeFileSync(join(f.keep, "docs", "x.md"), "x\n");
-  const s = linkPrivate(f.checkout, { private: ["docs/x.md"], privateHome: f.keep }, { name: "demo" });
-  assert.deepEqual(s.refused, ["docs/x.md"]);
-  assert.ok(!existsSync(join(outside, "x.md")));
-});
-
-test("special characters in a private path are ignored by Git as that path alone", (t) => {
-  const f = setup(t);
-  const names = ["a*b.md", "[x].md", "!bang", "q?.md"];
-  for (const n of names) writeFileSync(join(f.keep, n), "p\n");
-  for (const n of ["ab.md", "aXb.md", "x.md", "qz.md"]) writeFileSync(join(f.checkout, n), "public\n");
-  linkPrivate(f.checkout, { private: names, privateHome: f.keep }, { name: "demo" });
-  const untracked = f.git(f.checkout, "ls-files", "--others", "--exclude-standard").split("\n").sort();
-  assert.deepEqual(untracked, ["aXb.md", "ab.md", "qz.md", "x.md"], "only the private names are ignored, not what their patterns would match");
 });
 
 test("privateCommits finds a private file a commit adds, changes, links or a merge brings in, and not a deletion or what the base holds", (t) => {
@@ -203,7 +104,7 @@ test("privateCommits finds a private file a commit adds, changes, links or a mer
 
 test("privateChanges names private files wrap would stage: forced into the index, or no longer ignored", (t) => {
   const f = setup(t);
-  linkPrivate(f.checkout, { private: ["PROJECT.md", "notes"], privateHome: f.keep }, { name: "demo" });
+  linkByHand(f, ["PROJECT.md", "notes"]);
   assert.deepEqual(privateChanges(f.checkout, ["PROJECT.md", "notes"]), []);
   f.git(f.checkout, "add", "-f", "PROJECT.md");
   assert.deepEqual(privateChanges(f.checkout, ["PROJECT.md", "notes"]), ["PROJECT.md"]);
@@ -211,24 +112,11 @@ test("privateChanges names private files wrap would stage: forced into the index
   assert.deepEqual(privateChanges(f.checkout, ["PROJECT.md", "notes"]).sort(), ["PROJECT.md", "notes"]);
 });
 
-test("the list in iCloud is read as data: config-only names still work, each source is said, and a bad or tracked line is refused alone", (t) => {
+test("the list in iCloud is read as data: config-only names still work, and a bad line is refused alone", (t) => {
   const f = setup(t);
   writeFileSync(join(f.keep, ".atelier-private"), ["# private", "PROJECT.md", "../../etc/passwd", "/abs.md", ".git/config", "file.txt", ".atelier-private", "", "notes"].join("\n"));
   f.write({ demo: { path: f.checkout, branch: "main", protect: [], private: ["mine.md"] } });
-  writeFileSync(join(f.keep, "mine.md"), "this Mac only\n");
-  const r = linkPrivate(f.checkout, f.read().projects.demo, { name: "demo", root: f.icloud });
-  assert.deepEqual(r.invalid.map((x) => x.line), [3, 4, 5, 7]);
-  assert.deepEqual(r.refused, ["file.txt"], "a tracked file the list names is not linked");
-  assert.deepEqual(r.linked.sort(), ["PROJECT.md", "mine.md", "notes"]);
-  const said = r.said.join("\n");
-  for (const n of [3, 4, 5, 7]) assert.match(said, new RegExp(`\\.atelier-private line ${n}: .*; skipped\\.`));
-  assert.ok(!existsSync(join(f.root, "etc")));
-  assert.equal(f.git(f.checkout, "status", "--porcelain", "--untracked-files=all"), "");
-  const ls = f.run("private", "ls");
-  assert.match(ls.output, /PROJECT\.md \(listed in iCloud\): linked/);
-  assert.match(ls.output, /mine\.md \(listed on this Mac\): linked/);
-  assert.match(ls.output, /file\.txt \(listed in iCloud\): Git tracks it in the checkout/);
-  assert.match(ls.output, /\.atelier-private line 3: .*skipped/);
+  assert.deepEqual(readPrivateList(f.keep).refused.map((x) => x.line), [3, 4, 5, 7]);
   // Every command's guard reads the list too, and holds the list itself.
   assert.deepEqual(privateGuard("demo", f.read().projects.demo, { root: f.icloud }).paths.sort(), [".atelier-private", "PROJECT.md", "file.txt", "mine.md", "notes"].sort());
 });
@@ -303,29 +191,6 @@ test("the commit scan sees root commits whatever log.showRoot says, reads paths 
   } finally {
     if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = previous;
   }
-});
-
-test("a file Git tracks under another case is refused as tracked, and never replaced by a link", (t) => {
-  const f = setup(t);
-  writeFileSync(join(f.checkout, "project.md"), "tracked\n");
-  f.git(f.checkout, "add", "project.md");
-  f.git(f.checkout, "commit", "-q", "-m", "tracked");
-  const r = f.run("private", "add", "PROJECT.md");
-  assert.equal(r.code, 1, r.output);
-  assert.match(r.output, /Git tracks PROJECT\.md/);
-  // Named through the list instead, it is still not linked over the tracked file.
-  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
-  const linked = linkPrivate(f.checkout, { path: f.checkout }, { name: "demo", root: f.icloud });
-  assert.deepEqual(linked.refused, ["PROJECT.md"]);
-  assert.equal(readFileSync(join(f.checkout, "project.md"), "utf8"), "tracked\n");
-  assert.ok(!lstatSync(join(f.checkout, "project.md")).isSymbolicLink());
-});
-
-test("private ls takes no --home", (t) => {
-  const f = setup(t);
-  const r = f.run("private", "ls", "--home", f.keep);
-  assert.notEqual(r.code, 0);
-  assert.match(r.output, /usage: atelier private add/);
 });
 
 test("every name privatePath accepts comes back unchanged from the list in iCloud", () => {
@@ -459,22 +324,6 @@ test("the tree of every commit pushed is read, not only the tip's", (t) => {
   assert.deepEqual(privateCommits(c, ["PROJECT.md"], "HEAD", [a]).map((x) => x.commit), [s1]);
 });
 
-// Astra's third review of t645, finding 3: a tracked .gitignore with
-// !PROJECT.md outweighs .git/info/exclude.
-test("a rule in the checkout that un-ignores a private file is warned of, and Atelier still refuses to stage it", (t) => {
-  const f = setup(t);
-  writeFileSync(join(f.checkout, ".gitignore"), "!PROJECT.md\n");
-  f.git(f.checkout, "add", ".gitignore");
-  f.git(f.checkout, "commit", "-q", "-m", "unignore");
-  const r = f.run("private", "add", "PROJECT.md");
-  assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /Warning: Git does not ignore PROJECT\.md here: a rule in the checkout/);
-  assert.match(f.git(f.checkout, "status", "--porcelain"), /\?\? PROJECT\.md/, "git sees it, as the warning says");
-  const ls = f.run("private", "ls");
-  assert.match(ls.output, /PROJECT\.md \(listed in iCloud and on this Mac\): linked; NOT ignored by Git/);
-  assert.deepEqual(privateChanges(f.checkout, privateGuard("demo", f.read().projects.demo, { root: f.icloud }).paths), ["PROJECT.md"], "what wrap would stage includes it, so wrap refuses");
-});
-
 // Astra's fourth review of t645, finding 1: a long-running process (the
 // integrator) kept the config it started with, so a name made private by
 // another process later was not guarded.
@@ -493,9 +342,9 @@ test("a guard in a process started earlier honours a name another process made p
     for (const [key, value] of [["ATELIER_CONFIG_DIR", previous.dir], ["ATELIER_PRIVATE_ROOT", previous.root]]) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   });
   assert.deepEqual(privateGuardFor("demo"), { paths: [], refusal: null }, "nothing is private when it starts");
-  assert.equal(f.run("private", "add", "secret.md").code, 0);
+  f.write({ demo: { ...f.read().projects.demo, private: ["secret.md"] } });
   // A task commit holding it, pushed from this process.
-  rmSync(join(f.checkout, "secret.md"));
+  rmSync(join(f.checkout, "secret.md"), { force: true });
   writeFileSync(join(f.checkout, "secret.md"), "s\n");
   f.git(f.checkout, "add", "-f", "secret.md");
   f.git(f.checkout, "commit", "-q", "-m", "task");
@@ -505,33 +354,6 @@ test("a guard in a process started earlier honours a name another process made p
   // And a name this process holds but has not written is honoured too.
   memory.projects.demo.private.push("mine.md");
   assert.ok(privateGuardFor("demo").paths.includes("mine.md"));
-});
-
-// Astra's fourth review of t645, finding 2: with the list gone missing,
-// private add wrote a list of the new name alone, and discovery then dropped
-// the names only the copy held.
-test("private add never writes the list without a name it knows; only private remove drops one", (t) => {
-  const f = setup(t);
-  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
-  writeFileSync(join(f.keep, "notes.md"), "n\n");
-  assert.equal(f.run("private", "ls").code, 0, "ls finds the list and keeps its copy");
-  assert.deepEqual(f.read().projects.demo.privateFromList, ["PROJECT.md"]);
-  rmSync(join(f.keep, ".atelier-private"));
-  const r = f.run("private", "add", "notes.md");
-  assert.equal(r.code, 0, r.output);
-  const listed = () => parsePrivateList(readFileSync(join(f.keep, ".atelier-private"), "utf8")).paths;
-  assert.deepEqual(listed(), ["PROJECT.md", "notes.md"]);
-  assert.deepEqual(f.read().projects.demo.privateFromList, ["PROJECT.md", "notes.md"]);
-  assert.ok(lstatSync(join(f.checkout, "PROJECT.md")).isSymbolicLink(), "still linked");
-  // private remove is the one way out.
-  const removed = f.run("private", "remove", "PROJECT.md");
-  assert.equal(removed.code, 0, removed.output);
-  assert.deepEqual(listed(), ["notes.md"]);
-  assert.deepEqual(f.read().projects.demo.privateFromList, ["notes.md"]);
-  assert.ok(!f.read().projects.demo.private.includes("PROJECT.md"));
-  assert.ok(!existsSync(join(f.checkout, "PROJECT.md")), "its link is gone");
-  assert.ok(existsSync(join(f.keep, "PROJECT.md")), "the file in iCloud is left");
-  assert.notEqual(f.run("private", "remove", "nothing.md").code, 0);
 });
 
 // Astra's fifth review of t645, finding 1: every lstat error was taken for
@@ -548,38 +370,6 @@ test("a list that cannot be reached is unreadable, not missing, and an opted-in 
   assert.equal(read.exists, true);
   assert.match(read.unreadable, /\.atelier-private cannot be read \(EACCES\)/);
   assert.match(guard.refusal ?? "", /cannot be read \(EACCES\).*Nothing was pushed\./);
-});
-
-// Astra's fifth review of t645, finding 2: names only the copy of the list
-// held were left out of what linkPrivate worked on.
-test("names only this Mac's copy of the list holds are excluded and reported when the folder is gone", (t) => {
-  const f = setup(t);
-  const gone = join(f.root, "gone");
-  const r = linkPrivate(f.checkout, { path: f.checkout, privateHome: gone, privateFromList: ["PROJECT.md"] }, { name: "demo", root: f.icloud });
-  assert.equal(r.missingHome, true);
-  assert.match(r.said.join("\n"), /Private files not linked: .*gone, the folder that keeps them, is not on this Mac/);
-  assert.ok(excludesPrivate(f.checkout, "PROJECT.md"), "Git ignores it meanwhile");
-});
-
-// Astra's fifth review of t645, finding 3: private add replaced a list it
-// could not read with the names known here.
-test("private add and remove refuse a list they cannot read, and change nothing", (t) => {
-  const f = setup(t);
-  const file = join(f.keep, ".atelier-private");
-  writeFileSync(file, "PROJECT.md\nother.md\n");
-  chmodSync(file, 0o000);
-  const before = f.read();
-  let add, remove;
-  try {
-    add = f.run("private", "add", "notes.md");
-    remove = f.run("private", "remove", "PROJECT.md");
-  } finally { chmodSync(file, 0o644); }
-  assert.notEqual(add.code, 0);
-  assert.match(add.output, /\.atelier-private cannot be read \(EACCES\); nothing was changed/);
-  assert.notEqual(remove.code, 0);
-  assert.match(remove.output, /cannot be read.*nothing was changed/);
-  assert.equal(readFileSync(file, "utf8"), "PROJECT.md\nother.md\n", "the list is as it was");
-  assert.deepEqual(f.read(), before, "the config is as it was");
 });
 
 // Astra's sixth review of t645, finding 2: the guard saved by writing the
@@ -603,7 +393,7 @@ test("the guard writes only its own project's private settings, against the conf
   });
   // Another process makes a file of demo private.
   writeFileSync(join(f.keep, "secret.md"), "s\n");
-  assert.equal(f.run("private", "add", "secret.md").code, 0);
+  f.write({ ...f.read().projects, demo: { ...f.read().projects.demo, private: ["secret.md"] } });
   // The integrator's guard for other reads other's list and keeps its copy.
   assert.ok(privateGuardFor("other").paths.includes("x.md"));
   const disk = f.read();
@@ -686,7 +476,7 @@ async function overlap(t, { stage, first, second, env, lock }) {
   assert.equal(ra.code, 0, ra.out);
   assert.equal(rb.code, 0, rb.out);
 }
-const moduleUrl = JSON.stringify(resolve("cli/private.mjs"));
+const moduleUrl = JSON.stringify(resolve("cli/private-guard.mjs"));
 
 for (const lock of [true, false]) {
   test(`savePrivateFields for two projects at once ${lock ? "keeps both" : "loses one without the lock"}`, async (t) => {
@@ -715,19 +505,6 @@ for (const lock of [true, false]) {
     const p = f.read().projects;
     assert.equal(p.a.branch, "next");
     if (lock) assert.deepEqual(p.b.private, ["b.md"]); else assert.equal(p.b.private, undefined, "b's name was lost");
-  });
-
-  test(`two private add commands at once ${lock ? "keep both names in the list" : "lose one without the lock"}`, async (t) => {
-    const f = setup(t);
-    writeFileSync(join(f.keep, "one.md"), "1\n");
-    writeFileSync(join(f.keep, "two.md"), "2\n");
-    const env = { ...f.env, HOME: f.home, ATELIER_PRIVATE_ROOT: f.icloud, ATELIER_CONFIG_DIR: join(f.root, "config"), ATELIER_CACHE: join(f.root, "cache"), ATELIER_SERVER: "http://127.0.0.1:9", ATELIER_TOKEN: "t", ATELIER_ACTOR: "owner" };
-    const add = (name) => `const { spawnSync } = await import("node:child_process");
-      const r = spawnSync(process.execPath, [${JSON.stringify(resolve("cli/atelier.mjs"))}, "private", "add", ${JSON.stringify(name)}, "--project", "demo"], { encoding: "utf8", env: process.env });
-      process.stdout.write(r.stdout + r.stderr); process.exit(r.status ?? 1);`;
-    await overlap(t, { stage: "list", first: add("one.md"), second: add("two.md"), env, lock });
-    const listed = parsePrivateList(readFileSync(join(f.keep, ".atelier-private"), "utf8")).paths;
-    if (lock) assert.deepEqual(listed, ["one.md", "two.md"]); else assert.deepEqual(listed, ["one.md"], "two.md was lost from the list");
   });
 }
 
@@ -884,22 +661,6 @@ test("a rename into an entry whose folder is found by name compares that folder,
   assert.equal(projects.target.privateHome, f.keep);
 });
 
-// Astra's thirteenth review of t645, finding 2: info/exclude was rewritten
-// without a lock, so two commands at once could drop each other's lines.
-for (const lock of [true, false]) {
-  test(`two commands adding ignore lines at once ${lock ? "keep every line once" : "repeat the header without the lock"}`, async (t) => {
-    const f = setup(t);
-    const add = (path) => `const { excludePrivate } = await import(${moduleUrl}); excludePrivate(${JSON.stringify(f.checkout)}, [${JSON.stringify(path)}]);`;
-    const exclude = join(f.checkout, ".git", "info", "exclude");
-    writeFileSync(exclude, "# someone's own\nbuild/\n");
-    await overlap(t, { stage: "exclude", first: add("one.md"), second: add("two.md"), env: { ATELIER_CONFIG_DIR: join(f.root, "config") }, lock });
-    const lines = readFileSync(exclude, "utf8").split("\n");
-    assert.ok(lines.includes("/one.md") && lines.includes("/two.md"), "both lines are there");
-    assert.ok(lines.includes("build/"), "the lines already there are kept");
-    const headers = lines.filter((l) => l.startsWith("# Private files Atelier links")).length;
-    if (lock) assert.equal(headers, 1); else assert.equal(headers, 2, "without the lock both read before either wrote");
-  });
-}
 
 test("guardedPush hands the push the commit it scanned, whatever the branch names by then", (t) => {
   const f = setup(t);
@@ -909,20 +670,6 @@ test("guardedPush hands the push the commit it scanned, whatever the branch name
   guardedPush({ project: "nothing-private", cwd: c, tip: "refs/heads/main", what: "The push" }, (sha) => { given = sha; });
   assert.equal(given, scanned);
   assert.throws(() => guardedPush({ project: "nothing-private", cwd: c, tip: "refs/heads/none", what: "The push" }, () => {}), /does not name a commit here/);
-});
-
-// Astra's fourteenth review of t645, finding 2: a link the developer made
-// was replaced whenever it pointed elsewhere.
-test("a link the developer made is left as it is and reported", (t) => {
-  const f = setup(t);
-  const notes = join(f.root, "my-notes");
-  mkdirSync(notes);
-  writeFileSync(join(notes, "PROJECT.md"), "mine\n");
-  symlinkSync(join(notes, "PROJECT.md"), join(f.checkout, "PROJECT.md"));
-  const r = f.run("private", "add", "PROJECT.md");
-  assert.equal(r.code, 1, r.output);
-  assert.match(r.output, /PROJECT\.md: a link Atelier did not make is already in the checkout \(to .*my-notes\/PROJECT\.md\); it was left as it is/);
-  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(notes, "PROJECT.md"));
 });
 
 // Astra's fourteenth review of t645, finding 1: a save that changed one
@@ -972,18 +719,6 @@ test("a process started on an older folder reads the folder named since, and the
   assert.equal(memory.projects.demo.privateHome, b, "the folder on disk is the current one");
 });
 
-// Astra's fifteenth review of t645, finding 2: a developer's link into the
-// project's own folder was taken for Atelier's and replaced.
-test("a developer's link into the project's folder is left as it is", (t) => {
-  const f = setup(t);
-  writeFileSync(join(f.keep, "draft.md"), "draft\n");
-  symlinkSync(join(f.keep, "draft.md"), join(f.checkout, "PROJECT.md"));
-  const r = f.run("private", "add", "PROJECT.md");
-  assert.equal(r.code, 1, r.output);
-  assert.match(r.output, /PROJECT\.md: a link Atelier did not make is already in the checkout/);
-  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "draft.md"));
-});
-
 // Astra's sixteenth review of t645, finding 1: names read from the older
 // folder were returned but not kept, so the next call, with the older folder
 // no longer known, dropped them.
@@ -1011,80 +746,23 @@ test("names read from an older folder are kept in the copy, so a second guard ca
   assert.ok(f.read().projects.demo.privateFromList.includes("a.md"), "kept in the copy on disk");
 });
 
-// Astra's sixteenth review of t645, finding 2: private remove deleted any
-// link to the expected target, a developer's own included.
-test("private remove leaves a link the developer made, and still drops the name", (t) => {
-  const f = setup(t);
-  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\n");
-  f.write({ demo: { path: f.checkout, branch: "main", protect: [], private: ["PROJECT.md"], privateFromList: ["PROJECT.md"] } });
-  symlinkSync(join(f.keep, "PROJECT.md"), join(f.checkout, "PROJECT.md"));
-  const r = f.run("private", "remove", "PROJECT.md");
-  assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /PROJECT\.md: the link in the checkout \(to .*PROJECT\.md\) is not one Atelier made; it was left as it is\./);
-  assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "PROJECT.md"));
-  assert.ok(!f.read().projects.demo.private.includes("PROJECT.md"));
-  assert.deepEqual(parsePrivateList(readFileSync(join(f.keep, ".atelier-private"), "utf8")).paths, []);
-});
-
-// Argon's seventeenth review of t645, finding 1: private remove kept only
-// the names it held, so with the list naming another (added on another
-// Mac), removing the last local one left the project not opted in here.
-test("private remove keeps every name the list still holds in the copy, so the project stays guarded", (t) => {
-  const f = setup(t);
-  writeFileSync(join(f.keep, ".atelier-private"), "PROJECT.md\nnotes/plan.md\n");
-  f.write({ demo: { path: f.checkout, branch: "main", protect: [], private: ["PROJECT.md"], privateFromList: ["PROJECT.md"] } });
-  const r = f.run("private", "remove", "PROJECT.md");
-  assert.equal(r.code, 0, r.output);
-  const entry = f.read().projects.demo;
-  assert.deepEqual(entry.privateFromList, ["notes/plan.md"]);
-  assert.ok(privateGuard("demo", entry, { root: f.icloud }).paths.includes("notes/plan.md"));
-});
-
 // Argon's seventeenth review of t645, finding 2: a list that is there but
 // cannot be read was neither said nor guarded.
-test("a list that is there but cannot be read opts the project in, refuses pushes, and is said by private add and ls", (t) => {
+test("a list that is there but cannot be read opts the project in and refuses pushes", (t) => {
   const f = setup(t);
   const file = join(f.keep, ".atelier-private");
   writeFileSync(file, "PROJECT.md\n");
   chmodSync(file, 0o000);
-  let ls, add, entry, guard, pending = {};
+  let entry = { path: f.checkout, branch: "main" }, guard, pending = {};
   try {
-    ls = f.run("private", "ls");
-    add = f.run("private", "add", "--home", f.keep);
-    entry = f.read().projects.demo;
+    discoverPrivate("demo", entry, { root: f.icloud });
     guard = privateGuard("demo", entry, { root: f.icloud });
     discoverPrivate("demo", pending, { root: f.icloud });
   } finally { chmodSync(file, 0o644); }
-  assert.match(ls.output, /Warning: .*\.atelier-private cannot be read \(EACCES\)/);
-  assert.match(add.output, /\.atelier-private cannot be read \(EACCES\)/);
   assert.equal(entry.privateHome, f.keep, "the project is opted in");
   assert.match(guard.refusal ?? "", /cannot be read.*Nothing was pushed\./);
   assert.equal(pending.privateHome, f.keep, "a first init's pending entry is opted in too");
 });
-
-// Astra's eighteenth review of t645: a lock keyed by the path as written
-// let two spellings of one folder take two locks.
-test("two spellings of one folder share one lock key", (t) => {
-  const f = setup(t);
-  const alias = join(f.root, "alias");
-  symlinkSync(f.keep, alias);
-  assert.equal(lockKey(join(alias, ".atelier-private")), lockKey(join(f.keep, ".atelier-private")), "through a symbolic link");
-  const upper = f.keep.replace(/demo$/i, "DEMO").replace(/Demo$/, "DEMO");
-  if (existsSync(upper) && upper !== f.keep) assert.equal(lockKey(join(upper, ".atelier-private")), lockKey(join(f.keep, ".atelier-private")), "in another letter case");
-  assert.notEqual(lockKey(join(f.root, "elsewhere", ".atelier-private")), lockKey(join(f.keep, ".atelier-private")));
-});
-
-// Argon's eighteenth review of t645, finding 2: two private add commands at
-// once raced to make the same link, and the second failed with EEXIST.
-for (const lock of [true, false]) {
-  test(`two commands linking the same file at once both succeed ${lock ? "(the second waits)" : "(without the lock, the link the other made is taken as made)"}`, async (t) => {
-    const f = setup(t);
-    const entry = JSON.stringify({ path: f.checkout, private: ["PROJECT.md"], privateHome: f.keep });
-    const link = `const { linkPrivate } = await import(${moduleUrl}); const r = linkPrivate(${JSON.stringify(f.checkout)}, ${entry}, { name: "demo" }); if (r.refused.length) process.exit(3);`;
-    await overlap(t, { stage: "link", first: link, second: link, env: { ATELIER_CONFIG_DIR: join(f.root, "config") }, lock });
-    assert.equal(readlinkSync(join(f.checkout, "PROJECT.md")), join(f.keep, "PROJECT.md"));
-  });
-}
 
 // Argon's eighteenth review of t645, finding 3: names read from another
 // folder were kept as a copy while the current folder's list could not be

@@ -3,8 +3,7 @@
 A developer who works on one project from several Macs keeps a checkout of it
 on each, outside iCloud. Git carries code, history and work in progress
 between them, through the project's baseline and its branches repository;
-iCloud carries only the project's private files; dependencies, data and
-secrets stay on the Mac that made them. This page says where each lives, how
+dependencies, data and secrets stay on the Mac that made them. This page says where each lives, how
 to set up a new Mac, how to move work from one Mac to another, and what
 happens when two Macs disagree. The commands below name the project with
 `--project PROJECT`.
@@ -16,12 +15,10 @@ happens when two Macs disagree. The commands below name the project with
 | Code and history | The project's checkout, `~/ai-projects/PROJECT` unless `atelier clone` is given another folder | Git, through the baseline: `atelier pull` brings what another Mac carried there |
 | Receipts | `refs/notes/atelier` in the checkout, which `git log` shows beside the commits | Fetched by `atelier clone` and merged by `atelier pull` |
 | Work in progress | Branches named `wip/NAME` in the checkout | The project's branches repository, through `atelier branch push` and `atelier branch fetch` |
-| Private files, such as `PROJECT.md` | The project's folder in iCloud, linked into the checkout | iCloud |
-| The list of private files | `.atelier-private` in the project's iCloud folder | iCloud; it is never linked into a checkout or pushed |
 | Project data | `~/Documents/ai-project-data/PROJECT` | No Atelier command carries it |
 | Dependencies | `node_modules` in each checkout, which Git ignores | None: each checkout installs its own |
 | The Atelier token | The macOS Keychain, item `atelier.API_TOKEN` | None: `atelier login` on each Mac |
-| Atelier's configuration | `~/.config/atelier/config.json`: the server, each project's checkout on this Mac and the private files this Mac names | None, except the private file names, which the list in iCloud carries |
+| Atelier's configuration | `~/.config/atelier/config.json`: the server and each project's checkout on this Mac | None |
 
 ## The baseline as the shared remote
 
@@ -31,7 +28,7 @@ makes the checkout from it with the baseline's main, its whole history and its
 receipts, and keeps it as `origin`.
 
 No checkout keeps a token. Each Atelier command that reaches the baseline
-(`clone`, `pull`, `sync`, `publish`, `merge`) mints its own token, passes it
+(`clone`, `pull`, `sync`, `wrap`, `merge`) mints its own token, passes it
 only to the Git commands that need it and keeps it nowhere; the
 `atelier branch` commands do the same for the branches repository. `clone`,
 `pull` and `branch` run every Git command with every Git hook off, so no hook
@@ -56,13 +53,8 @@ Artifacts holds the pointers alone.
    atelier login --server https://atelier.zone
    ```
 
-2. Let iCloud bring down the project's folder in
-   `~/Library/Mobile Documents/com~apple~CloudDocs/ai-projects/`, which holds
-   the private files and their list.
-
-3. Clone the project. The folder must be missing or empty. Clone registers it
-   as this Mac's checkout of the project, links the private files that
-   `.atelier-private` names and makes Git ignore them.
+2. Clone the project. The folder must be missing or empty. Clone registers it
+   as this Mac's checkout of the project.
 
    ```bash
    atelier clone PROJECT
@@ -70,21 +62,12 @@ Artifacts holds the pointers alone.
 
    A project already registered on this Mac at another path is refused;
    `--replace` registers the new folder in its place and leaves the old one as
-   it is. `--private-home DIR` names the folder that keeps the private files
-   when it is not the iCloud folder named for the project.
+   it is.
 
-4. Install the dependencies in the new checkout.
+3. Install the dependencies in the new checkout.
 
    ```bash
    cd ~/ai-projects/PROJECT && npm ci
-   ```
-
-5. Check the private files. Any that iCloud had not yet downloaded are listed
-   as not in the folder; once they are there, `atelier private add PATH`
-   links them.
-
-   ```bash
-   atelier private ls --project PROJECT
    ```
 
 ## Moving work between Macs
@@ -96,7 +79,7 @@ branch.
 ### Commits on main
 
 On the Mac where the work was done, the commits reach the baseline through
-`atelier publish`, `atelier wrap` (which ends with a publish) or the next
+`atelier wrap` (which ends by updating the baseline) or the next
 `atelier merge`; for a baseline built from part of the project's history
 (`atelier init --history-since`), `atelier sync` carries them. On the other
 Mac:
@@ -110,7 +93,7 @@ baseline's main and receipts, merges the receipts into the checkout's own (a
 receipt made here and not yet pushed is kept), then fast-forwards main, or
 merges it with the local commits under the project's commit identity, and
 names the commits it brought. When main and the baseline each hold commits
-the other lacks, the local commits reach the baseline at the next `publish`,
+the other lacks, the local commits reach the baseline at the next `wrap`,
 `merge` or `sync`.
 
 ### Work in progress
@@ -129,8 +112,8 @@ atelier branch push --project PROJECT
 branches repository beside the baseline, with a token only the developer is
 given, and records its last commit and the Mac's name. Only names under
 `wip/` are taken: main, the project's branch and a task's id are refused
-before a token is minted, and the baseline's main is never reached. The push
-goes through the private-file guard (see Private files). On the other Mac:
+before a token is minted, and the baseline's main is never reached. On the
+other Mac:
 
 ```bash
 atelier branch ls --project PROJECT
@@ -142,15 +125,15 @@ git switch wip/idea
 last commit and the Mac it was pushed from. `branch fetch` refuses the branch
 that is checked out, so to bring a branch back to a Mac where it is checked
 out, switch to main first. Work on a `wip/` branch reaches main as any other
-branch does: merged into main in the checkout, then published.
+branch does: merged into main in the checkout, then carried to the baseline.
 
 ## Conflicts and refusals
 
-**A Mac that is behind.** `sync`, `publish` and `merge` read the
-baseline's main first and refuse, with nothing sent, while the checkout's
-main does not hold it; each names `atelier pull`. `wrap` commits first and
-then refuses at its publish, so the commit stays in the checkout until a pull
-and a publish carry it.
+**A Mac that is behind.** `sync` and `merge` read the baseline's main first
+and refuse, with nothing sent, while the checkout's main does not hold it;
+each names `atelier pull`. `wrap` commits first and then refuses when it
+updates the baseline, so the commit stays in the checkout until a pull and a
+later `wrap` carry it.
 
 **A merge that conflicts.** `atelier pull` makes its merge with
 `git merge-tree`, which writes no file. When the two sides conflict, main, the
@@ -181,11 +164,9 @@ It refuses after fetching and after merging the baseline's receipts into
 - the baseline changes a file the checkout's Git configuration runs (a hook,
   a filter or merge driver command, an included configuration file); the
   message names the files and the commit to review before merging by hand;
-- the baseline adds a file the checkout holds untracked or ignored, such as a
-  private file, which the pull would write over; the file is named, to be
-  moved aside.
-
-A pull that is refused, or that stops at a conflict, links no private files.
+- the baseline adds a file the checkout holds untracked or ignored, such as
+  local notes, which the pull would write over; the file is named, to be moved
+  aside.
 
 **Branches.** A `branch push` that would not fast-forward the branch in the
 branches repository is refused by Git; `--force` replaces the other side's.
@@ -194,53 +175,32 @@ and its own push is not recorded over the other. A `branch fetch` that would
 not fast-forward the local branch is refused the same way, and `--force`
 replaces the local one.
 
-**Private files.** Atelier does not merge them. iCloud keeps the one copy in
-the project's folder, and each checkout links to it.
-
 ## Private files
 
-`atelier private add PATH` names a file that stays with the developer, such as
-`PROJECT.md`. It is kept in the project's iCloud folder: the folder in
+A file that stays with the developer, such as `PROJECT.md`, is kept in the
+project's iCloud folder, the folder in
 `~/Library/Mobile Documents/com~apple~CloudDocs/ai-projects/` whose name
-matches the project's ignoring letter case, spaces, `-` and `_`, or the
-folder given with `--home DIR`. The name is written to `.atelier-private`
-there and to this Mac's configuration; the file is linked into the checkout
-and ignored by Git through `.git/info/exclude`, never `.gitignore`, which
-would be pushed. A file already in the checkout is never overwritten, and a
-file Git tracks is refused until it is untracked.
+matches the project's ignoring letter case, spaces, `-` and `_`. The folder's
+`.atelier-private` lists the files, one path a line, relative to the checkout;
+this Mac's `config.json` may name more in the project's entry (`private`) and
+the folder (`privateHome`). No Atelier command names, links or ignores them
+any more (`atelier private` was removed in t770); what the developer links into
+a checkout and ignores through `.git/info/exclude` is the developer's own.
 
-Because the list is in iCloud, `atelier clone` on any Mac links every file it
-names. A name added on another Mac after this Mac's clone is linked by the
-next `atelier pull` that succeeds, whether it brought commits or found main
-already up to date; pull says what it linked, left alone or could not link,
-and brings this Mac's copy of the list up to date. Pull does this only for a
-project this Mac already knows has private files: one whose list named a file
-when this Mac last read it, or whose names or folder this Mac's configuration
-holds. `atelier private ls` reads the list and opts the project in, and
-`atelier private add PATH` links a file at any time.
-
-`atelier private remove PATH` is the only way a name stops being private. It
-drops the name from this Mac's configuration, its copy of the list and the
-list in iCloud, and removes the link Atelier made; the file in iCloud is left
-as it is.
-
-Git's ignore rules are not what keeps a private file out of a push. Atelier's
-line in `.git/info/exclude` can be outweighed: a tracked `.gitignore` with a
-line such as `!PROJECT.md` re-includes the file, and an ordinary `git add`
-then stages it, as `git add -f` would. `atelier private ls` warns of each
-private file Git does not ignore.
-
-What keeps it out is the push guard, which every Atelier push goes through:
-`sync`, `publish`, `merge`, `wrap --push`, `publish REMOTE`, a
-task's `push` and `branch push`. Before pushing, the guard reads every commit
-the destination does not already hold, and refuses, with nothing pushed, when
-one of those commits adds, changes or retypes a private path, or when a
-private path is in the tree of the commit pushed or of any commit pushed whose
-parent the destination already holds. A symbolic link
-counts as the path, since Git commits a link as a link. The guard also
-refuses when the list of private files cannot be read and this Mac keeps no
-copy of it. The commit it read is the one pushed, so a commit made on the
-branch in between is not sent. `wrap` also refuses to stage a private file.
+What Atelier does is refuse to push them. `atelier clone` and a successful
+`atelier pull` keep a copy of the list in this Mac's configuration, and every
+Atelier push goes through the push guard: `sync`, `merge`, `wrap --push` and
+its baseline update, `ship --push`, `init`, a task's `push`, `branch push` and
+the task refresh. Before pushing, the guard reads every commit the destination
+does not already hold, and refuses, with nothing pushed, when one of those
+commits adds, changes or retypes a private path, or when a private path is in
+the tree of the commit pushed or of any commit pushed whose parent the
+destination already holds. A symbolic link counts as the path, since Git
+commits a link as a link. The guard also refuses when the list cannot be read
+and this Mac keeps no copy of it. The commit it read is the one pushed, so a
+commit made on the branch in between is not sent. `wrap` also refuses to stage
+a private file. A project with no private file named on this Mac is not
+guarded and its iCloud folder is never read.
 
 ## Data, dependencies and secrets
 

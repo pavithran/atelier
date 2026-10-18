@@ -8,7 +8,7 @@ import { evidenceAt } from "../../src/rules.ts";
 import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
 import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
-import { guardedPush, privateGuardFor, privateRefusal } from "../private.mjs";
+import { guardedPush, privateGuardFor, privateRefusal } from "../private-guard.mjs";
 import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";

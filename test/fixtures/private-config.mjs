@@ -1,6 +1,6 @@
 // A config.json under os.tmpdir() naming projects' private files, for tests
 // that call the CLI's modules in-process: the private-file guard reads the
-// project's configuration itself (cli/private.mjs, privateGuardFor), from
+// project's configuration itself (cli/private-guard.mjs, privateGuardFor), from
 // ATELIER_CONFIG_DIR, which this sets for the test and puts back after it.
 // The iCloud ai-projects folder is set to one that does not exist (unless
 // the test named one), so no test reads this Mac's own.

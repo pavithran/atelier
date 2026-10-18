@@ -1,5 +1,5 @@
 // Part 2 of 3 of the tests that were in pull.test.mjs, split so no file runs for more than about a minute (t771).
-// atelier pull (t644), and the refusals of sync, publish and merge while
+// atelier pull (t644), and the refusals of sync, wrap and merge while
 // a checkout's main does not hold the baseline's. Two Macs share a project's
 // baseline: each test makes their checkouts with atelier clone, each Mac with
 // its own Atelier config and cache, against a stand-in server whose
@@ -125,7 +125,7 @@ test("sync of a full-history project is refused before its policy is sent while 
 
 // Review of t644, finding 4: a replacement ref can give a commit a parent it
 // does not have. Pull and the guards read the objects themselves.
-test("pull and publish read the real history: a replacement ref does not make main hold the baseline", async (t) => {
+test("pull and wrap read the real history: a replacement ref does not make main hold the baseline", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
   const dir = await cloneOn(t, f, a);
@@ -135,9 +135,9 @@ test("pull and publish read the real history: a replacement ref does not make ma
   // The local commit claims the baseline's head as its parent.
   f.git(dir, "replace", "--graft", local, theirs);
   assert.equal(f.git(dir, "merge-base", "--is-ancestor", theirs, "HEAD"), "", "Git, with the replacement, says main holds it");
-  const publish = await run(t, f, a, ["publish", "--project", "demo"]);
-  assert.notEqual(publish.code, 0);
-  assert.match(publish.output, refusal(theirs, "atelier publish --project demo"));
+  const wrap = await run(t, f, a, ["wrap", "Mine", "--no-check", "--project", "demo"], { cwd: dir });
+  assert.notEqual(wrap.code, 0);
+  assert.match(wrap.output, refusal(theirs, "atelier wrap"));
   const pull = await run(t, f, a, ["pull", "--project", "demo"]);
   assert.equal(pull.code, 0, pull.output);
   assert.match(pull.output, /brought 1 commit from the baseline's main and merged them with 1 local commit/);
@@ -196,9 +196,9 @@ test("a graft file GIT_GRAFT_FILE names does not make main hold the baseline, fo
   writeFileSync(graft, `${local} ${theirs}\n`);
   const env = { GIT_GRAFT_FILE: graft };
   assert.equal(execFileSync("git", ["merge-base", "--is-ancestor", theirs, "HEAD"], { cwd: dir, env: { ...f.env, ...env } }).toString(), "", "Git, with the graft, says main holds it");
-  const publish = await run(t, f, a, ["publish", "--project", "demo"], { env });
-  assert.notEqual(publish.code, 0);
-  assert.match(publish.output, refusal(theirs, "atelier publish --project demo"));
+  const wrap = await run(t, f, a, ["wrap", "Mine", "--no-check", "--project", "demo"], { cwd: dir, env });
+  assert.notEqual(wrap.code, 0);
+  assert.match(wrap.output, refusal(theirs, "atelier wrap"));
   const sync = await run(t, f, a, ["sync", "--project", "demo"], { env });
   assert.notEqual(sync.code, 0);
   assert.match(sync.output, refusal(theirs, "atelier sync --project demo"));
