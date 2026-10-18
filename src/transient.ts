@@ -32,6 +32,16 @@ export function retryableByRuntime(err: unknown): boolean {
   return e.retryable === true || e.overloaded === true;
 }
 
+// Whether an error carries a code Artifacts uses for a failure that passes:
+// the service unavailable, an internal error, a deadline missed, or a fork
+// still being made. The code can arrive missing across the binding with only
+// its message, so the fork wait is also read from the message. A NOT_FOUND or
+// ALREADY_EXISTS is not here: a retry does not cure it.
+export function transientByArtifacts(err: unknown): boolean {
+  const f = errorFields(err);
+  return /^(UNAVAILABLE|INTERNAL_ERROR|DEADLINE_EXCEEDED|FORK_IN_PROGRESS)$/.test(f.code) || /fork in progress|IN_PROGRESS/i.test(`${f.code} ${f.message}`);
+}
+
 // How long the caller is asked to wait before it retries a 503, in seconds.
 export const RETRY_AFTER = 2;
 

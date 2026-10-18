@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { errorFields, errorLine, retryableByRuntime, withRetry } from "../src/transient.ts";
+import { errorFields, errorLine, retryableByRuntime, transientByArtifacts, withRetry } from "../src/transient.ts";
 
 test("a failed request's log line names the error's code and message, then its stack", () => {
   const err = Object.assign(new Error("fork limit reached"), { code: "RESOURCE_EXHAUSTED" });
@@ -42,4 +42,13 @@ test("a step stops at its attempts, and a permanent failure is not retried", asy
   calls = 0;
   await assert.rejects(withRetry(async () => { calls++; throw new Error("ALREADY_EXISTS"); }, { permanent: (e) => /ALREADY/.test(String(e)), sleep: async () => {} }), /ALREADY_EXISTS/);
   assert.equal(calls, 1);
+});
+
+test("t761: transientByArtifacts names the codes that pass and not the ones a retry cannot cure", () => {
+  const coded = (code: string, message = "") => Object.assign(new Error(message), { code });
+  for (const code of ["UNAVAILABLE", "INTERNAL_ERROR", "DEADLINE_EXCEEDED", "FORK_IN_PROGRESS"]) assert.equal(transientByArtifacts(coded(code)), true, code);
+  assert.equal(transientByArtifacts(new Error("fork in progress")), true);
+  for (const code of ["NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED"]) assert.equal(transientByArtifacts(coded(code, "nope")), false, code);
+  assert.equal(transientByArtifacts(new TypeError("x is undefined")), false);
+  assert.equal(transientByArtifacts(null), false);
 });
