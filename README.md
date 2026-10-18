@@ -660,7 +660,7 @@ confining it is [docs/harness-confinement.md](docs/harness-confinement.md).
 history too large for Artifacts, removing and renaming projects, the private
 operations toolkit behind `atelier ops`, and cleaning finished workspaces
 with `atelier clean` are in [docs/owner.md](docs/owner.md). Projects governed by
-ControlPlane, and moving one to Atelier with `atelier adopt`, are in
+ControlPlane are in
 [docs/control-plane.md](docs/control-plane.md).
 [docs/using-atelier.md](docs/using-atelier.md) is the developer's guide to using
 Atelier well, and [docs/orchestrating.md](docs/orchestrating.md) the

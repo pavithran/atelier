@@ -141,9 +141,7 @@ after approval and passing checks, the developer runs \`atelier accept ID\`, the
 \`atelier merge ID\`. For an already accepted task, run \`atelier merge ID\`,
 not land. Builders and reviewers do not accept or merge their own work.`;
 
-// The text `atelier guide` prints, and, without its heading, the section
-// `atelier adopt` inserts into a project's AGENTS.md. Kept in one place so the
-// two cannot drift apart.
+// The text `atelier guide` prints.
 export function guideText(): string {
   return `## Working through Atelier
 

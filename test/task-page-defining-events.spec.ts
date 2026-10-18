@@ -34,7 +34,7 @@ async function seed(name: string, id: string, rows: { actor?: string; kind: stri
   await runInDurableObject(ledger(name), async (_i, s) => {
     const insert = (actor: string, kind: string, data: unknown) => s.storage.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, ?, ?)`, id, AT, actor, kind, JSON.stringify(data));
     for (const r of rows) insert(r.actor ?? "owner", r.kind, r.data);
-    for (let i = 0; i < 250; i++) insert("owner", "item.edited", { area: null });
+    for (let i = 0; i < 250; i++) insert("owner", "item.edited", { nextGate: null });
     for (const [col, v] of Object.entries(item)) s.storage.sql.exec(`UPDATE items SET ${col} = ? WHERE id = ?`, v, id);
   });
 }

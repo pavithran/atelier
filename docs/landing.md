@@ -232,16 +232,15 @@ The steps in between:
    route so a stuck lease can be freed while the server is behind, and
    before the lease is read. `claim`, `start`, `wrap`, `new`, `edit`, `init`, `publish`, `merge`, `plan refresh`,
    `review`, `review-claim`, `review-unparsable`, `token issue`, `token
-   store`, `area`, `board`, the criteria review's `criteria-review`,
+   store`, `board`, the criteria review's `criteria-review`,
    `criteria-review-claim`, `criteria-verdict`, `criteria-review-failed`
    and `criteria-finding` (`reviews.criteria-review.v1`, t438) and the integrator's `integrated`,
    `integration-failed`, `refreshed` and `refresh-failed` declare theirs
-   (`new` and `edit` declare the area assignment their `--area` posts, as
-   `edit` declares the binding a change of criteria withdraws: a command
+   (`edit` declares the binding a change of criteria withdraws: a command
    declares what any of its flags may ask); a command with none, and
    `help`, `--help` and `--version` of any command, asks nothing, so the
    offline commands work with no server at all, including `init --rename-local`.
-   The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
+   The identity consumers (`revert`, `claim`, `start`, `wrap`, `init`, `merge`,
    `land` and runner jobs) require `projects.commit-identity.v1`;
    `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
    `models set` requires the pool's standing, `models.standing.v1` (t389),

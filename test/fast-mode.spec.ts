@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
@@ -29,6 +30,11 @@ const START = "0".repeat(40);
 const receipt = (commit: string, mergeCommit: string) => ({ commit, mergeCommit, testedHead: mergeCommit, batch: `${START}..${mergeCommit}`, builder: OPUS, tests: { command: "npm test", sha256: "f".repeat(64) } });
 
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+// 201 events logged after a task closed, beyond the 200 a page once read. A
+// closed task takes no edit, so they are logged as the ledger would.
+const laterEvents = (name: string, id: string) => runInDurableObject(ledger(name), async (_i, s) => {
+  for (let i = 0; i < 201; i++) s.storage.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, ?, ?)`, id, AT, "owner", "item.edited", JSON.stringify({ nextGate: null }));
+});
 async function project(name: string) {
   const record = { name, repo: `${name}--baseline`, policy, createdAt: AT };
   await ledger(name).setProject(record, "owner");
@@ -301,7 +307,7 @@ it("the task page's fast-landing summary names the developer's words and the act
   // codex/gpt-6-astra's review of t637: the page read the receipt from the
   // newest 200 events only, so 200 later edits of the merged task hid the
   // whole summary. It is read by kind now; the window really is passed here.
-  for (let i = 0; i < 201; i++) await L.editItem(item.id, "owner", { area: null });
+  await laterEvents(name, item.id);
   const late = await L.detail(item.id) as unknown as Detail;
   expect(late.events.some((x) => x.kind === "item.landed_fast")).toBe(false);
   const lateHtml = renderItem(await L.project(), late);
@@ -310,7 +316,7 @@ it("the task page's fast-landing summary names the developer's words and the act
   expect(lateHtml).toContain("no post-merge review was requested");
   // A post-merge review requested since the landing is read by kind too.
   await L.requestReview(item.id, "owner", SONNET, POOL);
-  for (let i = 0; i < 201; i++) await L.editItem(item.id, "owner", { area: null });
+  await laterEvents(name, item.id);
   expect(renderItem(await L.project(), await L.detail(item.id))).toContain("a post-merge review was requested and is not recorded yet");
 
   // Through the route: an agent token and a visitor not signed in never see the page.

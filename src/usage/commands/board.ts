@@ -2,12 +2,13 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "board",
-  // The board snapshot (t456).
+  // The board snapshot (t456). Declared as areas.board.v1 since function areas;
+  // the name stays because an older CLI's board command requires it.
   capabilities: ["areas.board.v1"],
   forms: [{
     group: "Items", line: 3, slot: 10,
     form: "board [--json]",
-    about: "Groups every task by function area, including empty areas and Unsorted. Shows area purposes, task kinds, titles, ledger-derived stages and holders; merged counts use the displayed membership.",
+    about: "Lists every task with its kind, title, ledger-derived stage and holder, and how many are merged.",
   }],
   flags: { json: true },
   help: {
