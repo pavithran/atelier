@@ -10,11 +10,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runTask, runOutcome, fastBuildSection } from "../cli/runner.mjs";
-import { fastLand, readySources } from "../cli/fast.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const entry = { agent: "claude-code", models: ["opus-5.5"], command: ["claude", "{brief_file}"] };
@@ -70,7 +69,7 @@ test("in fast mode the runner takes the build without a fork, builds in the clea
   assert.match(brief, /no fork and no remote.*Do not push/s);
   assert.ok(brief.includes(`Agent: ${ACTOR}`));
   assert.ok(logs.some((l) => l.startsWith("fast mode: no fork and no write token")));
-  assert.ok(logs.includes(`ready for fast land: t13=${BUILT}; the developer lands it with atelier fast land`));
+  assert.ok(logs.includes(`ready to merge: t13=${BUILT}; the developer merges it and records the merge with atelier record-merge`));
   assert.ok(calls.some((c) => c.removed), "the brief is removed");
 });
 
@@ -167,7 +166,7 @@ function run(argv, { cwd, env }) {
   });
 }
 
-test("atelier fast take makes a clean clone of main with no remote, fast ready reports its commit, fast status lists it as tN=SHA, and fast land fetches it from the clone", async (t) => {
+test("atelier fast take makes a clean clone of main with no remote, fast ready reports its commit, and fast status lists it as tN=SHA", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "atelier-fast-build-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   // The baseline: main with one commit.
@@ -206,34 +205,18 @@ test("atelier fast take makes a clean clone of main with no remote, fast ready r
   const report = await run(["fast", "ready", "t1", "--project", "proj", "--as", ACTOR], { cwd: dir, env });
   assert.equal(report.status, 0, report.err);
   assert.deepEqual(server.posted.find((p) => p.path.endsWith("/fast-ready")).body, { commit: built, base: main, builder: ACTOR, workspace: gitIn(dir, "rev-parse", "--show-toplevel") });
-  assert.match(report.out, new RegExp(`atelier fast land t1=${built}`));
+  assert.match(report.out, new RegExp(`is ready to merge at ${built}.*atelier record-merge t1 --merge SHA --head ${built} --review`));
 
   // A second take keeps the clone and its unreported commit.
   const again = await run(["fast", "take", "t1", "--project", "proj", "--as", ACTOR, "--runner", "home:studio", "--json"], { cwd: root, env });
   assert.equal(again.status, 0, again.err);
   assert.deepEqual(JSON.parse(again.out.trim().split("\n").at(-1)), { item: { id: "t1", state: "claimed", owner: ACTOR }, dir, base: main, head: built, resumed: true });
 
-  // fast status lists it as a tN=SHA line atelier fast land takes.
+  // fast status lists it as a tN=SHA line and names the command that records its merge.
   const status = await run(["fast", "status", "--project", "proj"], { cwd: root, env });
   assert.equal(status.status, 0, status.err);
   assert.match(status.out, new RegExp(`^t1=${built}  built by ${ACTOR} on home:studio at 2026-10-13 14:40 UTC$`, "m"));
-  assert.match(status.out, new RegExp(`^Land them: atelier fast land t1=${built}$`, "m"));
-
-  // The owner's checkout lacks the commit; fast land fetches it from the clone.
-  const owner = join(root, "owner");
-  execFileSync("git", ["clone", "-q", baseline, owner]);
-  const pairs = [{ id: "t1", sha: built.slice(0, 12) }];
-  // The report names the clone as Git resolves it (macOS's /var is /private/var).
-  const reported = ready[0].workspace;
-  assert.equal(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: reported, encoding: "utf8" }).trim(), gitIn(dir, "rev-parse", "--show-toplevel"));
-  assert.deepEqual(readySources(ready, pairs), { t1: reported });
-  assert.deepEqual(readySources(ready, [{ id: "t1", sha: "c".repeat(12) }]), {}, "only the commit the report names is fetched");
-  const logs = [];
-  const landed = await fastLand({ cwd: owner, pairs, titles: { t1: "One" }, reason: "forks fail", typecheck: "true", test: "true", regen: null, sources: readySources(ready, pairs), log: (l) => logs.push(l), record: async () => ({ ok: true }) });
-  assert.equal(landed.ok, true, JSON.stringify(landed.failure));
-  assert.equal(gitIn(owner, "rev-parse", "HEAD^2"), built);
-  assert.ok(logs.includes(`fetched t1's build from ${reported}`));
-  assert.ok(existsSync(join(owner, "b.txt")));
+  assert.match(status.out, new RegExp(`^  atelier record-merge t1 --merge SHA --head ${built} --review H/M=approve@${built}$`, "m"));
 });
 
 // Review of t589 (codex/gpt-6-astra): a take for another model removed the

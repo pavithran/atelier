@@ -1999,9 +1999,8 @@ const FAST_FALLBACK = /\b(not_fast_mode|not_fast_build)\b/;
 // it without a fork: atelier fast take records the holder as a claim does,
 // with no fork and no write token, and makes a clean clone of main on this
 // machine; the harness builds and commits there; atelier fast ready reports
-// the commit as ready for the owner's batch (atelier fast land). Nothing is
-// pushed, checked or submitted here: the batch merges, checks and records
-// it. The harness, its brief, its environment and its failures are a
+// the commit as ready to merge. Nothing is pushed, checked or submitted
+// here: the developer merges and records it (atelier record-merge). The harness, its brief, its environment and its failures are a
 // build's, as runTask runs them. A clone an earlier run left with a commit
 // it never reported is kept by the take, and the commit is reported
 // without the harness. Answers the run's state, or { fallback: true } when
@@ -2082,7 +2081,7 @@ export async function runFastBuild(assignment, config, name, io) {
     await io.cli(["fast", "ready", item.id, "--project", project, "--as", actor], workspace);
     advance({ type: "finish" });
     state = { ...state, fast: true };
-    io.log(`ready for fast land: ${item.id}=${head}; the developer lands it with atelier fast land`);
+    io.log(`ready to merge: ${item.id}=${head}; the developer merges it and records the merge with atelier record-merge`);
   } catch (error) {
     if (error.terminalState) {
       state = { ...state, phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
@@ -2128,7 +2127,7 @@ export function fastBuildSection(base) {
   return [
     "## Fast mode",
     "",
-    `The project is in fast mode. This workspace is a clean clone of main at ${base.slice(0, 12)} on the runner's machine, with no fork and no remote. Build and commit here, ending the commit message with your Agent line. Do not push. The runner reports your last commit as ready for fast land, and the developer merges, checks and lands it with the next batch.`,
+    `The project is in fast mode. This workspace is a clean clone of main at ${base.slice(0, 12)} on the runner's machine, with no fork and no remote. Build and commit here, ending the commit message with your Agent line. Do not push. The runner reports your last commit as ready to merge, and the developer merges and records it.`,
   ].join("\n");
 }
 
@@ -2485,7 +2484,7 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
 
 // The merge commit a post-merge review reads (t591), fetched into the review
 // clone from where it lives. A task landed in fast mode is merged on the
-// developer's own main (atelier fast land), and the merge reaches the
+// developer's own main (recorded with atelier record-merge), and the merge reaches the
 // project's baseline only when the developer publishes main; the task's fork
 // never holds it. The clone the claim names may therefore lack it, and the
 // checkout failed with "fatal: unable to read tree (<merge>)". When the

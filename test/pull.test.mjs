@@ -1,4 +1,4 @@
-// atelier pull (t644), and the refusals of sync, publish and fast land while
+// atelier pull (t644), and the refusals of sync, publish and merge while
 // a checkout's main does not hold the baseline's. Two Macs share a project's
 // baseline: each test makes their checkouts with atelier clone, each Mac with
 // its own Atelier config and cache, against a stand-in server whose
@@ -96,9 +96,6 @@ async function serve(t, f) {
       else if (req.method === "PUT" && req.url === "/api/projects/demo") body = { ok: true };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t2") body = { item: { id: "t2", title: "Two", state: "accepted", head: f.accepted, acceptedHead: f.accepted, owner: "codex/test" }, policy: { commitIdentity: IDENTITY, checks: [], protected: [] }, events: [], evidence: [], reviews: [], gate: {} };
       else if (req.method === "POST" && req.url === "/api/projects/demo/items/t2/read-token") body = { remote: f.bare, token: TOKEN };
-      else if (req.method === "GET" && req.url === "/api/projects/demo/items/t5") body = { item: { id: "t5", title: "Five", state: "accepted" } };
-      else if (req.method === "POST" && req.url === "/api/projects/demo/items/t5/landed-fast" && f.landedFast) body = f.landedFast(JSON.parse(raw));
-      else if (req.method === "GET" && req.url === "/api/projects/demo/items/t1") body = { item: { id: "t1", title: "One", state: "merged" } };
       else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
@@ -289,26 +286,6 @@ test("publish is refused while main does not hold the baseline's main, and goes 
   assert.equal(f.git(f.bare, "rev-parse", "main"), f.git(dir, "rev-parse", "HEAD"));
 });
 
-test("fast land is refused before any merge while main does not hold the baseline's main", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const before = f.git(dir, "rev-parse", "HEAD");
-  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
-  const sha = before.slice(0, 7);
-  const refused = await run(t, f, a, ["fast", "land", `t1=${sha}`, "--project", "demo"], { cwd: dir });
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.output, refusal(theirs, `atelier fast land t1=${sha} --project demo`));
-  assert.ok(!refused.seen.some((s) => s.route.includes("/items/")), "no task is read");
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), before);
-  // After a pull the refusal is gone; this batch then stops at its task, already merged.
-  assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
-  const next = await run(t, f, a, ["fast", "land", `t1=${sha}`, "--project", "demo"], { cwd: dir });
-  assert.notEqual(next.code, 0);
-  assert.doesNotMatch(next.output, /atelier pull/);
-  assert.match(next.output, /t1 is merged/);
-});
-
 test("pull refuses a checkout with uncommitted changes before it asks for a token", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
@@ -404,23 +381,6 @@ test("a conflicting pull of a fresh baseline says how to merge by hand so that s
   const sync = await run(t, f, b, ["sync", "--project", "demo"]);
   assert.equal(sync.code, 0, sync.output);
   assert.equal(f.git(f.bare, "show", "main:file.txt"), "version A and B");
-});
-
-// Review of t644, finding 1: a tag named main is not the branch. With one at
-// the baseline's head, rev-parse main read the tag, and fast land merged
-// into a branch behind the baseline.
-test("fast land reads main as refs/heads/main, never a tag named main", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
-  f.git(dir, "fetch", "-q", f.bare, "main");
-  f.git(dir, "tag", "main", theirs);
-  const sha = f.git(dir, "rev-parse", "refs/heads/main").slice(0, 7);
-  const refused = await run(t, f, a, ["fast", "land", `t1=${sha}`, "--project", "demo"], { cwd: dir });
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.output, refusal(theirs, `atelier fast land t1=${sha} --project demo`));
-  assert.ok(!refused.seen.some((s) => s.route.includes("/items/")));
 });
 
 // Review of t644, finding 2: a full-history project's sync returned before it
@@ -520,9 +480,6 @@ test("a graft file GIT_GRAFT_FILE names does not make main hold the baseline, fo
   const sync = await run(t, f, a, ["sync", "--project", "demo"], { env });
   assert.notEqual(sync.code, 0);
   assert.match(sync.output, refusal(theirs, "atelier sync --project demo"));
-  const fast = await run(t, f, a, ["fast", "land", `t1=${local.slice(0, 7)}`, "--project", "demo"], { cwd: dir, env });
-  assert.notEqual(fast.code, 0);
-  assert.match(fast.output, refusal(theirs, `atelier fast land t1=${local.slice(0, 7)} --project demo`));
   f.accepted = theirs;
   const merged = await run(t, f, a, ["merge", "t2", "--project", "demo"], { env });
   assert.notEqual(merged.code, 0);
@@ -818,48 +775,6 @@ test("pull of a project with no private files links nothing and reads no iCloud 
   assert.ok(!a.projects.demo.privateFromList && !a.projects.demo.privateHome);
 });
 
-// t731 (astra, round 2): the commands' own lookup of the project's commit
-// identity and its hand-off to fast land, run through the real CLI. Finding
-// they would have caught: dropping `identity` from the command's fastLand
-// call switched the author check off with every fastLand test still passing.
-const personal = (f, dir) => {
-  f.git(dir, "checkout", "-q", "-b", "task", "main");
-  writeFileSync(join(dir, "task.txt"), "task\n");
-  f.git(dir, "add", ".");
-  execFileSync("git", ["commit", "-q", "-m", "task\n\nAgent: codex/test"], { cwd: dir, env: { ...f.env, GIT_AUTHOR_NAME: "Personal", GIT_AUTHOR_EMAIL: "personal@me.test", GIT_COMMITTER_NAME: "Personal", GIT_COMMITTER_EMAIL: "personal@me.test" } });
-  const sha = f.git(dir, "rev-parse", "HEAD");
-  f.git(dir, "checkout", "-q", "main");
-  return sha;
-};
-const land = (t, f, a, dir, sha) => run(t, f, a, ["fast", "land", `t5=${sha}`, "--typecheck", "true", "--test", "true", "--project", "demo"], { cwd: dir });
-
-test("atelier fast land hands the project's commit identity to the landing: a task commit from outside it is refused, main untouched (t731)", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const sha = personal(f, dir);
-  const before = f.git(dir, "rev-parse", "HEAD");
-  const r = await land(t, f, a, dir, sha);
-  assert.notEqual(r.code, 0);
-  assert.ok(r.output.includes(`commit ${sha.slice(0, 12)}`) && r.output.includes("personal@me.test"), r.output);
-  assert.match(r.output, /Nothing of t5 was merged/);
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), before);
-});
-
-test("atelier fast land refuses a project with no commit identity before it reads a task or merges (t731)", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const sha = personal(f, dir);
-  f.noIdentity = true;
-  const before = f.git(dir, "rev-parse", "HEAD");
-  const r = await land(t, f, a, dir, sha);
-  assert.notEqual(r.code, 0);
-  assert.match(r.output, /demo has no commit identity in its policy.*Nothing was merged\./);
-  assert.ok(!r.seen.some((s) => s.route.includes("/items/")), "no task is read");
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), before);
-});
-
 test("the real atelier identity prints the project's identity as JSON, and fails clearly when it has none (t731)", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
@@ -871,55 +786,4 @@ test("the real atelier identity prints the project's identity as JSON, and fails
   const none = await run(t, f, a, ["identity", "--json", "--project", "demo"]);
   assert.notEqual(none.code, 0);
   assert.match(none.output, /demo has no commit identity in its policy/);
-});
-
-// t600 (astra, round 1): fast land's report of the post-merge review, run
-// through the real CLI against a stand-in server. Finding they would have
-// caught: removing printLanded's stderr OWED warning, or reading a missing
-// `owed` as settled, left every test passing.
-const inIdentity = (f, dir) => {
-  f.git(dir, "checkout", "-q", "-b", "task", "main");
-  writeFileSync(join(dir, "task.txt"), "task\n");
-  f.git(dir, "add", ".");
-  execFileSync("git", ["commit", "-q", "-m", "task\n\nAgent: codex/test"], { cwd: dir, env: { ...f.env, GIT_AUTHOR_NAME: IDENTITY.name, GIT_AUTHOR_EMAIL: IDENTITY.email, GIT_COMMITTER_NAME: IDENTITY.name, GIT_COMMITTER_EMAIL: IDENTITY.email } });
-  const sha = f.git(dir, "rev-parse", "HEAD");
-  f.git(dir, "checkout", "-q", "main");
-  return sha;
-};
-async function landAnswering(t, answer) {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const sha = inIdentity(f, dir);
-  f.landedFast = (receipt) => ({ item: { id: "t5" }, receipt, ...answer });
-  const r = await run(t, f, a, ["fast", "land", `t5=${sha}`, "--typecheck", "true", "--test", "true", "--project", "demo"], { cwd: dir });
-  return { r, f };
-}
-const OWED_LINE = /OWED: the post-merge review of t5 is not asked\. Ask one now: atelier review-request t5 --reviewer H\/M --project demo/;
-
-test("fast land with no review asked says OWED and the command to ask one, and still succeeds (t600)", async (t) => {
-  const { r } = await landAnswering(t, { review: null, owed: true });
-  assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /t5 landed in fast mode: .*no post-merge review asked/);
-  assert.match(r.output, OWED_LINE);
-});
-
-test("fast land whose review ask failed names the failure and says OWED, exit 0 (t600)", async (t) => {
-  const { r } = await landAnswering(t, { review: { error: "self_review", detail: "x contributed to t5" }, owed: true });
-  assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /post-merge review NOT asked \(self_review\): x contributed to t5/);
-  assert.match(r.output, OWED_LINE);
-});
-
-test("fast land against an older server whose answer has no owed treats the review as owed (t600)", async (t) => {
-  const { r } = await landAnswering(t, { review: null });
-  assert.equal(r.code, 0, r.output);
-  assert.match(r.output, OWED_LINE);
-});
-
-test("fast land with the review asked and owed false prints no warning (t600)", async (t) => {
-  const { r } = await landAnswering(t, { review: { requested: true, request: 7, reviewer: "claude-code/sonnet-5" }, owed: false });
-  assert.equal(r.code, 0, r.output);
-  assert.match(r.output, /post-merge review request 7 asked of claude-code\/sonnet-5/);
-  assert.doesNotMatch(r.output, /OWED/);
 });
