@@ -29,13 +29,20 @@ export function pushCheckoutRemote({ git, dir, branch, targetBranch = branch, re
 }
 
 // Why the commits `remote` lacks may not go to a public mirror: one text per
-// offence. What the remote holds is read from the remote itself; a remote that
-// cannot be read, or whose head is not in this checkout, is checked against its
-// whole history.
+// offence. A push goes to the remote's push URLs, which may differ from its
+// fetch URL and be several, so each push URL is read for what it holds of the
+// branch and the commits new to it are checked. A URL that cannot be read, or
+// whose head is not in this checkout, is checked against the whole history.
 function publicAddressRefusals({ git, dir, remote, ref, sha, identity }) {
-  const listed = git(["ls-remote", "--refs", remote, ref], { cwd: dir, allowFail: true, ownerRemote: true });
-  const head = listed.status === 0 ? listed.stdout.trim().split("\n").map((l) => l.split(/\s+/)).find(([, name]) => name === ref)?.[0] : null;
-  const known = head && git(["cat-file", "-e", `${head}^{commit}`], { cwd: dir, allowFail: true }).status === 0;
-  const log = git(["log", `--format=${IDENTITY_LOG_FORMAT}`, known ? `${head}..${sha}` : sha], { cwd: dir, raw: true });
-  return publicRefusals(identity, parseIdentityLog(log));
+  const urls = git(["remote", "get-url", "--push", "--all", remote], { cwd: dir, allowFail: true });
+  const destinations = urls.status === 0 ? urls.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  const out = [];
+  for (const destination of destinations.length ? destinations : [remote]) {
+    const listed = git(["ls-remote", "--refs", destination, ref], { cwd: dir, allowFail: true, ownerRemote: true });
+    const head = listed.status === 0 ? listed.stdout.trim().split("\n").map((l) => l.split(/\s+/)).find(([, name]) => name === ref)?.[0] : null;
+    const known = head && git(["cat-file", "-e", `${head}^{commit}`], { cwd: dir, allowFail: true }).status === 0;
+    const log = git(["log", `--format=${IDENTITY_LOG_FORMAT}`, known ? `${head}..${sha}` : sha], { cwd: dir, raw: true });
+    for (const why of publicRefusals(identity, parseIdentityLog(log))) if (!out.includes(why)) out.push(why);
+  }
+  return out;
 }

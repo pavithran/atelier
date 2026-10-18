@@ -102,3 +102,57 @@ test("a branch pushed under another name on the remote lands there, and a failed
   assert.notEqual(missing.status, 0);
   assert.equal(missing.refused, undefined, "a refusal by git is not Atelier's refusal");
 });
+
+// A push goes to a remote's push URLs, which may differ from its fetch URL and be
+// several. Each is read for what it holds, so an empty one is checked in full.
+function bare(f, name) {
+  const dir = join(f.dir, "..", `${name}.git`);
+  f.g(f.dir, OWN, "init", "-q", "--bare", "-b", "main", dir);
+  const head = () => { try { return f.g(f.dir, OWN, "--git-dir", dir, "rev-parse", "main"); } catch { return null; } };
+  return { dir, head };
+}
+
+test("a declared public mirror is checked against its push URL, not its fetch URL", (t) => {
+  const f = setup(t);
+  f.commit(OWN, "a");
+  const agent = f.commit(AGENT, "b");
+  // The fetch URL already holds the agent's commit; the push URL is empty.
+  f.g(f.dir, OWN, "push", "-q", "github", "main");
+  const aside = bare(f, "aside");
+  f.g(f.dir, OWN, "config", "remote.github.pushurl", aside.dir);
+  const r = pushCheckoutRemote({ git, dir: f.dir, branch: "main", remote: "github", identity, project: "other" });
+  assert.notEqual(r.status, 0);
+  assert.ok(r.refused.includes(`commit ${agent.slice(0, 12)}: the author email ${AGENT}`), r.refused);
+  assert.equal(aside.head(), null, "nothing reached the push URL");
+});
+
+test("a declared public mirror with two push URLs is checked against each: one that lacks an agent's commit refuses the push to both", (t) => {
+  const f = setup(t);
+  f.commit(OWN, "a");
+  const agent = f.commit(AGENT, "b");
+  const first = bare(f, "first"), second = bare(f, "second");
+  f.g(f.dir, OWN, "push", "-q", first.dir, "main");
+  f.g(f.dir, OWN, "push", "-q", "github", "main"); // the fetch URL holds it too
+  f.g(f.dir, OWN, "config", "--add", "remote.github.pushurl", first.dir);
+  f.g(f.dir, OWN, "config", "--add", "remote.github.pushurl", second.dir);
+  const r = pushCheckoutRemote({ git, dir: f.dir, branch: "main", remote: "github", identity, project: "other" });
+  assert.notEqual(r.status, 0);
+  assert.ok(r.refused.includes(`commit ${agent.slice(0, 12)}: the author email ${AGENT}`), r.refused);
+  assert.equal(second.head(), null);
+  assert.equal(first.head(), agent, "the one that held it was not pushed over either");
+});
+
+test("a declared public mirror with two push URLs that both hold the older commits takes a new one under the public address", (t) => {
+  const f = setup(t);
+  f.commit(AGENT, "old");
+  const first = bare(f, "first"), second = bare(f, "second");
+  f.g(f.dir, OWN, "push", "-q", first.dir, "main");
+  f.g(f.dir, OWN, "push", "-q", second.dir, "main");
+  f.g(f.dir, OWN, "config", "--add", "remote.github.pushurl", first.dir);
+  f.g(f.dir, OWN, "config", "--add", "remote.github.pushurl", second.dir);
+  const head = f.commit(OWN, "new");
+  const r = pushCheckoutRemote({ git, dir: f.dir, branch: "main", remote: "github", identity, project: "other" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(first.head(), head);
+  assert.equal(second.head(), head);
+});
