@@ -5,7 +5,6 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { removeBrief, removeDataHome } from "../cli/runner.mjs";
-
 // The tests name fake workspaces, and a harness failure marker is a file in
 // the cache keyed by the workspace's path (harnessFailureFiles in
 // cli/runner.mjs), so every test process has a cache of its own. In the

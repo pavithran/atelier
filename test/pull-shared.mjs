@@ -106,9 +106,6 @@ export async function serve(t, f) {
       else if (req.method === "PUT" && req.url === "/api/projects/demo") body = { ok: true };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t2") body = { item: { id: "t2", title: "Two", state: "accepted", head: f.accepted, acceptedHead: f.accepted, owner: "codex/test" }, policy: { commitIdentity: IDENTITY, checks: [], protected: [] }, events: [], evidence: [], reviews: [], gate: {} };
       else if (req.method === "POST" && req.url === "/api/projects/demo/items/t2/read-token") body = { remote: f.bare, token: TOKEN };
-      else if (req.method === "GET" && req.url === "/api/projects/demo/items/t5") body = { item: { id: "t5", title: "Five", state: "accepted" } };
-      else if (req.method === "POST" && req.url === "/api/projects/demo/items/t5/landed-fast" && f.landedFast) body = f.landedFast(JSON.parse(raw));
-      else if (req.method === "GET" && req.url === "/api/projects/demo/items/t1") body = { item: { id: "t1", title: "One", state: "merged" } };
       else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));

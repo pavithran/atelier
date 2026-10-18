@@ -188,7 +188,7 @@ test("the transport sends a declared call as declared, and refuses an undeclared
   assert.throws(() => helperCommand(["frobnicate", "t1"]), /atelier frobnicate is not a command the runner declares/);
   assert.equal(helperCommand(["fast", "take", "t1"]), "fast");
   assert.equal(helperCommand(["fast", "ready", "t1"]), "fast");
-  assert.throws(() => helperCommand(["fast", "land", "t1=abc"]), /atelier fast land is not a command the runner declares/);
+  assert.throws(() => helperCommand(["fast", "status"]), /atelier fast status is not a command the runner declares/);
 });
 
 // ── 2. the source ──────────────────────────────────────────────────────────
@@ -791,7 +791,7 @@ test("a release that reports a provider limit, and a fast take and its report, r
   await denied(api("POST", `${p.base(id)}/release`, { body: { providerLimit: true, note: "again" } }), token, "a second release after the first");
   // Fast mode (t589): the dispatched build is offered marked fast, and taken
   // without a fork; the commit it built is reported as ready for the
-  // developer's fast land, as the holder alone.
+  // developer's merge, as the holder alone.
   const fast = await project();
   await fast.L.confirmFastMode("owner", "access");
   await fast.L.setMode("owner", "fast", "forks fail");

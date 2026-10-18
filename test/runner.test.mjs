@@ -1,6 +1,7 @@
 // Part 1 of 2 of the tests that were in runner.test.mjs, split so no file runs for more than about a minute (t771).
 import { execFileSync, spawn } from "node:child_process";
 import { runInNewContext } from "node:vm";
+import * as limits from "../cli/timeouts.mjs";
 import { test } from "node:test";
 import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
@@ -1286,7 +1287,7 @@ test("CLI git failure output removes credential arguments and echoed values", ()
   // The stand-in git echoes its arguments and its environment's values, as
   // an error message might.
   const git = runInNewContext(`${gitSource}; git`, {
-    process: { env: {} }, redactGitArgs, gitEnv: (base, extra) => ({ ...base, ...extra }),
+    process: { env: {} }, redactGitArgs, ...limits, gitEnv: (base, extra) => ({ ...base, ...extra }),
     auth: (token) => ({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}` }),
     spawnSync: (_, args, opts) => ({ status: 1, stderr: [...args, ...Object.values(opts.env)].join(" ") }),
     die: (text) => { message = text; throw new Error("failed"); },
@@ -1319,7 +1320,7 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
       // No agent token here: the actor is never looked up.
       tokenActor: undefined, tokenRunner: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       RUNNER_COMMANDS, declaredHelperCall, commandFor: (name) => name, args: { _: [] },
-      server: () => "https://unused", apiToken: () => "unused",
+      server: () => "https://unused", apiToken: () => "unused", ...limits,
       serverFetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });

@@ -2910,7 +2910,7 @@ export function preExistingTask(itemId: string, title: string, review: { by: str
 // INTERNAL_ERROR), so the builds were run by hand in local clones. While the
 // project is in fast mode a runner takes a dispatched build without a fork:
 // it builds in a clean clone of main on its machine, commits, and reports
-// the commit as ready for the owner's batch (atelier fast land). Back in full
+// the commit as ready to merge. Back in full
 // mode runners claim with forks as before.
 
 type FastBuildItem = Pick<Item, "kind" | "plan" | "dispatch"> & Partial<Pick<Item, "fork" | "base" | "head">>;
@@ -2984,15 +2984,22 @@ export function standingFastReady(events: readonly { seq: number; kind: string; 
   return { commit: String(d.commit), base: String(d.base), builder: String(d.builder), runner: typeof d.runner === "string" ? d.runner : null, workspace: typeof d.workspace === "string" ? d.workspace : null, at: ready.at, by: ready.actor };
 }
 
+// The command that records the merge of a fast build. A fast build never
+// pushes a task head, so the record names the built commit with --head;
+// without it the route has no head to default to and refuses.
+export function recordMergeCommand(item: string, commit: string): string {
+  return `atelier record-merge ${item} --merge SHA --head ${commit} --review H/M=approve@${commit}`;
+}
+
 // What atelier fast status prints of the ready commits: one tN=SHA line
-// each, which atelier fast land takes as it stands, and the command that
-// lands them all.
+// each, then the command that records the merge of each.
 export function fastReadyLines(ready: readonly { item: string; commit: string; builder: string; runner: string | null; at: string }[]): string[] {
-  if (!ready.length) return ["Nothing is ready for fast land."];
+  if (!ready.length) return ["Nothing is ready to merge."];
   return [
-    `Ready for fast land (${ready.length}):`,
+    `Ready to merge (${ready.length}):`,
     ...ready.map((r) => `${r.item}=${r.commit}  built by ${r.builder}${r.runner ? ` on ${r.runner}` : ""} at ${utcMinute(r.at)}`),
-    `Land them: atelier fast land ${ready.map((r) => `${r.item}=${r.commit}`).join(" ")}`,
+    "Merge each, then record it:",
+    ...ready.map((r) => `  ${recordMergeCommand(r.item, r.commit)}`),
   ];
 }
 

@@ -1,5 +1,5 @@
 // Part 1 of 3 of the tests that were in pull.test.mjs, split so no file runs for more than about a minute (t771).
-// atelier pull (t644), and the refusals of sync, publish and fast land while
+// atelier pull (t644), and the refusals of sync, publish and merge while
 // a checkout's main does not hold the baseline's. Two Macs share a project's
 // baseline: each test makes their checkouts with atelier clone, each Mac with
 // its own Atelier config and cache, against a stand-in server whose
@@ -169,27 +169,6 @@ test("publish is refused while main does not hold the baseline's main, and goes 
 });
 
 
-test("fast land is refused before any merge while main does not hold the baseline's main", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const before = f.git(dir, "rev-parse", "HEAD");
-  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
-  const sha = before.slice(0, 7);
-  const refused = await run(t, f, a, ["fast", "land", `t1=${sha}`, "--project", "demo"], { cwd: dir });
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.output, refusal(theirs, `atelier fast land t1=${sha} --project demo`));
-  assert.ok(!refused.seen.some((s) => s.route.includes("/items/")), "no task is read");
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), before);
-  // After a pull the refusal is gone; this batch then stops at its task, already merged.
-  assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
-  const next = await run(t, f, a, ["fast", "land", `t1=${sha}`, "--project", "demo"], { cwd: dir });
-  assert.notEqual(next.code, 0);
-  assert.doesNotMatch(next.output, /atelier pull/);
-  assert.match(next.output, /t1 is merged/);
-});
-
-
 test("pull refuses a checkout with uncommitted changes before it asks for a token", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
@@ -201,27 +180,4 @@ test("pull refuses a checkout with uncommitted changes before it asks for a toke
   assert.match(r.output, /the registered checkout has uncommitted changes; commit or set them aside first, then pull/);
   assert.ok(!r.seen.some((s) => s.route.endsWith("/baseline-token")));
   assert.equal(readFileSync(join(dir, "file.txt"), "utf8"), "half done\n");
-});
-
-
-test("pull pins the checkout's git identity to the project's when it is unset or differs, and prints nothing when it matches (t755)", async (t) => {
-  // Finding: llm-basics, 2026-10-17, a commit in the registered checkout took
-  // the global address and the baseline push was refused.
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const said = /Set this checkout's git identity to Demo Owner <owner@example\.test>/;
-  const matching = await run(t, f, a, ["pull", "--project", "demo"]);
-  assert.equal(matching.code, 0, matching.output);
-  assert.doesNotMatch(matching.output, /git identity/);
-  f.git(dir, "config", "--local", "--unset", "user.email");
-  f.git(dir, "config", "--local", "user.name", "Someone Else");
-  const pinned = await run(t, f, a, ["pull", "--project", "demo"]);
-  assert.equal(pinned.code, 0, pinned.output);
-  assert.match(pinned.output, said);
-  assert.equal(pinned.output.match(/git identity/g).length, 1);
-  assert.equal(f.git(dir, "config", "--local", "user.email"), "owner@example.test");
-  assert.equal(f.git(dir, "config", "--local", "user.name"), "Demo Owner");
-  const again = await run(t, f, a, ["pull", "--project", "demo"]);
-  assert.doesNotMatch(again.output, /git identity/);
 });

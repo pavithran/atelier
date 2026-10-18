@@ -12,7 +12,7 @@
 //
 // Atelier never pushes them: wrap refuses to stage one, and every command
 // that pushes commits (sync, publish, merge, wrap --push and publish REMOTE)
-// or lands them (fast land) refuses a commit that adds, changes or retypes
+// refuses a commit that adds, changes or retypes
 // one (privateCommits). Git commits a symbolic link as a link, never the
 // file it points at, and the refusal covers the link too.
 import { spawnSync } from "node:child_process";

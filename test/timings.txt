@@ -31,13 +31,11 @@ test/land-2.test.mjs 65
 test/pull-3.test.mjs 61
 test/land-lease-workflow.test.mjs 59
 test/cli-sessions-2.test.mjs 57
-cli/fast-2.test.mjs 56
 test/init-steps.test.mjs 54
 test/landing-guard.test.mjs 53
 test/landing.test.mjs 53
 test/pull.test.mjs 52
 test/agent-commands.test.mjs 51
-cli/fast.test.mjs 47
 test/cli-flags-2.test.mjs 45
 test/mirror.test.mjs 45
 test/agent-commands-2.test.mjs 44

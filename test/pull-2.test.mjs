@@ -1,5 +1,5 @@
 // Part 2 of 3 of the tests that were in pull.test.mjs, split so no file runs for more than about a minute (t771).
-// atelier pull (t644), and the refusals of sync, publish and fast land while
+// atelier pull (t644), and the refusals of sync, publish and merge while
 // a checkout's main does not hold the baseline's. Two Macs share a project's
 // baseline: each test makes their checkouts with atelier clone, each Mac with
 // its own Atelier config and cache, against a stand-in server whose
@@ -13,6 +13,29 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { loadPairs } from "../cli/fresh.mjs";
 import { setup, commitElsewhere, commitIn, mac, run, cloneOn, refusal, cli, serve, TOKEN, IDENTITY } from "./pull-shared.mjs";
+
+test("pull pins the checkout's git identity to the project's when it is unset or differs, and prints nothing when it matches (t755)", async (t) => {
+  // Finding: llm-basics, 2026-10-17, a commit in the registered checkout took
+  // the global address and the baseline push was refused.
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const said = /Set this checkout's git identity to Demo Owner <owner@example\.test>/;
+  const matching = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.equal(matching.code, 0, matching.output);
+  assert.doesNotMatch(matching.output, /git identity/);
+  f.git(dir, "config", "--local", "--unset", "user.email");
+  f.git(dir, "config", "--local", "user.name", "Someone Else");
+  const pinned = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.equal(pinned.code, 0, pinned.output);
+  assert.match(pinned.output, said);
+  assert.equal(pinned.output.match(/git identity/g).length, 1);
+  assert.equal(f.git(dir, "config", "--local", "user.email"), "owner@example.test");
+  assert.equal(f.git(dir, "config", "--local", "user.name"), "Demo Owner");
+  const again = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.doesNotMatch(again.output, /git identity/);
+});
+
 
 // As clone does (t643, Astra's review, finding 2): a Mac whose global
 // core.hooksPath is the relative .githooks would otherwise run hooks the
@@ -75,24 +98,6 @@ test("a conflicting pull of a fresh baseline says how to merge by hand so that s
   const sync = await run(t, f, b, ["sync", "--project", "demo"]);
   assert.equal(sync.code, 0, sync.output);
   assert.equal(f.git(f.bare, "show", "main:file.txt"), "version A and B");
-});
-
-
-// Review of t644, finding 1: a tag named main is not the branch. With one at
-// the baseline's head, rev-parse main read the tag, and fast land merged
-// into a branch behind the baseline.
-test("fast land reads main as refs/heads/main, never a tag named main", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
-  f.git(dir, "fetch", "-q", f.bare, "main");
-  f.git(dir, "tag", "main", theirs);
-  const sha = f.git(dir, "rev-parse", "refs/heads/main").slice(0, 7);
-  const refused = await run(t, f, a, ["fast", "land", `t1=${sha}`, "--project", "demo"], { cwd: dir });
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.output, refusal(theirs, `atelier fast land t1=${sha} --project demo`));
-  assert.ok(!refused.seen.some((s) => s.route.includes("/items/")));
 });
 
 
@@ -197,9 +202,6 @@ test("a graft file GIT_GRAFT_FILE names does not make main hold the baseline, fo
   const sync = await run(t, f, a, ["sync", "--project", "demo"], { env });
   assert.notEqual(sync.code, 0);
   assert.match(sync.output, refusal(theirs, "atelier sync --project demo"));
-  const fast = await run(t, f, a, ["fast", "land", `t1=${local.slice(0, 7)}`, "--project", "demo"], { cwd: dir, env });
-  assert.notEqual(fast.code, 0);
-  assert.match(fast.output, refusal(theirs, `atelier fast land t1=${local.slice(0, 7)} --project demo`));
   f.accepted = theirs;
   const merged = await run(t, f, a, ["merge", "t2", "--project", "demo"], { env });
   assert.notEqual(merged.code, 0);
@@ -248,70 +250,4 @@ test("pull refuses a baseline change to a file this checkout's Git configuration
   assert.match(hook.output, /changes files that this checkout's Git configuration runs: \.githooks\/post-merge, which reach \.githooks, the hooks folder named by core\.hooksPath/);
   assert.ok(!existsSync(join(dir, ".githooks")));
   assert.ok(!existsSync(marker));
-});
-
-
-// Astra's third review of t644: two paths a Mac stores as one file, one from
-// each side, would be written one over the other. pull checks the merged
-// tree as atelier merge does (pathCollisions in src/rules.ts).
-test("pull refuses a merge whose tree holds paths that differ only by letter case or Unicode form", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const local = commitIn(f, dir, "report.txt", "mine\n");
-  commitElsewhere(f, "Report.txt", "theirs\n");
-  const r = await run(t, f, a, ["pull", "--project", "demo"]);
-  assert.notEqual(r.code, 0);
-  assert.match(r.output, new RegExp(`would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: (Report\\.txt and report\\.txt|report\\.txt and Report\\.txt)\\. Git would write one over the other in this checkout\\. Nothing was pulled: main is still at ${local.slice(0, 8)}`));
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
-  assert.equal(readFileSync(join(dir, "report.txt"), "utf8"), "mine\n");
-  assert.equal(f.git(dir, "status", "--porcelain"), "");
-  // A name in its composed and decomposed Unicode forms, the same way.
-  const g = setup(t), b = mac(g, "b");
-  const dirB = await cloneOn(t, g, b);
-  commitIn(g, dirB, "caf\u00e9.txt", "composed\n");
-  // Written with plumbing and precomposition off, so the decomposed name is kept as it is.
-  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: g.other, env: g.env, input: "decomposed\n", encoding: "utf8" }).trim();
-  g.git(g.other, "-c", "core.precomposeunicode=false", "update-index", "--add", "--cacheinfo", `100644,${blob},cafe\u0301.txt`);
-  g.git(g.other, "commit", "-q", "-m", "decomposed name");
-  g.git(g.other, "push", "-q", "origin", "main");
-  const u = await run(t, g, b, ["pull", "--project", "demo"]);
-  assert.notEqual(u.code, 0);
-  assert.match(u.output, /differ only by letter case or Unicode form/);
-});
-
-
-// Astra's fourth review of t644: Git's checkout writes over an ignored file
-// without a word, and private notes (PROJECT.md, t645) are ignored in the
-// checkout, so a baseline that added the same path destroyed them.
-test("pull refuses a baseline that adds a path this checkout holds as an ignored file, and keeps the file", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const dir = await cloneOn(t, f, a);
-  const gitDir = f.git(dir, "rev-parse", "--absolute-git-dir");
-  mkdirSync(join(gitDir, "info"), { recursive: true });
-  writeFileSync(join(gitDir, "info", "exclude"), "PROJECT.md\nprivate/\n");
-  writeFileSync(join(dir, "PROJECT.md"), "my notes\n");
-  mkdirSync(join(dir, "private"));
-  writeFileSync(join(dir, "private", "plan.md"), "my plan\n");
-  const head = f.git(dir, "rev-parse", "HEAD");
-  commitElsewhere(f, "PROJECT.md", "the baseline's\n");
-  const ff = await run(t, f, a, ["pull", "--project", "demo"]);
-  assert.notEqual(ff.code, 0);
-  assert.match(ff.output, new RegExp(`the baseline's main adds PROJECT\\.md, which this checkout holds as a file Git does not track \\(ignored, as private notes are\\)\\. Pulling would write over it\\. Nothing was pulled: main is still at ${head.slice(0, 8)}`));
-  assert.equal(readFileSync(join(dir, "PROJECT.md"), "utf8"), "my notes\n");
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
-  // In a merge too, and for a file in an ignored folder.
-  rmSync(join(dir, "PROJECT.md"));
-  const local = commitIn(f, dir, "mine.txt", "mine\n");
-  f.git(f.other, "pull", "-q", "--no-rebase", "origin", "main");
-  mkdirSync(join(f.other, "private"), { recursive: true });
-  commitElsewhere(f, "private/plan.md", "the baseline's plan\n");
-  writeFileSync(join(dir, "PROJECT.md"), "my notes\n");
-  const merge = await run(t, f, a, ["pull", "--project", "demo"]);
-  assert.notEqual(merge.code, 0);
-  assert.match(merge.output, /the baseline's main adds PROJECT\.md, private\/plan\.md, which this checkout holds as files Git does not track/);
-  assert.equal(readFileSync(join(dir, "private", "plan.md"), "utf8"), "my plan\n");
-  assert.equal(readFileSync(join(dir, "PROJECT.md"), "utf8"), "my notes\n");
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
 });

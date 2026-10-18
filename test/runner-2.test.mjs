@@ -1,6 +1,7 @@
 // Part 2 of 2 of the tests that were in runner.test.mjs, split so no file runs for more than about a minute (t771).
 import { execFileSync, spawn } from "node:child_process";
 import { runInNewContext } from "node:vm";
+import * as limits from "../cli/timeouts.mjs";
 import { test } from "node:test";
 import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
@@ -374,7 +375,7 @@ test("CLI marks network and server failures distinctly from task errors", async 
       // No agent token here: the actor is never looked up.
       tokenActor: undefined, tokenRunner: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       RUNNER_COMMANDS, declaredHelperCall, commandFor: (name) => name, args: { _: [] },
-      server: () => "https://unused", apiToken: () => "unused", fetch,
+      server: () => "https://unused", apiToken: () => "unused", ...limits, fetch,
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
     await assert.rejects(call("POST", "/projects/p/items/t1/submit", {}, "codex/model"), (error) => error.code === 4);

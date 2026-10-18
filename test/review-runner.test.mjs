@@ -983,7 +983,7 @@ test("a fast landing's post-merge review fetches the merge from the baseline and
   git(work, "push", "--quiet", fork, "HEAD:main");
   git(work, "checkout", "--quiet", "main");
   const parent = commit(work, "main.txt", "main before the batch\n");
-  // atelier fast land: one merge per task on the developer's main; then
+  // a fast landing: one merge per task on the developer's main; then
   // atelier publish carries main to the baseline.
   git(work, "merge", "--quiet", "--no-ff", head, "-m", "Merge t21");
   const merge = git(work, "rev-parse", "HEAD");

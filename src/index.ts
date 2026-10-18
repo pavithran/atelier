@@ -58,7 +58,7 @@ import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
-import { errorLine, RETRY_AFTER, retryableByRuntime, withRetry } from "./transient.ts";
+import { errorLine, RETRY_AFTER, FORK_WAIT_ATTEMPTS, forkWait, retryableByRuntime, transientByArtifacts, withRetry } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
@@ -314,6 +314,7 @@ const html = (body: string, status = 200, nonce?: string) =>
       "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
       "content-security-policy": csp(nonce),
+      ...(status === 503 ? { "retry-after": String(RETRY_AFTER) } : {}),
     },
   });
 
@@ -526,16 +527,22 @@ function codeOf(err: unknown): string {
 const ALREADY_EXISTS = /ALREADY_EXISTS|already exists/i;
 const IN_PROGRESS = /IN_PROGRESS|in progress|not ready/i;
 
+// A repository's HEAD. A passing Artifacts failure is waited out by
+// artifactsStep. A fresh fork can briefly report FORK_IN_PROGRESS; that is
+// waited for longer, in steps of forkWait, since the CLI does not retry a 503
+// and a claim should not fail for it. A repository that is not there is
+// thrown as it is.
 async function headOf(env: Env, repo: string): Promise<string | null> {
-  // A fresh fork can briefly report FORK_IN_PROGRESS; wait it out rather than fail the claim.
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < FORK_WAIT_ATTEMPTS; attempt++) {
     try {
-      using r = await env.ARTIFACTS.get(repo);
-      const [top] = await r.log({ limit: 1 });
-      return top?.hash ?? null;
+      return await artifactsStep(`read the head of ${repo}`, async () => {
+        using r = await env.ARTIFACTS.get(repo);
+        const [top] = await r.log({ limit: 1 });
+        return top?.hash ?? null;
+      }, (err) => NOT_FOUND.test(codeOf(err)) || IN_PROGRESS.test(codeOf(err)));
     } catch (err) {
       if (!IN_PROGRESS.test(codeOf(err))) throw err;
-      await new Promise((ok) => setTimeout(ok, 500 * (attempt + 1)));
+      await new Promise((ok) => setTimeout(ok, forkWait(attempt)));
     }
   }
   throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
@@ -826,7 +833,7 @@ async function repoExists(env: Env, repo: string): Promise<boolean> {
 // else, such as another project's branches repository or baseline, is
 // refused before any token is minted for it (the reviews of t641).
 async function assertMadeAs(env: Env, repo: string, mark: string | ((description: string | null) => boolean), purpose: string): Promise<void> {
-  await artifactsStep(`read the head of ${repo}`, () => headOf(env, repo));
+  await headOf(env, repo);
   const description = await artifactsStep(`read ${repo}`, async () => {
     using r = await env.ARTIFACTS.get(repo);
     return (await r.info()).description;
@@ -868,7 +875,7 @@ async function developerBranchesRepo(env: Env, L: ReturnType<typeof ledger>, act
     await assertMadeAs(env, repo, branchesMark(key), `${project}'s branches repository`);
     await L.recordBranchesRepo(actor, repo);
   }
-  await artifactsStep(`read the head of ${repo}`, () => headOf(env, repo));
+  await headOf(env, repo);
 }
 
 // The repository an item forks from and is measured against (docs/orchestrator.md,
@@ -933,10 +940,10 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
   // Main's head that cannot be read leaves a task's claim on its fork as it
   // stands, as a refresh would wait: the claim is not failed for it.
   const planHead = item.kind === "part"
-    ? await artifactsStep(`read the head of ${planFork}`, () => headOf(env, planFork), (err) => NOT_FOUND.test(codeOf(err)))
+    ? await headOf(env, planFork)
     : await mainHeadOf(env, L);
   if (!planHead || planHead === item.base) return false;
-  const forkHead = () => artifactsStep(`read the head of ${fork}`, () => headOf(env, fork), (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+  const forkHead = () => headOf(env, fork).catch((err) => {
     if (!NOT_FOUND.test(codeOf(err))) throw err;
     return null;
   });
@@ -981,7 +988,7 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
   });
   // A fork found under the name is taken only as this move's own (t641).
   if (!remade) await assertMadeAs(env, fork, (d) => madeAsTaskFork(d, fork, [project.name], item.id), `${project.name} ${item.id}'s fork`);
-  const base = await artifactsStep(`read the head of ${fork}`, () => headOf(env, fork));
+  const base = await headOf(env, fork);
   if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
   await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
   return true;
@@ -1861,7 +1868,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // GET says which for any token; POST { mode, reason } switches it, for
   // the owner alone, and the switch back to full names what landed fast.
   // GET also lists the builds runners made in fast mode and reported ready
-  // (t589), which atelier fast status prints as tN=SHA for atelier fast land.
+  // (t589), which atelier fast status prints as tN=SHA.
   if (parts[2] === "mode" && parts.length === 3) {
     if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList() });
     requireOwner(env, actor);
@@ -2041,7 +2048,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
             // anything else under this name is refused before any token is
             // made for it (the reviews of t641).
             if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
-            const head = await artifactsStep(`read the head of ${name}`, () => headOf(env, name));
+            const head = await headOf(env, name);
             await L.setFork(id, name, head, actor, !!c.token, generation);
           } catch (err) {
             // A give-up that fails is logged, and the claim's own failure is
@@ -2137,7 +2144,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       });
     }
     // The holder of a fast take reports the commit it built as ready for
-    // the owner's batch (atelier fast land): { commit, base, builder, workspace }.
+    // the developer to merge: { commit, base, builder, workspace }.
     case "fast-ready":
       return json(await L.reportFastReady(id, actor, body, !!c.token));
     case "owner-port-token": {
@@ -3840,6 +3847,12 @@ function failed(err: unknown, req: Request, url: URL, pathname: string, env: Env
   if (retryableByRuntime(err)) {
     const detail = "Atelier was briefly unable to reach its records; try again";
     return url.pathname.startsWith("/api/") ? json({ error: "unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
+  }
+  // Artifacts failing for a moment, on a route that did not wrap the call in
+  // artifactsStep: the same answer, so the caller retries (t761).
+  if (transientByArtifacts(err)) {
+    const detail = "Artifacts was briefly unable to answer; nothing was given out, so try again";
+    return url.pathname.startsWith("/api/") ? json({ error: "artifacts_unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
   }
   return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", back, who),500);
 }

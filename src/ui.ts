@@ -46,7 +46,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, changeClass, confirmationAt, contributorsOf, directionText, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, protectedNeed, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily, standingFastReady,
+  bindingOf, changeClass, confirmationAt, contributorsOf, directionText, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, protectedNeed, REASON_MAX, recordedText, recordMergeCommand, stateLabel, modelOf, modelKey, singleFamily, standingFastReady,
   type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 import { STEPS, TAGLINE, TAKEAWAYS, type Verb } from "./how-data.ts";
@@ -2104,13 +2104,13 @@ function recordedMergeBlock(d: Detail): string {
 }
 
 // A task a runner built in fast mode (t589) and reported ready: the commit
-// the owner's batch takes, as atelier fast land takes it.
+// the developer merges, then records with atelier record-merge.
 function fastReadyBlock(d: Detail): string {
   if (d.item.state === "merged" || d.item.state === "abandoned") return "";
   const ready = standingFastReady(definingOf(d));
   if (!ready) return "";
-  return `<div class="fast-ready"><p><strong>Ready for fast land at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the developer lands it with the next batch.</p>
-  <p class="meta"><code>atelier fast land ${e(d.item.id)}=${e(ready.commit)}</code></p></div>`;
+  return `<div class="fast-ready"><p><strong>Ready to merge at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the developer merges it and records the merge.</p>
+  <p class="meta"><code>${e(recordMergeCommand(d.item.id, ready.commit))}</code></p></div>`;
 }
 
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
