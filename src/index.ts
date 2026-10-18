@@ -826,7 +826,7 @@ async function repoExists(env: Env, repo: string): Promise<boolean> {
 // else, such as another project's branches repository or baseline, is
 // refused before any token is minted for it (the reviews of t641).
 async function assertMadeAs(env: Env, repo: string, mark: string | ((description: string | null) => boolean), purpose: string): Promise<void> {
-  await headOf(env, repo);
+  await artifactsStep(`read the head of ${repo}`, () => headOf(env, repo));
   const description = await artifactsStep(`read ${repo}`, async () => {
     using r = await env.ARTIFACTS.get(repo);
     return (await r.info()).description;
