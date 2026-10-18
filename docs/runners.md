@@ -479,15 +479,11 @@ or the deployed commit from a server that names no main. When the commit it
 started from does not contain the target, and the checkout it runs from (the
 folder holding `cli/atelier.mjs`) now does, it logs `runner: reloading:
 started from OLD, main is at NEW; starting replacement runner …` (`the server
-runs NEW` when the target is the deployed commit) and spawns the same command
-line with the same environment. A checkout that holds the deployed commit but
+runs NEW` when the target is the deployed commit) and runs the same command
+line with the same environment, in place of itself. A checkout that holds the deployed commit but
 not yet main's head reloads to the deployed one, and again once it holds
-main's. The replacement initializes,
-signals ready over IPC, and waits for the old process to release it before
-polling for work. The old process waits for the attached replacement to exit
-and forwards every SIGINT, SIGTERM and SIGHUP, including during startup.
-The replacement has its own process group so terminal signals reach it once.
-It has a new pid; Ctrl-C and session end still stop it.
+main's. The replacement keeps the pid and the terminal, so Ctrl-C and session end
+stop it as they stopped the old process.
 The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
 holds the target it logs once per target `runner: behind: …`, with the `git -C
 CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
@@ -500,17 +496,17 @@ commit means no reload. A re-exec that fails logs `runner: reload failed: …`
 and the old process runs on; it is tried again only once main or the deploy
 moves, or restart it by hand.
 
-Reloading works on all supported Node versions (24 and later), without
-`process.execve`. If spawning fails, initialization exits, or readiness takes
-longer than 60 seconds, the old runner logs the failure and keeps running.
-A replacement that times out is killed before the old runner resumes.
+Without a supervisor the idle runner replaces itself in place with
+`process.execve` (Node 24 and later): the same pid and terminal, no parent
+left waiting. First it loads the new checkout's entry, runner and runner
+command once in a child process. If that fails (a syntax error, a failing
+import), nothing is replaced: the old runner logs one line, `runner: reload
+failed: the new code does not load (...)`, and keeps running.
 For supervisors configured to restart on exit (including launchd with
 KeepAlive), explicitly set `ATELIER_RUNNER_SUPERVISED=1`. The idle runner
 then logs the old and target commits and exits; the supervisor starts the
-same command from the updated checkout, without a competing child.
-`XPC_SERVICE_NAME` alone does not enable this mode. The supervisor owns
-startup failures in this mode. Terminal runners retain the readiness fallback
-described above; losing their waiting parent also stops the replacement.
+same command from the updated checkout.
+`XPC_SERVICE_NAME` alone does not enable this mode.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 

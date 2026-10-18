@@ -148,8 +148,9 @@ export async function guardName({ runners, name, replace, kill, alive, sleep, sa
 
 // The section: one line per runner, then one per task with its agents.
 // A runner whose child is a runner is only the waiting parent of its
-// replacement (reexecSelf without a supervisor, t760): it is left out, so
-// each reload is one line and a waiting parent is never taken for a duplicate.
+// replacement (the reload before t764 left one; a runner started from that
+// code still has them): it is left out, so each reload is one line and a
+// waiting parent is never taken for a duplicate.
 export function formatProcesses({ runners: all, agents }) {
   const parents = new Set(all.map((r) => r.ppid));
   const runners = all.filter((r) => !parents.has(r.pid));

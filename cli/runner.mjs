@@ -6,7 +6,7 @@ import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSy
 import { createHash, randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { killTree, runGroup, treeGroups } from "./group.mjs";
@@ -3577,31 +3577,23 @@ export function runnerCheckout(dir = RUNNER_CHECKOUT, executeChild = execute) {
   };
 }
 
-// A replacement signals readiness only after runner initialization, and waits
-// for the old process to release it before polling. No job can overlap the
-// handoff. These APIs work on every supported Node, without process.execve.
-export const RELOAD_HANDOFF = "ATELIER_RUNNER_HANDOFF";
 export const RELOAD_TARGET = "ATELIER_RUNNER_RELOAD_TARGET";
-export async function runnerReady() {
-  if (!process.env[RELOAD_HANDOFF]) return;
-  delete process.env[RELOAD_HANDOFF];
-  if (!process.connected || !process.send) throw new Error("reload IPC channel is missing");
-  // Losing the waiting parent (including SIGKILL) ends this runner too.
-  process.once("disconnect", () => process.kill(process.pid, "SIGHUP"));
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("reload release timed out")), 60_000);
-    process.on("message", function release(message) {
-      if (message?.type !== "runner-release") return;
-      clearTimeout(timer);
-      process.off("message", release);
-      process.channel?.unref();
-      resolve();
-    });
-    process.send({ type: "runner-ready" }, (error) => {
-      if (error) { clearTimeout(timer); reject(error); }
-    });
-  });
+
+// Compatibility shim for the reload before t764. A runner started from that
+// code reloads by spawning the new code with ATELIER_RUNNER_HANDOFF=1 over an
+// IPC channel and kills it after 60 seconds unless it sends `runner-ready`.
+// The new code still answers once, then carries on; its own next reload uses
+// process.execve, so the chain of waiting parents ends after this generation.
+// Remove it once no runner older than the commit that added it is running.
+export function legacyHandoffReady() {
+  if (!process.env.ATELIER_RUNNER_HANDOFF) return;
+  delete process.env.ATELIER_RUNNER_HANDOFF;
+  if (process.send) { process.send({ type: "runner-ready" }, () => {}); process.channel?.unref(); }
 }
+
+// A reloaded runner is the process the name guard would find and refuse as a
+// second runner of its own name, so it does not run the guard.
+export const isReloaded = (env) => Boolean(env[RELOADED_FROM]);
 
 // Only explicitly configured supervisors may restart on exit. GUI apps also
 // inherit XPC_SERVICE_NAME; it does not promise that this runner restarts.
@@ -3609,71 +3601,34 @@ export function runnerSupervised(env) {
   return env.ATELIER_RUNNER_SUPERVISED === "1";
 }
 
-// Without a supervisor, remain an attached waiting parent. Temporarily own
-// signals so the idle runner's second-interrupt handler cannot orphan a child.
-// A startup failure kills and reaps the replacement before restoring polling.
-export async function reexecSelf(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, readyTimeoutMs = 60_000 } = {}) {
+// Before the process is replaced, the new checkout is loaded once in a child
+// process: its entry, the runner and the runner command. A syntax error or a
+// failing import there fails this check, because process.execve cannot fall
+// back once it has run. Throws one line naming why; the caller keeps running.
+export function reloadSmokeCheck(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, timeoutMs = 30_000 } = {}) {
+  // An npm link install runs through a symlink (/opt/homebrew/bin/atelier):
+  // node loads the real file, so the siblings are looked up beside that one,
+  // and execve keeps the same argv[1], which node resolves the same way.
+  const entry = realpathSync(argv[1]), dir = dirname(entry);
+  const files = [entry, join(dir, "runner.mjs"), join(dir, "commands", "runner.mjs")].map((file) => pathToFileURL(file).href);
+  const run = spawnSync(execPath, [...execArgv, "--input-type=module", "--eval", `for (const url of ${JSON.stringify(files)}) await import(url);`], { env, encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "ignore", "pipe"] });
+  if (run.error) throw new Error(`the new code could not be checked: ${run.error.message}`);
+  if (run.status === 0) return;
+  const lines = (run.stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const why = lines.find((l) => /Error/.test(l)) ?? lines[0] ?? `exit ${run.status}`;
+  throw new Error(`the new code does not load (${why.replace(/\s+/g, " ").slice(0, 200)})`);
+}
+
+// Without a supervisor, the idle runner replaces itself in place: same pid,
+// same stdio, no parent left waiting. With one, it exits and the supervisor
+// restarts it. A failed smoke check throws before anything is replaced.
+export async function reexecSelf(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, execve = process.execve } = {}) {
   if (runnerSupervised(env)) {
     console.log(`runner: supervisor restart: was ${short(env[RELOADED_FROM])}, target ${short(env[RELOAD_TARGET])}`);
     process.exit(0);
   }
-  const child = spawn(execPath, [...execArgv, ...argv.slice(1)], {
-    // Isolate terminal group signals: the parent forwards each one exactly once.
-    detached: true,
-    env: { ...env, [RELOAD_HANDOFF]: "1" },
-    stdio: ["inherit", "inherit", "inherit", "ipc"],
-  });
-  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
-  const previous = signals.map((signal) => process.rawListeners(signal));
-  let interrupted = null, ready = false, releasing = false, failure;
-  const forwards = signals.map((signal) => () => {
-    interrupted ??= signal;
-    child.kill(signal);
-  });
-  signals.forEach((signal, i) => {
-    process.removeAllListeners(signal);
-    process.on(signal, forwards[i]);
-  });
-  const cleanupChild = () => child.kill("SIGKILL");
-  process.once("exit", cleanupChild);
-  try {
-    await new Promise((resolve, reject) => {
-      const fail = (error) => {
-        if (failure) return;
-        failure = error;
-        clearTimeout(timer);
-        if (child.pid) child.kill("SIGKILL");
-        else reject(error);
-      };
-      const timer = setTimeout(() => fail(new Error("replacement runner readiness timed out")), readyTimeoutMs);
-      child.on("error", fail);
-      child.once("exit", (code, signal) => {
-        clearTimeout(timer);
-        if (ready || interrupted) {
-          const exitSignal = signal ?? interrupted;
-          process.exit(exitSignal ? { SIGINT: 130, SIGTERM: 143, SIGHUP: 129, SIGKILL: 137 }[exitSignal] ?? 1 : code ?? 1);
-        }
-        reject(failure ?? new Error(`replacement runner exited before ready (${signal ?? code})`));
-      });
-      child.on("message", (message) => {
-        if (failure || releasing || message?.type !== "runner-ready") return;
-        releasing = true;
-        // Even an interrupted startup needs release so its aborted runner
-        // loop can finish. It must not wait out the readiness deadline.
-        child.send({ type: "runner-release" }, (error) => {
-          if (error) { fail(error); return; }
-          clearTimeout(timer);
-          ready = true;
-        });
-      });
-    });
-  } finally {
-    process.off("exit", cleanupChild);
-    signals.forEach((signal, i) => {
-      process.off(signal, forwards[i]);
-      for (const listener of previous[i]) process.on(signal, listener);
-    });
-  }
+  reloadSmokeCheck(env, { argv, execArgv, execPath });
+  execve(execPath, [execPath, ...execArgv, ...argv.slice(1)], env);
 }
 
 // What an idle runner does about the server's version. Its target is
@@ -4164,7 +4119,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       for (const r of reasons) line(`  ${r.task}  ${r.line}`);
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
-    await runnerReady();
+    legacyHandoffReady();
     while (!controller.signal.aborted) {
       let state;
       try {
