@@ -138,7 +138,8 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   });
   assert.ok(harness);
   assert.deepEqual(calls, job === "plan" ? ["claim", "release"] : ["claim", "baseline-token", "finish"], logs.join("\n"));
-  // The leftover-files check after the harness (t365: unstaged and staged
+  // The read of the head's message (t557: whether it is work in progress a
+  // validation_blocked run committed), then the leftover-files check after the harness (t365: unstaged and staged
   // changes, untracked files), then the landing.s merge (fetch, main.s head, whether HEAD holds it; the
   // moved-code comparison: the build's head, the merge base, main's and the
   // build's trees, the git dir its log goes to; the fork point and the
@@ -147,7 +148,7 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   // no-ff merge and the Git dir it looks for a merge in; the route-level comparison, the
   // merged head), then the runner's own checks of the result (no conflict,
   // no merge pending, main's head and the build's head both in HEAD's history).
-  assert.deepEqual(gitCalls, job === "plan" ? [] : ["diff", "diff", "ls-files", "fetch", "rev-parse", "merge-base", "rev-parse", "merge-base", "diff-tree", "diff-tree", "rev-parse", "merge-base", "rev-list", "rev-parse", ...Array(12).fill("config"), "rev-parse", "rev-parse", "merge", "rev-parse", "rev-list", "merge-base", "rev-parse", "diff", "rev-parse", "merge-base", "merge-base"]);
+  assert.deepEqual(gitCalls, job === "plan" ? [] : ["log", "diff", "diff", "ls-files", "fetch", "rev-parse", "merge-base", "rev-parse", "merge-base", "diff-tree", "diff-tree", "rev-parse", "merge-base", "rev-list", "rev-parse", ...Array(12).fill("config"), "rev-parse", "rev-parse", "merge", "rev-parse", "rev-list", "merge-base", "rev-parse", "diff", "rev-parse", "merge-base", "merge-base"]);
   assert.deepEqual(readMovedCodeRecords(gitDir).map((r) => r.kind), job === "plan" ? [] : ["compared"], "the comparison is logged in the workspace, as a landing's is");
   assert.deepEqual(finish, job === "plan" ? null : ["finish", "t1", "--project", "demo", "--as", actor, "--summary", `Built t1 with main at ${mainHead} merged`]);
   assert.equal(posted, job === "plan");
