@@ -211,7 +211,7 @@ it("a fresh blocking verdict takes the waiter out at once, fences CLI and Workfl
   // Polling again, as atelier land --wait and the Workflow do, is refused.
   for (let i = 0; i < 2; i++) await refusal(L.queueProjectLanding(t2, "owner"), "prereview_blocked", /atelier unblock/);
   await refusal(L.beginProjectLanding(t2, "owner"), "prereview_blocked");
-  await L.setLandingWorkflow(t2, "wf-1", "owner", "local");
+  await L.setLandingWorkflow(t2, "wf-1", "owner");
   await refusal(L.queueProjectLanding(t2, "owner", false, "wf-1"), "prereview_blocked");
   // The CLI's route says the same.
   const res = await worker.fetch(new Request("https://atelier.test/api/projects/pre-block/landing-lease", {
@@ -660,7 +660,7 @@ for (const workflow of [false, true]) for (const outcome of ["passed", "conflict
     expect(await views(L, t2)).toHaveLength(1);
     const moved = "e".repeat(40);
     const instanceId = workflow ? "wf-main-moved" : undefined;
-    if (instanceId) await L.setLandingWorkflow(t2, instanceId, "owner", "local");
+    if (instanceId) await L.setLandingWorkflow(t2, instanceId, "owner");
     // Only the baseline moves: no noteMainHead or merge event informs the
     // ledger. Its normal polling path must discover the new identity.
     await runInDurableObject(L as unknown as DurableObjectStub<Ledger>, async (instance: Ledger) => {

@@ -563,12 +563,13 @@ test("a landing that merged says the handover, not a warning, when a queued land
 // `workspace` (t550); the CLI said that as the queue for the lease a checked
 // and approved head makes, before anything was checked.
 test("a landing Workflow at its first record is said to be starting, not queueing for the lease (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   wf.firstStage = "lease";
   const tick = wf.tick;
   wf.tick = (box) => { if (wf.stage === "lease" && !wf.detail) { wf.stage = "workspace"; return; } tick(box); };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /The landing Workflow is starting\./);
   assert.ok(r.output.indexOf("is starting") < r.output.indexOf("merge main and push, holding no lease"));
@@ -576,14 +577,15 @@ test("a landing Workflow at its first record is said to be starting, not queuein
 });
 
 test("land --workflow starts the Workflow, merges main and pushes holding no lease, reports the head, and merges once the Workflow holds the lease and accepts (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   const before = git(f.checkout, "rev-parse", "HEAD");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Landing t1 as a Cloudflare Workflow \(instance land-t1-1\)/);
-  assert.equal(wf.started[0].checks, "container");
-  assert.match(r.output, /runs the checks \(in a Cloudflare container\)/);
+  assert.match(r.output, /runs the required checks in a clean clone and merges when the Workflow asks/);
+  assert.doesNotMatch(r.output, /Cloudflare container/);
   assert.match(r.output, /The landing Workflow waits for this machine to merge main and push, holding no lease\./);
   assert.match(r.output, /The landing Workflow has the head checked and approved, and queues for the landing lease for the merge alone\./);
   assert.ok(r.output.indexOf("merge main and push, holding no lease") < r.output.indexOf("queues for the landing lease"));
@@ -600,10 +602,11 @@ test("land --workflow starts the Workflow, merges main and pushes holding no lea
   const head = git(f.workspace("t1"), "rev-parse", "HEAD");
   assert.equal(f.forkHead("t1"), head);
   assert.deepEqual(wf.events, [{ type: "workspace", payload: { round: 0, head, mainHead: f.mainCommit, mergedIn: true } }]);
-  // The server's steps are the Workflow's: this machine ran no check and
-  // made no submission, review request or acceptance of its own.
+  // The server's steps are the Workflow's: this machine ran the checks (t768
+  // removed the container mode) but made no submission, review request or
+  // acceptance of its own.
   for (const route of ["/submit", "/review-request", "/accept", "/sandbox"]) assert.deepEqual(f.posts(route), [], route);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "merged"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "merged"]);
   // The merge in the registered checkout holds the pushed head.
   assert.equal(f.box.states.t1, "merged");
   assert.deepEqual(git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [before, head]);
@@ -677,7 +680,7 @@ test("land --workflow ends with the Workflow's own reason when the Workflow fail
 test("land --workflow says when the server replaced an hours-old instance, and names the replacement on every event and renewal", async (t) => {
   const f = await landFixture(t);
   const wf = scriptWorkflow(f);
-  Object.assign(wf, { instance: "land-t1-old", stage: "lease", round: 0, checks: "local", status: "waiting", replace: { reason: "lease-wait", detail: "instance land-t1-old has waited for the landing lease since 2026-10-10T08:00:00.000Z (3.5 hours), at or past the 3 hours limit" } });
+  Object.assign(wf, { instance: "land-t1-old", stage: "lease", round: 0, status: "waiting", replace: { reason: "lease-wait", detail: "instance land-t1-old has waited for the landing lease since 2026-10-10T08:00:00.000Z (3.5 hours), at or past the 3 hours limit" } });
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Replaced t1's landing Workflow land-t1-old with land-t1-r1 \(lease-wait\): instance land-t1-old has waited for the landing lease since .* at or past the 3 hours limit\./);
@@ -692,7 +695,7 @@ test("land --workflow says when the server replaced an hours-old instance, and n
 test("land --workflow reports a named reviewer the server refused to put in place of the live instance's", async (t) => {
   const f = await landFixture(t);
   const wf = scriptWorkflow(f);
-  Object.assign(wf, { instance: "land-t1-1", stage: "lease", round: 0, checks: "local", status: "running" });
+  Object.assign(wf, { instance: "land-t1-1", stage: "lease", round: 0, status: "running" });
   wf.attach = { reviewer: "claude-code/opus-5.5", reviewerRefused: "claude-code/sonnet-5.5 cannot replace the remembered reviewer claude-code/opus-5.5: claude-code/sonnet-5.5 is not of another family than every contributor" };
   const r = await f.run(f.checkout, "land", "t1", "--workflow", "--reviewer", "claude-code/sonnet-5.5");
   assert.equal(r.status, 0, r.output);
@@ -727,7 +730,7 @@ test("land without --workflow never reaches the landing Workflow, and --dry-run 
   assert.match(both.output, /--dry-run and --workflow together say two things/);
 });
 
-// ── the local checks mode (t305) ────────────────────────────────────────────
+// ── the checks run here (t305, t768) ────────────────────────────────────────────
 
 test("land --workflow runs the required checks here in a clean clone after the push, by default, and reports the head only once they pass", async (t) => {
   if (!canInspectSlots(t)) return;
@@ -735,9 +738,10 @@ test("land --workflow runs the required checks here in a clean clone after the p
   const wf = scriptWorkflow(f);
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
-  // The mode is local without --checks, sent to the server and said.
+  // A server from before t768 still reads the mode from the start, so the
+  // command keeps sending local; the current server ignores it.
   assert.equal(wf.started[0].checks, "local");
-  assert.match(r.output, /runs the required checks in a clean clone \(checks mode local\)/);
+  assert.match(r.output, /runs the required checks in a clean clone and merges when the Workflow asks/);
   assert.match(r.output, /Pushed \w+ to t1's fork; running the required checks in a clean clone\./);
   assert.match(r.output, /The required checks pass at \w+; reporting the head to the landing Workflow\./);
   // The check ran through atelier check (its observed result posted to the
@@ -826,34 +830,29 @@ test("land --workflow fits a long local-check failure to what the Workflow recor
   assert.ok(!reason.includes("…\n" + pointer), reason);
 });
 
-test("land --workflow --checks container runs no check here; --checks is refused without --workflow or with another mode; a server with no modes is warned of", async (t) => {
+test("--checks local is still accepted with --workflow; --checks container is gone, and --checks needs --workflow (t768)", async (t) => {
   const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
+  scriptWorkflow(f);
   const alone = await f.run(f.checkout, "land", "t1", "--checks", "local");
   assert.equal(alone.status, 1, alone.output);
-  assert.match(alone.output, /--checks says where a Workflow landing runs the required checks; give it with --workflow/);
-  const bogus = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "laptop");
-  assert.equal(bogus.status, 1, bogus.output);
-  assert.match(bogus.output, /--checks takes local or container: atelier land t1 --workflow --checks local\|container/);
+  assert.match(alone.output, /--checks local is the only mode, and it applies to a Workflow landing; give it with --workflow/);
+  for (const mode of ["container", "laptop"]) {
+    const gone = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", mode);
+    assert.equal(gone.status, 1, gone.output);
+    assert.match(gone.output, /--checks container is gone: the required checks always run on this machine, in a clean clone \(t768\)\. Leave --checks out: atelier land t1 --workflow/, mode);
+  }
   assert.deepEqual(f.posts("/landing-workflow"), []);
-  // A server older than the modes records none and runs the checks in the
-  // container: this machine runs none and says so.
-  wf.noChecksMode = true;
-  const old = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(old.status, 0, old.output);
-  assert.match(old.output, /Warning: the server recorded no checks mode for this landing/);
-  assert.deepEqual(f.posts("/evidence"), []);
-  assert.ok(!f.posts("/land").some((x) => x.body.step === "check"));
 });
 
 test("land --workflow reports a finished landing, not a lost one, when the merged task no longer names its Workflow (t308)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   // As in production on 2026-10-08: once the task is merged, the route
   // answers with no instance instead of a completed one.
   const tick = wf.tick;
   wf.tick = (box) => { tick(box); if (box.states.t1 === "merged") wf.instance = null; };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /t1 landed through the landing Workflow; the lease is released\./);
   assert.doesNotMatch(r.output, /can no longer be read/);
@@ -1027,7 +1026,7 @@ test("land --workflow reads a live instance again after failed reads, and recove
     else { wf.unreadable = false; wf.readError = null; }
     tick(box);
   };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /the landing Workflow could not be read \(Workflow binding unavailable\); trying again in \d+s, for up to \d+s in all/);
   assert.doesNotMatch(r.output, /can no longer be read/);
@@ -1049,7 +1048,7 @@ test("land --workflow reads again after a read that throws, and recovers within 
   const start = wf.tick;
   let armed = false;
   wf.tick = (box) => { if (!armed) { armed = true; wf.dropReads = 3; } start(box); };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /the landing Workflow could not be read \(.*\); trying again in \d+s, for up to \d+s in all/);
   assert.equal(wf.dropReads, 0);

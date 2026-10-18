@@ -141,7 +141,7 @@ function handle(status: () => Promise<InstanceStatus>, terminate: () => Promise<
 it("a terminate that fails, a status still live, or one unreadable after the terminate starts no replacement", async () => {
   const project = "wf-replace-unconfirmed";
   const { L, id } = await task(project);
-  await L.setLandingWorkflow(id, "wf-unconfirmed-old", "owner", "local");
+  await L.setLandingWorkflow(id, "wf-unconfirmed-old", "owner");
   await enteredLeaseAgo(L, id, LANDING_LEASE_WAIT_LIMIT_MS + 1);
   let creates = 0, terminates = 0;
   const binding = (status: () => Promise<InstanceStatus>, terminate: () => Promise<void>) => ({ ...env, LANDING_WORKFLOW: {
@@ -208,7 +208,7 @@ for (const first of ["the request that found it terminated", "the replacing requ
     const project = first.startsWith("the replacing") ? "wf-race-replacer-first" : "wf-race-observer-first";
     const { L, id } = await task(project);
     const old = `wf-${project}-old`;
-    await L.setLandingWorkflow(id, old, "owner", "local");
+    await L.setLandingWorkflow(id, old, "owner");
     await enteredLeaseAgo(L, id, LANDING_LEASE_WAIT_LIMIT_MS + 1);
     const race = racingBinding(old);
     const fresh = replacementInstanceId(id, old);
@@ -240,7 +240,7 @@ for (const winner of ["codex/gpt-5.5", "gemini-cli/gemini-3-pro"] as const) {
     const { L, id } = await task(project);
     const old = `wf-${project}-old`;
     // Remembered with the task's own builder, who is never eligible.
-    await L.setLandingWorkflow(id, old, "owner", { checks: "local", reviewer: OPUS });
+    await L.setLandingWorkflow(id, old, "owner", { reviewer: OPUS });
     const loser = winner === "codex/gpt-5.5" ? "gemini-cli/gemini-3-pro" : "codex/gpt-5.5";
     const race = racingBinding(old);
     // Both are past the terminate before either reaches the Ledger; the
@@ -266,7 +266,7 @@ it("a create that fails keeps its claim for reconciliation", async () => {
   const project = "wf-race-create-fails";
   const { L, id } = await task(project);
   const old = "wf-create-fails-old";
-  await L.setLandingWorkflow(id, old, "owner", "local");
+  await L.setLandingWorkflow(id, old, "owner");
   const failing = { ...env, LANDING_WORKFLOW: {
     get: async (instance: string) => {
       if (instance !== old) throw new Error("instance.not_found");
@@ -337,7 +337,7 @@ it("an instance whose record was replaced while it ran stops without releasing t
   // A lease the replacement holds for the task (t550: once it took it).
   await setLease(L, id);
   // Its termination failed to take, and the record names a replacement.
-  await L.claimLandingWorkflow(id, "wf-stale-old", "wf-stale-new", "owner", { checks: "container" }, { from: "wf-stale-old", reason: "lease-wait", detail: "a test replacement" });
+  await L.claimLandingWorkflow(id, "wf-stale-old", "wf-stale-new", "owner", {}, { from: "wf-stale-old", reason: "lease-wait", detail: "a test replacement" });
   await report("wf-stale-old");
   await wf.waitForStatus("errored");
   // Its failure handler found itself fenced: the lease and the record are the replacement's.
@@ -441,7 +441,7 @@ it("an ended successor inherits unnamed review options but not a historical repl
 it("naming a reviewer attaches to a pre-t430 record with no remembered reviewer", async () => {
   const project = "wf-legacy-reviewer";
   const { L, id } = await task(project);
-  await L.setLandingWorkflow(id, "wf-legacy", "owner", "local");
+  await L.setLandingWorkflow(id, "wf-legacy", "owner");
   let ended = false, creates = 0;
   const testEnv = { ...env, LANDING_WORKFLOW: {
     get: async () => handle(async () => ({ status: ended ? "terminated" : "waiting" }), async () => { ended = true; }),
@@ -466,7 +466,7 @@ it("reconciles a dead claimant using its ID and options even with concurrent ret
   const project = "wf-unborn-recovery";
   const { L, id } = await task(project);
   const instance = "wf-unborn";
-  await L.claimLandingWorkflow(id, null, instance, "owner", { checks: "local", reviewer: "codex/gpt-5.5", noReview: true });
+  await L.claimLandingWorkflow(id, null, instance, "owner", { reviewer: "codex/gpt-5.5", noReview: true });
   await runInDurableObject(L, async (_instance, state) => {
     const key = `landing-workflow:${id}`;
     const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
@@ -497,7 +497,7 @@ it("reconciles a dead claimant using its ID and options even with concurrent ret
     expect(await response.json()).toMatchObject({ instance, created: false, reviewer: "codex/gpt-5.5", noReview: true });
   }
   expect(creates).toHaveLength(1);
-  expect(creates[0]).toMatchObject({ id: instance, params: { checks: "local", reviewer: "codex/gpt-5.5", noReview: true } });
+  expect(creates[0]).toMatchObject({ id: instance, params: { reviewer: "codex/gpt-5.5", noReview: true } });
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance, reviewer: "codex/gpt-5.5", lastStatus: { status: "queued" } });
 });
 

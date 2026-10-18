@@ -245,21 +245,24 @@ it("init again changes only what it names, and --reset starts over", async () =>
   }), { ...testEnv, ARTIFACTS } as typeof env);
   const policy = async () => (await (await put({})).json() as { project: { title?: string; policy: Record<string, unknown> } }).project;
 
-  const first = await put({ checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true, title: "Kept" });
+  const first = await put({ checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], refuseOverlap: true, title: "Kept" });
   expect(first.status).toBe(200);
   // A second init that names nothing keeps every setting, the title included.
-  expect(await policy()).toMatchObject({ title: "Kept", policy: { checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true } });
+  expect(await policy()).toMatchObject({ title: "Kept", policy: { checks: ["npm test"], protected: ["AGENTS.md", "src/rules.ts"], refuseOverlap: true } });
   // Naming one setting replaces that one only.
   await put({ checks: ["npm run typecheck"] });
-  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], refuseOverlap: true });
+  // t768 removed the sandbox check mode: an init from a client that still names it stores nothing.
+  await put({ sandboxOnly: true });
+  expect((await policy()).policy).not.toHaveProperty("sandboxOnly");
   // Only reset: true resets; anything else that is not a boolean is refused.
   expect((await put({ reset: "false", title: "X" })).status).toBe(400);
   expect((await put({ reset: 1 })).status).toBe(400);
   await put({ reset: false, title: "Still kept" });
-  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], sandboxOnly: true });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm run typecheck"], protected: ["AGENTS.md", "src/rules.ts"], refuseOverlap: true });
   // --reset rebuilds from what it is given and the defaults.
   await put({ reset: true, checks: ["npm test"] });
-  expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], sandboxOnly: false });
+  expect((await policy()).policy).toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], refuseOverlap: false });
   // A first init of a new project with nothing named gets the defaults.
   const fresh = await worker.fetch(new Request("https://atelier.test/api/projects/fresh", {
     method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: "{}",
@@ -1374,22 +1377,22 @@ it("a merged check is recorded against both revisions, needs a main head on main
   expect(await noFork.json()).toMatchObject({ error: "no_fork" });
 });
 
-it("the sandbox route passes a merged run on to the runner, and a plain one as before", async () => {
-  const name = "sandbox-merged", A = "claude-code/opus-5.5", H1 = "a".repeat(40);
+// Finding it would have caught: the container check's routes left behind would
+// start a run in a class t768 deleted.
+it("the sandbox routes are gone: neither starting a run nor reading one answers", async () => {
+  const name = "sandbox-gone", A = "claude-code/opus-5.5", H1 = "a".repeat(40);
   await project(name);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  await L.newItem("Run in the cloud", [], "owner");
+  await L.newItem("Check it", [], "owner");
   await L.claim("t1", A);
   await L.setFork("t1", `${name}--t1`, "0".repeat(40), A);
   await L.recordPush("t1", A, H1, H1);
-  const started = async (body: unknown) => {
-    const res = await call("POST", `/projects/${name}/items/t1/sandbox`, "owner", body);
-    expect(res.status, await res.clone().text()).toBe(202);
-    return (await res.json() as { state: { request: Record<string, unknown> } }).state.request;
-  };
-  expect(await started({ merged: true })).toMatchObject({ itemId: "t1", head: H1, merged: true });
-  expect(await started({})).not.toHaveProperty("merged");
-  expect(await started({ merged: "yes" })).not.toHaveProperty("merged");
+  const started = await call("POST", `/projects/${name}/items/t1/sandbox`, "owner", {});
+  // 410 with a message, not a 404 a CLI built before t768 would misread as a missing run.
+  expect(started.status).toBe(410);
+  expect(await started.json()).toMatchObject({ error: "sandbox_removed", detail: expect.stringContaining("atelier check") });
+  const read = await call("GET", `/projects/${name}/items/t1/sandbox/${encodeURIComponent(`${name}:t1:aaaaaaaaaaaa:1`)}`, "owner");
+  expect(read.status).toBe(410);
 });
 it("the developer sets, replaces and clears a task's context through the edit route, and it is recorded only on change", async () => {
   await project("routes-ctx");

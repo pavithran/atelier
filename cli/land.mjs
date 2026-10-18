@@ -264,14 +264,12 @@ export async function runLand(io) {
   const workflow = args.workflow === true;
   const reviewer = args.reviewer;
   const movedOk = args["moved-ok"] === true;
-  // Where a Workflow landing runs the required checks (t305): "local" (the
-  // default) runs them here in a clean clone, as the plain landing does, and
-  // the Workflow waits for their observed results; "container" has the
-  // Workflow run them in the CheckRunner container. Atelier's own suite does
-  // not finish in the container's default instance, hence the default.
-  const checksMode = args.checks;
-  if (checksMode !== undefined && !workflow) die("--checks says where a Workflow landing runs the required checks; give it with --workflow (the plain landing always runs them here, in a clean clone)");
-  if (checksMode !== undefined && checksMode !== "local" && checksMode !== "container") die(`--checks takes local or container: atelier land ${id} --workflow --checks local|container`);
+  // A Workflow landing runs the required checks here in a clean clone, as the
+  // plain landing does, and the Workflow waits for their observed results.
+  // t768 removed the other mode, the Workflow running them in a container;
+  // --checks local is still accepted, since it names what now always happens.
+  if (args.checks !== undefined && !workflow) die("--checks local is the only mode, and it applies to a Workflow landing; give it with --workflow, or leave it out (the plain landing always runs the checks here, in a clean clone)");
+  if (args.checks !== undefined && args.checks !== "local") die(`--checks container is gone: the required checks always run on this machine, in a clean clone (t768). Leave --checks out: atelier land ${id} --workflow`);
   const triageFlags = { triage: args.triage, noTriage: args["no-triage"], override: args["override-triage"] };
   if (releaseLease && (dryRun || noReview || wait || reviewer !== undefined || workflow || movedOk || Object.values(triageFlags).some((v) => v !== undefined))) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
   if (workflow && dryRun) die("--dry-run and --workflow together say two things: --dry-run prints what a landing would do and changes nothing, and --workflow starts the landing as a Cloudflare Workflow that does it; give one or the other");
@@ -1922,7 +1920,6 @@ const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused", "roll
 async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, moved }) {
   const { args, name, id, p, request, git, die, print } = io;
   const reviewer = args.reviewer, noReview = args["no-review"] === true;
-  const askedChecks = args.checks ?? "local";
   const wfPath = `${itemPath}/landing-workflow`;
   const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
   const record = landRecorder(io, itemPath);
@@ -1950,23 +1947,15 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
   if (d0.item.state === "accepted" && !live) die(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
   // A landing that triages says so, and the Workflow then submits and asks
   // for the review only while the triage it is told of stands (t475).
-  try { started = await request("POST", wfPath, { checks: askedChecks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(triage.mode !== "off" ? { triage: true } : {}) }); }
+  try { started = await request("POST", wfPath, { checks: "local", ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(triage.mode !== "off" ? { triage: true } : {}) }); }
   catch (error) { die(error.message); }
-  // The mode is the instance's, as the server recorded it: a live instance
-  // keeps the mode it was started with, and a server older than the modes
-  // records none and runs the checks in the container.
-  const checksMode = started.checks === "local" ? "local" : "container";
-  if (!started.checks && askedChecks === "local") print("Warning: the server recorded no checks mode for this landing, so it predates them and runs the required checks in a Cloudflare container; deploy the server for --checks local.");
-  else if (!started.created && args.checks !== undefined && args.checks !== checksMode) print(`The live instance keeps the checks mode it was started with (${checksMode}); --checks applies to a new landing.`);
   // A live instance the server replaced rather than attach to (t430): it
   // waited for the lease past the limit, or the reviewer it was started
   // with is no longer eligible and this run named one who is.
   if (started.replaced) print(`Replaced ${id}'s landing Workflow ${started.replaced.from} with ${started.replaced.to} (${started.replaced.reason}): ${started.replaced.detail}.`);
   if (started.reviewerRefused) print(`Warning: ${started.reviewerRefused}; the live instance keeps its reviewer.`);
   print(started.created || started.replaced
-    ? (checksMode === "local"
-      ? `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow runs the submission and the review on Cloudflare as durable steps without the landing lease, then takes ${name}'s lease for the acceptance and the merge alone; this machine merges main, pushes, runs the required checks in a clean clone (checks mode local) and merges when the Workflow asks, and the Workflow goes on only once the server has recorded every check passing at the pushed head. If this command stops, run atelier land ${id} --workflow again to attach.`
-      : `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow runs the checks (in a Cloudflare container), the submission and the review on Cloudflare as durable steps without the landing lease, then takes ${name}'s lease for the acceptance and the merge alone; this machine merges main, pushes and merges when the Workflow asks. If this command stops, run atelier land ${id} --workflow again to attach.`)
+    ? `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow runs the submission and the review on Cloudflare as durable steps without the landing lease, then takes ${name}'s lease for the acceptance and the merge alone; this machine merges main, pushes, runs the required checks in a clean clone and merges when the Workflow asks, and the Workflow goes on only once the server has recorded every check passing at the pushed head. If this command stops, run atelier land ${id} --workflow again to attach.`
     : `Attached to ${id}'s landing Workflow (instance ${started.instance}, at ${started.stage ?? "its start"}).`);
   if (!started.created && !started.replaced && !started.reviewerRefused && ((reviewer && reviewer !== started.reviewer) || (noReview && started.noReview !== true))) print(`The live instance keeps the review options it was started with (${started.noReview ? "--no-review" : started.reviewer ? `reviewer ${started.reviewer}` : "the reviewer the gate picks"}); --reviewer and --no-review apply to a new landing.`);
 
@@ -2041,7 +2030,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
         lease: "has the head checked and approved, and queues for the landing lease for the merge alone",
         workspace: `waits for this machine to merge main and push, holding no lease${detail ? ` (${detail})` : ""}`,
         conflict: `is paused on conflicts in ${(files ?? []).join(", ") || "the merge of main"}`,
-        checks: checksMode === "local" ? "reads the observed results of the checks this machine ran" : "runs the required checks in a Cloudflare container",
+        checks: "reads the observed results of the checks this machine ran",
         review: `waits for the review verdict${detail ? `. ${detail}` : ""}`,
         merge: "has accepted the reviewed head and waits for the merge",
         done: "is done",
@@ -2071,17 +2060,15 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
         // again before the review request (t475).
         const triaged = await triageGate(io, { triage, dir, id, itemPath, head: merged.head, mainHead: merged.mainHead, target: merged.target, record, guard });
         guard();
-        // The local checks mode: the required checks run here, in a clean
-        // clone of the pushed head, through the same `atelier check` step as
-        // the plain landing, before the head is reported, so the server has
-        // recorded their observed results when the Workflow reads them. A
-        // failure ends the landing below, reported as a failed workspace.
-        if (checksMode === "local") {
-          print(`Pushed ${short(merged.head)} to ${id}'s fork; running the required checks in a clean clone.`);
-          await checkStep(io, itemPath, id, (kind, argv, cwd) => landStep(io, record, kind, argv, cwd), dir);
-          guard();
-          print(`The required checks pass at ${short(merged.head)}; reporting the head to the landing Workflow.`);
-        } else print(`Pushed ${short(merged.head)} to ${id}'s fork; reporting it to the landing Workflow.`);
+        // The required checks run here, in a clean clone of the pushed head,
+        // through the same `atelier check` step as the plain landing, before
+        // the head is reported, so the server has recorded their observed
+        // results when the Workflow reads them. A failure ends the landing
+        // below, reported as a failed workspace.
+        print(`Pushed ${short(merged.head)} to ${id}'s fork; running the required checks in a clean clone.`);
+        await checkStep(io, itemPath, id, (kind, argv, cwd) => landStep(io, record, kind, argv, cwd), dir);
+        guard();
+        print(`The required checks pass at ${short(merged.head)}; reporting the head to the landing Workflow.`);
         await send("workspace", { round, head: merged.head, mainHead: merged.mainHead, mergedIn: merged.mergedIn, ...(triaged ? { triage: { base: triaged.base, criteria: triaged.criteria } } : {}) });
       } catch (error) {
         const conflicts = Array.isArray(error.data?.conflicts) && error.data.conflicts.length ? error.data.conflicts : null;

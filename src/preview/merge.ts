@@ -255,86 +255,6 @@ export function bytesOf(lines: string[]): Uint8Array {
   return new TextEncoder().encode(lines.length && !noEol ? `${text}\n` : text);
 }
 
-// A leaf entry at a path: its hash and type, for the file, script or link
-// there, and null for a folder, a submodule or nothing.
-type Leaf = { hash: string; type: "blob" | "exec" | "symlink" };
-function leafLocator(r: Reader) {
-  const trees = new Map<string, ReturnType<Reader["tree"]>>();
-  const tree = (h: string) => {
-    if (!trees.has(h)) trees.set(h, r.tree(h));
-    return trees.get(h)!;
-  };
-  return async (root: string, path: string): Promise<Leaf | null> => {
-    let hash = root;
-    const parts = path.split("/");
-    for (let i = 0; i < parts.length; i++) {
-      const e = (await tree(hash))?.find((x) => x.name === parts[i]);
-      if (!e) return null;
-      if (i === parts.length - 1) return e.type === "blob" || e.type === "exec" || e.type === "symlink" ? { hash: e.hash, type: e.type } : null;
-      if (e.type !== "tree") return null;
-      hash = e.hash;
-    }
-    return null;
-  };
-}
-
-// The tree the merge would have, as changes laid over the task's head: for
-// each path main changed since the fork point, main's entry where the task
-// left the path alone (null where main deleted it), and the merged lines
-// where both sides changed a file on separate lines. A path both sides
-// changed alike needs nothing, since the head holds it. The conflicts are
-// the preview's, and with any there is no tree; a file both sides changed
-// that cannot be merged here, as one too large to diff, is a conflict too.
-export interface Patch { type: Leaf["type"]; hash?: string; data?: Uint8Array }
-
-export async function mergePatch(
-  main: Reader, task: Reader, baseTree: string, oursTree: string, theirsTree: string,
-): Promise<{ patch: Map<string, Patch | null>; conflicts: Conflict[]; regenerable?: string[]; generators?: string[] }> {
-  const m = await mergeability(main, task, baseTree, oursTree, theirsTree);
-  const patch = new Map<string, Patch | null>();
-  if (!m.clean) return { patch, conflicts: m.conflicts };
-  // Outputs only a generator can write: no tree here, since no generator
-  // runs in the Worker (the caller says where the merge can be checked).
-  if (m.regenerable?.length) return { patch, conflicts: [], regenerable: m.regenerable, generators: m.generators };
-  const declared = await declarations(main, task, baseTree, oursTree, theirsTree);
-  const records = "manifest" in declared ? declared.manifest.records : [];
-  const both = new Set(m.both);
-  const atMain = leafLocator(main), atTask = leafLocator(task);
-  for (const path of baseTree === oursTree ? [] : await changedPaths(main, baseTree, oursTree)) {
-    const o = await atMain(oursTree, path);
-    if (!both.has(path)) { patch.set(path, o ? { type: o.type, hash: o.hash } : null); continue; }
-    const t = await atTask(theirsTree, path);
-    if (!o || !t || o.hash === t.hash) continue;
-    const b = await atMain(baseTree, path);
-    const [bb, ob, tb] = await Promise.all([b ? main.blob(b.hash) : Promise.resolve(new Uint8Array()), main.blob(o.hash), task.blob(t.hash)]);
-    const record = records.find((r) => r.path === path);
-    if (record && bb && ob && tb) {
-      // A declared record file merges by key, as the records driver merges it.
-      const merged = mergeRecords(...[bb, ob, tb].map((x) => new TextDecoder().decode(x)) as [string, string, string], record.pattern, record.framed);
-      if (merged.problems.length || merged.conflicts.length) return { patch: new Map(), conflicts: [{ path, reason: "could not be merged here" }] };
-      patch.set(path, { type: t.type, data: new TextEncoder().encode(merged.text) });
-      continue;
-    }
-    const lines = bb && ob && tb ? mergeLines(linesOf(bb), linesOf(ob), linesOf(tb)) : null;
-    if (!lines) return { patch: new Map(), conflicts: [{ path, reason: "could not be merged here" }] };
-    patch.set(path, { type: t.type, data: bytesOf(lines) });
-  }
-  return { patch, conflicts: [] };
-}
-
-// Why a sandbox merged check has no tree to check, or null where mergePatch
-// gave it one. Conflicts are the preview's. A merge that needs a declared
-// generator (bin/merge-manifest.json, t463) is refused too: the Worker runs
-// no generator, and a text merge of generated outputs is a tree no landing
-// pushes, so the check names the local merged check, which merges through
-// the CLI's merge pipeline and regenerates them.
-export function mergedTreeRefusal(merge: { conflicts: Conflict[]; regenerable?: string[]; generators?: string[] }, mainHead: string): string | null {
-  const at = `the merge with main at ${mainHead.slice(0, 8)}`;
-  if (merge.conflicts.length) return `${at} stops on conflicts: ${merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ")}; bring main into the workspace and resolve them`;
-  if (merge.regenerable?.length) return `${at} needs ${merge.generators?.join(", ") || "a declared generator"} to regenerate ${merge.regenerable.join(", ")} (declared in ${MANIFEST_PATH}), and no generator runs in the sandbox; check the merge with atelier check --merged without --sandbox, which merges through the merge pipeline and regenerates them, or bring main into the workspace with atelier update and check its head`;
-  return null;
-}
-
 // Live tasks whose changes touch the same paths, as pairs with the shared
 // paths, so two agents working on one file are seen before either merges.
 export function overlaps(tasks: { id: string; paths: string[] }[]): { a: string; b: string; paths: string[] }[] {
@@ -442,20 +362,4 @@ export async function previewAgainstMain(artifacts: Artifacts, baselineRepo: str
     ? { clean: true, conflicts: [], both: [], ours: 0, theirs: 0 }
     : await mergeability(repoReader(baseline), repoReader(fork), baseTree, head.treeHash, theirs.treeHash);
   return { head: head.hash, ahead, aheadCapped: capped, merge };
-}
-
-// The three trees a merged check is built from, read as the preview reads
-// them: the fork point's, main's head's and the task's head's. Null when
-// either repository is empty or the fork's history meets none of main's
-// first-parent line within the logs read.
-export interface MergeTrees { base: string; baseTree: string; main: string; mainTree: string; head: string; headTree: string }
-
-export async function mergeTrees(baseline: ArtifactsRepo, fork: ArtifactsRepo): Promise<MergeTrees | null> {
-  const [log, forkLog] = await Promise.all([baseline.log({ limit: MAIN_LOG }), fork.log({ limit: FORK_LOG })]);
-  const main = log[0], head = forkLog[0];
-  if (!main || !head) return null;
-  const base = mergeBase(await mergedHistory(fork, forkLog, log), log.map((c) => c.hash));
-  if (!base) return null;
-  const baseTree = log.find((c) => c.hash === base)!.treeHash;
-  return { base, baseTree, main: main.hash, mainTree: main.treeHash, head: head.hash, headTree: head.treeHash };
 }

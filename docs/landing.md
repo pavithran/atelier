@@ -18,8 +18,7 @@ outline.
 
 After committing, an agent runs `atelier finish` in its claimed workspace.
 It pushes, runs required checks, and submits only if those checks pass and
-the workspace remains unchanged. A project with `sandboxOnly` enabled uses
-the cloud runner automatically. `--sandbox` selects it explicitly.
+the workspace remains unchanged.
 
 Once a part of a plan is submitted, if the gate needs an independent review, the server queues a review request automatically as a `review` job, and a runner that offers review jobs claims it. Approval moves the part to integration. For a single task outside a plan, nothing is queued automatically; its review is requested when the developer lands it whole (see Landing a task whole, below), or they can complete an exact revision by hand with:
 
@@ -297,12 +296,10 @@ The steps in between:
    drivers), a runner's merge-main, integrate and refresh merges, and the
    speculative merge `atelier check --merged` checks in its clean clone.
    The Worker makes no Git merge: the item page's merge preview, a plan's
-   and a part's mergeability, and the merged tree `atelier check --merged
-   --sandbox` checks read the same declarations through
+   and a part's mergeability read the same declarations through
    `src/merge-declarations.ts`, uniting record files by key and listing
    regenerable outputs apart from source conflicts. No generator runs
-   there, so a sandbox merged check whose merge needs one is refused,
-   naming `atelier check --merged`.
+   there.
    `bin/merge-manifest.json` declares each generator (its name, its command
    as an argument list, the source inputs it reads and the outputs it
    writes), the record files that unite by key, and the registries whose
@@ -453,9 +450,8 @@ landing. In order:
 2. Wait for the workspace (stage `workspace`, below), holding no lease
    (t550), then see the pushed head in the Ledger. A report must name the
    main head the push was merged with; one that names none ends the landing.
-3. Settle the required checks in the landing's checks mode (below): in the
-   `local` mode, read their observed results at the pushed head from the
-   Ledger; in the `container` mode, run them in a Cloudflare container.
+3. Settle the required checks (below): read their observed results at the
+   pushed head from the Ledger, where the command recorded them.
 4. Submit the task in its holder's name, as `atelier submit` in the
    workspace does.
 5. Request the review and wait for the verdict, polling the Ledger; the
@@ -501,7 +497,7 @@ two of them:
 
 - At `workspace` the Workflow holds no lease, and the command merges main,
   regenerates and pushes with the same code as the plain landing, triages
-  when the landing triages, in the `local` checks mode then runs the
+  when the landing triages, then runs the
   required checks in a clean clone (the plain landing's `atelier check`
   step), and reports the pushed head and the main it merged as a
   `workspace` event. A new round (main moved before the lease, or a
@@ -518,44 +514,29 @@ two of them:
 
 ### Where the checks run
 
-`atelier land t9 --workflow --checks local|container` chooses where the
-required checks run; `local` is the default. The mode is a flag only: the
-project's policy holds no default for it (adding an `atelier init` field
-was more than this change needed, t305).
+The required checks of a Workflow landing run on the developer's machine,
+never on the server. After the push (and the triage, when the landing
+triages), the command runs them in a clean clone of the pushed head, exactly
+as the plain landing does, and the server records each result as observed
+evidence at the head it reads from Artifacts (only the task's holder can
+record a check, and only at that head). Only then does the command report the
+head. The Workflow starts no container: it reads the task's evidence from
+the Ledger and judges it with `evidenceAt` (`src/rules.ts`), the gate's own
+reading, so only an observed result at exactly the pushed head counts (never
+a report, a merged run, or a run at another head). Every required check that
+applies must pass. A failing one ends the landing, recorded as a failed
+`land.check`, with the lease never taken and nothing submitted. Checks with
+no result are waited for, polling, for up to 30 minutes (`checksTimeoutMs`
+on the route), and then end the landing, naming them. The command records
+the `land.check` step it ran, as the plain landing does.
 
-- `local`: after the push (and the triage, when the landing triages), the
-  command runs the required checks on the
-  developer's machine in a clean clone of the pushed head, exactly as the plain
-  landing does, and the server records each result as observed evidence at
-  the head it reads from Artifacts (only the task's holder can record a
-  check, and only at that head). Only then does the command report the
-  head. The Workflow starts no container: it reads the task's evidence from
-  the Ledger and judges it with `evidenceAt` (`src/rules.ts`), the gate's
-  own reading, so only an observed result at exactly the pushed head counts
-  (never a report, a merged run, or a run at another head; under
-  `sandboxOnly`, which counts only container runs, the local mode is
-  refused and points at `--checks container`). Every required check that
-  applies must pass. A failing one ends the landing, recorded as a failed
-  `land.check`, with the lease never taken and nothing submitted. Checks
-  with no result are waited for, polling, for up to 30
-  minutes (`checksTimeoutMs` on the route), and then end the landing,
-  naming them. The command records the `land.check` step it ran, as the
-  plain landing does.
-- `container`: the Workflow runs the checks in the same CheckRunner that
-  `atelier check --sandbox` starts, polling the run to its end, and records
-  `land.check`. A check the container refuses (one that deploys, installs
-  or pushes) ends the Workflow; land such a project without `--workflow`.
-  This suits a project whose suite finishes in the container's default
-  instance; Atelier's own suite does not (2026-10-08: stopped at the 600 s
-  step limit, then interrupted with no result after 62 minutes), which is
-  why `local` is the default.
-
-The server records the mode with the instance (`checks` in `GET
-.../landing-workflow`), so a rerun that attaches to a live landing follows
-the mode it was started with. A start that names no mode, as a command
-older than the modes sends, runs the checks in the container, since that
-command runs none itself; against a server older than the modes the
-command warns that the checks run in the container.
+Until t768 the landing could choose a second place with `--checks container`,
+where the Workflow ran the checks in a Cloudflare container. That mode is
+gone. `--checks local` is still accepted and changes nothing; `--checks
+container` is refused with a message saying so. A start that names no mode
+(a command older than t768 sends `local`, one older than t305 sent none) is
+treated as the one mode there is, and the record of a landing started
+before t768 may still carry a `checks` field, which nothing reads.
 
 ### Conflicts and what the Workflow protects against
 
@@ -571,9 +552,8 @@ What this protects against, and what it does not:
 - A closed laptop or a killed command stops only the view. The Workflow
   keeps its place, and the same command run again attaches to the live
   instance and goes on from its stage. The submission, the review wait and
-  the container mode's checks proceed with no machine attached; the
-  workspace steps (with the local mode's checks) and the final merge wait
-  for one. The Workflow holds no lease while it waits for the workspace
+  the wait for the checks proceed with no machine attached; the
+  workspace steps (with the checks) and the final merge wait for one. The Workflow holds no lease while it waits for the workspace
   (t550). While it waits for the merge it holds the lease and renews it, so
   no other landing can merge and move main under its accepted head; a
   machine that is gone therefore holds the project until the merge wait
@@ -659,16 +639,15 @@ The routes the command calls (`landing-workflow`, GET and POST) raised the
 route level to 14. The Workflow is tested in workerd with the Workflows test
 helpers (`test/landing-workflow.spec.ts`: the step sequence, a retry after a
 transient failure, a failure that outlasts the retries, the pause on a
-conflict and its resume, the local checks mode with evidence present,
+conflict and its resume, the checks with evidence present,
 arriving late, missing or untrusted, and failing, and the routes), and the
 command against a stand-in server (`test/land.test.mjs`, including the
-local mode's checks run after the push and before the report, and
+the checks run after the push and before the report, and
 `test/land-lease-workflow.test.mjs`: `land --workflow` against a scripted
 Workflow on that server, from the start without the lease to the merge under
 it). No test drives the command against a Workflow running in workerd. On
 Cloudflare itself the Workflow is live: `LandingWorkflow` has landed most of
-the orchestrator's tasks since 2026-10-10, run as `atelier land tN --workflow`
-with the default `--checks local`.
+the orchestrator's tasks since 2026-10-10, run as `atelier land tN --workflow`.
 Claim reconciliation relies on Cloudflare rejecting duplicate Workflow IDs.
 The remote smoke check before and after deploy must also leave a recorded
 claim without creating its instance, wait 60 seconds, then retry concurrently

@@ -37,9 +37,8 @@ Eligible:   any agent
 Overlap:    flagged
 ```
 
-Add `--sandbox-only` to count only checks run in a Cloudflare container.
-Without it, a check runs in a clean clone on the machine that runs it, and
-is recorded as Observed there.
+A check runs in a clean clone on the machine that runs it, and is recorded
+as Observed there.
 
 **Fill the model pool.** Routing needs a model that can build each part
 and a model of another family that can review it; an approval is refused
@@ -305,18 +304,6 @@ the Worker measured:
 PASS  npm test  @ 8c44da71
 changed: src/export.ts, test/export.test.ts
 ```
-
-With `--sandbox` on `finish`, `done` or `check`, or under a project set up
-with `init --sandbox-only`, the checks run in a Cloudflare container started
-from the Worker, and each line ends with its duration and `in Cloudflare`:
-
-```text
-PASS  npm test  @ 8c44da71  (41s, in Cloudflare)
-```
-
-The container holds no token; the Worker streams the exact files into it,
-and its only network reach is the npm registry, to download. Under `--sandbox-only` a
-check run on an agent's machine does not count, and the pages say so.
 
 `atelier report "what you verified and how"` records a Reported claim at
 the current head. It is shown and never counted as a check.

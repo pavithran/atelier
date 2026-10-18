@@ -103,7 +103,7 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
     if (path === `${itemPath}/base-token`) return { remote: baseline, token: "read", defaultBranch: "main" };
     if (path === `${itemPath}/landing-workflow`) return method === "GET" && calls.some((c) => c.method === "POST" && c.path === path)
       ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
-      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, checks: "local", stage: "lease" };
+      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, stage: "lease" };
     return {};
   };
   // Each `atelier push` answers the next of `push` (true passes, a string

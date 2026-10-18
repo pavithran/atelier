@@ -35,9 +35,9 @@ task** (or, for the override, the footer's link):
 ## Omitted for want of data
 
 - **The runner's name** in an evidence row ("runner mac-mini-2, clean
-  clone"). Evidence records only where a check ran (`sandbox` or `runner`),
-  not which runner, so the row says "Runner, clean clone" or "Cloudflare
-  container".
+  clone"). Evidence records only where a check ran (`runner`, or `sandbox` on a
+  result recorded before t768), not which runner, so the row says "Runner,
+  clean clone" or "Cloudflare container".
 - **The count of protected files** in the diff row ("· 1 protected"). The
   gate records the files outside the scope, not which changed files are
   protected; the row counts those outside the scope instead, when any are.

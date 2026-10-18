@@ -1,11 +1,9 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { CheckRunner, RunRequest, RunState } from "../src/sandbox/runner.ts";
 
 // Every registered check must be read-only (src/checks.ts). These tests drive
-// init, the evidence route, the sandbox route and the runner through the
+// init and the evidence route through the
 // Worker and its Durable Objects, and ask that a check that deploys is never
 // registered, run or counted, that an undeclared one needs the owner's
 // declaration, and that a project's existing checks keep running.
@@ -95,38 +93,20 @@ it("a project's existing checks keep running: an init that names no checks keeps
   expect(page).toContain("read-only, declared by the developer: PAVI, 2026-10-06: verify.sh reads the docs and runs the tests");
 });
 
-it("a check that deploys is neither run in the sandbox nor counted from anyone's machine, even when it was registered before the rule", async () => {
-  const name = "classes-sandbox", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40);
+it("a check that deploys is not counted from anyone's machine, even when it was registered before the rule", async () => {
+  const name = "classes-deploy", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40);
   const L = await legacy(name, ["npm test", "npx wrangler deploy"]);
   await L.newItem("Work", [], "owner");
   await L.claim("t1", A);
   await L.setFork("t1", `${name}--t1`, H0, A);
   await L.recordPush("t1", A, H1, H1);
   const call = api();
-  const sandbox = await call("POST", `/projects/${name}/items/t1/sandbox`, A, {});
-  expect(sandbox.status).toBe(409);
-  expect(await sandbox.json()).toMatchObject({ error: "not_read_only", detail: expect.stringMatching(/`npx wrangler deploy` is not a check: it deploys .*the container runs nothing/) });
   const evidence = await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "check", claim: "npx wrangler deploy", passed: true, head: H1 });
   expect(evidence.status).toBe(409);
   expect(await evidence.json()).toMatchObject({ error: "not_read_only" });
   expect(((await L.detail("t1")) as { evidence: unknown[] }).evidence).toEqual([]);
   // A report is words, never run, and is recorded as before.
   expect((await call("POST", `/projects/${name}/items/t1/evidence`, A, { kind: "report", claim: "npx wrangler deploy worked", head: H1 })).status).toBe(200);
-});
-
-it("the runner refuses a check that deploys before it reads the workspace or starts a container", async () => {
-  const runId = "classes-runner:t1:aaaaaaaaaaaa:1";
-  const request: RunRequest = { runId, project: "classes-runner", itemId: "t1", baselineRepo: "base", fork: "base--t1", head: "a".repeat(40), checks: ["npm test", "npx wrangler deploy"], requestedBy: "owner" };
-  // The run is stored as start() leaves it and its alarm is called here, so
-  // no alarm the runtime fires on its own can race the test.
-  const stub = env.RUNNER.get(env.RUNNER.idFromName(runId));
-  const state = await runInDurableObject(stub, async (instance: CheckRunner, s: DurableObjectState) => {
-    await s.storage.put("state", { status: "queued", request, queuedAt: new Date().toISOString() } satisfies RunState);
-    await instance.alarm();
-    return s.storage.get<RunState>("state");
-  });
-  expect(state).toMatchObject({ status: "failed", error: expect.stringMatching(/`npx wrangler deploy` is not a check: it deploys/) });
-  expect(state?.results).toBeUndefined();
 });
 
 it("init persists preparation through the API and ledger, preserves omission, clears and resets, and validates classification and paths", async () => {

@@ -49,7 +49,7 @@ globalThis.fetch = async (url, options = {}) => {
   else if (path === "/api/projects" && method === "GET") data = ${JSON.stringify(registered ? [{ name: "demo", repo: "demo", policy: registered }] : [])};
   else if (method === "PUT") {
     const checks = body.checks ?? ${JSON.stringify(registered?.checks ?? [])};
-    data = { project: { name: "demo", repo: "demo", policy: { checks, checkClasses: body.checkClasses ?? [], protected: body.protected ?? [], eligible: [], refuseOverlap: false, sandboxOnly: false } }, baseline: { remote: ${JSON.stringify(baseline)}, token: "fake-baseline-token", defaultBranch: "main" } };
+    data = { project: { name: "demo", repo: "demo", policy: { checks, checkClasses: body.checkClasses ?? [], protected: body.protected ?? [], eligible: [], refuseOverlap: false } }, baseline: { remote: ${JSON.stringify(baseline)}, token: "fake-baseline-token", defaultBranch: "main" } };
   }
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
 };
@@ -162,7 +162,7 @@ async function checkFixture(t, checks) {
   const server = createServer(async (req, res) => {
     for await (const _ of req);
     paths.push(req.url);
-    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks, sandboxOnly: false } };
+    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks } };
     if (req.url.endsWith("/read-token")) data = { remote, token: "read", head, defaultBranch: "main" };
     if (req.url.endsWith("/baseline-token")) data = { remote, token: "base", head, defaultBranch: "main" };
     res.writeHead(200, { "content-type": "application/json" });

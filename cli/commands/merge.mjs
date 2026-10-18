@@ -21,7 +21,7 @@ import { pinCheckoutIdentity } from "../identity.mjs";
 // t708: the tree the merge produced (the index, before the receipt is added)
 // when every required check's latest counting run at the accepted head passed:
 // the gate's own reading (evidenceAt), so a later failing run of a check is not
-// masked by an earlier pass, and sandboxOnly is honoured. The accepted head's
+// masked by an earlier pass. The accepted head's
 // tree must be that tree. Anything that cannot be read or compared gives null,
 // and a null makes the receipt claim nothing, so the deploy gate runs again.
 function checkedTreeMatch(cwd,evidence,policy,head){

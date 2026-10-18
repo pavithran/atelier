@@ -43,14 +43,6 @@
   // Atelier's own metrics (src/metrics.ts).
   "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "atelier_metrics" }],
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
-  // Cloudflare Browser Run (Browser Rendering until 2026): the render check
-  // (src/render-check.ts) scrapes each page the sandbox sends with
-  // JavaScript off and allowRequestPattern set to the pages' Google Fonts
-  // stylesheet URL and fonts.gstatic.com font files only, so the page loads
-  // nothing else; a check run may render at most MAX_RENDERS times, and the
-  // answer holds no text the browser got from anywhere but the sent HTML.
-  // The binding holds no credential the sandbox could read.
-  "browser": { "binding": "BROWSER" },
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   // Large payloads by reference (t284): whole check logs and review diffs are
   // kept in R2 and named by their key in briefs and the ledger, instead of
@@ -61,33 +53,23 @@
   "r2_buckets": [{ "binding": "LARGE", "bucket_name": "atelier-large" }],
   "durable_objects": {
     "bindings": [
-      { "name": "LEDGER", "class_name": "Ledger" },
-      { "name": "RUNNER", "class_name": "CheckRunner" }
+      { "name": "LEDGER", "class_name": "Ledger" }
     ]
   },
   // The landing pipeline as a Cloudflare Workflow (src/landing-workflow.ts),
   // used only by `atelier land ID --workflow` (docs/landing.md): one instance
-  // per landing runs the checks (in a container with --checks container),
-  // the submission and the review wait without the landing lease, then takes
+  // per landing waits for the observed results of the checks the developer's
+  // machine ran, then the submission and the review wait without the landing lease, then takes
   // the lease for the acceptance and the merge alone, as durable steps with
   // retries, and waits for the developer's machine to merge main, push, run
-  // the checks (with --checks local, the default) and merge. At the
+  // the checks and merge. At the
   // default polls a landing takes under 3,000 steps, well inside the
   // default limit of 10,000.
   "workflows": [{ "name": "landing", "binding": "LANDING_WORKFLOW", "class_name": "LandingWorkflow" }],
-  // One container per check run, started from the Cloudflare-managed
-  // cloudflare/debian-trixie image (Node 24), so no image is built or pushed
-  // and deploying needs no Docker. The image has no git: the runner fetches
-  // Debian's git package, pinned by sha256, and unpacks it into each
-  // container offline (src/sandbox/tools.ts; docs/setup.md, "The check
-  // container's git"). Declaring an "images" entry here would make every
-  // deploy need Docker or Workers Builds.
-  // A Durable Object-managed container takes no instance_type (wrangler
-  // refuses it), so the check step's own limit (STEP_SECONDS in
-  // src/sandbox/runner.ts) is what lets a long suite finish.
-  "containers": [{ "class_name": "CheckRunner", "scheduling_policy": "durable_object" }],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Ledger"] },
-    { "tag": "v2", "new_sqlite_classes": ["CheckRunner"] }
+    { "tag": "v2", "new_sqlite_classes": ["CheckRunner"] },
+    // t768 removed the container check; this deletes the class and its data.
+    { "tag": "v3", "deleted_classes": ["CheckRunner"] }
   ]
 }

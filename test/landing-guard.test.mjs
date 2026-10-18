@@ -335,7 +335,7 @@ for (const [what, observed, claimed, policy] of [
   ['failed once and passed in a later run', [{ passed: false }, {}], true],
   ['failed', [{ passed: false }], false],
   ['ran on a merge with main', [{ merged: true, mainHead: OTHER }], false],
-  ['passed on a runner under sandboxOnly', [{}], false, { sandboxOnly: true }],
+  ['passed on a runner under a stored sandboxOnly policy, which t768 removed', [{}], true, { sandboxOnly: true }],
   ['passed on another head', [{ head: OTHER }], false],
 ]) {
   test(`merge's receipt ${claimed ? 'names' : 'does not name'} the checked tree when the check ${what}`, async (t) => {

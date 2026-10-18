@@ -1013,9 +1013,11 @@ it("the criteria requirement is set by an init that names it, kept by one that d
 it("an init is merged into the project in one step and keeps every field it does not name", async () => {
   const { mergeProject } = await import("../src/ledger");
   const base = { name: "m", repo: "m", reset: false };
-  const full = mergeProject(null, { ...base, title: "T", checks: ["npm test"], protected: ["src/rules.ts"], eligible: ["claude"], refuseOverlap: true, sandboxOnly: true, approval: "PAVI, today" }, "2026-10-04T00:00:00Z");
-  // A title-only init keeps checks, protection, eligibility, overlap, sandbox and approval.
+  const full = mergeProject(null, { ...base, title: "T", checks: ["npm test"], protected: ["src/rules.ts"], eligible: ["claude"], refuseOverlap: true, approval: "PAVI, today" }, "2026-10-04T00:00:00Z");
+  // A title-only init keeps checks, protection, eligibility, overlap and approval.
   expect(mergeProject(full, { ...base, title: "U" }, "later")).toEqual({ ...full, title: "U", revision: 2 });
+  // A policy recorded before t768 may name the removed sandboxOnly; the next init drops it.
+  expect(mergeProject({ ...full, policy: { ...full.policy, sandboxOnly: true } } as never, { ...base, title: "U" }, "later").policy).not.toHaveProperty("sandboxOnly");
   // An explicit null clears; reset starts from the defaults.
   expect(mergeProject(full, { ...base, title: null, approval: null }, "later")).toEqual({ ...full, revision: 2, title: undefined, policy: { ...full.policy, approval: undefined } } as never);
   // The review bar is set, kept by an init that does not name it, and cleared by null.
@@ -1051,7 +1053,7 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(single, { ...base, reset: true }, "later").policy).not.toHaveProperty("familyMode");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
-  expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], eligible: [], refuseOverlap: false, sandboxOnly: false });
+  expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], eligible: [], refuseOverlap: false });
   expect([reset.title, reset.createdAt, reset.revision]).toEqual(["T", full.createdAt, 2]);
   // The index keeps the newest copy, whatever order two inits register in.
   const I = env.LEDGER.get(env.LEDGER.idFromName("__index"));

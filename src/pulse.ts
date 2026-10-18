@@ -46,7 +46,7 @@ export function windowDays(now: Date, days = PULSE_DAYS): string[] {
 // `cut` says the events were read up to a limit, so the record may hold
 // older ones. Moves are counted as the Flow graph's buildStory counts them:
 // an agent's move is any event of theirs that is not bookkeeping (QUIET);
-// what Atelier itself recorded (a sandbox check, an observed push) is the
+// what Atelier itself recorded (an observed push) is the
 // platform's work and no one's move; the owner's decisions are counted
 // apart, and nothing else of the owner's counts.
 export function buildPulse(events: LedgerEvent[], owner: string, now: Date, cut = false, days = PULSE_DAYS): Pulse {

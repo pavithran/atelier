@@ -58,14 +58,11 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check, prepa
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
     if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
-    let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: Array.isArray(check) ? check : [check], prepare, protected: [], sandboxOnly: false }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
+    let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: Array.isArray(check) ? check : [check], prepare, protected: [] }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
     if (path.endsWith("/read-token")) data = { remote: fork, token: "fake-fork-token", head, defaultBranch: "main" };
     if (path.endsWith("/baseline-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
     // A task with no plan is measured against the baseline, so its base token names it.
     if (path.endsWith("/base-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
-    // A sandbox run, finished at once, as the Worker reports one it ran on the merge.
-    if (path.endsWith("/sandbox")) data = { runId: "run" };
-    if (path.endsWith("/sandbox/run")) data = { status: "done", recorded: true, request: { head, merged: true }, mainHead, results: [{ claim: check, passed: true, seconds: 1, outputTail: "check output" }] };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });
@@ -152,21 +149,6 @@ test("check --merged on a head that already holds main's head checks the head it
   assert.match(r.stderr, new RegExp(`main at ${f.mainHead.slice(0, 8)} is already in this revision; the merge is the revision itself`));
   assert.deepEqual(f.evidence().map((e) => [e.passed, e.merged, e.mainHead]), [[true, true, f.mainHead]]);
 });
-
-test("check --merged --sandbox asks the Worker for a merged run and reports it as one", async (t) => {
-  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), check: bothFiles });
-  const r = await f.run(["check", "t1", "--project", "proj", "--merged", "--sandbox"]);
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.deepEqual(f.posts.filter((p) => p.path.endsWith("/sandbox")).map((p) => p.body), [{ merged: true }]);
-  assert.match(r.stderr, /on its merge with main in a Cloudflare container/);
-  assert.match(r.stdout, new RegExp(`^PASS  .*  @ ${f.head.slice(0, 8)} merged with main ${f.mainHead.slice(0, 8)}  \\(1s, in Cloudflare\\)$`, "m"));
-  assert.match(r.stdout, /Recorded on the merge with main at/);
-  assert.deepEqual(f.evidence(), [], "the Worker records a sandbox run itself");
-  // Without --merged the request asks for a plain run.
-  await f.run(["check", "t1", "--project", "proj", "--sandbox"]);
-  assert.deepEqual(f.posts.filter((p) => p.path.endsWith("/sandbox")).map((p) => p.body), [{ merged: true }, {}]);
-});
-
 
 test("preparation runs once in the merged tree before multiple checks, and runs again on retry", async (t) => {
   if (!canInspectSlots(t)) return;

@@ -100,7 +100,7 @@ function step(s: Verbed): string {
 function takeaways(): string {
   return `
 <p class="how-takeaways">${e(TAKEAWAYS)}</p>
-<p>Proven: every required check observed passing at the exact head Atelier reads from Artifacts, on the paths Atelier measures itself; an agent's own report never counts, and a project that wants results no agent can forge runs its checks in a Cloudflare container with <code>atelier init --sandbox-only</code>. Reviewed: protected changes approved by a model of another family than every contributor, or in single-family mode by a different model of the project's company; a developer override is recorded as one, never as a review. Recorded: every claim, push, check, review, acceptance and merge in the task's ledger, and its receipt attached to the merge as a git note.</p>
+<p>Proven: every required check observed passing at the exact head Atelier reads from Artifacts, on the paths Atelier measures itself; an agent's own report never counts, though a local result is the word of the machine that ran it. Reviewed: protected changes approved by a model of another family than every contributor, or in single-family mode by a different model of the project's company; a developer override is recorded as one, never as a review. Recorded: every claim, push, check, review, acceptance and merge in the task's ledger, and its receipt attached to the merge as a git note.</p>
 <p class="how-tagline">${e(TAGLINE)}</p>
 <h3 class="how-sub">Limits of enforcement</h3>
 <ul class="how-limits">${LIMITS.map((t) => `<li>${md(t)}</li>`).join("")}</ul>`;

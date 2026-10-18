@@ -74,7 +74,7 @@ const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
 export const cliState = { doneStep: undefined, loginToken: null, loginServer: null };
 // Each check the run recorded: { claim, result, where }, read into done's outcome.
 export const doneChecks = [];
-export const CLEAN_CLONE = "in a clean clone on this machine", CONTAINER = "in a Cloudflare container";
+export const CLEAN_CLONE = "in a clean clone on this machine";
 
 export function die(msg, code = 1) {
   if (cliState.doneStep) msg = `${cliState.doneStep} failed: ${msg}`;
@@ -1569,36 +1569,6 @@ export function writeReceipt(cwd, { name, id, item, owners, view, reviews, polic
   };
   writeFileSync(file, JSON.stringify(receipt, null, 2) + "\n", { flag: fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW });
   return file.slice(cwd.length + 1);
-}
-
-// Run the project's required checks in a Cloudflare container instead of
-// here. The Worker records the results itself; this only starts and waits.
-export async function checkInSandbox() {
-  const name = project(), id = itemArg(), as = await actor();
-  // --merged asks for the checks on the merge of the head with main's head;
-  // the Worker builds that tree itself and records the results bound to both.
-  const merged = args.merged === true;
-  const { runId } = await call("POST", `${I(name, id)}/sandbox`, merged ? { merged: true } : {}, as);
-  process.stderr.write(`atelier: running the checks for ${id}${merged ? " on its merge with main" : ""} in a Cloudflare container (run ${runId})…\n`);
-  let state;
-  for (let waited = 0; ; waited += 5) {
-    state = await call("GET", `${I(name, id)}/sandbox/${encodeURIComponent(runId)}`, undefined, as);
-    if (state.status === "done" || state.status === "failed") break;
-    if (waited > 20 * 60) die(`still ${state.status} after 20 minutes; check later with atelier show ${id}`);
-    await new Promise((ok) => setTimeout(ok, 5000));
-  }
-  const on = state.request?.merged && state.mainHead ? ` merged with main ${short(state.mainHead)}` : "";
-  for (const r of state.results ?? []) {
-    doneChecks.push({ claim: r.claim, result: r.notApplicable ? "not applicable" : r.passed ? "passed" : "failed", where: CONTAINER });
-    if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}${on}  (not run: this change touches none of the paths it applies to)`); continue; }
-    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}${on}  (${r.seconds}s, in Cloudflare)`);
-    if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
-  }
-  if (on) console.log(`Recorded on the merge with main at ${short(state.mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
-  else if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
-  if (state.status === "failed") die(`the run failed: ${state.error}`);
-  if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (!cliState.doneStep && state.results.some((r) => r.passed === false)) process.exit(2);
 }
 
 // What an agent relays is one line per field: text a person or an agent

@@ -42,7 +42,7 @@ function fixture(run) {
   return Promise.resolve().then(() => run({ dir, write })).finally(() => rmSync(dir, { recursive: true, force: true }));
 }
 
-const before = { protected: ["AGENTS.md"], eligible: ["claude"], refuseOverlap: false, approval: "Owner approved the copy", checks: ["npm test"], sandboxOnly: true };
+const before = { protected: ["AGENTS.md"], eligible: ["claude"], refuseOverlap: false, approval: "Owner approved the copy", checks: ["npm test"] };
 const IDENTITY = { name: "Project Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"] };
 
 test("refresh sends only ControlPlane fields and leaves project settings intact", () => fixture(async ({ dir, write }) => {
@@ -167,7 +167,7 @@ test("merge compares eligible agents, the overlap rule and checks with the accep
 });
 
 test("the acceptance's policy is its snapshot over the server's policy before the refresh, with the current policy for the rest", () => {
-  const current = { ...before, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true, checks: ["npm test", "npm run lint"], sandboxOnly: false };
+  const current = { ...before, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true, checks: ["npm test", "npm run lint"] };
   const server = { ...before, eligible: ["codex"], checks: ["npm test"] };
   // A full snapshot stands over the server's earlier policy.
   const full = { protected: ["AGENTS.md"], eligible: ["gemini"], refuseOverlap: false, checks: ["npm test"] };

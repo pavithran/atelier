@@ -146,14 +146,13 @@ function exported(name, atelier = ATELIER) {
 }
 
 // The path a call site names, as the table writes it: I(name, id) is the
-// item, a template on it is the item's verb, a run id under sandbox is
-// {run}, P(name) is the project, and a plain string is itself.
+// item, a template on it is the item's verb, P(name) is the project, and a plain string is itself.
 function declaredPath(expr) {
   const text = expr.trim();
   if (/^I\(\s*name\s*,\s*id\s*\)$/.test(text)) return ITEM;
   if (/^P\(\s*name\s*\)$/.test(text)) return "/projects/{project}";
-  const template = /^`\$\{I\(\s*name\s*,\s*id\s*\)\}((?:\/[a-z-]+)*)(\/\$\{encodeURIComponent\(runId\)\})?`$/.exec(text);
-  if (template) return `${ITEM}${template[1]}${template[2] ? "/{run}" : ""}`;
+  const template = /^`\$\{I\(\s*name\s*,\s*id\s*\)\}((?:\/[a-z-]+)*)`$/.exec(text);
+  if (template) return `${ITEM}${template[1]}`;
   // The project-level baseline read (t435), the one project route below the project record a runner token may call.
   if (/^`\$\{P\(\s*name\s*\)\}\/baseline-token`$/.test(text)) return "/projects/{project}/baseline-token";
   const literal = /^"(\/[a-z/-]+)"$/.exec(text);
@@ -376,7 +375,6 @@ test("the source check reads call sites as the commands write them", () => {
   assert.equal(declaredPath("I(name, id)"), ITEM);
   assert.equal(declaredPath("I(name,id)"), ITEM);
   assert.equal(declaredPath("`${I(name, id)}/review-skip`"), `${ITEM}/review-skip`);
-  assert.equal(declaredPath("`${I(name, id)}/sandbox/${encodeURIComponent(runId)}`"), `${ITEM}/sandbox/{run}`);
   assert.equal(declaredPath('"/runs"'), "/runs");
   assert.equal(declaredPath("P(name)"), "/projects/{project}");
   assert.equal(declaredPath("`${P(name)}/baseline-token`"), "/projects/{project}/baseline-token");

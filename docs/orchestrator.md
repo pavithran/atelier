@@ -249,7 +249,7 @@ The criteria are what section 4's review judges a change against, so criteria th
 ## 5. t16: integration branch per plan
 
 **Parts fork from the plan's fork, at its current head.** This changes the claim route's source repository. It also means changed paths must be measured against the plan's fork, not the baseline. Today these all assume the baseline:
-- `againstMain` in `src/sandbox/runner.ts`, and `measureWorkspace` in `src/diff.ts`, which the evidence route calls;
+- `measureWorkspace` in `src/diff.ts`, which the evidence route calls;
 - `cleanClone` in `cli/atelier.mjs`;
 - `itemDiff`;
 - `atelier update`.
@@ -302,7 +302,6 @@ A failed integration attempts to restore its previous head.
 **Where the merge can run.**
 - **Not in the Worker today.** The Artifacts binding cannot write; only a git push with a write token can.
 - **isomorphic-git** is not a dependency. In a Worker it could merge in memory and push over HTTP, but that is t47.
-- **Not in the check container.** Its stated invariant is that it holds no credential and cannot reach the repository.
 - **So it runs on a home runner now.**
 
 **Friction with governed projects.** Under a governed policy, `assertEligible` needs `agentOf()` to name the actor, and it maps `atelier/integrator` to nothing, so the claim would be refused. Treat the integrator as a reserved actor, reachable only through a t43 token bound to it.
@@ -389,7 +388,7 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 **t16: Integration branch per plan**
 
 11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`. Built.
-12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, the sandbox's base repository, and CLI `check`, `diff` and `update`. Built.
+12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, and CLI `check`, `diff` and `update`. Built.
 13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check at the integrator's claim, marking parts merged when the plan merges, and the reserved integrator actor. Built.
 14. **Runner `--integrate`.** The integrate and refresh jobs. Built. The refresh is dispatched by the tick when main has moved and by `atelier plan refresh`, and recorded through the `refreshed` and `refresh-failed` routes. A conflicted refresh, or `atelier plan refresh --resolve`, adds a merge-main part that the runner sets up by merging main into the part's workspace. A part sent back for a conflict with the plan's branch is dispatched with the branch's head, which the runner merges into its workspace the same way. The merge receipt still lists no parts: every merge writes the landing receipt (`writeReceipt` in `cli/atelier.mjs`), and it names the item, not the plan's parts. Tests: `test/plan-refresh.spec.ts`, `test/plan-merge-main.spec.ts`, `test/plan-merge-plan.spec.ts`, `test/integrate-runner.test.mjs`, `test/runner-merge-main.test.mjs`, `test/runner-merge-plan.test.mjs`.
 

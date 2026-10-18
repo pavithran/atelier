@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bytesOf, changedRegions, commitsSince, linesConflict, linesOf, mergeLines, mergePatch, mergeTrees, mergeability, mergedTreeRefusal, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
+import { bytesOf, changedRegions, commitsSince, linesConflict, linesOf, mergeLines, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
 import type { Reader } from "../src/diff.ts";
 
 // A content-addressed toy: files are named by their text, trees by a label.
@@ -175,8 +175,7 @@ test("a file on one side where the other side has a folder is a conflict, as in 
   assert.equal(replaced.clean, true, "a deleted path leaves nothing to collide with");
 });
 
-// The merged tree for a check in the sandbox: git's result where the
-// preview's conflict rule finds none, and no tree where it finds one.
+// Git's result where the preview's conflict rule finds none.
 test("mergeLines applies both sides' changes to separate lines, a shared change once, and refuses a conflict", () => {
   const L = (s: string) => s.split("");
   assert.deepEqual(mergeLines(L("12345"), L("O2345"), L("1234F")), L("O234F"));
@@ -190,36 +189,6 @@ test("mergeLines applies both sides' changes to separate lines, a shared change 
 
 test("bytesOf writes linesOf's lines back, keeping a missing final newline", () => {
   for (const text of ["a\nb\n", "a\nb", "", "\n", "a"]) assert.equal(new TextDecoder().decode(bytesOf(linesOf(new TextEncoder().encode(text)))), text);
-});
-
-test("mergePatch lays main's changes over the head: main's files where the task left them, merged lines where both changed, nothing where they agree", async () => {
-  const base = { "a.ts": "1\n2\n3\n4\n5\n", "b.ts": "b\n", "c.ts": "c\n", "same.ts": "s\n", "gone.ts": "g\n" };
-  const main = repo({ base, ours: { "a.ts": "ONE\n2\n3\n4\n5\n", "b.ts": "B\n", "c.ts": "c\n", "same.ts": "S\n", "new.ts": "n\n" } });
-  const task = repo({ base, theirs: { "a.ts": "1\n2\n3\n4\nFIVE\n", "b.ts": "b\n", "c.ts": "C\n", "same.ts": "S\n", "gone.ts": "g\n", "t.ts": "t\n" } });
-  const { patch, conflicts } = await mergePatch(main, task, "base", "ours", "theirs");
-  assert.deepEqual(conflicts, []);
-  assert.deepEqual([...patch.keys()].sort(), ["a.ts", "b.ts", "gone.ts", "new.ts"], "c.ts and t.ts are the task's alone, and same.ts changed alike");
-  assert.equal(new TextDecoder().decode(patch.get("a.ts")!.data), "ONE\n2\n3\n4\nFIVE\n");
-  assert.deepEqual(patch.get("b.ts"), { type: "blob", hash: id("B\n") });
-  assert.equal(patch.get("gone.ts"), null, "deleted on main");
-  assert.deepEqual(patch.get("new.ts"), { type: "blob", hash: id("n\n") });
-  // Main unchanged since the fork point: nothing to lay over.
-  assert.equal((await mergePatch(main, task, "base", "base", "theirs")).patch.size, 0);
-});
-
-test("mergePatch gives the preview's conflicts and no tree", async () => {
-  const main = repo({ base: { "a.ts": "1\n2\n" }, ours: { "a.ts": "1\nX\n", "n.ts": "main\n" } });
-  const task = repo({ base: { "a.ts": "1\n2\n" }, theirs: { "a.ts": "1\nY\n" } });
-  const { patch, conflicts } = await mergePatch(main, task, "base", "ours", "theirs");
-  assert.equal(patch.size, 0);
-  assert.deepEqual(conflicts, [{ path: "a.ts", reason: "both sides changed the same lines" }]);
-});
-
-test("mergeTrees reads the fork point, main's head and the task's head as the preview does", async () => {
-  const trees = { base: { "a.ts": "1\n" }, m1: { "a.ts": "2\n" }, task: { "a.ts": "1\nt\n" }, x: {} };
-  const A = artifactsOf({ main: { log: ["m1", "base"], trees }, fork: { log: ["task", "base"], trees }, apart: { log: ["x"], trees } });
-  assert.deepEqual(await mergeTrees(await A.get("main"), await A.get("fork")), { base: "base", baseTree: "base", main: "m1", mainTree: "m1", head: "task", headTree: "task" });
-  assert.equal(await mergeTrees(await A.get("main"), await A.get("apart")), null, "no fork point");
 });
 
 // Trees with folders, for the merge declarations (t463): each label's files
@@ -275,42 +244,22 @@ test("the preview keeps a record key both sides changed differently, and a misde
   assert.match((await mergeability(bad, bad, "base", "ours", "theirs")).conflicts[0]?.reason ?? "", /bin\/merge-manifest\.json is not valid JSON/);
 });
 
-test("the sandbox's merged tree unites records by key, and a merge needing a generator gives no tree but names the local merged check (t463)", async () => {
-  const base = declaring({ "out/index.txt": "base\n", "routes.tsv": "/a\tA\n", "cmds/base.txt": "b\n" });
-  const records = nested({ base, ours: { ...base, "routes.tsv": "/a\tA\n/main\tM\n" }, theirs: { ...base, "routes.tsv": "/a\tA\n/task\tT\n" } });
-  const merged = await mergePatch(records, records, "base", "ours", "theirs");
-  assert.deepEqual(merged.conflicts, []);
-  assert.equal(new TextDecoder().decode(merged.patch.get("routes.tsv")!.data), "/a\tA\n/main\tM\n/task\tT\n");
-  assert.equal(mergedTreeRefusal(merged, "f".repeat(40)), null);
-  const gen = nested({ base, ours: { ...base, "cmds/main.txt": "m\n", "out/index.txt": "base\nmain\n" }, theirs: { ...base, "cmds/task.txt": "t\n", "out/index.txt": "base\ntask\n" } });
-  const refused = await mergePatch(gen, gen, "base", "ours", "theirs");
-  assert.equal(refused.patch.size, 0);
-  assert.deepEqual(refused.regenerable, ["out/index.txt"]);
-  assert.equal(mergedTreeRefusal(refused, "f".repeat(40)), "the merge with main at ffffffff needs indexes to regenerate out/index.txt (declared in bin/merge-manifest.json), and no generator runs in the sandbox; check the merge with atelier check --merged without --sandbox, which merges through the merge pipeline and regenerates them, or bring main into the workspace with atelier update and check its head");
-  assert.match(mergedTreeRefusal({ conflicts: [{ path: "a.ts", reason: "both sides changed the same lines" }] }, "f".repeat(40)) ?? "", /stops on conflicts: a\.ts \(both sides changed the same lines\)/);
-});
-
-test("merged registry validation rejects independent duplicate keys in preview and sandbox (t463)", async () => {
+test("merged registry validation rejects independent duplicate keys in the preview (t463)", async () => {
   const manifest = JSON.stringify({ version: 1, registries: [{ name: "commands", dir: "cmds", key: "^key: (.+)$", files: "*.txt", exclude: ["index.txt"] }] });
   const base = { "bin/merge-manifest.json": manifest, "cmds/base.txt": "key: base\n" };
   const ours = { ...base, "cmds/main.txt": "key: same\n", "cmds/index.txt": "ignored\n", "cmds/readme.md": "ignored\n" };
   for (const key of ["same", "unique"]) {
     const r = nested({ base, ours, theirs: { ...base, "cmds/task.txt": `key: ${key}\n` } });
     const preview = await mergeability(r, r, "base", "ours", "theirs");
-    const merged = await mergePatch(r, r, "base", "ours", "theirs");
     assert.equal(preview.clean, key === "unique");
-    assert.deepEqual(merged.conflicts, preview.conflicts);
-    if (key === "same") {
-      assert.match(preview.conflicts[0].reason, /registry key same is declared by both cmds\/main.txt and cmds\/task.txt/);
-      assert.equal(merged.patch.size, 0);
-    }
+    if (key === "same") assert.match(preview.conflicts[0].reason, /registry key same is declared by both cmds\/main.txt and cmds\/task.txt/);
   }
   // A deletion must not leave a phantom duplicate in the combined listing.
   const r = nested({ base, ours: { ...base, "cmds/new.txt": "key: base\n" }, theirs: { "bin/merge-manifest.json": manifest } });
   assert.equal((await mergeability(r, r, "base", "ours", "theirs")).clean, true);
 });
 
-test("preview and sandbox both select record declarations introduced only by the task (t463)", async () => {
+test("the preview selects record declarations introduced only by the task (t463)", async () => {
   const base = { "bin/merge-manifest.json": JSON.stringify({ version: 1 }), "routes.tsv": "/base\tB\n" };
   const r = nested({
     base,
@@ -318,7 +267,4 @@ test("preview and sandbox both select record declarations introduced only by the
     theirs: { ...base, "bin/merge-manifest.json": JSON.stringify({ version: 1, records: [{ path: "routes.tsv", key: "^(\\S+)\\t" }] }), "routes.tsv": "/base\tB\n/task\tT\n" },
   });
   assert.equal((await mergeability(r, r, "base", "ours", "theirs")).clean, true);
-  const merged = await mergePatch(r, r, "base", "ours", "theirs");
-  assert.deepEqual(merged.conflicts, []);
-  assert.equal(new TextDecoder().decode(merged.patch.get("routes.tsv")!.data), "/base\tB\n/main\tM\n/task\tT\n");
 });

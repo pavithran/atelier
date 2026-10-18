@@ -300,7 +300,7 @@ function cliFixture(t, options) {
   writeFileSync(preload, `
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
-  const project = { name: "demo", title: null, repo: "demo", policy: { checks: [], protected: [], eligible: [], refuseOverlap: false, sandboxOnly: false } };
+  const project = { name: "demo", title: null, repo: "demo", policy: { checks: [], protected: [], eligible: [], refuseOverlap: false } };
   const data = path === "/api/config" ? { ownerActor: "owner", ownerName: "Pavi" }
     : path === "/api/version" ? { capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} }
     : method === "PUT" ? { project, baseline: { remote: ${JSON.stringify(s.baseline)}, token: "fake-baseline-token", defaultBranch: "main" } } : {};
