@@ -2882,7 +2882,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // a missing independent review. Anything but text arrives as a blank
       // reason, which the Ledger refuses.
       // note, when sent, is the owner's own word on the acceptance, kept
-      // with it in the ledger (land.sh records the session's note there).
+      // with it in the ledger (the orchestrator's landing script records the session's note there).
       // An override through the API comes with the owner token, which an
       // agent session may hold, so the Ledger takes it only with the
       // developer's direction, `quote` with the acting model, recorded with

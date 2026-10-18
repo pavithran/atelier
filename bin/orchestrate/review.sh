@@ -22,8 +22,8 @@ project=$(project_of "$ws")
 main=${MAIN_REPO:-$(checkout_of "$project")}
 # The default bar and the reply format are Atelier's own
 # (src/review/verdict.ts), the ones the runner's review brief states, so the
-# two reviews block on the same defects and land.sh can read the answer with
-# the same parser.
+# two reviews block on the same defects and verdict.mjs can read the answer
+# with the same parser.
 bar=${REVIEW_BAR:-$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { DEFAULT_REVIEW_BAR } from "./src/review/verdict.ts"; process.stdout.write(DEFAULT_REVIEW_BAR)')}
 format=$(cd "${0:A:h}/../.." && node --input-type=module -e 'import { REPLY_FORMAT } from "./src/review/verdict.ts"; process.stdout.write(REPLY_FORMAT)')
 # The prose standard's line is Atelier's own (src/prose-standard.ts), the one

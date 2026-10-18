@@ -75,7 +75,6 @@ test/status.test.mjs 16
 test/adopt.test.mjs 16
 test/landing-lease-wait.test.ts 16
 test/plan-cli.test.mjs 15
-test/land-queue.test.mjs 15
 test/runner-merge-main.test.mjs 13
 test/check-cleanup.test.mjs 13
 test/commit-identity.test.mjs 12

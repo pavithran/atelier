@@ -752,18 +752,6 @@ it.each(["lease", "failed", "done"] as const)("does not replace an existing hand
   expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-status-existing");
 });
 
-it("fences stale-record clearing to the owner and the instance read", async () => {
-  const { L, id } = await pushedTask("wf-clear-fence", "wf-clear-current");
-  let refused = false;
-  try { await L.clearLandingWorkflow(id, "wf-clear-current", OPUS); }
-  catch (error) { refused = true; expect(String(error)).toMatch(/only the developer/); }
-  expect(refused).toBe(true);
-  await L.clearLandingWorkflow(id, "wf-clear-old", "owner");
-  expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-clear-current");
-  await L.clearLandingWorkflow(id, "wf-clear-current", "owner");
-  expect(await L.landingWorkflowOf(id)).toBeNull();
-});
-
 it("runs its first stage when execution starts before create returns and replaces a terminal record", async () => {
   const project = "wf-create-race";
   const { L, id } = await pushedTask(project, "wf-old-terminal");

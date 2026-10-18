@@ -56,12 +56,10 @@ export const BACKFILL_DAYS = 7;
 export const TREND_DAYS = 14;
 
 const DAY_MS = 86_400_000;
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 // ── UTC days ───────────────────────────────────────────────────────────────
 
 export const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
-export const isDay = (s: string): boolean => DAY.test(s) && utcDay(Date.parse(`${s}T00:00:00.000Z`)) === s;
 // The instant a day ends: the next day's midnight, UTC. An event belongs to
 // the day when it was recorded strictly before it.
 export const dayEnd = (day: string): string => new Date(Date.parse(`${day}T00:00:00.000Z`) + DAY_MS).toISOString();

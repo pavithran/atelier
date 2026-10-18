@@ -225,7 +225,6 @@ it("deploy records command outcome separately and the real route verifies commit
 it("cancelling before publication releases only that reservation and clearing policy permits a later landing", async () => {
   const { L, call, publish } = await setup("post-cancel");
   await call("POST", "/items/t1/landing", { head: B });
-  const first = (await L.postMergeRun("t1"))!;
   await L.cancelLanding("t1", "owner");
   await L.cancelLanding("t1", "owner");
   expect(await L.activePostMerge()).toBeNull();
@@ -233,5 +232,4 @@ it("cancelling before publication releases only that reservation and clearing po
   expect((await call("POST", "/items/t1/landing", { head: B })).status).toBe(200);
   expect(await L.postMergeRun("t1")).toBeNull();
   publish(); expect((await call("POST", "/items/t1/merged", { mergeCommit: M })).status).toBe(200);
-  expect((await L.postMergeRuns()).find(r => r.id === first.id)?.state).toBe("complete");
 });

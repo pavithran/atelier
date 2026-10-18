@@ -1899,7 +1899,7 @@ function localWorkspace(dir, id, from) {
 }
 
 // Whether a landing is running on this machine for the project: the lock
-// file bin/orchestrate/queue.sh holds through the kernel's file lock (flock
+// file a landing script holds through the kernel's file lock (flock
 // on Linux, lockf on macOS) while it lands. The file stays after a landing,
 // so existence says nothing; it is probed without blocking in a child process
 // that takes the lock and exits at once, and a probe that could not run, or

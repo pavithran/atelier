@@ -6,15 +6,12 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const root = resolve('.');
-const queue = join(root, 'bin/orchestrate/land-queue.sh');
-const zsh = ['/bin/zsh', '/usr/bin/zsh'].find(existsSync);
 const post = join(root, 'bin/orchestrate/post-merge.sh');
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'atelier-orchestrate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, 'bin'); mkdirSync(bin);
   const env = { ...process.env, ATELIER_CACHE: dir, ATELIER_PROJECT: 'fixture',
-    LAND_QUEUE_LOAD: '100000', LAND_QUEUE_IDLE: '1', LAND_QUEUE_POLL: '1',
     PATH: `${bin}:${process.env.PATH}` };
   const script = (name, content) => { const path = join(bin, name); writeFileSync(path, `#!/bin/sh\n${content}\n`, { mode: 0o755 }); return path; };
   return { dir, env, script };
@@ -22,22 +19,6 @@ function fixture(t) {
 function run(file, args, env, cwd = root) {
   return spawnSync(file, args, { env, cwd, encoding: 'utf8', timeout: 20000 });
 }
-
-test('successful landings wait for post-merge; failure survives restart without consuming the next task', { skip: !zsh && 'zsh is not installed' }, (t) => {
-  const f = fixture(t);
-  f.env.ATELIER_CLI = f.script('mock-cli', `echo "land $2" >> "$ATELIER_CACHE/order"\necho "$2 landed through the landing Workflow; the lease is released."`);
-  f.env.LAND_QUEUE_POST_MERGE = f.script('hook', `echo "post $1" >> "$ATELIER_CACHE/order"\n[ -f "$ATELIER_CACHE/ready" ]`);
-  let r = run(zsh, [queue, 't1:a/b', 't2:c/d'], f.env);
-  assert.equal(r.status, 1, r.stderr);
-  assert.match(r.stdout, /post-merge blocked/);
-  assert.equal(readFileSync(join(f.dir, 'land-queue/fixture.queue'), 'utf8'), 't2:c/d\n');
-  assert.equal(readFileSync(join(f.dir, 'order'), 'utf8'), 'land t1\npost t1\n');
-  writeFileSync(join(f.dir, 'ready'), '');
-  r = run(zsh, [queue], f.env);
-  assert.equal(r.status, 0, r.stderr);
-  assert.equal(readFileSync(join(f.dir, 'order'), 'utf8'), 'land t1\npost t1\npost t1\nland t2\npost t2\n');
-  assert.ok(!existsSync(join(f.dir, 'land-queue/fixture.queue.post-merge')));
-});
 
 function repository(t) {
   const f = fixture(t);

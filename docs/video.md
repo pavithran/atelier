@@ -222,8 +222,7 @@ showcase.
 
 On screen, dark: the architecture drawn layer by layer, requests travelling
 along its edges. Live: Worker, Durable Objects, Artifacts, Workers Logs, AI
-Gateway, Access, R2 (`atelier-large`), Workflows. Built, not yet in daily
-use: Analytics Engine (bound; nothing writes to it yet).
+Gateway, Access, R2 (`atelier-large`), Workflows.
 
 > It runs on Cloudflare: a Worker for the API and the gate, a Durable Object for each project's ledger, and Artifacts for every repository and fork.
 >
