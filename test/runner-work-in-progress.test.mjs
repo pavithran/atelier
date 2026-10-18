@@ -135,20 +135,53 @@ test("a clean merge of main onto the work in progress still runs the builder, wh
     io.fetch = async () => {};
     io.mergeMain = async () => { head = "merged0123456"; return { code: 0, output: "" }; };
     io.conflicts = async () => [];
+    const gitReads = [];
+    io.git = async (args) => { gitReads.push(args[0]); return ""; };
     const cli = io.cli;
     io.cli = async (argv, cwd) => (argv[0] === "base-token" ? JSON.stringify({ remote: "https://artifacts.example/base", token: "t", defaultBranch: "main" }) : cli(argv, cwd));
     const harness = io.harness;
     io.harness = async (...args) => { const result = await harness(...args); if (added) head = added; return result; };
-    return { state: await runTask(job, config, "home:studio", io), calls, logs };
+    return { state: await runTask(job, config, "home:studio", io), calls, logs, gitReads };
   };
   const idle = await run(null);
   assert.ok(idle.calls.some((c) => c.harness), "the merge does not finish the unverified work without the builder");
   assert.match(idle.calls.find((c) => c.brief).brief, /Continue from it: read it with git show wip012345678/);
   assert.equal(idle.state.reason, "harness made no new commit");
+  assert.deepEqual(idle.gitReads, [], "a harness that added nothing after the merge has no leftovers to tidy");
   assert.ok(!commands(idle.calls).includes("finish"));
   const built = await run("next0123456789");
   assert.equal(built.state.phase, "submitted");
   assert.ok(commands(built.calls).includes("finish"));
+});
+
+test("edits a builder leaves after a clean merge onto work in progress, ending validation_blocked, are kept", async () => {
+  const MAIN = "c".repeat(40);
+  const message = workInProgressMessage(actor, BLOCKED).join("\n\n");
+  const job = { ...assignment, item: { ...assignment.item, state: "submitted", head: "wip0123456789", base: "base", dispatch: { job: "merge-main", head: MAIN } } };
+  // The builder leaves edits and ends validation_blocked; the head stays the merge.
+  const { io, calls, logs } = fixture({ message, wip: "kept0123456789" });
+  let head = "wip0123456789";
+  io.head = async (cwd, options) => (options?.ref === "FETCH_HEAD" ? MAIN : head);
+  io.fetch = async () => {};
+  io.mergeMain = async () => { head = "merged0123456"; return { code: 0, output: "" }; };
+  io.conflicts = async () => [];
+  const cli = io.cli;
+  io.cli = async (argv, cwd) => (argv[0] === "base-token" ? JSON.stringify({ remote: "https://artifacts.example/base", token: "t", defaultBranch: "main" }) : cli(argv, cwd));
+  const state = await runTask(job, config, "home:studio", io);
+  assert.equal(runOutcome(state), "validation_blocked");
+  assert.equal(state.workInProgress, "kept0123456789");
+  assert.ok(calls.some((c) => c.commitWork), "the edits are committed as work in progress");
+  assert.deepEqual(commands(calls).filter((c) => c === "push" || c === "release" || c === "finish"), ["push", "release"]);
+  assert.ok(logs.includes("released: work in progress kept0123 pushed unsubmitted for the next run"));
+  // Nothing uncommitted: the merge is the head the builder started from, so
+  // the run is released as no new commit rather than holding the claim.
+  const idle = fixture({ message, wip: null });
+  idle.io.head = io.head; idle.io.fetch = io.fetch; idle.io.mergeMain = io.mergeMain; idle.io.conflicts = io.conflicts;
+  const idleCli = idle.io.cli;
+  idle.io.cli = async (argv, cwd) => (argv[0] === "base-token" ? JSON.stringify({ remote: "https://artifacts.example/base", token: "t", defaultBranch: "main" }) : idleCli(argv, cwd));
+  head = "wip0123456789";
+  await runTask(job, config, "home:studio", idle.io);
+  assert.ok(idle.logs.includes("released: no new commit"));
 });
 
 test("a validation_blocked run inside a conflicted merge of main commits nothing for the builder", async () => {

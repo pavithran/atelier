@@ -1545,6 +1545,10 @@ export async function runTask(assignment, config, name, io) {
   // from is such work in progress; and the head the harness of such a run
   // starts from, past a clean merge of main.
   let runEnv = null, continuing = false, harnessFrom = null;
+  // The head the harness started from: the workspace's head at the claim, or
+  // the clean merge of main that was put on top of work in progress (t557).
+  // Every comparison of 'did the harness move the head' is against this.
+  const startedAt = () => harnessFrom ?? before;
   // The recovery obligation (t363): a harness run failed in this workspace and
   // none has since succeeded. `failedRun` is what the run found at its start;
   // the rest is what this run did to it.
@@ -1558,7 +1562,7 @@ export async function runTask(assignment, config, name, io) {
   // differs from the head now, else the task's recorded head or its base.
   const startOfWork = () => {
     const now = markHead ?? before;
-    return before && before !== now ? before : item.head && item.head !== now ? item.head : item.base ?? before ?? null;
+    return startedAt() && startedAt() !== now ? startedAt() : item.head && item.head !== now ? item.head : item.base ?? before ?? null;
   };
   const markFailure = async (info = {}) => {
     failedNow = true;
@@ -1872,7 +1876,7 @@ export async function runTask(assignment, config, name, io) {
     // that is named in the failure and the run report, and the finish refuses
     // it as before. Any doubt (git unreadable, the follow-up failing) leaves
     // the run as it was.
-    if (result && !resumed && !harnessExit && !result.timedOut && result.code === 0 && head !== before) {
+    if (result && !resumed && !harnessExit && !result.timedOut && result.code === 0 && head !== startedAt()) {
       const left = await tidyLeftovers();
       leftovers = left.files;
       if (left.head) head = left.head;
@@ -1886,7 +1890,7 @@ export async function runTask(assignment, config, name, io) {
     // unchanged head is a stall, released below; the log says which.
     // The head the harness started from: past a clean merge onto work in
     // progress (t557), the merge. Work in progress is never a complete task.
-    const from = harnessFrom ?? before;
+    const from = startedAt();
     const completeness = () => continuing
       ? { complete: false, why: `the workspace head ${String(head).slice(0, 8)} is unverified work in progress` }
       : alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h));
@@ -2008,7 +2012,7 @@ export async function runTask(assignment, config, name, io) {
       // commit of the builder's to make; and a commit whose push fails stays
       // local, under the claim, as any other commit does.
       let kept = null, unstaged = false;
-      if (head === before && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
+      if (head === startedAt() && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
           !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
         try {
           const wip = await io.commitWork(workspace, runEnv, workInProgressMessage(actor, error.message));
@@ -2038,7 +2042,7 @@ export async function runTask(assignment, config, name, io) {
           io.log(`released: work in progress ${kept.slice(0, 8)} pushed unsubmitted for the next run`);
         }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-      } else if (head === before && !unstaged) {
+      } else if (head === startedAt() && !unstaged) {
         try {
           await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)], workspace);
           // The task is released with nothing committed: nothing is owed.
