@@ -251,3 +251,36 @@ test("a failed or timed-out install makes the evidence not-run and runs no test"
     assert.deepEqual(npm, [], "nothing is run on an unprepared clone");
   }
 });
+
+// t732: the 2026-10-17 review in which gpt-6-astra wrote "I could not
+// independently reproduce the full-suite result" got a tail of output and no
+// count or failing name, and was not told the run was done for it.
+const NODE_FAIL = "✔ good one (0.2ms)\n✖ the bad one (0.3ms)\nℹ tests 2\nℹ pass 1\nℹ fail 1\n\n✖ failing tests:\n\ntest at x.test.mjs:2:26\n✖ the bad one (0.3ms)\n  AssertionError: 1 == 2\n";
+const VITEST_FAIL = " FAIL  test/b.spec.ts > bad two\nAssertionError: expected 1 to be 2\n\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n";
+
+test("the whole output is read for counts and failing names, and unreadable output gives none", async () => {
+  const { summarizeTestOutput } = await import("../cli/runner.mjs");
+  assert.deepEqual(summarizeTestOutput(NODE_FAIL), { passed: 1, failed: 1, failing: ["the bad one"] });
+  assert.deepEqual(summarizeTestOutput(VITEST_FAIL), { passed: 3, failed: 1, failing: ["test/b.spec.ts > bad two"] });
+  assert.deepEqual(summarizeTestOutput("Tests  4 passed (4)"), { passed: 4, failed: 0, failing: [] });
+  assert.deepEqual(summarizeTestOutput("something else entirely"), { failing: [] });
+});
+
+test("a failing test is named in the brief with the counts, and the reviewer is told not to run it again", async () => {
+  const { dir, head } = repo({ "test/a.test.mjs": "x", "test/b.spec.ts": "x" });
+  const { run } = runner((command) => command[0].includes("vitest") ? { code: 1, output: VITEST_FAIL } : command[1] === "test" ? { code: 1, output: NODE_FAIL } : {});
+  const evidence = await collectRunnerEvidence({ source: dir, head, changedPaths: ["test/a.test.mjs", "test/b.spec.ts"], run, prepare });
+  assert.equal(evidence.tests.passed, 4);
+  assert.equal(evidence.tests.failed, 2);
+  const text = brief({ ...evidence, head: H1 });
+  const body = section(text);
+  assert.match(body, /Counted in the output: 4 passed, 2 failed/);
+  assert.match(body, /Failing:\n```\nthe bad one\ntest\/b\.spec\.ts > bad two\n```/);
+  assert.match(body, /do not run them again/);
+});
+
+test("a run whose output has no count shows none, not a guess", () => {
+  const body = section(brief({ head: H1, tests: { status: "pass", command: "npm test" }, typecheck: { status: "pass" } }));
+  assert.doesNotMatch(body, /Counted in the output/);
+  assert.match(body, /do not run them again/);
+});
