@@ -33,6 +33,7 @@ import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { callPath, declaredCall, RUNNER_COMMANDS } from "../src/tokens.ts";
 import { mergeMainAndRegenerate } from "./land.mjs";
 import { runTaskRefresh } from "./task-refresh.mjs";
+import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 
@@ -3306,6 +3307,25 @@ export function infrastructureFailureCount(count, state) {
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
+// A job that fails on the runner's side again and again (a git command that
+// exits 1 on every lease) is not offered to it again at once (t763): the
+// integrator took the same refresh lease 334 times in a day, each failing the
+// same way, with a poll's wait between and nothing longer. The first two
+// failures in a row cost no wait, as before (the infrastructure cap of three
+// already ends a task that keeps one dispatch); after the third the task
+// waits backoffPolls(n) polls (30 seconds each): 2, 4, 8 and on, at most 60
+// (half an hour). The wait is kept by project, task and job, not by dispatch,
+// so a new dispatch of the same job does not clear it; any run that does not
+// fail on the runner's side does.
+export const backoffPolls = (failures) => (failures < 3 ? 0 : Math.min(2 ** (failures - 2), 60));
+export const backoffKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.job ?? null]);
+export function backoffAfter(entry, state, poll) {
+  if (state.phase !== "failed") return undefined;
+  if (state.taskFailure || state.recorded || state.claimRefused || state.skipped || state.providerLimit || state.terminalState) return entry;
+  const count = (entry?.count ?? 0) + 1;
+  return { count, due: poll + backoffPolls(count) };
+}
+
 // A claim that lost the race to a hold (the server's 409 held, t540): the
 // claim the task waits on came back between this runner's offer and its
 // claim. It is not refused for good, so the runner keeps no refusal of it:
@@ -3319,9 +3339,11 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), poll = 0 }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), poll = 0 }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
+  const waiting = backoff.get(backoffKey(task));
+  if (waiting && poll < waiting.due) return `Passed by: it failed on this runner ${waiting.count} time${waiting.count === 1 ? "" : "s"} in a row; it is tried again in ${waiting.due - poll} poll${waiting.due - poll === 1 ? "" : "s"}.`;
   // A post-merge review whose merge commit no source held (t591) waits for
   // the baseline to move, whatever number the request has since.
   const absent = missing.get(missingKey(task));
@@ -3725,7 +3747,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
+  const refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -3883,7 +3905,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // build's merge of main: a process group ended with the runner.
     runGenerator: (argv, opts) => runGroup(argv, { ...opts, signal: controller.signal, timeoutMs: DEFAULT_TASK_TIMEOUT_MS }),
     git: async (args, { cwd, token, allowFail = false, raw = false, env = null, timeoutMs } = {}) => {
-      const childEnv = token || env ? { ...(token ? gitAuth(token) : process.env), ...(env ?? {}) } : null;
+      const base = token || env ? { ...(token ? gitAuth(token) : process.env), ...(env ?? {}) } : null;
+      const childEnv = talksToRemote(args) ? lowSpeedEnv(base ?? process.env) : base;
       const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], timeoutMs, ...(childEnv ? { env: childEnv } : {}) });
       if (result.timedOut) throw new Error(`git ${args[0]} timed out`);
       if (controller.signal.aborted) throw new Error("interrupted");
@@ -3971,7 +3994,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // (cli/merge-pipeline.mjs) before anything merges in it, the harness's
     // own merges included.
     clone: async (remote, token, dir) => {
-      const out = await checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild);
+      const out = await checked(["git", "clone", "--quiet", remote, dir], { env: lowSpeedEnv(gitAuth(token)), signal: controller.signal, step: "clone" }, executeChild);
       installMergeConfig(dir);
       return out;
     },
@@ -4012,7 +4035,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // The integrate and refresh jobs' git operations: fetch a head, merge it
     // onto the plan's branch, and reset the workspace for a rollback. Their
     // pushes go through atelier push.
-    fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: gitAuth(token), signal: controller.signal, step: "fetch" }, executeChild),
+    fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: lowSpeedEnv(gitAuth(token)), signal: controller.signal, step: "fetch" }, executeChild),
     // The integrate and refresh merges and a merge-main part's merge
     // (startMergeMain) all go through the merge pipeline (pipelineMerge);
     // a merge-main merge leaves its conflicts in place, and the files it
@@ -4187,7 +4210,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, poll: polls });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, poll: polls });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4243,6 +4266,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           const key = failureKey(task), count = failureCount(failures.get(key) ?? 0, state);
           failures.set(key, count);
           if (count === 2) io.log(`${task.project}/${task.item.id} needs the developer's attention after 2 failures; skipped for this process`);
+          const waiting = backoffAfter(backoff.get(backoffKey(task)), state, polls);
+          if (waiting) backoff.set(backoffKey(task), waiting); else backoff.delete(backoffKey(task));
           const infrastructureCount = infrastructureFailureCount(infrastructureFailures.get(key) ?? 0, state);
           infrastructureFailures.set(key, infrastructureCount);
           if (infrastructureCount === 3) io.log(`${task.project}/${task.item.id} needs the developer's attention after 3 consecutive infrastructure failures: ${state.reason}; skipped for this process`);
