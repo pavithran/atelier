@@ -110,7 +110,7 @@ export interface FastLanding {
 }
 
 // A build a runner made in fast mode (t589) and reported ready for the
-// owner's batch: the commit atelier fast land takes as tN=SHA.
+// developer to merge: the commit atelier fast status lists as tN=SHA.
 export type FastReadyEntry = FastReady & { item: string; title: string; at: string; by: string };
 
 // A developer branch's last push (t641): its name under wip/, the commit
@@ -5413,7 +5413,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Every open task's standing fast-build report, oldest first: what atelier
-  // fast status lists as tN=SHA for atelier fast land.
+  // fast status lists as tN=SHA.
   fastReadyList(): FastReadyEntry[] {
     this.project();
     const kinds = ["item.fast_ready", ...FAST_READY_STALE];

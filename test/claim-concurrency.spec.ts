@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
-import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { taskForkMark } from "../src/rules.ts";
-import { setRetryBaseMs } from "../src/transient.ts";
+import { setForkWaitMs, setRetryBaseMs } from "../src/transient.ts";
 
 // These tests inject transient Artifacts failures; the retry backoff would
 // otherwise spend seconds waiting (and time out under load). Milliseconds do.
@@ -376,3 +376,74 @@ it("t496: abandon during a dispatched claim's not-ready fork stays closed on eve
   expect(access).not.toHaveBeenCalled();
   expect(fa.live("abandon-not-ready--t1")).toEqual([]);
 }, 30_000);
+
+const get = (artifacts: Artifacts, path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
+
+// t761 (audit finding 3): about forty-five Artifacts calls sit outside
+// artifactsStep, and a one-second Artifacts blip on any of them answered 500.
+describe("t761: a transient Artifacts failure answers 503 on any route", () => {
+  it("a route that calls Artifacts outside artifactsStep answers 503 with Retry-After, not 500", async () => {
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
+    let down = true;
+    const { fa } = await setup("concurrency-bare", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: () => down });
+    const browse = () => get(fa.artifacts, "/p/concurrency-bare/code");
+    const first = await browse();
+    expect(first.status).toBe(503);
+    expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(errors.join("\n")).toContain("code=UNAVAILABLE");
+    down = false;
+    expect((await browse()).status).not.toBe(503);
+  });
+
+  it("an error that is not a passing Artifacts failure still answers 500", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { L, callers, claim } = await setup("concurrency-bare-500", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false });
+    await L.claim("t1", "claude-code/agent-1");
+    await L.setFork("t1", "concurrency-bare-500--gone", H0, "claude-code/agent-1");
+    expect((await callers[0]("POST", claim("t1").replace(/claim$/, "read-token"))).status).toBe(500);
+  });
+
+  it("headOf waits out a failure that passes and answers the head, and answers 503 when it does not pass", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let down = 2;
+    const { fa } = await setup("concurrency-head", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: () => down-- > 0 });
+    const ok = await get(fa.artifacts, "/api/projects/concurrency-head/baseline-head");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ head: H0 });
+    down = 99;
+    const dead = await get(fa.artifacts, "/api/projects/concurrency-head/baseline-head");
+    expect(dead.status).toBe(503);
+    expect(((await dead.json()) as { error: string }).error).toBe("artifacts_unavailable");
+  });
+
+  it("a repository that is not there is not retried", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let gets = 0;
+    const { fa } = await setup("concurrency-head-gone", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: () => { gets++; return false; } });
+    fa.repos.delete("concurrency-head-gone");
+    const res = await get(fa.artifacts, "/api/projects/concurrency-head-gone/baseline-head");
+    expect(res.status).toBe(500);
+    expect(gets).toBe(1);
+  });
+
+  it("a fork that becomes ready after about five seconds of waiting answers its head, and one that never does answers 503", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // Real steps of 500 ms are 500, 1000, 1500 and 2000 ms before the fifth
+    // read: five seconds. The step is lowered so the test does not wait.
+    setForkWaitMs(1);
+    try {
+      const { fa } = await setup("concurrency-fork-wait", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 4, mint: () => false });
+      const ready = await get(fa.artifacts, "/api/projects/concurrency-fork-wait/baseline-head");
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toEqual({ head: H0 });
+      const never = await setup("concurrency-fork-never", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 99, mint: () => false });
+      const res = await get(never.fa.artifacts, "/api/projects/concurrency-fork-never/baseline-head");
+      expect(res.status).toBe(503);
+      expect(((await res.json()) as { error: string }).error).toBe("not_ready");
+    } finally { setForkWaitMs(); }
+  });
+});

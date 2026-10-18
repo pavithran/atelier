@@ -146,7 +146,7 @@ branch does: merged into main in the checkout, then published.
 
 ## Conflicts and refusals
 
-**A Mac that is behind.** `sync`, `publish`, `merge` and `fast land` read the
+**A Mac that is behind.** `sync`, `publish` and `merge` read the
 baseline's main first and refuse, with nothing sent, while the checkout's
 main does not hold it; each names `atelier pull`. `wrap` commits first and
 then refuses at its publish, so the commit stays in the checkout until a pull
@@ -231,7 +231,7 @@ then stages it, as `git add -f` would. `atelier private ls` warns of each
 private file Git does not ignore.
 
 What keeps it out is the push guard, which every Atelier push goes through:
-`sync`, `publish`, `merge`, `wrap --push`, `publish REMOTE`, `fast land`, a
+`sync`, `publish`, `merge`, `wrap --push`, `publish REMOTE`, a
 task's `push` and `branch push`. Before pushing, the guard reads every commit
 the destination does not already hold, and refuses, with nothing pushed, when
 one of those commits adds, changes or retypes a private path, or when a

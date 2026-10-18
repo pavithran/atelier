@@ -2,8 +2,8 @@
 // from two or three Macs, each with a checkout whose remote is the project's
 // baseline. When one Mac carries commits to the baseline, another Mac's main
 // no longer holds the baseline's main, and its push would be rejected as a
-// non-fast-forward after the work before it was done. sync, publish, merge
-// and fast land ask this first and refuse, naming atelier pull.
+// non-fast-forward after the work before it was done. sync, publish and merge
+// ask this first and refuse, naming atelier pull.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { REAL_HISTORY_ENV, loadPairs } from "./fresh.mjs";

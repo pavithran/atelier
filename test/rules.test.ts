@@ -1169,7 +1169,7 @@ test("a landed-fast receipt needs both commits, the builder, the test command an
   assert.deepEqual(pushActors([{ actor: "owner", kind: "item.landed_fast", data: { builder: "claude-code/opus-5.5" } }]), ["claude-code/opus-5.5"]);
 });
 
-// Finding it would have caught (Astra finding 10, 2026-10-16): fast land took
+// Finding it would have caught (Astra finding 10, 2026-10-16): the fast landing took
 // the builder from the tip commit's Agent line only, so a model that wrote an
 // earlier commit of the range could later review the change.
 test("a fast landing's contributors are every agent of the range, and gate review independence (t603)", () => {
@@ -1276,19 +1276,21 @@ test("the standing report is the last one with no claim, release, handoff, dispa
   assert.equal(standingFastReady([ready(1, H1), ev(2, "review.requested")])?.commit, H1);
 });
 
-test("fast status prints each ready commit as a tN=SHA line atelier fast land takes, and the command for all", () => {
-  assert.deepEqual(fastReadyLines([]), ["Nothing is ready for fast land."]);
+test("fast status prints each ready commit as a tN=SHA line and the command that records its merge", () => {
+  assert.deepEqual(fastReadyLines([]), ["Nothing is ready to merge."]);
   const lines = fastReadyLines([
     { item: "t5", commit: H1, builder: "claude-code/opus-5.5", runner: "home:studio", at: "2026-10-13T14:05:00.000Z" },
     { item: "t7", commit: H2, builder: "codex/gpt-6", runner: null, at: "2026-10-13T14:09:00.000Z" },
   ]);
   assert.deepEqual(lines, [
-    "Ready for fast land (2):",
+    "Ready to merge (2):",
     `t5=${H1}  built by claude-code/opus-5.5 on home:studio at 2026-10-13 14:05 UTC`,
     `t7=${H2}  built by codex/gpt-6 at 2026-10-13 14:09 UTC`,
-    `Land them: atelier fast land t5=${H1} t7=${H2}`,
+    "Merge each, then record it:",
+    `  atelier record-merge t5 --merge SHA --head ${H1} --review H/M=approve@${H1}`,
+    `  atelier record-merge t7 --merge SHA --head ${H2} --review H/M=approve@${H2}`,
   ]);
-  // Each line's first word is what atelier fast land parses.
+  // Each line's first word is the task and the commit built.
   for (const l of lines.slice(1, 3)) assert.match(l.split(" ")[0], /^t\d+=[0-9a-f]{40}$/);
 });
 
