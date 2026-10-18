@@ -6,7 +6,7 @@ import worker from "../src/index.ts";
 // observed check on a task it neither held nor worked on, and the gate
 // counts the latest one, so another agent could pass or fail a task's
 // checks. Only the task's holder records a check through the API; anyone
-// may ask the sandbox, which runs the checks and records them itself.
+// runs them in their own workspace with atelier check.
 
 const TOKEN = "check-holder-token";
 const A = "claude-code/opus-5.5", B = "codex/gpt-6-astra";
@@ -39,7 +39,7 @@ it("only the task's holder records an observed check through the API; another ag
   for (const [bearer, actor] of [[other, null], [TOKEN, "owner"], [TOKEN, B]] as const) {
     const res = await evidence(bearer, actor, check(false));
     expect(res.status, `${actor ?? B}: ${await res.clone().text()}`).toBe(403);
-    expect(await res.json()).toMatchObject({ error: "not_owner", detail: `${actor ?? B} does not hold t1, so it cannot record t1's checks: only its holder, ${A}, can. To have Atelier run them, use atelier check t1 --sandbox` });
+    expect(await res.json()).toMatchObject({ error: "not_owner", detail: `${actor ?? B} does not hold t1, so it cannot record t1's checks: only its holder, ${A}, can. Run them in your own workspace: atelier check t1` });
   }
   expect(await L.evidenceFor("t1")).toEqual([]);
 
