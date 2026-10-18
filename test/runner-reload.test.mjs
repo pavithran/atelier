@@ -4,12 +4,12 @@
 // arguments, and until then says once that it is behind.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import { RELOADED_FROM, runnerSupervised, planFilePath, reexecSelf, reloadCheck, runRunner, runnerCheckout } from "../cli/runner.mjs";
+import { RELOADED_FROM, isReloaded, runnerSupervised, planFilePath, reexecSelf, reloadCheck, reloadSmokeCheck, runRunner, runnerCheckout } from "../cli/runner.mjs";
 import { fileURLToPath } from "node:url";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
@@ -264,63 +264,85 @@ test("runnerCheckout holds a baseline commit through the checkout's baseline map
   assert.equal((await reloadCheck(one, { version: async () => merged(NEW), checkout })).action, "reload", "an older start still reloads once the checkout holds the mapped commit");
 });
 
-// Real children exercise spawn errors, startup failure, timeout cleanup and
-// the readiness barrier on the running Node, including supported Node 24.
-test("failed spawn and failed readiness keep the caller alive", async (t) => {
+// A checkout the smoke check can load: the three files it imports. `broken`
+// replaces one of them. Audit 2026-10-17 finding 1: process.execve cannot
+// fall back, so a syntax error or a failing import in the new checkout, which
+// would have left the runner dead, must be refused before the process is replaced.
+function fakeCli(s, { broken = {}, entry = "console.log(JSON.stringify({ pid: process.pid, args: process.argv.slice(2), flags: process.execArgv, custom: process.env.CUSTOM }));" } = {}) {
+  const cli = join(s.dir, "cli");
+  mkdirSync(join(cli, "commands"), { recursive: true });
+  const files = { "atelier.mjs": entry, "runner.mjs": "export const ok = 1;", "commands/runner.mjs": "import '../runner.mjs'; export default 1;", ...broken };
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(cli, name), body);
+  return [process.execPath, join(cli, "atelier.mjs"), "runner", "--name", "home:replacement"];
+}
+
+test("the smoke check passes a checkout that loads, and refuses a syntax error and a failing import with one line", (t) => {
   const s = setup(t);
-  await assert.rejects(reexecSelf(process.env, { execPath: join(s.dir, "missing-node") }), /ENOENT/);
-  await assert.rejects(reexecSelf(process.env, {
-    execArgv: [], argv: [process.execPath, "--eval", "process.exit(7)"],
-  }), /exited before ready \(7\)/);
-  const pidFile = join(s.dir, "pid");
-  await assert.rejects(reexecSelf(process.env, {
-    execArgv: [], argv: [process.execPath, "--eval", `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`],
-    readyTimeoutMs: 1000,
-  }), /readiness timed out/);
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  assert.throws(() => process.kill(pid, 0), /ESRCH/, "timed-out replacement is gone before old runner resumes");
+  reloadSmokeCheck(process.env, { argv: fakeCli(s), execArgv: [] });
+  for (const [name, body, why] of [
+    ["atelier.mjs", "const = ;", /SyntaxError/],
+    ["runner.mjs", "export const ok = ;", /SyntaxError/],
+    ["commands/runner.mjs", "import './missing-module.mjs';", /missing-module/],
+    ["commands/runner.mjs", "throw new Error('boom at load');", /boom at load/],
+  ]) {
+    const argv = fakeCli(s, { broken: { [name]: body } });
+    assert.throws(() => reloadSmokeCheck(process.env, { argv, execArgv: [] }), (error) => why.test(error.message) && !error.message.includes("\n") && /^the new code does not load/.test(error.message), `${name}: ${body}`);
+  }
+  assert.throws(() => reloadSmokeCheck(process.env, { argv: fakeCli(s), execPath: join(s.dir, "missing-node") }), /could not be checked.*ENOENT/);
 });
 
-test("real replacement waits for readiness, preserves arguments and environment, then starts without another reload", (t) => {
+test("a hung smoke check is cut off and refused", (t) => {
   const s = setup(t);
-  const next = join(s.dir, "next.mjs");
-  const runner = new URL("../cli/runner.mjs", import.meta.url).href;
-  writeFileSync(next, `
-    import { runRunner, RELOADED_FROM } from ${JSON.stringify(runner)};
-    const oldPid = process.ppid;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    process.kill(oldPid, 0); // The old runner must survive initialization.
-    console.log(JSON.stringify({ phase: 'initialized', pid: process.pid, args: process.argv.slice(2), from: process.env[RELOADED_FROM], flag: process.execArgv, custom: process.env.CUSTOM }));
-    let polls = 0;
-    await runRunner({ _: ['runner'], multi: {}, name: 'home:replacement', integrate: true }, {
-      credential: 'test', workspacePath: () => '.', wait: async () => {},
-      version: async () => (${JSON.stringify(answer(NEW))}),
-      queue: async () => { console.log('replacement polled'); if (++polls === 3) process.emit('SIGTERM'); return []; },
-      reload: { checkout: { dir: '.', head: async () => '${NEW}', contains: async (commit) => commit === '${NEW}' }, reexec: async () => { throw new Error('reload loop'); } },
-    });
-  `);
+  const argv = fakeCli(s, { broken: { "runner.mjs": "setInterval(() => {}, 1000); await new Promise(() => {});" } });
+  assert.throws(() => reloadSmokeCheck(process.env, { argv, execArgv: [], timeoutMs: 500 }), /could not be checked/);
+});
+
+test("a failed smoke check never calls execve, so the old runner keeps running", async (t) => {
+  const s = setup(t);
+  const argv = fakeCli(s, { broken: { "runner.mjs": "export const ok = ;" } });
+  let execs = 0;
+  await assert.rejects(reexecSelf(process.env, { argv, execArgv: [], execve: () => { execs++; } }), /does not load/);
+  assert.equal(execs, 0);
+  // Through the runner's loop: said once as one line, the old process polls on.
+  let polls = 0;
+  await runRunner(kinds.build(s), {
+    credential: "secret", workspacePath: () => s.workspace, wait: async () => {},
+    version: async () => answer(polls === 0 ? OLD : NEW),
+    queue: async () => { if (++polls > 4) stop(); return []; },
+    reload: { checkout: fakeCheckout([OLD, NEW]), reexec: (env) => reexecSelf(env, { argv, execArgv: [], execve: () => { execs++; } }) },
+  });
+  assert.equal(execs, 0);
+  assert.equal(polls, 5, "the old process polled on");
+  const failed = s.logs.filter((l) => l.startsWith("runner: reload failed:"));
+  assert.equal(failed.length, 1, "tried once for that target");
+  assert.match(failed[0], /does not load \(.*SyntaxError.*\); still running aaaaaaaa/);
+});
+
+test("a reloaded runner is the process the one-name guard would find, so it skips the guard", () => {
+  assert.equal(isReloaded({ [RELOADED_FROM]: OLD }), true);
+  assert.equal(isReloaded({}), false);
+  assert.equal(isReloaded({ [RELOADED_FROM]: "" }), false);
+});
+
+test("a real reload replaces the process in place: same pid, no parent left, same arguments and environment", (t) => {
+  const s = setup(t);
+  const argv = fakeCli(s);
   const child = `
-    const { reexecSelf } = await import(${JSON.stringify(runner)});
+    import { reexecSelf } from ${JSON.stringify(new URL("../cli/runner.mjs", import.meta.url).href)};
     console.log('old pid ' + process.pid);
-    await reexecSelf({ ...process.env, CUSTOM: 'preserved', XPC_SERVICE_NAME: 'application.com.apple.Terminal.123', ATELIER_RUNNER_SUPERVISED: '0', ATELIER_RUNNER_RELOADED_FROM: '${OLD}', ATELIER_RUNNER_RELOAD_TARGET: '${NEW}' }, {
-      execArgv: ['--no-warnings'], argv: [process.execPath, ${JSON.stringify(next)}, 'runner', '--name', 'home:replacement'],
-    });
+    await reexecSelf({ ...process.env, CUSTOM: 'preserved', ATELIER_RUNNER_SUPERVISED: '0' }, { execArgv: ['--no-warnings'], argv: ${JSON.stringify(argv)} });
     console.log('old resumed');
   `;
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', child], { encoding: 'utf8', timeout: 30_000 });
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", child], { encoding: "utf8", timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
-  const lines = result.stdout.trim().split('\n');
-  const initialized = JSON.parse(lines.find((line) => line.startsWith('{')));
-  assert.notEqual(initialized.pid, Number(lines[0].slice(8)));
-  assert.deepEqual(initialized.args, ['runner', '--name', 'home:replacement']);
-  assert.deepEqual(initialized.flag, ['--no-warnings']);
-  assert.equal(initialized.from, OLD);
-  assert.equal(initialized.custom, 'preserved');
-  assert.match(result.stdout, /reloaded: was aaaaaaaa, now bbbbbbbb/);
-  assert.equal(lines.filter((line) => line === 'replacement polled').length, 3);
-  assert.doesNotMatch(result.stdout + result.stderr, /old resumed|reload loop|reloading:/);
+  const lines = result.stdout.trim().split("\n");
+  const after = JSON.parse(lines.find((line) => line.startsWith("{")));
+  assert.equal(after.pid, Number(lines[0].slice(8)), "the pid is kept");
+  assert.deepEqual(after.args, ["runner", "--name", "home:replacement"]);
+  assert.deepEqual(after.flags, ["--no-warnings"]);
+  assert.equal(after.custom, "preserved");
+  assert.doesNotMatch(result.stdout, /old resumed/);
 });
-
 
 test("supervised reload exits without spawning a replacement; supervisor restarts the same command", (t) => {
   const s = setup(t);
@@ -348,125 +370,4 @@ test("supervised reload exits without spawning a replacement; supervisor restart
   assert.equal(second.status, 0, second.stderr);
   assert.match(second.stdout, /supervisor started updated runner runner --integrate --name home:test/);
   assert.doesNotMatch(second.stdout, /supervisor restart/);
-});
-
-for (const phase of ['initializing', 'released']) {
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    test(`attached replacement receives one group ${signal} while ${phase} and finishes cleanup`, async (t) => {
-      const s = setup(t), next = join(s.dir, 'attached.mjs');
-      const runner = new URL('../cli/runner.mjs', import.meta.url).href;
-      writeFileSync(next, `
-        import { runnerReady } from ${JSON.stringify(runner)};
-        let interrupts = 0;
-        process.on('${signal}', () => {
-          if (++interrupts > 1) { console.error('duplicate interrupt'); process.exit(99); }
-          setTimeout(() => { console.log('child cleanup finished'); process.exit(0); }, 200);
-        });
-        ${phase === 'released' ? 'await runnerReady();' : ''}
-        console.log('child pid ' + process.pid);
-        setInterval(() => {}, 1000);
-      `);
-      const parent = spawn(process.execPath, ['--input-type=module', '-e', `
-        import { reexecSelf } from ${JSON.stringify(runner)};
-        // Exercise the real runner's existing signal handler too.
-        process.on('${signal}', () => { throw new Error('old handler ran'); });
-        await reexecSelf({ ...process.env, XPC_SERVICE_NAME: '0', ATELIER_RUNNER_SUPERVISED: '0' }, {
-          execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}], readyTimeoutMs: 5000,
-        });
-        console.log('old resumed');
-      `], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      t.after(() => parent.kill('SIGKILL'));
-      let output = '', errors = '', childPid;
-      parent.stderr.on('data', chunk => { errors += chunk; });
-      parent.stdout.on('data', chunk => {
-        output += chunk;
-        const match = output.match(/child pid (\d+)/);
-        if (match && !childPid) {
-          childPid = Number(match[1]);
-          process.kill(childPid, 0);
-          process.kill(-parent.pid, signal);
-        }
-      });
-      const result = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { parent.kill('SIGKILL'); reject(new Error('handoff did not stop')); }, 10000);
-        parent.once('exit', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
-      });
-      assert.equal(result.code, { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal], errors);
-      assert.match(output, /child cleanup finished/);
-      assert.doesNotMatch(errors, /duplicate interrupt/);
-      assert.doesNotMatch(output, /old resumed/);
-      assert.throws(() => process.kill(childPid, 0), /ESRCH/);
-    });
-  }
-}
-
-
-test("a second group interrupt is forwarded so the replacement owns forced cleanup", async (t) => {
-  const s = setup(t), next = join(s.dir, 'second-interrupt.mjs');
-  const runner = new URL('../cli/runner.mjs', import.meta.url).href;
-  writeFileSync(next, `
-    import { runnerReady } from ${JSON.stringify(runner)};
-    let interrupts = 0;
-    process.on('SIGINT', () => {
-      if (++interrupts === 1) console.log('first interrupt');
-      else { console.log('forced cleanup finished'); process.exit(130); }
-    });
-    await runnerReady();
-    console.log('released');
-    setInterval(() => {}, 1000);
-  `);
-  const parent = spawn(process.execPath, ['--input-type=module', '-e', `
-    import { reexecSelf } from ${JSON.stringify(runner)};
-    await reexecSelf({ ...process.env, ATELIER_RUNNER_SUPERVISED: '0' }, {
-      execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}],
-    });
-  `], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => parent.kill('SIGKILL'));
-  let output = '', sent = 0;
-  parent.stdout.on('data', chunk => {
-    output += chunk;
-    if (sent === 0 && output.includes('released')) {
-      sent = 1;
-      process.kill(-parent.pid, 'SIGINT');
-    } else if (sent === 1 && output.includes('first interrupt')) {
-      sent = 2;
-      process.kill(-parent.pid, 'SIGINT');
-    }
-  });
-  const code = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { parent.kill('SIGKILL'); reject(new Error('second interrupt did not stop runner')); }, 10000);
-    parent.once('close', code => { clearTimeout(timer); resolve(code); });
-  });
-  assert.equal(code, 130);
-  assert.match(output, /forced cleanup finished/);
-});
-
-
-test("losing the waiting parent stops the released replacement", async (t) => {
-  const s = setup(t), next = join(s.dir, 'parent-loss.mjs');
-  const runner = new URL('../cli/runner.mjs', import.meta.url).href;
-  writeFileSync(next, `
-    import { runnerReady } from ${JSON.stringify(runner)};
-    process.on('SIGHUP', () => { console.log('parent lost; child stopped'); process.exit(0); });
-    await runnerReady();
-    console.log('released');
-    setInterval(() => {}, 1000);
-  `);
-  const parent = spawn(process.execPath, ['--input-type=module', '-e', `
-    import { reexecSelf } from ${JSON.stringify(runner)};
-    await reexecSelf({ ...process.env, XPC_SERVICE_NAME: '0', ATELIER_RUNNER_SUPERVISED: '0' }, {
-      execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}],
-    });
-  `], { stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => parent.kill('SIGKILL'));
-  let output = '';
-  parent.stdout.on('data', chunk => {
-    output += chunk;
-    if (output.includes('released')) parent.kill('SIGKILL');
-  });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('orphan kept output open')), 10000);
-    parent.once('close', () => { clearTimeout(timer); resolve(); });
-  });
-  assert.match(output, /parent lost; child stopped/);
 });

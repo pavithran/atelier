@@ -26,12 +26,12 @@ export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { RELOAD_HANDOFF, reexecSelf, runnerUsage, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
-  // One name is one process (t581). A reload's replacement starts beside the
-  // runner it replaces, so it is let through; so is a start that cannot read
-  // the process table, which says so.
+  const { isReloaded, reexecSelf, runnerUsage, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
+  // One name is one process (t581). A reload's replacement is the same
+  // process, which would find itself, so it is let through; so is a start that
+  // cannot read the process table, which says so.
   try { runnerUsage(args); } catch (error) { die(error.message); }
-  if (!process.env[RELOAD_HANDOFF]) {
+  if (!isReloaded(process.env)) {
     const live = liveHere();
     if (!live) console.log("runner: the process table could not be read, so a second runner of this name is not ruled out.");
     const refusal = live && await guardName({
@@ -59,7 +59,7 @@ export default async function runnerCommand() {
       // project's prose standard (a path from it) is copied from (t676).
       checkoutOf: (name) => cfg.projects?.[name]?.path ?? null,
       // An idle runner reloads itself from this checkout once it holds the
-      // deployed commit (t265), handing off to an initialized replacement.
+      // deployed commit (t265), replacing the process in place once the new code loads.
       reload: { checkout: runnerCheckout(), reexec: reexecSelf },
       // The server's route level against the CLI's, checked at start: a
       // server behind this CLI would fail the runner's calls one by one. An

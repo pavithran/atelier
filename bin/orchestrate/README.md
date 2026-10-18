@@ -455,25 +455,19 @@ had already merged), which the runner asks for at start.
 Runners no longer need restarting after a deploy (t265). An idle runner, the
 integrator included, reads the deployed commit (`GET /api/version`) after
 each poll that claimed nothing and, once its checkout holds that commit,
-spawns a replacement with the same arguments and environment. Once the new
-runner signals ready, the old one releases it to poll for work and waits
-for it to exit, forwarding every SIGINT, SIGTERM and SIGHUP even during
-startup. The replacement has its own process group so a terminal signal
-reaches it only once. Ctrl-C and session end still stop the attached replacement.
-The replacement has a new pid. It logs `runner:
-reloading: started from OLD, the server runs NEW; …`, and the new process
+replaces itself with the same arguments and environment (`process.execve`):
+the pid and terminal are kept and no parent is left waiting. It logs `runner:
+reloading: started from OLD, the server runs NEW; …`, and the new code
 `runner: reloaded: was OLD, now NEW`. Pull the checkout after a deploy
 (`git -C CHECKOUT pull --ff-only`); until then the runner logs once `runner:
 behind: …` and keeps running the old code. It never reloads mid-job. A failed
 re-exec logs `runner: reload failed: …` and keeps the old process running;
-restart that one by hand. Reload works on every supported Node (24 or later)
-without `process.execve`. A replacement that exits before ready or times out
-also leaves the old runner running. Set `ATELIER_RUNNER_SUPERVISED=1`
+restart that one by hand. Before replacing itself the runner loads the new code once; if that fails,
+the old runner keeps running. Set `ATELIER_RUNNER_SUPERVISED=1`
 explicitly for supervisors configured to restart on exit, including launchd
 with KeepAlive. The runner then logs the old and target commits and exits so
 the supervisor restarts the same command from the updated checkout, without
-a duplicate. `XPC_SERVICE_NAME` alone does not enable this mode; supervisors
-own startup failures. Details:
+a duplicate. `XPC_SERVICE_NAME` alone does not enable this mode. Details:
 docs/runners.md, "Reload on deploy".
 
 ## Measuring reviewers
