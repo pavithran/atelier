@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -289,6 +289,30 @@ test("the smoke check passes a checkout that loads, and refuses a syntax error a
     assert.throws(() => reloadSmokeCheck(process.env, { argv, execArgv: [] }), (error) => why.test(error.message) && !error.message.includes("\n") && /^the new code does not load/.test(error.message), `${name}: ${body}`);
   }
   assert.throws(() => reloadSmokeCheck(process.env, { argv: fakeCli(s), execPath: join(s.dir, "missing-node") }), /could not be checked.*ENOENT/);
+});
+
+// Astra's finding on t764: an npm link install starts the CLI through a
+// symlink such as /opt/homebrew/bin/atelier, and the sibling modules were looked
+// up beside the link, so every healthy reload was refused.
+test("a checkout started through a symlink is checked beside the real file, and the exec runs that same checkout", (t) => {
+  const s = setup(t);
+  const real = fakeCli(s);
+  const bin = join(s.dir, "bin");
+  mkdirSync(bin);
+  const link = join(bin, "atelier");
+  symlinkSync(real[1], link);
+  const argv = [real[0], link, ...real.slice(2)];
+  reloadSmokeCheck(process.env, { argv, execArgv: [] });
+  writeFileSync(join(s.dir, "cli", "runner.mjs"), "export const ok = ;");
+  assert.throws(() => reloadSmokeCheck(process.env, { argv, execArgv: [] }), /SyntaxError/, "the real checkout's files are the ones checked");
+  writeFileSync(join(s.dir, "cli", "runner.mjs"), "export const ok = 1;");
+  const child = `
+    import { reexecSelf } from ${JSON.stringify(new URL("../cli/runner.mjs", import.meta.url).href)};
+    await reexecSelf({ ...process.env, ATELIER_RUNNER_SUPERVISED: '0' }, { execArgv: [], argv: ${JSON.stringify(argv)} });
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", child], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).args, ["runner", "--name", "home:replacement"]);
 });
 
 test("a hung smoke check is cut off and refused", (t) => {
