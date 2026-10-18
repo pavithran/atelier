@@ -105,8 +105,8 @@ const LSOF = [
 test("liveProcesses names runners and agents by task and keeps command lines out", () => {
   const live = liveProcesses({ ps: parsePs(PS), lsof: parseLsof(LSOF), work: "/cache/work", skip: [400] });
   assert.deepEqual(live.runners, [
-    { pid: 100, name: "home:mac", age: "2h3m", tasks: ["t7"] },
-    { pid: 200, name: "runner", age: "3d4h", tasks: [] },
+    { pid: 100, ppid: 1, name: "home:mac", age: "2h3m", tasks: ["t7"] },
+    { pid: 200, ppid: 1, name: "runner", age: "3d4h", tasks: [] },
   ]);
   assert.deepEqual(live.agents.map((a) => [a.pid, a.command, a.project, a.id]), [[102, "claude", "demo", "t7"], [300, "codex", "demo", "t9"]]);
   const text = formatProcesses(live);
@@ -115,6 +115,30 @@ test("liveProcesses names runners and agents by task and keeps command lines out
   assert.match(text, /demo\/t7 {2}claude pid 102/);
   for (const secret of ["SECRETPROMPT", "/secret/cfg.json", "--config", "-p "]) assert.ok(!text.includes(secret), `${secret} is not printed`);
   assert.ok(!text.includes("pgrep") && !text.includes("vim"), "the asker and unrelated processes are left out");
+});
+
+// t760: after two reloads without a supervisor, runner 10 waits on 20, which
+// waits on 30. Status listed all three as idle runners, and stopping an
+// "extra" one ended the live runner.
+test("status lists a reloaded runner once, not its waiting parents (t760)", () => {
+  const ps = parsePs([
+    "  10     1 03:00:00 /usr/bin/node /x/cli/atelier.mjs runner --name home:mbp",
+    "  20    10    02:00 /usr/bin/node /x/cli/atelier.mjs runner --name home:mbp",
+    "  30    20    01:00 /usr/bin/node /x/cli/atelier.mjs runner --name home:mbp",
+    "  40    30    00:30 claude -p x",
+    "  50     1 03:00:00 /usr/bin/node /x/cli/atelier.mjs runner --name home:mbp-2",
+  ].join("\n"));
+  const live = liveProcesses({ ps, lsof: parseLsof("p40\ncclaude\nn/cache/work/demo/t7"), work: "/cache/work" });
+  const text = formatProcesses(live);
+  assert.deepEqual(text.match(/pid (\d+)/g), ["pid 30", "pid 50", "pid 40"]);
+  assert.match(text, /runner home:mbp {2}pid 30 .*working on t7/);
+  assert.doesNotMatch(text, /duplicate/);
+});
+
+test("two runners that are not parent and child both stay listed (t760)", () => {
+  const text = formatProcesses({ runners: [{ pid: 1, ppid: 9, name: "a", age: "1h", tasks: [] }, { pid: 2, ppid: 9, name: "b", age: "1h", tasks: [] }], agents: [] });
+  assert.match(text, /runner a {2}pid 1/);
+  assert.match(text, /runner b {2}pid 2/);
 });
 
 test("liveProcesses can be limited to one project, and says so when nothing runs", () => {

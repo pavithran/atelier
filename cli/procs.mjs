@@ -101,7 +101,7 @@ export function liveProcesses({ ps, lsof, work, skip = [], project = null }) {
         if (at.ppid === p.pid) { tasks.add(a.id); break; }
       }
     }
-    return { pid: p.pid, name: runnerName(p.args), age: age(p.etime), tasks: [...tasks].sort() };
+    return { pid: p.pid, ppid: p.ppid, name: runnerName(p.args), age: age(p.etime), tasks: [...tasks].sort() };
   });
   const byTask = (a, b) => a.id.localeCompare(b.id, "en", { numeric: true }) || a.pid - b.pid;
   return { runners: runners.sort((a, b) => a.pid - b.pid), agents: agents.sort(byTask) };
@@ -147,7 +147,12 @@ export async function guardName({ runners, name, replace, kill, alive, sleep, sa
 }
 
 // The section: one line per runner, then one per task with its agents.
-export function formatProcesses({ runners, agents }) {
+// A runner whose child is a runner is only the waiting parent of its
+// replacement (reexecSelf without a supervisor, t760): it is left out, so
+// each reload is one line and a waiting parent is never taken for a duplicate.
+export function formatProcesses({ runners: all, agents }) {
+  const parents = new Set(all.map((r) => r.ppid));
+  const runners = all.filter((r) => !parents.has(r.pid));
   const lines = ["Live on this Mac:"];
   for (const r of runners) lines.push(`  runner ${r.name}  pid ${r.pid}  up ${r.age}${r.tasks.length ? `  working on ${r.tasks.join(", ")}` : "  idle"}`);
   if (!runners.length) lines.push("  no runner process");
