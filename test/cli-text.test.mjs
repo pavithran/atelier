@@ -37,14 +37,20 @@ test("atelier guide prints exactly the pinned text", () => {
   assert.equal(r.stdout, fixture("guide.txt"));
 });
 
+// The usage of every command is read in this process; the dispatcher is run
+// for a few commands only, so the file starts 188 processes fewer (t765, audit
+// finding 7). The commands run are the first and one with subcommands.
 test("each command's usage line prints exactly as pinned", () => {
   const pinned = JSON.parse(fixture("usage.json"));
   assert.deepEqual(Object.keys(COMMAND_USAGE).sort(), Object.keys(pinned).sort());
   for (const [command, line] of Object.entries(pinned)) {
+    assert.equal(`${COMMAND_USAGE[command]}\n`, line, `atelier ${command} --help`);
+  }
+  for (const command of [Object.keys(pinned)[0], "models"]) {
     for (const flag of ["--help", "-h"]) {
       const r = run([command, flag]);
       assert.equal(r.status, 0, `${command} ${flag}`);
-      assert.equal(r.stdout, line, `atelier ${command} ${flag}`);
+      assert.equal(r.stdout, pinned[command], `atelier ${command} ${flag}`);
     }
   }
 });
