@@ -1,12 +1,10 @@
+// Part 1 of 2 of the tests that were in cli-flags.test.mjs, split so no file runs for more than about a minute (t771).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { noProjectMessage, parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
-import { SERVER_CAPABILITIES } from "../src/route-level.ts";
-
+import { fixture, cli } from "./cli-flags-shared.mjs";
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
 // --refuse-overlap) never takes the word after it, so an item id written after
 // one is the item id; a flag that needs a value refuses a bare one before any
@@ -14,9 +12,6 @@ import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 // commands run against a fake server: a preload replaces fetch, answers every
 // route from local state and logs each request, and the server named in the
 // configuration cannot be reached even if the preload were bypassed.
-
-const cli = resolve("cli/atelier.mjs");
-
 test("parseArgs: a switch keeps the next word as a positional, a text flag takes it", () => {
   const review = parseArgs(["review", "--approve", "t2", "--note", "fine"]);
   assert.deepEqual(review._, ["review", "t2"]);
@@ -43,6 +38,7 @@ test("parseArgs: a switch keeps the next word as a positional, a text flag takes
   assert.deepEqual(parseArgs(["models", "add", "--help", "m1"])._, ["models", "add", "m1"]);
 });
 
+
 // t360: --version parses like --help, wherever it stands, and never takes a
 // value or lands in the flag table's way.
 test("parseArgs: --version is read before any flag, wherever it stands", () => {
@@ -60,6 +56,7 @@ test("parseArgs: --version is read before any flag, wherever it stands", () => {
   assert.deepEqual(rest.rest, ["--version"]);
 });
 
+
 // t360: --version=… is refused as a value the flag does not take, never a
 // string that slips through and answers anyway.
 test("parseArgs: --version= is a problem, not a version", () => {
@@ -70,105 +67,6 @@ test("parseArgs: --version= is a problem, not a version", () => {
   assert.equal(parseArgs(["ls", "--version="]).version, false);
 });
 
-function fixture(t) {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-flags-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).trim();
-  const identity = (cwd) => { git(cwd, "config", "user.name", "Test"); git(cwd, "config", "user.email", "test@example.invalid"); };
-  // The owner's checkout, the baseline it was copied to, and the task fork.
-  const checkout = join(dir, "checkout");
-  mkdirSync(checkout);
-  git(checkout, "init", "-q", "-b", "main");
-  identity(checkout);
-  writeFileSync(join(checkout, "STATE.md"), "Current state\n");
-  git(checkout, "add", ".");
-  git(checkout, "commit", "-qm", "Initial");
-  const head = git(checkout, "rev-parse", "HEAD");
-  const baseline = join(dir, "baseline.git");
-  git(dir, "init", "-q", "--bare", "-b", "main", baseline);
-  git(checkout, "push", "-q", baseline, "main");
-  const fork = join(dir, "fork.git");
-  git(dir, "clone", "-q", "--bare", baseline, fork);
-  // t1's workspace, as a claim leaves it: the clone records its project, item and actor.
-  const workspace = join(dir, "cache", "work", "demo", "t1");
-  mkdirSync(join(dir, "cache", "work", "demo"), { recursive: true });
-  git(dir, "clone", "-q", fork, workspace);
-  identity(workspace);
-  for (const [k, v] of Object.entries({ project: "demo", item: "t1", actor: "codex/test", branch: "main" })) git(workspace, "config", "--local", `atelier.${k}`, v);
-  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", ownerName: "Pavi", projects: { demo: { path: checkout, branch: "main" } } }));
-  const log = join(dir, "requests.jsonl");
-  const preload = join(dir, "server.mjs");
-  writeFileSync(preload, `
-import { appendFileSync } from "node:fs";
-const HEAD = ${JSON.stringify(head)}, BASELINE = ${JSON.stringify(baseline)};
-const TIMES = { createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-10-05T09:30:00.000Z", lastPushAt: "2026-10-05T09:00:00.000Z" };
-// t3 is open and held by nobody; every other item is submitted by codex/test.
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: id === "t3" ? "open" : "submitted", owner: id === "t3" ? null : "codex/test", head: HEAD, acceptedHead: null, base: HEAD, fork: "demo-" + id, dispatch: null, ...TIMES });
-const CHANGES = {
-  t4: { reviews: 2, requests: 1, acceptance: false, override: false, asked: ["codex/gpt-6-astra"] },
-  t5: { reviews: 0, requests: 1, acceptance: false, override: false, asked: [] },
-  t6: { reviews: 0, requests: 0, acceptance: false, override: false, asked: [] },
-  t7: { reviews: 1, requests: 0, acceptance: true, override: true, asked: [] },
-};
-const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [] }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
-globalThis.fetch = async (url, options = {}) => {
-  const path = new URL(url).pathname, method = options.method ?? "GET";
-  // The capability check before new, edit, init, review and merge (t458) reads the version.
-  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
-  const body = options.body ? JSON.parse(options.body) : undefined;
-  appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body, actor: options.headers?.["x-atelier-actor"] ?? null }) + "\\n");
-  let data = {};
-  const m = /^\\/api\\/projects\\/demo(?:\\/(.*))?$/.exec(path);
-  if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
-  else if (path === "/api/projects") data = [{ name: "demo", title: "Demo" }];
-  else if (path === "/api/inbox") data = [];
-  // t389: the pool holds one reserved, review-only frontier model; a set
-  // answers with the entry as changed.
-  else if (path === "/api/models") data = [{ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "openai", aliases: [], family: "openai", note: "credits held for t370", addedBy: "owner", addedAt: "2026-10-01T09:00:00.000Z", state: "reserved", stateAt: "2026-10-08T09:00:00.000Z", roles: ["review"], tier: "frontier" }];
-  else if (path === "/api/models/gpt-6-astra/set") data = { id: "gpt-6-astra", state: body.state, stateAt: "2026-10-10T08:00:00.000Z", note: body.note, roles: body.roles.split(","), tier: body.tier };
-  else if (m) {
-    const rest = m[1] ?? "";
-    // t394: the stub records a model-policy switch as the server does, stamped with who and when.
-    const familyMode = body?.singleFamily !== undefined ? { familyMode: { single: body.singleFamily || null, by: "owner", at: "2026-10-09T10:00:00.000Z" } } : {};
-    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, ...familyMode } };
-    if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
-    else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
-    else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
-    // As the server answers an older CLI's long title: kept as the brief, the title derived.
-    else if (rest === "items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope, ...(body.accept ? { accept: body.accept } : {}), ...(body.title.length > 80 && !body.brief ? { title: "Derived title", brief: body.title, derived: true } : {}) };
-    else {
-      const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(rest) ?? [];
-      if (verb === "handoff") data = { item: { ...item(id), owner: body.to }, next: "next" };
-      // Asked to suggest (t370), it answers as the server does: the builder it chose and why.
-      else if (verb === "dispatch" && body.suggest === true) data = { ...item(id), dispatch: { to: "home", agent: "claude-code", model: "opus-5.5" }, suggestion: { actor: "claude-code/opus-5.5", reasons: ["Eligible pool models ranked by recorded successful and failed outcomes.", "Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since."] } };
-      else if (verb === "dispatch") data = { ...item(id), dispatch: { to: body.to ?? "any", agent: body.agent ?? null, model: body.model ?? null, ...(body.job !== undefined ? { job: body.job, head: body.head ?? "5".repeat(40) } : {}) } };
-      else if (verb === "block") data = { ...item(id), state: "blocked", blocked: { reason: body.reason, by: "codex/test" } };
-      else if (verb === "unblock") data = { ...item(id), state: "claimed" };
-      // t326: a change of criteria answers with what it withdrew; t4 had
-      // standing reviews and a request, t5 a request alone, t6 neither, t7
-      // was accepted with the owner's override; t1 and t2 report no change.
-      else if (verb === "edit") data = { ...item(id), ...body, ...(CHANGES[id] && body.accept ? { criteriaChange: { from: "a".repeat(64), to: "b".repeat(64), ...CHANGES[id] } } : {}) };
-      else if (verb === "brief") data = { decided: "Wait on " + id, summary: null, nonGoals: [], stopWhen: [], nextGate: null, accept: ["Nested lists parse"], partAccept: ["It works"], criteria: "c".repeat(64), evidence: [], recommendation: { verdict: "wait", reason: "In progress." } };
-      // t575: a review claim answers its request, head and criteria binding; a renewal its word.
-      else if (verb === "review-claim") data = { item: item(id), head: HEAD, request: 7, criteria: "c".repeat(64) };
-      else if (verb === "review-renew") data = { renewed: true };
-      else data = detail(id);
-    }
-  }
-  // Any other project is one the server does not know, as the Worker answers it.
-  const status = !m && path.startsWith("/api/projects/") ? 404 : 200;
-  if (status === 404) data = { error: "no_project", detail: "project not initialised; run atelier init" };
-  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
-};
-`);
-  const run = (cwd, args, env = {}) => spawnSync(process.execPath, ["--import", preload, cli, ...args], {
-    cwd, encoding: "utf8",
-    env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "fake-owner-token", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner", GIT_CONFIG_NOSYSTEM: "1", ...env },
-  });
-  const requests = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : []);
-  const clear = () => rmSync(log, { force: true });
-  return { dir, checkout, workspace, run, requests, clear, head };
-}
 
 test("new warns when a task has no acceptance criteria, and init sends --require-criteria as a switch", (t) => {
   const f = fixture(t);
@@ -195,6 +93,7 @@ test("new warns when a task has no acceptance criteria, and init sends --require
   assert.equal(put(["--reset"]).requireCriteria, false);
 });
 
+
 test("a folder that is no registered checkout is named, with every registered project and its folder", (t) => {
   const f = fixture(t);
   const elsewhere = join(f.dir, "elsewhere");
@@ -216,6 +115,7 @@ test("a folder that is no registered checkout is named, with every registered pr
   assert.equal(unregisteredMessage("/work/x", {}), "which project? /work/x is not a registered checkout or a task workspace. Pass --project NAME, or run the command in a registered checkout or in a task workspace.\nNo project is registered on this Mac: run atelier init in a project's checkout to register it.");
   assert.equal(unregisteredMessage("/work/Photograph", { photograph: { path: "/p" }, demo: { path: "/d" } }).split("\n").slice(1).join("\n"), "Registered on this Mac:\n  demo        /d\n  photograph  /p\nphotograph, named like this folder, is registered at /p; run the command there, or pass --project photograph.");
 });
+
 
 test("a project the server does not know is answered with the registered names, closest first, and init only away from a checkout", (t) => {
   const f = fixture(t);
@@ -239,6 +139,7 @@ test("a project the server does not know is answered with the registered names, 
   assert.equal(noProjectMessage("x", "https://x", {}, null), "no project named x on https://x.\nNo project is registered on this Mac. To register one, run atelier init in its checkout.");
 });
 
+
 test("abandon says whose write token is revoked, or that nobody held the item", (t) => {
   const f = fixture(t);
   const held = f.run(f.checkout, ["abandon", "t1", "--project", "demo"]);
@@ -251,6 +152,7 @@ test("abandon says whose write token is revoked, or that nobody held the item", 
   assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/t3/abandon")).map((q) => q.body), [{ note: "Superseded by t5" }]);
 });
 
+
 test("init refuses to run in a task workspace, names its project and task, and registers nothing", (t) => {
   const f = fixture(t);
   const config = () => readFileSync(join(f.dir, "config.json"), "utf8");
@@ -261,6 +163,7 @@ test("init refuses to run in a task workspace, names its project and task, and r
   assert.deepEqual(f.requests(), [], "a request was sent");
   assert.equal(config(), before, "config.json changed");
 });
+
 
 test("when git itself cannot run, the error says why instead of showing an empty detail", (t) => {
   const f = fixture(t);
@@ -278,6 +181,7 @@ test("when git itself cannot run, the error says why instead of showing an empty
   assert.match(missing.stderr, /^atelier: git remote could not run: the folder \S*\/gone does not exist$/m);
 });
 
+
 test("review --approve t2 in t1's workspace reviews t2, never the workspace's item", (t) => {
   const f = fixture(t);
   const r = f.run(f.workspace, ["review", "--approve", "t2", "--note", "looks right"], { ATELIER_ACTOR: "claude-code/opus" });
@@ -292,6 +196,7 @@ test("review --approve t2 in t1's workspace reviews t2, never the workspace's it
   assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/review")).map((q) => [q.path, q.body.approve, q.body.note]), [["/api/projects/demo/items/t2/review", false, "not yet"]]);
 });
 
+
 test("merge --cancel t1 in the checkout cancels t1 instead of asking which item", (t) => {
   const f = fixture(t);
   const r = f.run(f.checkout, ["merge", "--cancel", "t1", "--project", "demo"]);
@@ -300,6 +205,7 @@ test("merge --cancel t1 in the checkout cancels t1 instead of asking which item"
   assert.match(r.stdout, /t1: the merge is cancelled/);
   assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/landing", { cancel: true }]]);
 });
+
 
 // The owner's dispatch of a merge-main job (t243): the request carries the
 // job and the head the server reads when none is named, the message says
@@ -332,6 +238,7 @@ test("dispatch --job merge-main sends the conflicted task back to its builder, a
   assert.equal(plain.stdout, "t3 is waiting for a home runner, codex.\n");
 });
 
+
 // With no --agent the server suggests the builder (t370): the CLI asks for
 // the suggestion and prints which builder it chose and why.
 test("dispatch with no --agent asks the server to suggest a builder and prints the choice and its reason", (t) => {
@@ -341,6 +248,7 @@ test("dispatch with no --agent asks the server to suggest a builder and prints t
   assert.deepEqual(f.requests().at(-1).body, { to: "home", suggest: true });
   assert.equal(r.stdout, "Builder: claude-code/opus-5.5. Eligible pool models ranked by recorded successful and failed outcomes. Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since.\nt3 is waiting for a home runner, claude-code with opus-5.5.\n");
 });
+
 
 // t389: the owner's standing for a model is set with models set and comes
 // back from models, in its listing and as JSON.
@@ -371,6 +279,7 @@ test("models set sends state, note, roles and tier; models lists them and --json
   assert.deepEqual(f.requests().filter((r) => r.path.startsWith("/api/models")), []);
 });
 
+
 // t360: --version answers after any command, before any request.
 test("--version after a command prints the version and contacts no server", (t) => {
   const f = fixture(t);
@@ -379,6 +288,7 @@ test("--version after a command prints the version and contacts no server", (t) 
   assert.match(r.stdout, /^atelier \d+\.\d+\.\d+ \(route level \d+\)\n$/);
   assert.deepEqual(f.requests(), []);
 });
+
 
 // t690: the developer sends accepted work back to building with their own
 // token and no --as; the command used to demand "say who you are" and a
@@ -396,6 +306,7 @@ test("handoff with no --as and no workspace acts as the developer, and --as stil
   assert.equal(named.status, 0, named.stderr);
   assert.equal(f.requests().find((q) => q.path.endsWith("/items/t1/handoff")).actor, "claude-code/opus-5.5");
 });
+
 
 test("a flag that needs a value refuses a bare one before any request", (t) => {
   const f = fixture(t);
@@ -431,6 +342,7 @@ test("a flag that needs a value refuses a bare one before any request", (t) => {
   }
   assert.deepEqual(f.requests(), []);
 });
+
 
 test("init sends a switch as true or false, as it was written, and refuses any other word", (t) => {
   const f = fixture(t);
@@ -471,6 +383,7 @@ test("init sends a switch as true or false, as it was written, and refuses any o
   assert.deepEqual(f.requests(), []);
 });
 
+
 // t394: init --single-family COMPANY sends the company, --cross-family sends
 // null, neither sends nothing, both together are refused, and the answer's
 // mode is printed with who switched and when.
@@ -504,6 +417,7 @@ test("init sends --single-family as the company and --cross-family as null, prin
   assert.deepEqual(f.requests(), []);
 });
 
+
 test("a flag the command does not take, or a stray --, is refused before any request", (t) => {
   const f = fixture(t);
   for (const [argv, message] of [
@@ -523,344 +437,4 @@ test("a flag the command does not take, or a stray --, is refused before any req
   const ok = f.run(f.checkout, ["ls", "--project", "demo", "--all"]);
   assert.equal(ok.status, 0, ok.stderr);
   assert.match(ok.stdout, /t1 .*Task t1/);
-});
-
-test("ls --json and status --json print each item with its times, for Observatory", (t) => {
-  const f = fixture(t);
-  const TIMES = { createdAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-10-05T09:30:00.000Z", lastPushAt: "2026-10-05T09:00:00.000Z" };
-  const ls = f.run(f.checkout, ["ls", "--project", "demo", "--json"]);
-  assert.equal(ls.status, 0, ls.stderr);
-  assert.deepEqual(JSON.parse(ls.stdout), [
-    { id: "t1", title: "Task t1", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
-    { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
-  ]);
-
-  const status = f.run(f.checkout, ["status", "--json"]);
-  assert.equal(status.status, 0, status.stderr);
-  assert.deepEqual(JSON.parse(status.stdout), [{
-    name: "demo",
-    title: "Demo",
-    inbox: [],
-    items: [
-      { id: "t1", title: "Task t1", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
-      { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
-    ],
-    overlaps: [],
-    // The waiting rule's placement (src/attention.ts): nothing waits on the
-    // owner, and both submitted tasks are in review.
-    attention: {
-      owner: [],
-      pipeline: [{ id: "t1", title: "Task t1", stage: "submitted", notices: [] }, { id: "t2", title: "Task t2", stage: "submitted", notices: [] }],
-      unknown: [],
-    },
-    mergedByOverride: [],
-  }]);
-
-  // The JSON listing honours --all as the text one does (test/status.test.mjs
-  // covers the text).
-});
-
-test("new and edit send the framing as lists and a line, block sends its reason, and an empty value clears only on edit", (t) => {
-  const f = fixture(t);
-  const made = f.run(f.checkout, ["new", "Frame it", "--scope", "src/**", "--non-goal", "no CSS", "--non-goal", "no routes", "--stop-when", "a check fails twice", "--next-gate", "design review", "--project", "demo"]);
-  assert.equal(made.status, 0, made.stderr);
-  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.path, q.body]), [
-    ["/api/projects/demo/items", { title: "Frame it", scope: ["src/**"], nonGoals: ["no CSS", "no routes"], stopWhen: ["a check fails twice"], nextGate: "design review" }],
-  ]);
-  f.clear();
-  // A field not given is not sent, so the server keeps what the item has.
-  const plain = f.run(f.checkout, ["new", "Plain", "--project", "demo"]);
-  assert.equal(plain.status, 0, plain.stderr);
-  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Plain", scope: [] }]);
-  f.clear();
-  for (const [argv, message] of [
-    [["new", "Title", "--non-goal", "", "--project", "demo"], /--non-goal needs text: atelier new --non-goal "TEXT", once per entry/],
-    [["new", "Title", "--stop-when", "  ", "--project", "demo"], /--stop-when needs text: atelier new --stop-when "TEXT", once per entry/],
-    [["new", "Title", "--next-gate", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
-    [["new", "Title", "--next-gate", "  ", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
-    [["edit", "t1", "--project", "demo"], /usage: atelier edit ID \[--title TEXT\] \[--brief TEXT\] \[--scope GLOB\]\.\.\. \[--accept TEXT\]\.\.\. \[--non-goal TEXT\]/],
-    [["edit", "t1", "--non-goal", "", "--non-goal", "x", "--project", "demo"], /--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear/],
-    [["edit", "t1", "--scope", "", "--scope", "src/**", "--project", "demo"], /--scope needs text: atelier edit ID --scope "GLOB", once per entry, or --scope "" alone to clear/],
-    [["block", "t1", "--project", "demo"], /usage: atelier block \[ID\] "what it is waiting on"/],
-    [["block", "--project", "demo"], /usage: atelier block/],
-  ]) {
-    const r = f.run(f.checkout, argv);
-    assert.equal(r.status, 1, argv.join(" "));
-    assert.match(r.stderr, message, argv.join(" "));
-  }
-  assert.deepEqual(f.requests(), []);
-  // edit sends exactly what it is given: a replacement list, an empty list, a cleared gate.
-  const edited = f.run(f.checkout, ["edit", "t1", "--non-goal", "no CSS", "--stop-when", "", "--next-gate", "", "--project", "demo"]);
-  assert.equal(edited.status, 0, edited.stderr);
-  assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t1/edit", { nonGoals: ["no CSS"], stopWhen: [], nextGate: null }, "owner"]]);
-  assert.match(edited.stdout, /^t1 edited\.\nNon-goals: no CSS\n$/);
-  f.clear();
-  // --context sets, replaces and (empty) clears the reviewers' context, and is sent trimmed.
-  for (const [text, sent] of [["Keep the ledger column out.", "Keep the ledger column out."], ["  padded  ", "padded"], ["", ""]]) {
-    const ctx = f.run(f.checkout, ["edit", "t1", "--context", text, "--project", "demo"]);
-    assert.equal(ctx.status, 0, ctx.stderr);
-    assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/edit", { context: sent }]]);
-    f.clear();
-  }
-  const bare = f.run(f.checkout, ["edit", "t1", "--context", "--project", "demo"]);
-  assert.equal(bare.status, 1);
-  assert.match(bare.stderr, /--context needs text/);
-  assert.deepEqual(f.requests(), []);
-  // --scope is repeatable; one empty value clears it.
-  const scoped = f.run(f.checkout, ["edit", "t1", "--scope", "src/**", "--scope", "test/**", "--project", "demo"]);
-  assert.equal(scoped.status, 0, scoped.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ scope: ["src/**", "test/**"] }]);
-  assert.match(scoped.stdout, /Scope: src\/\*\*, test\/\*\*/);
-  f.clear();
-  const unscoped = f.run(f.checkout, ["edit", "t1", "--scope", "", "--project", "demo"]);
-  assert.equal(unscoped.status, 0, unscoped.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ scope: [] }]);
-  f.clear();
-  // block takes the id first when given, else the workspace's item; the reason is the words after it.
-  const blocked = f.run(f.checkout, ["block", "t2", "waiting", "on", "the", "keys", "--project", "demo"]);
-  assert.equal(blocked.status, 0, blocked.stderr);
-  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/block", { reason: "waiting on the keys" }]]);
-  assert.match(blocked.stdout, /^t2 is blocked: waiting on the keys\. It keeps its holder and workspace; run atelier unblock t2 when it can go on\.\n$/);
-  f.clear();
-  const here = f.run(f.workspace, ["block", "needs a decision"], { ATELIER_ACTOR: "codex/test" });
-  assert.equal(here.status, 0, here.stderr);
-  assert.deepEqual(f.requests().map((q) => [q.path, q.body, q.actor]), [["/api/projects/demo/items/t1/block", { reason: "needs a decision" }, "codex/test"]]);
-  f.clear();
-  const unblocked = f.run(f.workspace, ["unblock"], { ATELIER_ACTOR: "codex/test" });
-  assert.equal(unblocked.status, 0, unblocked.stderr);
-  assert.deepEqual(f.requests().map((q) => [q.path, q.body, q.actor]), [["/api/projects/demo/items/t1/unblock", {}, "codex/test"]]);
-  assert.match(unblocked.stdout, /^t1 is unblocked and claimed again\.\n$/);
-});
-
-// t315: a short title, a brief and acceptance criteria. One long string is
-// sent as the title, as an older CLI sends it, and the answer says the
-// server kept it as the brief.
-// t402: a session is pointed at the orchestrator guide by the commands it runs
-// until the project's AGENTS.md states the review path.
-const POINTER = "Review path for demo: atelier guide --role orchestrate --project demo prints how to run, review and land work here, including atelier land --reviewer.\n";
-
-test("ls and new name the orchestrator guide until AGENTS.md states the review path, and not in a task workspace or in --json", (t) => {
-  const f = fixture(t);
-  for (const argv of [["ls", "--project", "demo"], ["new", "A task", "--project", "demo"]]) {
-    const r = f.run(f.checkout, argv);
-    assert.equal(r.status, 0, r.stderr);
-    assert.ok(r.stdout.endsWith(`\n\n${POINTER}`), `${argv[0]}: ${r.stdout}`);
-    assert.equal(r.stdout.split("atelier guide --role orchestrate").length, 2, "one line");
-  }
-  assert.doesNotMatch(f.run(f.checkout, ["ls", "--json", "--project", "demo"]).stdout, /atelier guide/);
-  assert.doesNotMatch(f.run(f.workspace, ["ls"]).stdout, /atelier guide/);
-  writeFileSync(join(f.checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
-  for (const argv of [["ls", "--project", "demo"], ["new", "A task", "--project", "demo"]]) {
-    const r = f.run(f.checkout, argv);
-    assert.equal(r.status, 0, r.stderr);
-    assert.doesNotMatch(r.stdout, /atelier guide/, argv[0]);
-  }
-});
-
-test("status --brief names the orchestrator guide until AGENTS.md states the review path, and not with --json", (t) => {
-  const f = fixture(t);
-  const brief = f.run(f.checkout, ["status", "--brief", "--project", "demo"]);
-  assert.equal(brief.status, 0, brief.stderr);
-  assert.ok(brief.stdout.endsWith(`\n\n${POINTER}`), brief.stdout);
-  assert.equal(brief.stdout.split("atelier guide --role orchestrate").length, 2, "one line");
-  assert.doesNotMatch(f.run(f.checkout, ["status", "--brief", "--json", "--project", "demo"]).stdout, /atelier guide/);
-  writeFileSync(join(f.checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
-  assert.doesNotMatch(f.run(f.checkout, ["status", "--brief", "--project", "demo"]).stdout, /atelier guide/);
-});
-
-test("new sends a title, a brief and repeatable criteria; one long string alone is said to become the brief; edit takes --title, --brief and --accept", (t) => {
-  const f = fixture(t);
-  const made = f.run(f.checkout, ["new", "Short titles", "--brief", "The whole task.", "--accept", "Lists show it", "--accept", "The page shows the brief", "--project", "demo"]);
-  assert.equal(made.status, 0, made.stderr);
-  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
-  assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n\n" + POINTER);
-  f.clear();
-  const long = "word ".repeat(30).trim();
-  const derived = f.run(f.checkout, ["new", long, "--project", "demo"]);
-  assert.equal(derived.status, 0, derived.stderr);
-  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: long, scope: [] }]);
-  assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n\n' + POINTER);
-  f.clear();
-  for (const [argv, message] of [
-    [["new", "Title", "--brief", "", "--project", "demo"], /--brief needs text: atelier new "short title" --brief "TEXT"/],
-    [["new", "Title", "--accept", " ", "--project", "demo"], /--accept needs text: atelier new --accept "TEXT", once per criterion/],
-    [["new", "Title", "--title", "x", "--project", "demo"], /new does not take --title/],
-    [["edit", "t1", "--title", "", "--project", "demo"], /--title needs text: atelier edit ID --title "TEXT", at most 80 characters/],
-    [["edit", "t1", "--accept", "", "--accept", "x", "--project", "demo"], /--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear/],
-  ]) {
-    const r = f.run(f.checkout, argv);
-    assert.equal(r.status, 1, argv.join(" "));
-    assert.match(r.stderr, message, argv.join(" "));
-  }
-  assert.deepEqual(f.requests(), []);
-  const edited = f.run(f.checkout, ["edit", "t1", "--title", "Shorter", "--brief", "", "--accept", "One", "--project", "demo"]);
-  assert.equal(edited.status, 0, edited.stderr);
-  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t1/edit", { title: "Shorter", brief: null, accept: ["One"] }]]);
-  assert.equal(edited.stdout, "t1 edited.\nTitle: Shorter\nBrief: cleared.\nAcceptance criterion 1: One\n");
-  f.clear();
-  const cleared = f.run(f.checkout, ["edit", "t1", "--accept", "", "--project", "demo"]);
-  assert.equal(cleared.status, 0, cleared.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ accept: [] }]);
-});
-
-// t326: the review command sends the binding of the criteria it judged and
-// the request it claimed only as given, never the task's own; edit says what
-// a change of the criteria withdrew; show prints the criteria and their binding.
-test("review sends the criteria binding and the request only as given, and refuses malformed ones before any request", (t) => {
-  const f = fixture(t);
-  const C = "c".repeat(64);
-  const r = f.run(f.workspace, ["review", "t2", "--approve", "--criteria", C, "--request", "7", "--note", "read them"], { ATELIER_ACTOR: "claude-code/opus" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/review")).map((q) => q.body), [{ approve: true, note: "read them", head: f.head, criteria: C, request: 7 }]);
-  f.clear();
-  // Without --criteria none is sent, and the server refuses it with how to refresh.
-  const bare = f.run(f.workspace, ["review", "t2", "--approve"], { ATELIER_ACTOR: "claude-code/opus" });
-  assert.equal(bare.status, 0, bare.stderr);
-  assert.equal(f.requests().find((q) => q.path.endsWith("/review")).body.criteria, undefined);
-  f.clear();
-  for (const [argv, message] of [
-    [["review", "t2", "--approve", "--criteria", "abc"], /--criteria needs the 64-digit binding atelier show prints/],
-    [["review", "t2", "--approve", "--criteria", C, "--request", "x"], /--request needs the request number the review claim gave/],
-  ]) {
-    const bad = f.run(f.workspace, argv, { ATELIER_ACTOR: "claude-code/opus" });
-    assert.equal(bad.status, 1, argv.join(" "));
-    assert.match(bad.stderr, message);
-  }
-  assert.equal(f.requests().filter((q) => q.path.endsWith("/review")).length, 0);
-});
-
-// t575: on 2026-10-13 a hand-served review of t573 lost its claim to the
-// 5-minute lease during a 6-minute run, and its verdict, sent without
-// --request, was refused for "request undefined". The claim now prints the
-// exact verdict command and how to renew; --renew renews through the route a
-// runner uses; review without --request answers the request claimed here.
-test("review-claim prints the verdict command and the lease, --renew renews it, and review remembers the request", (t) => {
-  const f = fixture(t);
-  const C = "c".repeat(64), as = { ATELIER_ACTOR: "opencode/glm-5.3" };
-  const claim = f.run(f.workspace, ["review-claim", "t2", "--runner", "home:hand"], as);
-  assert.equal(claim.status, 0, claim.stderr);
-  // The JSON stays the one line on stdout, which a runner parses.
-  assert.equal(JSON.parse(claim.stdout).request, 7);
-  assert.equal(claim.stdout.trim().split("\n").length, 1);
-  assert.match(claim.stderr, new RegExp(`^Claimed t2's review request 7 at ${f.head} as opencode/glm-5\\.3\\.$`, "m"));
-  assert.match(claim.stderr, new RegExp(`^Criteria binding: ${C}$`, "m"));
-  assert.ok(claim.stderr.includes(`Record the verdict with: atelier review t2 --head ${f.head} --request 7 --criteria ${C} --approve|--reject --note "…" --as opencode/glm-5.3`), claim.stderr);
-  // Astra's review of t575 (2026-10-13): the server skips a renewal within
-  // 30 seconds of its last one (REVIEW_RENEW_MS) and answers only
-  // {renewed: true}, so "five more minutes" after an early renewal was
-  // wrong, and renewing at its last moment lost the claim. The guidance
-  // now renews every 2 minutes, inside the 4 minutes 30 seconds a renewal
-  // is sure of.
-  assert.match(claim.stderr, /lease lasts 5 minutes .*atelier review-claim t2 --renew --request 7 --as opencode\/glm-5\.3 every 2 minutes/);
-  assert.doesNotMatch(claim.stderr, /within every 5 minutes/);
-  f.clear();
-  // --renew without --request renews the request claimed here, by the runner's route.
-  const renew = f.run(f.workspace, ["review-claim", "t2", "--renew"], as);
-  assert.equal(renew.status, 0, renew.stderr);
-  assert.match(renew.stdout, /Renewed the lease on t2's review request 7, the one this machine last claimed, as opencode\/glm-5\.3: it lasts at least 4 minutes 30 seconds from now \(the server skips a renewal within 30 seconds of the last\); renew again within 2 minutes\./);
-  assert.doesNotMatch(renew.stdout, /5 more minutes/);
-  assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t2/review-renew", { request: 7 }, "opencode/glm-5.3"]]);
-  f.clear();
-  const named = f.run(f.workspace, ["review-claim", "t2", "--renew", "--request", "9"], as);
-  assert.equal(named.status, 0, named.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ request: 9 }]);
-  f.clear();
-  // review without --request answers the remembered request and says which.
-  const verdict = f.run(f.workspace, ["review", "t2", "--approve", "--criteria", C, "--note", "fine"], as);
-  assert.equal(verdict.status, 0, verdict.stderr);
-  assert.match(verdict.stdout, /^Answering review request 7, the one this machine last claimed for t2 as opencode\/glm-5\.3/m);
-  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/review")).map((q) => q.body.request), [7]);
-  f.clear();
-  // Another reviewer, or a task never claimed here, sends no request at all.
-  for (const [id, env] of [["t2", { ATELIER_ACTOR: "claude-code/opus" }], ["t4", as]]) {
-    const other = f.run(f.workspace, ["review", id, "--approve", "--criteria", C], env);
-    assert.equal(other.status, 0, other.stderr);
-    assert.doesNotMatch(other.stdout, /Answering/);
-    assert.ok(!("request" in f.requests().find((q) => q.path.endsWith("/review")).body));
-    f.clear();
-  }
-  // Nothing to renew for a task never claimed here; --request without --renew is refused.
-  const none = f.run(f.workspace, ["review-claim", "t4", "--renew"], as);
-  assert.equal(none.status, 1);
-  assert.match(none.stderr, /no review request of t4 was claimed on this machine; name it with --request N/);
-  const stray = f.run(f.workspace, ["review-claim", "t2", "--request", "7"], as);
-  assert.equal(stray.status, 1);
-  assert.match(stray.stderr, /--request names the claim --renew renews/);
-  assert.equal(f.requests().length, 0);
-  // Astra's review of t575 (2026-10-13): the remembered claim does not supply
-  // the reviewer, so a renewal without --as fails or is refused by the
-  // server's actor check; the help and the handbook name it.
-  const help = spawnSync(process.execPath, [resolve("cli/atelier.mjs"), "review-claim", "--help"], { encoding: "utf8" });
-  assert.match(help.stdout, /review-claim ID --renew --as H\/M/);
-  assert.match(help.stdout, /renew every 2 minutes/);
-  const handbook = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
-  assert.match(handbook, /`atelier review-claim ID --renew --as HARNESS\/MODEL`/);
-  assert.doesNotMatch(handbook, /`atelier review-claim ID --renew`/);
-});
-
-test("review-release forwards the claim generation and preserves owner recovery without a number", (t) => {
-  const f = fixture(t);
-  const run = (...flags) => f.run(f.workspace, ["review-release", "t2", ...flags], { ATELIER_ACTOR: "claude-code/opus" });
-  const numbered = run("--request", "7", "--note", "harness stopped");
-  assert.equal(numbered.status, 0, numbered.stderr);
-  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/review-release", { request: 7, note: "harness stopped" }]]);
-  f.clear();
-  const owner = run("--note", "manual recovery");
-  assert.equal(owner.status, 0, owner.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ note: "manual recovery" }]);
-  f.clear();
-  for (const value of ["x", "0", "-1", "1.5", "1e2", "9007199254740992", ""]) {
-    const bad = run(`--request=${value}`);
-    assert.equal(bad.status, 1, value);
-    assert.match(bad.stderr, /--request needs the request number the review claim gave/);
-  }
-  const bare = run("--request");
-  assert.equal(bare.status, 1);
-  assert.equal(f.requests().length, 0, "invalid generations never reach the server");
-});
-
-test("edit says when the acceptance criteria changed, what that withdrew, and that a fresh review is needed; otherwise nothing of them", (t) => {
-  const f = fixture(t);
-  const edit = (id, ...flags) => {
-    const r = f.run(f.checkout, ["edit", id, ...flags, "--project", "demo"]);
-    assert.equal(r.status, 0, r.stderr);
-    return r.stdout;
-  };
-  assert.equal(edit("t4", "--accept", "One", "--accept", "Two"), [
-    "t4 edited.", "Acceptance criterion 1: One", "Acceptance criterion 2: Two",
-    "The acceptance criteria of t4 changed (binding bbbbbbbbbbbb, was aaaaaaaaaaaa).",
-    "Withdrawn: 2 reviews, 1 review request. They stay in the record and never count again, even if the criteria change back; t4 needs a fresh review of the new criteria.",
-    "Asked again at the same head: codex/gpt-6-astra.", "",
-  ].join("\n"));
-  assert.match(edit("t5", "--accept", "One"), /\nWithdrawn: 1 review request\. They stay in the record and never count again, even if the criteria change back; t5 needs a fresh review of the new criteria\.\n$/);
-  assert.match(edit("t6", "--accept", ""), /^t6 edited\. No framing is set now\.\nThe acceptance criteria of t6 changed \(binding bbbbbbbbbbbb, was aaaaaaaaaaaa\)\.\nNo review or review request stood, so nothing was withdrawn; any review of t6 from now on judges the new criteria\.\n$/);
-  assert.match(edit("t7", "--accept", "One"), /Withdrawn: 1 review, the acceptance, the override of the review\..*\nt7 is claimed again: its holder submits it, and it is reviewed and accepted again before it can merge\.\n$/s);
-  // The same criteria again, or an unrelated edit: no word of the criteria.
-  for (const flags of [["--accept", "One"], ["--next-gate", "Owner"]]) assert.doesNotMatch(edit("t1", ...flags), /criteria of|Withdrawn|fresh review/);
-  assert.deepEqual(f.requests().map((q) => q.body).filter((b) => b.accept !== undefined).map((b) => b.accept), [["One", "Two"], ["One"], [], ["One"], ["One"]]);
-});
-
-test("show prints the task's criteria, the plan's for a part, and their binding a review names", (t) => {
-  const f = fixture(t);
-  const r = f.run(f.checkout, ["show", "t2", "--project", "demo"]);
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /\nAcceptance criterion 1: Nested lists parse\nPlan acceptance criterion 1: It works\nCriteria binding: c{64} \(a review of these criteria names it with --criteria\)\n/);
-});
-
-
-test("review-request sends a named reviewer as an owner-requested runner job", (t) => {
-  const f = fixture(t);
-  const r = f.run(f.checkout, ["review-request", "t1", "--reviewer", "codex/gpt-6-astra"]);
-  assert.equal(r.status, 0, r.stderr);
-  const sent = f.requests().find((r) => r.path.endsWith("/review-request"));
-  assert.deepEqual(sent.body, { reviewer: "codex/gpt-6-astra", wanted: true });
-});
-
-test("parseArgs: --brief is a switch only for status, found after flag values", () => {
-  const other = parseArgs(["--project", "status", "new", "--brief", "text"]);
-  assert.deepEqual(other._, ["new"]);
-  assert.equal(other.brief, "text");
-  const status = parseArgs(["--project", "demo", "status", "--brief"]);
-  assert.deepEqual(status._, ["status"]);
-  assert.equal(status.brief, true);
 });

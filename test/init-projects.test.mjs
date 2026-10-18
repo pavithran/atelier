@@ -15,14 +15,18 @@ function fixture(run) {
   const initial = { server: "https://atelier.test", owner: "owner", projects: { weblog: { path: dir, branch: "main", notesRemote: "origin" } } };
   writeFileSync(config, JSON.stringify(initial));
   writeFileSync(log, "");
-  writeFileSync(join(dir, "git"), `#!/usr/bin/env node
-if (process.argv.includes('--show-toplevel')) console.log(process.cwd());
-else if (process.argv.includes('--abbrev-ref')) console.log('main');
-else if (process.argv.includes('symbolic-ref')) console.log('refs/heads/main');
-else if (process.argv.includes('--is-shallow-repository')) console.log('false');
-else if (process.argv.includes('rev-parse')) console.log('a'.repeat(40));
-else if (process.argv.includes('config')) process.exit(1);
-else if (!process.argv.includes('push')) process.exit(2);
+  // A /bin/sh script, not a node one: each node start cost about 80 ms of
+  // every git call a command makes (t771).
+  writeFileSync(join(dir, "git"), `#!/bin/sh
+has() { needle=$1; shift; for arg in "$@"; do [ "$arg" = "$needle" ] && return 0; done; return 1; }
+if has --show-toplevel "$@"; then pwd
+elif has --abbrev-ref "$@"; then echo main
+elif has symbolic-ref "$@"; then echo refs/heads/main
+elif has --is-shallow-repository "$@"; then echo false
+elif has rev-parse "$@"; then echo ${"a".repeat(40)}
+elif has config "$@"; then exit 1
+elif ! has push "$@"; then exit 2
+fi
 `, { mode: 0o755 });
   const preload = join(dir, "fetch.mjs");
   writeFileSync(preload, `import { appendFileSync } from 'node:fs';
@@ -287,15 +291,17 @@ test("CLI sync refreshes ControlPlane policy even when the baseline already matc
   mkdirSync(dir, { recursive: true });
   const head = "a".repeat(40);
   writeFileSync(join(gitDir, "atelier-baseline-map.json"), JSON.stringify({ weblog: { [head]: head } }));
-  writeFileSync(join(top, "git"), `#!/usr/bin/env node
-if (process.argv.includes('--show-toplevel')) console.log(process.cwd());
-else if (process.argv.includes('--absolute-git-dir')) console.log(process.cwd() + '/fake-git');
-else if (process.argv.includes('--abbrev-ref')) console.log('main');
-else if (process.argv.includes('symbolic-ref')) console.log('refs/heads/main');
-else if (process.argv.includes('--is-shallow-repository')) console.log('false');
-else if (process.argv.includes('rev-parse')) console.log('a'.repeat(40));
-else if (process.argv.includes('config')) process.exit(1);
-else if (!process.argv.includes('status') && !process.argv.includes('fetch')) process.exit(2);
+  writeFileSync(join(top, "git"), `#!/bin/sh
+has() { needle=$1; shift; for arg in "$@"; do [ "$arg" = "$needle" ] && return 0; done; return 1; }
+if has --show-toplevel "$@"; then pwd
+elif has --absolute-git-dir "$@"; then echo "$(pwd)/fake-git"
+elif has --abbrev-ref "$@"; then echo main
+elif has symbolic-ref "$@"; then echo refs/heads/main
+elif has --is-shallow-repository "$@"; then echo false
+elif has rev-parse "$@"; then echo ${"a".repeat(40)}
+elif has config "$@"; then exit 1
+elif ! has status "$@" && ! has fetch "$@"; then exit 2
+fi
 `, { mode: 0o755 });
   const agents = { codex: { available: true, eligible_roles: ["executor"] } };
   const execution = { allowed_classes: ["protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };

@@ -203,6 +203,9 @@ test("the merge context names the item's contributors, the checks observed passi
   assert.deepEqual(mergeContext(detail).overlapping, []);
 });
 
+// A string as one single-quoted word in a /bin/sh script.
+const shq = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
+
 function commandFixture(run) {
   return fixture(async ({ dir, write }) => {
     write("agent-policy", { agents: { codex: { available: true } } });
@@ -213,33 +216,51 @@ function commandFixture(run) {
     writeFileSync(log, "");
     writeFileSync(gitLog, "");
     writeFileSync(join(dir, "config.json"), JSON.stringify({ projects: { example: { path: dir, branch: "main" } } }));
-    writeFileSync(join(dir, "git"), `#!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(gitLog)}, JSON.stringify(args) + '\\n');
-// Settings are kept in a file of their own, so the merge configuration the
-// merge installs (cli/merge-pipeline.mjs) reads back as written.
-const settings = ${JSON.stringify(join(gitDir, "settings.json"))};
-const held = existsSync(settings) ? JSON.parse(readFileSync(settings, 'utf8')) : {};
-if (args[0] === 'config' && args.includes('--get')) { if (args.at(-1) in held) console.log(held[args.at(-1)]); else process.exit(1); }
-else if (args[0] === 'config' && args[1] === '--local') writeFileSync(settings, JSON.stringify({ ...held, [args.at(-2)]: args.at(-1) }));
-else if (args.includes('--git-common-dir')) console.log(${JSON.stringify(gitDir)});
-else if (args.includes('--show-toplevel')) console.log(${JSON.stringify(dir)});
-else if (args.includes('status') && process.env.TEST_DIRTY) console.log(' M file');
-else if (args.includes('--absolute-git-dir')) console.log(${JSON.stringify(gitDir)});
-else if (args.includes('--abbrev-ref')) console.log('main');
-else if (args.includes('rev-parse')) console.log(${JSON.stringify(head)});
-// The fork point the baseline and the accepted revision share: none unless
-// the test names one, as after atelier update moved the revision past its base.
-else if (args[0] === 'merge-base' && !args.includes('--is-ancestor')) console.log(process.env.TEST_FORK_POINT ?? '');
-// Diffed from the recorded base, the revision shows a path the baseline
-// changed since the fork; from its real fork point, only its own.
-else if (args.includes('diff')) process.stdout.write(args.includes(${JSON.stringify(base)}) ? 'src/secret.ts\\0' : 'docs/own.md\\0');
-// The commits a landing checks for their identity (t451): none unless the
-// test names some, as JSON, since the environment cannot carry a NUL.
-else if (args[0] === 'log' && args.includes('--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x1e')) process.stdout.write(JSON.parse(process.env.TEST_IDENTITY_LOG ?? '""'));
-else if (args.includes('merge')) { console.error('merge reached'); process.exit(1); }
-else if (args[0] === 'merge-base' && args.at(-1) !== 'HEAD') process.exit(1);
+    // A /bin/sh script, not a node one: a landing makes dozens of git calls,
+    // and a node start (about 80 ms) cost several seconds a test (t771).
+    // Settings are kept one file per key under git-settings, so the merge
+    // configuration the merge installs (cli/merge-pipeline.mjs) reads back as
+    // written.
+    const settings = join(dir, "git-settings");
+    mkdirSync(settings);
+    writeFileSync(join(dir, "git"), String.raw`#!/bin/sh
+# Each call is logged as one JSON array of its arguments.
+printf '[' >> ${shq(gitLog)}
+sep=''
+for arg in "$@"; do
+  case $arg in
+    *[\\\"]*) arg=$(printf '%s' "$arg" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g') ;;
+  esac
+  printf '%s"%s"' "$sep" "$arg" >> ${shq(gitLog)}
+  sep=','
+done
+printf ']\n' >> ${shq(gitLog)}
+has() { needle=$1; shift; for arg in "$@"; do [ "$arg" = "$needle" ] && return 0; done; return 1; }
+for last in "$@"; do :; done
+prev=''; before=''
+for arg in "$@"; do before=$prev; prev=$arg; done
+if [ "$1" = config ] && has --get "$@"; then
+  [ -f ${shq(settings)}/"$last" ] || exit 1
+  printf '%s\n' "$(cat ${shq(settings)}/"$last")"
+elif [ "$1" = config ] && [ "$2" = --local ]; then printf '%s' "$last" > ${shq(settings)}/"$before"
+elif has --git-common-dir "$@"; then echo ${shq(gitDir)}
+elif has --show-toplevel "$@"; then echo ${shq(dir)}
+elif has status "$@" && [ -n "$TEST_DIRTY" ]; then echo ' M file'
+elif has --absolute-git-dir "$@"; then echo ${shq(gitDir)}
+elif has --abbrev-ref "$@"; then echo main
+elif has rev-parse "$@"; then echo ${shq(head)}
+# The fork point the baseline and the accepted revision share: none unless
+# the test names one, as after atelier update moved the revision past its base.
+elif [ "$1" = merge-base ] && ! has --is-ancestor "$@"; then echo "$TEST_FORK_POINT"
+# Diffed from the recorded base, the revision shows a path the baseline
+# changed since the fork; from its real fork point, only its own.
+elif has diff "$@"; then if has ${shq(base)} "$@"; then printf 'src/secret.ts\0'; else printf 'docs/own.md\0'; fi
+# The commits a landing checks for their identity (t451): none unless the
+# test names some, as a printf %b string, since the environment cannot carry a NUL.
+elif [ "$1" = log ] && has '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x1e' "$@"; then printf '%b' "$TEST_IDENTITY_LOG"
+elif has merge "$@"; then echo 'merge reached' >&2; exit 1
+elif [ "$1" = merge-base ] && [ "$last" != HEAD ]; then exit 1
+fi
 `, { mode: 0o755 });
     const storage = join(dir, "server.json");
     writeFileSync(storage, JSON.stringify({ policy: { ...before, commitIdentity: IDENTITY }, state: "accepted", acceptanceProtected: before.protected }));
@@ -350,7 +371,8 @@ test("merge refuses an accepted revision whose new commits the policy refuses, n
   const c = "c".repeat(40), d = "d".repeat(40);
   const record = (...fields) => `${fields.join("\x00")}\x1e\n`;
   const log = record(c, "codex", "agents@atelier.example", "Project Owner", "123+owner@users.noreply.github.com") + record(d, "Pavi", "pavi@studio.local", "Pavi", "pavi@personal.example");
-  const result = command(["merge", "t1"], { TEST_IDENTITY_LOG: JSON.stringify(log) });
+  const printable = log.replaceAll("\x00", "\\0000").replaceAll("\x1e", "\\0036").replaceAll("\n", "\\n");
+  const result = command(["merge", "t1"], { TEST_IDENTITY_LOG: printable });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /t1's accepted revision holds commits whose identity the project's policy refuses:\n {2}commit dddddddddddd: the author email pavi@studio\.local is one Git guesses from the machine's user and host names\n {2}commit dddddddddddd: the committer email pavi@personal\.example is neither the project's commit address \(123\+owner@users\.noreply\.github\.com\) nor an agent address the policy allows \(agentEmails\)\nNothing was merged\./);
   assert.doesNotMatch(result.stderr, /cccccccc/, "the agent's allowed commit is not named");

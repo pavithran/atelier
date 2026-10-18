@@ -76,3 +76,26 @@ export function rejections({ unassigned, multiple }) {
     ...multiple.map(({ file, runners }) => `${file}: owned by more than one runner (${runners.join(", ")})`),
   ];
 }
+
+// The timing list (test/timings.txt, t771): one "path seconds" per line, how
+// long a file's tests took in a run that measured it; blank lines and lines
+// starting with # are notes. Only the slow files are listed, and nothing
+// refreshes it: a file missing from it, or a line that does not parse, is
+// simply an unlisted file.
+export function parseTimings(text) {
+  const timings = new Map();
+  for (const line of String(text).split("\n")) {
+    const m = /^(\S+)\s+(\d+(?:\.\d+)?)\s*$/.exec(line);
+    if (m) timings.set(m[1], Number(m[2]));
+  }
+  return timings;
+}
+
+// Longest first, so the files that end a run start at once. Unlisted files
+// come before the listed ones, in the order given: a new file may be slow,
+// and the list does not know it yet. Files that tie keep their order.
+export function longestFirst(files, timings) {
+  const unlisted = files.filter((f) => !timings.has(f));
+  const listed = files.filter((f) => timings.has(f)).sort((a, b) => timings.get(b) - timings.get(a));
+  return [...unlisted, ...listed];
+}
