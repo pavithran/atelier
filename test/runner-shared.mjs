@@ -12,8 +12,12 @@ import { removeBrief, removeDataHome } from "../cli/runner.mjs";
 // machine's cache, the two parts of this file and every other run of it shared
 // the markers of workspace /cache/work/atelier/t13, and tests failed on each
 // other's (t771).
-process.env.ATELIER_CACHE ??= mkdtempSync(join(tmpdir(), "atelier-runner-test-cache-"));
-process.once("exit", () => rmSync(process.env.ATELIER_CACHE, { recursive: true, force: true }));
+// It is always a new folder, whatever ATELIER_CACHE the run inherited (that
+// one may be the developer's, with workspaces in it), and the exit removes
+// that folder alone.
+const testCache = mkdtempSync(join(tmpdir(), "atelier-runner-test-cache-"));
+process.env.ATELIER_CACHE = testCache;
+process.once("exit", () => rmSync(testCache, { recursive: true, force: true }));
 
 // A runner that gives a task up sets the process's exit code (1), as the
 // command does. Some tests reset it when they end and some do not; in one
