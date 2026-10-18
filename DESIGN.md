@@ -61,11 +61,10 @@ only a list of tasks.
 
 ## Evidence always says where
 
-Wherever a check is reported as passed, the page says whether Atelier ran it
-in a Cloudflare container or a runner ran it in a clean clone: in the decision line
-("Checks passed in a Cloudflare container"), and in each check's row. Under a
-project's sandbox-only policy, a check that ran only on a runner is
-shown as waiting, with the reason. Reports are labelled as reported and never
+Wherever a check is reported as passed, the page says where it ran: on a
+runner in a clean clone, or, for a result recorded before t768 removed the
+container check, in a Cloudflare container. It says so in the decision line
+and in each check's row. Reports are labelled as reported and never
 read as passing.
 
 ## Marks on a lane

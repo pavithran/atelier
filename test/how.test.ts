@@ -285,10 +285,9 @@ test("the How page, help and docs state the current core-file hold rule", () => 
 
 // t595's review (codex/gpt-6-astra and antigravity/gemini-4-argon, 2026-10-13):
 // pages and docs once said Atelier itself runs the tests, where a local check
-// runs on the caller's machine and only a container check, which
-// `--sandbox-only` requires, is Atelier's own run. No reader-facing text may
-// say so again, and /how must name the setting that makes it true.
-test("no page or doc says Atelier itself runs the tests, and /how names --sandbox-only", () => {
+// runs on the caller's machine. Since t768 removed the container check, no
+// check is Atelier's own run. No reader-facing text may say so again.
+test("no page or doc says Atelier itself runs the tests", () => {
   const docs = readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => `docs/${name}`);
   const pages = readdirSync(join(root, "src")).filter((name) => /^how.*\.ts$/.test(name)).map((name) => `src/${name}`);
   for (const file of ["README.md", ...docs, ...pages, "src/ui.ts"]) {
@@ -297,11 +296,8 @@ test("no page or doc says Atelier itself runs the tests, and /how names --sandbo
       assert.doesNotMatch(text, claim, `${file} says ${claim.source}`);
     }
   }
-  assert.ok(pages.some((file) => read(file).includes("--sandbox-only")), "/how no longer names --sandbox-only");
-  // The film's narration says the trust boundary where it speaks of the
-  // exact head: a local pass is the caller's word, a container's is not.
-  for (const line of read("docs/video.md").split("\n").filter((l) => l.startsWith("> ") && /exact head/.test(l))) {
-    assert.match(line, /Cloudflare container/, `the narration speaks of the exact head without the container: ${line}`);
+  for (const file of ["README.md", ...docs, ...pages, "src/ui.ts"]) {
+    assert.doesNotMatch(read(file), /--sandbox-only|sandboxOnly|atelier check --sandbox/, `${file} names the removed sandbox check mode`);
   }
 });
 

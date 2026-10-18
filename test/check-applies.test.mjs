@@ -67,7 +67,6 @@ test("check records a check whose paths the change does not touch as not applica
   const f = await fixture(t, (root) => ({
     checks: [touch(root, "ran-docs"), touch(root, "ran-app")],
     checkPaths: [{ command: touch(root, "ran-docs"), paths: ["docs/**"] }, { command: touch(root, "ran-app"), paths: ["App/**", "project.yml"] }],
-    sandboxOnly: false,
   }));
   const r = await f.run("check", "t1");
   assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -79,22 +78,6 @@ test("check records a check whose paths the change does not touch as not applica
   const given = await f.run("check", "t1", "--", touch(f.root, "ran-given"));
   assert.equal(given.status, 0, given.stderr);
   assert.equal(existsSync(join(f.root, "ran-given")), true);
-});
-
-test("a sandbox run's check that did not apply is printed as such and is not a failure", async (t) => {
-  const f = await fixture(t, () => ({ checks: ["npm test", "xcodebuild build"], sandboxOnly: true }), (path) => {
-    if (path.endsWith("/sandbox")) return { runId: "run-1" };
-    if (path.includes("/sandbox/")) return {
-      status: "done", recorded: true, changedPaths: ["docs/a.md"],
-      request: { head: "a".repeat(40) },
-      results: [{ claim: "npm test", passed: true, exitCode: 0, seconds: 3, outputTail: "" }, { claim: "xcodebuild build", passed: null, exitCode: null, seconds: 0, outputTail: "", notApplicable: true }],
-    };
-    return undefined;
-  });
-  const r = await f.run("check", "t1");
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /^PASS  npm test  @ aaaaaaaa  \(3s, in Cloudflare\)$/m);
-  assert.match(r.stdout, /^N\/A   xcodebuild build  @ aaaaaaaa  \(not run: this change touches none of the paths it applies to\)$/m);
 });
 
 // init against a fake server, in a checkout whose ControlPlane adapter has change_rules.
@@ -175,7 +158,7 @@ test("decision 2026-10-06: a re-init that names no check does not narrow the pat
 });
 
 test("N/A checks never enter or validate the slot pool", async (t) => {
-  const f = await fixture(t, () => ({ checks: ["exit 7"], checkPaths: [{ command: "exit 7", paths: ["App/**"] }], sandboxOnly: false }), undefined, { ATELIER_TEST_SLOTS: "invalid" });
+  const f = await fixture(t, () => ({ checks: ["exit 7"], checkPaths: [{ command: "exit 7", paths: ["App/**"] }] }), undefined, { ATELIER_TEST_SLOTS: "invalid" });
   const result = await f.run("check", "t1");
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(f.posts[0].notApplicable, true);

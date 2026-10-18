@@ -21,8 +21,7 @@ project's required checks run from the item's own head. The `check` command in
 cli/atelier.mjs clones the fork Artifacts holds into a throwaway directory
 (`cleanClone`, `runCheck`) and runs each command there, and `atelier finish`
 runs push and then check in one command, so a test authored against a path the
-head lacks fails immediately after the push. The sandbox route (src/index.ts,
-case "sandbox") runs the same head in a Cloudflare container. A check command
+head lacks fails immediately after the push. A check command
 that is not a real string is refused at the boundary (`asStrings` in
 src/index.ts). Tests: test/check-env.test.mjs, "a passing local check sees no
 credentials and uploads none" and "a check still runs its toolchain: node and
@@ -199,9 +198,8 @@ and was read as success though it had landed nothing, because zsh does not
 word-split unquoted parameters and a grep filter hid the error. It was caught
 only by checking state afterwards. Verify state, not output.
 
-Atelier's recording path verifies state, with one stated exception: outside a
-project registered as sandbox only, a check's pass or fail is the caller's
-word, recorded as observed (the evidence route in src/index.ts says so). The
+Atelier's recording path verifies state, with one stated exception: a check's
+pass or fail is the caller's word, recorded as observed (the evidence route in src/index.ts says so). The
 push route reads the head from
 Artifacts itself (`headOf` in src/index.ts), and `recordPush` in src/ledger.ts
 records what the Worker saw, logging a mismatch flag when the caller's claim

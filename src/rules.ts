@@ -300,12 +300,12 @@ export interface Evidence {
   failureLines?: string;
   // The whole output of an observed check, kept in R2 by reference (src/large.ts)
   // when it is longer than the tail kept inline; `outputTail` is its end. Only
-  // Atelier's own runs record one: the sandbox runner stores the log as it
-  // streams, and nothing posted to the API can name a stored payload.
+  // Only Atelier's own code records one, and nothing posted to the API can
+  // name a stored payload.
   log?: LargeRef;
-  // Where an observed check ran: "sandbox" is a Cloudflare container started by
-  // the Worker; "runner" is Atelier's CLI on the caller's machine. Only the
-  // Worker's own code can record "sandbox"; anything posted to the API is "runner".
+  // Where an observed check ran: "runner" is Atelier's CLI on the caller's
+  // machine. "sandbox" marks a result recorded before t768 removed the
+  // Cloudflare container check; it still counts and is shown as it was.
   where?: "sandbox" | "runner";
   // Main's head when an observed check was recorded, read by the Worker from
   // Artifacts. A merged check ran on the merge of `head` with that commit
@@ -325,9 +325,8 @@ export interface Evidence {
   // (evidenceFor in src/ledger.ts), never posted: what `atelier show` and
   // `atelier check-log` name a result by (t436).
   id?: number;
-  // The container run that made an observed result (src/sandbox/runner.ts),
-  // the run id `atelier check --sandbox` polls; a run on someone's machine
-  // records none.
+  // The container run that made an observed result recorded before t768
+  // removed the container check; a run on someone's machine records none.
   run?: string;
 }
 
@@ -616,7 +615,6 @@ export interface ProjectPolicy {
   // policy), none for any other.
   riskReviews?: RiskReviews;
   approval?: string;
-  sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
   // Which companies' models build and review (t394). Absent, or `single`
   // null, the default holds: a protected change needs approval from a model
   // of another family than every contributor. With `single` set the project
@@ -1600,28 +1598,25 @@ export interface EvidenceView {
 }
 
 // Whether an observed result counts as a check at the head: a merged check
-// does not, since it ran on another tree, and under sandboxOnly a check run
-// on someone's machine is still shown but does not count.
-const countsAtHead = (policy: ProjectPolicy, e: Evidence) => e.grade === "observed" && !e.merged && (!policy.sandboxOnly || e.where === "sandbox");
+// does not, since it ran on another tree.
+const countsAtHead = (e: Evidence) => e.grade === "observed" && !e.merged;
 
 // The head's own runs of one check that the gate counts, oldest first: every
-// observed result at the head for that command that is not a merged run and,
-// under sandboxOnly, ran in a container. The last of them is the check's
+// observed result at the head for that command that is not a merged run. The last of them is the check's
 // result at the head (evidenceAt); the earlier ones are the retries it
 // followed, kept so a failure and the pass that answered it stay legible
 // together (t403, t436).
 export function countingRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, claim: string): Evidence[] {
   return (head ? evidence.filter((e) => e.head === head) : [])
-    .filter((e) => countsAtHead(policy, e) && !e.notApplicable && e.claim === claim)
+    .filter((e) => countsAtHead(e) && !e.notApplicable && e.claim === claim)
     .sort((a, b) => a.at.localeCompare(b.at));
 }
 
 export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null): EvidenceView {
   const atHead = head ? evidence.filter((e) => e.head === head) : [];
-  const counts = (e: Evidence) => countsAtHead(policy, e);
+  const counts = countsAtHead;
   const latest = (claim: string) => countingRunsAt(policy, atHead, head, claim).pop();
-  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
-    Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
+  const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) => a.at.localeCompare(b.at)).pop();
   const changedPaths = measured?.changedPaths ?? null;
   // A check's applicability at a head is settled once, by the newest counting
   // record of it there: a record that the check does not apply stands, judged
@@ -1666,12 +1661,12 @@ export interface MergedCheckView {
 // last is the check's result on the merge (mergedChecksAt).
 export function mergedRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, claim: string): Evidence[] {
   return (head ? evidence.filter((e) => e.head === head) : [])
-    .filter((e) => e.claim === claim && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox"))
+    .filter((e) => e.claim === claim && e.merged && e.grade === "observed" && !e.notApplicable)
     .sort((a, b) => a.at.localeCompare(b.at));
 }
 
 export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, mainNow: string | null): MergedCheckView {
-  const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox")) : [];
+  const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable) : [];
   const notApplicable = new Set(evidenceAt(policy, evidence, head).notApplicable);
   const checks = policy.checks.filter((claim) => !notApplicable.has(claim)).map((claim) => {
     const e = mergedRunsAt(policy, runs, head, claim).pop();

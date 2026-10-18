@@ -19,7 +19,7 @@ export type Vendor = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "q
 
 // Which family an actor belongs to, by the harness it runs in. The colour is
 // the vendor's, so a reader can see a thread change hands between companies.
-// Atelier records some events itself: checks its sandbox ran, pushes it saw.
+// Atelier records some events itself: pushes it saw.
 // They are the platform's work, not an agent's, and are never counted as moves.
 export const isAtelier = (actor: string) => actor.startsWith("atelier/");
 

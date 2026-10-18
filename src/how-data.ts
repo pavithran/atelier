@@ -26,7 +26,7 @@ export interface Verbed {
 export const STEPS: Verbed[] = [
   { verb: "Claim", line: "One holder per task.", about: "An agent claims an open task with `atelier start`. The project's Durable Object grants it atomically, so a second claimant is refused." },
   { verb: "Fork", line: "Every task its own fork.", about: "The claim forks the baseline into a workspace for that task alone, with one write token for its holder. The agent commits and pushes there, never to the project." },
-  { verb: "Prove", line: "The checks run on the exact head.", about: "`atelier check` runs the required checks on a clean clone of exactly the head Atelier reads from Artifacts, on the machine that asks or, with `--sandbox`, in a Cloudflare container, and only those Observed results count; what an agent says it ran is shown and never counted." },
+  { verb: "Prove", line: "The checks run on the exact head.", about: "`atelier check` runs the required checks on a clean clone of exactly the head Atelier reads from Artifacts, on the machine that asks, and only those Observed results count; what an agent says it ran is shown and never counted." },
   { verb: "Review", line: "Another company reviews, or in single-family mode another model.", about: "A change to a protected path needs an approval from a model of another family than every contributor by default; a project set to single-family mode takes a different model of its one company from every contributor, and says so wherever the review shows. No agent reviews its own work." },
   { verb: "Land", line: "One merge at a time, with a receipt.", about: "The developer accepts one exact head through the gate and it merges, one merge per project at a time under the landing lease, with the task's record attached as a git note." },
 ];
@@ -69,7 +69,7 @@ export const LOOP: Step[] = [
   {
     name: "Checks", lane: "agent", command: "check", moves: "a check result",
     records: ["Observed result", "at that head:", "pass or fail"],
-    detail: "`atelier check` clones the workspace afresh at that head on the machine that runs it, runs each required check and posts each result. Atelier records a result as Observed only when it names the head Atelier reads from Artifacts, with the paths the change touches, which the Worker measures itself. `--sandbox` runs the checks in a Cloudflare container instead. `--merged` runs them on the would-be merge, the head merged with main as it is now, and the result stands beside the merge preview, bound to both revisions. `atelier report` adds a Reported claim. `atelier submit` marks the task ready, and `atelier done \"summary\"` runs push, check and submit in order.",
+    detail: "`atelier check` clones the workspace afresh at that head on the machine that runs it, runs each required check and posts each result. Atelier records a result as Observed only when it names the head Atelier reads from Artifacts, with the paths the change touches, which the Worker measures itself. `--merged` runs them on the would-be merge, the head merged with main as it is now, and the result stands beside the merge preview, bound to both revisions. `atelier report` adds a Reported claim. `atelier submit` marks the task ready, and `atelier done \"summary\"` runs push, check and submit in order.",
   },
   {
     name: "Review", lane: "reviewer", command: "review", moves: "a review", conditional: true,
@@ -101,7 +101,7 @@ export const TERMS: Term[] = [
   { term: "Baseline", meaning: "Atelier's copy of the project's branch, the one `atelier init` registered (often `main`), held in an Artifacts repository." },
   { term: "Workspace", meaning: "A task's own fork of the baseline, also an Artifacts repository. Only the task's holder has a write token for it." },
   { term: "Head", meaning: "The latest commit in a workspace. Results, reviews and acceptance each name the head they apply to." },
-  { term: "Observed", meaning: "A required check's result, recorded against the head Atelier read from Artifacts, from a run on a clean clone of that head, on the machine that ran it or in a Cloudflare container." },
+  { term: "Observed", meaning: "A required check's result, recorded against the head Atelier read from Artifacts, from a run on a clean clone of that head, on the machine that ran it." },
   { term: "Reported", meaning: "A statement an agent made about its own work. It is shown and never counted." },
   { term: "Pending", meaning: "A required check with no Observed result at the current head." },
   { term: "Gate", meaning: "The function that decides whether a task can be accepted and lists what still blocks it: `gate` in `src/rules.ts`." },
@@ -141,8 +141,8 @@ export const RULES: Rule[] = [
   },
   {
     title: "Observed evidence only", verb: "Prove",
-    enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds, on the caller's machine or, with `--sandbox`, in a Cloudflare container, and posts the result as a check. Atelier refuses a result that names any head but the one it reads from Artifacts, and measures the paths the change touches itself; the pass or fail of a local run is the word of the machine that ran it. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. Under `sandboxOnly`, only results from a Cloudflare container count. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
-    why: "An agent's own statement that its tests pass is not evidence; the developer needs results taken from a clean clone of the head, though only a container result is produced by Atelier itself, and a local Observed result is posted by the machine that ran it, so a project that wants results no agent can forge requires the container with `atelier init --sandbox-only`.",
+    enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds, on the caller's machine, and posts the result as a check. Atelier refuses a result that names any head but the one it reads from Artifacts, and measures the paths the change touches itself; the pass or fail of a local run is the word of the machine that ran it. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
+    why: "An agent's own statement that its tests pass is not evidence; the developer needs results taken from a clean clone of the head, though a local Observed result is posted by the machine that ran it and is that machine's word.",
     where: [{ file: "src/rules.ts", symbol: "evidenceAt" }, { file: "src/rules.ts", symbol: "gate" }, { file: "src/rules.ts", symbol: "mergedBlockers" }],
   },
   {
@@ -171,7 +171,7 @@ export const RULES: Rule[] = [
   },
   {
     title: "Tokens scoped to an actor", verb: "Claim",
-    enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading, with these routes by name: `block`, `unblock`, `queue`, `sandbox`, `plan`, `integrated`, `integration-failed`, `refreshed`, `refresh-failed`, `refresh-lease`, `refresh-pushing` and `refresh-checked`. The Ledger still takes several of them only from the task's holder. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the developer token, and agent tokens cannot sign in to the browser.",
+    enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading, with these routes by name: `block`, `unblock`, `queue`, `plan`, `integrated`, `integration-failed`, `refreshed`, `refresh-failed`, `refresh-lease`, `refresh-pushing` and `refresh-checked`. The Ledger still takes several of them only from the task's holder. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the developer token, and agent tokens cannot sign in to the browser.",
     why: "A leaked or misused agent token can act only as its own actor, in its own projects, and cannot decide for the developer.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }, { file: "src/tokens.ts", symbol: "tokenActive" }, { file: "src/tokens.ts", symbol: "inScope" }],
   },
@@ -192,7 +192,7 @@ export const RULES: Rule[] = [
 // Trusted, not enforced: the README's list, restated for a reader of the page.
 export const LIMITS: string[] = [
   "Agent tokens prove identity. The developer token may name any actor, a reviewer included: a review it records in a model's name counts as that model's (for a protected change, only when it answers a review request that model claimed for that head), so independence of review holds against agents, not against whoever holds that token, which stays with the developer's tools. A workspace write token is separate and controls only Git pushes.",
-  "A local check runs on the caller's machine, which posts its pass or fail. Atelier verifies the head and measures the changed paths, but a caller allowed to post check results, the task's own agent included, could post a pass that was never run, so a local Observed result rests on the command having run the check. A container check runs on the server, and `sandboxOnly` counts only those; the container path is implemented, and a successful run in production has not been confirmed.",
+  "A local check runs on the caller's machine, which posts its pass or fail. Atelier verifies the head and measures the changed paths, but a caller allowed to post check results, the task's own agent included, could post a pass that was never run, so a local Observed result rests on the command having run the check. Atelier has no check it runs itself: the container check was removed (t768).",
   "The merge happens on the developer's machine. Artifacts can be read through its binding but written only by a git push with a write token, so Atelier merges in git in the developer's checkout and pushes the result.",
 ];
 

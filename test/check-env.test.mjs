@@ -43,7 +43,7 @@ async function fixture(t, check) {
     if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
-    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: [command], sandboxOnly: false } };
+    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: [command] } };
     if (path.endsWith("/claim")) data = { item, workspace: { token: WRITE, remote, defaultBranch: "main", expiresAt: "tomorrow" } };
     if (path.endsWith("/read-token")) data = { remote, token: READ, head, defaultBranch: "main" };
     if (path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: BASE, head, defaultBranch: "main" };

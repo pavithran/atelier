@@ -83,7 +83,7 @@ without proof · 4 Big goals become plans · 5 It measures, and it learns ·
 
 > Many AI agents, one repository. When their work merges, what can you trust?
 >
-> Three things to remember. One: a check counts only when it names the exact head, and a project can demand checks in a Cloudflare container, which no agent can forge (`--sandbox-only`); a local pass is the word of the machine that ran it. Two: independent review, by another company's model. Three: every step is on the record.
+> Three things to remember. One: a check counts only when it names the exact head; a pass is the word of the machine that ran it. Two: independent review, by another company's model. Three: every step is on the record.
 
 ## 2. Why Git alone isn't enough {#why}
 
@@ -132,7 +132,7 @@ seconds after the approval. Then the live page of t278: its Thread, with the
 two send-backs, and its Checks and reviews, with Gemini's approval. Tag:
 from the ledger, t278, 7 October 2026; on the footage, the live page.
 
-> Proof comes first, then review. Tests run on a runner, in a clean clone of the exact head pushed to Artifacts, and Atelier records the runner's result against that head; a project can demand a Cloudflare container instead, whose result no agent can forge.
+> Proof comes first, then review. Tests run on a runner, in a clean clone of the exact head pushed to Artifacts, and Atelier records the runner's result against that head.
 >
 > Opus 5.5 built task t278, so no Anthropic model could approve it. Gemini rejected it twice, quoting file and line: a pull could drop logs past a thousand, then one bad log could end paging early. All four findings were real, and fixed; the third head merged eleven seconds after its approval.
 >
@@ -223,13 +223,11 @@ showcase.
 On screen, dark: the architecture drawn layer by layer, requests travelling
 along its edges. Live: Worker, Durable Objects, Artifacts, Workers Logs, AI
 Gateway, Access, R2 (`atelier-large`), Workflows. Built, not yet in daily
-use: Browser Rendering (render checks of /how and the showcase), Containers
-(a full suite not yet proven), Analytics Engine (bound; nothing writes to it
-yet).
+use: Analytics Engine (bound; nothing writes to it yet).
 
 > It runs on Cloudflare: a Worker for the API and the gate, a Durable Object for each project's ledger, and Artifacts for every repository and fork.
 >
-> Workers Logs, AI Gateway, Access, R2 and Workflows are live; Browser Rendering and Containers are built.
+> Workers Logs, AI Gateway, Access, R2 and Workflows are live.
 
 ## 10. Close {#close}
 
@@ -237,7 +235,7 @@ On screen, dark: the field of light returns. Four lines, then "Git keeps
 the code. Atelier brings the receipts.", 321 tasks and 240 merged counting up,
 with the rest beneath; then atelier.zone and the repository's address.
 
-> Checks that name the exact head, run in a Cloudflare container when a project demands it. Independent review, by another company's model. Every step is on the record.
+> Checks that name the exact head. Independent review, by another company's model. Every step is on the record.
 >
 > Git keeps the code. Atelier brings the receipts. It built itself this way: 321 tasks, 240 merged.
 >
@@ -268,12 +266,12 @@ than kept; they are listed at the end.
 | 7a | Fifteen tasks held at once at 12:59:32 UTC on 6 October, the most in the ledger; not measured beyond | ledger `peak` (every holding interval swept in time order, `derive.mjs`) | yes; all fifteen were held by Anthropic models during the waiver of that day |
 | 7b | Each task is its own fork in Artifacts; each project's ledger its own Durable Object; checks run on as many runners as are started; only landing on main waits its turn (a lease per project); a plan's parts meet first on the plan's branch | README.md:67, 86, 179, 342; `wrangler.jsonc` | yes, as design; scale beyond the ledger's peak is not claimed |
 | 9 | On screen, per agent: merged tasks built (final builder) and reviews recorded | ledger `facts.mergedByFinalBuilder`, `facts.reviewsByModel` | yes |
-| 10 | Checks run on the lead developer's machine, in a clean clone of the exact head pushed to Artifacts; Atelier records the result the runner posted | `evidence.observed` events carry `where: "runner"` (the runner on the lead developer's Mac) or are run by `atelier land` there; `cli/atelier.mjs` runs each check "in a second, clean clone of exactly the head" Atelier read; the live page labels these "Agent's machine" | yes; checks in a Cloudflare Container are built, not proven (claim 33) |
+| 10 | Checks run on the lead developer's machine, in a clean clone of the exact head pushed to Artifacts; Atelier records the result the runner posted | `evidence.observed` events carry `where: "runner"` (the runner on the lead developer's Mac) or are run by `atelier land` there; `cli/atelier.mjs` runs each check "in a second, clean clone of exactly the head" Atelier read; the live page labels these "Agent's machine" | yes |
 | 11 | t278: built by Opus 5.5; rejected twice by Gemini 3.1 Pro at 2d7ac626 (21:02:06 UTC; src/index.ts:1694, src/usage/gateway.ts:201) and 04cafbf6 (21:20:50 UTC; src/usage/gateway.ts:190); four findings, each judged "fixed"; approved at de671943 21:28:33, merged 21:28:44 UTC on 7 October as 5af22431 (11 s) | ledger `stories.t278` | yes |
 | 12 | t278's live page shows two send-backs on its Thread and Gemini's approval under Checks and reviews | `video/public/footage/t278-2-thread.png`, `t278-3-reviews.png`, captured signed in on 2026-10-08 | yes |
 | 13 | t283: GLM-5.3's 524-line Browser Rendering check; the run released "harness timed out" at 00:29:05 UTC on 8 October; the reclaim deleted the work; recovered only from a patch the orchestrator had saved | ledger `stories.t283` events; t296's title (filed 00:33:30 UTC), which gives the 524 lines and the recovery | yes, from the ledger; the line count is t296's title's |
 | 14 | t296 fixed within three hours | t296 created 00:33:30, merged 03:11:28 UTC on 8 October | yes |
-| 15 | Opus 5.5 rejected t283 at d7fa6484 (01:21:15 UTC): JavaScript on, no request filter, label text returned, so any project's check container could reach the internet through the browser | ledger `stories.t283.reviews[0]`, finding at src/render-check.ts:223 | yes |
+| 15 | Opus 5.5 rejected t283 at d7fa6484 (01:21:15 UTC): JavaScript on, no request filter, label text returned, so any project's check container could reach the internet through the browser | ledger `stories.t283.reviews[0]`, finding at src/render-check.ts:223 (the file went with the container check, t768) | yes |
 | 16 | Fixed, then approved by Gemini 3.1 Pro at 876eea58 (04:56:00 UTC), merged 04:56:08 as e6f66b6d | ledger `stories.t283` | yes; the fix commit (d6511f1) carries a Claude Opus 5.5 co-author line while the ledger attributes the push to GLM-5.3, the holder, so the film does not say who fixed it |
 | 17 | t219: Opus 5.5 found that a signed-out visitor could confirm private project names by guessing (303 for a registered name, 404 otherwise), 097f3af5, 17:55:20 UTC on 7 October; approved at aea15054, merged as 51c0dd47 | ledger `stories.t219`, finding at src/index.ts:2275 | yes |
 | 17a | Context preservation: 339 claims, 15 handoffs, 1,122 observed checks, 346 reviews in the ledger; a rework brief carries the review's findings or the failing check's output; a runner saves uncommitted work under refs/atelier/rescue/ before a reset (t296) | ledger `facts.claims`, `facts.handoffs`, `facts.observedChecks`, `facts.modelReviews`; `src/plans/brief.ts` (job brief, rework findings); `cli/runner.mjs` (rescue ref) | yes |
@@ -294,7 +292,7 @@ than kept; they are listed at the end.
 | 30 | fresh-demo: first commit "A list pager" with a failing test at 15:27:17 UTC; `init` registered the project 15:27:26; t1 created 15:27:34, claimed 15:27:35, pushed 15:27:45, check observed 15:27:48; landed and merged 15:28:06 as 75e9e7a, with the note; 49 s from the first commit | `git log` and `git notes` in the fresh-demo checkout (data/terminal/fresh-*.txt); `GET /api/projects/fresh-demo/items/t1`; the test was run at 0dddfd0 (fails: [3,4] for [1,2]) and at a0e9ad5 (passes) | yes; the land needed no review: the project has no execution policy (its `land.review` event says so) |
 | 31 | Worker serves the API and the gate; a Durable Object per project's ledger; Artifacts holds every repository and fork | `wrangler.jsonc` | yes |
 | 32 | Workers Logs, AI Gateway, Access, R2, Workflows live | `wrangler.jsonc`; `src/access.ts`; `src/large.ts`; `src/landing-workflow.ts`; `curl -I https://atelier.zone/` answered 302 to Cloudflare Access at 15:44 UTC on 2026-10-08; `/` is the public showcase now, and on 2026-10-13 `curl -I` had `/` answer 200 and `/home`, a developer path, 302 (docs/setup.md lists the paths behind Access) | yes |
-| 33 | Browser Rendering and Containers built, not yet proven in daily use | `wrangler.jsonc` `browser`, `containers`; `src/render-check.ts` (t283), `src/sandbox/runner.ts` | yes |
+| 33 | Browser Rendering and Containers were built and never proven in daily use; t768 removed them | the history of `wrangler.jsonc`, `src/render-check.ts` and `src/sandbox/runner.ts` | yes |
 | 34 | 321 tasks, 240 merged; of the rest 61 abandoned, 11 open, 5 blocked, 3 submitted, 1 claimed | ledger `facts.tasks`, `facts.states` | yes |
 | 35 | The showcase is live at atelier.zone/showcase, readable signed out | captured signed out 2026-10-08 15:4x UTC | yes; its own headline counts use a different window from this film's and are not shown |
 

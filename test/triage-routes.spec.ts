@@ -102,7 +102,7 @@ it("a Workflow landing that triages submits and goes on to the review once the t
   expect((await L.item(id)).state).toBe("accepted");
   // The triage is its own record, beside the review the gate decided on.
   const kinds = await landKinds(L, id);
-  expect(kinds.filter((k) => k !== "land.lease" && k !== "land.release")).toEqual(["land.triage", "land.check", "item.submitted", "land.submit", "land.review", "land.accept"]);
+  expect(kinds.filter((k) => k !== "land.lease" && k !== "land.release")).toEqual(["land.triage", "item.submitted", "land.submit", "land.review", "land.accept"]);
 });
 
 it("a Workflow landing that triages submits nothing when the criteria changed since the triage, the report carries no binding, or the triage recorded there stopped (t475)", async () => {

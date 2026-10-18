@@ -94,7 +94,7 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
       res.end(text === undefined ? JSON.stringify({ error: "no_such_payload", detail: "nothing is stored" }) : text);
       return;
     }
-    let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox, ...policy }, evidence };
+    let data = { item, gate, policy: { checks: [command], ...(sandbox ? { sandboxOnly: true } : {}), ...policy }, evidence };
     if (path === "/api/projects/proj") data = { project: { policy: { prepare } }, items: [item] };
     if (path === "/api/projects") data = [{ name: "proj", title: "Proj" }];
     if (path === "/api/runners") data = [];
@@ -103,8 +103,6 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
     if (path.split("?")[0].endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title, kind: "accept", reason: "all checks observed passing at this head", weight: 100 }];
-    if (path.endsWith("/sandbox")) data = { runId: "run" };
-    if (path.endsWith("/sandbox/run")) data = { status: "done", recorded: true, request: { head }, results: [{ claim: command, passed: !failed, seconds: 1, outputTail: "check output" }] };
     const broken = failStep && path.endsWith(`/${failStep}`) && (failStep !== "base-token" || requests.filter((p) => p.endsWith("/base-token")).length === 1);
     res.writeHead(broken ? 503 : 200, { "content-type": "application/json" });
     res.end(JSON.stringify(broken ? { error: "unavailable", detail: "try later" } : data));
@@ -176,7 +174,7 @@ test("show names each failed check as the gate reads it, with its tests and a la
   assert.match(bad.output, /--head needs a revision, 7 to 64 hex digits: atelier check-log t1 --head SHA/);
 });
 
-test("show and check-log give a run one attempt number: own, merged, own, and under sandboxOnly a machine run before a container's", async (t) => {
+test("show and check-log give a run one attempt number: own, merged, own, and a machine run before a container's recorded before t768", async (t) => {
   const evidence = [];
   const f = await fixture(t, { evidence });
   const row = (over) => ({ itemId: "t1", claim: "exit 0", grade: "observed", head: f.head, passed: false, by: actor, where: "runner", changedPaths: ["docs/a.md"], outputTail: "out\n", ...over });
@@ -194,7 +192,7 @@ test("show and check-log give a run one attempt number: own, merged, own, and un
   assert.ok(log.stdout.includes("· attempt 2 of 3 · passed on the merge with main at 11111111 ·"), log.output);
 
   const sandboxed = [];
-  const g = await fixture(t, { evidence: sandboxed, sandbox: true });
+  const g = await fixture(t, { evidence: sandboxed });
   const at = (over) => ({ ...row(over), head: g.head });
   sandboxed.push(
     at({ id: 1, at: "2026-10-10T12:00:00.000Z" }),
@@ -205,7 +203,7 @@ test("show and check-log give a run one attempt number: own, merged, own, and un
   assert.ok(shown.output.includes("evidence #2, run k:t1:abc:2, attempt 2 of 2 at this head"), shown.output);
   const logs = await g.run(["check-log", "t1"]);
   assert.equal(logs.status, 0, logs.output);
-  assert.ok(logs.stdout.includes("· attempt 1 of 2 · failed · on a runner, in a clean clone · 2026-10-10 12:00 UTC · evidence #1 · not counted by the gate: this project counts only runs in a Cloudflare container\n"), logs.output);
+  assert.ok(logs.stdout.includes("· attempt 1 of 2 · failed · on a runner, in a clean clone · 2026-10-10 12:00 UTC · evidence #1\n"), logs.output);
   assert.ok(logs.stdout.includes("· attempt 2 of 2 · failed · in a Cloudflare container · 2026-10-10 12:01 UTC · evidence #2, run k:t1:abc:2\n"), logs.output);
 });
 
@@ -230,8 +228,11 @@ test("start claims and prepares a clone with task instructions", async (t) => {
   assert.equal(f.posts.filter((p) => p.path.endsWith("/claim")).length, 1);
 });
 
-for (const sandbox of [false, true]) test(`done ends with failed checks, exit 2, nothing submitted (${sandbox ? "sandbox" : "local"})`, async (t) => {
-  if (!sandbox && !canInspectSlots(t)) return;
+// t768 removed the container check. A project whose stored policy still names it
+// (finding: the CLI would have called the removed /sandbox route and failed
+// every done) runs the checks here and says so once.
+for (const sandbox of [false, true]) test(`done ends with failed checks, exit 2, nothing submitted (${sandbox ? "a policy that still names the sandbox mode" : "local"})`, async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, { failed: true, sandbox });
   assert.equal((await f.run(["start", "t1"])).status, 0);
   const r = await f.run(["done", "Edited docs"], f.workspace);
@@ -241,6 +242,9 @@ for (const sandbox of [false, true]) test(`done ends with failed checks, exit 2,
   assert.match(r.output, /Accept: not reached/);
   assert.ok(f.posts.some((p) => p.path.endsWith("/push")));
   assert.ok(!f.posts.some((p) => p.path.endsWith("/submit")));
+  assert.ok(!f.requests.some((p) => p.includes("/sandbox")));
+  assert.equal(r.output.split("names the container check mode (sandboxOnly)").length - 1, sandbox ? 1 : 0, r.output);
+  assert.ok(f.posts.some((p) => p.path.endsWith("/evidence")), "the checks ran here and were recorded");
 });
 
 test("done reports a failed check before a changed workspace, naming the files the check left", async (t) => {

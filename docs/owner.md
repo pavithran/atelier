@@ -210,8 +210,8 @@ still blocks acceptance.
 banded by who has held it, each band and the thread along it in the
 holder's family colour as the Flow graph draws a thread, with a mark for
 every claim, push, check, handoff, submission and review. A handoff is a
-visible change of band and colour, and every check mark says whether it ran
-in a Cloudflare container or on the agent's machine. The page refreshes every fifteen seconds. The Decisions page
+visible change of band and colour, and every check mark says where it ran,
+on a runner or, for a result recorded before t768, in a Cloudflare container. The page refreshes every fifteen seconds. The Decisions page
 shows the same agents in brief before anything is opened. `DESIGN.md`
 describes the marks.
 

@@ -21,8 +21,9 @@
 // wherever the caller's SSH keys reach. A check that needs anything else sets it
 // in its own command, as ourai's check sets its own HOME. This keeps the
 // caller's credentials out of a check's environment; it does not keep the
-// check from reading the caller's files or Keychain, which is why untrusted
-// code belongs in the sandbox (atelier check --sandbox).
+// check from reading the caller's files or Keychain, which is why a
+// check is run only on code the caller trusts (Atelier no longer has a
+// sandbox for checks, t768).
 const CHECK_ENV = new Set(["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR", "CI", "DEVELOPER_DIR", "TOOLCHAINS", "NODE_EXTRA_CA_CERTS", "NODE_USE_SYSTEM_CA", "SSL_CERT_FILE", "SSL_CERT_DIR"]);
 const SECRET_NAME = /token|secret|passw|credential|auth|key|otp/i;
 export function checkEnv(base = process.env) {

@@ -170,7 +170,6 @@ function liftProjectRow(body: string): { body: string; row: string; title: strin
 // One line about Atelier (src/how-data.ts), used here and as the sign-in
 // page's headline, so the two never say different things.
 
-// src/render-check.ts lets the render check's browser load exactly this URL.
 export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
 // `signedIn` draws the sign-out form in the owner's menu; the sign-in page
@@ -494,7 +493,7 @@ function decisionDetail({ project: p, detail: d, diff }: ReviewContext, lead?: O
   const view = evidenceAt(d.policy, d.evidence, item.head);
   const checks = view.checks.map((c) => {
     const last = d.evidence
-      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
+      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable)
       .sort((a, b) => a.at.localeCompare(b.at)).at(-1);
     const [label, t] = c.grade === "pending" ? ["Waiting", "ask"] : c.passed ? ["Passed", "go"] : ["Failed", "bad"];
     return evidenceRow(label, t, `<code>${e(c.claim)}</code>`, last ? `${e(PLACE[last.where ?? "runner"])} · ${when(last.at)}` : "");
@@ -715,7 +714,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
   const said: Record<Verb, [text: string, count: string]> = {
     Claim: [`${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope. One agent claims it, and a second claim is refused.`, `${plural(t.planned, "task")} planned, ${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`],
     Fork: [`The task gets its own fork in Cloudflare Artifacts, and nobody else can write there. The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`],
-    Prove: ["The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`],
+    Prove: ["The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`],
     Review: [`Changes to protected files need an approval from a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`],
     Land: [`${cap(who)} ${who === "You" ? "accept" : "accepts"} one revision on the diff, the evidence and the reviews. It merges into main on ${yours} machine, one merge at a time, with its whole history attached as a git note.`, `${plural(t.accepts, "acceptance")}, ${t.merges} merged`],
   };
@@ -1937,7 +1936,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
   const policy = `<dl>
     <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
-    <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
+    <dt>Check execution</dt><dd>Checks count from a runner's clean clone</dd>
     <dt>Models</dt><dd>${e(familyModeText(p.policy))}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
@@ -2611,20 +2610,17 @@ ${submissionRounds(d)}
   // beside the merge preview instead.
   const checkRows = view.checks.map((c) => {
     const runs = d.evidence
-      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
+      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable)
       .sort((a, b) => a.at.localeCompare(b.at));
     const last = runs.at(-1);
     const status = c.grade === "pending" ? tag("Waiting", "ask") : c.passed ? tag("Passed", "go") : tag("Failed", "bad");
     const where = c.grade === "observed" ? whereChip(c.where) : "";
-    const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && x.where !== "sandbox");
     // The load the run started at, one decimal, so a failure under a
     // saturated machine stays legible beside a later pass (t403).
     const loadOf = (x: Evidence) => (x.load !== undefined ? `load ${Math.round(x.load * 10) / 10}` : "");
     const detail = last
       ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}${loadOf(last) ? ` · ${loadOf(last)}` : ""}`
-      : uncounted
-        ? "This check ran on a runner, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
-        : "The task holder must run this required check.";
+      : "The task holder must run this required check.";
     // Every result at this head is kept and shown, each with its load, so a
     // later pass of an unchanged command does not replace its earlier failure.
     const history = runs.length > 1
@@ -2685,7 +2681,7 @@ ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
-  <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
+  <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}</p>
   ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${prereview}${overrideNote}${blockers}
   ${item.state === "merged" ? definingOf(d).filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
@@ -2808,7 +2804,7 @@ function renderMergedChecks(merged: MergedCheckView | undefined, m: MainPreview,
   if (!merged || !merged.checks.length) return "";
   if (!merged.run) {
     return offer
-      ? `<p class="meta merge-checks">Checks on the merge: not run. <code>atelier check --merged</code> runs the required checks on the merge of this revision with main at <code>${short(m.head)}</code>, locally or with <code>--sandbox</code>.</p>`
+      ? `<p class="meta merge-checks">Checks on the merge: not run. <code>atelier check --merged</code> runs the required checks on the merge of this revision with main at <code>${short(m.head)}</code>.</p>`
       : "";
   }
   const rows = merged.checks.map((c) => {

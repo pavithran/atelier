@@ -230,17 +230,17 @@ it("the How page draws where Atelier runs, layer by layer", async () => {
   expect(how).toContain("its token limits what it can do");
   expect(how).not.toContain("one path to Cloudflare");
   expect(how).not.toContain("internet off;");
-  expect(how).toContain("reaches only the npm registry, read-only");
-  expect(how).toContain(">Check container<");
-  expect(how).toContain(">npm registry only, read-only<");
+  expect(how).not.toContain("npm registry");
+  expect(how).not.toContain(">Check container<");
   expect(how.indexOf('id="where-it-runs"')).toBeLessThan(how.indexOf('id="the-loop"'));
 });
 
 it("the rules say who produces a check result, which routes a token opens and what acceptance needs (t216)", () => {
   const rule = (title: string) => RULES.find((r) => r.title === title)!;
   expect(rule("Observed evidence only").why).toContain("local Observed result is posted by the machine that ran it");
-  expect(rule("Observed evidence only").why).toContain("only a container result is produced by Atelier itself");
+  expect(rule("Observed evidence only").why).not.toContain("container");
   const tokens = rule("Tokens scoped to an actor").enforced;
-  for (const route of ["block", "unblock", "queue", "sandbox", "plan", "integrated", "integration-failed"]) expect(tokens).toContain(`\`${route}\``);
+  for (const route of ["block", "unblock", "queue", "plan", "integrated", "integration-failed"]) expect(tokens).toContain(`\`${route}\``);
+  expect(tokens).not.toContain("`sandbox`");
   expect(rule("Developer acceptance and merge").enforced).toContain("the task is in the submitted state");
 });

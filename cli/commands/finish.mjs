@@ -1,5 +1,5 @@
 // atelier finish. Its forms, flags and help are declared in src/usage/commands/finish.ts.
-import { I, actor, isRunnerForbidden, noLongerHolds, takenBackNotice, args, call, checkInSandbox, cliState, die, doneChecks, git, itemArg, project, request, requireWorkspace, summaryArg } from "../atelier.mjs";
+import { I, actor, isRunnerForbidden, noLongerHolds, takenBackNotice, args, call, cliState, die, doneChecks, git, itemArg, project, request, requireWorkspace, summaryArg } from "../atelier.mjs";
 import { workspaceNotice } from "../review-notice.mjs";
 import checkCommand from "./check.mjs";
 import pushCommand from "./push.mjs";
@@ -21,7 +21,7 @@ export default async function finishCommand() {
   if (cliState.doneStep) cliState.doneStep = "push";
   await pushCommand();
   if (cliState.doneStep) cliState.doneStep = "check";
-  if (d.policy.sandboxOnly || args.sandbox) await checkInSandbox(); else await checkCommand();
+  await checkCommand();
   const changed = git(["status","--porcelain"], { raw: true }).split("\n").filter(Boolean).map((line) => line.slice(3));
   // A failed check is the outcome even when it also changed the workspace; the changed files are named with it.
   if (doneChecks.some((c) => c.result === "failed")) return { id, head, checks: doneChecks, changed };

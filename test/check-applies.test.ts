@@ -67,8 +67,6 @@ test("a record that a check does not apply measures the paths and is never its r
   // If the check applies after all, such a record is not a result: the check waits.
   const app = observed("xcodebuild build", { passed: null, notApplicable: true, changedPaths: ["App/View.swift"] });
   assert.deepEqual(gate(item(), only, [app], []).blockers, ["`xcodebuild build` not yet observed at this head"]);
-  // Under sandboxOnly, a record from someone's machine measures nothing.
-  assert.equal(evidenceAt({ ...only, sandboxOnly: true }, [{ ...na, where: "runner" }], H1).changedPaths, null);
 });
 
 test("the brief counts checks that do not apply, and says so when none applies", () => {

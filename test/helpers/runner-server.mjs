@@ -25,8 +25,8 @@ const HANDLERS = {
   "POST projects/:project/baseline-token": empty,
   [`GET ${ITEM}`]: empty,
   ...Object.fromEntries(["brief", "job-brief", "diff"].map(verb => [`GET ${ITEM}/${verb}`, empty])),
-  ...Object.fromEntries(["sandbox", "logs", "diffs"].map(verb => [`GET ${ITEM}/${verb}/*`, empty])),
-  ...Object.fromEntries(["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip", "fast-take", "fast-ready",
+  ...Object.fromEntries(["logs", "diffs"].map(verb => [`GET ${ITEM}/${verb}/*`, empty])),
+  ...Object.fromEntries(["claim", "read-token", "base-token", "push", "evidence", "submit", "plan", "release", "review-skip", "run-skip", "fast-take", "fast-ready",
     "review-claim", "review-renew", "review-release", "review-unparsable"].map(verb => [`POST ${ITEM}/${verb}`, empty])),
 };
 

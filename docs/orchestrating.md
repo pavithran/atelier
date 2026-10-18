@@ -924,8 +924,7 @@ Fast land runs the project's commands (regeneration, typecheck, tests)
 with the developer's own filesystem access, after merging agents' changes
 to them: their environment holds no tokens or keys, but a hostile command
 could still tamper with the checkout, Git or the atelier CLI itself, so
-fast mode is for batches the developer trusts, and a check that no agent
-can forge needs the sandbox (`atelier init --sandbox-only`). On success each task gets a landed-fast
+fast mode is for batches the developer trusts. On success each task gets a landed-fast
 receipt: the commit merged, the merge commit, the head the tests ran at and
 its batch (START..HEAD), the builder its Agent line names, the test command and the sha256 of its output, and the mode's
 reason. The task is marked merged, and its post-merge review is asked of

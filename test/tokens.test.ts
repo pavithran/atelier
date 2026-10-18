@@ -56,7 +56,7 @@ test("expiry is exclusive and revocation takes effect immediately", () => {
 
 test("route policy grants workflow operations and defaults to refusing", () => {
   const task = ["projects", "p", "items", "t1"];
-  for (const verb of ["claim", "read-token", "push", "evidence", "sandbox", "review", "submit", "handoff", "release", "block", "unblock"]) {
+  for (const verb of ["claim", "read-token", "push", "evidence", "review", "submit", "handoff", "release", "block", "unblock"]) {
     assert.equal(agentRoute("POST", [...task, verb]), true, verb);
   }
   for (const verb of ["accept", "merged", "landing", "abandon", "dispatch", "undispatch", "edit", "future"]) {
@@ -70,7 +70,10 @@ test("route policy grants workflow operations and defaults to refusing", () => {
   assert.equal(agentRoute("DELETE", ["projects", "p"]), false);
   assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "write" }), false);
   assert.equal(agentRoute("POST", ["projects", "p", "baseline-token"], { scope: "read" }), true);
-  for (const path of [["config"], ["projects"], ["inbox"], ["queue"], ["projects", "p"], ["projects", "p", "baseline-head"], [...task], [...task, "brief"], [...task, "diff"], [...task, "sandbox", "run"]]) assert.equal(agentRoute("GET", path), true, path.join("/"));
+  for (const path of [["config"], ["projects"], ["inbox"], ["queue"], ["projects", "p"], ["projects", "p", "baseline-head"], [...task], [...task, "brief"], [...task, "diff"]]) assert.equal(agentRoute("GET", path), true, path.join("/"));
+  // t768 removed the container check and its routes.
+  assert.equal(agentRoute("POST", [...task, "sandbox"]), false);
+  assert.equal(agentRoute("GET", [...task, "sandbox", "run"]), false);
   assert.equal(agentRoute("POST", [...task, "claim", "extra"]), false);
 });
 

@@ -1,11 +1,9 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { CheckRunner, RunRequest, RunState } from "../src/sandbox/runner.ts";
 
 // A check can apply only when an item's changed paths match its globs. These
-// tests drive init, the evidence route, the sandbox route and the runner, and
+// tests drive init and the evidence route, and
 // ask that a check is recorded as not applicable only where the paths the
 // Worker measures show it, and that the gate then does not wait for it.
 
@@ -46,20 +44,6 @@ function store(name: string, changed: string) {
 }
 
 const POLICY = { checks: ["npm test", "xcodebuild build"], checkPaths: [{ command: "xcodebuild build", paths: ["App/**", "project.yml"] }], protected: [] };
-
-it("the sandbox route carries preparation into both plain and merged runs", async () => {
-  const name = "prepare-sandbox-route";
-  const prepare = { command: "npm ci", inputs: ["package.json"], outputs: ["node_modules"], declaration: { command: "npm ci", by: "command" } };
-  await pushed(name, { ...POLICY, prepare });
-  const call = api({ ...testEnv, ARTIFACTS: store(name, "docs/a.md") } as typeof env);
-  for (const merged of [false, true]) {
-    const response = await call("POST", `/projects/${name}/items/t1/sandbox`, A, { merged });
-    expect(response.status).toBe(202);
-    const { state } = await response.json() as { state: RunState };
-    expect(state.request.prepare).toEqual(prepare);
-    expect(state.request.merged === true).toBe(merged);
-  }
-});
 
 async function pushed(name: string, policy: object = POLICY) {
   const record = { name, repo: name, policy, createdAt: new Date().toISOString() };
@@ -128,36 +112,3 @@ it("init records the paths a check applies to, for registered checks only, and t
   expect(page).toContain("read-only, a known build or test command; applies only when the change touches src/**");
 });
 
-it("the sandbox route sends each check's paths, and the runner records a check that does not apply without running it or starting a container", async () => {
-  const name = "applies-sandbox";
-  await pushed(name, { ...POLICY, checks: ["xcodebuild build"] });
-  const ARTIFACTS = store(name, "docs/a.md");
-  const started = await api({ ...testEnv, ARTIFACTS } as typeof env)("POST", `/projects/${name}/items/t1/sandbox`, A, {});
-  expect(started.status).toBe(202);
-  const { state } = await started.json() as { state: RunState };
-  expect(state.request.checkPaths).toEqual(POLICY.checkPaths);
-
-  // The run itself, with the fake Artifacts, in a runner of its own.
-  const runId = `${name}:t1:direct`;
-  const request: RunRequest = { ...state.request, runId };
-  const stub = env.RUNNER.get(env.RUNNER.idFromName(runId));
-  const after = await runInDurableObject(stub, async (instance: CheckRunner, s: DurableObjectState) => {
-    (instance as unknown as { env: typeof env }).env = { ...env, ARTIFACTS } as typeof env;
-    await s.storage.put("state", { status: "queued", request, queuedAt: new Date().toISOString() } satisfies RunState);
-    await instance.alarm();
-    return s.storage.get<RunState>("state");
-  });
-  expect(after).toMatchObject({ status: "done", recorded: true, changedPaths: ["docs/a.md"], results: [{ claim: "xcodebuild build", passed: null, notApplicable: true }] });
-  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  expect(((await L.detail("t1")) as Detail).evidence.at(-1)).toMatchObject({ claim: "xcodebuild build", passed: null, notApplicable: true, where: "sandbox", by: "atelier/sandbox" });
-  // A check that applies is run, which needs the container this test has none of.
-  const runId2 = `${name}:t1:applies`;
-  const stub2 = env.RUNNER.get(env.RUNNER.idFromName(runId2));
-  const applied = await runInDurableObject(stub2, async (instance: CheckRunner, s: DurableObjectState) => {
-    (instance as unknown as { env: typeof env }).env = { ...env, ARTIFACTS: store(name, "App/View.swift") } as typeof env;
-    await s.storage.put("state", { status: "queued", request: { ...request, runId: runId2 }, queuedAt: new Date().toISOString() } satisfies RunState);
-    await instance.alarm();
-    return s.storage.get<RunState>("state");
-  });
-  expect(applied).toMatchObject({ status: "failed", error: "no container is configured for CheckRunner", results: [] });
-});

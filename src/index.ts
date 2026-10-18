@@ -13,7 +13,6 @@ import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mer
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
-import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
@@ -61,9 +60,8 @@ import { actionForm, actionsApi } from "./actions-api.ts";
 import { errorLine, RETRY_AFTER, retryableByRuntime, withRetry } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
 
-export { CheckRunner, Egress, Ledger };
+export { Ledger };
 export { LandingWorkflow } from "./landing-workflow.ts";
-import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow.ts";
 import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
 import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
@@ -494,10 +492,10 @@ function projectNameArg(value: unknown): string {
   return value;
 }
 
-// A run id joins a project's key and an item id with colons (see the
-// sandbox route), so a name no project has had cannot hold a colon: no new
-// key then begins with another key and a colon. Names a project already
-// has, or had, keep working.
+// A name no project has had cannot hold a colon: no new key then begins
+// with another key and a colon (run ids of the removed container check
+// joined a key and an item id with colons). Names a project already has, or
+// had, keep working.
 function assertNewName(name: string): void {
   if (name.includes(":")) throw new RuleError("bad_name", "a new project name cannot contain a colon", 400);
 }
@@ -1577,7 +1575,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       // The independent reviews each risk class needs (t631); null clears them.
       ...(has("riskReviews") ? { riskReviews: body.riskReviews === null ? null : parseRiskReviews(body.riskReviews) } : {}),
-      ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
       // Overrides of the independent review refused in this project (t371).
       ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
@@ -1937,18 +1934,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // Where the review of the item's acceptance criteria stands (t438): the
   // status, every criteria review and every resolution of a finding.
   if (verb === "criteria-reviews" && parts.length === 5 && m === "GET") return json(await L.criteriaReviewView(id));
-  if (verb === "sandbox" && parts[5] && m === "GET") {
-    // A run id is `${key}:${item}:${head}:${ms}`, and a project's key may
-    // hold a colon (only new names are refused one), so the prefix alone can
-    // match a run of another project whose key begins with this one's. The
-    // prefix only spares a lookup. A run is returned when the item exists
-    // here and the run's own request names this project's key and this item.
-    if (!parts[5].startsWith(`${ref.key}:${id}:`)) throw new RuleError("not_found", "no such run", 404);
-    await L.item(id);
-    const state = await env.RUNNER.get(env.RUNNER.idFromName(parts[5])).state();
-    if (!state || state.request.project !== ref.key || state.request.itemId !== id) throw new RuleError("not_found", "no such run", 404);
-    return json(state);
-  }
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
@@ -2208,12 +2193,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const check = body.kind === "check";
       // An observed check posted here is its sender's word, and the gate
       // counts the latest one, so only the task's holder records it: anyone
-      // else could pass or fail another agent's task. The sandbox route,
-      // open to any caller in scope, runs the checks and records them itself.
+      // else could pass or fail another agent's task.
       // The holder of a task refresh's lease runs the required checks at the
       // head its refresh recorded (t462), and records them as the holder would.
       if (check && actor !== item.owner && !(await L.refreshChecker(id, actor, String(body.head ?? item.head ?? "")))) {
-        throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. To have Atelier run them, use atelier check ${id} --sandbox`, 403);
+        throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. Run them in your own workspace: atelier check ${id}`, 403);
       }
       // A merged check ran on the merge of the head with a main head the
       // caller names; it needs a workspace to be measured against.
@@ -2251,8 +2235,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // gate decides whether a change is protected from those paths, and the
       // caller is often the item's own agent, so body.changedPaths is never
       // read. The result itself (body.passed) is the caller's word, shown as
-      // run on the caller's machine; sandboxOnly is the policy for projects
-      // that will not count it. Each row names main's head as Atelier reads
+      // run on the caller's machine. Each row names main's head as Atelier reads
       // it now; a merged check is bound to the main head it merged with,
       // which must be a commit on main's line, and measures no paths.
       if (check && item.fork) {
@@ -2284,30 +2267,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
-    }
-    case "sandbox": {
-      // Run the required checks in a Cloudflare container. The run reports to the
-      // Ledger itself; the caller polls GET .../sandbox/RUN_ID.
-      const item = await L.item(id);
-      if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
-      const p = await L.project();
-      if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
-      const refused = [...(p.policy.prepare ? [p.policy.prepare.command] : []), ...p.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
-      if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}. The developer replaces it with atelier init --check; until then the container runs nothing.`, 409);
-      // The run is named and the runner records to the Ledger by the key, so a
-      // run started under one of the project's names is read under any other.
-      const runId = `${ref.key}:${id}:${item.head.slice(0, 12)}:${Date.now()}`;
-      const request: RunRequest = {
-        runId, project: ref.key, itemId: id, baselineRepo: await baseRepo(env, L, item, p.repo), fork: item.fork, head: item.head,
-        checks: p.policy.checks, requestedBy: actor,
-        ...(p.policy.prepare ? { prepare: p.policy.prepare } : {}),
-        ...(body.merged === true ? { merged: true } : {}),
-      };
-      if (p.policy.checkPaths?.length) request.checkPaths = p.policy.checkPaths;
-      await L.setNotificationOrigin(id, c.url.origin);
-      if (c.token) await L.recordSandboxRequest(id, actor, runId);
-      const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).start(request);
-      return json({ runId, state }, 202);
     }
     case "dispatch": {
       assertNotTerminal(await L.item(id));
@@ -2591,11 +2550,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         }
         return json({ sent: true, instance: remembered.instance });
       }
-      // Where the checks run (t305): "local" or "container" as the CLI
-      // sends it; absent is "container", since a CLI older than the mode
-      // runs no checks on its machine.
-      if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
-      const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
       const named = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
       let standing: InstanceStatus | null = null;
       let handle: WorkflowInstance | undefined;
@@ -2628,7 +2582,6 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
                 handle = await env.LANDING_WORKFLOW.create({
                   id: remembered.instance,
                   params: { project, key: ref.key, item: id, actor, origin: c.url.origin,
-                    checks: remembered.checks ?? "container",
                     ...(remembered.reviewer ? { reviewer: remembered.reviewer } : {}),
                     ...(remembered.noReview ? { noReview: true } : {}),
                     ...(remembered.triage ? { triage: true } : {}),
@@ -2690,7 +2643,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // the review only while a triage recorded at the reported head,
       // merge base and criteria lets it go on. The record keeps it, so an
       // instance reconciled from its claim triages too.
-      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(body.triage === true ? { triage: true } : {}) };
+      const options = { ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(body.triage === true ? { triage: true } : {}) };
       // Who starts the next instance is decided in the Ledger before anything
       // is created (t430). The instance that follows a remembered one has an
       // id derived from it, so every request that follows it (two replacing

@@ -94,8 +94,7 @@ do. This wrapper does not attempt to constrain hostile processes.
 
 Cloud containers do not share the host's filesystem or process namespace.
 Wrappers inside a container therefore use that container's own pool; local
-status never reports cloud containers. Container checks requested through
-Atelier's sandbox path continue to run in the container, not in a host slot.
+status never reports cloud containers.
 Do not mount the host pool database into a container or share `/tmp` between
 otherwise independent process namespaces.
 
