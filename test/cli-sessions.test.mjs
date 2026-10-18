@@ -186,6 +186,25 @@ test("wrap commits with summary, next and trailer when the checks pass, and upda
   assert.doesNotMatch(result.stdout, /overridden/);
 });
 
+test("wrap pins the checkout's git identity to the project's, once, and prints nothing when it already matches (t755)", (t) => {
+  // Finding: llm-basics, 2026-10-17, a commit in the registered checkout took
+  // the global address and the baseline push was refused.
+  const f = fixture(t);
+  const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: [] });
+  const said = /Set this checkout's git identity to Owner <123\+owner@users\.noreply\.github\.com>/;
+  const first = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "First", "--no-check");
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, said);
+  assert.equal(first.stdout.match(/Set this checkout's git identity/g).length, 1);
+  assert.equal(f.git("config", "--local", "user.email"), "123+owner@users.noreply.github.com");
+  assert.equal(f.git("config", "--local", "user.name"), "Owner");
+  assert.equal(f.git("log", "-1", "--format=%ae %ce"), "123+owner@users.noreply.github.com 123+owner@users.noreply.github.com");
+  writeFileSync(join(f.checkout, "again.txt"), "more\n");
+  const second = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Second", "--no-check");
+  assert.equal(second.status, 0, second.stderr);
+  assert.doesNotMatch(second.stdout, /git identity/);
+});
+
 // A failing registered check refuses the commit, as an unfinished checkout
 // does: the tree, the index and HEAD stay as the checks left them, and no
 // request writes. The fixture's default check is `exit 7`.
@@ -685,9 +704,10 @@ test("wrap pushes a declared public mirror only the project's no-reply address: 
   const published = f.git("rev-parse", "HEAD");
   assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), published);
   // One under an agent address the landing allows is not.
-  f.git("config", "user.email", "agents@atelier.example");
+  // (wrap pins the checkout's own address to the project's, t755, so an agent's address arrives by the environment.)
+  const agent = { GIT_AUTHOR_EMAIL: "agents@atelier.example", GIT_COMMITTER_EMAIL: "agents@atelier.example" };
   writeFileSync(join(f.checkout, "agent.txt"), "agent work\n");
-  const refused = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Agent", "--push", "--no-check");
+  const refused = f.runWith({ FAKE_IDENTITY: identity, ...agent }, "wrap", "Agent", "--push", "--no-check");
   assert.equal(refused.status, 1, refused.stderr);
   const commit = f.git("rev-parse", "HEAD");
   assert.ok(refused.stdout.includes(`${commit.slice(0, 12)}: author and committer email is not 123+owner@users.noreply.github.com`), refused.stdout);

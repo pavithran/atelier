@@ -23,3 +23,21 @@ export function applyIdentity(checkout, workspace) {
   }
   return id;
 }
+
+// A registered checkout commits under the project's identity too (t755). In
+// llm-basics a commit there took the machine's global address and the
+// baseline push was refused. When the checkout's own user.name or user.email
+// is unset or differs from the policy's, set both in .git/config and say so
+// in one line; when both match, change and print nothing. A project with no
+// identity yet is left alone. Returns true when it changed the checkout.
+export function pinCheckoutIdentity(checkout, identity, say = console.log) {
+  if (!checkout || !identity?.name || !identity?.email) return false;
+  const have = checkoutIdentity(checkout);
+  if (have.name === identity.name && have.email === identity.email) return false;
+  for (const [key, value] of [["user.name", identity.name], ["user.email", identity.email]]) {
+    const r = spawnSync("git", ["config", "--local", key, value], { cwd: checkout, encoding: "utf8" });
+    if (r.status !== 0) throw new Error(`could not set ${key} in ${checkout}/.git/config: ${(r.stderr || "").trim()}`);
+  }
+  say(`Set this checkout's git identity to ${identity.name} <${identity.email}>, the project's commit identity.`);
+  return true;
+}

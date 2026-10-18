@@ -322,6 +322,28 @@ test("pull refuses a checkout with uncommitted changes before it asks for a toke
   assert.equal(readFileSync(join(dir, "file.txt"), "utf8"), "half done\n");
 });
 
+test("pull pins the checkout's git identity to the project's when it is unset or differs, and prints nothing when it matches (t755)", async (t) => {
+  // Finding: llm-basics, 2026-10-17, a commit in the registered checkout took
+  // the global address and the baseline push was refused.
+  const f = setup(t);
+  const a = mac(f, "a");
+  const dir = await cloneOn(t, f, a);
+  const said = /Set this checkout's git identity to Demo Owner <owner@example\.test>/;
+  const matching = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.equal(matching.code, 0, matching.output);
+  assert.doesNotMatch(matching.output, /git identity/);
+  f.git(dir, "config", "--local", "--unset", "user.email");
+  f.git(dir, "config", "--local", "user.name", "Someone Else");
+  const pinned = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.equal(pinned.code, 0, pinned.output);
+  assert.match(pinned.output, said);
+  assert.equal(pinned.output.match(/git identity/g).length, 1);
+  assert.equal(f.git(dir, "config", "--local", "user.email"), "owner@example.test");
+  assert.equal(f.git(dir, "config", "--local", "user.name"), "Demo Owner");
+  const again = await run(t, f, a, ["pull", "--project", "demo"]);
+  assert.doesNotMatch(again.output, /git identity/);
+});
+
 // As clone does (t643, Astra's review, finding 2): a Mac whose global
 // core.hooksPath is the relative .githooks would otherwise run hooks the
 // baseline carries, the fetches' with the token in their environment.
