@@ -38,12 +38,13 @@ function commit(dir, files, message) {
 
 // `main` is a repository; the workspace clones it, then main and the task
 // each add a command, so the generated index conflicts as text.
-function setup(t, { main = {}, task = {} } = {}) {
+function setup(t, { main = {}, task = {}, layout = {} } = {}) {
+  const { generator = GENERATOR, manifest = MANIFEST, attributes = "out/index.txt merge=atelier-generated\n" } = layout;
   const root = mkdtempSync(join(tmpdir(), "atelier-landgen-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const remote = join(root, "main"), dir = join(root, "ws");
   mkdirSync(remote); git(remote, "init", "-q", "-b", "main");
-  commit(remote, { "gen.mjs": GENERATOR, "bin/merge-manifest.json": JSON.stringify(MANIFEST), ".gitattributes": "out/index.txt merge=atelier-generated\n", "cmds/help.txt": "name: help\n", "notes.txt": "base\n" }, "base");
+  commit(remote, { "gen.mjs": generator, "bin/merge-manifest.json": JSON.stringify(manifest), ".gitattributes": attributes, "cmds/help.txt": "name: help\n", "notes.txt": "base\n" }, "base");
   git(root, "clone", "-q", remote, dir);
   commit(remote, { "cmds/land.txt": "name: land\n", ...main }, "main work");
   commit(dir, { "cmds/push.txt": "name: push\n", ...task }, "task work");
@@ -80,4 +81,33 @@ test("a failed regenerate command stops the landing with its output", async (t) 
   const f = setup(t, { task: { "fail-generator": "" } });
   await assert.rejects(f.merge(), (e) => e instanceof StepError && /generator index/.test(e.message) && /failed on run 1 \(exit 3\)/.test(e.message) && /boom-marker/.test(e.message));
   assert.ok(!existsSync(join(f.dir, ".git", "MERGE_HEAD")), "the merge is aborted");
+});
+
+// The project's own paths: both fixtures the CLI usage change rewrites
+// (t710, t624, t687 and t646 each needed a hand merge-up when two queued
+// tasks added a command), declared as this repository declares them.
+const FIXTURES = ["test/fixtures/cli/help.txt", "test/fixtures/cli/usage.json"];
+const FIXTURE_LAYOUT = {
+  generator: `import { readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+const names = readdirSync("cmds").sort().map((f) => /^name: (\\S+)/m.exec(readFileSync("cmds/" + f, "utf8"))[1]);
+mkdirSync("test/fixtures/cli", { recursive: true });
+writeFileSync("${FIXTURES[0]}", names.map((n) => n + "\\n").join(""));
+writeFileSync("${FIXTURES[1]}", JSON.stringify(names) + "\\n");
+`,
+  manifest: { version: 1, generators: [{ name: "fixtures", command: ["node", "gen.mjs"], inputs: ["cmds/**", "gen.mjs"], outputs: FIXTURES }] },
+  attributes: FIXTURES.map((f) => `${f} merge=atelier-generated\n`).join(""),
+};
+
+test("two tasks that each add a command settle the CLI fixtures by regenerating them, with no agent run", async (t) => {
+  const f = setup(t, { layout: FIXTURE_LAYOUT });
+  const r = await f.merge();
+  assert.equal(r.mergedIn, true);
+  assert.equal(git(f.dir, "status", "--porcelain"), "");
+  assert.equal(readFileSync(join(f.dir, FIXTURES[0]), "utf8"), "help\nland\npush\n");
+  assert.equal(readFileSync(join(f.dir, FIXTURES[1]), "utf8"), '["help","land","push"]\n');
+});
+
+test("a conflict in a CLI fixture and another file stops the landing and names the other file", async (t) => {
+  const f = setup(t, { layout: FIXTURE_LAYOUT, main: { "notes.txt": "main\n" }, task: { "notes.txt": "task\n" } });
+  await assert.rejects(f.merge(), (e) => e instanceof StepError && /notes\.txt/.test(e.message) && /stops on conflicts/.test(e.message));
 });
