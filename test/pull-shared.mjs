@@ -104,6 +104,8 @@ export async function serve(t, f) {
         : { remote: f.bare, token: TOKEN, tokenId: "tok1", expiresAt: "2026-10-13T20:00:00.000Z", defaultBranch: "main" };
       else if (req.method === "GET" && req.url === "/api/projects/demo/mode") body = { mode: "fast", line: "demo is in fast mode", reason: "a test", ready: [], landed: [] };
       else if (req.method === "PUT" && req.url === "/api/projects/demo") body = { ok: true };
+      else if (req.method === "GET" && req.url === "/api/projects/demo/sessions") body = [];
+      else if (req.method === "POST" && req.url === "/api/projects/demo/sessions") body = { actor: "owner", at: "2026-10-18T00:00:00.000Z", data: JSON.parse(raw) };
       else if (req.method === "GET" && req.url === "/api/projects/demo/items/t2") body = { item: { id: "t2", title: "Two", state: "accepted", head: f.accepted, acceptedHead: f.accepted, owner: "codex/test" }, policy: { commitIdentity: IDENTITY, checks: [], protected: [] }, events: [], evidence: [], reviews: [], gate: {} };
       else if (req.method === "POST" && req.url === "/api/projects/demo/items/t2/read-token") body = { remote: f.bare, token: TOKEN };
       else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }

@@ -2551,7 +2551,7 @@ export async function fetchLandedCommit(io, workspace, claimed, { project, actor
   // there, so this too is a fetch failure, served again with backoff, not a
   // missing commit kept until the baseline moves (fifth review of t591).
   if (unread.length) throw Object.assign(new Error(`could not read ${unread.join(" or ")} for the merge commit ${commit}: looked in ${looked.join(", ")}`), { fetchFailed: { commit } });
-  throw Object.assign(new Error(`the merge commit ${commit} is not in ${looked.join(", nor ")}; publish main to the baseline (atelier publish), and this runner reviews it once the baseline moves`), { missingCommit: { commit, baseline } });
+  throw Object.assign(new Error(`the merge commit ${commit} is not in ${looked.join(", nor ")}; publish main to the baseline (atelier wrap, or atelier sync), and this runner reviews it once the baseline moves`), { missingCommit: { commit, baseline } });
 }
 
 // A criteria review job (t438, src/review/criteria.ts): the runner claims the
@@ -3349,7 +3349,7 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   const unread = fetchFailures.get(missingKey(task));
   if (unread && poll < unread.due) return `Passed by: its post-merge review of ${unread.commit.slice(0, 8)} failed before a verdict (${unread.count} of ${FETCH_TRIES} tries); it is served again in ${unread.due - poll} poll${unread.due - poll === 1 ? "" : "s"}.`;
   if (absent?.fetchFailed) return `Passed by: its post-merge review of ${absent.commit.slice(0, 8)} failed before a verdict ${FETCH_TRIES} times (the baseline, the clone or the checkout); it is tried again once the baseline moves or this runner restarts.`;
-  if (absent) return `Passed by: its merge commit ${absent.commit.slice(0, 8)} is not in the baseline${absent.baseline ? ` (at ${absent.baseline.slice(0, 8)})` : ""}; it is tried again once the baseline moves (publish main with atelier publish) or this runner restarts.`;
+  if (absent) return `Passed by: its merge commit ${absent.commit.slice(0, 8)} is not in the baseline${absent.baseline ? ` (at ${absent.baseline.slice(0, 8)})` : ""}; it is tried again once the baseline moves (publish main with atelier wrap or atelier sync) or this runner restarts.`;
   // A task the server answered task_terminal for while this runner held it
   // (t476) is not taken again by this process, whatever later polls say.
   const terminal = terminalTasks.get(taskKey(task));

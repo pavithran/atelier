@@ -2,7 +2,7 @@
 import { hostname } from "node:os";
 import { developerBranch } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
-import { guardedPush, remoteBases } from "../private.mjs";
+import { pinnedPush } from "../checkout-push.mjs";
 import { branchLine, formatDeveloperBranches } from "../status.mjs";
 import { OWNER, P, actor, args, call, cfg, die, landingGit, project, request, short, wsConfig } from "../atelier.mjs";
 
@@ -15,11 +15,8 @@ import { OWNER, P, actor, args, call, cfg, die, landingGit, project, request, sh
 // with every hook off (landingGit), so no hook of the checkout sees it.
 // The name is checked here before a token is minted, and
 // the push names one ref on both sides, so nothing but that branch moves.
-// The push goes through guardedPush like every other Atelier push (t650):
-// the branch is resolved to its commit once, every commit and tree the
-// branches repository's tip of that branch lacks is read for private files,
-// and that commit is what is pushed, so a private file a wip commit carries
-// (after git add -f, say) never reaches the branches repository.
+// The push goes through pinnedPush: the branch is resolved to its commit
+// once, and that commit is what is pushed.
 export default async function branchCommand() {
   const git = landingGit;
   const [, sub, given] = args._;
@@ -43,7 +40,7 @@ export default async function branchCommand() {
     const local = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: dir, allowFail: true });
     if (local.status !== 0) die(`the checkout at ${dir} has no branch ${branch}${branch !== asked ? `; name yours ${branch} first (git branch -m ${asked} ${branch})` : ""}. Nothing was pushed`);
     const token = await call("POST", `${P(name)}/branches/token`, { scope: "write" }, as);
-    const commit = guardedPush({ project: name, cwd: dir, tip: ref, bases: () => remoteBases({ git, cwd: dir, remote: token.remote, ref, opts: { token: token.token } }), what: `Not pushed to ${name}'s branches repository: ${branch}`, fail: die },
+    const commit = pinnedPush({ cwd: dir, tip: ref, what: `Not pushed to ${name}'s branches repository: ${branch}`, fail: die },
       (sha) => {
         git(["push", "--quiet", "--no-follow-tags", "--recurse-submodules=no", token.remote, `${args.force === true ? "+" : ""}${sha}:${ref}`], { cwd: dir, token: token.token });
         return sha;

@@ -274,7 +274,7 @@ exit \${DEPLOY_EXIT:-0}
   const run = (args, env = {}, cwd = checkout) => new Promise((done) => {
     const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("ATELIER_")));
     const child = spawn(process.execPath, [cli, ...args], {
-      cwd, env: { ...clean, ATELIER_PRIVATE_ROOT: join(dir, "no-icloud"), ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_SERVER: url, MY_API_TOKEN: SECRET, SHIP_MARKER: marker, ...env },
+      cwd, env: { ...clean, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_SERVER: url, MY_API_TOKEN: SECRET, SHIP_MARKER: marker, ...env },
     });
     let stdout = "", stderr = "";
     child.stdout.on("data", (s) => { stdout += s; });
@@ -438,63 +438,33 @@ test("approve sends the kind, the full revision and the expiry; approvals lists 
   assert.match((await f.run(["approvals", "frobnicate"])).stderr, /usage: atelier approvals/);
 });
 
-// Once the policy declares a public mirror, ship --push goes through the same
-// check as publish REMOTE (cli/mirror.mjs): the outgoing commits must carry
-// the public address, and the remote must point at its declared destination.
-test("ship --push publishes a declared public mirror only through the privacy check", async (t) => {
-  const mirrorPolicy = (github) => ({ name: "T", email: PUBLIC_EMAIL, agentEmails: [], publicMirrors: ["github"], publicMirrorDestinations: { github } });
+// A remote the policy declares a public mirror takes ship --push only commits
+// under the project's public address (cli/checkout-push.mjs).
+test("ship --push sends a declared public mirror only commits under the public address", async (t) => {
+  const mirrorPolicy = () => ({ name: "T", email: PUBLIC_EMAIL, agentEmails: [], publicMirrors: ["github"] });
   const clean = await fixture(t, { approve: ["deploy"], email: PUBLIC_EMAIL });
-  clean.state.identity = mirrorPolicy(clean.github);
+  clean.state.identity = mirrorPolicy();
   const ok = await clean.run(["ship", "--push"]);
   assert.equal(ok.status, 0, ok.stderr + ok.stdout);
-  assert.equal(git(clean.github, "rev-parse", "main"), clean.head, "the scanned head reached the mirror");
+  assert.equal(git(clean.github, "rev-parse", "main"), clean.head, "the head reached the mirror");
   assert.ok(clean.state.runs.at(-1).passed);
 
   // A commit under a private address is refused, named, and nothing reaches the mirror.
   const f = await fixture(t, { approve: ["deploy"] });
-  f.state.identity = mirrorPolicy(f.github);
+  f.state.identity = mirrorPolicy();
   const before = git(f.github, "rev-parse", "main");
   const r = await f.run(["ship", "--push"]);
   assert.equal(r.status, 1, r.stdout);
-  assert.match(r.stdout, /push: Not published/);
-  assert.match(r.stdout, new RegExp(f.head.slice(0, 8)));
   assert.match(r.stderr, /ship stopped at push/);
+  assert.match(f.state.runs.at(-1).outputTail, new RegExp(`Not pushed to github: commit ${f.head.slice(0, 12)}: the author email .* is not the project's public address ${PUBLIC_EMAIL.replace(/[+]/g, "\\+")}`));
   assert.equal(git(f.github, "rev-parse", "main"), before, "the mirror was not pushed");
   assert.equal(f.state.runs.at(-1).step, "push");
   assert.equal(f.state.runs.at(-1).passed, false);
 
-  // A ship file pushing another branch name is refused before anything runs.
+  // A ship file may name another branch on the mirror: the same check applies, and the branch is pushed there.
   const other = await fixture(t, { approve: ["deploy"], email: PUBLIC_EMAIL, ship: { schema_version: 1, kind: "atelier.ship", class: "other", push: { remote: "github", branch: "release" } } });
-  other.state.identity = mirrorPolicy(other.github);
-  const refused = await other.run(["ship", "--push"]);
-  assert.equal(refused.status, 1, refused.stdout);
-  assert.match(refused.stderr, /declares public mirrors, so ship pushes only main to main/);
-  assert.deepEqual(other.writes(), []);
-});
-
-// Both reviews of t645: ship --push pushed the checkout's history to the
-// project's own remote unchecked, so a commit holding a private file that
-// was later removed (one from before the file was named private) reached it.
-test("ship --push carries no commit holding a private file to the remote", async (t) => {
-  const f = await fixture(t);
-  writeFileSync(join(f.checkout, "PROJECT.md"), "the plan\n");
-  git(f.checkout, "add", "-f", "PROJECT.md");
-  git(f.checkout, "commit", "-q", "-m", "before it was private");
-  const leak = git(f.checkout, "rev-parse", "HEAD");
-  git(f.checkout, "rm", "-q", "--cached", "PROJECT.md");
-  git(f.checkout, "commit", "-q", "-m", "now private");
-  rmSync(join(f.checkout, "PROJECT.md"));
-  const head = git(f.checkout, "rev-parse", "HEAD");
-  git(f.checkout, "push", "-q", f.baseline, "main");
-  f.state.approvals.push({ id: "a9", kind: "deploy", commit: head, note: "", by: "owner", at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString() });
-  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
-  config.projects.demo.private = ["PROJECT.md"];
-  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
-  const before = git(f.github, "rev-parse", "main");
-  const r = await f.run(["ship", "--push"]);
-  assert.notEqual(r.status, 0, r.stdout);
-  assert.match(r.stderr, /ship stopped at push/);
-  const push = f.state.runs.find((x) => x.step === "push");
-  assert.match(push.outputTail, new RegExp(`Not pushed to github: main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
-  assert.equal(git(f.github, "rev-parse", "main"), before, "the remote got nothing");
+  other.state.identity = mirrorPolicy();
+  const named = await other.run(["ship", "--push"]);
+  assert.equal(named.status, 0, named.stderr + named.stdout);
+  assert.equal(git(other.github, "rev-parse", "release"), other.head);
 });

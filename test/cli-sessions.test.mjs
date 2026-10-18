@@ -9,9 +9,6 @@ import { constants as osConstants } from "node:os";
 import { landingDir, landingJournalFile, oldLandingJournalFile } from "../cli/landing.mjs";
 import { fixture, snapshot, remote, cli } from "./cli-sessions-shared.mjs";
 
-// No test reads this Mac's own iCloud folder (t645).
-process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
-
 
 test("unwrap uses only GET and leaves all checkout and Git files unchanged, the index included", (t) => {
   const f = fixture(t);

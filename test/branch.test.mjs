@@ -84,8 +84,8 @@ async function serve(t, f) {
 async function run(t, f, argv, { mac = f.mac1, actor = "owner" } = {}) {
   if (!f.url) await serve(t, f);
   const from = f.seen.length;
-  writeFileSync(join(f.config, "config.json"), JSON.stringify({ server: f.url, owner: "owner", projects: { demo: { path: mac, branch: "main", ...(f.private ? { private: f.private } : {}) } } }));
-  const env = { ...f.env, HOME: f.home, ATELIER_CONFIG_DIR: f.config, ATELIER_PRIVATE_ROOT: join(f.root, "icloud"), ATELIER_CACHE: join(f.root, "cache"), ATELIER_SERVER: f.url, ATELIER_SECRET_STORE: "file", ATELIER_TOKEN: "test-token", ATELIER_ACTOR: actor };
+  writeFileSync(join(f.config, "config.json"), JSON.stringify({ server: f.url, owner: "owner", projects: { demo: { path: mac, branch: "main" } } }));
+  const env = { ...f.env, HOME: f.home, ATELIER_CONFIG_DIR: f.config, ATELIER_CACHE: join(f.root, "cache"), ATELIER_SERVER: f.url, ATELIER_SECRET_STORE: "file", ATELIER_TOKEN: "test-token", ATELIER_ACTOR: actor };
   const child = spawn(process.execPath, [cli, ...argv], { cwd: mac, env });
   let output = "";
   child.stdout.on("data", (s) => output += s);
@@ -230,31 +230,4 @@ test("a push the server answers stale says another Mac pushed since and points t
   const r = await run(t, f, ["branch", "push"]);
   assert.equal(r.code, 1, r.output);
   assert.match(r.output, new RegExp(`demo: pushed wip/idea @ ${commit.slice(0, 8)}, but another Mac pushed wip/idea since: the branches repository holds 99999999 from Mac-B, not ${commit.slice(0, 8)}, so this push is not recorded as its tip; run atelier branch ls`));
-});
-
-// t650: atelier branch push was the one push that did not go through
-// guardedPush, so a wip commit that force-added a private file reached the
-// branches repository. It is now refused, naming the path, and the
-// branches repository is left as it was.
-test("a wip branch whose commit force-adds a private file is refused, naming the path, and the branches repository is unchanged", async (t) => {
-  const f = setup(t);
-  f.private = ["notes.md"];
-  writeFileSync(join(f.mac1, ".git", "info", "exclude"), "notes.md\n");
-  commitOn(f, f.mac1, "wip/idea", "Draft the idea");
-  assert.equal((await run(t, f, ["branch", "push"])).code, 0, "a branch with no private file is pushed");
-  const before = refs(f, f.branches);
-  writeFileSync(join(f.mac1, "notes.md"), "mine alone\n");
-  f.git(f.mac1, "add", "-f", "notes.md");
-  f.git(f.mac1, "commit", "-q", "-m", "Carry my notes");
-  const r = await run(t, f, ["branch", "push"]);
-  assert.equal(r.code, 1, r.output);
-  assert.match(r.output, /Not pushed to demo's branches repository: wip\/idea would carry private files: notes\.md in [0-9a-f]{12}/);
-  assert.match(r.output, /Nothing was pushed/);
-  assert.deepEqual(refs(f, f.branches), before);
-  assert.ok(!r.seen.some((s) => s.route === "POST /api/projects/demo/branches"), "no push was recorded");
-  // Forcing the push does not get past the guard either.
-  const forced = await run(t, f, ["branch", "push", "--force"]);
-  assert.equal(forced.code, 1, forced.output);
-  assert.match(forced.output, /notes\.md/);
-  assert.deepEqual(refs(f, f.branches), before);
 });

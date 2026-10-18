@@ -1,5 +1,5 @@
 // Part 3 of 3 of the tests that were in pull.test.mjs, split so no file runs for more than about a minute (t771).
-// atelier pull (t644), and the refusals of sync, publish and merge while
+// atelier pull (t644), and the refusals of sync, wrap and merge while
 // a checkout's main does not hold the baseline's. Two Macs share a project's
 // baseline: each test makes their checkouts with atelier clone, each Mac with
 // its own Atelier config and cache, against a stand-in server whose
@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setup, commitElsewhere, commitIn, mac, run, cloneOn, cli, serve, TOKEN, IDENTITY } from "./pull-shared.mjs";
 
@@ -44,8 +44,8 @@ test("pull refuses a merge whose tree holds paths that differ only by letter cas
 
 
 // Astra's fourth review of t644: Git's checkout writes over an ignored file
-// without a word, and private notes (PROJECT.md, t645) are ignored in the
-// checkout, so a baseline that added the same path destroyed them.
+// without a word, and local notes (PROJECT.md) are ignored in the checkout,
+// so a baseline that added the same path destroyed them.
 test("pull refuses a baseline that adds a path this checkout holds as an ignored file, and keeps the file", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
@@ -60,7 +60,7 @@ test("pull refuses a baseline that adds a path this checkout holds as an ignored
   commitElsewhere(f, "PROJECT.md", "the baseline's\n");
   const ff = await run(t, f, a, ["pull", "--project", "demo"]);
   assert.notEqual(ff.code, 0);
-  assert.match(ff.output, new RegExp(`the baseline's main adds PROJECT\\.md, which this checkout holds as a file Git does not track \\(ignored, as private notes are\\)\\. Pulling would write over it\\. Nothing was pulled: main is still at ${head.slice(0, 8)}`));
+  assert.match(ff.output, new RegExp(`the baseline's main adds PROJECT\\.md, which this checkout holds as a file Git does not track \\(ignored\\)\\. Pulling would write over it\\. Nothing was pulled: main is still at ${head.slice(0, 8)}`));
   assert.equal(readFileSync(join(dir, "PROJECT.md"), "utf8"), "my notes\n");
   assert.equal(f.git(dir, "rev-parse", "HEAD"), head);
   // In a merge too, and for a file in an ignored folder.
@@ -175,95 +175,6 @@ test("a project with no commit identity fast-forwards, and a pull that would mer
   assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
   assert.equal(f.git(dir, "rev-parse", "refs/notes/atelier"), notesBefore, "the receipts are as they were");
   assert.equal(f.git(dir, "status", "--porcelain"), "");
-});
-
-
-// t651: a name another Mac adds to the project's list of private files in
-// iCloud after this checkout was cloned is linked by the next pull that
-// succeeds, never by one that is refused or conflicts. Before t651, pull
-// linked nothing, and the new file stayed out of the checkout until atelier
-// private add ran by hand.
-test("pull links a private file the iCloud list named since the clone, and a refused or conflicting pull links nothing", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const icloud = join(f.root, "icloud"), home = join(icloud, "demo");
-  mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, ".atelier-private"), "PROJECT.md\n");
-  writeFileSync(join(home, "PROJECT.md"), "my plan\n");
-  const env = { ATELIER_PRIVATE_ROOT: icloud };
-  const dir = join(f.root, "checkout-a");
-  const cloned = await run(t, f, a, ["clone", "demo", dir], { env });
-  assert.equal(cloned.code, 0, cloned.output);
-  assert.equal(readlinkSync(join(dir, "PROJECT.md")), join(home, "PROJECT.md"));
-
-  // Another Mac names NOTES.md private.
-  writeFileSync(join(home, ".atelier-private"), "NOTES.md\nPROJECT.md\n");
-  writeFileSync(join(home, "NOTES.md"), "my notes\n");
-
-  // A conflicting pull links nothing.
-  const local = commitIn(f, dir, "file.txt", "version mine\n");
-  commitElsewhere(f, "file.txt", "version theirs\n");
-  const conflict = await run(t, f, a, ["pull", "--project", "demo"], { env });
-  assert.notEqual(conflict.code, 0);
-  assert.match(conflict.output, /the changes conflict/);
-  assert.doesNotMatch(conflict.output, /Private files/);
-  assert.ok(!existsSync(join(dir, "NOTES.md")));
-  assert.equal(f.git(dir, "rev-parse", "HEAD"), local);
-
-  // A refused pull links nothing.
-  f.git(dir, "reset", "-q", "--hard", "HEAD~1");
-  writeFileSync(join(dir, "file.txt"), "uncommitted\n");
-  const refused = await run(t, f, a, ["pull", "--project", "demo"], { env });
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.output, /uncommitted changes/);
-  assert.ok(!existsSync(join(dir, "NOTES.md")));
-  f.git(dir, "checkout", "-q", "--", "file.txt");
-
-  // A fast-forward links it, says so, and Git ignores it.
-  const pulled = await run(t, f, a, ["pull", "--project", "demo"], { env });
-  assert.equal(pulled.code, 0, pulled.output);
-  assert.match(pulled.output, /demo: brought 1 commit from the baseline's main/);
-  assert.match(pulled.output, new RegExp(`Private files linked from ${home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: NOTES\\.md, PROJECT\\.md\\.`));
-  assert.equal(readlinkSync(join(dir, "NOTES.md")), join(home, "NOTES.md"));
-  assert.equal(f.git(dir, "status", "--porcelain"), "");
-  assert.deepEqual(a.projects.demo.privateFromList.sort(), ["NOTES.md", "PROJECT.md"]);
-
-  // A merge with local commits links the next one too, and one that cannot
-  // be linked, a file standing where its link would go, is left alone and
-  // said.
-  writeFileSync(join(home, ".atelier-private"), "NOTES.md\nPLAN.md\nPROJECT.md\nTODO.md\n");
-  writeFileSync(join(home, "PLAN.md"), "a plan\n");
-  writeFileSync(join(home, "TODO.md"), "to do\n");
-  writeFileSync(join(f.git(dir, "rev-parse", "--absolute-git-dir"), "info", "exclude"), "TODO.md\n", { flag: "a" });
-  writeFileSync(join(dir, "TODO.md"), "my own\n");
-  commitIn(f, dir, "mine.txt", "mine\n");
-  commitElsewhere(f, "theirs.txt", "theirs\n");
-  const merged = await run(t, f, a, ["pull", "--project", "demo"], { env });
-  assert.equal(merged.code, 0, merged.output);
-  assert.match(merged.output, /merged them with 1 local commit/);
-  assert.equal(readlinkSync(join(dir, "PLAN.md")), join(home, "PLAN.md"));
-  assert.match(merged.output, /TODO\.md: a file Atelier did not link is already in the checkout; it was left as it is, not linked\./);
-  assert.equal(readFileSync(join(dir, "TODO.md"), "utf8"), "my own\n");
-});
-
-
-// A project with no private files on this Mac: pull reads nothing from
-// iCloud and says nothing of them, though a folder there is named for it.
-test("pull of a project with no private files links nothing and reads no iCloud folder", async (t) => {
-  const f = setup(t);
-  const a = mac(f, "a");
-  const icloud = join(f.root, "icloud-later");
-  const dir = await cloneOn(t, f, a);
-  assert.ok(!a.projects.demo.private && !a.projects.demo.privateFromList && !a.projects.demo.privateHome);
-  mkdirSync(join(icloud, "demo"), { recursive: true });
-  writeFileSync(join(icloud, "demo", ".atelier-private"), "PROJECT.md\n");
-  writeFileSync(join(icloud, "demo", "PROJECT.md"), "my plan\n");
-  commitElsewhere(f, "new.txt", "new\n");
-  const r = await run(t, f, a, ["pull", "--project", "demo"], { env: { ATELIER_PRIVATE_ROOT: icloud } });
-  assert.equal(r.code, 0, r.output);
-  assert.doesNotMatch(r.output, /[Pp]rivate/);
-  assert.ok(!existsSync(join(dir, "PROJECT.md")));
-  assert.ok(!a.projects.demo.privateFromList && !a.projects.demo.privateHome);
 });
 
 

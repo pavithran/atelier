@@ -10,9 +10,6 @@ import { postMergeArgs } from "../cli/post-merge-policy.mjs";
 import { runLand } from "../cli/land.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { publishPinned, executePostMerge } from "../cli/post-merge.mjs";
-import { privateConfig } from "./fixtures/private-config.mjs";
-// No test reads this Mac's own iCloud folder (t645).
-process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 const at = "2026-10-10T12:00:00Z", a = "a".repeat(40), b = "b".repeat(40);
 const step = (name, more = {}) => ({ name, command: "npm test", class: "check", when: "always", protect: ["package.json", "scripts/**"], timeoutMs: 1000, ...more });
 const policy = steps => parsePostMerge({ version: 1, steps, approval: { reason: "owner authorizes these commands" } }, "owner", at);
@@ -129,7 +126,7 @@ function repo(t) {
 
 test("privacy scans add-then-remove secrets rather than just the outgoing tip", async t => {
   const r = repo(t); const secret = r.commit("super-secret"); const head = r.commit("safe again");
-  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir, project: "post-merge-fixture" }), error => error.message.includes(secret) && !error.message.includes("super-secret"));
+  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir }), error => error.message.includes(secret) && !error.message.includes("super-secret"));
   assert.equal(r.pushes(), 0);
 });
 
@@ -137,15 +134,15 @@ test("privacy traverses every parent, commit messages, exact identities and forb
   const r = repo(t);
   r.g(["checkout", "-qb", "side"]); const secret = r.commit("safe side", "super-secret"); r.commit("safe second");
   r.g(["checkout", "-q", "main"]); r.g(["merge", "--no-ff", "-qm", "merge", "side"]);
-  await assert.rejects(publishPinned({ git: r.git, run: { after: r.g(["rev-parse", "HEAD"]).trim() }, step: r.s, cwd: r.dir, project: "post-merge-fixture" }), new RegExp(secret));
+  await assert.rejects(publishPinned({ git: r.git, run: { after: r.g(["rev-parse", "HEAD"]).trim() }, step: r.s, cwd: r.dir }), new RegExp(secret));
   r.g(["reset", "--hard", r.base]); const head = r.commit("safe2");
-  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: { ...r.s, privacy: { ...r.s.privacy, committers: [{ name: "Other", email: "owner@example.test" }] } }, cwd: r.dir, project: "post-merge-fixture" }), /identity/);
-  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: { ...r.s, privacy: { ...r.s.privacy, forbiddenPaths: ["file"] } }, cwd: r.dir, project: "post-merge-fixture" }), /path/);
+  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: { ...r.s, privacy: { ...r.s.privacy, committers: [{ name: "Other", email: "owner@example.test" }] } }, cwd: r.dir }), /identity/);
+  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: { ...r.s, privacy: { ...r.s.privacy, forbiddenPaths: ["file"] } }, cwd: r.dir }), /path/);
 });
 
 test("publication pins source and destination, rescans changed tips and fails closed on missing history", async t => {
   const r = repo(t), head = r.commit("safe2");
-  await publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir, project: "post-merge-fixture" });
+  await publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir });
   const push = r.calls.find(a => a[0] === "push");
   assert.ok(push.includes(`--force-with-lease=refs/heads/main:${r.base}`));
   assert.ok(push.includes(`${head}:refs/heads/main`));
@@ -155,9 +152,9 @@ test("publication pins source and destination, rescans changed tips and fails cl
     if (args.includes("rev-list")) scans++;
     return r.git(args);
   };
-  await publishPinned({ git: moving, run: { after: head }, step: r.s, cwd: r.dir, project: "post-merge-fixture" });
+  await publishPinned({ git: moving, run: { after: head }, step: r.s, cwd: r.dir });
   assert.equal(scans, 2);
-  await assert.rejects(publishPinned({ git: r.git, run: { after: a }, step: r.s, cwd: r.dir, project: "post-merge-fixture" }));
+  await assert.rejects(publishPinned({ git: r.git, run: { after: a }, step: r.s, cwd: r.dir }));
 });
 
 test("executor persists the attempt before clone, uses pinned checkout, installs dependencies and never replays success", async () => {
@@ -216,7 +213,7 @@ test("privacy scans the full raw message even beyond a NUL byte", async t => {
   const raw = `tree ${tree}\nparent ${r.base}\nauthor Owner <owner@example.test> 1700000000 +0000\ncommitter Owner <owner@example.test> 1700000000 +0000\n\nsafe\0super-secret\n`;
   const head = r.g(["hash-object", "--literally", "-t", "commit", "-w", "--stdin"], raw).trim();
   r.g(["update-ref", "refs/heads/main", head]);
-  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir, project: "post-merge-fixture" }), /privacy message/);
+  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir }), /privacy message/);
   assert.equal(r.pushes(), 0);
 });
 
@@ -259,7 +256,7 @@ test("first publication scans each distinct blob once across long history and re
     if (args.includes("ls-remote")) return tips++ === 0 ? `${r.base}\trefs/heads/main\n` : "";
     return r.git(args);
   };
-  await publishPinned({ git, run: { after: head }, step: r.s, cwd: r.dir, project: "post-merge-fixture" });
+  await publishPinned({ git, run: { after: head }, step: r.s, cwd: r.dir });
   const reads = r.calls.filter(args => args[0] === "cat-file" && args[1] === "blob");
   assert.equal(reads.length, 41);
   assert.equal(new Set(reads.map(args => args[2])).size, reads.length);
@@ -268,7 +265,7 @@ test("first publication scans each distinct blob once across long history and re
   // The cache must not allow an already scanned blob under a forbidden name.
   r.g(["mv", "file", "private-file"]); r.g(["commit", "-qm", "rename"]);
   r.g(["mv", "private-file", "file"]); r.g(["commit", "-qm", "restore"]);
-  await assert.rejects(publishPinned({ git: r.git, run: { after: r.g(["rev-parse", "HEAD"]).trim() }, step: { ...r.s, privacy: { ...r.s.privacy, forbiddenPaths: ["private-file"] } }, cwd: r.dir, project: "post-merge-fixture" }), /privacy path/);
+  await assert.rejects(publishPinned({ git: r.git, run: { after: r.g(["rev-parse", "HEAD"]).trim() }, step: { ...r.s, privacy: { ...r.s.privacy, forbiddenPaths: ["private-file"] } }, cwd: r.dir }), /privacy path/);
 });
 
 test("CLI post-merge recovery refuses a server without land.post-merge.v1 before touching the run (t458)", async () => {
@@ -280,17 +277,4 @@ test("CLI post-merge recovery refuses a server without land.post-merge.v1 before
   } };
   await assert.rejects(runLand(io), /lacks capabilities land\.post-merge\.v1.*then run atelier land t1 --post-merge status again/);
   assert.deepEqual(calls, ["/version"]);
-});
-
-// t645: a publication step carries none of the project's private files,
-// whatever its own privacy rules allow.
-test("a publication refuses a commit holding a private file of the project and pushes nothing", async t => {
-  const r = repo(t);
-  writeFileSync(join(r.dir, "PROJECT.md"), "the plan\n"); r.g(["add", "PROJECT.md"]); r.g(["commit", "-qm", "plan"]);
-  const head = r.g(["rev-parse", "HEAD"]).trim();
-  privateConfig(t, { demo: { private: ["project.md"] } });
-  await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir, project: "demo" }), /The publication to https:\/\/example\.test\/repo\.git would carry private files: PROJECT\.md/);
-  assert.equal(r.pushes(), 0);
-  await publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir, project: "other" });
-  assert.equal(r.pushes(), 1, "for a project that names no private file, the same publication goes");
 });

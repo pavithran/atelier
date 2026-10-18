@@ -148,7 +148,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "adopt", "area", "board", "branch", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "publish", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "adopt", "area", "board", "branch", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
@@ -169,8 +169,7 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.fast, ["projects.mode.v1", "runners.fast-build.v1"]);
   // stuck reads the owner's stuck report route (t441).
   assert.deepEqual(COMMAND_CAPABILITIES.stuck, ["projects.stuck.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "land.triage.v1", "reviews.criteria-review.v1", "projects.publication-policy.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.publish, ["projects.publication-policy.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "land.triage.v1", "reviews.criteria-review.v1"]);
   // The criteria review's commands post the criteria-review routes (t438).
   for (const command of ["criteria-review", "criteria-review-claim", "criteria-verdict", "criteria-review-failed", "criteria-finding"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-review.v1"], command);
   for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
@@ -274,23 +273,13 @@ test("post-merge runs are guaranteed from legacy level 27 alone, and init and la
   }
 });
 
-test("init and publish REMOTE require the publication policy by name, which no legacy level guarantees; bare publish does not (t433)", () => {
+// t770 removed publish REMOTE and the init flags that recorded the policy's destinations and
+// privacy rules. A CLI from before it still requires the capability, so the server keeps declaring it.
+test("the server still declares the publication policy for CLIs from before t770, and no command requires it", () => {
   assert.equal(CAPABILITIES.find((c) => c.name === "projects.publication-policy.v1")?.level, undefined);
   assert.ok(SERVER_CAPABILITIES.includes("projects.publication-policy.v1"));
-  assert.deepEqual(requiredForCommand("publish"), []);
-  assert.deepEqual(requiredForCommand("publish", "github"), ["projects.publication-policy.v1"]);
-  assert.ok(requiredForCommand("init").includes("projects.publication-policy.v1"));
-  for (const required of [requiredForCommand("init"), requiredForCommand("publish", "github")]) {
-    assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, required).ok, true);
-    assert.deepEqual(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "projects.publication-policy.v1") }, required).missing, ["projects.publication-policy.v1"]);
-    // A server reporting only route level 28, or any higher level, is refused.
-    for (const routeLevel of [ROUTE_LEVEL, ROUTE_LEVEL + 5]) {
-      const legacy = checkCapabilities({ routeLevel }, required);
-      assert.equal(legacy.ok, false);
-      assert.equal(legacy.kind, "unmapped");
-      assert.ok(legacy.missing.includes("projects.publication-policy.v1"));
-    }
-  }
+  for (const [command, names] of Object.entries(COMMAND_CAPABILITIES)) assert.ok(!names.includes("projects.publication-policy.v1"), command);
+  assert.ok(!requiredForCommand("init").includes("projects.publication-policy.v1"));
 });
 
 test("the landing's triage is guaranteed from legacy level 28 alone, and init and land require it (t475)", () => {

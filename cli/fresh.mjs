@@ -23,7 +23,7 @@ export const FRESH_TRAILER = "Atelier-Fresh-History";
 // objects themselves and the repository's own boundaries. Replacement refs
 // are off; GIT_GRAFT_FILE names a path that cannot exist, so neither a graft
 // file the caller's environment names nor info/grafts is read (as
-// SCAN_ENV in cli/mirror.mjs); a replace-ref base or shallow file the
+// PLAIN in cli/checkout-push.mjs); a replace-ref base or shallow file the
 // caller's environment names is dropped (an undefined value is left out of
 // a child's environment). The object directories are left as they are:
 // objects are named by their content, so an alternate store cannot change

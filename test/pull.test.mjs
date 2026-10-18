@@ -1,5 +1,5 @@
 // Part 1 of 3 of the tests that were in pull.test.mjs, split so no file runs for more than about a minute (t771).
-// atelier pull (t644), and the refusals of sync, publish and merge while
+// atelier pull (t644), and the refusals of sync, wrap and merge while
 // a checkout's main does not hold the baseline's. Two Macs share a project's
 // baseline: each test makes their checkouts with atelier clone, each Mac with
 // its own Atelier config and cache, against a stand-in server whose
@@ -15,7 +15,7 @@ import { setup, commitElsewhere, commitIn, mac, run, cloneOn, refusal, cli, serv
 // One Mac: its own Atelier config, cache and home, and the projects it registers.
 // What a Mac outside Atelier's checkouts does: commits in `other`, a plain
 // clone of the baseline, pushed straight to it, as another Mac's sync,
-// merge or publish leaves the baseline.
+// merge or wrap leaves the baseline.
 test("two checkouts of one baseline take turns: A syncs, B is refused and pulls, B syncs, A pulls", async (t) => {
   const f = setup(t, { fresh: true, http: true });
   const a = mac(f, "a"), b = mac(f, "b");
@@ -124,7 +124,7 @@ test("pull keeps the checkout's own receipts, those not yet pushed and those the
   assert.equal(r.code, 0, r.output);
   assert.match(r.output, /brought 1 commit from the baseline's main and merged them with 1 local commit/);
   assert.match(r.output, /Receipts: 1 new on refs\/notes\/atelier, merged with this checkout's own\./);
-  assert.match(r.output, /atelier publish --project demo or the next atelier merge/);
+  assert.match(r.output, /atelier wrap --project demo or the next atelier merge/);
   assert.deepEqual(f.git(dir, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [local, theirs]);
   const note = (c) => f.git(dir, "notes", "--ref=atelier", "show", c);
   assert.equal(note(local), "Local receipt, not yet pushed");
@@ -152,18 +152,18 @@ test("a pull whose merge conflicts stops with main, the index and the work tree 
 });
 
 
-test("publish is refused while main does not hold the baseline's main, and goes through after a pull", async (t) => {
+test("wrap does not update the baseline while main does not hold the baseline's main, and does after a pull", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
   const dir = await cloneOn(t, f, a);
   const theirs = commitElsewhere(f, "theirs.txt", "theirs\n");
   commitIn(f, dir, "mine.txt", "mine\n");
-  const refused = await run(t, f, a, ["publish", "--project", "demo"]);
+  const refused = await run(t, f, a, ["wrap", "Mine", "--no-check", "--project", "demo"], { cwd: dir });
   assert.notEqual(refused.code, 0);
-  assert.match(refused.output, refusal(theirs, "atelier publish --project demo"));
+  assert.match(refused.output, refusal(theirs, "atelier wrap"));
   assert.equal(f.git(f.bare, "rev-parse", "main"), theirs);
   assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
-  const ok = await run(t, f, a, ["publish", "--project", "demo"]);
+  const ok = await run(t, f, a, ["wrap", "Mine", "--no-check", "--project", "demo"], { cwd: dir });
   assert.equal(ok.code, 0, ok.output);
   assert.equal(f.git(f.bare, "rev-parse", "main"), f.git(dir, "rev-parse", "HEAD"));
 });
