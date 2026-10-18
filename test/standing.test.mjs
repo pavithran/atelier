@@ -366,7 +366,7 @@ else process.exit(require("node:child_process").spawnSync(${JSON.stringify(real)
   const json = await run(t, setup, ["status", "--project", "demo", "--json"]);
   assert.equal(json.status, 0, json.output);
   const processes = JSON.parse(json.output).processes;
-  assert.deepEqual(processes.runners, [{ pid: 100, name: "home:test", age: "1m", tasks: ["t7"] }]);
+  assert.deepEqual(processes.runners, [{ pid: 100, ppid: 1, name: "home:test", age: "1m", tasks: ["t7"] }]);
   assert.deepEqual(processes.agents, [{ pid: 101, command: "codex", age: "30s", project: "demo", id: "t7" }]);
   for (const output of [text.output, json.output]) assert.doesNotMatch(output, /PRIVATE|SECRET|--config|codex exec/);
 });
