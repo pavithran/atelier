@@ -22,7 +22,7 @@ export async function switchMode(name, to, reason, direction = {}) {
   catch (error) { if (error instanceof RequestError) die(fastRefusal(error.message, name, reason), error.code); throw error; }
   console.log(r.line);
   if (to === "full") for (const line of landedLines(r.landed)) console.log(line);
-  else console.log(`Recorded as decision ${r.decision}. Land finished tasks with atelier fast land tN=SHA ...; switch back with atelier mode full.`);
+  else console.log(`Recorded as decision ${r.decision}. Merge finished tasks yourself and record each with atelier record-merge; switch back with atelier mode full.`);
   return r;
 }
 

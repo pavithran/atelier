@@ -885,7 +885,7 @@ fork:
   items/tN/fast-ready): the commit, the main it was built on, the builder
   its Agent line names and the clone's path. The task stays claimed by its
   builder and its dispatch is cleared, so no runner takes it again. Nothing
-  is pushed, checked or submitted; the developer's batch does that.
+  is pushed, checked or submitted; the developer merges and records it.
 - A run that committed but could not report keeps its claim; the next take
   of the same dispatch (the runner passes `--dispatch`, the assignment's
   `at`) keeps the clone and reports the commit without the harness. A run
@@ -903,69 +903,22 @@ and submit as before. The routes are the named capability
 `runners.fast-build.v1`; `atelier fast take`, `ready` and `status` ask for
 it.
 
-In fast mode, from a clean checkout of main:
-
-    atelier fast land t575=SHA t576=SHA --reviewer H/M
-
-merges each SHA in order with `git merge --no-ff`, regenerates the
-generated files and commits them, runs the typecheck, scans every file
-each of the batch's commits adds or changes for credentials with the
-server's own scanner (a file it cannot read as text stops the batch, as it
-blocks a push), and runs the tests once for the whole batch. After the
-tests, every commit of the batch and every tree and blob in its whole
-tree (those it holds unchanged from main included), and every object the
-scan read, must still be there and hash to its id; a missing or changed
-one stops the batch, named by its path. If any step
-fails, main is reset to where it started and nothing is recorded; if main
-cannot be put back, fast land says so, with main's head and the command
-that restores it.
-
-Fast land runs the project's commands (regeneration, typecheck, tests)
-with the developer's own filesystem access, after merging agents' changes
-to them: their environment holds no tokens or keys, but a hostile command
-could still tamper with the checkout, Git or the atelier CLI itself, so
-fast mode is for batches the developer trusts, and a check that no agent
-can forge needs the sandbox (`atelier init --sandbox-only`). On success each task gets a landed-fast
-receipt: the commit merged, the merge commit, the head the tests ran at and
-its batch (START..HEAD), the builder its Agent line names, the test command and the sha256 of its output, and the mode's
-reason. The task is marked merged, and its post-merge review is asked of
-the reviewer named. It never pushes or deploys; publish main and deploy as
-after any landing, so the reviewer can read the merge. A commit a runner
-built on this machine and reported ready is fetched from its clone when the
-checkout lacks it.
-
-Before posting any receipt, fast land writes the batch's receipts (task,
-commit, merge commit, builder, tests) to
-`.git/atelier-fast-land/START..HEAD.json` in the checkout, marks each one
-as the server records it, and removes the file when all are. If a receipt
-fails (the network or the server), main already holds the batch, so
-landing again would refuse every task; fast land says which receipts were
-recorded and prints the command that records the rest:
-
-    atelier fast record .git/atelier-fast-land/START..HEAD.json --project P
-
-`atelier fast record` (with no file, the only one waiting) posts only the
-receipts not yet recorded and never merges. It refuses, posting nothing,
-when main no longer holds a receipt's merge commit, the merge is not of
-that task's commit, or any object the batch's commits reference (their
-whole trees included) is missing or no longer hashes to its id. The server answers a receipt it already holds for the
-same merge commit with the one it recorded, so posting again is safe.
-
-The post-merge review of a fast landing may come from a model of the
-builder's family (PAVI: fast mode permits single-family models), never
-from the builder itself; the review record says "same-family (fast mode)".
-A merge that went through the gate keeps the family rule for its post-merge
-review. A rejection files a fix task, "Fix after fast landing of tN: ...",
-whose criteria are the review's findings.
+There is no command that lands a batch. The developer merges a reported
+build in their own checkout of main, runs the checks they trust, publishes
+main, and then records the merge with `atelier record-merge` (see its help
+for the review it needs). A task recorded that way is shown as merged
+outside Atelier, recorded afterwards, with the reviews as the developer
+gave them. `atelier fast land` and `atelier fast record` were removed in
+t767; the landings they made stay in the ledger and in `atelier fast
+status`, with the review state of each.
 
 `atelier fast status` lists every fast landing with its review's state,
-then every build reported ready as a `tN=SHA` line, which `atelier fast
-land` takes as it stands, and the command that lands them all.
-`atelier mode full` (or `atelier fast close`) returns the project to full
-mode, withdraws the decision and prints the same list. The task page names
-a fast landing as "Landed in fast mode" with its receipt, and a ready build
-as "Ready for fast land at SHA"; the showcase counts fast landings apart
-from gated merges.
+then every build reported ready as a `tN=SHA` line and the command that
+records a merge. `atelier mode full` (or `atelier fast close`) returns the
+project to full mode, withdraws the decision and prints the same list. The
+task page names a fast landing as "Landed in fast mode" with its receipt,
+and a ready build as "Ready to merge at SHA"; the showcase counts fast
+landings apart from gated merges.
 
 ## Judging a review
 

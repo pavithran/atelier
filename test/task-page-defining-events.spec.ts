@@ -79,7 +79,7 @@ it("a task in review keeps its submission summary, ready report and override ava
   expect(standingFastReady(definingOf(d))?.commit).toBe(C1);
   const html = renderItem(await L.project(), d);
   expect(html).toContain("Did the whole thing");
-  expect(html).toContain(`Ready for fast land at <code>${C1.slice(0, 12)}</code>`);
+  expect(html).toContain(`Ready to merge at <code>${C1.slice(0, 12)}</code>`);
   expect(html).toContain("Reviewer availability: unknown, the pool was unreadable");
 });
 
@@ -166,5 +166,5 @@ it("a ready report stale by an event after it stays hidden once both are buried"
   ], { state: "open" });
   const d = await L.detail(item.id) as unknown as Detail;
   expect(standingFastReady(definingOf(d))).toBeNull();
-  expect(renderItem(await L.project(), d)).not.toContain("Ready for fast land");
+  expect(renderItem(await L.project(), d)).not.toContain("Ready to merge");
 });

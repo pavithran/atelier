@@ -1861,7 +1861,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // GET says which for any token; POST { mode, reason } switches it, for
   // the owner alone, and the switch back to full names what landed fast.
   // GET also lists the builds runners made in fast mode and reported ready
-  // (t589), which atelier fast status prints as tN=SHA for atelier fast land.
+  // (t589), which atelier fast status prints as tN=SHA.
   if (parts[2] === "mode" && parts.length === 3) {
     if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList() });
     requireOwner(env, actor);
@@ -2137,7 +2137,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       });
     }
     // The holder of a fast take reports the commit it built as ready for
-    // the owner's batch (atelier fast land): { commit, base, builder, workspace }.
+    // the developer to merge: { commit, base, builder, workspace }.
     case "fast-ready":
       return json(await L.reportFastReady(id, actor, body, !!c.token));
     case "owner-port-token": {

@@ -2104,13 +2104,13 @@ function recordedMergeBlock(d: Detail): string {
 }
 
 // A task a runner built in fast mode (t589) and reported ready: the commit
-// the owner's batch takes, as atelier fast land takes it.
+// the developer merges, then records with atelier record-merge.
 function fastReadyBlock(d: Detail): string {
   if (d.item.state === "merged" || d.item.state === "abandoned") return "";
   const ready = standingFastReady(definingOf(d));
   if (!ready) return "";
-  return `<div class="fast-ready"><p><strong>Ready for fast land at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the developer lands it with the next batch.</p>
-  <p class="meta"><code>atelier fast land ${e(d.item.id)}=${e(ready.commit)}</code></p></div>`;
+  return `<div class="fast-ready"><p><strong>Ready to merge at <code>${e(ready.commit.slice(0, 12))}</code></strong>: built by ${e(ready.builder)}${ready.runner ? ` on ${e(ready.runner)}` : ""} on main at <code>${e(ready.base.slice(0, 12))}</code>, reported ${e(ready.at.slice(0, 16).replace("T", " "))} UTC. No fork was made; the developer merges it and records the merge.</p>
+  <p class="meta"><code>atelier record-merge ${e(d.item.id)} --merge SHA --review H/M=approve@${e(ready.commit)}</code></p></div>`;
 }
 
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
