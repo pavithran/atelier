@@ -106,7 +106,7 @@ it("in fast mode the runner takes the build with no fork and no write token, rep
   expect(mode.ready).toEqual([expect.objectContaining({ item: "t1", title: "Build it", commit: BUILT, base: MAIN, builder: ACTOR, runner: "home:studio" })]);
   const html = renderItem(await t.L.project(), await t.L.detail("t1"));
   expect(html).toContain(`Ready to merge at <code>${BUILT.slice(0, 12)}</code>`);
-  expect(html).toContain(`atelier record-merge t1 --merge SHA --review H/M=approve@${BUILT}`);
+  expect(html).toContain(`atelier record-merge t1 --merge SHA --head ${BUILT} --review H/M=approve@${BUILT}`);
 
   // The owner's batch lands it; it is no longer listed as ready.
   await t.L.landedFast("t1", "owner", { commit: BUILT, mergeCommit: "d".repeat(40), testedHead: "d".repeat(40), batch: `${"0".repeat(40)}..${"d".repeat(40)}`, builder: ACTOR, tests: { command: "npm test", sha256: "e".repeat(64) } });

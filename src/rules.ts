@@ -2984,14 +2984,22 @@ export function standingFastReady(events: readonly { seq: number; kind: string; 
   return { commit: String(d.commit), base: String(d.base), builder: String(d.builder), runner: typeof d.runner === "string" ? d.runner : null, workspace: typeof d.workspace === "string" ? d.workspace : null, at: ready.at, by: ready.actor };
 }
 
+// The command that records the merge of a fast build. A fast build never
+// pushes a task head, so the record names the built commit with --head;
+// without it the route has no head to default to and refuses.
+export function recordMergeCommand(item: string, commit: string): string {
+  return `atelier record-merge ${item} --merge SHA --head ${commit} --review H/M=approve@${commit}`;
+}
+
 // What atelier fast status prints of the ready commits: one tN=SHA line
-// each, and the command that records a merge of one.
+// each, then the command that records the merge of each.
 export function fastReadyLines(ready: readonly { item: string; commit: string; builder: string; runner: string | null; at: string }[]): string[] {
   if (!ready.length) return ["Nothing is ready to merge."];
   return [
     `Ready to merge (${ready.length}):`,
     ...ready.map((r) => `${r.item}=${r.commit}  built by ${r.builder}${r.runner ? ` on ${r.runner}` : ""} at ${utcMinute(r.at)}`),
-    "Merge each, then record it: atelier record-merge ID --merge SHA --review H/M=VERDICT@COMMIT",
+    "Merge each, then record it:",
+    ...ready.map((r) => `  ${recordMergeCommand(r.item, r.commit)}`),
   ];
 }
 

@@ -3,7 +3,7 @@ import { COMMAND_USAGE } from "../help.mjs";
 import { I, OWNER, P, actor, args, call, die, fastTakeWorkspace, git, itemArg, project, wsConfig } from "../atelier.mjs";
 import { shellQuote } from "../fast.mjs";
 import { landedLines, switchMode } from "./mode.mjs";
-import { agentOfMessage, fastReadyLines } from "../../src/rules.ts";
+import { agentOfMessage, fastReadyLines, recordMergeCommand } from "../../src/rules.ts";
 
 export default async function fastCommand() {
   const [, sub, ...rest] = args._;
@@ -53,5 +53,5 @@ async function fastReadyReport(name) {
   if (!builder) die(`${commit.slice(0, 12)} has no Agent: line naming its builder; amend it to end with Agent: ${as}`);
   const top = git(["rev-parse", "--show-toplevel"], { cwd });
   const r = await call("POST", `${I(name, id)}/fast-ready`, { commit, base, builder, workspace: top }, as);
-  console.log(`${id} is ready to merge at ${r.ready.commit}, built by ${r.ready.builder} on main at ${r.ready.base.slice(0, 12)}. The developer merges it and records the merge: atelier record-merge ${id} --merge SHA --review H/M=approve@${r.ready.commit}`);
+  console.log(`${id} is ready to merge at ${r.ready.commit}, built by ${r.ready.builder} on main at ${r.ready.base.slice(0, 12)}. The developer merges it and records the merge: ${recordMergeCommand(id, r.ready.commit)}`);
 }

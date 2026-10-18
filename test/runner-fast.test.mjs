@@ -205,7 +205,7 @@ test("atelier fast take makes a clean clone of main with no remote, fast ready r
   const report = await run(["fast", "ready", "t1", "--project", "proj", "--as", ACTOR], { cwd: dir, env });
   assert.equal(report.status, 0, report.err);
   assert.deepEqual(server.posted.find((p) => p.path.endsWith("/fast-ready")).body, { commit: built, base: main, builder: ACTOR, workspace: gitIn(dir, "rev-parse", "--show-toplevel") });
-  assert.match(report.out, new RegExp(`is ready to merge at ${built}.*atelier record-merge t1 --merge SHA --review H/M=approve@${built}`));
+  assert.match(report.out, new RegExp(`is ready to merge at ${built}.*atelier record-merge t1 --merge SHA --head ${built} --review`));
 
   // A second take keeps the clone and its unreported commit.
   const again = await run(["fast", "take", "t1", "--project", "proj", "--as", ACTOR, "--runner", "home:studio", "--json"], { cwd: root, env });
@@ -216,7 +216,7 @@ test("atelier fast take makes a clean clone of main with no remote, fast ready r
   const status = await run(["fast", "status", "--project", "proj"], { cwd: root, env });
   assert.equal(status.status, 0, status.err);
   assert.match(status.out, new RegExp(`^t1=${built}  built by ${ACTOR} on home:studio at 2026-10-13 14:40 UTC$`, "m"));
-  assert.match(status.out, /^Merge each, then record it: atelier record-merge ID --merge SHA --review H\/M=VERDICT@COMMIT$/m);
+  assert.match(status.out, new RegExp(`^  atelier record-merge t1 --merge SHA --head ${built} --review H/M=approve@${built}$`, "m"));
 });
 
 // Review of t589 (codex/gpt-6-astra): a take for another model removed the

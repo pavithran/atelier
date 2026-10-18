@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { setRetryBaseMs } from "../src/transient.ts";
 import worker from "../src/index.ts";
 import { renderItem } from "../src/ui.ts";
+import { recordMergeCommand } from "../src/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 
 // atelier record-merge (t653). Under the 2026-10-13 freeze the tasks
@@ -116,6 +117,27 @@ it("takes the task's recorded head when no head is named", async () => {
   expect(r.status, await r.clone().text()).toBe(200);
   expect((await r.json() as { record: { commit: string } }).record.commit).toBe(HEAD);
   expect(((await L.events(item.id)) as unknown as LedgerEvent[]).find((e) => e.kind === "item.merge_recorded")?.data.recordedHead).toBeUndefined();
+});
+
+// t767 round 2 (Astra): the command that replaced fast land omitted --head. A
+// fast build never pushes a task head, so the route had none to default to
+// and the suggested command failed. The test takes the command as printed,
+// reads its --head and sends what it names.
+it("the command suggested for a fast build carries the built commit as --head, and the route accepts it where it refuses without", async () => {
+  const { L, call } = await setup("record-merge-fast");
+  const item = await L.newItem("Built in fast mode", [], "owner");
+  const { generation } = await L.claim(item.id, BUILDER);
+  await L.setFork(item.id, "record-merge-fast--t1", BASE, BUILDER);
+  await L.recordToken(item.id, BUILDER, generation, null, "tok-fast");
+  const command = recordMergeCommand(item.id, HEAD);
+  const word = (flag: string) => command.split(" ")[command.split(" ").indexOf(flag) + 1];
+  expect(word("--head")).toBe(HEAD);
+  expect(word("--review")).toBe(`H/M=approve@${HEAD}`);
+  // Without --head: no pushed head, so the route refuses.
+  expect((await call(item.id, { mergeCommit: MERGE, reviews })).status).not.toBe(200);
+  const r = await call(item.id, { mergeCommit: MERGE, head: word("--head"), reviews });
+  expect(r.status, await r.clone().text()).toBe(200);
+  expect((await r.json() as { record: { commit: string } }).record.commit).toBe(HEAD);
 });
 
 it("refuses an agent: only the developer records a merge", async () => {

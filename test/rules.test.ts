@@ -1294,7 +1294,9 @@ test("fast status prints each ready commit as a tN=SHA line and the command that
     "Ready to merge (2):",
     `t5=${H1}  built by claude-code/opus-5.5 on home:studio at 2026-10-13 14:05 UTC`,
     `t7=${H2}  built by codex/gpt-6 at 2026-10-13 14:09 UTC`,
-    "Merge each, then record it: atelier record-merge ID --merge SHA --review H/M=VERDICT@COMMIT",
+    "Merge each, then record it:",
+    `  atelier record-merge t5 --merge SHA --head ${H1} --review H/M=approve@${H1}`,
+    `  atelier record-merge t7 --merge SHA --head ${H2} --review H/M=approve@${H2}`,
   ]);
   // Each line's first word is the task and the commit built.
   for (const l of lines.slice(1, 3)) assert.match(l.split(" ")[0], /^t\d+=[0-9a-f]{40}$/);
