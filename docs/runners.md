@@ -422,7 +422,10 @@ named variable that holds the developer's Atelier token is withheld, and the
 runner says so. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
-in place for inspection. A provider's usage limit is the exception: the claim
+in place for inspection. A `validation_blocked` run's uncommitted work is
+committed, pushed unsubmitted and released for the next run to continue (see
+[Build validation blocked by the harness](#build-validation-blocked-by-the-harness)).
+A provider's usage limit is the exception: the claim
 is released even with commits, which stay in the workspace, so the same work
 resumes after the reset (see [Provider usage limits](#provider-usage-limits)). Two counters are kept for each project and task id,
 across revision changes. The task counter never resets. Two task failures,
@@ -757,9 +760,35 @@ counts only beside such an error, since not running the full suite is what the
 brief asks. Mentioning `validation_blocked` or "did not run any atelier
 command" in passing does not.
 This outcome is excluded from the model reliability penalty.
-The runner does not call `finish`, so it does not push that build. The task page
+The runner does not call `finish`, so it does not submit that build. The task page
 shows the report above clean-clone results, with the actor, runner and reason.
 Structured Codex transcripts use the final agent message, excluding tool logs.
+
+Work the builder left uncommitted is kept (t557). Releasing such a run as
+"no new commit" let the next run start from the old head without it, so the
+work was lost. When the build harness ends
+`validation_blocked` with the head unchanged and files changed, the runner
+commits them in the harness's own environment, so Git resolves the builder's
+commit identity, with hooks skipped and a message ending in the builder's
+`Agent:` line and the trailer `Atelier-Work-In-Progress: validation_blocked`.
+It pushes that commit with `atelier push`, which records it unsubmitted, and
+releases the claim with a note naming it. The next run of the task, on any
+machine, finds the trailer on its head and is briefed to continue from that
+commit, to commit on top of it, and to say with an empty commit that it is
+complete when its tests pass. A head of work in progress is never finished as
+a dead run's commit or as an already complete task: a harness that adds no
+commit to it is a stall. Nor is a clean merge of main onto it the job done:
+the harness still runs, from the merge, and must commit on top of it. A run
+with nothing uncommitted is released as before; so is the resolution of a
+merge in progress, which is not committed for the builder. A harness that
+failed, or a run that still owes the harness an earlier failure, keeps its failure
+marker and commits nothing here. The head counts as work in progress when the first non-merge commit on its
+first-parent history carries the trailer, so merges of main onto it change
+nothing. Work that cannot be fully staged (a file or directory Git cannot read)
+is not committed: the runner logs the file, keeps the claim and leaves the
+workspace as it is. A work-in-progress
+commit whose push fails stays in the workspace under the claim, as any other
+commit does.
 
 Committed work remains local. A `.git/atelier-validation-blocked` marker,
 naming the actor and the unverified head, stops a restarted runner from

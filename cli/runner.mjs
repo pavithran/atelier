@@ -953,6 +953,57 @@ export async function rescueWork(cwd, git, log, now = new Date()) {
   return ref;
 }
 
+// A builder that ends validation_blocked with its work uncommitted (t557)
+// used to have the claim released as "no new commit", and the next run
+// started from the old head without it: four runs lost their work so on
+// 2026-10-12. The runner now commits that work in progress on the fork under
+// the builder's commit identity, with the builder's Agent line and the
+// trailer below, pushes it unsubmitted and releases the claim. The trailer
+// is how a later run, on any machine, knows its head is that unverified work
+// (isWorkInProgress): it is briefed to continue from it
+// (workInProgressSection), and the head is never finished as an earlier
+// run's completed commit or as an already complete task. Hooks are skipped:
+// the work is known unverified. `git(args)` runs git in the workspace and
+// returns its output. Returns the new head, or null when nothing was left
+// uncommitted.
+export const WORK_IN_PROGRESS = "Atelier-Work-In-Progress: validation_blocked";
+export const isWorkInProgress = (message) => String(message ?? "").split("\n").some((line) => line.trim() === WORK_IN_PROGRESS);
+export const workInProgressMessage = (actor, detail) => [
+  "Work in progress left uncommitted by a validation_blocked run",
+  `The runner committed this as the builder left it, unverified, for the next run to continue. The builder reported: ${oneLine(detail ?? "").slice(0, 500)}`,
+  `Agent: ${actor}\n${WORK_IN_PROGRESS}`,
+];
+export async function commitWorkInProgress(git, message, log = () => {}) {
+  // Fail closed: work that cannot be fully staged is not committed, so the
+  // commit is never a partial copy that releasing the claim would let a reset
+  // discard the rest of.
+  let addError = null;
+  try { await git(["add", "--all", "--ignore-errors"]); }
+  catch (error) { addError = error; }
+  const left = (await git(["status", "--porcelain"])).split("\n").filter((line) => line && (line.startsWith("?") || line[1] !== " ")).map((line) => line.slice(3));
+  // Git only warns about a directory it cannot open and exits 0, leaving it
+  // out of the status: an untracked directory left after staging that cannot
+  // be read is work that was not staged.
+  if (!left.length) {
+    const top = (await git(["rev-parse", "--show-toplevel"])).trim();
+    for (const dir of (await git(["ls-files", "--others", "--exclude-standard", "--directory"])).split("\n").filter((l) => l.endsWith("/"))) {
+      try { readdirSync(join(top, dir)); } catch { left.push(dir); break; }
+    }
+  }
+  if (addError || left.length) {
+    const file = left[0] ?? String(addError?.message ?? "").split("\n")[0];
+    throw Object.assign(new Error(`could not stage ${file}, so nothing is committed`), { notStaged: true });
+  }
+  if (!(await git(["diff", "--cached", "--name-only"])).trim()) return null;
+  await git(["commit", "--quiet", "--no-verify", ...message.flatMap((part) => ["-m", part])]);
+  return (await git(["rev-parse", "HEAD"])).trim();
+}
+export const workInProgressSection = (head, actor) => [
+  `The last run of this task ended validation_blocked with its work uncommitted. The runner committed that work as it stood, unverified, as ${String(head).slice(0, 12)} (marked ${WORK_IN_PROGRESS}), which the workspace's HEAD holds.`,
+  `Continue from it: read it with git show ${String(head).slice(0, 12)}, finish what it lacks, run the tests for the files it changes and the typecheck, and commit on top of it; do not rewrite or drop it.`,
+  `The runner submits only a new commit: if it already holds everything and its tests pass, say so with git commit --allow-empty -m "subject" -m "Agent: ${actor}".`,
+].join("\n");
+
 // A merge-main job's build (docs/orchestrator.md, section 5): a part's
 // workspace forks from the plan's branch, a task's is its own fork of main,
 // and after claiming the runner fetches the current baseline branch
@@ -1489,6 +1540,15 @@ export async function runTask(assignment, config, name, io) {
   if (!assignment) { io.log("nothing claimed"); advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
   let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, exitOutcome = null, failedRun = null;
+  // The build harness's environment, which a validation_blocked run's work
+  // in progress is committed with (t557); whether the head the run started
+  // from is such work in progress; and the head the harness of such a run
+  // starts from, past a clean merge of main.
+  let runEnv = null, continuing = false, harnessFrom = null;
+  // The head the harness started from: the workspace's head at the claim, or
+  // the clean merge of main that was put on top of work in progress (t557).
+  // Every comparison of 'did the harness move the head' is against this.
+  const startedAt = () => harnessFrom ?? before;
   // The recovery obligation (t363): a harness run failed in this workspace and
   // none has since succeeded. `failedRun` is what the run found at its start;
   // the rest is what this run did to it.
@@ -1502,7 +1562,7 @@ export async function runTask(assignment, config, name, io) {
   // differs from the head now, else the task's recorded head or its base.
   const startOfWork = () => {
     const now = markHead ?? before;
-    return before && before !== now ? before : item.head && item.head !== now ? item.head : item.base ?? before ?? null;
+    return startedAt() && startedAt() !== now ? startedAt() : item.head && item.head !== now ? item.head : item.base ?? before ?? null;
   };
   const markFailure = async (info = {}) => {
     failedNow = true;
@@ -1673,7 +1733,9 @@ export async function runTask(assignment, config, name, io) {
     // no build harness of its own. Submission still refreshes current main.
     // The dead run already committed the job's requested resolution. A
     // workspace at the recorded head means the dead run committed nothing,
-    // and the harness runs as for any other claim.
+    // and the harness runs as for any other claim. Nor is a head of work in
+    // progress (t557) a completed commit: a run whose push of it failed left
+    // it unrecorded, and the harness continues from it as briefed.
     // The recovery obligation (t363): a harness run failed in this workspace
     // and none has succeeded since. Any marker for the task, readable or not,
     // whoever wrote it and at whatever head, means the harness must run again
@@ -1686,7 +1748,9 @@ export async function runTask(assignment, config, name, io) {
     const inMemory = unsavedFailures.get(obligationKey()) ?? null;
     failedRun = onFile ?? inMemory;
     if (failedRun) failedRun = { ...failedRun, reruns: Math.max(onFile?.reruns ?? 0, inMemory?.reruns ?? 0) };
-    resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
+    continuing = io.headMessage ? isWorkInProgress(await io.headMessage(workspace).catch(() => "")) : false;
+    if (continuing) io.log(`the head ${String(before).slice(0, 8)} is work in progress a validation_blocked run committed; the builder continues from it`);
+    resumed = !continuing && item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head && !failedRun;
     if (failedRun) {
       if (failedRun.reruns >= MAX_HARNESS_RERUNS) {
         throw Object.assign(new Error(`the harness failed ${failedRun.reruns} times in a row in this workspace, so the runner stops rerunning it; this task needs the developer (a broken environment or a corrupt failure marker)`), { needsDeveloper: true });
@@ -1729,8 +1793,11 @@ export async function runTask(assignment, config, name, io) {
       await prepare();
       const merged = merges.some((m) => m.state === "merged") && !merges.some((m) => m.state === "conflicts" || m.state === "skipped");
       // With the obligation standing, a clean merge is not the work finished:
-      // the harness runs instead of this shortcut.
-      if (merged && !failedRun) {
+      // the harness runs instead of this shortcut. Nor is it with work in
+      // progress (t557) under it: that work is unverified, so the harness runs
+      // from the merge and must commit on top of it.
+      if (merged && continuing) harnessFrom = await io.head(workspace);
+      else if (merged && !failedRun) {
         // A clean merge is the part's work: the job finishes with it, no harness.
         const head = await io.head(workspace);
         advance({ type: "start" });
@@ -1758,7 +1825,8 @@ export async function runTask(assignment, config, name, io) {
         : merging
           ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
           : reworked?.text ? `${local}\n${reworked.text}\n` : local;
-      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
+      const progress = continuing ? `\n${workInProgressSection(before, actor)}\n` : "";
+      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${progress}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
       const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
       for (const name of withheld) io.log(`${name} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
       // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -1769,7 +1837,7 @@ export async function runTask(assignment, config, name, io) {
         // environment it gets (t451): the policy the claim wrote must allow
         // its author and committer, or it does not start. A refusal is the
         // runner's setup, not the model's work, and names the setting to fix.
-        const runEnv = harnessRunEnv(env, dataHome, item.id, "build", name, project, actor);
+        runEnv = harnessRunEnv(env, dataHome, item.id, "build", name, project, actor);
         const refused = await io.identityRefusals(workspace, runEnv, project);
         if (refused.length) throw Object.assign(new Error(`commit identity refused before the builder started: ${refused.join("; ")}`), { infrastructure: true });
         advance({ type: "start" });
@@ -1808,7 +1876,7 @@ export async function runTask(assignment, config, name, io) {
     // that is named in the failure and the run report, and the finish refuses
     // it as before. Any doubt (git unreadable, the follow-up failing) leaves
     // the run as it was.
-    if (result && !resumed && !harnessExit && !result.timedOut && result.code === 0 && head !== before) {
+    if (result && !resumed && !harnessExit && !result.timedOut && result.code === 0 && head !== startedAt()) {
       const left = await tidyLeftovers();
       leftovers = left.files;
       if (left.head) head = left.head;
@@ -1820,14 +1888,20 @@ export async function runTask(assignment, config, name, io) {
     // finishes a dead run's commit: the exit names the base as what the run
     // moved from, the checks run, and that head is submitted. Any other
     // unchanged head is a stall, released below; the log says which.
-    const unchanged = !resumed && result && !result.timedOut && head === before;
-    already = unchanged && result.code === 0 ? await alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h)) : null;
+    // The head the harness started from: past a clean merge onto work in
+    // progress (t557), the merge. Work in progress is never a complete task.
+    const from = startedAt();
+    const completeness = () => continuing
+      ? { complete: false, why: `the workspace head ${String(head).slice(0, 8)} is unverified work in progress` }
+      : alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h));
+    const unchanged = !resumed && result && !result.timedOut && head === from;
+    already = unchanged && result.code === 0 ? await completeness() : null;
     // A harness that fails on a head already pushed ahead of the base (t363)
     // left that pushed work, not nothing: the exit below names the base as
     // where the run began, so the head is said to have moved and the claim is
     // kept, not released as "no new commit".
-    const failedOnPushed = !resumed && result && head === before && (result.timedOut || result.code !== 0)
-      ? await alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h)) : null;
+    const failedOnPushed = !resumed && result && head === from && (result.timedOut || result.code !== 0)
+      ? await completeness() : null;
     // A rerun after a failed one whose harness now exits 0 and adds nothing
     // finishes the failed run's commit: the checks decide, as for a head
     // already pushed.
@@ -1841,7 +1915,7 @@ export async function runTask(assignment, config, name, io) {
     // A rerun after a failed harness that fails again without a new commit
     // began at the marker's starting head, not at the commit it reruns from.
     exitOutcome = harnessOutcome({
-      ran: !!result, marker: failedRun, head, before, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
+      ran: !!result, marker: failedRun, head, before: from, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
       code: result ? result.code : 0, timedOut: result?.timedOut,
       pushedComplete: !!(already?.complete || failedOnPushed?.complete),
       mergesBlock: merges.some((m) => m.state === "conflicts" || m.state === "skipped"),
@@ -1931,7 +2005,44 @@ export async function runTask(assignment, config, name, io) {
     } else if (claimed && before) {
       let head;
       try { head = await io.head(workspace, { cleanup: true }); } catch { /* Unknown commit status preserves the claim. */ }
-      if (head === before) {
+      // A validation_blocked builder's uncommitted work (t557) is committed,
+      // pushed unsubmitted and released with it, so the next run, wherever
+      // it runs, continues from it. Not after a failed harness (its marker
+      // stands), and not a merge's resolution in progress, which is no
+      // commit of the builder's to make; and a commit whose push fails stays
+      // local, under the claim, as any other commit does.
+      let kept = null, unstaged = false;
+      if (head === startedAt() && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
+          !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
+        try {
+          const wip = await io.commitWork(workspace, runEnv, workInProgressMessage(actor, error.message));
+          if (wip) {
+            io.log(`work in progress committed as ${wip.slice(0, 8)}`);
+            await io.cli(["push", item.id, "--project", project, "--as", actor], workspace);
+            kept = wip;
+          }
+        } catch (keepError) {
+          if (keepError.notStaged) {
+            // Nothing is committed, pushed or released: the claim and the
+            // workspace stay as they are.
+            unstaged = true;
+            io.log(`work in progress not kept, claim preserved: ${keepError.message}`);
+          } else {
+            io.log(`work in progress not kept: ${keepError.message}`);
+            try { head = await io.head(workspace, { cleanup: true }); } catch { head = undefined; }
+          }
+        }
+      }
+      if (kept) {
+        state = { ...state, workInProgress: kept };
+        const note = `${state.reason}; the uncommitted work is committed as ${kept.slice(0, 8)} and pushed unsubmitted for the next run to continue`;
+        try {
+          await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(note)], workspace);
+          released = true;
+          io.log(`released: work in progress ${kept.slice(0, 8)} pushed unsubmitted for the next run`);
+        }
+        catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
+      } else if (head === startedAt() && !unstaged) {
         try {
           await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)], workspace);
           // The task is released with nothing committed: nothing is owed.
@@ -1941,7 +2052,7 @@ export async function runTask(assignment, config, name, io) {
           io.log("released: no new commit");
         }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-      } else io.log("claim preserved: a commit exists or commit status is unknown");
+      } else if (!unstaged) io.log("claim preserved: a commit exists or commit status is unknown");
     } else if (claimAttempted && !claimed) {
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
@@ -3871,6 +3982,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     },
     head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
+    // A validation_blocked build's work in progress (t557), committed in the
+    // build harness's own environment `env`, so Git resolves the builder's
+    // commit identity; and the head's message, which says whether it is such work.
+    commitWork: (cwd, env, message) => commitWorkInProgress((args) => checked(["git", ...args], { cwd, env, capture: true, captureError: true, signal: controller.signal, step: "commit" }, executeChild), message, io.log),
+    headMessage: (cwd) => checked(["git", "log", "--first-parent", "--no-merges", "-1", "--format=%B", "HEAD"], { cwd, capture: true, captureError: true, signal: controller.signal, step: "log" }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
     // after the reset (excludeScratch).
     reset: async (cwd) => { await resetTo(cwd, "HEAD"); excludeScratch(cwd); },
