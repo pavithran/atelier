@@ -782,7 +782,11 @@ the harness still runs, from the merge, and must commit on top of it. A run
 with nothing uncommitted is released as before; so is the resolution of a
 merge in progress, which is not committed for the builder. A harness that
 failed, or a run that still owes the harness an earlier failure, keeps its failure
-marker and commits nothing here. A work-in-progress
+marker and commits nothing here. The head counts as work in progress when the first non-merge commit on its
+first-parent history carries the trailer, so merges of main onto it change
+nothing. Work that cannot be fully staged (a file or directory Git cannot read)
+is not committed: the runner logs the file, keeps the claim and leaves the
+workspace as it is. A work-in-progress
 commit whose push fails stays in the workspace under the claim, as any other
 commit does.
 

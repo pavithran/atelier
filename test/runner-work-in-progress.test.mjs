@@ -5,7 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTask, runRunner, execute, runOutcome, WORK_IN_PROGRESS, isWorkInProgress, workInProgressMessage, commitWorkInProgress } from "../cli/runner.mjs";
@@ -232,4 +232,72 @@ test("the runner's own wiring commits the work in progress as the builder and pu
   const message = git("log", "-1", "--format=%B");
   assert.match(message, new RegExp(`Agent: ${actor}\n${WORK_IN_PROGRESS}`));
   assert.equal(readFileSync(join(workspace, "draft.mjs"), "utf8"), "export const draft = 1;\n");
+});
+
+test("work that cannot be fully staged is not committed, pushed or released, and the workspace stays as it is", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-wip-unstaged-"));
+  t.after(() => { chmodSync(join(dir, "locked"), 0o755); rmSync(dir, { recursive: true, force: true }); });
+  const git = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  await git(["init", "--quiet"]);
+  await git(["config", "user.name", "Builder"]);
+  await git(["config", "user.email", "builder@example.test"]);
+  writeFileSync(join(dir, "a"), "1");
+  await git(["add", "a"]);
+  await git(["commit", "--quiet", "-m", "initial"]);
+  const before = (await git(["rev-parse", "HEAD"])).trim();
+  writeFileSync(join(dir, "a"), "2");
+  mkdirSync(join(dir, "locked"));
+  writeFileSync(join(dir, "locked", "secret"), "x");
+  chmodSync(join(dir, "locked"), 0o000);
+  await assert.rejects(commitWorkInProgress(git, workInProgressMessage(actor, BLOCKED)), (error) => error.notStaged && /could not stage locked\//.test(error.message));
+  assert.equal((await git(["rev-parse", "HEAD"])).trim(), before);
+  // The same failure inside a run keeps the claim: no push, no release.
+  const { io, calls, logs } = fixture();
+  io.commitWork = async () => { throw Object.assign(new Error("could not stage locked/, so nothing is committed"), { notStaged: true }); };
+  const state = await runTask(assignment, config, "home:studio", io);
+  assert.equal(runOutcome(state), "validation_blocked");
+  assert.deepEqual(commands(calls), ["claim"]);
+  assert.equal(logs.filter((l) => /locked\//.test(l)).length, 1);
+  assert.ok(!logs.some((l) => /^released/.test(l)));
+});
+
+test("work in progress stays work in progress under merge commits, so finish needs a builder commit", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-wip-merge-"));
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); process.exitCode = 0; });
+  const workspace = join(dir, "t13");
+  mkdirSync(workspace);
+  const git = (...args) => execFileSync("git", args, { cwd: workspace, encoding: "utf8" }).trim();
+  git("init", "--quiet", "-b", "main");
+  git("config", "user.name", "Runner test");
+  git("config", "user.email", "runner@example.test");
+  writeFileSync(join(workspace, ".git", "atelier-identity.json"), JSON.stringify({ name: "Runner test", email: "runner@example.test", agentEmails: [] }));
+  writeFileSync(join(workspace, "tracked"), "original");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "initial");
+  git("checkout", "--quiet", "-b", "side");
+  writeFileSync(join(workspace, "other"), "main moved");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "main moved");
+  git("checkout", "--quiet", "main");
+  writeFileSync(join(workspace, "tracked"), "work");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "Work in progress", "-m", `Agent: ${actor}\n${WORK_IN_PROGRESS}`);
+  git("merge", "--quiet", "--no-ff", "-m", "Merge main", "side");
+  assert.ok(!isWorkInProgress(git("log", "-1", "--format=%B")), "the head itself is a merge with no trailer");
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const sent = [];
+  let harnessRan = false;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: () => workspace,
+    queue: async () => [{ ...assignment, item: { ...assignment.item, state: "claimed", owner: actor, head: "0".repeat(40), base: "base" } }],
+    taskIO: { log: () => {}, harness: async () => { harnessRan = true; return { code: 0, output: "Nothing to add." }; } },
+    executeChild: async (argv, options) => {
+      if (argv[0] === "git") return execute(argv, options);
+      sent.push(argv[2]);
+      return execute([process.execPath, "-e", ""], options);
+    },
+  });
+  assert.ok(harnessRan, "the builder runs on a merge over work in progress");
+  assert.ok(!sent.includes("finish"), "nothing is finished without a builder commit");
 });

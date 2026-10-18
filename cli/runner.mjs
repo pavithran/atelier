@@ -974,8 +974,26 @@ export const workInProgressMessage = (actor, detail) => [
   `Agent: ${actor}\n${WORK_IN_PROGRESS}`,
 ];
 export async function commitWorkInProgress(git, message, log = () => {}) {
+  // Fail closed: work that cannot be fully staged is not committed, so the
+  // commit is never a partial copy that releasing the claim would let a reset
+  // discard the rest of.
+  let addError = null;
   try { await git(["add", "--all", "--ignore-errors"]); }
-  catch (error) { log(`some files could not be staged for the work in progress: ${error.message}`); }
+  catch (error) { addError = error; }
+  const left = (await git(["status", "--porcelain"])).split("\n").filter((line) => line && (line.startsWith("?") || line[1] !== " ")).map((line) => line.slice(3));
+  // Git only warns about a directory it cannot open and exits 0, leaving it
+  // out of the status: an untracked directory left after staging that cannot
+  // be read is work that was not staged.
+  if (!left.length) {
+    const top = (await git(["rev-parse", "--show-toplevel"])).trim();
+    for (const dir of (await git(["ls-files", "--others", "--exclude-standard", "--directory"])).split("\n").filter((l) => l.endsWith("/"))) {
+      try { readdirSync(join(top, dir)); } catch { left.push(dir); break; }
+    }
+  }
+  if (addError || left.length) {
+    const file = left[0] ?? String(addError?.message ?? "").split("\n")[0];
+    throw Object.assign(new Error(`could not stage ${file}, so nothing is committed`), { notStaged: true });
+  }
   if (!(await git(["diff", "--cached", "--name-only"])).trim()) return null;
   await git(["commit", "--quiet", "--no-verify", ...message.flatMap((part) => ["-m", part])]);
   return (await git(["rev-parse", "HEAD"])).trim();
@@ -1989,7 +2007,7 @@ export async function runTask(assignment, config, name, io) {
       // stands), and not a merge's resolution in progress, which is no
       // commit of the builder's to make; and a commit whose push fails stays
       // local, under the claim, as any other commit does.
-      let kept = null;
+      let kept = null, unstaged = false;
       if (head === before && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
           !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
         try {
@@ -2000,8 +2018,15 @@ export async function runTask(assignment, config, name, io) {
             kept = wip;
           }
         } catch (keepError) {
-          io.log(`work in progress not kept: ${keepError.message}`);
-          try { head = await io.head(workspace, { cleanup: true }); } catch { head = undefined; }
+          if (keepError.notStaged) {
+            // Nothing is committed, pushed or released: the claim and the
+            // workspace stay as they are.
+            unstaged = true;
+            io.log(`work in progress not kept, claim preserved: ${keepError.message}`);
+          } else {
+            io.log(`work in progress not kept: ${keepError.message}`);
+            try { head = await io.head(workspace, { cleanup: true }); } catch { head = undefined; }
+          }
         }
       }
       if (kept) {
@@ -2013,7 +2038,7 @@ export async function runTask(assignment, config, name, io) {
           io.log(`released: work in progress ${kept.slice(0, 8)} pushed unsubmitted for the next run`);
         }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-      } else if (head === before) {
+      } else if (head === before && !unstaged) {
         try {
           await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)], workspace);
           // The task is released with nothing committed: nothing is owed.
@@ -2023,7 +2048,7 @@ export async function runTask(assignment, config, name, io) {
           io.log("released: no new commit");
         }
         catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-      } else io.log("claim preserved: a commit exists or commit status is unknown");
+      } else if (!unstaged) io.log("claim preserved: a commit exists or commit status is unknown");
     } else if (claimAttempted && !claimed) {
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
@@ -3957,7 +3982,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // build harness's own environment `env`, so Git resolves the builder's
     // commit identity; and the head's message, which says whether it is such work.
     commitWork: (cwd, env, message) => commitWorkInProgress((args) => checked(["git", ...args], { cwd, env, capture: true, captureError: true, signal: controller.signal, step: "commit" }, executeChild), message, io.log),
-    headMessage: (cwd) => checked(["git", "log", "-1", "--format=%B", "HEAD"], { cwd, capture: true, captureError: true, signal: controller.signal, step: "log" }, executeChild),
+    headMessage: (cwd) => checked(["git", "log", "--first-parent", "--no-merges", "-1", "--format=%B", "HEAD"], { cwd, capture: true, captureError: true, signal: controller.signal, step: "log" }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
     // after the reset (excludeScratch).
     reset: async (cwd) => { await resetTo(cwd, "HEAD"); excludeScratch(cwd); },
