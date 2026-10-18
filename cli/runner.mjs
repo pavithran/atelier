@@ -754,6 +754,23 @@ export async function installEvidenceDependencies(dir, source, { run = execute, 
 // file records 'none' for the tests.
 export const RUNNER_EVIDENCE_TIMEOUT_MS = 20 * 60_000;
 export const RUNNER_EVIDENCE_OUTPUT = 4000;
+const RUNNER_EVIDENCE_NAMES = 20;
+// Counts and failing test names read from a run's whole output, which the
+// trimmed tail may have cut. The output of Node's test runner and of Vitest
+// is read; a count or name that is not found is left out, never guessed, and
+// the tail in the brief remains the evidence.
+export function summarizeTestOutput(text) {
+  const clean = String(text).replace(/\u001b\[[0-9;]*m/g, "");
+  let passed, failed;
+  const node = { pass: clean.match(/^ℹ pass (\d+)$/m), fail: clean.match(/^ℹ fail (\d+)$/m) };
+  if (node.pass && node.fail) { passed = Number(node.pass[1]); failed = Number(node.fail[1]); }
+  const vitest = clean.match(/^\s*Tests\s+(?:(\d+) failed)?[\s|]*(?:(\d+) passed)?/m);
+  if (vitest && (vitest[1] || vitest[2])) { passed = (passed ?? 0) + Number(vitest[2] ?? 0); failed = (failed ?? 0) + Number(vitest[1] ?? 0); }
+  const names = new Set();
+  for (const m of clean.matchAll(/^✖ (.+?) \([\d.]+ms\)$/gm)) names.add(m[1]);
+  for (const m of clean.matchAll(/^\s*FAIL\s+(.+?)\s*$/gm)) names.add(m[1]);
+  return { ...(passed === undefined ? {} : { passed, failed }), failing: [...names].slice(0, RUNNER_EVIDENCE_NAMES) };
+}
 export async function collectRunnerEvidence({ source, head, from, changedPaths, run = execute, signal, timeoutMs = RUNNER_EVIDENCE_TIMEOUT_MS, prepare = installEvidenceDependencies, id = randomUUID().slice(0, 8) }) {
   const dir = `${source}-evidence-${id}`;
   const notRun = (reason) => ({ status: "not-run", reason });
@@ -771,7 +788,7 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
     if (result.timedOut) return { command, ...notRun(`it timed out after ${Math.round(timeoutMs / 1000)} seconds`) };
     if (result.code === null || result.code === undefined) return { command, ...notRun(`it ended on signal ${result.signal ?? "unknown"}`) };
     const output = [result.output, result.stderr].filter(Boolean).join("\n");
-    return { command, status: result.code === 0 ? "pass" : "fail", output: trim(output), outputLength: output.length };
+    return { command, status: result.code === 0 ? "pass" : "fail", output: trim(output), outputLength: output.length, ...summarizeTestOutput(output) };
   };
   try {
     const cloned = await run(["git", "clone", "--quiet", source, dir], { capture: true, captureError: true, signal, timeoutMs }).catch((error) => { if (signal?.aborted) throw error; return { code: 1, stderr: error.message }; });
@@ -801,6 +818,8 @@ export async function collectRunnerEvidence({ source, head, from, changedPaths, 
       reason: runs.filter((r) => r.reason).map((r) => r.reason).join("; "),
       output: runs.map((r) => r.output ?? "").join("\n"),
       outputLength: runs.reduce((n, r) => n + (r.outputLength ?? 0), runs.length - 1),
+      ...(runs.every((r) => r.passed !== undefined) ? { passed: runs.reduce((n, r) => n + r.passed, 0), failed: runs.reduce((n, r) => n + r.failed, 0) } : {}),
+      failing: runs.flatMap((r) => r.failing ?? []).slice(0, RUNNER_EVIDENCE_NAMES),
     } : { status: "none" };
     const typecheck = await exec("npm run typecheck", slot(["npm", "run", "typecheck"]));
     return { head, tests, typecheck };

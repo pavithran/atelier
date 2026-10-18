@@ -151,6 +151,9 @@ export interface RunnerRun {
   files?: readonly string[];
   output?: string;       // the end of the output, trimmed by the runner
   reason?: string;       // why it did not run
+  passed?: number;       // counts and failing names the runner read from the whole output
+  failed?: number;
+  failing?: readonly string[];
 }
 
 export interface RunnerEvidence {
@@ -691,15 +694,17 @@ function runnerEvidenceLines(evidence: RunnerEvidence | null, head: string): str
       const kept = text.length > EVIDENCE_OUTPUT_MAX ? text.slice(-EVIDENCE_OUTPUT_MAX).replace(/^[\udc00-\udfff]/, "") : text;
       return [...(kept.length < (run.outputLength ?? text.length) ? [`The output is cut: these are its last ${kept.length} of ${run.outputLength ?? text.length} characters.`] : []), block(kept, "text")];
     };
+    const counts = run.passed === undefined ? [] : [`Counted in the output: ${run.passed} passed, ${run.failed ?? 0} failed.`];
+    const failing = run.failing?.length ? ["Failing:", block(run.failing.join("\n"))] : [];
     switch (run.status) {
-      case "pass": return [`- ${name}: passed${cmd}.`, ...files];
-      case "fail": return [`- ${name}: FAILED${cmd}.`, ...files, ...tail()];
+      case "pass": return [`- ${name}: passed${cmd}.`, ...counts, ...files];
+      case "fail": return [`- ${name}: FAILED${cmd}.`, ...counts, ...failing, ...files, ...tail()];
       case "none": return [`- ${name}: none. The diff added or changed no test file, so no tests were run.`];
       default: return [`- ${name}: not run${cmd}${run.reason ? `, because ${inline(run.reason)}` : ""}. This is not a pass.`];
     }
   };
   return [
-    `Run by the review runner in a clean clone of ${code(head)}, through the host slot wrapper. Only the tests the diff added or changed are run, not the full suite.`,
+    `Run by the review runner in a clean clone of ${code(head)}, through the host slot wrapper. Only the tests the diff added or changed are run, not the full suite. They ran here so that you need not: do not run them again, since your sandbox may refuse what a clean clone allows (a temporary folder, a listening port), and a failure there says nothing of the change. Judge from this result.`,
     ...one("Changed tests", evidence.tests),
     ...one("Typecheck", evidence.typecheck),
   ];
