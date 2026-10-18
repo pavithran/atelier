@@ -35,8 +35,11 @@ if (listing) {
   process.exit(0);
 }
 // Each pool takes its share of the cores, so the slots busy together keep the
-// load under the core count (t744; poolSize in cli/load.mjs).
-const workers = poolSize();
+// load under the core count (t744; poolSize in cli/load.mjs). A run that owns
+// the machine names its worker count in ATELIER_TEST_WORKERS instead: setting
+// ATELIER_TEST_SLOTS would reach every CLI the tests start, which then warns
+// that it differs from the stored capacity and breaks tests that read output.
+const workers = /^[1-9]\d*$/.test(process.env.ATELIER_TEST_WORKERS ?? "") ? Number(process.env.ATELIER_TEST_WORKERS) : poolSize();
 const node = [process.execPath, "--import", "./test/guard.mjs", "--test", "--test-timeout=180000", `--test-concurrency=${workers}`];
 const commands = files.length ? [[...node, ...files]]
   : [...(found.byRunner.node.length ? [[...node, ...found.byRunner.node]] : []), ["node_modules/.bin/vitest", "run", `--maxWorkers=${workers}`]];
