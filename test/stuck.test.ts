@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import type { Item } from "../src/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { detectStuck, type StuckLimits } from "../src/stuck/rules.ts";
-import { handoffNotes, noteFacts } from "../src/stuck/notes.ts";
 
 const H1 = "a".repeat(40);
 const H2 = "b".repeat(40);
@@ -121,42 +120,4 @@ test("other items' events do not leak into a finding", () => {
   const it = item();
   const events = [claim("2026-10-03T11:00:00.000Z"), event({ itemId: "t2", at: "2026-10-02T00:00:00.000Z", kind: "review.rejected", actor: "codex/gpt-5.5", data: {} })];
   assert.deepEqual(detectStuck([it], events, NOW), []);
-});
-
-test("notes list facts newest first, from the events alone", () => {
-  const it = item({ state: "submitted" });
-  const events = [
-    claim(T0),
-    push("2026-10-01T06:00:00.000Z"),
-    event({ at: "2026-10-01T07:00:00.000Z", kind: "evidence.reported", actor: "claude-code/opus-5.5", data: { claim: "tests pass" } }),
-    fail("2026-10-02T00:00:00.000Z", H1),
-    reject("2026-10-02T12:00:00.000Z", "flaky check"),
-  ];
-  const facts = noteFacts(it, events);
-  assert.deepEqual(facts.map((f) => f.at), [
-    "2026-10-02T12:00:00.000Z", "2026-10-02T00:00:00.000Z", "2026-10-01T07:00:00.000Z", "2026-10-01T06:00:00.000Z", T0,
-  ]);
-  assert.match(facts[0].text, /codex\/gpt-5\.5 requested changes: "flaky check"/);
-  assert.match(facts[1].text, /observed check "npm test" at a{8}: failed/);
-  assert.match(facts[2].text, /reported "tests pass"/);
-  assert.match(facts[3].text, /pushed head a{8}/);
-  assert.match(facts[4].text, /claude-code\/opus-5\.5 claimed the item/);
-});
-
-test("a handoff shows both sides of the ownership change", () => {
-  const it = item({ owner: "codex/gpt-5.5" });
-  const events = [claim(T0), event({ at: "2026-10-02T00:00:00.000Z", kind: "item.handoff", data: { from: "claude-code/opus-5.5", to: "codex/gpt-5.5" } })];
-  const facts = noteFacts(it, events);
-  assert.match(facts[0].text, /handed off from claude-code\/opus-5\.5 to codex\/gpt-5\.5/);
-});
-
-test("handoffNotes renders a short plain-text note", () => {
-  const it = item();
-  const events = [claim(T0), push("2026-10-01T06:00:00.000Z")];
-  const note = handoffNotes(it, events);
-  assert.match(note, /^Handoff notes for t1 \(Fix it\)\n/);
-  assert.ok(note.includes("- 2026-10-01T06:00:00.000Z pushed head aaaaaaaa"));
-  assert.ok(note.includes(`- ${T0} claude-code/opus-5.5 claimed the item`));
-  const empty = handoffNotes(item(), []);
-  assert.ok(empty.includes("no recorded facts"));
 });

@@ -339,8 +339,7 @@ change of state, head, holder or review count. It prints one line and exits 0 wh
 failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
 the task cannot be read. A task whose agent died stays claimed, so pair a
 long wait with `--timeout` and look at `atelier status` when it ends.
-`bin/orchestrate/queue.sh` and `land.sh` are the
-fallback for a session without a runner to serve the review. When the
+When the
 review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
@@ -501,32 +500,17 @@ no one reviewer's queue holds every landing. A reviewer that has rejected
 the same task several rounds running is still the right reviewer; see
 "Judging a review".
 
-### The landing queue
+### Landing one task at a time
 
-`bin/orchestrate/land-queue.sh` lands tasks one after another, waiting for
-the machine's load to fall under 25 before each, and prints one `LANDQ tN:`
-line per landing. After a successful merge it synchronously runs
-`bin/orchestrate/post-merge.sh tN`; the next task stays queued until that
-step checks main, deploys and publishes successfully. Start it once from the project's checkout as a long-lived
-background job, then add each submitted task with `--add`:
+Land one task at a time, with `atelier land` or the orchestrator's own
+queue, and run `bin/orchestrate/post-merge.sh tN` in the project checkout
+after each merge (see "After each merge"): the next task waits until that
+step checks main, deploys and publishes successfully.
 
-```sh
-bin/orchestrate/land-queue.sh            # once, in the background
-bin/orchestrate/land-queue.sh --add t405:codex/gpt-6-astra
-```
-
-`--add` takes the queue's lock (the directory `atelier.queue.lock` beside the
-queue file), as the queue does when it takes the first line, so an addition
-made while a landing is being taken off the queue is never lost. A bare
-`echo … >>` does not take the lock and can be lost; do not use it. The queue
-prints `LANDQ tN: …` for each landing and, once nothing has been queued for
-two hours, `LANDQ idle: …` and exits: start it again then.
-
-Order the queue so the tasks that touch core files land first: everything
+Order the landings so the tasks that touch core files land first: everything
 else will merge around them, and a core-file change landed late conflicts
 with every task that landed before it. Within that, put first the tasks that
-another piece of work waits on. To reorder it, hold the lock while you edit the queue file:
-`mkdir "$ATELIER_CACHE/land-queue/atelier.queue.lock"`, edit, then `rmdir` it.
+another piece of work waits on.
 
 Wait for a landing with `atelier wait tN --project atelier --for merged`.
 For a runner's build use `--for submitted`, for an agent's review use
@@ -535,17 +519,10 @@ Add `--timeout 600` to bound the wait, including a stalled server read.
 The command prints the outcome and exits 0 when reached, 1 when the task
 fails, 3 on timeout, or 4 when it cannot read the task. Check that outcome
 before starting dependent work. A merge does not confirm deployment or
-publishing; check the landing queue's post-merge outcome separately.
+publishing; check the post-merge step's outcome separately.
 
-A failed post-merge step prints `LANDQ tN: post-merge blocked` and exits
-nonzero. Read `$ATELIER_CACHE/land-queue/atelier.queue.post-merge` for the
-pending task and `$ATELIER_CACHE/land-queue/tN.post-merge.log` for the error.
-Fix it and restart `bin/orchestrate/land-queue.sh`; it retries that step
-before consuming any task, even after a process restart. Do not delete the
-marker or requeue the already merged task. `post-merge complete` means the
-barrier cleared. `LAND_QUEUE_POST_MERGE=/absolute/path/to/hook` may replace
-the step only with an executable that performs all the same operations;
-zero means they all finished, any other status holds the queue.
+A failed post-merge step stops the landing that ran it: fix the cause and run
+`bin/orchestrate/post-merge.sh tN` again for the already merged task.
 
 ### Pre-review while the lease is busy
 
@@ -679,19 +656,19 @@ landing.
 
 ### After each merge
 
-The queue runs `bin/orchestrate/post-merge.sh tN` in the project checkout
-and waits for it. It requires a clean `main`, pulls with `--ff-only`, runs
+Run `bin/orchestrate/post-merge.sh tN` in the project checkout after each
+merge and wait for it. It requires a clean `main`, pulls with `--ff-only`, runs
 `npm run typecheck` and `npm test`,
 deploys, audits outgoing history and publishes. Any failed command stops it
 and holds the next landing. The steps below explain those operations and
-manual diagnosis; never start a second queue while this barrier is pending.
+manual diagnosis; land nothing else while this step is pending.
 The script runs the full suite in the clean checkout; a clean clone below
 can reproduce failures independently.
 
 For a task whose platform/runtime behaviour needs a remote smoke check, set
 `POST_MERGE_SMOKE=/absolute/path/to/check`; the executable receives `before`
 and `after` around deployment and must return zero for each. A failure
-holds the queue. Include the orchestrator's signed-in browser criterion in
+holds the next landing. Include the orchestrator's signed-in browser criterion in
 that verification after deployment; a local pass cannot stand in for it.
 
 1. Update and type check:
@@ -749,7 +726,7 @@ that verification after deployment; a local pass cannot stand in for it.
    git log -p -m --root --format=fuller --binary public/main..HEAD
    # after every candidate is cleared, let the pending post-merge step push
    export PUBLIC_AUDIT_HEAD=$(git rev-parse HEAD)
-   bin/orchestrate/land-queue.sh
+   bin/orchestrate/post-merge.sh tN
    ```
 
    `NOREPLY` is the public no-reply address, read from the project's

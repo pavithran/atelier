@@ -33,15 +33,13 @@
   //     "CF_ACCESS_OWNER_EMAIL": "owner@example.com"
   //   }
   "vars": {
-    // The Cloudflare account that holds the AI Gateway and the metrics
-    // dataset is the secret CF_ACCOUNT_ID (README, "AI Gateway costs"), so
-    // the public source names no account; unset, neither is read.
+    // The Cloudflare account that holds the AI Gateway is the secret
+    // CF_ACCOUNT_ID (README, "AI Gateway costs"), so the public source names
+    // no account; unset, the gateway figures are not read.
     // The gateway runners send their calls through, whose figures the
     // Models page reads from the GraphQL Analytics API.
     "AI_GATEWAY_ID": "atelier"
   },
-  // Atelier's own metrics (src/metrics.ts).
-  "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "atelier_metrics" }],
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "atelier", "remote": true }],
   // Large payloads by reference (t284): whole check logs and review diffs are

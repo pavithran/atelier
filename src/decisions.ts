@@ -21,7 +21,6 @@ import { TEXT_CONTROLS } from "./text.ts";
 export const DECISION_TEXT_MAX = 1000;
 export const DECISION_QUOTE_MAX = 2000;
 export const DECISION_NOTE_MAX = 500;
-export const DECISION_ID = /^d\d{1,9}$/;
 
 export interface Decision {
   id: string;            // d1, d2, ... in the order they were recorded

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Synchronous landing barrier, run in the registered checkout on main.
-# A failure leaves land-queue.sh's durable marker in place for a retry.
+# A failure stops the landing; run it again for the same task.
 set -eu
 [ "$(git branch --show-current)" = main ] || { echo 'Switch to main first'; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo 'Checkout must be clean'; exit 1; }

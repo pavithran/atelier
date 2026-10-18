@@ -1,7 +1,6 @@
 // verdict.mjs ANSWERFILE: reads a reviewer's answer with Atelier's own parser
 // (src/review/verdict.ts, the one the runner uses) and prints one JSON line:
-// { ok, verdict, summary, findings } or { ok: false, error }. land.sh records
-// the verdict and its findings from it.
+// { ok, verdict, summary, findings } or { ok: false, error }.
 import { readFileSync } from "node:fs";
 import { parseVerdict } from "../../src/review/verdict.ts";
 

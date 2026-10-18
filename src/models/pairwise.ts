@@ -44,14 +44,12 @@
 import type { LedgerEvent } from "../ledger.ts";
 import { sameActor } from "../rules.ts";
 import { canonicalModel, type PoolNames } from "./judgement.ts";
-import { PRECISION_WINDOW_DAYS, type PrecisionWindow } from "./precision.ts";
+import type { PrecisionWindow } from "./precision.ts";
 import { isAgent, type ProjectEvents } from "./reliability.ts";
 import { SERVED, servedActor, servedBy } from "./served.ts";
 
-// The window is review precision's, so the two review figures read the same
-// days. Below PAIRWISE_MIN_PAIRS eligible pairs no share is given: one or
-// two pairs say little about a reviewer.
-export const PAIRWISE_WINDOW_DAYS = PRECISION_WINDOW_DAYS;
+// Below PAIRWISE_MIN_PAIRS eligible pairs no share is given: one or two
+// pairs say little about a reviewer.
 export const PAIRWISE_MIN_PAIRS = 5;
 export const PAIR_REFS = 10;
 

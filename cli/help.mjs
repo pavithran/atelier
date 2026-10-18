@@ -9,7 +9,3 @@ export const HELP_GROUPS = shared.helpGroups("cli");
 export const HELP_FORMS = shared.helpForms("cli");
 export const helpText = () => shared.helpText("cli");
 export const REVERT_USAGE = shared.commandUsage("revert");
-
-// Runner credentials extend specific token subcommands, each with help of its
-// own, declared in src/usage/commands/token.ts.
-export const TOKEN_SUBCOMMANDS = shared.COMMANDS.token.subcommands;

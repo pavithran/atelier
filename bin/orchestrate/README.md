@@ -8,23 +8,19 @@ set them up and what each does.
 They find a project's registered checkout in the CLI's `config.json`
 (`ATELIER_CONFIG_DIR`, default `~/.config/atelier`) and a task's workspace
 under the CLI's cache (`ATELIER_CACHE`). `ATELIER_PROJECT` names the project
-for `land.sh` and `queue.sh` (default `atelier`).
+for the scripts that need one (default `atelier`).
 
 | Script | What it does |
 | --- | --- |
 | `worktree.sh TASK` | Makes the Git worktree a builder works in (branch TASK from main, under `~/Library/Caches/ai-projects/atelier-worktrees/`) and sets the project's commit identity in that worktree's own Git config, read with `atelier identity`; the checkout's config is left alone. It stops before it makes anything when the project has no identity (t731). |
 | `run-agent.sh WHICH WORKSPACE OUTFILE BRIEF` | Runs an opencode agent (`glm`, `deepseek` or `openrouter:VENDOR/MODEL`) in a task's workspace, with its own data folder. BRIEF is the file holding the prompt, which reaches opencode on standard input; text that names no file is taken as the prompt and written to the workspace's `.scratch/` first. Pass the file, as in `run-agent.sh glm WS OUT brief.md`: `"$(cat brief.md)"` is itself an argument, and fails once the brief nears 1 MB. |
 | `review.sh WORKSPACE OUTBASE CONTEXT [MODEL]` | Has an Antigravity model review the task's commits in a throwaway clone where it may run commands, and writes its answer to `OUTBASE.md`. The prompt, written to `OUTBASE.prompt.md`, goes to `agy` on standard input. |
-| `queue.sh TASK CONTEXT NOTE` | Takes this machine's landing lock for the project, merges main into the task, and hands it to `land.sh` when the merge is clean and type-checks. |
-| `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits and reviews the head it read before the review; records the verdict with the reviewer's own summary and its findings either way, and on approval accepts at that head with NOTE on the acceptance and merges, then type-checks main. `REVIEW_MODEL` is `gemini-3.1-pro-high` (recorded as `antigravity/gemini-3.1-pro`) or `gpt-oss-120b-medium` (`antigravity/gpt-oss-120b`); any other is refused. |
-| `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON; `land.sh` records them. |
+| `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON. |
 | `review-bake.sh run\|score` | A reviewer bake-off (t699): gives each reviewer the same blind brief and diff of every build in a sample of judged model-bake-off builds, read-only, and scores the replies against the judge's verdicts with `review-bake-score.mjs`. See "Measuring reviewers". |
 | `regen-fixtures.sh` | Runs `node cli/regenerate.mjs`, rewriting the command indexes and the CLI's help fixtures in the current directory. |
-| `land-queue.sh [TASK:H/M ...]` | Lands queued tasks one after another with `atelier land --workflow --wait --reviewer`, each once the five-minute load average is under `LAND_QUEUE_LOAD` (25), printing one `LANDQ tN: OUTCOME` line per landing for a watcher. Run it once in the background from the project's checkout; add a task with `land-queue.sh --add tN:harness/model`, which takes the queue's lock (a bare append to the queue file is not safe). `docs/orchestrating.md`, "The loop with runners", says how its outcomes are handled. It is a workaround until the server keeps a queue of landings itself (t460). |
 
-`atelier land` (task t187) does what `queue.sh` and `land.sh` do inside
-Atelier, under a lease on the server; use it where the server's version
-check allows (task t190).
+`atelier land` (task t187) lands a task inside Atelier, under a lease on the
+server.
 
 ## Setting up the agents
 
@@ -534,7 +530,7 @@ terminal sandboxed. No script pushes a project's own remotes or deploys.
 
 ## Between landings
 
-`land-queue.sh` runs `post-merge.sh TASK` synchronously after the CLI reports
+Run `post-merge.sh TASK` after the CLI reports
 that a task landed through the landing Workflow. This step requires clean
 `main`, pulls, runs `npm run typecheck` and `npm test`,
 deploys (developer decision d6), and publishes to `public`. Set `NOREPLY` to the
@@ -544,18 +540,14 @@ and audits every outgoing commit, including paths removed in later commits.
 The first run stops for human inspection of the files in
 `$(git rev-parse --git-path public-audit)`. Read all outgoing history and
 binary assets, clear every private detail, then set
-`PUBLIC_AUDIT_HEAD` to the inspected `git rev-parse HEAD` and restart the
-queue. This acknowledgement cannot bypass private paths or bad identities.
+`PUBLIC_AUDIT_HEAD` to the inspected `git rev-parse HEAD` and run the
+step again. This acknowledgement cannot bypass private paths or bad identities.
 A main change invalidates it. `POST_MERGE_SMOKE` can name an executable
 called with `before` and `after` around deployment; use it for declared
 remote smoke checks and verification the orchestrator owes after deploy.
 
-Any error leaves `PROJECT.queue.post-merge` beside the queue, prints
-`post-merge blocked`, and exits without taking another task. Read
-`TASK.post-merge.log`, fix the cause and restart: the pending step retries
-before the queue advances. Do not delete the marker. A successful run prints
-`post-merge complete`. `LAND_QUEUE_POST_MERGE` may name another executable
-receiving TASK, but its zero status must certify checks, required deployment,
-verification and publication all completed; any failure must return nonzero.
-The default step repeats checks/deploy on retry. Run only one queue process.
+Any error prints the failing step and exits nonzero, and nothing else should
+land until it is fixed. Fix the cause and run `post-merge.sh TASK` again for
+the same task. A successful run prints `post-merge complete`. The default step
+repeats checks and deploy on a retry.
 Open task **t460**, a merge queue that tests ahead in parallel and lands in batches, replaces this workaround (it superseded t432, abandoned).
