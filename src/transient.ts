@@ -58,6 +58,16 @@ export function setRetryBaseMs(ms: number = BASE_RETRY_MS): void {
   retryBaseMs = ms;
 }
 
+// A fork still being made is waited for in linear steps, FORK_WAIT_ATTEMPTS
+// reads in all (about ten seconds at 500 ms: the CLI does not retry a 503, so
+// a claim waits here). A test lowers the step with setForkWaitMs.
+export const FORK_WAIT_ATTEMPTS = 6;
+let forkWaitMs = 500;
+export function setForkWaitMs(ms: number = 500): void {
+  forkWaitMs = ms;
+}
+export const forkWait = (attempt: number) => forkWaitMs * (attempt + 1);
+
 // Runs one step against Artifacts, retrying a failure `permanent` does not
 // claim, with exponential backoff and jitter so that many callers failing
 // together do not retry together. The last failure is thrown as it is.

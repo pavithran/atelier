@@ -58,7 +58,7 @@ import { baseRepoOf, mergeBaseFor, rollbackFor, verifyIntegration, verifyRefresh
 import { INTEGRATOR } from "./plans/state.ts";
 import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
-import { errorLine, RETRY_AFTER, retryableByRuntime, transientByArtifacts, withRetry } from "./transient.ts";
+import { errorLine, RETRY_AFTER, FORK_WAIT_ATTEMPTS, forkWait, retryableByRuntime, transientByArtifacts, withRetry } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
 
 export { CheckRunner, Egress, Ledger };
@@ -527,15 +527,25 @@ function codeOf(err: unknown): string {
 const ALREADY_EXISTS = /ALREADY_EXISTS|already exists/i;
 const IN_PROGRESS = /IN_PROGRESS|in progress|not ready/i;
 
-// A repository's HEAD. A fresh fork can briefly report FORK_IN_PROGRESS, and
-// Artifacts can fail for a moment; artifactsStep waits out both, so a caller
-// gets the head or a 503. A repository that is not there is thrown as it is.
+// A repository's HEAD. A passing Artifacts failure is waited out by
+// artifactsStep. A fresh fork can briefly report FORK_IN_PROGRESS; that is
+// waited for longer, in steps of forkWait, since the CLI does not retry a 503
+// and a claim should not fail for it. A repository that is not there is
+// thrown as it is.
 async function headOf(env: Env, repo: string): Promise<string | null> {
-  return artifactsStep(`read the head of ${repo}`, async () => {
-    using r = await env.ARTIFACTS.get(repo);
-    const [top] = await r.log({ limit: 1 });
-    return top?.hash ?? null;
-  }, (err) => NOT_FOUND.test(codeOf(err)));
+  for (let attempt = 0; attempt < FORK_WAIT_ATTEMPTS; attempt++) {
+    try {
+      return await artifactsStep(`read the head of ${repo}`, async () => {
+        using r = await env.ARTIFACTS.get(repo);
+        const [top] = await r.log({ limit: 1 });
+        return top?.hash ?? null;
+      }, (err) => NOT_FOUND.test(codeOf(err)) || IN_PROGRESS.test(codeOf(err)));
+    } catch (err) {
+      if (!IN_PROGRESS.test(codeOf(err))) throw err;
+      await new Promise((ok) => setTimeout(ok, forkWait(attempt)));
+    }
+  }
+  throw new RuleError("not_ready", `${repo} is still being prepared; try again`, 503);
 }
 
 // One step of a request against Artifacts, retried with backoff when it

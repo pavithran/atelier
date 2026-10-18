@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { taskForkMark } from "../src/rules.ts";
-import { setRetryBaseMs } from "../src/transient.ts";
+import { setForkWaitMs, setRetryBaseMs } from "../src/transient.ts";
 
 // These tests inject transient Artifacts failures; the retry backoff would
 // otherwise spend seconds waiting (and time out under load). Milliseconds do.
@@ -427,5 +427,23 @@ describe("t761: a transient Artifacts failure answers 503 on any route", () => {
     const res = await get(fa.artifacts, "/api/projects/concurrency-head-gone/baseline-head");
     expect(res.status).toBe(500);
     expect(gets).toBe(1);
+  });
+
+  it("a fork that becomes ready after about five seconds of waiting answers its head, and one that never does answers 503", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // Real steps of 500 ms are 500, 1000, 1500 and 2000 ms before the fifth
+    // read: five seconds. The step is lowered so the test does not wait.
+    setForkWaitMs(1);
+    try {
+      const { fa } = await setup("concurrency-fork-wait", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 4, mint: () => false });
+      const ready = await get(fa.artifacts, "/api/projects/concurrency-fork-wait/baseline-head");
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toEqual({ head: H0 });
+      const never = await setup("concurrency-fork-never", 1, 1, { forkBefore: () => false, forkAfter: () => false, inProgress: 99, mint: () => false });
+      const res = await get(never.fa.artifacts, "/api/projects/concurrency-fork-never/baseline-head");
+      expect(res.status).toBe(503);
+      expect(((await res.json()) as { error: string }).error).toBe("not_ready");
+    } finally { setForkWaitMs(); }
   });
 });
