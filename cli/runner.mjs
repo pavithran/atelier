@@ -3579,6 +3579,18 @@ export function runnerCheckout(dir = RUNNER_CHECKOUT, executeChild = execute) {
 
 export const RELOAD_TARGET = "ATELIER_RUNNER_RELOAD_TARGET";
 
+// Compatibility shim for the reload before t764. A runner started from that
+// code reloads by spawning the new code with ATELIER_RUNNER_HANDOFF=1 over an
+// IPC channel and kills it after 60 seconds unless it sends `runner-ready`.
+// The new code still answers once, then carries on; its own next reload uses
+// process.execve, so the chain of waiting parents ends after this generation.
+// Remove it once no runner older than the commit that added it is running.
+export function legacyHandoffReady() {
+  if (!process.env.ATELIER_RUNNER_HANDOFF) return;
+  delete process.env.ATELIER_RUNNER_HANDOFF;
+  if (process.send) { process.send({ type: "runner-ready" }, () => {}); process.channel?.unref(); }
+}
+
 // A reloaded runner is the process the name guard would find and refuse as a
 // second runner of its own name, so it does not run the guard.
 export const isReloaded = (env) => Boolean(env[RELOADED_FROM]);
@@ -4107,6 +4119,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       for (const r of reasons) line(`  ${r.task}  ${r.line}`);
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
+    legacyHandoffReady();
     while (!controller.signal.aborted) {
       let state;
       try {

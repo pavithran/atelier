@@ -395,3 +395,35 @@ test("supervised reload exits without spawning a replacement; supervisor restart
   assert.match(second.stdout, /supervisor started updated runner runner --integrate --name home:test/);
   assert.doesNotMatch(second.stdout, /supervisor restart/);
 });
+
+// Astra's finding on t764: every live runner reloads the old way, spawning the
+// new code with ATELIER_RUNNER_HANDOFF=1 and killing it after 60 seconds unless
+// it sends runner-ready. This parent is the old spawn-and-wait, trimmed.
+test("a pre-t764 waiting parent starting the new code gets runner-ready and does not kill it", async (t) => {
+  const s = setup(t), next = join(s.dir, "next.mjs");
+  const runner = new URL("../cli/runner.mjs", import.meta.url).href;
+  writeFileSync(next, `
+    import { runRunner } from ${JSON.stringify(runner)};
+    let polls = 0;
+    await runRunner({ _: ['runner'], multi: {}, name: 'home:replacement', integrate: true }, {
+      credential: 'test', workspacePath: () => '.', wait: async () => new Promise((r) => setTimeout(r, 100)),
+      version: async () => (${JSON.stringify(answer(NEW))}),
+      queue: async () => { console.log('polled'); if (++polls === 5) process.emit('SIGTERM'); return []; },
+      reload: { checkout: { dir: '.', head: async () => '${NEW}', contains: async () => true }, reexec: async () => { throw new Error('reload loop'); } },
+    });
+  `);
+  const parent = `
+    import { spawn } from 'node:child_process';
+    const child = spawn(process.execPath, [${JSON.stringify(next)}], { env: { ...process.env, ATELIER_RUNNER_HANDOFF: '1' }, stdio: ['inherit', 'inherit', 'inherit', 'ipc'] });
+    let ready = false;
+    const timer = setTimeout(() => { console.log('parent: no ready, killing'); child.kill('SIGKILL'); }, 8000);
+    child.on('message', (m) => { if (m?.type === 'runner-ready') { ready = true; console.log('parent: ready'); child.send({ type: 'runner-release' }); } });
+    child.on('exit', (code, signal) => { clearTimeout(timer); console.log('parent: child exit ' + code + ' ' + signal + ' ready ' + ready); });
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", parent], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /parent: ready/);
+  assert.match(result.stdout, /parent: child exit 0 null ready true/);
+  assert.doesNotMatch(result.stdout, /no ready|reload loop/);
+  assert.equal(result.stdout.split("\n").filter((l) => l === "polled").length, 5);
+});
