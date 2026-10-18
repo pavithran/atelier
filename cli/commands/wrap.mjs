@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { OWNER, P, actor, args, at, call, cfg, die, git, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
+import { pinCheckoutIdentity } from "../identity.mjs";
 import { publishCheckoutRemote } from "../mirror.mjs";
 import { privateChanges, privateGuardFor } from "../private.mjs";
 import { publishBaseline } from "./publish.mjs";
@@ -29,6 +30,7 @@ export default async function wrapCommand() {
   if (allowFailing && data.checksSkipped) die("--allow-failing and --no-check together: skipped checks cannot fail; give one or the other");
   wrapReady(name, cwd, true);
   const { project: record } = await call("GET", P(name), undefined, as);
+  try { pinCheckoutIdentity(cwd, record.policy.commitIdentity); } catch (error) { die(`${error.message}; nothing was staged`); }
   const refused = data.checksSkipped ? [] : record.policy.checks.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
   if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
   const failing = [];

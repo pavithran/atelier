@@ -314,6 +314,21 @@ test("merge override proceeds to Git merge while retaining the warning", () => c
   assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
 }));
 
+test("merge pins the registered checkout's git identity to the project's before it commits, once (t755)", () => commandFixture(({ command, dir, gitCalls }) => {
+  // Finding: llm-basics, 2026-10-17, a commit in the registered checkout took
+  // the global address and the baseline push was refused.
+  rmSync(join(dir, "docs/control-plane"), { recursive: true });
+  const first = command(["merge", "t1"]);
+  assert.match(first.stdout, /Set this checkout's git identity to Project Owner <123\+owner@users\.noreply\.github\.com>/);
+  const sets = () => gitCalls().filter((a) => a[0] === "config" && a[1] === "--local" && /^user\./.test(a.at(-2))).map((a) => a.slice(-2));
+  assert.deepEqual(sets(), [["user.name", "Project Owner"], ["user.email", "123+owner@users.noreply.github.com"]]);
+  const pinned = gitCalls().findIndex((a) => a.at(-2) === "user.email");
+  assert.ok(pinned < gitCalls().findIndex((a) => a.includes("merge") && a.includes("--no-ff")), "pinned before the merge");
+  const second = command(["merge", "t1"]);
+  assert.doesNotMatch(second.stdout, /git identity/);
+  assert.equal(sets().length, 2, "a matching identity is not written again");
+}));
+
 test("merge without ControlPlane files makes no project policy requests", () => commandFixture(({ command, dir, calls, gitCalls }) => {
   rmSync(join(dir, "docs/control-plane"), { recursive: true });
   const result = command(["merge", "t1"]);
