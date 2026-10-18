@@ -175,6 +175,33 @@ and its own push is not recorded over the other. A `branch fetch` that would
 not fast-forward the local branch is refused the same way, and `--force`
 replaces the local one.
 
+## Private files
+
+A file that stays with the developer, such as `PROJECT.md`, is kept in the
+project's iCloud folder, the folder in
+`~/Library/Mobile Documents/com~apple~CloudDocs/ai-projects/` whose name
+matches the project's ignoring letter case, spaces, `-` and `_`. The folder's
+`.atelier-private` lists the files, one path a line, relative to the checkout;
+this Mac's `config.json` may name more in the project's entry (`private`) and
+the folder (`privateHome`). No Atelier command names, links or ignores them
+any more (`atelier private` was removed in t770); what the developer links into
+a checkout and ignores through `.git/info/exclude` is the developer's own.
+
+What Atelier does is refuse to push them. `atelier clone` and a successful
+`atelier pull` keep a copy of the list in this Mac's configuration, and every
+Atelier push goes through the push guard: `sync`, `merge`, `wrap --push` and
+its baseline update, `ship --push`, `init`, a task's `push`, `branch push` and
+the task refresh. Before pushing, the guard reads every commit the destination
+does not already hold, and refuses, with nothing pushed, when one of those
+commits adds, changes or retypes a private path, or when a private path is in
+the tree of the commit pushed or of any commit pushed whose parent the
+destination already holds. A symbolic link counts as the path, since Git
+commits a link as a link. The guard also refuses when the list cannot be read
+and this Mac keeps no copy of it. The commit it read is the one pushed, so a
+commit made on the branch in between is not sent. `wrap` also refuses to stage
+a private file. A project with no private file named on this Mac is not
+guarded and its iCloud folder is never read.
+
 ## Data, dependencies and secrets
 
 **Data.** A project's data, such as saved relay envelopes and review

@@ -1,39 +1,25 @@
-// The pushes Atelier makes from the developer's checkout.
-//
-// pinnedPush resolves the branch to a commit once and pushes that commit by its
-// id, so a commit made on the branch between the decision to push and the push
-// is never sent. pushCheckoutRemote is the push `wrap --push` and `ship --push`
-// make to one of the checkout's remotes: never forced, no tags, one branch.
+// The push `wrap --push` and `ship --push` make to one of the checkout's
+// remotes: never forced, no tags, one branch, and the commit the branch named
+// when the private-file guard read it (guardedPush), so a commit made
+// meanwhile is never sent. No commit the remote lacks may carry one of the
+// project's private files (cli/private-guard.mjs).
 // A remote the project's commit identity declares a public mirror (init
 // --public-mirror) takes only commits whose author and committer carry the
 // project's own GitHub no-reply address (publicRefusals); when what that
 // remote holds cannot be read, the whole history is checked, which only adds
 // refusals.
-import { spawnSync } from "node:child_process";
+import { guardedPush, remoteBases } from "./private-guard.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, parseIdentityLog, publicRefusals } from "../src/commit-identity.ts";
-
-// Git as the check reads history: no replacement refs or grafts change what a
-// commit holds.
-const PLAIN = Object.freeze({ GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null/atelier-no-grafts" });
-
-// `push` runs with the commit `tip` names, resolved here once. A tip that names
-// no commit is a refusal: `fail` takes its text (by default it is thrown) and
-// its answer is returned. Returns what `push` returns.
-export function pinnedPush({ cwd, tip, what, fail = (message) => { throw new Error(message); } }, push) {
-  const resolved = typeof tip === "string" && tip && !tip.startsWith("-")
-    ? spawnSync("git", ["rev-parse", "--verify", "--quiet", "--end-of-options", `${tip}^{commit}`], { cwd, encoding: "utf8", env: { ...process.env, ...PLAIN } }) : null;
-  const sha = resolved?.status === 0 ? resolved.stdout.trim() : null;
-  if (!sha) return fail(`${what}: ${tip} does not name a commit here. Nothing was pushed.`);
-  return push(sha);
-}
 
 // Pushes `branch` to `targetBranch` (by default the same) on `remote`. `git` is
 // the CLI's runner. Returns the push's result, or { status: 1, stdout: "",
 // stderr: message, refused: message } when Atelier refused before pushing.
-export function pushCheckoutRemote({ git, dir, branch, targetBranch = branch, remote, identity }) {
+export function pushCheckoutRemote({ git, dir, branch, targetBranch = branch, remote, identity, project }) {
   const ref = `refs/heads/${targetBranch}`;
   const refuse = (message) => ({ status: 1, stdout: "", stderr: message, refused: message });
-  return pinnedPush({ cwd: dir, tip: `refs/heads/${branch}`, what: `Not pushed to ${remote}: ${branch}`, fail: refuse }, (sha) => {
+  // Checked for private files against every push URL the remote has, each as
+  // it stands: one may lack commits another already holds.
+  return guardedPush({ project, cwd: dir, tip: `refs/heads/${branch}`, bases: () => remoteBases({ git, cwd: dir, remote, ref, opts: { ownerRemote: true } }), what: `Not pushed to ${remote}: ${branch}`, fail: refuse }, (sha) => {
     if (isPublicMirror(identity, remote)) {
       const why = publicAddressRefusals({ git, dir, remote, ref, sha, identity });
       if (why.length) return refuse(`Not pushed to ${remote}: ${why.join("; ")}. Nothing was pushed.`);

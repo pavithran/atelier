@@ -2,13 +2,18 @@
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
-import { moveProjectEntryOnDisk } from "../config-store.mjs";
+import { moveConflict, moveProjectEntryOnDisk } from "../private-guard.mjs";
 
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {
   const [, sub, name, to] = args._;
   if (sub === "rename") {
     if (!name || !to || args._.length !== 4) die(COMMAND_USAGE.projects);
+    // The local move is checked first: a rename the local config would then
+    // refuse is not made on the server either (Astra's eighth review of
+    // t645), so nothing is left half done.
+    const conflict = moveConflict(cfg.projects, name, to);
+    if (conflict) die(`${name} was not renamed: ${conflict}`);
     const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
     // The server answers the new name for both when the request named it
     // to finish a rename: no entry moves, and the one under it stays.
@@ -17,16 +22,20 @@ export default async function projectsCommand() {
     // local entry moves from that name. An entry already under the new
     // name is kept, and the old one dropped, saying what it held.
     let local = `No local config entry was called ${r.from}.`;
-    // The old name is kept with the entry as a former name: a task workspace
-    // made before the rename still names the old one.
+    // The old name is kept with the entry as a former name, and a merge
+    // into an entry already under the new name keeps every private setting
+    // (moveProjectEntry, t645): a task workspace made before the rename
+    // still names the old one, and the private-file guard finds the entry
+    // by it.
     const held = cfg.projects?.[r.from];
     if (held) {
       const into = !!cfg.projects[r.to];
       // Made in config.json under its lock, and followed in memory.
       const moved = moveProjectEntryOnDisk(cfg.projects, r.from, r.to);
+      if (moved.error) die(`${r.from} is now ${r.to} on ${server()}, but ${moved.error}`);
       const settings = Object.entries(moved.dropped ?? {}).map(([k, v]) => `${k} ${typeof v === "string" ? v : JSON.stringify(v)}`);
       local = into
-        ? `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped${settings.length ? ` (it held: ${settings.join(", ")})` : ""}.`
+        ? `The local config already had an entry ${r.to}, which is kept; the entry ${r.from} was dropped${settings.length ? ` (it held: ${settings.join(", ")})` : ""}, its private files joined to ${r.to}'s.`
         : `The local config entry ${r.from} is now ${r.to}.`;
     }
     console.log(`${r.from} is now ${r.to} on ${server()}. Its Ledger, baseline ${r.project.repo} and every fork stay where they are. ${local}`);

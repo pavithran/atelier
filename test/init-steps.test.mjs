@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PUSH_STEP, pushHistory, refusedForSize } from "../cli/push-steps.mjs";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
+// No test reads this Mac's own iCloud folder (t645).
+process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
 // atelier init pushes a project's history to its new baseline. When Artifacts
 // refuses the push for size or time, the history goes in steps of about 700
@@ -457,4 +459,52 @@ test("a step that fails when the baseline cannot be read says what it could not 
       return true;
     },
   );
+});
+
+// t645, both reviews of t645: init pushed the checkout's history to the
+// baseline with no check for the project's private files, whole, in steps
+// or rebuilt by --history-since.
+function leakPrivate(f) {
+  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
+  config.projects.demo = { path: f.checkout, branch: "main", private: ["PROJECT.md"] };
+  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  writeFileSync(join(f.checkout, "PROJECT.md"), "the plan\n");
+  git(["add", "-f", "PROJECT.md"], { cwd: f.checkout });
+  git(["-c", "user.name=T", "-c", "user.email=t@x.test", "commit", "-q", "-m", "by hand"], { cwd: f.checkout });
+  return git(["rev-parse", "HEAD"], { cwd: f.checkout });
+}
+
+test("atelier init pushes no commit holding a private file, whole or rebuilt from part of the history", (t) => {
+  const f = cliFixture(t, { count: 5, limit: 1000 });
+  const leak = leakPrivate(f);
+  const r = f.run();
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, new RegExp(`main's history for demo's baseline would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}\\..*Nothing was pushed\\.`));
+  assert.equal(f.tip(), null, "the baseline holds nothing");
+  const since = f.run(["--history-since", "2025-01-01"]);
+  assert.equal(since.status, 1, since.stdout);
+  assert.match(since.stderr, /The baseline history of demo would carry private files: PROJECT\.md in [0-9a-f]{12}\..*Nothing was pushed\./);
+  assert.equal(f.tip(), null);
+});
+
+// The first init of a project this Mac does not register yet reads the
+// list in its iCloud folder before the first push, as clone does.
+test("a first atelier init finds the project's list in iCloud and pushes no commit holding a file it names", (t) => {
+  const f = cliFixture(t, { count: 5, limit: 1000 });
+  const root = join(f.dir, "icloud");
+  mkdirSync(join(root, "Demo"), { recursive: true });
+  writeFileSync(join(root, "Demo", ".atelier-private"), "PROJECT.md\n");
+  writeFileSync(join(f.checkout, "PROJECT.md"), "the plan\n");
+  git(["add", "-f", "PROJECT.md"], { cwd: f.checkout });
+  git(["-c", "user.name=T", "-c", "user.email=t@x.test", "commit", "-q", "-m", "by hand"], { cwd: f.checkout });
+  const r = f.run([], { ATELIER_PRIVATE_ROOT: root });
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /main's history for demo's baseline would carry private files: PROJECT\.md in [0-9a-f]{12}.*Nothing was pushed\./);
+  assert.equal(f.tip(), null, "the baseline holds nothing");
+  assert.equal(f.registered(), undefined, "nothing was registered");
+  // Without the file, the first init goes, and keeps the list's copy.
+  git(["reset", "-q", "--hard", "HEAD~1"], { cwd: f.checkout });
+  const ok = f.run([], { ATELIER_PRIVATE_ROOT: root });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(f.registered().privateFromList, ["PROJECT.md"]);
 });

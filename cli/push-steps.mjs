@@ -56,7 +56,7 @@ function baselineTip(git, cwd, remote, token, branch) {
 // pre-push hook: a refusal by that hook can read like one for size or time,
 // and the steps must not carry the history past it.
 export function pushHistory(git, cwd, { remote, token, branch, say, step = PUSH_STEP, head: pinned = null }) {
-  // Pushed by the id of the commit the push is pinned to, when given.
+  // Pushed by the id of the commit the guard scanned, when given (t645).
   const whole = ["push", "--quiet", "--recurse-submodules=no", remote, pinned ? `${pinned}:refs/heads/${branch}` : `${branch}:${branch}`];
   const first = git(whole, { cwd, token, allowFail: true });
   if (first.status === 0) return;
@@ -157,8 +157,8 @@ export function pushCommitsInTurn(git, cwd, { remote, branch, head: pinned = nul
     return { tip: /^([0-9a-f]{40,64})\s/.exec(String(r.stdout ?? ""))?.[1] ?? null };
   };
   const ancestor = (older, newer) => run(["merge-base", "--is-ancestor", older, newer]).status === 0;
-  // The commit the push is pinned to, when given, never HEAD as it may be by
-  // now.
+  // The commit the guarded push scanned, when given, never HEAD as it may
+  // be by now (t645).
   const head = pinned ?? out(run(["rev-parse", "--verify", "HEAD^{commit}"]));
   const read = tipOf();
   if (read.error) throw new Error(`the push answered 413, and ${branch} could not be read from the remote afterwards, so the commits cannot be pushed one at a time:\n${indent(read.error)}`);

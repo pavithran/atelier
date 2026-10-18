@@ -1,8 +1,12 @@
 // atelier push. Its forms, flags and help are declared in src/usage/commands/push.ts.
 import { I, OWNER, actor, args, call, cfg, count, die, forkBranch, git, hasCommit, holds, itemArg, project, renewWorkspaceToken, requireWorkspace, saveConfig, short, serverVersion, isRunnerForbidden, noLongerHolds, request, takenBackNotice, TOKEN_REFUSED, workspaceForkBranch, wsConfig } from "../atelier.mjs";
-import { pinnedPush } from "../checkout-push.mjs";
+import { guardedPush, remoteBases } from "../private-guard.mjs";
+
 import { checkCapabilities, COMMAND_CAPABILITIES } from "../../src/route-level.ts";
 import { pushCommitsInTurn, refused413 } from "../push-steps.mjs";
+
+// The server refused the workspace token while the push read the fork (t705).
+class TokenRefused extends Error {}
 
 // A workspace a runner claimed pushes through the runner route (t488).
 const RUNNER_ROUTE = /\/git\/runner\/[^/?#]+\/[^/?#]+$/i;
@@ -85,10 +89,34 @@ export default async function pushCommand() {
       [`GIT_CONFIG_KEY_${n + 1}`]: `http.${credential.remote}.extraHeader`, [`GIT_CONFIG_VALUE_${n + 1}`]: `Authorization: Bearer ${credential.token}` };
   }
   const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, credential?.remote ?? "origin", `HEAD:${branch}`];
-  // Pinned to the head read above: that commit is pushed by its id, whatever
-  // HEAD does meanwhile.
-  let r = pinnedPush({ cwd: undefined, tip: head, what: `${id}'s push to its fork`, fail: die },
+  // A task's history carries none of the project's private files to its
+  // fork (t645): what the fork lacks of HEAD is read for them first, at
+  // every place the push goes, and the 413 fallback below pushes the same
+  // HEAD.
+  // The fork's own URL, where the 413 fallback may push a commit, is read
+  // too (Argon's third review of t645).
+  const remoteName = credential?.remote ?? "origin";
+  const forkUrl = credential ? null : git(["config", "--get", "atelier.fork-remote"], { allowFail: true }).stdout?.trim() || null;
+  const forkBases = () => {
+    const opts = { token: credential?.token, env: credentialEnv };
+    const read = remoteBases({ git, cwd: undefined, remote: remoteName, ref: `refs/heads/${branch}`, opts });
+    if (read.error || !forkUrl) return read;
+    const fork = remoteBases({ git, cwd: undefined, remote: forkUrl, ref: `refs/heads/${branch}`, opts });
+    return fork.error ? fork : { bases: [...read.bases, ...fork.bases] };
+  };
+  // Pinned to the head read above: that commit is scanned and pushed by its
+  // id, and recorded, whatever HEAD does meanwhile.
+  // The read of what the fork holds is refused first when the token lapsed
+  // since the check above: it is carried to the same renewal as a refused push.
+  let r;
+  try {
+    r = guardedPush({ project: name, cwd: undefined, tip: head, bases: forkBases, what: `${id}'s push to its fork`,
+      fail: (message) => { if (!credential && TOKEN_REFUSED.test(message)) throw new TokenRefused(message); return die(message); } },
     (sha) => git([...pushArgs.slice(0, -1), `${sha}:refs/heads/${branch}`], { allowFail: true, token: credential?.token, env: credentialEnv }));
+  } catch (error) {
+    if (!(error instanceof TokenRefused)) throw error;
+    r = { status: 1, stderr: error.message };
+  }
   if (!credential && r.status !== 0 && TOKEN_REFUSED.test(`${r.stderr ?? ""}${r.stdout ?? ""}`)) {
     await renewWorkspaceToken(name, id, as, "The server refused this workspace's token as expired.");
     return pushCommand();

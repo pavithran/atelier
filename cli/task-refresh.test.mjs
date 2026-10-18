@@ -18,6 +18,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DETECTOR_ENV } from "../src/moved-code.ts";
 import { diffIdentity, runTaskRefresh } from "./task-refresh.mjs";
+import { privateConfig } from "../test/fixtures/private-config.mjs";
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com", GIT_CONFIG_NOSYSTEM: "1", HOME: tmpdir() };
 function git(cwd, ...args) {
@@ -539,4 +540,25 @@ for (const timeout of [false, true]) test(`a push that changes the fork then ${t
   assert.deepEqual(released(h), []);
   assert.ok(!h.verbs().includes("refresh-failed"));
   if (!timeout) assert.deepEqual(h.verbs().slice(-3), ["refreshed", "check", "refresh-checked"]);
+});
+
+// Astra's third review of t645, finding 1: the refresh took main's history
+// as held by the fork, so a private file main added and later deleted went
+// to the fork with main's commits, unread.
+test("a refresh carries none of the project's private files to the fork, main's commits included", async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  git(f.work, "checkout", "--quiet", "mainline");
+  writeFileSync(join(f.work, "PROJECT.md"), "the plan\n");
+  git(f.work, "add", "PROJECT.md");
+  git(f.work, "commit", "--quiet", "-m", "plan, by mistake");
+  git(f.work, "rm", "--quiet", "PROJECT.md");
+  git(f.work, "commit", "--quiet", "-m", "plan removed");
+  f.main = git(f.work, "rev-parse", "HEAD");
+  git(f.work, "push", "--quiet", "--force", f.baseline, `${f.main}:refs/heads/main`);
+  privateConfig(t, { demo: { private: ["PROJECT.md"] } });
+  const h = harness(f);
+  const state = await h.run();
+  assert.notEqual(state.phase, "refreshed");
+  assert.match(String(state.reason), /t7's refresh would carry private files: PROJECT\.md/);
+  assert.equal(forkHead(f), f.task, "the fork got nothing");
 });

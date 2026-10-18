@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildHistory, loadPairs } from "../cli/fresh.mjs";
@@ -94,7 +94,7 @@ async function run(t, f, argv, { projects = {}, login = true, cwd, globalConfig 
   writeFileSync(join(f.config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects }));
   const cliConfig = join(f.root, "cli-gitconfig");
   writeFileSync(cliConfig, globalConfig ?? "");
-  const env = { ...f.env, GIT_CONFIG_GLOBAL: cliConfig, HOME: f.home, ATELIER_CONFIG_DIR: f.config, ATELIER_CACHE: f.cache, ATELIER_SERVER: url, ATELIER_SECRET_STORE: "file", ATELIER_ACTOR: "owner" };
+  const env = { ...f.env, GIT_CONFIG_GLOBAL: cliConfig, HOME: f.home, ATELIER_PRIVATE_ROOT: join(f.home, "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects"), ATELIER_CONFIG_DIR: f.config, ATELIER_CACHE: f.cache, ATELIER_SERVER: url, ATELIER_SECRET_STORE: "file", ATELIER_ACTOR: "owner" };
   delete env.ATELIER_TOKEN;
   if (login) env.ATELIER_TOKEN = "test-token";
   const child = spawn(process.execPath, [cli, ...argv], { cwd: cwd ?? f.root, env });
@@ -281,12 +281,86 @@ test("clone names the baseline origin whatever clone.defaultRemoteName says", as
   assert.equal(f.git(dir, "rev-parse", "--abbrev-ref", "main@{upstream}"), "origin/main");
 });
 
-// The rebuild that sync pushes reads the real commits, never what a
-// replacement ref says they hold.
-test("sync rebuilds the real commits: a replacement ref cannot slip a file into the commits it pushes", async (t) => {
+// Private files (t645): files the project names as private stay in its
+// iCloud folder; clone links them into the checkout, Git ignores them, and
+// no Atelier command pushes them.
+function icloudFolder(f, name = "Demo") {
+  const keep = join(f.home, "Library", "Mobile Documents", "com~apple~CloudDocs", "ai-projects", name);
+  mkdirSync(join(keep, "notes"), { recursive: true });
+  writeFileSync(join(keep, "PROJECT.md"), "the plan\n");
+  writeFileSync(join(keep, "notes", "plan.md"), "notes\n");
+  return keep;
+}
+
+test("clone --private-home that is not a folder is refused before anything is cloned", async (t) => {
+  // --private-home that is not a folder is refused before anything is cloned.
+  const g = setup(t), other = join(g.root, "demo");
+  const refused = await run(t, g, ["clone", "demo", other, "--private-home", join(g.root, "nope")]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.output, /--private-home .*nope is not a folder on this Mac; nothing was cloned/);
+  assert.ok(!existsSync(other));
+});
+
+test("clone --private-home records the folder that keeps the private files and their list", async (t) => {
+  const f = setup(t);
+  const keep = icloudFolder(f, "Somewhere Else");
+  const dir = join(f.root, "demo");
+  const r = await run(t, f, ["clone", "demo", dir, "--private-home", keep], { projects: { demo: { private: ["PROJECT.md"] } } });
+  assert.equal(r.code, 0, r.output);
+  assert.equal(r.config.projects.demo.privateHome, keep);
+});
+
+test("sync never carries a private file to the baseline, even one committed by hand past the exclude", async (t) => {
+  const f = setup(t, { fresh: true });
+  icloudFolder(f);
+  const dir = join(f.root, "demo");
+  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"] } } });
+  assert.equal(r.code, 0, r.output);
+  const before = f.git(f.bare, "rev-parse", "main");
+  // The file, ignored as a developer would, then forced past the exclude.
+  writeFileSync(join(dir, ".git", "info", "exclude"), "PROJECT.md\n");
+  writeFileSync(join(dir, "PROJECT.md"), "the plan\n");
+  f.git(dir, "add", "-f", "PROJECT.md");
+  f.git(dir, "commit", "-q", "-m", "oops");
+  const s = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
+  assert.notEqual(s.code, 0, s.output);
+  assert.match(s.output, /Carrying main to demo's baseline would carry private files: PROJECT\.md in [0-9a-f]{12}\. .*Nothing was pushed\./);
+  assert.equal(f.git(f.bare, "rev-parse", "main"), before);
+  // Taken out of the history, the rest is carried.
+  f.git(dir, "reset", "-q", "--hard", "HEAD~1");
+  writeFileSync(join(dir, "code.txt"), "public\n");
+  f.git(dir, "add", "-A");
+  f.git(dir, "commit", "-q", "-m", "code");
+  const ok = await run(t, f, ["sync", "--project", "demo"], { projects: r.config.projects });
+  assert.equal(ok.code, 0, ok.output);
+  assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt");
+});
+
+// The list of private files lives beside them in iCloud, so a second Mac,
+// whose config names nothing yet, links them with the clone alone.
+test("a Mac with a fresh config keeps a copy of the list .atelier-private holds with the clone alone, a bad line left out", async (t) => {
+  const f = setup(t);
+  const keep = icloudFolder(f);
+  writeFileSync(join(keep, ".atelier-private"), "# private\nPROJECT.md\n../outside.md\nnotes/plan.md\n");
+  const dir = join(f.home, "ai-projects", "demo");
+  const r = await run(t, f, ["clone", "demo"]);
+  assert.equal(r.code, 0, r.output);
+  assert.ok(!existsSync(join(dir, ".atelier-private")), "the list itself is never in the checkout");
+  assert.equal(f.git(dir, "status", "--porcelain", "--untracked-files=all"), "");
+  assert.equal(r.config.projects.demo.private, undefined, "nothing had to be named on this Mac");
+  // A copy of the list is kept, so the guards hold when iCloud cannot give it (Astra's review of t645, finding 4).
+  assert.deepEqual(r.config.projects.demo.privateFromList, ["PROJECT.md", "notes/plan.md"]);
+});
+
+// Astra's third review of t645, finding 2: sync scanned the checkout's
+// commits but pushed rebuilt ones, and the rebuild read commits through
+// replacement refs, so a replacement holding a private file was pushed
+// unscanned. The rebuild now reads the real commits and the scan reads what
+// is pushed.
+test("sync pushes what it scanned: a replacement ref cannot slip a private file into the rebuilt commits", async (t) => {
   const f = setup(t, { fresh: true });
   const dir = join(f.root, "demo");
-  const r = await run(t, f, ["clone", "demo", dir]);
+  const r = await run(t, f, ["clone", "demo", dir], { projects: { demo: { private: ["PROJECT.md"] } } });
   assert.equal(r.code, 0, r.output);
   writeFileSync(join(dir, "code.txt"), "public\n");
   f.git(dir, "add", "code.txt");
@@ -308,4 +382,18 @@ test("sync rebuilds the real commits: a replacement ref cannot slip a file into 
   assert.equal(s.code, 0, s.output);
   assert.equal(f.git(f.bare, "ls-tree", "--name-only", "main"), "code.txt\nfile.txt\nmore.txt");
   assert.doesNotMatch(f.git(f.bare, "log", "--all", "--name-only", "--format="), /PROJECT\.md/);
+});
+
+// Argon's seventeenth review of t645, finding 2: a clone whose project list
+// was there but could not be read said nothing and left the project unguarded.
+test("clone opts the project in when its list cannot be read, so pushes refuse", async (t) => {
+  const f = setup(t);
+  const keep = icloudFolder(f);
+  const file = join(keep, ".atelier-private");
+  writeFileSync(file, "PROJECT.md\n");
+  chmodSync(file, 0o000);
+  let r;
+  try { r = await run(t, f, ["clone", "demo", join(f.root, "demo")]); } finally { chmodSync(file, 0o644); }
+  assert.equal(r.code, 0, r.output);
+  assert.equal(r.config.projects.demo.privateHome, keep, "opted in, so the guard refuses until the list can be read");
 });

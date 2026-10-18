@@ -473,7 +473,7 @@ export async function ship(ctx) {
     } else if (s.step === "push") {
       const started = Date.now();
       const label = pushLabel(target, branch);
-      const r = pushCheckoutRemote({ git, dir: cwd, branch, targetBranch: target.branch, remote: target.remote, identity: ctx.identity });
+      const r = pushCheckoutRemote({ git, dir: cwd, branch, targetBranch: target.branch, remote: target.remote, identity: ctx.identity, project: name });
       const now = git(["rev-parse", "HEAD"], { cwd });
       const listed = r.status === 0 ? git(["ls-remote", target.remote, `refs/heads/${target.branch}`], { cwd, allowFail: true, ownerRemote: true }) : null;
       const holds = listed?.status === 0 && listed.stdout.split(/\s/)[0] === now;

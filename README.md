@@ -666,7 +666,7 @@ ControlPlane, and moving one to Atelier with `atelier adopt`, are in
 Atelier well, and [docs/orchestrating.md](docs/orchestrating.md) the
 handbook for a session that runs Atelier for a project.
 [docs/multi-mac.md](docs/multi-mac.md) covers working on one project from
-several Macs: `atelier clone`, `pull` and `branch`.
+several Macs: `atelier clone`, `pull`, `branch` and private files.
 
 ## Costs and usage
 

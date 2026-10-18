@@ -5,7 +5,8 @@ import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefus
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { OWNER, P, actor, args, at, call, cfg, die, git, landingGit, project, saveConfig, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, short, wrapReady } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
-import { pinnedPush, pushCheckoutRemote } from "../checkout-push.mjs";
+import { pushCheckoutRemote } from "../checkout-push.mjs";
+import { guardedPush, privateChanges, privateGuardFor, remoteBases } from "../private-guard.mjs";
 import { behindRefusal } from "../pull.mjs";
 import syncCommand from "./sync.mjs";
 
@@ -109,6 +110,15 @@ export default async function wrapCommand() {
   if (marked.length) {
     die(`wrap will not commit conflict markers: ${marked.map((p) => sessionText(p, 200)).join(", ")}; resolve them first. Nothing was staged.`);
   }
+  // A private file (t645) is never staged: Git ignores each one through
+  // info/exclude, and one staged by hand or no longer excluded stops wrap
+  // here, before anything is staged. A symbolic link is refused as the file.
+  const guard = privateGuardFor(name);
+  if (guard.refusal) die(`wrap stopped before staging anything: ${guard.refusal}`);
+  const privates = guard.paths;
+  let held;
+  try { held = privateChanges(cwd, privates); } catch (error) { die(`${error.message}; nothing was staged`); }
+  if (held.length) die(`wrap will not commit private files: ${held.map((p) => sessionText(p, 200)).join(", ")}. They stay in this Mac's iCloud folder and Atelier never pushes them. Unstage them with git rm --cached PATH, and have Git ignore them again through .git/info/exclude. Nothing was staged.`);
   git(["add", "-A"], { cwd });
   // Whitespace is checked on what the commit will hold, after staging: the
   // index against HEAD takes in staged changes and new files, which a diff of
@@ -127,7 +137,7 @@ export default async function wrapCommand() {
   data.pushes = [];
   for (const remote of remotes) {
     const identity = record.policy.commitIdentity;
-    const result = pushCheckoutRemote({ git, dir: cwd, branch, remote, identity });
+    const result = pushCheckoutRemote({ git, dir: cwd, branch, remote, identity, project: name });
     if (result.refused) console.log(result.refused);
     const passed = result.status === 0;
     data.pushes.push({ remote, passed });
@@ -171,7 +181,11 @@ async function publishBaseline() {
     const behind = behindRefusal(landingGit, p.path, { name, fresh: false, branch: p.branch, baselineHead, nothing: "Nothing was pushed.", command: "atelier wrap" });
     if (behind) die(behind);
   }
-  pinnedPush({ cwd: p.path, tip: `refs/heads/${p.branch}`, what: `Publishing ${p.branch} to ${name}'s baseline`, fail: die },
+  // No commit the baseline lacks may carry a private file (t645). The
+  // baseline's head is read, and fetched when this checkout lacks it; the
+  // commit scanned is the one pushed.
+  const ref = `refs/heads/${p.branch}`;
+  guardedPush({ project: name, cwd: p.path, tip: ref, bases: () => remoteBases({ git, cwd: p.path, remote: t.remote, ref, opts: { token: t.token, ownerRemote: false } }), what: `Publishing ${p.branch} to ${name}'s baseline`, fail: die },
     (sha) => git(["push", "--quiet", "--recurse-submodules=no", t.remote, `${sha}:refs/heads/${p.branch}`], { cwd: p.path, token: t.token }));
   console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
 }

@@ -5,10 +5,11 @@ import { dirname, join, resolve } from "node:path";
 import { FRESH_TRAILER, savePairs } from "../fresh.mjs";
 import { installMergeConfig } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
+import { privateGuardFor } from "../private-guard.mjs";
 import { OWNER, P, apiToken, args, call, cfg, die, landingGit, saveConfig, server, short } from "../atelier.mjs";
 
 // The developer, on a Mac that has no checkout of the project yet (t643):
-// Git carries code between Macs, and the project's baseline is
+// Git, not iCloud, carries code between Macs, and the project's baseline is
 // the remote every Mac shares. The checkout is made from the baseline the
 // way a task workspace is (claimWorkspace in cli/atelier.mjs), with the
 // baseline as origin. The checkout keeps no token: the developer's write
@@ -42,6 +43,12 @@ export default async function cloneCommand() {
   const elsewhere = old?.path && resolve(old.path) !== dir ? old.path : null;
   if (elsewhere && args.replace !== true) {
     die(`${name} is already registered on this Mac at ${elsewhere}; nothing was cloned. To register ${dir} in its place, run atelier clone ${name} ${JSON.stringify(dir)} --replace (${elsewhere} is left as it is)`);
+  }
+  // The folder that keeps the project's private files (t645), when named.
+  let privateHome;
+  if (args["private-home"] !== undefined) {
+    privateHome = resolve(String(args["private-home"]));
+    if (!existsSync(privateHome) || !statSync(privateHome).isDirectory()) die(`--private-home ${privateHome} is not a folder on this Mac; nothing was cloned`);
   }
   apiToken();
 
@@ -85,8 +92,11 @@ export default async function cloneCommand() {
 
   const { fresh: _wasFresh, ...kept } = old ?? {};
   cfg.projects ??= {};
-  cfg.projects[name] = { ...kept, path: dir, branch, protect: record?.policy?.protected ?? [], ...(fresh ? { fresh: true } : {}) };
+  cfg.projects[name] = { ...kept, path: dir, branch, protect: record?.policy?.protected ?? [], ...(fresh ? { fresh: true } : {}), ...(privateHome ? { privateHome } : {}) };
   saveConfig(cfg);
+  // This Mac keeps a copy of the list of private files it read, so the
+  // guards hold even when iCloud cannot give it later (t645).
+  privateGuardFor(name, { discover: true });
 
   const head = git(["rev-parse", "HEAD"], { cwd: dir });
   console.log(`${name}: cloned ${branch} @ ${short(head)}, ${commits.length} commit${commits.length === 1 ? "" : "s"}${fresh ? " (the baseline holds part of the project's history)" : ""}, into ${dir}, now this Mac's checkout of ${name}.`);

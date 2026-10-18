@@ -3049,6 +3049,69 @@ export function parseLedgerRestart(raw: unknown): LedgerRestart | null {
   } catch { return null; }
 }
 
+// Private files (t645): files a project keeps on the developer's Macs and
+// never pushes, such as PROJECT.md. Each is named by its path in the
+// checkout and kept in the project's iCloud folder.
+
+// A private path as the developer typed it, made plain: relative to the
+// checkout, no "." or ".." part, no empty part, nothing in .git. A trailing
+// slash names a folder and is dropped.
+export function privatePath(input: string): { path: string } | { error: string } {
+  const raw = String(input ?? "");
+  const shown = JSON.stringify(raw);
+  if (!raw.trim()) return { error: "a private path is empty" };
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return { error: `${shown} holds a control character` };
+  if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw)) return { error: `${shown} is absolute; name it relative to the checkout` };
+  const path = raw.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  // The name as it will be kept is what must come back the same from the
+  // list in iCloud (parsePrivateList): one name per line, # opening a
+  // comment, so it has no space or tab at either end and no leading #
+  // (Astra's second review of t645: ./#plan was kept as #plan).
+  if (path !== path.trim()) return { error: `${shown} begins or ends with a space` };
+  if (path.startsWith("#")) return { error: `${shown} begins with #, which the list of private files reads as a comment` };
+  const parts = path.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return { error: `${shown} has an empty, "." or ".." part; name the file as it sits in the checkout` };
+  if (foldPath(parts[0]) === ".git") return { error: `${shown} is inside .git` };
+  if (foldPath(path) === PRIVATE_LIST) return { error: `${shown} is the list of private files itself, which stays in the folder that keeps them` };
+  return { path };
+}
+
+// The list of a project's private files, kept beside them in the project's
+// iCloud folder so it follows the developer between Macs: one path per line,
+// relative to the checkout; # starts a comment. It is data from iCloud, so
+// every line is read as a path the developer types.
+export const PRIVATE_LIST = ".atelier-private";
+
+export function parsePrivateList(text: string): { paths: string[]; refused: { line: number; text: string; error: string }[] } {
+  const paths: string[] = [], refused: { line: number; text: string; error: string }[] = [];
+  String(text ?? "").split("\n").forEach((raw, i) => {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim() || line.trimStart().startsWith("#")) return;
+    const r = privatePath(line);
+    if ("error" in r) refused.push({ line: i + 1, text: line, error: r.error });
+    else if (!paths.includes(r.path)) paths.push(r.path);
+  });
+  return { paths, refused };
+}
+
+// The paths among `paths` that are private or inside a private folder,
+// compared as a Mac compares names: letter case and Unicode form aside.
+export function privatePathsAmong(paths: string[], privates: string[]): string[] {
+  const folded = privates.map(foldPath);
+  return paths.filter((path) => {
+    const f = foldPath(path);
+    return folded.some((p) => f === p || f.startsWith(`${p}/`));
+  });
+}
+
+// Whether an iCloud folder is a project's: its name, with letter case,
+// spaces, hyphens and underscores set aside, is the project's ("ikon weblog"
+// for ikon-weblog, "AssetsApp" for assetsapp).
+export function privateFolderMatches(project: string, folder: string): boolean {
+  const plain = (s: string) => foldPath(s).replace(/[\s_-]+/g, "");
+  return !!plain(project) && plain(project) === plain(folder);
+}
+
 // ── usage shortage ─────────────────────────────────────────────────────────
 
 // How long the windows a tool reports last. A window of any other name has no

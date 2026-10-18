@@ -26,7 +26,7 @@ proven, reviewed and recorded.
 the developer's behalf; the How it works page (`/how`) holds every rule and
 command.
 [Working from several Macs](multi-mac.md) says where a project's code,
-data and secrets live on each Mac, and how work moves between
+private files, data and secrets live on each Mac, and how work moves between
 them.
 
 ## Start with what waits for you

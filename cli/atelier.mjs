@@ -54,7 +54,7 @@ import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
 import { serverFetch } from "./server-fetch.mjs";
 import { lowSpeedEnv, secondsOf, serverTimeoutMs, talksToRemote, timedOut, tooSlow, withTimeout } from "./timeouts.mjs";
-import { saveWholeConfig } from "./config-store.mjs";
+import { saveWholeConfig, useConfig } from "./private-guard.mjs";
 
 const HOME = homedir();
 const CONFIG_DIR = process.env.ATELIER_CONFIG_DIR ?? join(HOME, ".config", "atelier");
@@ -86,9 +86,10 @@ function loadConfig() {
   try { return JSON.parse(readFileSync(CONFIG, "utf8")); } catch { return { server: null, projects: {} }; }
 }
 // Writes the config this process holds, merged under a lock with the file
-// as it is now (saveWholeConfig in cli/config-store.mjs): what this
+// as it is now (saveWholeConfig in cli/private-guard.mjs, t645): what this
 // process changed since it read the config is written, what another command
-// wrote since is kept. `c` is left holding what was written.
+// wrote since is kept, and no project's private names are dropped. `c` is
+// left holding what was written.
 let savedConfig = null;
 export function saveConfig(c) {
   const merged = saveWholeConfig(c, c === cfg ? savedConfig : null);
@@ -559,6 +560,9 @@ if (isMain && process.argv[2] === "ops") {
 
 export const args = parseArgs(process.argv.slice(2));
 export const cfg = isMain ? loadConfig() : {};
+// The private-file guard reads and keeps its copy of the list in this same
+// config (t645), so what it saves is not lost to a later saveConfig.
+if (isMain) useConfig(cfg);
 savedConfig = structuredClone(cfg);
 
 // The server says which actor stands for the project owner; `login` records it.
