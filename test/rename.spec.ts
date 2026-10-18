@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
+import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
 
@@ -304,7 +305,7 @@ it("the standard reviewer project cannot be renamed, and no project can be renam
   await project("other-std");
   const out = await rename("atelier", "atelier-2");
   expect(out.status).toBe(409);
-  expect(JSON.stringify(await out.json())).toContain("atelier cannot be renamed");
+  expect(JSON.stringify(await out.json())).toContain("atelier can be renamed only with --release-name");
   const into = await rename("other-std", "atelier");
   expect(into.status).toBe(409);
   expect(((await (await call("GET", "/projects", "owner")).json()) as { name: string }[]).map((p) => p.name)).toContain("atelier");
@@ -498,4 +499,65 @@ it("renaming back to the project's own key while releasing names it again, and a
   const again = await call("POST", "/projects/bk-4/rename", "owner", { to: "bk-4", releaseName: true });
   expect(again.status).toBe(200);
   expect((await L("bk-3").project()).name).toBe("bk-4");
+});
+
+// Task t774, criterion 4: the standard project (atelier, t687) may be renamed
+// only by releasing its name, and the project that takes the name inherits its
+// reviewer admissions, so no project loses the reviewers it inherits.
+it("the standard project is renamed only with releaseName, and other projects keep the same inherited reviewers before the release, while no project holds the name, and once the new project exists", async () => {
+  const entry = (id: string) => ({ id, aliases: [], harness: "opencode", where: "home", endpoint: "http://x/v1", provider: "ai-studio", family: familyOf(id), note: "", addedBy: "owner", addedAt: new Date().toISOString() }) as ModelEntry;
+  const pool = [entry("Qwen3-Coder-Next"), entry("gemini-4-argon")];
+  await project("atelier");
+  await project("std-other");
+  const refusal = async (res: Response) => {
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: string; detail: string };
+    expect(body.error).toBe("standard_project");
+    expect(body.detail).toMatch(/only with --release-name/);
+  };
+  await refusal(await rename("atelier", "atelier-x"));
+  await refusal(await rename("std-other", "atelier"));
+  await refusal(await release("std-other", "atelier"));
+  expect((await I().resolveProject("atelier")).registered).toBe(true);
+  expect(await I().standardOrigin()).toBeNull();
+  const home = L("atelier");
+  await home.admitReviewer("Qwen3-Coder-Next", true, "Qualified", "owner", pool);
+  await home.admitReviewer("gemini-4-argon", true, "Qualified", "owner", pool);
+  await home.admitReviewer("gemini-4-argon", false, "Retired", "owner", pool);
+  const homeBefore = await home.standardReviewersSnapshot();
+  const sendFromHome = async () => { const s = await home.standardReviewersSnapshot(); await L("std-other").setStandardReviewers(s.admissions.filter((a) => a.active), s.version); };
+  await sendFromHome();
+  const inherited = async (name: string) => (await L(name).reviewerListing()).map(({ id, active, inherited }) => ({ id, active, inherited }));
+  const before = await inherited("std-other");
+  expect(before).toEqual([{ id: "Qwen3-Coder-Next", active: true, inherited: "atelier" }]);
+
+  expect((await release("atelier", "atelier-former")).status).toBe(200);
+  expect(await I().standardOrigin()).toBe("atelier");
+  // No project holds the name: a project made now still gets the old standard set, not an empty one.
+  const seen = { forks: [] as string[], created: [] as string[] };
+  expect((await call("PUT", "/projects/std-between", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  expect(await inherited("std-between")).toEqual(before);
+  expect(await inherited("std-other")).toEqual(before);
+
+  // The new project under the name starts with the old project's records, withdrawals included, and says where they came from.
+  expect((await call("PUT", "/projects/atelier", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  const fresh = L("atelier-2");
+  expect((await fresh.project()).name).toBe("atelier");
+  const copied = await fresh.standardReviewersSnapshot();
+  expect(copied.admissions).toEqual(homeBefore.admissions);
+  expect(copied.version).toBeGreaterThan(homeBefore.version);
+  expect(copied.inherited).toBe("atelier");
+  const events = (await fresh.events() as unknown as { kind: string; data: { from: string; admissions: { id: string; active: boolean }[] } }[]).filter((e) => e.kind === "reviewers.inherited");
+  expect(events).toHaveLength(1);
+  expect(events[0].data.from).toBe("atelier");
+  expect(events[0].data.admissions.map((a) => [a.id, a.active])).toEqual([["Qwen3-Coder-Next", true], ["gemini-4-argon", false]]);
+  // A project made after it reads the new project's set, which is the same; running init again copies nothing twice.
+  expect((await call("PUT", "/projects/std-after", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  expect((await call("PUT", "/projects/atelier", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  expect(await inherited("std-after")).toEqual(before);
+  expect(await inherited("std-other")).toEqual(before);
+  expect((await fresh.events() as unknown as { kind: string }[]).filter((e) => e.kind === "reviewers.inherited")).toHaveLength(1);
+  // An admission made in the new project reaches the others as it did in the old.
+  await fresh.admitReviewer("gemini-4-argon", true, "Back", "owner", pool);
+  expect((await fresh.standardReviewersSnapshot()).version).toBeGreaterThan(copied.version);
 });

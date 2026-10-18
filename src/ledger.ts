@@ -1256,8 +1256,21 @@ export class Ledger extends DurableObject<Env> {
     if (releaseKey !== undefined) this.sql.exec(`INSERT OR REPLACE INTO names (name, key) VALUES (?, ?)`, source.name, releaseKey);
     if (to !== source.key) this.sql.exec(`INSERT OR REPLACE INTO names (name, key) VALUES (?, ?)`, to, source.key);
     const rescoped = releaseKey !== undefined ? this.rescopeTokens(source.name, to) : undefined;
+    // The standard project's key is kept, so the project that takes the name
+    // next inherits its reviewer admissions and, until it has, they are read
+    // from here (standardReviewers in src/index.ts).
+    if (releaseKey !== undefined && source.name === STANDARD_REVIEWER_PROJECT) {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('standard-origin', ?)`, source.key);
+    }
     this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key, ...(releaseKey !== undefined ? { released: source.name, releasedTo: releaseKey } : {}) }, new Date().toISOString());
     return { from: source.name, to, key: source.key, names: this.namesOf(source.key), ...(releaseKey !== undefined ? { released: source.name, rescoped } : {}) };
+  }
+
+  // The key of the project that was the standard project before its name was
+  // released, or null.
+  standardOrigin(): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'standard-origin'`).toArray()[0];
+    return row ? row.value as string : null;
   }
 
   // A storage key no project, name or key in the index uses. The route also
@@ -1919,9 +1932,31 @@ export class Ledger extends DurableObject<Env> {
 
   // On the standard project: its admissions with the version of this state,
   // which every admission or withdrawal here raises by one.
-  standardReviewersSnapshot(): { admissions: ReviewerAdmission[]; version: number } {
+  // `inherited` is the key of the project whose admissions were copied into
+  // this one at creation (inheritReviewers), or null.
+  standardReviewersSnapshot(): { admissions: ReviewerAdmission[]; version: number; inherited: string | null } {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewer-admissions-version'`).toArray()[0];
-    return { admissions: this.reviewerAdmissions(), version: row ? Number(row.value) : 0 };
+    const from = this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewers-inherited'`).toArray()[0];
+    return { admissions: this.reviewerAdmissions(), version: row ? Number(row.value) : 0, inherited: from ? from.value as string : null };
+  }
+
+  // A project that takes the released standard name starts with the old
+  // standard project's admissions and withdrawals (t774), once: a second
+  // call changes nothing. Its version is newer than the old project's, so
+  // every project accepts what it sends next. Records this project already
+  // holds for a model stand over the copied one.
+  inheritReviewers(from: string, admissions: ReviewerAdmission[], version: number): boolean {
+    if (this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewers-inherited'`).toArray()[0]) return false;
+    const own = this.reviewerAdmissions();
+    const next = [...admissions.filter((a) => !own.some((o) => sharesName(o, a))), ...own];
+    const at = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions', ?)`, JSON.stringify(next));
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions-version', ?)`, String(Math.max(version, this.standardReviewersSnapshot().version) + 1));
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewers-inherited', ?)`, from);
+      this.log(null, this.owner, "reviewers.inherited", { from, admissions }, at);
+    });
+    return true;
   }
 
   // The standard project's active admissions, as the index last sent them
