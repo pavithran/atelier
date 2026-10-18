@@ -730,6 +730,13 @@ export function assertNameFree(source: ProjectRef, to: string, target: ProjectRe
   if (target.key !== to) throw new RuleError("name_taken", `${to} was a name of a removed project, stored under ${target.key}, which still answers to it`, 409);
 }
 
+// Every name that reaches `key`, given the names table: the key itself unless
+// a release pointed it at another key (t774), then each name the table maps
+// to it.
+export function keyNames(keys: Map<string, string>, key: string): string[] {
+  return [...(keys.has(key) && keys.get(key) !== key ? [] : [key]), ...[...keys].filter(([, k]) => k === key).map(([n]) => n)];
+}
+
 export function assertProjectRemovable(items: Pick<Item, "state">[], force: boolean): void {
   if (!force && items.some((i) => ["claimed", "submitted", "accepted", "blocked"].includes(i.state))) {
     throw new RuleError("live_work", "project has claimed, submitted, accepted or blocked work; use --force to remove it", 409);
@@ -1191,7 +1198,7 @@ export class Ledger extends DurableObject<Env> {
     const keys = new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string]));
     const listed = (record: ProjectRecord): ProjectRecord => {
       const key = keys.get(record.name) ?? record.name;
-      const formerly = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)].filter((n) => n !== record.name);
+      const formerly = keyNames(keys, key).filter((n) => n !== record.name);
       return { ...record, ...(key !== record.name ? { key } : {}), ...(formerly.length ? { formerly } : {}) };
     };
     return this.sql.exec(`SELECT json FROM projects ORDER BY name`).toArray().map((r) => listed(JSON.parse(r.json as string)));
@@ -1207,7 +1214,7 @@ export class Ledger extends DurableObject<Env> {
   // every former name resolves in one step.
 
   private namesOf(key: string): string[] {
-    return [key, ...this.sql.exec(`SELECT name FROM names WHERE key = ? ORDER BY name`, key).toArray().map((r) => r.name as string)];
+    return keyNames(new Map(this.sql.exec(`SELECT name, key FROM names ORDER BY name`).toArray().map((r) => [r.name as string, r.key as string])), key);
   }
 
   // Every request that names a project resolves it here, so the names table
@@ -1217,7 +1224,7 @@ export class Ledger extends DurableObject<Env> {
     const keyOf = (n: string) => keys.get(n) ?? n;
     const key = keyOf(name);
     const registered = this.sql.exec(`SELECT name FROM projects`).toArray().map((r) => r.name as string).find((n) => keyOf(n) === key);
-    const names = [key, ...[...keys].filter(([, k]) => k === key).map(([n]) => n)];
+    const names = keyNames(keys, key);
     return { name: registered ?? name, key, names, registered: registered !== undefined, former: registered !== undefined && registered !== name };
   }
 
@@ -1226,18 +1233,68 @@ export class Ledger extends DurableObject<Env> {
   // names keep resolving to it, so renaming back is the same operation. A
   // name that reaches another project's key is refused: one registered under
   // it or that had it before.
-  renameProject(from: string, to: string): { from: string; to: string; key: string; names: string[] } {
+  //
+  // `releaseKey` also gives up the project's current name (t774): the name
+  // is pointed at that fresh key, so it reaches no storage of this project
+  // and the next project created under it is stored apart (`freeKey` picks
+  // the key). Agent and runner tokens limited to the released name are
+  // limited to `to` instead, so they keep reaching this project and never
+  // the next one that takes the name.
+  renameProject(from: string, to: string, releaseKey?: string): { from: string; to: string; key: string; names: string[]; released?: string; rescoped?: number } {
     const source = this.resolveProject(from);
     if (!source.registered) throw new RuleError("no_project", `no project ${from}`, 404);
     if (source.name === to) throw new RuleError("same_name", `${to} is already the project's name`, 400);
+    if (releaseKey !== undefined && from !== source.name) {
+      throw new RuleError("release_current_name", `${from} is a former name of ${source.name}; release the project's current name by renaming ${source.name}`, 400);
+    }
     assertNameFree(source, to, this.resolveProject(to));
+    if (releaseKey !== undefined && !this.keyFree(releaseKey)) throw new RuleError("name_taken", `${releaseKey} is already in use as a storage key`, 409);
     const row = this.sql.exec(`SELECT json FROM projects WHERE name = ?`, source.name).toArray()[0];
     const record = { ...(JSON.parse(row.json as string) as ProjectRecord), name: to };
     this.sql.exec(`DELETE FROM projects WHERE name = ?`, source.name);
     this.sql.exec(`INSERT INTO projects (name, json) VALUES (?, ?)`, to, JSON.stringify(record));
+    if (releaseKey !== undefined) this.sql.exec(`INSERT OR REPLACE INTO names (name, key) VALUES (?, ?)`, source.name, releaseKey);
     if (to !== source.key) this.sql.exec(`INSERT OR REPLACE INTO names (name, key) VALUES (?, ?)`, to, source.key);
-    this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key }, new Date().toISOString());
-    return { from: source.name, to, key: source.key, names: this.namesOf(source.key) };
+    const rescoped = releaseKey !== undefined ? this.rescopeTokens(source.name, to) : undefined;
+    // The standard project's key is kept, so the project that takes the name
+    // next inherits its reviewer admissions and, until it has, they are read
+    // from here (standardReviewers in src/index.ts).
+    if (releaseKey !== undefined && source.name === STANDARD_REVIEWER_PROJECT) {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('standard-origin', ?)`, source.key);
+    }
+    this.log(null, this.owner, "project.renamed", { from: source.name, to, key: source.key, ...(releaseKey !== undefined ? { released: source.name, releasedTo: releaseKey } : {}) }, new Date().toISOString());
+    return { from: source.name, to, key: source.key, names: this.namesOf(source.key), ...(releaseKey !== undefined ? { released: source.name, rescoped } : {}) };
+  }
+
+  // The key of the project that was the standard project before its name was
+  // released, or null.
+  standardOrigin(): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'standard-origin'`).toArray()[0];
+    return row ? row.value as string : null;
+  }
+
+  // A storage key no project, name or key in the index uses. The route also
+  // asks whether a Ledger is kept under it, which only that Ledger knows.
+  keyFree(key: string): boolean {
+    const rows = this.sql.exec(`SELECT name, key FROM names`).toArray();
+    if (rows.some((r) => r.name === key || r.key === key)) return false;
+    const keys = new Map(rows.map((r) => [r.name as string, r.key as string]));
+    return !this.sql.exec(`SELECT name FROM projects`).toArray().some((r) => r.name === key || (keys.get(r.name as string) ?? r.name) === key);
+  }
+
+  // Tokens limited to `released` are limited to `to` instead, revoked ones
+  // too, so none is left that names a name the next project may take.
+  // Returns how many were changed.
+  private rescopeTokens(released: string, to: string): number {
+    let changed = 0;
+    for (const row of this.sql.exec(`SELECT id, json FROM agent_tokens`).toArray()) {
+      const token = JSON.parse(row.json as string) as AgentToken;
+      if (!token.projects?.includes(released)) continue;
+      token.projects = [...new Set(token.projects.map((n) => n === released ? to : n))];
+      this.sql.exec(`UPDATE agent_tokens SET json = ? WHERE id = ?`, JSON.stringify(token), row.id);
+      changed++;
+    }
+    return changed;
   }
 
   // The model pool, on the index instance like the project list: shared by
@@ -1875,9 +1932,31 @@ export class Ledger extends DurableObject<Env> {
 
   // On the standard project: its admissions with the version of this state,
   // which every admission or withdrawal here raises by one.
-  standardReviewersSnapshot(): { admissions: ReviewerAdmission[]; version: number } {
+  // `inherited` is the key of the project whose admissions were copied into
+  // this one at creation (inheritReviewers), or null.
+  standardReviewersSnapshot(): { admissions: ReviewerAdmission[]; version: number; inherited: string | null } {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewer-admissions-version'`).toArray()[0];
-    return { admissions: this.reviewerAdmissions(), version: row ? Number(row.value) : 0 };
+    const from = this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewers-inherited'`).toArray()[0];
+    return { admissions: this.reviewerAdmissions(), version: row ? Number(row.value) : 0, inherited: from ? from.value as string : null };
+  }
+
+  // A project that takes the released standard name starts with the old
+  // standard project's admissions and withdrawals (t774), once: a second
+  // call changes nothing. Its version is newer than the old project's, so
+  // every project accepts what it sends next. Records this project already
+  // holds for a model stand over the copied one.
+  inheritReviewers(from: string, admissions: ReviewerAdmission[], version: number): boolean {
+    if (this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewers-inherited'`).toArray()[0]) return false;
+    const own = this.reviewerAdmissions();
+    const next = [...admissions.filter((a) => !own.some((o) => sharesName(o, a))), ...own];
+    const at = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions', ?)`, JSON.stringify(next));
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions-version', ?)`, String(Math.max(version, this.standardReviewersSnapshot().version) + 1));
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewers-inherited', ?)`, from);
+      this.log(null, this.owner, "reviewers.inherited", { from, admissions }, at);
+    });
+    return true;
   }
 
   // The standard project's active admissions, as the index last sent them

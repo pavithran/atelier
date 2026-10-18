@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { CACHE, OWNER, P, actor, args, call, cfg, die, project, saveConfig, server } from "../atelier.mjs";
-import { moveConflict, moveProjectEntryOnDisk } from "../private-guard.mjs";
+import { moveConflict, moveProjectEntryOnDisk, releaseFormerName } from "../private-guard.mjs";
 
 // The project owner renames a project on the server, or removes it.
 export default async function projectsCommand() {
@@ -14,7 +14,8 @@ export default async function projectsCommand() {
     // t645), so nothing is left half done.
     const conflict = moveConflict(cfg.projects, name, to);
     if (conflict) die(`${name} was not renamed: ${conflict}`);
-    const r = await call("POST", `${P(name)}/rename`, { to }, await actor(OWNER));
+    const release = args["release-name"] === true;
+    const r = await call("POST", `${P(name)}/rename`, { to, ...(release ? { releaseName: true } : {}) }, await actor(OWNER));
     // The server answers the new name for both when the request named it
     // to finish a rename: no entry moves, and the one under it stays.
     if (r.from === r.to) return console.log(`${r.to} is the project's name on ${server()}, and the rename that gave it that name is complete. The local config is unchanged.`);
@@ -39,6 +40,18 @@ export default async function projectsCommand() {
         : `The local config entry ${r.from} is now ${r.to}.`;
     }
     console.log(`${r.from} is now ${r.to} on ${server()}. Its Ledger, baseline ${r.project.repo} and every fork stay where they are. ${local}`);
+    if (release && r.released !== r.from) {
+      // A server from before t774 ignores the field: the project was renamed and still answers to the old name.
+      console.error(`${r.from} was renamed, but this server did not release the name (it predates --release-name), so ${r.from} still reaches the project. Update the server before creating a project under ${r.from}.`);
+      process.exitCode = 1;
+      return;
+    }
+    if (release) {
+      // The local entry must not answer to the released name either (t774).
+      releaseFormerName(cfg.projects, r.to, r.from);
+      console.log(`${r.from} is released: it no longer reaches ${r.to}, and a project created under it is stored apart, with its own ledger and baseline repository. Tokens limited to ${r.from} are limited to ${r.to} now (${r.rescoped} changed). Page links and runner configs that name ${r.from} reach whatever project holds that name, so update them.`);
+      return;
+    }
     console.log(`${r.from} still works: the API serves it under that name, old page links redirect, tokens limited to it keep their access, and workspaces under ${join(CACHE, "work", r.from)} need no change.`);
     return;
   }

@@ -12,7 +12,7 @@ import { parsePrivateList, privatePath } from "../src/rules.ts";
 // What a list in iCloud holds: one path a line.
 const privateListText = (paths) => `${[...new Set(paths)].sort().map((p) => `${p}\n`).join("")}`;
 import { privateConfig } from "./fixtures/private-config.mjs";
-import { discoverPrivate, mergeConfigForSave, moveProjectEntry, moveProjectEntryOnDisk, saveWholeConfig, savePrivateFields, guardedPush, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal } from "../cli/private-guard.mjs";
+import { discoverPrivate, mergeConfigForSave, moveProjectEntry, moveProjectEntryOnDisk, saveWholeConfig, savePrivateFields, guardedPush, privateGuardFor, readPrivateList, useConfig, privateGuard, remoteBases, privateChanges, privateCommits, privateHome, privateRefusal, projectKey, releaseFormerName } from "../cli/private-guard.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
 
@@ -785,4 +785,32 @@ test("names from other folders do not stand in for an unreadable current list", 
   assert.match(first.refusal ?? "", /cannot be read/);
   assert.equal(entry.privateFromList, undefined, "they are not kept as a copy of the current list");
   assert.match(second.refusal ?? "", /cannot be read/, "the next push still refuses");
+});
+
+// Task t774: a name released by projects rename --release-name must stop
+// resolving to the renamed entry, and an entry under the exact name wins over
+// an alias, so a new local project under the released name is its own.
+test("a released name no longer resolves to the renamed entry, and an exact entry wins over an alias", (t) => {
+  const f = setup(t);
+  const renamed = { path: f.checkout, branch: "main", formerNames: ["atelier", "older"] };
+  f.write({ "atelier-old": renamed });
+  assert.equal(projectKey({ "atelier-old": renamed }, "atelier"), "atelier-old", "before the release the alias resolves");
+  const previous = process.env.ATELIER_CONFIG_DIR;
+  process.env.ATELIER_CONFIG_DIR = join(f.root, "config");
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_CONFIG_DIR; else process.env.ATELIER_CONFIG_DIR = previous; });
+  const held = { "atelier-old": structuredClone(renamed) };
+  assert.equal(releaseFormerName(held, "atelier-old", "atelier"), true);
+  assert.deepEqual(held["atelier-old"].formerNames, ["older"]);
+  assert.deepEqual(f.read().projects["atelier-old"].formerNames, ["older"], "on disk too");
+  assert.equal(projectKey(held, "atelier"), null);
+  assert.equal(releaseFormerName(held, "atelier-old", "atelier"), false, "releasing twice changes nothing");
+  assert.equal(releaseFormerName(held, "missing", "x"), false);
+  // The last former name goes with the list.
+  assert.equal(releaseFormerName(held, "atelier-old", "older"), true);
+  assert.equal("formerNames" in held["atelier-old"], false);
+  // The reuse scenario: a config that still lists the alias, and a new entry under the name.
+  const stale = { "atelier-old": { ...renamed }, atelier: { path: "/new", branch: "main" } };
+  assert.equal(projectKey(stale, "atelier"), "atelier", "the entry under the exact name wins over the alias");
+  assert.equal(projectKey(stale, "atelier-old"), "atelier-old");
+  assert.equal(projectKey(stale, "older"), "atelier-old", "an alias with no entry of its own still resolves");
 });

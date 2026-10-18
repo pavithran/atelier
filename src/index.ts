@@ -358,10 +358,19 @@ async function unreachedOf(projects: readonly ProjectRecord[], send: (p: Project
 // Read with the version the standard project gave that set, which a ledger
 // uses to drop a delivery older than the one it holds.
 async function standardReviewers(env: Env): Promise<{ admissions: ReviewerAdmission[]; version: number }> {
-  const home = (await index(env).projects()).find((p) => p.name === STANDARD_REVIEWER_PROJECT);
-  if (!home) return { admissions: [], version: 0 };
-  const snapshot = await ledgerOf(env, home).standardReviewersSnapshot();
-  return { admissions: standardAdmissions(snapshot.admissions), version: snapshot.version };
+  const I = index(env);
+  const [home, origin] = await Promise.all([I.projects().then((all) => all.find((p) => p.name === STANDARD_REVIEWER_PROJECT)), I.standardOrigin()]);
+  // After the standard name was released (t774) the project that takes it
+  // inherits the old one's admissions when it is created. Until it has, and
+  // while none holds the name, they are read from the old project: never an
+  // empty set, which would strip every project of its inherited reviewers.
+  if (home) {
+    const snapshot = await ledgerOf(env, home).standardReviewersSnapshot();
+    if (!origin || snapshot.inherited) return { admissions: standardAdmissions(snapshot.admissions), version: snapshot.version };
+  }
+  if (!origin) return { admissions: [], version: 0 };
+  const old = await ledger(env, origin).standardReviewersSnapshot();
+  return { admissions: standardAdmissions(old.admissions), version: old.version };
 }
 // Sends them to every other project's ledger; returns the projects it could
 // not reach, which keep their last copy.
@@ -1622,6 +1631,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // broadcast between the read and the install misses it (finding 4 of
     // the second review).
     const models = await index(env).models();
+    // A project new under the released standard name starts with the old
+    // standard project's admissions, recorded as an event naming the source.
+    const origin = project === STANDARD_REVIEWER_PROJECT && !ref.registered ? await index(env).standardOrigin() : null;
+    if (origin && origin !== ref.key) {
+      const old = await ledger(env, origin).standardReviewersSnapshot();
+      await L.inheritReviewers(origin, old.admissions, old.version);
+    }
     await seedProject({
       register: () => index(env).registerProject(record),
       snapshot: () => index(env).assignmentSnapshotFor(ref?.key ?? project),
@@ -1668,8 +1684,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // moving the name away would strand the admissions every other project
     // inherited, and moving it onto another project would hand that project
     // the standing without a broadcast.
-    if (project === STANDARD_REVIEWER_PROJECT || to === STANDARD_REVIEWER_PROJECT) {
-      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} cannot be renamed, or taken as a new name: reviewers admitted there are every project's reviewers, and the other projects find them by that name`, 409);
+    // Only a rename that releases the name moves it (t774): the project that
+    // takes it next inherits the admissions, and until then they are read
+    // from the old project.
+    if (to === STANDARD_REVIEWER_PROJECT || project === STANDARD_REVIEWER_PROJECT && body.releaseName !== true) {
+      throw new RuleError("standard_project", `${STANDARD_REVIEWER_PROJECT} can be renamed only with --release-name, and cannot be taken as a new name: reviewers admitted there are every project's reviewers, and the other projects find them by that name`, 409);
     }
     // Renaming back to one of the project's own names is not a new name.
     if (!ref.names.includes(to)) assertNewName(to);
@@ -1685,7 +1704,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (target.key !== ref.key && await ledger(env, to).project().then(() => true, () => false)) {
       throw new RuleError("name_taken", `${to} is in use: a removed project's Ledger is kept under that name`, 409);
     }
-    const moved = await index(env).renameProject(project, to);
+    // --release-name (t774): the project gives up its current name, which a
+    // project created afterwards may take, stored apart from this one under
+    // a fresh key. The key is picked here, where a Ledger kept under a
+    // candidate can be seen; an older CLI never sends the field, so its
+    // rename is the one it always was.
+    if (body.releaseName !== undefined && typeof body.releaseName !== "boolean") throw new RuleError("bad_release", "releaseName must be true or false", 400);
+    let releaseKey: string | undefined;
+    if (body.releaseName === true) {
+      for (let n = 2; releaseKey === undefined; n++) {
+        const candidate = `${ref.name}-${n}`;
+        // Derived as init derives it: lowercased and sanitised, at most 63
+        // characters. A name too long for a suffix refuses the release with
+        // nothing recorded; a repository already taken by a baseline skips to
+        // the next suffix.
+        let repo: string;
+        try { repo = repoName(candidate); }
+        catch { throw new RuleError("release_name_too_long", `${ref.name} cannot be released: a project created under it would need a storage key ${candidate} that no repository can be named after; rename it without --release-name`, 409); }
+        if (!await index(env).keyFree(candidate)) continue;
+        if (await index(env).assertRepoAvailable(candidate, repo).then(() => false, () => true)) continue;
+        if (await ledger(env, candidate).project().then(() => true, () => false)) continue;
+        releaseKey = candidate;
+      }
+    }
+    const moved = await index(env).renameProject(project, to, releaseKey);
     return json({ ...moved, project: await L.setName(to, actor) });
   }
   if (parts[2] === "sessions" && parts.length === 3) {

@@ -222,15 +222,22 @@ const configFile = () => join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), 
 // lists the name among its former names (projects rename records them),
 // since a workspace made before a rename still names the old one (Astra's
 // sixth review of t645).
-// An entry that lists the name among its former names is the project's
-// entry now, and wins over a stale entry still under the old name (Astra's
-// eleventh review of t645); the loader joins the stale entry's private
-// settings to it.
+// An entry under the exact name is the project's (t774); only when there is
+// none does the entry that lists the name among its former names stand for
+// it. Both entries' private names guard the project (entryFor), as Astra's
+// eleventh review of t645 asked.
 export function projectKey(projects, name) {
   if (!projects || typeof name !== "string") return null;
-  const renamed = Object.keys(projects).find((key) => key !== name && Array.isArray(projects[key]?.formerNames) && projects[key].formerNames.includes(name));
-  if (renamed) return renamed;
-  return Object.hasOwn(projects, name) ? name : null;
+  // An entry under the exact name wins over any alias of it (t774): after a
+  // name is released and another project takes it, the entry under it is that
+  // project's, whatever an older entry still lists among its former names.
+  if (Object.hasOwn(projects, name)) return name;
+  return aliasOwner(projects, name) ?? null;
+}
+
+// The entry that lists `name` among its former names, if any.
+function aliasOwner(projects, name) {
+  return Object.keys(projects).find((key) => key !== name && Array.isArray(projects[key]?.formerNames) && projects[key].formerNames.includes(name));
 }
 
 // The project's entry by name or former name, with the private settings
@@ -240,6 +247,11 @@ function entryFor(projects, name) {
   if (!key) return { key: null, entry: undefined };
   const entry = projects[key];
   if (key !== name && projects[name]) joinPrivate(entry, projects[name]);
+  // An entry under the exact name wins (t774), but an entry that lists the
+  // name as a former one still adds its private names to the guard: more
+  // files guarded, never fewer.
+  const other = key === name ? aliasOwner(projects, name) : undefined;
+  if (other) joinPrivate(entry, projects[other]);
   return { key, entry };
 }
 
@@ -554,6 +566,23 @@ export function moveProjectEntryOnDisk(projects, from, to) {
   if (written === false && !moved.moved) moved = moveProjectEntry(projects, from, to);
   else if (projects?.[from]) moveProjectEntry(projects, from, to);
   return moved;
+}
+
+// The project at `to` gave up the name `name` (projects rename --release-name,
+// t774): it is dropped from the entry's former names, on disk under the config
+// lock and in `projects` in memory, so the name no longer resolves to it and a
+// new local entry under it is the new project's alone.
+export function releaseFormerName(projects, to, name) {
+  const drop = (list) => {
+    const entry = list?.[to];
+    if (!Array.isArray(entry?.formerNames) || !entry.formerNames.includes(name)) return false;
+    entry.formerNames = entry.formerNames.filter((n) => n !== name);
+    if (!entry.formerNames.length) delete entry.formerNames;
+    return true;
+  };
+  const written = updateConfig((cfg) => drop(cfg.projects));
+  const held = drop(projects);
+  return written === true || held;
 }
 
 // Why moving `from` to `to` would be refused, or null: checked before

@@ -38,8 +38,10 @@ globalThis.fetch = async (url, options) => {
   if (process.env.TEST_REFUSE) return Response.json({ error: 'live_work', detail: 'live work' }, { status: 409 });
   const renamed = /\\/projects\\/([^/]+)\\/rename$/.exec(url);
   if (renamed) {
-    const from = decodeURIComponent(renamed[1]), to = JSON.parse(options.body).to;
-    return Response.json({ from, to, key: from, names: [from, to], project: { name: to, repo: from, policy: { checks: [], protected: [] } } });
+    const from = decodeURIComponent(renamed[1]), { to, releaseName } = JSON.parse(options.body);
+    // A server from before t774 ignores releaseName.
+    const released = releaseName && !process.env.TEST_OLD_SERVER ? { released: from, rescoped: 2 } : {};
+    return Response.json({ from, to, key: from, names: releaseName && !process.env.TEST_OLD_SERVER ? [to] : [from, to], ...released, project: { name: to, repo: from, policy: { checks: [], protected: [] } } });
   }
   if (options.method === 'PUT') policy = { ...policy, ...JSON.parse(options.body) };
   return Response.json(options.method === 'DELETE' ? { removed: true } : {
@@ -164,6 +166,26 @@ test("CLI rename asks the server, then moves the local config entry to the new n
   assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog, formerNames: ["weblog"] } });
   assert.match(renamed.stdout, /weblog is now ikon on https:\/\/atelier\.test\. Its Ledger, baseline weblog and every fork stay where they are\. The local config entry weblog is now ikon\./);
   assert.match(renamed.stdout, /weblog still works/);
+}));
+
+// Task t774: the old atelier project gives up its name for the rewritten one.
+test("CLI rename --release-name asks the server to release the name, and says what that did", () => fixture(({ command, initial, config, calls }) => {
+  const renamed = command(["projects", "rename", "weblog", "ikon", "--release-name"]);
+  assert.equal(renamed.status, 0, renamed.stderr);
+  assert.deepEqual(JSON.parse(calls()[0].body), { to: "ikon", releaseName: true });
+  // The entry moves, but the released name is not kept as one of its former names (t774).
+  assert.deepEqual(config().projects, { ikon: { ...initial.projects.weblog } });
+  assert.match(renamed.stdout, /weblog is now ikon on https:\/\/atelier\.test\./);
+  assert.match(renamed.stdout, /weblog is released: it no longer reaches ikon, and a project created under it is stored apart.*Tokens limited to weblog are limited to ikon now \(2 changed\)/);
+  assert.doesNotMatch(renamed.stdout, /weblog still works/);
+}));
+
+test("CLI rename --release-name against a server that ignores it says the name is not released and exits 1", () => fixture(({ command, calls }) => {
+  const renamed = command(["projects", "rename", "weblog", "ikon", "--release-name"], { TEST_OLD_SERVER: "1" });
+  assert.equal(renamed.status, 1);
+  assert.deepEqual(JSON.parse(calls()[0].body), { to: "ikon", releaseName: true });
+  assert.match(renamed.stderr, /weblog was renamed, but this server did not release the name \(it predates --release-name\), so weblog still reaches the project/);
+  assert.doesNotMatch(renamed.stdout, /is released/);
 }));
 
 test("CLI rename leaves local config alone when the server refuses, or when no entry has the old name", () => fixture(({ command, initial, config, calls }) => {
