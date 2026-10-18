@@ -1685,7 +1685,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (target.key !== ref.key && await ledger(env, to).project().then(() => true, () => false)) {
       throw new RuleError("name_taken", `${to} is in use: a removed project's Ledger is kept under that name`, 409);
     }
-    const moved = await index(env).renameProject(project, to);
+    // --release-name (t774): the project gives up its current name, which a
+    // project created afterwards may take, stored apart from this one under
+    // a fresh key. The key is picked here, where a Ledger kept under a
+    // candidate can be seen; an older CLI never sends the field, so its
+    // rename is the one it always was.
+    if (body.releaseName !== undefined && typeof body.releaseName !== "boolean") throw new RuleError("bad_release", "releaseName must be true or false", 400);
+    let releaseKey: string | undefined;
+    if (body.releaseName === true) {
+      for (let n = 2; releaseKey === undefined; n++) {
+        const candidate = `${ref.name}-${n}`;
+        if (!await index(env).keyFree(candidate)) continue;
+        if (await ledger(env, candidate).project().then(() => true, () => false)) continue;
+        releaseKey = candidate;
+      }
+    }
+    const moved = await index(env).renameProject(project, to, releaseKey);
     return json({ ...moved, project: await L.setName(to, actor) });
   }
   if (parts[2] === "sessions" && parts.length === 3) {

@@ -322,3 +322,180 @@ it("the standard reviewer project cannot be removed, with or without --force, an
   }
   expect(((await (await call("GET", "/projects", "owner")).json()) as { name: string }[]).map((p) => p.name)).toContain("atelier");
 });
+
+// Task t774: the old atelier project is renamed and a new one created under
+// atelier. A rename with releaseName gives the old name up: it reaches no
+// storage of the renamed project, the project created next under it is stored
+// apart, and a token limited to it never reaches the new project by that name.
+const release = (from: string, to: string) => call("POST", `/projects/${from}/rename`, "owner", { to, releaseName: true });
+const withArtifacts = (seen: { forks: string[]; created: string[] }) => ({ ...testEnv, ARTIFACTS: artifacts(seen) }) as typeof env;
+const bearer = (token: string, method: string, path: string, e: typeof env = testEnv) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
+  method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+}), e);
+
+it("releasing a name: the project stops answering to it, the name is free, and the new project there is stored apart", async () => {
+  await project("rel-a", "Old A");
+  await L("rel-a").newItem("Old work", [], "owner");
+  const res = await release("rel-a", "rel-a-old");
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ from: "rel-a", to: "rel-a-old", key: "rel-a", names: ["rel-a-old"], released: "rel-a", rescoped: 0, project: { name: "rel-a-old", repo: "rel-a" } });
+  // The released name reaches nothing: not the project, not its Ledger.
+  const gone = await call("GET", "/projects/rel-a", "owner");
+  expect(gone.status).toBe(404);
+  expect(((await gone.json()) as { error: string }).error).toBe("no_project");
+  // Like any name no project has, it reads an empty Ledger of its own, never the renamed project's.
+  expect(await (await call("GET", "/projects/rel-a/items", "owner")).json()).toEqual([]);
+  expect(await I().resolveProject("rel-a")).toEqual({ name: "rel-a", key: "rel-a-2", names: ["rel-a-2", "rel-a"], registered: false, former: false });
+  const listed = (await I().projects()).find((p) => p.name === "rel-a-old");
+  expect(listed).toMatchObject({ key: "rel-a", repo: "rel-a" });
+  expect(listed?.formerly).toBeUndefined();
+  // The old project, its Ledger and its baseline stay reachable under the new name.
+  expect(((await (await call("GET", "/projects/rel-a-old/items", "owner")).json()) as { title: string }[]).map((i) => i.title)).toEqual(["Old work"]);
+  // A project created under the released name gets a key and a baseline of its own.
+  const seen = { forks: [] as string[], created: [] as string[] };
+  const created = await call("PUT", "/projects/rel-a", "owner", { title: "New A" }, withArtifacts(seen));
+  expect(created.status).toBe(200);
+  expect(((await created.json()) as { project: unknown }).project).toMatchObject({ name: "rel-a", repo: "rel-a-2", title: "New A" });
+  expect(seen.created).toEqual(["rel-a-2"]);
+  const both = (await I().projects()).filter((p) => p.name.startsWith("rel-a"));
+  expect(both.map((p) => [p.name, p.key ?? p.name, p.repo])).toEqual([["rel-a", "rel-a-2", "rel-a-2"], ["rel-a-old", "rel-a", "rel-a"]]);
+  expect(await I().resolveProject("rel-a")).toMatchObject({ name: "rel-a", key: "rel-a-2", registered: true, former: false });
+  expect(await I().resolveProject("rel-a-old")).toMatchObject({ name: "rel-a-old", key: "rel-a", names: ["rel-a-old"], registered: true });
+  expect(await call("GET", "/projects/rel-a/items", "owner").then((r) => r.json())).toEqual([]);
+  expect(((await (await call("GET", "/projects/rel-a-old/items", "owner")).json()) as { title: string }[]).map((i) => i.title)).toEqual(["Old work"]);
+  expect((await L("rel-a").project()).name).toBe("rel-a-old");
+  expect((await L("rel-a-2").project()).name).toBe("rel-a");
+  // The old name cannot be taken back by the renamed project while the new one holds it.
+  const back = await rename("rel-a-old", "rel-a");
+  expect(back.status).toBe(409);
+  expect(((await back.json()) as { error: string }).error).toBe("name_taken");
+});
+
+it("without releaseName a rename keeps answering to the old name, as before", async () => {
+  await project("keep-a");
+  const res = await rename("keep-a", "keep-b");
+  expect(await res.json()).toMatchObject({ names: ["keep-a", "keep-b"] });
+  expect((await call("GET", "/projects/keep-a", "owner")).status).toBe(200);
+  expect(await I().resolveProject("keep-a")).toMatchObject({ key: "keep-a", registered: true, former: true });
+  // A released name taken by another project is still refused, as it is today.
+  await project("keep-c");
+  expect((await rename("keep-c", "keep-a")).status).toBe(409);
+});
+
+it("tokens limited to the released name are limited to the new name, and never reach the project that takes the name", async () => {
+  await project("tok-a");
+  await L("tok-a").newItem("Mine", [], "owner");
+  const agentToken = await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6-astra", projects: ["tok-a", "elsewhere"] })).json() as { token: string; id: string };
+  const runnerToken = await (await call("POST", "/tokens", "owner", { runner: "tok-runner", projects: ["tok-a"] })).json() as { token: string; id: string };
+  const unrelated = await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6-astra", projects: ["elsewhere"] })).json() as { token: string };
+  const unscoped = await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6-astra" })).json() as { token: string };
+  const revoked = await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6-astra", projects: ["tok-a"] })).json() as { token: string; id: string };
+  expect((await call("DELETE", `/tokens/${revoked.id}`, "owner")).status).toBe(200);
+  const res = await release("tok-a", "tok-a-old");
+  expect(await res.json()).toMatchObject({ released: "tok-a", rescoped: 3 });
+  const scopes = Object.fromEntries(((await (await call("GET", "/tokens", "owner")).json()) as { id: string; projects?: string[] }[]).map((t) => [t.id, t.projects]));
+  expect(scopes[agentToken.id]).toEqual(["tok-a-old", "elsewhere"]);
+  expect(scopes[runnerToken.id]).toEqual(["tok-a-old"]);
+  expect(scopes[revoked.id]).toEqual(["tok-a-old"]);
+  // The token made for the old project still works for it, under its new name.
+  expect((await bearer(agentToken.token, "GET", "/projects/tok-a-old/items")).status).toBe(200);
+  // The name now reaches no project, and later the new one: neither token gets in.
+  const seen = { forks: [] as string[], created: [] as string[] };
+  expect((await call("PUT", "/projects/tok-a", "owner", {}, withArtifacts(seen))).status).toBe(200);
+  for (const token of [agentToken.token, unrelated.token]) {
+    const refused = await bearer(token, "GET", "/projects/tok-a/items");
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: string }).error).toBe("project_scope");
+  }
+  expect((await bearer(agentToken.token, "GET", "/projects/tok-a-old/items")).status).toBe(200);
+  const listing = ((await (await bearer(agentToken.token, "GET", "/projects")).json()) as { name: string }[]).map((p) => p.name);
+  expect(listing).toEqual(["tok-a-old"]);
+  // A runner token limited to the old project is refused at the new one too, and an unscoped token or one made after the release reaches it.
+  expect((await bearer(runnerToken.token, "GET", "/projects/tok-a")).status).toBe(403);
+  expect((await bearer(unscoped.token, "GET", "/projects/tok-a/items")).status).toBe(200);
+  const fresh = await (await call("POST", "/tokens", "owner", { actor: "codex/gpt-6-astra", projects: ["tok-a"] })).json() as { token: string };
+  expect((await bearer(fresh.token, "GET", "/projects/tok-a/items")).status).toBe(200);
+  expect((await bearer(fresh.token, "GET", "/projects/tok-a-old/items")).status).toBe(403);
+});
+
+it("a runner offer limited by a rescoped token serves the old project under its new name only", async () => {
+  await project("off-a");
+  const runnerToken = await (await call("POST", "/tokens", "owner", { runner: "off-runner", projects: ["off-a"] })).json() as { token: string };
+  expect((await release("off-a", "off-a-old")).status).toBe(200);
+  expect((await call("PUT", "/projects/off-a", "owner", {}, withArtifacts({ forks: [], created: [] }))).status).toBe(200);
+  await I().askQueue({ runner: "home:off-runner", agents: [], projects: ["off-a-old"] } as never, new Date().toISOString());
+  const names = (await I().askQueue(null, new Date().toISOString())).filter((p) => p.name.startsWith("off-a")).map((p) => [p.name, p.formerly ?? null]);
+  expect(names).toEqual([["off-a", ["off-a-2"]], ["off-a-old", null]]);
+  expect(await (await bearer(runnerToken.token, "GET", "/projects/off-a-old")).status).toBe(200);
+  expect(await (await bearer(runnerToken.token, "GET", "/projects/off-a")).status).toBe(403);
+});
+
+it("a released name keeps off every key and Ledger already in use, and a former name releases the current one", async () => {
+  // rel-b-2 is taken as a project name, rel-b-3 is a key another project's name maps to, rel-b-4 holds a retained Ledger.
+  await project("rel-b");
+  await project("rel-b-2");
+  await project("rel-b-3x");
+  expect((await rename("rel-b-3x", "rel-b-3y")).status).toBe(200);
+  await I().renameProject("rel-b-3y", "rel-b-4");
+  await project("rel-b-5");
+  expect((await call("DELETE", "/projects/rel-b-5", "owner")).status).toBe(200);
+  await L("rel-b-6").setProject({ name: "rel-b-6", repo: "rel-b-6", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() } as never, "owner");
+  const res = await release("rel-b", "rel-b-old");
+  expect(res.status).toBe(200);
+  expect((await I().resolveProject("rel-b")).key).toBe("rel-b-3");
+  // rel-b-3 was free, so it is taken; check the ones that were not skipped by releasing again where they are the only candidates.
+  await project("rel-c");
+  await project("rel-c-2");
+  await L("rel-c-3").setProject({ name: "rel-c-3", repo: "rel-c-3", policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() } as never, "owner");
+  expect((await release("rel-c", "rel-c-old")).status).toBe(200);
+  expect((await I().resolveProject("rel-c")).key).toBe("rel-c-4");
+  // A former name cannot be released: the current one is.
+  await project("rel-d");
+  expect((await rename("rel-d", "rel-d2")).status).toBe(200);
+  await runInDurableObject(I(), async (instance) => {
+    expect(() => instance.renameProject("rel-d", "rel-d3", "rel-d-2")).toThrow(/former name of rel-d2/);
+  });
+  expect((await I().projects()).find((p) => p.name === "rel-d2")).toMatchObject({ key: "rel-d", formerly: ["rel-d"] });
+  // The route resolves the name it is given, so a former name releases the project's current one.
+  const viaFormer = await release("rel-d", "rel-d3");
+  expect(await viaFormer.json()).toMatchObject({ from: "rel-d2", to: "rel-d3", released: "rel-d2" });
+  expect((await I().resolveProject("rel-d2")).registered).toBe(false);
+  expect((await I().resolveProject("rel-d")).registered).toBe(true);
+  // A malformed flag is refused before anything changes.
+  const bad = await call("POST", "/projects/rel-d3/rename", "owner", { to: "rel-d4", releaseName: "yes" });
+  expect(bad.status).toBe(400);
+  expect(((await bad.json()) as { error: string }).error).toBe("bad_release");
+  expect((await I().resolveProject("rel-d3")).name).toBe("rel-d3");
+});
+
+it("releasing the current name of a project already renamed keeps its original key as a name, and the released name goes to a fresh key", async () => {
+  await project("chn-1");
+  expect((await rename("chn-1", "chn-2")).status).toBe(200);
+  const res = await release("chn-2", "chn-3");
+  expect(await res.json()).toMatchObject({ from: "chn-2", to: "chn-3", key: "chn-1", names: ["chn-1", "chn-3"], released: "chn-2" });
+  expect(await I().resolveProject("chn-2")).toMatchObject({ key: "chn-2-2", registered: false });
+  expect(await I().resolveProject("chn-1")).toMatchObject({ name: "chn-3", key: "chn-1", registered: true, former: true });
+  expect((await call("GET", "/projects/chn-1", "owner")).status).toBe(200);
+  expect((await call("GET", "/projects/chn-2", "owner")).status).toBe(404);
+  // A project created under chn-2 is stored under chn-2-2, with a baseline of that name.
+  const seen = { forks: [] as string[], created: [] as string[] };
+  const made = await call("PUT", "/projects/chn-2", "owner", {}, withArtifacts(seen));
+  expect(((await made.json()) as { project: unknown }).project).toMatchObject({ name: "chn-2", repo: "chn-2-2" });
+  expect(seen.created).toEqual(["chn-2-2"]);
+  expect((await I().projects()).find((p) => p.name === "chn-3")).toMatchObject({ key: "chn-1", formerly: ["chn-1"], repo: "chn-1" });
+});
+
+it("renaming back to the project's own key while releasing names it again, and a retry after only the index took the rename finishes it", async () => {
+  await project("bk-1");
+  expect((await release("bk-1", "bk-2")).status).toBe(200);
+  // bk-1 now belongs to a fresh key, so the project cannot take it back until that is a project of its own: refused, not silently shared.
+  const refused = await rename("bk-2", "bk-1");
+  expect(refused.status).toBe(409);
+  expect(((await refused.json()) as { error: string }).error).toBe("name_taken");
+  // The retry of an interrupted rename-and-release addresses the new name and ignores the flag.
+  await project("bk-3");
+  await I().renameProject("bk-3", "bk-4", "bk-3-2");
+  const again = await call("POST", "/projects/bk-4/rename", "owner", { to: "bk-4", releaseName: true });
+  expect(again.status).toBe(200);
+  expect((await L("bk-3").project()).name).toBe("bk-4");
+});
