@@ -53,6 +53,7 @@ import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
 import { serverFetch } from "./server-fetch.mjs";
+import { lowSpeedEnv, secondsOf, serverTimeoutMs, talksToRemote, timedOut, tooSlow, withTimeout } from "./timeouts.mjs";
 import { saveWholeConfig, useConfig } from "./private.mjs";
 
 const HOME = homedir();
@@ -130,6 +131,18 @@ export function rememberedReviewClaim(name, id) {
 // token goes nowhere else: with ATELIER_SERVER naming another server it is
 // not sent, and the command says what to do instead.
 let ownerNoticeGiven = false;
+
+// The store is read once per process (t763): the macOS Keychain answers by
+// spawning `security`, and one command asks for the token on every request.
+// The answer is kept under the settings that choose the store, so a process
+// that points at another store reads that one. A token another process
+// rewrites meanwhile is seen by the next command, not this one.
+let storeRead;
+function storeToken() {
+  const key = JSON.stringify([process.env.ATELIER_SECRET_STORE, process.env.ATELIER_CONFIG_DIR, process.env.HOME]);
+  if (storeRead?.key !== key) storeRead = { key, token: readSecret("API_TOKEN") };
+  return storeRead.token;
+}
 export function apiToken() {
   if (cliState.loginToken) return cliState.loginToken;
   try {
@@ -146,7 +159,7 @@ export function apiToken() {
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
   let token;
-  try { token = readSecret("API_TOKEN"); } catch (error) { die(error.message); }
+  try { token = storeToken(); } catch (error) { die(error.message); }
   if (!token) die("no API token: run `atelier login --server URL` to store one, or set ATELIER_TOKEN");
   const home = cfg.server ? trimSlash(cfg.server) : null;
   if (server() !== home) {
@@ -188,7 +201,10 @@ export function git(args, opts = {}) {
   let off = {};
   if (opts.hooks === false) { try { off = configEnv(hooksOff(opts.cwd, gitEnv(process.env, {}, args))); } catch (error) { die(error.message); } }
   const env = { ...off, ...(opts.token ? auth(opts.token, { ...process.env, ...off }) : {}), ...opts.env };
-  const r = spawnSync("git", args, { encoding: opts.bytes ? null : "utf8", cwd: opts.cwd, env: gitEnv(process.env, env, args, opts.ownerRemote === true), input: opts.input, maxBuffer: 256 * 1024 * 1024 });
+  // A transfer to a remote that stalls is cut by Git's low-speed floor, not by
+  // a cap on time (t763): a large push that keeps moving is never stopped.
+  const gitEnvironment = gitEnv(process.env, env, args, opts.ownerRemote === true);
+  const r = spawnSync("git", args, { encoding: opts.bytes ? null : "utf8", cwd: opts.cwd, env: talksToRemote(args) ? lowSpeedEnv(gitEnvironment) : gitEnvironment, input: opts.input, maxBuffer: 256 * 1024 * 1024 });
   if (opts.bytes && r.stderr) r.stderr = r.stderr.toString("utf8");
   const shown = redactGitArgs(args);
   // git itself did not run: the folder it was to run in is missing, it is
@@ -206,7 +222,7 @@ export function git(args, opts = {}) {
     if (shown[i] === "[redacted]") detail = detail.split(arg).join("[redacted]");
   }
   if (opts.token) detail = detail.split(opts.token).join("[redacted]");
-  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} failed:\n${detail}`);
+  if (r.status !== 0 && !opts.allowFail) die(`git ${shown.join(" ")} ${talksToRemote(args) && tooSlow(detail) ? "timed out (the transfer stalled below the low-speed floor)" : "failed"}:\n${detail}`);
   return opts.allowFail ? r : opts.raw ? r.stdout : r.stdout.trim();
 }
 
@@ -943,12 +959,12 @@ export async function request(method, path, body, as, extra = {}, signal) {
   let res, text;
   try {
     res = await serverFetch(server() + "/api" + path, {
-      method, signal,
+      method, signal: withTimeout(signal, serverTimeoutMs(body)),
       headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     text = await res.text();
-  } catch (error) { die(`server request failed: ${error.message}`, 4); }
+  } catch (error) { die(`server request failed: ${timedOut(error) ? `${method} ${path} timed out after ${secondsOf(serverTimeoutMs(body))}` : error.message}`, 4); }
   let data;
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
   if (!res.ok) {
@@ -983,9 +999,9 @@ export async function requestText(path, as) {
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
-    res = await serverFetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
+    res = await serverFetch(server() + "/api" + path, { signal: withTimeout(undefined, serverTimeoutMs()), headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
     text = await res.text();
-  } catch (error) { throw new RequestError(`server request failed: ${error.message}`, 4); }
+  } catch (error) { throw new RequestError(`server request failed: ${timedOut(error) ? `GET ${path} timed out after ${secondsOf(serverTimeoutMs())}` : error.message}`, 4); }
   if (res.status === 404) return null;
   if (!res.ok) {
     let data = {};
@@ -1039,9 +1055,9 @@ export async function recordedApproval(name) {
   await resolveTokenActor();
   let res, data;
   try {
-    res = await serverFetch(`${server()}/api${P(name)}`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+    res = await serverFetch(`${server()}/api${P(name)}`, { method: "GET", signal: withTimeout(undefined, serverTimeoutMs()), headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
     data = await res.json().catch(() => ({}));
-  } catch (error) { die(`server request failed: ${error.message}`, 4); }
+  } catch (error) { die(`server request failed: ${timedOut(error) ? `GET ${P(name)} timed out after ${secondsOf(serverTimeoutMs())}` : error.message}`, 4); }
   if (res.status === 404) return null;
   if (!res.ok) die(`${data.error ?? res.status}: ${data.detail ?? "the project could not be read"}`, res.status >= 500 ? 4 : 1);
   return data.project?.policy?.approval ?? null;
@@ -1940,9 +1956,9 @@ export async function landingLease(name, as) {
   await resolveTokenActor();
   let res, data;
   try {
-    res = await serverFetch(`${server()}/api${P(name)}/landing-lease`, { method: "GET", headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? as } });
+    res = await serverFetch(`${server()}/api${P(name)}/landing-lease`, { method: "GET", signal: withTimeout(undefined, serverTimeoutMs()), headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? as } });
     data = await res.json().catch(() => ({}));
-  } catch (error) { die(`server request failed: ${error.message}`, 4); }
+  } catch (error) { die(`server request failed: ${timedOut(error) ? `GET ${P(name)}/landing-lease timed out after ${secondsOf(serverTimeoutMs())}` : error.message}`, 4); }
   if (!res.ok) return { unreadable: `${data.error ?? res.status}` };
   const lease = data.lease;
   if (!lease || typeof lease !== "object") return null;

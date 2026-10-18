@@ -106,7 +106,8 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
         const headers = Object.entries(options.env ?? {}).filter(([key]) => /^GIT_CONFIG_VALUE_/.test(key)).map(([, value]) => value);
         if (argv[1] === "fetch") {
           assert.deepEqual(argv.slice(2), ["--quiet", "https://git.test/demo.git", "main"]);
-          assert.deepEqual(headers, [`Authorization: Bearer ${baseToken}`]);
+          // The fetch is bounded by Git's low-speed floor (t763), after the header.
+          assert.deepEqual(headers, [`Authorization: Bearer ${baseToken}`, "1000", "120"]);
         } else assert.deepEqual(headers, [], "only the fetch carries the read token");
         assert.ok(!argv.includes(token) && !argv.includes(baseToken), "no credential is a git argument");
         // A workspace whose fork predates main's head: main is not yet in
