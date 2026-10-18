@@ -14,7 +14,6 @@ import { criteriaOf } from "./criteria.ts";
 export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
-  area?: string | null;
   id: string;
   title: string;            // the short title every list shows, at most TITLE_MAX characters
   // The long text of the task, shown only on its own page and in briefs to
@@ -136,7 +135,6 @@ export interface SecretClearance {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
-  area?: string | null;
   // Creation only: the ledger resolves this task's recorded merge itself.
   revertOf?: string;
   nonGoals?: string[];
@@ -973,6 +971,13 @@ export class RuleError extends Error {
   }
 }
 
+// Function areas were removed (t769), and adopt with them. The server deploys
+// before every CLI updates, so an older CLI that still lists, creates, renames
+// or removes an area, or sends a task's area, is told so with 410 Gone and
+// not with a 404 or 403 that reads as a mistake of its own.
+export const AREAS_REMOVED = "areas_removed";
+export const AREAS_REMOVED_MESSAGE = "function areas were removed from Atelier; update the CLI (a task keeps working without one)";
+
 export function parseRuleError(err: unknown): { status: number; code: string; detail: string } | null {
   const m = err instanceof Error ? /^(\d{3})\|([a-z_]+)\|([\s\S]*)$/.exec(err.message) : null;
   return m ? { status: Number(m[1]), code: m[2], detail: m[3] } : null;
@@ -1435,10 +1440,9 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
-  if (input.area !== undefined) {
-    if (input.area !== null && (typeof input.area !== "string" || !/^a[1-9]\d*$/.test(input.area))) throw new RuleError("bad_area", "area must be an area ID or null to clear", 400);
-    out.area = input.area as string | null;
-  }
+  // An older CLI's new --area and edit --area or --clear-area send this
+  // field. Refuse it plainly, whatever its value, rather than store it.
+  if (input.area !== undefined) throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410);
   if (input.revertOf !== undefined) {
     if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
     out.revertOf = input.revertOf;

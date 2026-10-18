@@ -1,7 +1,7 @@
 import { reportLimits, stuckReport, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
-import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, fastJobRefusal } from "./rules.ts";
+import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, fastJobRefusal } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
@@ -1905,14 +1905,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(r.data, r.status);
   }
   if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
-  if (parts[2] === "areas") {
-    if (parts.length === 3 && m === "GET") return json(await L.areas());
-    requireOwner(env, actor);
-    if (parts.length === 3 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose), 201);
-    if (parts.length === 4 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose, parts[3]));
-    if (parts.length === 4 && m === "DELETE") { await L.removeArea(parts[3], actor); return json({ removed: parts[3] }); }
-    throw new RuleError("not_found", "no such route", 404);
-  }
+  // Function areas were removed (t769). An older CLI's area commands get 410
+  // Gone on every path and method under areas, not a 404 or 403.
+  if (parts[2] === "areas") throw new RuleError(AREAS_REMOVED, AREAS_REMOVED_MESSAGE, 410);
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
   // one (docs/orchestrator.md, section 2), for the owner alone, with the

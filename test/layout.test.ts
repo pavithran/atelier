@@ -74,7 +74,7 @@ test("an owner item's action paragraph on the Overview spans the text columns, n
 // arrow column and wrapped a letter per line. The board link keeps one full-width
 // column, so the id line and the title stack and the title wraps by word.
 test("the tasks board title link is one full-width column that wraps by word", () => {
-  const rule = css.match(/\.area-board \.task-list a\.area-task-title \{([^}]*)\}/);
+  const rule = css.match(/\.task-board \.task-list a\.board-task-title \{([^}]*)\}/);
   assert.ok(rule, "a rule scoped above `.task-list a` exists");
   assert.match(rule[1], /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/);
   assert.match(rule[1], /overflow-wrap:\s*break-word/);
