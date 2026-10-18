@@ -1,0 +1,358 @@
+// Part 2 of 2 of the tests that were in landing-states.test.mjs, split so no file runs for more than about a minute (t771).
+// The states of a landing, and the way out of each. `atelier merge ID`
+// lands an accepted task in the owner's checkout: it writes a journal under
+// the CLI's cache (cli/landing.mjs), merges and commits in the checkout,
+// takes the landing lease on the server, publishes the merge commit to the
+// baseline, and records the merge. Each state says what is true in the
+// checkout and on the server, and what each command does from it. merge,
+// merge --cancel and sync each hold the checkout's landing lock while they
+// run, so none of them runs beside another: a cancel never meets a merge of
+// the same checkout halfway through its publication. Where merge --cancel
+// asks whether the baseline holds a commit, it fetches the baseline and Git
+// reads its whole history.
+//
+// none: no journal. merge starts a landing. merge --cancel ends any lease
+//   the item holds, unless the baseline holds the accepted revision; that
+//   merge is recorded by the checkout that made it. sync and wrap go ahead.
+// prepared: the journal names the accepted revision, the commit the merge
+//   starts from and the baseline's head; the checkout is on that start. The
+//   item is accepted at the revision, with no lease. merge goes on; merge
+//   --cancel removes the journal and ends any lease; sync and wrap refuse.
+// merging: stopped inside the Git merge, which is in progress on the start
+//   with the accepted revision's tree incoming. merge refuses the
+//   uncommitted changes. merge --cancel keeps the Git merge unless
+//   --discard-local, which aborts it.
+// committed: the merge commit is made and the journal names it, or the
+//   process stopped first and the commit is found by its parents and its
+//   line `Atelier: PROJECT/ID accepted at REVISION`. Until the lease is
+//   taken, a push or a review on the server can withdraw the acceptance,
+//   and another revision can then be accepted. merge takes the lease while
+//   the item is accepted at the journal's revision, and otherwise refuses,
+//   naming the cancel. merge --cancel keeps the commit unless
+//   --discard-local, which puts the branch back on the start while it is
+//   still on the commit with nothing uncommitted, and otherwise changes
+//   nothing and says how to get there; a branch already back on the start
+//   needs no flag. It ends the lease only while the item is accepted at the
+//   journal's revision: a lease is taken for the accepted revision alone and
+//   nothing moves the acceptance while one is held, so after a change of
+//   acceptance there is no lease of this landing's to end. Nor does it when
+//   the baseline holds the accepted revision through a merge made
+//   elsewhere: that lease is left for that merge to be recorded.
+// leased: as committed, and the server holds the lease, so no push or
+//   review moves the acceptance. merge publishes. merge --cancel ends the
+//   lease, which the server refuses once the merge is on the baseline.
+// published: the baseline holds the merge commit (or, for a baseline that
+//   holds part of the history, its rebuilt twin), and the journal says so
+//   once the push returns. merge records the merge, with the branch on the
+//   merge commit, and otherwise names the commit to put it back on. merge
+//   --cancel refuses, with or without --discard-local, and the checkout
+//   keeps the merge: it reads the journal, and the baseline's whole history
+//   for a push that returned just before the process stopped. When the item
+//   is no longer accepted at the journal's revision, so that the server
+//   cannot record the merge, merge --cancel removes the journal and keeps the
+//   merge, as the baseline does.
+// recorded: the server says merged, and the journal is still there. merge
+//   and merge --cancel remove the journal and keep the merge.
+//
+// Every test runs the real CLI against a stand-in ledger on 127.0.0.1, in
+// scratch repositories, and leaves the landing in one of these states the
+// way an interrupted process or a change on the server would.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { landing, assertRestored } from "./landing-states-shared.mjs";
+
+// The acceptance is withdrawn as above, then the task's owner pushes a new
+// revision and it is accepted. The journal from before the reopen names the
+// earlier revision: merge refuses it and names the cancel; the owner has
+// put the checkout back by hand, so a plain cancel removes the journal and
+// leaves the new revision's lease alone; the new revision then lands.
+test('a journal from before a reopen: merge names the cancel, which leaves the new acceptance alone, and the new revision lands', async (t) => {
+  const f = await landing(t);
+  f.box.withdraw = true;
+  assert.equal((await f.run('merge', 't1')).status, 1);
+  const merged = f.at();
+  const H2 = f.revise('changed again\n');
+  Object.assign(f.box, { state: 'accepted', head: H2, acceptedHead: H2, lease: H2 });
+
+  const retry = await f.run('merge', 't1');
+  assert.equal(retry.status, 1, retry.output);
+  assert.ok(retry.output.includes(`t1 is accepted at ${H2.slice(0, 8)}, no longer accepted at ${f.H1.slice(0, 8)}, where this checkout began landing it, so that landing cannot be finished. Cancel it with: atelier merge t1 --cancel --discard-local, then merge again\n`), retry.output);
+  assert.equal(f.at(), merged);
+
+  // The owner already put the branch back on the start by hand: nothing is left to discard.
+  f.git(f.checkout, 'reset', '-q', '--hard', f.start);
+  f.box.requests.length = 0;
+  const cancelled = await f.run('merge', 't1', '--cancel');
+  assert.equal(cancelled.status, 0, cancelled.output);
+  assert.equal(cancelled.output, `t1: the landing in this checkout is cancelled. t1 is accepted at ${H2.slice(0, 8)}, and nothing changed on the server; merge its accepted revision with: atelier merge t1.\n`);
+  assertRestored(f);
+  assert.ok(!f.asked('/landing', true), 'the lease is the new revision\'s, not this landing\'s');
+  assert.equal(f.box.lease, H2);
+
+  f.box.lease = null;
+  const landed = await f.run('merge', 't1');
+  assert.equal(landed.status, 0, landed.output);
+  assert.equal(f.box.state, 'merged');
+  assert.equal(f.tip(), f.at());
+  assert.deepEqual(f.git(f.checkout, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ').slice(1), [f.start, H2]);
+});
+
+
+// ── a landing stopped between two of its steps ──────────────────────────────
+
+// The process stopped after the journal was written and before the Git
+// merge began. The checkout is on the start. merge goes on from the
+// journal; a cancel removes it and ends the lease. A journal of another task
+// holds both back and names the commands that end it.
+test('stopped before the Git merge: merge goes on, cancel ends it, and another task\'s journal names its way out', async (t) => {
+  const f = await landing(t);
+  f.begin(f.H1);
+  const cancelled = await f.run('merge', 't1', '--cancel');
+  assert.equal(cancelled.status, 0, cancelled.output);
+  assert.equal(cancelled.output, 't1: the merge is cancelled; its holder can push a new revision.\n');
+  assertRestored(f);
+  assert.ok(f.asked('/landing', true));
+
+  f.begin(f.H1);
+  const landed = await f.run('merge', 't1');
+  assert.equal(landed.status, 0, landed.output);
+  assert.equal(f.box.state, 'merged');
+  assert.equal(f.tip(), f.at());
+  assert.equal(f.journal(), null);
+
+  writeFileSync(f.journalFile, JSON.stringify({ project: 'proj', item: 't2', head: f.H1, start: f.at(), phase: 'prepared' }) + '\n');
+  f.box.requests.length = 0;
+  for (const args of [['merge', 't1'], ['merge', 't1', '--cancel']]) {
+    const other = await f.run(...args);
+    assert.equal(other.status, 1, other.output);
+    assert.ok(other.output.includes('finish the pending landing for proj/t2 before starting another: atelier merge t2 --project proj, or cancel it with atelier merge t2 --project proj --cancel\n'), other.output);
+  }
+  assert.ok(!f.asked('/landing'));
+});
+
+
+
+// The process stopped inside `git merge --no-commit`: the Git merge is in
+// progress on the start. merge refuses the uncommitted changes, as before;
+// cancel keeps them unless asked, then aborts the Git merge and ends the
+// lease, since the item is still accepted at the journal's revision.
+test('stopped inside the Git merge: cancel keeps it unless asked, then aborts it', async (t) => {
+  const f = await landing(t);
+  f.begin(f.H1);
+  f.git(f.checkout, 'fetch', '-q', f.fork, f.H1);
+  f.git(f.checkout, 'merge', '-q', '--no-ff', '--no-commit', f.H1);
+  assert.ok(existsSync(join(f.checkout, '.git', 'MERGE_HEAD')));
+
+  const retry = await f.run('merge', 't1');
+  assert.equal(retry.status, 1, retry.output);
+  assert.match(retry.output, /the registered checkout has uncommitted changes/);
+
+  const kept = await f.run('merge', 't1', '--cancel');
+  assert.equal(kept.status, 1, kept.output);
+  assert.ok(kept.output.includes(`the checkout holds this merge's unfinished Git merge of ${f.H1.slice(0, 8)} on ${f.start.slice(0, 8)}.\nAbort it with git merge --abort, then finish the landing with: atelier merge t1\nor cancel and remove it with: atelier merge t1 --cancel --discard-local\n`), kept.output);
+  assert.ok(existsSync(join(f.checkout, '.git', 'MERGE_HEAD')));
+  assert.ok(f.journal());
+
+  const cancelled = await f.run('merge', 't1', '--cancel', '--discard-local');
+  assert.equal(cancelled.status, 0, cancelled.output);
+  assert.match(cancelled.output, /Aborted the unfinished Git merge; main is at [0-9a-f]{8}, where the merge began\.\n/);
+  assert.match(cancelled.output, /t1: the merge is cancelled; its holder can push a new revision\./);
+  assertRestored(f);
+  assert.ok(f.asked('/landing', true));
+});
+
+
+// The process stopped after `git commit` and before the journal named the
+// commit. Cancel finds it by its parents and its landing line and keeps it
+// unless asked. A branch moved past it, or uncommitted changes on it, are
+// left as they are, with what to do; once the branch is back on it, cancel
+// --discard-local restores the start.
+test('stopped after the merge commit, before the journal named it: cancel finds the commit and never resets past the owner\'s work', async (t) => {
+  const f = await landing(t);
+  f.begin(f.H1);
+  f.git(f.checkout, 'fetch', '-q', f.fork, f.H1);
+  f.git(f.checkout, 'merge', '-q', '--no-ff', '-m', 'Merge t1: Fixture task', '-m', `Atelier: proj/t1 accepted at ${f.H1}`, f.H1);
+  const merged = f.at();
+  assert.equal(f.journal().mergeCommit, undefined);
+
+  const kept = await f.run('merge', 't1', '--cancel');
+  assert.equal(kept.status, 1, kept.output);
+  assert.ok(kept.output.includes(`the checkout holds this merge's unpublished commit ${merged.slice(0, 8)} on top of ${f.start.slice(0, 8)}.\nFinish it with: atelier merge t1\n`), kept.output);
+  assert.ok(f.journal());
+
+  // The owner committed on top of the merge commit.
+  writeFileSync(join(f.checkout, 'mine.txt'), 'mine\n');
+  f.git(f.checkout, 'add', 'mine.txt'); f.git(f.checkout, 'commit', '-q', '-m', 'Mine');
+  const mine = f.at();
+  f.box.requests.length = 0;
+  const moved = await f.run('merge', 't1', '--cancel', '--discard-local');
+  assert.equal(moved.status, 1, moved.output);
+  assert.ok(moved.output.includes(`main moved since the merge: it is at ${mine.slice(0, 8)}, past the merge commit ${merged.slice(0, 8)}. Nothing was changed. Move your commits off it and put main back on ${merged.slice(0, 8)}, or on ${f.start.slice(0, 8)} where the merge began, then run: atelier merge t1 --cancel --discard-local\n`), moved.output);
+  assert.equal(f.at(), mine);
+  assert.ok(f.journal());
+  assert.ok(!f.asked('/landing', true), 'a refusal ends nothing on the server');
+
+  // Back on the merge commit, with a change not committed.
+  f.git(f.checkout, 'reset', '-q', '--hard', merged);
+  writeFileSync(join(f.checkout, 'work.txt'), 'unsaved\n');
+  const dirty = await f.run('merge', 't1', '--cancel', '--discard-local');
+  assert.equal(dirty.status, 1, dirty.output);
+  assert.ok(dirty.output.includes(`the checkout has uncommitted changes on top of the merge commit ${merged.slice(0, 8)}. Nothing was changed. Set them aside (git stash), then run: atelier merge t1 --cancel --discard-local\n`), dirty.output);
+  assert.equal(readFileSync(join(f.checkout, 'work.txt'), 'utf8'), 'unsaved\n');
+
+  f.git(f.checkout, 'checkout', '-q', '--', 'work.txt');
+  const cancelled = await f.run('merge', 't1', '--cancel', '--discard-local');
+  assert.equal(cancelled.status, 0, cancelled.output);
+  assertRestored(f);
+  assert.ok(f.asked('/landing', true));
+});
+
+
+// The same stop, and the merge goes on from the commit it finds.
+test('stopped after the merge commit, before the journal named it: merge goes on from that commit', async (t) => {
+  const f = await landing(t);
+  f.begin(f.H1);
+  f.git(f.checkout, 'fetch', '-q', f.fork, f.H1);
+  f.git(f.checkout, 'merge', '-q', '--no-ff', '-m', 'Merge t1: Fixture task', '-m', `Atelier: proj/t1 accepted at ${f.H1}`, f.H1);
+  const merged = f.at();
+  const landed = await f.run('merge', 't1');
+  assert.equal(landed.status, 0, landed.output);
+  assert.equal(f.at(), merged);
+  assert.equal(f.tip(), merged);
+  assert.equal(f.box.state, 'merged');
+  assert.equal(f.journal(), null);
+});
+
+
+// ── a cancel beside a merge, and a merge made elsewhere ─────────────────────
+
+// A merge of this checkout has made its commit and waits on the server for
+// the lease, about to publish. A cancel run meanwhile refuses on the landing
+// lock and changes nothing, and the merge lands as if no cancel had been
+// asked for.
+test('a cancel refuses while a merge of the same checkout is running, and the merge lands', async (t) => {
+  const f = await landing(t);
+  let release;
+  f.box.gate = new Promise((ok) => { release = ok; });
+  const merging = f.run('merge', 't1');
+  let merged;
+  try {
+    for (const end = Date.now() + 30_000; !f.asked('/landing', false); await new Promise((ok) => setTimeout(ok, 20))) {
+      assert.ok(Date.now() < end, 'the merge asks for the lease');
+    }
+    merged = f.at();
+    assert.equal(f.journal().phase, 'committed');
+    f.box.requests.length = 0;
+    const cancel = await f.run('merge', 't1', '--cancel', '--discard-local');
+    assert.equal(cancel.status, 1, cancel.output);
+    assert.match(cancel.output, /another landing process \(pid \d+\) is still running/);
+    assert.deepEqual(f.box.requests, [], 'the refusal comes before any request');
+    assert.equal(f.at(), merged);
+  } finally { release(); }
+  const landed = await merging;
+  assert.equal(landed.status, 0, landed.output);
+  assert.equal(f.box.state, 'merged');
+  assert.equal(f.at(), merged);
+  assert.equal(f.tip(), merged);
+  assert.equal(f.journal(), null);
+});
+
+
+// No journal here, and the baseline already holds the accepted revision
+// through a merge made from another clone. The cancel finds it in the
+// baseline's history and refuses before it asks the server, which this
+// stand-in would let through.
+test('without a journal, a cancel refuses once the baseline holds the accepted revision', async (t) => {
+  const f = await landing(t);
+  f.mergeElsewhere();
+  const cancel = await f.run('merge', 't1', '--cancel');
+  assert.equal(cancel.status, 1, cancel.output);
+  assert.ok(cancel.output.includes(`t1 at ${f.H1.slice(0, 8)} is already merged on the baseline, so its landing lease cannot be cancelled. Record that merge by running atelier merge t1 in the checkout that made it\n`), cancel.output);
+  assert.ok(!f.asked('/landing', true));
+  assert.equal(f.at(), f.start);
+});
+
+
+// This checkout's merge commit never reached the baseline, and the accepted
+// revision reached it through a merge made elsewhere. The landing cannot be
+// finished; the cancel removes this checkout's commit and leaves the lease
+// for the other merge.
+test('a landing overtaken by a merge made elsewhere: cancel restores the checkout and leaves the lease', async (t) => {
+  const f = await landing(t);
+  f.box.failLanding = true;
+  assert.equal((await f.run('merge', 't1')).status, 4);
+  const merged = f.at();
+  f.box.lease = f.H1;
+  const other = f.mergeElsewhere();
+  const kept = await f.run('merge', 't1', '--cancel');
+  assert.equal(kept.status, 1, kept.output);
+  assert.ok(kept.output.includes(`t1 at ${f.H1.slice(0, 8)} is already on the baseline through another merge commit, so this landing cannot be finished. The checkout holds this merge's unpublished commit ${merged.slice(0, 8)} on top of ${f.start.slice(0, 8)}.\nRemove it with: atelier merge t1 --cancel --discard-local\n`), kept.output);
+  f.box.requests.length = 0;
+  const cancelled = await f.run('merge', 't1', '--cancel', '--discard-local');
+  assert.equal(cancelled.status, 0, cancelled.output);
+  assert.ok(cancelled.output.endsWith(`t1: the landing in this checkout is cancelled. t1 at ${f.H1.slice(0, 8)} is already on the baseline through another merge commit, so its landing lease is left for that merge to be recorded.\n`), cancelled.output);
+  assertRestored(f);
+  assert.ok(!f.asked('/landing', true));
+  assert.equal(f.box.lease, f.H1);
+  assert.equal(f.tip(), other);
+});
+
+
+// ── generated outputs and records on the baseline (t463) ───────────────────
+
+// The project declares gen.txt as generated from in/*.txt and routes.tsv as
+// records keyed by their first word, on the baseline and in the task.
+function declareMerges(f) {
+  const manifest = JSON.stringify({ version: 1, generators: [{ name: 'gen', command: ['sh', '-c', 'cat in/*.txt > gen.txt'], inputs: ['in/**'], outputs: ['gen.txt'] }], records: [{ path: 'routes.tsv', key: '^(\\S+)\\t' }] });
+  mkdirSync(join(f.checkout, 'bin')); mkdirSync(join(f.checkout, 'in'));
+  writeFileSync(join(f.checkout, 'bin', 'merge-manifest.json'), manifest);
+  writeFileSync(join(f.checkout, '.gitattributes'), 'gen.txt merge=atelier-generated\nroutes.tsv merge=atelier-records\n');
+  writeFileSync(join(f.checkout, 'in', 'base.txt'), 'base\n'); writeFileSync(join(f.checkout, 'gen.txt'), 'base\n');
+  writeFileSync(join(f.checkout, 'routes.tsv'), '/a\tA\n');
+  f.git(f.checkout, 'add', '.'); f.git(f.checkout, 'commit', '-q', '-m', 'Declare merges');
+  f.git(f.checkout, 'push', '-q', f.baseline, 'HEAD:main');
+  f.git(f.workspace, 'fetch', '-q', f.baseline, 'main'); f.git(f.workspace, 'merge', '-q', '--no-edit', 'FETCH_HEAD');
+}
+
+// One side's commit: files written, committed and sent where that side lives.
+function side(f, dir, files, message) {
+  for (const [path, text] of Object.entries(files)) writeFileSync(join(dir, path), text);
+  f.git(dir, 'add', '.'); f.git(dir, 'commit', '-q', '-m', message);
+  if (dir === f.checkout) f.git(dir, 'push', '-q', f.baseline, 'HEAD:main');
+  else { f.git(dir, 'push', '-q', 'origin', 'main'); f.box.head = f.box.acceptedHead = f.git(dir, 'rev-parse', 'HEAD'); }
+}
+
+
+test('a merge onto the baseline that would regenerate outputs nobody checked or reviewed is refused, and nothing is merged', async (t) => {
+  const f = await landing(t);
+  declareMerges(f);
+  side(f, f.workspace, { 'in/task.txt': 'task\n', 'gen.txt': 'base\ntask\n' }, 'Task adds an input');
+  side(f, f.checkout, { 'in/main.txt': 'main\n', 'gen.txt': 'base\nmain\n' }, 'Main adds an input');
+  const before = { at: f.at(), tip: f.tip() };
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /merging t1 would regenerate gen\.txt, since the baseline and the accepted revision both changed what its generator reads \(gen\)\. The regenerated outputs were never checked or reviewed, so nothing was merged and t1 stays accepted\. The developer can send it back to a runner with atelier dispatch t1 --job merge-main, or hand it to a builder with atelier handoff t1 --to H\/M: main is merged into its workspace there/);
+  // Not atelier land, which refuses an accepted task (cli/land.mjs).
+  assert.doesNotMatch(r.output, /atelier land t1/);
+  assert.deepEqual({ at: f.at(), tip: f.tip() }, before);
+  assert.equal(existsSync(join(f.checkout, '.git', 'MERGE_HEAD')), false);
+  assert.equal(f.journal(), null);
+  assert.equal(f.box.state, 'accepted');
+});
+
+
+test('records both sides added merge onto the baseline by key, with the union recorded in the merge commit', async (t) => {
+  const f = await landing(t);
+  declareMerges(f);
+  side(f, f.workspace, { 'routes.tsv': '/a\tA\n/task\tT\n' }, 'Task adds a route');
+  side(f, f.checkout, { 'routes.tsv': '/a\tA\n/main\tM\n' }, 'Main adds a route');
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.equal(readFileSync(join(f.checkout, 'routes.tsv'), 'utf8'), '/a\tA\n/main\tM\n/task\tT\n');
+  assert.match(f.git(f.checkout, 'log', '-1', '--format=%B'), /Worked by: [^\n]*\nAtelier-Records-Merged: routes\.tsv, united by key$/);
+  assert.equal(f.tip(), f.at());
+  // The checkout's Git configuration now names the driver, copied under .git.
+  assert.match(f.git(f.checkout, 'config', 'merge.atelier-records.driver'), /\/\.git\/atelier\/merge-driver\.mjs' records %O %A %B %P$/);
+});

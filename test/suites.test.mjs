@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, sym
 import { join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createVitest } from "vitest/node";
-import { assign, discover, rejections, NODE_RUNNER, plan } from "./suites.mjs";
+import { assign, discover, longestFirst, parseTimings, rejections, NODE_RUNNER, plan } from "./suites.mjs";
 
 // t466: every test file runs in npm test, whichever directory it lives in.
 
@@ -164,7 +164,7 @@ test("npm test executes real runner-token routes and propagates a failed token a
   const dir = tree(t, []);
   rmSync(join(dir, "vitest.config.mjs"));
   for (const file of ["package.json", "vitest.config.ts", "wrangler.jsonc", "tsconfig.json", "src",
-    "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs", "cli/load.mjs"]) {
+    "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file), { recursive: true });
   }
@@ -195,7 +195,7 @@ test("npm test executes real runner-token routes and propagates a failed token a
 // exit is the worst status either ended with.
 test("npm test runs the vitest pool after a failed Node pool and exits with the worst status", (t) => {
   const dir = tree(t, []);
-  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "cli/group.mjs", "cli/load.mjs"]) {
+  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file));
   }
@@ -215,4 +215,75 @@ test("npm test runs the vitest pool after a failed Node pool and exits with the 
     assert.equal(readFileSync(join(dir, "vitest-ran"), "utf8").trim(), "ran", "vitest ran after the Node pool failed");
     assert.equal(r.status, expected, r.stdout + r.stderr);
   }
+});
+
+// t771: the audit of 2026-10-17 found test/land-lease-workflow.test.mjs, 294 s
+// of tests, starting 32 s into the run because files started in name order,
+// so it alone ended the run.
+test("the timing list is parsed as path and seconds, and notes and malformed lines are skipped", () => {
+  const timings = parseTimings("# measured\n\ntest/a.test.mjs 12.5\ntest/b.test.mjs 300\nbroken\ntest/c.test.mjs slow\ntest/d.test.mjs 4 extra\n");
+  assert.deepEqual([...timings], [["test/a.test.mjs", 12.5], ["test/b.test.mjs", 300]]);
+  assert.deepEqual([...parseTimings(undefined)], []);
+});
+
+test("files run longest first, those the list does not name before it, each group in its given order", () => {
+  const timings = new Map([["b", 30], ["d", 300], ["e", 30], ["gone", 999]]);
+  assert.deepEqual(longestFirst(["a", "b", "c", "d", "e"], timings), ["a", "c", "d", "b", "e"]);
+  assert.deepEqual(longestFirst(["b", "a"], new Map()), ["b", "a"]);
+});
+
+function runTree(t, { timings, vitest = "exit 0" } = {}) {
+  const dir = tree(t, []);
+  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/load.mjs"]) {
+    mkdirSync(join(dir, file, ".."), { recursive: true });
+    cpSync(file, join(dir, file));
+  }
+  if (timings) writeFileSync(join(dir, "test/timings.txt"), timings);
+  writeFileSync(join(dir, "test/b.spec.ts"), "");
+  mkdirSync(join(dir, "node_modules/.bin"), { recursive: true });
+  symlinkSync(resolve("node_modules/vitest"), join(dir, "node_modules/vitest"), "dir");
+  writeFileSync(join(dir, "node_modules/.bin/vitest"), `#!/bin/sh\necho vitest ran > "${join(dir, "vitest-ran")}"\n${vitest}\n`, { mode: 0o755 });
+  const env = { ...process.env, ATELIER_TEST_WORKERS: "1" };
+  delete env.NODE_TEST_CONTEXT; // A nested runner must report its own tests.
+  delete env.NODE_COMPILE_CACHE;
+  return { dir, run: () => spawnSync(process.execPath, ["test/run.mjs"], { cwd: dir, env, encoding: "utf8", timeout: 60_000 }) };
+}
+const noteTest = (dir, name) => writeFileSync(join(dir, name), `import { test } from "node:test"; import { appendFileSync } from "node:fs";
+  test(${JSON.stringify(name)}, () => appendFileSync(${JSON.stringify(join(dir, "order.txt"))}, ${JSON.stringify(name)} + "\\n"));`);
+
+test("npm test starts the files the timing list names slowest first, and unlisted files before them", (t) => {
+  const { dir, run } = runTree(t, { timings: "# a note\nb.test.mjs 5\nd.test.mjs 90\nc.test.mjs 40\n" });
+  for (const name of ["a.test.mjs", "b.test.mjs", "c.test.mjs", "d.test.mjs", "e.test.mjs"]) noteTest(dir, name);
+  const r = run();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(readFileSync(join(dir, "order.txt"), "utf8").trim().split("\n"), ["a.test.mjs", "e.test.mjs", "d.test.mjs", "c.test.mjs", "b.test.mjs"]);
+});
+
+test("npm test runs without a timing list, in discovery order", (t) => {
+  const { dir, run } = runTree(t);
+  for (const name of ["b.test.mjs", "a.test.mjs"]) noteTest(dir, name);
+  const r = run();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(readFileSync(join(dir, "order.txt"), "utf8").trim().split("\n"), ["a.test.mjs", "b.test.mjs"]);
+});
+
+test("npm test starts the vitest pool beside the node pool, not after it, and prints its output after the node pool's", (t) => {
+  const { dir, run } = runTree(t, { vitest: "echo vitest output" });
+  // The node test passes only if vitest has started while it still runs.
+  writeFileSync(join(dir, "a.test.mjs"), `import { test } from "node:test"; import { existsSync } from "node:fs";
+    test("node pool is still running when vitest starts", async () => {
+      for (let i = 0; i < 400 && !existsSync(${JSON.stringify(join(dir, "vitest-ran"))}); i++) await new Promise((ok) => setTimeout(ok, 25));
+      if (!existsSync(${JSON.stringify(join(dir, "vitest-ran"))})) throw new Error("vitest had not started");
+    });`);
+  const r = run();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(r.stdout.indexOf("vitest output") > r.stdout.indexOf("node pool is still running when vitest starts"), r.stdout);
+});
+
+test("npm test gives every test process a compile cache in the checkout's node_modules", (t) => {
+  const { dir, run } = runTree(t);
+  writeFileSync(join(dir, "a.test.mjs"), `import { test } from "node:test"; import assert from "node:assert/strict"; import { join } from "node:path"; import { realpathSync } from "node:fs";
+    test("cache", () => assert.equal(realpathSync(process.env.NODE_COMPILE_CACHE + "/.."), realpathSync(join(process.cwd(), "node_modules", ".cache"))));`);
+  const r = run();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 });

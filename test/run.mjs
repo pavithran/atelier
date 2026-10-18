@@ -16,8 +16,10 @@
 // service is needed.
 import { runGroup } from "../cli/group.mjs";
 import { poolSize } from "../cli/load.mjs";
+import { readFileSync } from "node:fs";
 import { constants } from "node:os";
-import { plan, rejections } from "./suites.mjs";
+import { join } from "node:path";
+import { longestFirst, parseTimings, plan, rejections } from "./suites.mjs";
 
 const TIMEOUT_MS = Number(process.env.ATELIER_TEST_TIMEOUT_MS ?? 30 * 60_000);
 
@@ -41,8 +43,19 @@ if (listing) {
 // that it differs from the stored capacity and breaks tests that read output.
 const workers = /^[1-9]\d*$/.test(process.env.ATELIER_TEST_WORKERS ?? "") ? Number(process.env.ATELIER_TEST_WORKERS) : poolSize();
 const node = [process.execPath, "--import", "./test/guard.mjs", "--test", "--test-timeout=180000", `--test-concurrency=${workers}`];
-const commands = files.length ? [[...node, ...files]]
-  : [...(found.byRunner.node.length ? [[...node, ...found.byRunner.node]] : []), ["node_modules/.bin/vitest", "run", `--maxWorkers=${workers}`]];
+// The node pool is the long one, so it starts the slowest files first (the
+// timing list, test/timings.txt) and the vitest pool runs beside it, on a few
+// workers of its own, rather than after it (t771). Given test files, only the
+// node pool runs, on those in the order given.
+let timings;
+try { timings = parseTimings(readFileSync(new URL("./timings.txt", import.meta.url), "utf8")); } catch { timings = new Map(); }
+const vitestWorkers = Math.min(4, workers);
+// node --test sorts the files it is given by name, so a full run goes through
+// test/node-pool.mjs, which keeps the order.
+const pool = [process.execPath, "--import", "./test/guard.mjs", "test/node-pool.mjs", String(workers), "180000"];
+const nodeCommand = files.length ? [...node, ...files]
+  : found.byRunner.node.length ? [...pool, ...longestFirst(found.byRunner.node, timings)] : null;
+const vitestCommand = files.length ? null : ["node_modules/.bin/vitest", "run", `--maxWorkers=${vitestWorkers}`];
 
 // runGroup SIGKILLs the group on the way out of process.exit.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => process.exit(128 + constants.signals[signal]));
@@ -51,15 +64,26 @@ setInterval(() => { if (process.ppid !== parent) process.exit(129); }, 1000).unr
 
 // The guard (test/guard.mjs) in each test file's process ends it once this
 // process is gone, should it be SIGKILLed and have no chance to act.
-const env = { ...process.env, ATELIER_TEST_RUNNER: String(process.pid) };
+// Every CLI and test process loads the same sources; Node's compile cache,
+// kept in the checkout's node_modules, makes each start after the first
+// quicker (t771).
+const env = { ...process.env, ATELIER_TEST_RUNNER: String(process.pid),
+  NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE ?? join(process.cwd(), "node_modules", ".cache", "atelier-compile") };
 // Every pool runs, the vitest pool after a failed Node pool included, so one
 // run reports every failure rather than hiding the second pool's behind the
 // first's (t568). The exit is the worst status any pool ended with: the
 // highest, and 1 for one that ended with no status (a timeout, a signal, a
-// command that could not start).
+// command that could not start). The vitest pool's output is held until the
+// node pool has ended, so the two do not interleave.
+const held = [];
+const start = (argv, options) => argv && runGroup(argv, { env, timeoutMs: TIMEOUT_MS, ...options });
+const nodeRun = start(nodeCommand, { stdio: "inherit" });
+const vitestRun = start(vitestCommand, { onData: (key, chunk) => held.push([key, chunk]) });
 let worst = 0;
-for (const argv of commands) {
-  const r = await runGroup(argv, { env, stdio: "inherit", timeoutMs: TIMEOUT_MS });
+for (const [argv, run] of [[nodeCommand, nodeRun], [vitestCommand, vitestRun]]) {
+  if (!argv) continue;
+  const r = await run;
+  if (argv === vitestCommand) for (const [key, chunk] of held) process[key].write(chunk);
   if (r.timedOut) console.error(`test/run.mjs: \`${argv.join(" ")}\` ran past ${Math.round(TIMEOUT_MS / 1000)} s; its process group was killed`);
   else if (r.error && r.status === null && !r.signal) console.error(`test/run.mjs: ${r.error.message}`);
   if (r.status !== 0 || r.error) worst = Math.max(worst, r.status || 1);
