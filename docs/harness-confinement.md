@@ -8,8 +8,9 @@ would follow.
 wraps the harness in a `sandbox-exec` profile that allows the workspace, the
 toolchain caches and nothing else of the developer's home, and denies the
 Keychain, the developer's Atelier and git credentials, and the execution of
-`/usr/bin/security`. Keep the Cloudflare sandbox (`atelier check --sandbox`)
-for checking untrusted code, and keep every protected action with the developer:
+`/usr/bin/security`. Atelier has no sandbox for checks (the Cloudflare
+container check was removed in t768), so do not check untrusted code, and
+keep every protected action with the developer:
 `atelier ship` already runs as the developer in the registered checkout and no
 part of it should move inside a task's confinement. Escalate to a dedicated
 macOS user per task, started by the same launchd mechanism, when a project's
@@ -36,9 +37,10 @@ workspace, a clone under `~/Library/Caches/ai-projects/cloudflare-git/work/`:
   build unless its command is `codex exec --sandbox danger-full-access` (or
   the sandbox bypass), since the checks need localhost listening, the npm
   cache and the network (`codexBuildRefusal` in `cli/runner.mjs`).
-- **Checks run in a clean clone**, or in a Cloudflare container with
-  `--sandbox`, which is the strongest confinement Atelier has: no developer
-  files, no developer network, no developer identity.
+- **Checks run in a clean clone** on the developer's machine, with only the
+  environment variables toolchains need. That is no confinement of the
+  developer's files, network or identity: since t768 removed the Cloudflare
+  container check, Atelier has nothing stronger.
 
 ## What is not confined
 
@@ -145,11 +147,11 @@ profile it is supervision, not confinement.
 
 1. The runner wraps each harness command in the Seatbelt profile
    (`cli/runner.mjs` `execute()`), one profile shipped in the CLI and a
-   per-project addition in the runner config. The Cloudflare sandbox remains
-   the answer for checking code already written.
+   per-project addition in the runner config. Code already written is
+   checked on the developer's machine, unconfined.
 2. The runner moves from spawning processes to launchd jobs, reaping orphans
    at startup, and collects each job's output where its logs already go.
-3. A policy field (as `sandboxOnly` is for checks) lets a project demand the
+3. A policy field lets a project demand the
    task user; the launchd daemon starts those jobs under it, and provisioning
    becomes per project, once.
 
@@ -162,6 +164,5 @@ accounts for, and that a project can demand.
 Network filtering beyond a profile's all-or-nothing deny: a per-project
 allow list (registries, the Atelier server) is future work. Resource limits
 (CPU, memory) are not addressed by any option as stated; cgroups do not
-exist on macOS, and `launchd` offers only niceness. The Cloudflare sandbox
-already covers checks; this design covers the harness that writes the code,
-and leaves the developer's own commands, `ship` above all, where they are.
+exist on macOS, and `launchd` offers only niceness. This design covers the
+harness that writes the code, not the checks it runs, and leaves the developer's own commands, `ship` above all, where they are.

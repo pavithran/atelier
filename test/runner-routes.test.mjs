@@ -20,8 +20,8 @@
 //    throws unless called from runnerTransport (fetchGuard), so a form the
 //    scan cannot read fails at run time.
 // 3. The gateway. The real Worker and Ledger run under Miniflare, with a
-//    stub Artifacts worker and a stub check container standing in for the
-//    external services and nothing standing in for authorization. A scoped
+//    stub Artifacts worker standing in for the
+//    external service and nothing standing in for authorization. A scoped
 //    runner token exercises every declared runner-token call with a valid
 //    offer or claim, and is refused across projects, runners, actors, jobs
 //    and expired offers, on owner-only operations and on write-token
@@ -72,8 +72,8 @@ const API_ROUTES = [
   ...["PUT /projects/p", "DELETE /projects/p", "GET /projects/p", "POST /projects/p/rename", "GET /projects/p/sessions", "POST /projects/p/sessions", "GET /projects/p/baseline-head",
     "GET /projects/p/owners", "GET /projects/p/standing", "GET /projects/p/landing-lease", "POST /projects/p/baseline-token", "POST /projects/p/baseline-token (write)", "POST /projects/p/served",
     "GET /projects/p/decisions", "POST /projects/p/decisions", "POST /projects/p/decisions/d1/withdraw", "GET /projects/p/actions", "GET /projects/p/items", "POST /projects/p/items"],
-  ...["GET", "GET brief", "GET job-brief", "GET sandbox/p:t1:abc:1", "GET diff", `GET logs/${"a".repeat(64)}`, `GET diffs/${"a".repeat(64)}`, "GET plan", "GET landing-workflow",
-    ...["claim", "read-token", "read-token (write)", "base-token", "base-token (write)", "push", "evidence", "sandbox", "dispatch", "undispatch", "edit", "block", "unblock", "clear-secret",
+  ...["GET", "GET brief", "GET job-brief", "GET diff", `GET logs/${"a".repeat(64)}`, `GET diffs/${"a".repeat(64)}`, "GET plan", "GET landing-workflow",
+    ...["claim", "read-token", "read-token (write)", "base-token", "base-token (write)", "push", "evidence", "dispatch", "undispatch", "edit", "block", "unblock", "clear-secret",
       "review", "review-claim", "review-renew", "review-release", "review-skip", "review-unparsable", "run-skip", "review-request", "fast-take", "fast-ready", "owner-port-token",
       "criteria-review-claim", "criteria-review", "criteria-review-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
       "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed", "plan", "plan/approve"].map((v) => `POST ${v}`),
@@ -116,7 +116,6 @@ test("runnerRoute allows exactly the declared runner-token calls and the spare r
 
 test("callPath fills and encodes the path's parameters, and refuses a missing one", () => {
   assert.equal(callPath(declaredCall("job-brief"), { project: "my/proj", item: "t12" }), "/projects/my%2Fproj/items/t12/job-brief");
-  assert.equal(callPath(declaredCall("sandbox-run"), { project: "p", item: "t1", run: "p:t1:abc:1" }), "/projects/p/items/t1/sandbox/p%3At1%3Aabc%3A1");
   assert.equal(callPath(declaredCall("queue")), "/queue");
   assert.throws(() => callPath(declaredCall("release"), { project: "p" }), /release needs item/);
   assert.throws(() => callPath(declaredCall("release"), { project: "p", item: "" }), /release needs item/);
@@ -530,10 +529,9 @@ test("a module the runner imports, directly or several hops down, in any form, i
 
 // ── 3. the gateway ─────────────────────────────────────────────────────────
 
-// The Worker as deployed, bundled with two test-only classes: the Ledger
-// with one method that ages a runner's recorded offer, as the clock would,
-// and a stand-in for the check container that records a run and runs
-// nothing. The gateway's authorization is untouched.
+// The Worker as deployed, bundled with a test-only Ledger that has one
+// method to age a runner's recorded offer, as the clock would. The
+// gateway's authorization is untouched.
 const indexPath = resolve("src/index.ts");
 const ENTRY = `
 import worker, { Ledger } from ${JSON.stringify(indexPath)};
@@ -549,10 +547,6 @@ export class TestLedger extends Ledger {
     this.ctx.storage.sql.exec("UPDATE meta SET value = ? WHERE key = ?", JSON.stringify(value), key);
     return value.at;
   }
-}
-export class StubCheckRunner extends DurableObject {
-  async start(request) { const state = { status: "queued", request, queuedAt: new Date().toISOString() }; await this.ctx.storage.put("state", state); return state; }
-  async state() { return (await this.ctx.storage.get("state")) ?? null; }
 }
 `;
 // Artifacts, stubbed as a Worker the gateway reaches over its RPC binding:
@@ -604,7 +598,7 @@ before(async () => {
     workers: [
       {
         name: "atelier", compatibilityDate: "2026-10-03", modules: [{ type: "ESModule", path: "index.mjs", contents: bundled.outputFiles[0].text }],
-        durableObjects: { LEDGER: { className: "TestLedger", useSQLite: true }, RUNNER: { className: "StubCheckRunner", useSQLite: true } },
+        durableObjects: { LEDGER: { className: "TestLedger", useSQLite: true } },
         serviceBindings: { ARTIFACTS: { name: "artifacts", entrypoint: "Artifacts" } },
         bindings: { ATELIER_TOKEN: OWNER_TOKEN, AI_GATEWAY_ID: "atelier" }, r2Buckets: ["LARGE"],
       },
@@ -726,7 +720,7 @@ test("idle polling: an empty queue answers [], records the offer, and GET /queue
   cover("queue", "queue-why", "queue-heartbeat", "config", "version", "capabilities");
 });
 
-test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and release, each under the runner's own claim", async () => {
+test("a build job: claim, reads, tokens, push, evidence, submit and release, each under the runner's own claim", async () => {
   const p = await project();
   const id = await task(p);
   await dispatch(p, id);
@@ -749,14 +743,13 @@ test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and rel
   const ws = await expect(api("POST", `${p.base(id)}/read-token`, { body: {} }), 200, "read-token");
   assert.deepEqual([ws.token, ws.head], ["git-read-secret", H0]);
   assert.equal((await expect(api("POST", `${p.base(id)}/base-token`, { body: { scope: "read" } }), 200, "base-token")).token, "git-read-secret");
-  // The push, the checks it is measured by, and a container run.
+  // The push, the checks it is measured by, .
   await setHead(fork(p.name, id), H1);
   assert.equal((await expect(api("POST", `${p.base(id)}/push`, { body: { head: H1 } }), 200, "push")).head, H1);
   const evidence = await expect(api("POST", `${p.base(id)}/evidence`, { body: { kind: "check", claim: "npm test", head: H1, passed: true, outputTail: "ok", changedPaths: [] } }), 200, "evidence");
   assert.ok(evidence.evidence.some((e) => e.claim === "npm test" && e.passed === true && e.by === ACTOR));
-  const { runId, state } = await expect(api("POST", `${p.base(id)}/sandbox`, { body: {} }), 202, "sandbox");
-  assert.deepEqual([state.status, state.request.itemId, state.request.requestedBy], ["queued", id, ACTOR]);
-  assert.equal((await expect(api("GET", `${p.base(id)}/sandbox/${encodeURIComponent(runId)}`), 200, "sandbox run")).request.runId, runId);
+  // A runner built before t768 may still ask for a container run: it is told the check was removed, not refused as an unknown route.
+  assert.equal((await expect(api("POST", `${p.base(id)}/sandbox`, { body: {} }), 410, "sandbox removed")).error, "sandbox_removed");
   const diff = await expect(api("GET", `${p.base(id)}/diff`), 200, "diff");
   assert.deepEqual([diff.base, diff.head, diff.files], [H0, H1, []]);
   // A check log and a review diff kept by reference (src/large.ts), read by their sha.
@@ -775,7 +768,7 @@ test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and rel
   await denied(api("POST", `${p.base(id)}/owner-port-token`, { body: {} }), token, "owner-port-token as the runner");
   const port = await expect(call("POST", `${p.base(id)}/owner-port-token`, { body: {} }), 200, "owner-port-token");
   assert.deepEqual([port.remote, port.token, port.defaultBranch], [`https://git.test/${fork(p.name, id)}.git`, "git-write-secret", "main"]);
-  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "baseline-token", "baseline-project", "baseline-head", "push", "evidence", "sandbox", "sandbox-run", "submit", "release", "owner-port-token");
+  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "baseline-token", "baseline-project", "baseline-head", "push", "evidence", "submit", "release", "owner-port-token");
 });
 
 test("a release that reports a provider limit, and a fast take and its report, reach the ledger under the runner's own claim", async () => {

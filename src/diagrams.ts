@@ -42,7 +42,6 @@ const NODES: Node[] = [
   // The Ledger spans two columns: a goal enters it as a plan, and it
   // dispatches the plan's parts and the jobs runners take.
   { x: COL[0], y: 540, w: COL[1] + CW - COL[0], name: "Durable Objects: a Ledger per project", sub: "holds each plan and dispatches its parts and jobs", cloud: true },
-  { x: COL[2], y: 540, w: CW, name: "Check container", sub: "npm registry only, read-only", cloud: true },
   { x: COL[3], y: 540, w: CW, name: "Artifacts", sub: "the baseline and task forks", cloud: true },
 ];
 
@@ -55,12 +54,9 @@ const FLOWS: string[] = [
   `M662 ${118 + NH}V${196 - 2}`,
   // Each agent calls its own provider.
   ...COL.map((x) => `M${mid(x)} ${284 + NH}V${372 - 2}`),
-  // Inside Cloudflare: the Worker writes the Ledger and, with --sandbox,
-  // starts a check container, which is given the task's exact tree from
-  // Artifacts.
+  // Inside Cloudflare: the Worker writes the Ledger.
   `M620 ${460 + NH}V522H${mid(COL[1])}V${540 - 2}`,
   `M662 ${460 + NH}V${540 - 2}`,
-  `M${COL[3]} 562H${COL[2] + CW + 2}`,
   // The Worker makes each task's fork and mints its scoped Git token.
   `M760 ${460 + NH}V522H${mid(COL[3])}V${540 - 2}`,
 ];
@@ -73,9 +69,9 @@ const RAILS: string[] = [
   `M${COL[3] + CW} 130H988V562H${COL[3] + CW + 2}`,
 ];
 
-export const LAYERS_LABEL = "Where Atelier runs, in five layers. The developer works through a browser and the terminal, where atelier plan \"goal\" enters a goal as a plan. An orchestrating session or a home runner can act for them, and a home runner takes build, plan and review jobs. All three act through the atelier CLI, which makes one workspace per task, a clone of the task's fork. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach Artifacts, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, which holds each plan and dispatches its parts and jobs; the Worker makes each task's fork in Artifacts, and with --sandbox runs checks in a container that starts with the internet off and reaches only the npm registry, read-only, through a gateway.";
+export const LAYERS_LABEL = "Where Atelier runs, in five layers. The developer works through a browser and the terminal, where atelier plan \"goal\" enters a goal as a plan. An orchestrating session or a home runner can act for them, and a home runner takes build, plan and review jobs. All three act through the atelier CLI, which makes one workspace per task, a clone of the task's fork. An agent works in its own workspace and calls its own model provider. Agents normally reach Cloudflare through the CLI, and an agent's token limits what it can do: the CLI's API calls reach the Worker and its git pushes reach Artifacts, and the browser reaches the Worker directly. The Worker keeps each project's Ledger in a Durable Object, which holds each plan and dispatches its parts and jobs; the Worker makes each task's fork in Artifacts.";
 
-export const LAYERS_CAPTION = "A goal enters as a plan: atelier plan \"goal\" reaches the Worker through the CLI, and the project's Ledger holds the plan and dispatches its parts. A home runner takes the build and plan jobs, and review jobs when its config offers them; a runner started with --integrate runs no model and takes the integrate and refresh jobs instead, and the refresh that keeps each waiting task merged with main. Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach Artifacts. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's fork alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them, or with --sandbox in a Cloudflare container, which starts with the internet off and reaches only the npm registry, read-only. Either way the result is recorded against that head, and the Worker's gate reads it.";
+export const LAYERS_CAPTION = "A goal enters as a plan: atelier plan \"goal\" reaches the Worker through the CLI, and the project's Ledger holds the plan and dispatches its parts. A home runner takes the build and plan jobs, and review jobs when its config offers them; a runner started with --integrate runs no model and takes the integrate and refresh jobs instead, and the refresh that keeps each waiting task merged with main. Dashed lines cross the layers: the browser reaches the Worker, and the CLI's API calls reach the Worker and its git pushes reach Artifacts. An agent normally reaches Cloudflare through the CLI; its token limits what it can do, and its Git write access covers its own task's fork alone, so a write token also works with plain git; the session or runner that started it may push and check for it instead. Checks run in a fresh clone of exactly the pushed head, on the machine that asks for them. The result is recorded against that head, and the Worker's gate reads it.";
 
 export function layersDiagram(): string {
   const p: string[] = [];

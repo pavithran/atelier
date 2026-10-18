@@ -134,11 +134,8 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
       else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status) && !wf.replace) answer = { ...view(), created: false, ...(wf.attach ?? {}) };
       // A live instance the server replaces (t430): `wf.replace` names why.
-      else if (wf.instance && wf.replace) { const from = wf.instance; Object.assign(wf, { instance: `land-${item}-r1`, stage: wf.firstStage ?? "lease", round: 0, checks: body.checks ?? "container", status: "running" }); wf.started.push(body); answer = { ...view(), created: true, replaced: { from, to: wf.instance, ...wf.replace } }; wf.replace = null; }
-      // The checks mode is recorded as the server records it (t305):
-      // container where the start names none; `wf.noChecksMode` stands in
-      // for a server older than the modes, which records none.
-      else { Object.assign(wf, { instance: `land-${item}-${wf.started.length + 1}`, stage: wf.firstStage ?? "lease", round: 0, checks: wf.noChecksMode ? null : body.checks ?? "container", status: "running", files: null, error: null }); wf.started.push(body); answer = { ...view(), created: true }; }
+      else if (wf.instance && wf.replace) { const from = wf.instance; Object.assign(wf, { instance: `land-${item}-r1`, stage: wf.firstStage ?? "lease", round: 0, checks: body.checks ?? null, status: "running" }); wf.started.push(body); answer = { ...view(), created: true, replaced: { from, to: wf.instance, ...wf.replace } }; wf.replace = null; }
+      else { Object.assign(wf, { instance: `land-${item}-${wf.started.length + 1}`, stage: wf.firstStage ?? "lease", round: 0, checks: body.checks ?? null, status: "running", files: null, error: null }); wf.started.push(body); answer = { ...view(), created: true }; }
       res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(answer));
       if (req.method === "GET") wf.tick?.(box);
       return;
@@ -443,7 +440,7 @@ export function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test"
     if (path === `${itemPath}/base-token`) return { remote: "https://base.invalid/main.git", token: "read", defaultBranch: "main" };
     if (path === `${itemPath}/landing-workflow`) return method === "GET" && calls.some((c) => c.method === "POST" && c.path === path)
       ? { instance: "w1", stage: "done", round: 0, status: { status: "complete" } }
-      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, checks: "local", stage: "lease" };
+      : method === "GET" ? { instance: null, status: null } : { instance: "w1", created: true, stage: "lease" };
     return {};
   };
   // Git as a landing asks it: main already merged, nothing to compare or

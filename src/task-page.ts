@@ -59,7 +59,7 @@ export function taskPage(d: Detail) {
     const check = matches.length === 1 ? matches[0] : "";
     const superseded = !!head && !!criteria && !!check && d.evidence.some(e =>
       e.itemId === d.item.id && e.claim === check && e.grade === "observed" && e.passed === true && !e.merged && !e.notApplicable
-      && (!d.policy.sandboxOnly || e.where === "sandbox") && e.at > r.at && bindingAt(e.at).criteria === criteria
+      && e.at > r.at && bindingAt(e.at).criteria === criteria
       && (e.head === head || submissions.some(s => s.at > r.at && s.data.head === e.head && bindingAt(s.at).criteria === criteria)));
     const key = JSON.stringify([r.outcome, check, criteria]);
     const group = notices.get(key) ?? { kind: "Validation blocked", check, criteria, originals: [] };

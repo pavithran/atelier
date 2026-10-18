@@ -414,16 +414,19 @@ test("gc requires an expired check record and no live process", async () => {
   for (const age of [undefined, "yesterday", NaN, Infinity, now + 1]) assert.ok(gcCheckReason(age, false, now));
 });
 
-test("under sandboxOnly, only checks the Worker observed in a sandbox count", () => {
-  const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
+// t768 removed the container check and the sandboxOnly policy that required
+// it. A project whose stored policy still names it (finding: with the mode
+// gone, no result could ever come from a sandbox, so honouring the value would
+// have blocked every acceptance) counts a run on a runner like any other.
+test("a stored sandboxOnly policy no longer decides what counts: a run on a runner passes the gate", () => {
+  const legacy = { ...policy, sandboxOnly: true } as unknown as ProjectPolicy;
   const local = pass();                                   // posted by the CLI: where is absent, so "runner"
+  assert.equal(gate(item(), legacy, [local], []).ready, true);
+  assert.deepEqual(evidenceAt(legacy, [local], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "runner" }]);
+  // A result a container recorded before the mode was removed still counts, and is still shown as it was.
   const cloud = pass({ where: "sandbox", by: "atelier/sandbox" });
-  assert.equal(gate(item(), policy, [local], []).ready, true);
-  const g = gate(item(), strict, [local], []);
-  assert.equal(g.ready, false);
-  assert.match(g.blockers.join(), /not yet observed/);
-  assert.equal(gate(item(), strict, [local, cloud], []).ready, true);
-  assert.deepEqual(evidenceAt(strict, [cloud], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "sandbox" }]);
+  assert.deepEqual(evidenceAt(policy, [cloud], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "sandbox" }]);
+  assert.equal(mergedChecksAt(legacy, [pass({ merged: true, mainHead: "d".repeat(40), changedPaths: null })], H1, "d".repeat(40)).run, true);
   assert.equal(evidenceAt(policy, [local], H1).checks[0].where, "runner");
 });
 
@@ -576,12 +579,6 @@ test("empty governed changes have no class and nothing to merge", () => {
   assert.equal(g.ready, false);
   assert.match(g.blockers.join(), /nothing to merge/);
   assert.equal(gate(item(), policy, [pass({ changedPaths: [] })], []).ready, true);
-});
-
-test("sandbox path measurements outrank newer runner measurements", () => {
-  const evidence = [pass({ where: "sandbox", changedPaths: ["AGENTS.md"] }), pass({ where: "runner", at: "2026-10-05", changedPaths: ["docs/a.md"] })];
-  assert.equal(gate(item(), governed, evidence, []).changeClass, "protected");
-  assert.equal(gate(item(), governed, evidence.reverse(), []).ready, false);
 });
 
 test("the project owner's rejection blocks every class, and the owner's approval is no class's independent review", () => {
@@ -917,7 +914,6 @@ test("a merged check never satisfies the head's own check, and is read beside th
   assert.equal(mergedChecksAt(policy, [merged], H1, M0).checks[0].stale, true, "stale once main has moved past the head it merged with");
   assert.equal(mergedChecksAt(policy, [merged], H2, M1).run, false, "a new head retires every merged run");
   assert.deepEqual(mergedChecksAt(policy, [], H1, M1), { checks: [{ claim: "npm test", grade: "pending", passed: null, stale: false }], run: false });
-  assert.equal(mergedChecksAt({ ...policy, sandboxOnly: true }, [merged], H1, M1).run, false, "under sandboxOnly a merged run on a runner does not count");
   // The head's own run records main's head too, and is still the head's check.
   const own = pass({ mainHead: M0 });
   assert.deepEqual(evidenceAt(policy, [own], H1).checks, [{ claim: "npm test", grade: "observed", passed: true, where: "runner", mainHead: M0 }]);
@@ -947,10 +943,6 @@ test("a failing merged check blocks only when main moved after the head's own ch
   // While the head's own check is pending or failing, that check is the blocker.
   assert.deepEqual(gate(item(), policy, [failing], []).blockers.filter((b) => b.includes("merge")), []);
   assert.deepEqual(gate(item(), policy, [own, pass({ passed: false, mainHead: M0, at: "2026-10-03T12:30:00.000Z" }), failing], []).blockers.filter((b) => b.includes("merge")), []);
-  // Under sandboxOnly, a merged run on a runner neither blocks nor counts.
-  const strict: ProjectPolicy = { ...policy, sandboxOnly: true };
-  assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), failing], []).ready, true);
-  assert.equal(gate(item(), strict, [pass({ where: "sandbox", mainHead: M0 }), { ...failing, where: "sandbox" }], []).ready, false);
 });
 
 // PAVI's decision of 2026-10-06 (t178): a failing merged check at the head

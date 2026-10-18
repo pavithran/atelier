@@ -177,8 +177,8 @@ test("an integration counts only with the plan's checks observed passing at the 
   assert.deepEqual(integrationChecks(policy, [pass(MA, { grade: "reported", passed: null })], MA), pending);
   assert.deepEqual(integrationChecks(policy, [pass(MA, { passed: false })], MA), ["`npm test` failed when observed at 11111111"]);
   assert.deepEqual(integrationChecks(policy, [pass(MA, { passed: false }), pass(MA, { at: "2026-10-05T12:05:00.000Z" })], MA), []);
-  assert.deepEqual(integrationChecks({ ...policy, sandboxOnly: true }, [pass(MA, { where: "runner" })], MA), pending);
-  assert.deepEqual(integrationChecks({ ...policy, sandboxOnly: true }, [pass(MA, { where: "sandbox" })], MA), []);
+  // A stored sandboxOnly (removed by t768) decides nothing: a run on a runner counts.
+  assert.deepEqual(integrationChecks({ ...policy, sandboxOnly: true } as unknown as typeof policy, [pass(MA, { where: "runner" })], MA), []);
 });
 
 test("rollback after a failed integration restores the integration head under a lease on its own merge", () => {

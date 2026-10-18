@@ -76,7 +76,7 @@ globalThis.fetch = async (url, options = {}) => {
   else if (verb === "baseline-token" || verb === "base-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
   else if (verb === "claim") data = { item: item(), workspace: { remote: FORK, token: "fake-fork-token", defaultBranch: "main", expiresAt: "later" }, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
   else if (verb === "push") data = { ...item(), head: forkHead() };
-  else data = { item: item(), policy: { checks: [], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };
+  else data = { item: item(), policy: { checks: [], protected: [] }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
 };
 `);

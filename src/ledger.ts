@@ -325,7 +325,6 @@ export interface ProjectInit {
   requireCriteriaReview?: boolean;  // builds need an approved criteria review (see ProjectPolicy.requireCriteriaReview)
   riskReviews?: ProjectPolicy["riskReviews"] | null;  // replaces the reviews each risk class needs; null clears them (see ProjectPolicy.riskReviews)
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
-  sandboxOnly?: boolean;
   noOverride?: boolean;       // overrides of the independent review are refused (see ProjectPolicy.noOverride)
   approval?: string | null;
   // The switch of model policy this init makes (see ProjectPolicy.familyMode):
@@ -371,9 +370,11 @@ export interface LandingWorkflowRecord {
   round: number;
   detail?: string;
   files?: string[];
-  // Where the instance runs the required checks (t305): "local" on the
-  // machine holding the workspace, "container" in the CheckRunner. The
-  // executor reads it to know whether the checks are its to run.
+  // Always "local" since t768 removed the container mode. A CLI built before
+  // it (cli/land.mjs at bba67d5e, runLandWorkflow) reads this field of the
+  // start response and the stage record, and takes anything but "local" for
+  // the container mode, so the server keeps saying it. Records written before
+  // t768 may carry "container"; nothing here reads it.
   checks?: "local" | "container";
   // The review options the instance was started with (t430), so a rerun
   // that attaches to it can tell whether a reviewer it names differs.
@@ -386,14 +387,14 @@ export interface LandingWorkflowRecord {
   replaced?: { from: string; reason: string; detail: string; at: string };
   lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
 }
-export interface LandingWorkflowOptions { checks?: "local" | "container"; reviewer?: string | null; noReview?: boolean; triage?: boolean }
+export interface LandingWorkflowOptions { reviewer?: string | null; noReview?: boolean; triage?: boolean }
 
 // A new instance's record: at the stage `lease` from now, with the options
 // it was started with.
 function landingWorkflowRecord(instance: string, options: LandingWorkflowOptions): LandingWorkflowRecord {
   const at = new Date().toISOString();
   return {
-    instance, at, stage: "lease", stageAt: at, round: 0, checks: options.checks ?? "container",
+    instance, at, stage: "lease", stageAt: at, round: 0, checks: "local",
     ...(options.reviewer ? { reviewer: options.reviewer } : {}),
     ...(options.noReview ? { noReview: true } : {}),
     ...(options.triage ? { triage: true } : {}),
@@ -699,7 +700,6 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...((i.requireCriteriaReview ?? p?.requireCriteriaReview) ? { requireCriteriaReview: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       ...(riskReviews ? { riskReviews } : {}),
-      sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       // Carried only when set, so a project that allows overrides records nothing new.
       ...((i.noOverride ?? p?.noOverride) ? { noOverride: true } : {}),
       ...(approval ? { approval } : {}),
@@ -3267,11 +3267,6 @@ export class Ledger extends DurableObject<Env> {
     this.ctx.waitUntil(gate ? gate.hold(work) : work);
   }
 
-  recordSandboxRequest(id: string, actor: string, runId: string): void {
-    this.item(id);
-    this.log(id, actor, "sandbox.requested", { runId }, new Date().toISOString(), true);
-  }
-
   addEvidence(e: Evidence, origin?: string, proved = false): void {
     const item = this.item(e.itemId);
     if (e.head !== item.head) {
@@ -3981,10 +3976,10 @@ export class Ledger extends DurableObject<Env> {
   // instance still runs is read from the Workflow itself. The record is
   // cleared when the task closes, like the rest of its landing state (see
   // merged and abandon).
-  setLandingWorkflow(id: string, instance: string, actor: string, checks: "local" | "container" | LandingWorkflowOptions = "container"): LandingWorkflowRecord {
+  setLandingWorkflow(id: string, instance: string, actor: string, options: LandingWorkflowOptions = {}): LandingWorkflowRecord {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer lands a task", 403);
     this.item(id);
-    const record = landingWorkflowRecord(instance, typeof checks === "string" ? { checks } : checks);
+    const record = landingWorkflowRecord(instance, options);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
     return record;
   }

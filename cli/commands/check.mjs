@@ -4,17 +4,19 @@ import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
 import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
 import { appliesText, refusalOf, refusalText } from "../../src/checks.ts";
-import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, checkInSandbox, cleanClone, cliState, die, doneChecks, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
+export const SANDBOX_GONE = "atelier: this project's policy names the container check mode (sandboxOnly), which Atelier no longer has; running the checks here, in a clean clone on this machine. The next atelier init writes the policy without it.\n";
 const FLAKE_NOTE = "failed once, then passed on a rerun at the same head";
 
 // Observed evidence: run each required check (or the given command) in a
 // clean clone of exactly the head Artifacts holds, and record the result.
 export default async function checkCommand() {
-  if (args.sandbox) return checkInSandbox();
   const name = project(), id = itemArg(), as = await actor();
   const d = await call("GET", I(name, id), undefined, as);
-  if (d.policy.sandboxOnly) return checkInSandbox();
+  // A policy recorded before t768 may still name the container check, which
+  // is gone: the checks run here, said once, and the policy is not read again.
+  if (d.policy.sandboxOnly) process.stderr.write(SANDBOX_GONE);
   const cmds = args.rest?.length ? [args.rest.join(" ")] : d.policy.checks;
   if (!cmds.length) die("this project has no required checks; pass one: atelier check -- npm test");
   // A command that is never read-only is not run, here or anywhere.

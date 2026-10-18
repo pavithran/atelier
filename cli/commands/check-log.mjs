@@ -6,8 +6,8 @@ import { I, OWNER, actor, args, call, count, die, itemArg, logReader, project, s
 // head unless --head names one the task stood at earlier, each attempt
 // labelled by check, number among the runs of that check (the number
 // `show` and the landings print for the same run), outcome, where and when
-// it ran and its evidence id (and container run id), and, under
-// sandboxOnly, that the gate does not count a run on a machine, with the
+// it ran and its evidence id (and container run id, on a result recorded
+// before t768), with the
 // stored whole log read by reference where the run kept one and the
 // inline tail, labelled as such, where it did not. Terminal control
 // sequences are dropped from the log; its lines are otherwise printed as

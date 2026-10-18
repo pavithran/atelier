@@ -1,6 +1,5 @@
 // Part 6 of 6 of the tests that were in land-lease-workflow.test.mjs, split so no file runs for more than about a minute (t771).
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
-import { WORKSPACE_REASON_MAX } from "../src/check-failure.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -9,67 +8,30 @@ import { runLand, readRetry, workflowIsGone } from "../cli/land.mjs";
 import { LANDING_LEASE_EXPIRY_MS, landingLeasePollMs } from "../src/landing-lease.ts";
 import { git, landFixture, recordedAt, scriptWorkflow, tokenLanding } from "./land-fixture.mjs";
 
-test("land --workflow fits a long local-check failure to what the Workflow records, keeping every failed check and the check-log line", async (t) => {
-  if (!canInspectSlots(t)) return;
+test("--checks local is still accepted with --workflow; --checks container is gone, and --checks needs --workflow (t768)", async (t) => {
   const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
-  // The first check's output runs long (60 lines of some 100 characters,
-  // past what the summary shows and what the recorder keeps inline), and
-  // the second check fails after it.
-  const line = `not ok 1 - the long check ${"x".repeat(70)}`;
-  f.box.checks = [`yes '${line}' | head -n 60; exit 3`, "exit 4"];
-  const r = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(r.status, 1, r.output);
-  const pointer = "  Whole logs of every attempt at this head: atelier check-log t1";
-  // The terminal prints the summary whole: both checks, the first's 20-line tail, then the pointer.
-  const printed = r.output.slice(r.output.indexOf("Failed checks at"), r.output.indexOf(pointer) + pointer.length);
-  assert.ok(printed.length > WORKSPACE_REASON_MAX, String(printed.length));
-  assert.match(printed, /\n {2}`yes 'not ok 1 - the long check x+' \| head -n 60; exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap, read from a tail of the output, so names cut with the rest are not listed\): the long check x+\n {4}log: inline tail only \(a check run on a machine keeps its last 3,500 characters inline, and this output was longer\); last 20 of \d+ lines:\n/, printed);
-  assert.match(printed, /\n {2}`exit 4` failed on a runner, in a clean clone at .*: evidence #2, attempt 1 of 1 at this head\n/, printed);
-  // The 20-line tail: 19 of the output's lines, then the sha256 line the recorder appends.
-  assert.equal(printed.split("\n").filter((l) => l.startsWith(`      ${line}`)).length, 19, printed);
-  // The Workflow is sent the same failure fitted to its record's size, not
-  // cut at it: the first line, both checks, and the check-log line survive.
-  assert.equal(wf.events.length, 1);
-  assert.equal(wf.events[0].payload.failed, true);
-  const reason = wf.events[0].payload.reason;
-  assert.ok(reason.length <= WORKSPACE_REASON_MAX, String(reason.length));
-  assert.ok(reason.startsWith("atelier check failed (exit 2):\nFailed checks at "), reason);
-  assert.ok(reason.includes("`exit 4`"), reason);
-  assert.ok(reason.endsWith(`\n${pointer}`), reason);
-  assert.ok(!reason.includes("…\n" + pointer), reason);
-});
-
-
-test("land --workflow --checks container runs no check here; --checks is refused without --workflow or with another mode; a server with no modes is warned of", async (t) => {
-  const f = await landFixture(t);
-  const wf = scriptWorkflow(f);
+  scriptWorkflow(f);
   const alone = await f.run(f.checkout, "land", "t1", "--checks", "local");
   assert.equal(alone.status, 1, alone.output);
-  assert.match(alone.output, /--checks says where a Workflow landing runs the required checks; give it with --workflow/);
-  const bogus = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "laptop");
-  assert.equal(bogus.status, 1, bogus.output);
-  assert.match(bogus.output, /--checks takes local or container: atelier land t1 --workflow --checks local\|container/);
+  assert.match(alone.output, /--checks local is the only mode, and it applies to a Workflow landing; give it with --workflow/);
+  for (const mode of ["container", "laptop"]) {
+    const gone = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", mode);
+    assert.equal(gone.status, 1, gone.output);
+    assert.match(gone.output, /--checks container is gone: the required checks always run on this machine, in a clean clone \(t768\)\. Leave --checks out: atelier land t1 --workflow/, mode);
+  }
   assert.deepEqual(f.posts("/landing-workflow"), []);
-  // A server older than the modes records none and runs the checks in the
-  // container: this machine runs none and says so.
-  wf.noChecksMode = true;
-  const old = await f.run(f.checkout, "land", "t1", "--workflow");
-  assert.equal(old.status, 0, old.output);
-  assert.match(old.output, /Warning: the server recorded no checks mode for this landing/);
-  assert.deepEqual(f.posts("/evidence"), []);
-  assert.ok(!f.posts("/land").some((x) => x.body.step === "check"));
 });
 
 
 test("land --workflow reports a finished landing, not a lost one, when the merged task no longer names its Workflow (t308)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   // As in production on 2026-10-08: once the task is merged, the route
   // answers with no instance instead of a completed one.
   const tick = wf.tick;
   wf.tick = (box) => { tick(box); if (box.states.t1 === "merged") wf.instance = null; };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /t1 landed through the landing Workflow; the lease is released\./);
   assert.doesNotMatch(r.output, /can no longer be read/);
@@ -254,7 +216,7 @@ test("land --workflow reads a live instance again after failed reads, and recove
     else { wf.unreadable = false; wf.readError = null; }
     tick(box);
   };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /the landing Workflow could not be read \(Workflow binding unavailable\); trying again in \d+s, for up to \d+s in all/);
   assert.doesNotMatch(r.output, /can no longer be read/);
@@ -278,7 +240,7 @@ test("land --workflow reads again after a read that throws, and recovers within 
   const start = wf.tick;
   let armed = false;
   wf.tick = (box) => { if (!armed) { armed = true; wf.dropReads = 3; } start(box); };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /the landing Workflow could not be read \(.*\); trying again in \d+s, for up to \d+s in all/);
   assert.equal(wf.dropReads, 0);

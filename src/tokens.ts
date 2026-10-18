@@ -90,8 +90,8 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   // criteria-review-claim, criteria-review and criteria-review-failed are the
   // criteria reviewer's claim, verdict and failure (t438); asking for one
   // and resolving its findings stay the owner's.
-  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
+  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews"].includes(verb) || parts.length === 6 && ["logs", "diffs"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "read-token", "base-token", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
@@ -116,8 +116,8 @@ export const RUNNER_ROUTES: readonly { method: string; pattern: string }[] = [
   { method: "POST", pattern: "projects/:project/baseline-token" },
   { method: "GET", pattern: RUNNER_ITEM },
   ...["brief", "job-brief", "diff"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}` })),
-  ...["sandbox", "logs", "diffs"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}/*` })),
-  ...["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip", "fast-take", "fast-ready"]
+  ...["logs", "diffs"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}/*` })),
+  ...["claim", "read-token", "base-token", "push", "evidence", "submit", "plan", "release", "review-skip", "run-skip", "fast-take", "fast-ready"]
     .map(verb => ({ method: "POST", pattern: `${RUNNER_ITEM}/${verb}` })),
 ];
 
@@ -179,7 +179,7 @@ export type RunnerJob = "build" | "plan" | "review" | "criteria-review" | "integ
 export interface RunnerCall {
   name: string;
   method: "GET" | "POST";
-  // A path under /api, with {project}, {item} and {run} standing for the
+  // A path under /api, with {project} and {item} standing for the
   // encoded path parameters (callPath).
   path: string;
   credential: CallCredential;
@@ -270,8 +270,6 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The same command reads the project's regenerate command from its record.
   { name: "baseline-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "baseline-token", jobs: ["build"] },
   { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "merged", "mainHead", "notApplicable", "load"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
-  { name: "sandbox", method: "POST", path: `${ITEM}/sandbox`, credential: "runner", body: ["merged"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
-  { name: "sandbox-run", method: "GET", path: `${ITEM}/sandbox/{run}`, credential: "runner", body: [], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
   // Fast mode (t589): a build taken without a fork, and the report of the
   // commit it built. atelier fast take also reads the baseline it clones.
   { name: "fast-take", method: "POST", path: `${ITEM}/fast-take`, credential: "runner", body: [], via: "cli", command: "fast", jobs: ["build"] },
@@ -351,7 +349,7 @@ export function declaredHelperCall(method: string, path: string, body: unknown, 
 // encoded as a path segment; a parameter the path names and the caller
 // leaves out is an error, never an empty segment.
 export function callPath(call: RunnerCall, params: Record<string, string> = {}): string {
-  return call.path.replace(/\{(project|item|run)\}/g, (_, key: string) => {
+  return call.path.replace(/\{(project|item)\}/g, (_, key: string) => {
     const value = params[key];
     if (typeof value !== "string" || !value) throw new Error(`${call.name} needs ${key}`);
     return encodeURIComponent(value);
@@ -360,7 +358,7 @@ export function callPath(call: RunnerCall, params: Record<string, string> = {}):
 
 // The path's segments as the gateway splits them, for runnerRoute and
 // agentRoute: the declared path with sample parameters.
-export function callParts(call: RunnerCall, params: Record<string, string> = { project: "p", item: "t1", run: "p:t1:abc:1" }): string[] {
+export function callParts(call: RunnerCall, params: Record<string, string> = { project: "p", item: "t1" }): string[] {
   return callPath(call, params).split("/").filter(Boolean).map((s) => decodeURIComponent(s));
 }
 

@@ -3,13 +3,12 @@
 // pipeline on the owner's Mac as before (cli/land.mjs, docs/landing.md).
 //
 // One instance lands one task. The steps the server can do alone are durable
-// Workflow steps with retries: the required checks in a Cloudflare
-// container (the CheckRunner `atelier check --sandbox` starts), the
-// submission, the review request and the wait for its verdict, taking the
+// Workflow steps with retries: the wait for the required checks' observed
+// results, the submission, the review request and the wait for its verdict, taking the
 // project's landing lease (queueing for it in the order the landings asked,
 // t249), the acceptance, and the watch for the merge. Each reads and writes the Ledger
 // Durable Object directly, with no token, so an expired write token cannot
-// end them, and each retries on its own when the Ledger, the container or
+// end them, and each retries on its own when the Ledger or
 // Artifacts fails it transiently (a 503). The verdict wait and the merge
 // watch hibernate between polls, so a closed laptop costs nothing while
 // they wait.
@@ -43,25 +42,16 @@
 // Each lease step records the time the round spent before the lease and in
 // the queue, and each release step the time the lease was held.
 //
-// The required checks run in one of two places, the landing's checks mode
-// (t305), chosen by `atelier land ID --workflow --checks local|container`:
-//   - `container`: the Workflow starts the CheckRunner container run at the
-//     pushed head and polls it to its end, as above. It suits a project
-//     whose suite finishes in the container's small default instance.
-//   - `local`: the executor runs the checks in a clean clone on the machine
-//     holding the workspace (`atelier check`, as the plain landing does)
-//     after it pushes and before it reports the head, and the server records
-//     each result as observed evidence at that head. The Workflow then runs
-//     no container: it reads the Ledger until every required check has
-//     observed evidence at the exact pushed head, counted as the gate counts
-//     it (evidenceAt), so a report, a merged run or a run at another head
-//     never passes it. A failing result ends the landing as a failing
-//     container run does; no result within the checks timeout ends it too.
-//     Atelier's own suite outgrew the container (2026-10-08: stopped at the
-//     600 s step limit, then interrupted after 62 minutes with no result),
-//     which is why this mode exists.
-// A landing started without a mode (by a CLI older than t305, whose
-// executor runs no checks) runs them in the container.
+// The required checks run on the machine holding the workspace: the
+// executor runs them in a clean clone (`atelier check`, as the plain landing
+// does) after it pushes and before it reports the head, and the server
+// records each result as observed evidence at that head. The Workflow runs no
+// container: it reads the Ledger until every required check has observed
+// evidence at the exact pushed head, counted as the gate counts it
+// (evidenceAt), so a report, a merged run or a run at another head never
+// passes it. A failing result ends the landing; no result within the checks
+// timeout ends it too. (Until t768 the landing could run them in a
+// Cloudflare container instead; that mode is gone.)
 //
 // Each step is recorded as the same land.* events the CLI's own landing
 // writes (t186): the Workflow records the lease, the checks, the
@@ -74,7 +64,6 @@ import { suggestionRecords } from "./models/suggestion-records.ts";
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { refusalOf, refusalText } from "./checks";
 import { baseRepoOf } from "./plans/integrate";
 import { evidenceAt, parseRuleError, type Evidence } from "./rules";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, resolveFailures } from "./check-failure.ts";
@@ -83,7 +72,6 @@ import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
 import { landingVerdict, allSkipped, recordedApproval, reviewStall, type RecordedDetail, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
-import type { RunRequest } from "./sandbox/runner";
 import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
 import { fenceText, type PrereviewFence } from "./dispatch/prereview.ts";
 import { offersFor } from "./dispatch/rules.ts";
@@ -109,10 +97,8 @@ export interface LandingWorkflowParams {
   conflictTimeoutMs?: number;
   reviewTimeoutMs?: number;
   mergeTimeoutMs?: number;
-  // Where the required checks run (see the head of this file); absent is
-  // `container`. `checksTimeoutMs` bounds the local mode's wait for the
-  // observed results.
-  checks?: LandingChecksMode;
+  // `checksTimeoutMs` bounds the wait for the observed results of the
+  // required checks (see the head of this file).
   checksTimeoutMs?: number;
   // The landing triages before its review (t475, src/review/triage.ts): the
   // executor triages the pushed head before it reports it, and reports the
@@ -121,9 +107,6 @@ export interface LandingWorkflowParams {
   // the landing go on, and the task's head and criteria are still those.
   triage?: boolean;
 }
-
-export type LandingChecksMode = "local" | "container";
-export const LANDING_CHECKS_MODES: readonly LandingChecksMode[] = ["local", "container"];
 
 // What the executor reports for the workspace steps of one round: the head
 // it pushed after merging main (and the main head it merged, for the
@@ -183,7 +166,6 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       wait: Math.min(bounded(raw.waitTimeoutMs, LANDING_LEASE_WAIT_LIMIT_MS), LANDING_LEASE_WAIT_LIMIT_MS), workspace: bounded(raw.workspaceTimeoutMs, 24 * 3_600_000),
       conflict: bounded(raw.conflictTimeoutMs, 7 * DAY),
       review: bounded(raw.reviewTimeoutMs, 3_600_000), merge: bounded(raw.mergeTimeoutMs, 24 * 3_600_000),
-      checks: raw.checks === "local" ? "local" : "container",
       // The executor has already run the checks when it reports the push,
       // so the wait only bridges a slow record; half an hour, renewed lease.
       checksWait: bounded(raw.checksTimeoutMs, 30 * 60_000),
@@ -241,14 +223,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         const head = report.head;
         await this.seeHeadPushed(step, L, p, head);
 
-        // The checks: in the container mode, in the same Cloudflare
-        // container `atelier check --sandbox` starts, from the fork at the
-        // pushed head; in the local mode, the observed results the
-        // executor's clean-clone run recorded at that head, read from the
-        // Ledger.
-        await this.stage(step, L, p, "checks", round, p.checks === "local" ? `waiting for the observed results of the required checks at ${short(head)}, run in a clean clone on the machine holding the workspace` : undefined);
-        if (p.checks === "local") await this.awaitObservedChecks(step, L, p, head);
-        else await this.runChecks(step, L, p, head);
+        // The checks: the observed results the executor's clean-clone run
+        // recorded at that head, read from the Ledger.
+        await this.stage(step, L, p, "checks", round, `waiting for the observed results of the required checks at ${short(head)}, run in a clean clone on the machine holding the workspace`);
+        await this.awaitObservedChecks(step, L, p, head);
 
         // The submission, in the name of the task's holder, as `atelier
         // submit` run in the workspace submits it with the owner's token; it
@@ -594,73 +572,13 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   // ── the checks, the review, the merge ────────────────────────────────
 
-  // Starts the container run the sandbox route starts (refusing the same
-  // checks it refuses), with a run id named by this instance and head, so a
-  // retry of the step resumes the run it began (CheckRunner.start answers
-  // an existing run as it stands), and polls it to its end. A project with
-  // no required checks skips the container, recorded as skipped.
-  private async runChecks(step: WorkflowStep, L: LedgerStub, p: Landing, head: string): Promise<void> {
-    const started = await step.do(`run the required checks in a Cloudflare container${p.sfx}`, RETRIES, async () => {
-      await this.stillCurrent(L, p);
-      const item = await L.item(p.item);
-      const project = await L.project();
-      if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
-      if (!project.policy.checks.length) return { none: true as const, t0: Date.now(), runId: "", seconds: 0 };
-      if (!item.fork || !item.head) throw new NonRetryableError(`${p.item} has nothing pushed to check`);
-      const refused = [...(project.policy.prepare ? [project.policy.prepare.command] : []), ...project.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
-      if (refused.length) throw new NonRetryableError(`${refused.join(". ")}. The developer replaces it with atelier init --check; until then land ${p.item} without --workflow.`);
-      const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
-      const runId = `${p.key}:${p.item}:${head.slice(0, 12)}:wf-${p.instance}`;
-      const request: RunRequest = {
-        runId, project: p.key, itemId: p.item,
-        baselineRepo: baseRepoOf(item, project.repo, planFork),
-        fork: item.fork, head, checks: [...project.policy.checks], requestedBy: p.actor,
-        ...(project.policy.prepare ? { prepare: project.policy.prepare } : {}),
-        ...(project.policy.checkPaths?.length ? { checkPaths: project.policy.checkPaths } : {}),
-      };
-      if (p.origin) await L.setNotificationOrigin(p.item, p.origin);
-      await this.env.RUNNER.get(this.env.RUNNER.idFromName(runId)).start(request);
-      return { none: false as const, t0: Date.now(), runId, seconds: (project.policy.checks.length + (project.policy.prepare ? 1 : 0)) * 1800 + 120 };
-    });
-    if (started.none) {
-      await step.do(`record the check step${p.sfx}`, RETRIES, async () => { await this.note(L, p, "check", Date.now() - started.t0, { skipped: true }); return {}; });
-      return;
-    }
-    const maxPolls = Math.max(1, Math.ceil((started.seconds + 300) * 1000 / p.poll));
-    for (let i = 0; ; i++) {
-      const state = await step.do(`read the check run #${i}${p.sfx}`, RETRIES, async () => {
-        const s = await this.env.RUNNER.get(this.env.RUNNER.idFromName(started.runId)).state();
-        // A step returns serializable state alone, narrowed to what the
-        // decision below reads.
-        return s ? { status: s.status, error: String(s.error ?? ""), recorded: s.recorded === true, results: (s.results ?? []).map((r) => ({ claim: r.claim, passed: r.passed, outputTail: String(r.outputTail ?? "") })) } : null;
-      });
-      if (state?.status === "done") {
-        const failed = state.results.filter((r) => r.passed === false);
-        // The failure is said as every landing says it (failureText): from
-        // the evidence the run recorded, read as the gate reads it, after
-        // the line that names the checks, within the record's size.
-        const why = `the required checks failed at ${short(head)} in the Cloudflare container: ${failed.map((r) => r.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.`;
-        const { detail } = await step.do(`record the check step${p.sfx}`, RETRIES, async () => {
-          await this.note(L, p, "check", Date.now() - started.t0, failed.length ? { failed: true, reason: failed.map((r) => r.claim).join(", ").slice(0, 500) } : {});
-          return { detail: failed.length && state.recorded ? await this.failureText(L, p, head, why) : "" };
-        });
-        if (!state.recorded) throw new NonRetryableError(`the checks ran but the ledger did not record them; run atelier land ${p.item} --workflow again`);
-        if (failed.length) throw new NonRetryableError(detail || why);
-        return;
-      }
-      if (state?.status === "failed") throw new NonRetryableError(`the check run failed: ${state.error || "unknown error"}. Run atelier land ${p.item} --workflow again`);
-      if (i + 1 >= maxPolls) throw new NonRetryableError(`the checks were still ${state?.status ?? "unread"} after ${span(maxPolls * p.poll)}; run atelier land ${p.item} --workflow again`);
-      await step.sleep(`wait for the check run #${i}${p.sfx}`, p.poll);
-    }
-  }
-
-  // The local mode's checks: the executor ran them in a clean clone before
+  // The checks: the executor ran them in a clean clone before
   // it reported the push, and the server recorded each as observed evidence
   // at the head it read from Artifacts. The Workflow trusts none of that by
   // word: it reads the evidence from the Ledger and judges it with
   // evidenceAt, the gate's own reading, which counts only observed results
   // (never a report), at exactly this head, not a merged run, the latest per
-  // check, and under sandboxOnly only a container's. Every required check
+  // check. Every required check
   // that applies must pass; a failing one ends the landing; one with no
   // result is waited for until the checks timeout. No lease is held while
   // it waits (t550).
@@ -673,7 +591,6 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         const item = await L.item(p.item);
         if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
         const { policy } = await L.project();
-        if (policy.sandboxOnly && policy.checks.length) throw new NonRetryableError(`${p.project} counts only checks observed in a Cloudflare container (sandboxOnly), so checks run on the machine holding the workspace cannot pass it; run atelier land ${p.item} --workflow --checks container`);
         const view = evidenceAt(policy, await L.evidenceFor(p.item), head);
         return { checks: view.checks.map((c) => ({ claim: c.claim, observed: c.grade === "observed", passed: c.passed === true })) };
       });
@@ -689,7 +606,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       const pending = seen.checks.filter((c) => !c.observed);
       if (!pending.length) return;
       if (i + 1 >= maxPolls) {
-        throw new NonRetryableError(`no observed result at ${short(head)} for ${pending.map((c) => c.claim).join("; ")} within ${span(p.checksWait)}: in the local checks mode the machine holding the workspace runs the required checks in a clean clone (atelier check) after it pushes, and the server records them. Nothing was submitted; run atelier land ${p.item} --workflow again from that machine, or with --checks container`);
+        throw new NonRetryableError(`no observed result at ${short(head)} for ${pending.map((c) => c.claim).join("; ")} within ${span(p.checksWait)}: the machine holding the workspace runs the required checks in a clean clone (atelier check) after it pushes, and the server records them. Nothing was submitted; run atelier land ${p.item} --workflow again from that machine`);
       }
       await step.sleep(`wait for the observed checks at ${short(head)} #${i}${p.sfx}`, p.poll);
     }
@@ -902,7 +819,7 @@ type Landing = {
   project: string; key: string; item: string; actor: string; instance: string;
   reviewer: string | null; noReview: boolean; origin?: string;
   poll: number; mergePoll: number; wait: number; workspace: number; conflict: number; review: number; merge: number;
-  checks: LandingChecksMode; checksWait: number; triage: boolean;
+  checksWait: number; triage: boolean;
   // The suffix of this round's step names (t550): empty in the first round,
   // " rN" after, so a step of a later round never answers from the cache of
   // an earlier one's.

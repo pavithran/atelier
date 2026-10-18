@@ -177,13 +177,6 @@ test("runs at another head, reports and not-applicable records never make a fail
   assert.deepEqual(effectiveFailures(policy, evidence, null), []);
 });
 
-test("under sandboxOnly a failure on someone's machine does not count, as the gate does not count it; a container's does", () => {
-  const only: ProjectPolicy = { ...policy, sandboxOnly: true };
-  assert.deepEqual(effectiveFailures(only, [ev({ passed: false }), ev({ claim: "npm run typecheck", passed: false })], H1), []);
-  const failures = effectiveFailures(only, [ev({ passed: false }), ev({ passed: false, where: "sandbox" })], H1);
-  assert.deepEqual(failures.map((f) => [f.claim, f.where, f.attempt, f.attempts]), [["npm test", "sandbox", 2, 2]]);
-});
-
 test("a failing run on the merge with main is a failure exactly when the gate counts it as a blocker", () => {
   const own = ev({ passed: true, mainHead: M1 }), ownType = ev({ claim: "npm run typecheck", passed: true, mainHead: M1 });
   // Main moved after the head's own check passed: the merged failure blocks.
@@ -460,10 +453,10 @@ test("show, the landings and check-log number a run alike: own, merged, own at o
   assert.deepEqual([f.id, f.attempt, f.attempts], [third.id, 3, 3]);
   const text = failureSummary("t1", H1, [f]);
   assert.ok(text.includes(`evidence #${third.id}, attempt 3 of 3 at this head`), text);
-  const attempts = checkAttemptsAt(evidence, H1, policy);
+  const attempts = checkAttemptsAt(evidence, H1);
   assert.equal(summaryAttempt(text), "3 of 3");
   assert.equal(logAttempt(attempts, third.id), "3 of 3");
-  assert.deepEqual(attempts.filter((a) => a.claim === "npm test").map((a) => [a.id, a.attempt, a.attempts, a.uncounted]), [[first.id, 1, 3, null], [merged.id, 2, 3, null], [third.id, 3, 3, null]]);
+  assert.deepEqual(attempts.filter((a) => a.claim === "npm test").map((a) => [a.id, a.attempt, a.attempts]), [[first.id, 1, 3], [merged.id, 2, 3], [third.id, 3, 3]]);
   assert.deepEqual(failureJson(f).attempt, 3);
   // One helper numbers both: the number of every row is the one attemptNumbers gives it.
   const numbers = attemptNumbers(evidence, H1);
@@ -473,24 +466,21 @@ test("show, the landings and check-log number a run alike: own, merged, own at o
   const rows = [own, typecheck, blocking];
   const [m] = await resolveFailures(effectiveFailures(policy, rows, H1), none);
   assert.equal(summaryAttempt(failureSummary("t1", H1, [m])), "2 of 2");
-  assert.equal(logAttempt(checkAttemptsAt(rows, H1, policy), blocking.id), "2 of 2");
+  assert.equal(logAttempt(checkAttemptsAt(rows, H1), blocking.id), "2 of 2");
 });
 
-test("under sandboxOnly a container run is numbered after the machine run before it, everywhere, and check-log says the gate does not count the machine run", async () => {
-  const only: ProjectPolicy = { ...policy, sandboxOnly: true };
+test("a container run recorded before t768 is numbered after the machine run before it, everywhere", async () => {
   const machine = ev({ passed: false }), container = ev({ passed: false, where: "sandbox", run: "k:t1:a:2" });
   const typecheck = ev({ claim: "npm run typecheck", passed: true, where: "sandbox" });
   const evidence = [machine, container, typecheck];
-  const [f] = await resolveFailures(effectiveFailures(only, evidence, H1), none);
+  const [f] = await resolveFailures(effectiveFailures(policy, evidence, H1), none);
   assert.deepEqual([f.id, f.attempt, f.attempts], [container.id, 2, 2]);
   const text = failureSummary("t1", H1, [f]);
-  const attempts = checkAttemptsAt(evidence, H1, only);
+  const attempts = checkAttemptsAt(evidence, H1);
   assert.equal(summaryAttempt(text), "2 of 2");
   assert.equal(logAttempt(attempts, container.id), "2 of 2");
-  assert.equal(attemptHeader(attempts[0]), `── \`npm test\` · attempt 1 of 2 · failed · on a runner, in a clean clone · ${machine.at.slice(0, 16).replace("T", " ")} UTC · evidence #${machine.id} · not counted by the gate: this project counts only runs in a Cloudflare container`);
-  assert.ok(!attemptHeader(attempts[1]).includes("not counted"), attemptHeader(attempts[1]));
-  // Without the policy, check-log says nothing of what the gate counts.
-  assert.equal(checkAttemptsAt(evidence, H1)[0].uncounted, null);
+  assert.equal(attemptHeader(attempts[0]), `── \`npm test\` · attempt 1 of 2 · failed · on a runner, in a clean clone · ${machine.at.slice(0, 16).replace("T", " ")} UTC · evidence #${machine.id}`);
+  assert.match(attemptHeader(attempts[1]), /in a Cloudflare container/);
 });
 
 test("a why line longer than the landing record leaves the summary its check-log line", async () => {

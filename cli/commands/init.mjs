@@ -157,12 +157,11 @@ export default async function initCommand() {
     if (cp.agents) policy.agents = cp.agents;
     if (cp.execution) policy.execution = cp.execution;
   }
-  // --refuse-overlap and --sandbox-only are switches: given, they turn the
-  // setting on; given as --sandbox-only=false or --sandbox-only false, off.
+  // --refuse-overlap is a switch: given, it turns the setting on; given as
+  // --refuse-overlap=false or --refuse-overlap false, off.
   if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
   if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
   if (args["require-criteria-review"] !== undefined || reset) policy.requireCriteriaReview = args["require-criteria-review"] === true;
-  if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
   // --no-override is a switch too (t371): given, overrides of the
   // independent review are refused in the project; --no-override=false
   // allows them again, with the owner's confirmation.

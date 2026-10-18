@@ -25,7 +25,7 @@ async function fixture(t, checks = ["exit 0"]) {
   const evidence = [];
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
-    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks, sandboxOnly: false } };
+    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks } };
     if (req.url.endsWith("/read-token")) data = { remote, token: "read", head, defaultBranch: "main" };
     if (req.url.endsWith("/base-token")) data = { remote, token: "base", head, defaultBranch: "main" };
     if (req.url.endsWith("/evidence")) evidence.push(JSON.parse(raw));

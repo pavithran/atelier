@@ -394,8 +394,7 @@ export async function changedPaths(r: Reader, baseTree: string, headTree: string
 }
 
 // The workspace's head and every path it differs from main's head on (see
-// againstMain), both read from Artifacts with the measure the sandbox runner
-// uses. The gate classifies a change on these paths, so they come from here
+// againstMain), both read from Artifacts with the measure `atelier check`'s clean clone uses. The gate classifies a change on these paths, so they come from here
 // and never from the caller, and never from a fork point the workspace's
 // history chooses. When either repository has no commits, nothing is
 // measured: the paths are null and the gate waits.

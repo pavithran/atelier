@@ -1,5 +1,6 @@
 // Part 5 of 6 of the tests that were in land-lease-workflow.test.mjs, split so no file runs for more than about a minute (t771).
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
+import { WORKSPACE_REASON_MAX } from "../src/check-failure.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
@@ -12,12 +13,13 @@ import { git, landFixture, scriptWorkflow } from "./land-fixture.mjs";
 // `workspace` (t550); the CLI said that as the queue for the lease a checked
 // and approved head makes, before anything was checked.
 test("a landing Workflow at its first record is said to be starting, not queueing for the lease (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   wf.firstStage = "lease";
   const tick = wf.tick;
   wf.tick = (box) => { if (wf.stage === "lease" && !wf.detail) { wf.stage = "workspace"; return; } tick(box); };
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /The landing Workflow is starting\./);
   assert.ok(r.output.indexOf("is starting") < r.output.indexOf("merge main and push, holding no lease"));
@@ -26,14 +28,15 @@ test("a landing Workflow at its first record is said to be starting, not queuein
 
 
 test("land --workflow starts the Workflow, merges main and pushes holding no lease, reports the head, and merges once the Workflow holds the lease and accepts (t550)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   const before = git(f.checkout, "rev-parse", "HEAD");
-  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Landing t1 as a Cloudflare Workflow \(instance land-t1-1\)/);
-  assert.equal(wf.started[0].checks, "container");
-  assert.match(r.output, /runs the checks \(in a Cloudflare container\)/);
+  assert.match(r.output, /runs the required checks in a clean clone and merges when the Workflow asks/);
+  assert.doesNotMatch(r.output, /Cloudflare container/);
   assert.match(r.output, /The landing Workflow waits for this machine to merge main and push, holding no lease\./);
   assert.match(r.output, /The landing Workflow has the head checked and approved, and queues for the landing lease for the merge alone\./);
   assert.ok(r.output.indexOf("merge main and push, holding no lease") < r.output.indexOf("queues for the landing lease"));
@@ -50,10 +53,11 @@ test("land --workflow starts the Workflow, merges main and pushes holding no lea
   const head = git(f.workspace("t1"), "rev-parse", "HEAD");
   assert.equal(f.forkHead("t1"), head);
   assert.deepEqual(wf.events, [{ type: "workspace", payload: { round: 0, head, mainHead: f.mainCommit, mergedIn: true } }]);
-  // The server's steps are the Workflow's: this machine ran no check and
-  // made no submission, review request or acceptance of its own.
+  // The server's steps are the Workflow's: this machine ran the checks (t768
+  // removed the container mode) but made no submission, review request or
+  // acceptance of its own.
   for (const route of ["/submit", "/review-request", "/accept", "/sandbox"]) assert.deepEqual(f.posts(route), [], route);
-  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "merged"]);
+  assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "merged"]);
   // The merge in the registered checkout holds the pushed head.
   assert.equal(f.box.states.t1, "merged");
   assert.deepEqual(git(f.checkout, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [before, head]);
@@ -131,7 +135,7 @@ test("land --workflow ends with the Workflow's own reason when the Workflow fail
 test("land --workflow says when the server replaced an hours-old instance, and names the replacement on every event and renewal", async (t) => {
   const f = await landFixture(t);
   const wf = scriptWorkflow(f);
-  Object.assign(wf, { instance: "land-t1-old", stage: "lease", round: 0, checks: "local", status: "waiting", replace: { reason: "lease-wait", detail: "instance land-t1-old has waited for the landing lease since 2026-10-10T08:00:00.000Z (3.5 hours), at or past the 3 hours limit" } });
+  Object.assign(wf, { instance: "land-t1-old", stage: "lease", round: 0, status: "waiting", replace: { reason: "lease-wait", detail: "instance land-t1-old has waited for the landing lease since 2026-10-10T08:00:00.000Z (3.5 hours), at or past the 3 hours limit" } });
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Replaced t1's landing Workflow land-t1-old with land-t1-r1 \(lease-wait\): instance land-t1-old has waited for the landing lease since .* at or past the 3 hours limit\./);
@@ -147,7 +151,7 @@ test("land --workflow says when the server replaced an hours-old instance, and n
 test("land --workflow reports a named reviewer the server refused to put in place of the live instance's", async (t) => {
   const f = await landFixture(t);
   const wf = scriptWorkflow(f);
-  Object.assign(wf, { instance: "land-t1-1", stage: "lease", round: 0, checks: "local", status: "running" });
+  Object.assign(wf, { instance: "land-t1-1", stage: "lease", round: 0, status: "running" });
   wf.attach = { reviewer: "claude-code/opus-5.5", reviewerRefused: "claude-code/sonnet-5.5 cannot replace the remembered reviewer claude-code/opus-5.5: claude-code/sonnet-5.5 is not of another family than every contributor" };
   const r = await f.run(f.checkout, "land", "t1", "--workflow", "--reviewer", "claude-code/sonnet-5.5");
   assert.equal(r.status, 0, r.output);
@@ -185,7 +189,7 @@ test("land without --workflow never reaches the landing Workflow, and --dry-run 
 });
 
 
-// ── the local checks mode (t305) ────────────────────────────────────────────
+// ── the checks run here (t305, t768) ────────────────────────────────────────────
 
 test("land --workflow runs the required checks here in a clean clone after the push, by default, and reports the head only once they pass", async (t) => {
   if (!canInspectSlots(t)) return;
@@ -193,9 +197,10 @@ test("land --workflow runs the required checks here in a clean clone after the p
   const wf = scriptWorkflow(f);
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 0, r.output);
-  // The mode is local without --checks, sent to the server and said.
+  // A server from before t768 still reads the mode from the start, so the
+  // command keeps sending local; the current server ignores it.
   assert.equal(wf.started[0].checks, "local");
-  assert.match(r.output, /runs the required checks in a clean clone \(checks mode local\)/);
+  assert.match(r.output, /runs the required checks in a clean clone and merges when the Workflow asks/);
   assert.match(r.output, /Pushed \w+ to t1's fork; running the required checks in a clean clone\./);
   assert.match(r.output, /The required checks pass at \w+; reporting the head to the landing Workflow\./);
   // The check ran through atelier check (its observed result posted to the
@@ -253,4 +258,36 @@ test("land --workflow with a failing local check reports the workspace failed, n
   const check = f.posts("/land").find((x) => x.body.step === "check");
   assert.equal(check?.body.failed, true);
   assert.deepEqual(f.posts("/merged"), []);
+});
+
+
+test("land --workflow fits a long local-check failure to what the Workflow records, keeping every failed check and the check-log line", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  // The first check's output runs long (60 lines of some 100 characters,
+  // past what the summary shows and what the recorder keeps inline), and
+  // the second check fails after it.
+  const line = `not ok 1 - the long check ${"x".repeat(70)}`;
+  f.box.checks = [`yes '${line}' | head -n 60; exit 3`, "exit 4"];
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  const pointer = "  Whole logs of every attempt at this head: atelier check-log t1";
+  // The terminal prints the summary whole: both checks, the first's 20-line tail, then the pointer.
+  const printed = r.output.slice(r.output.indexOf("Failed checks at"), r.output.indexOf(pointer) + pointer.length);
+  assert.ok(printed.length > WORKSPACE_REASON_MAX, String(printed.length));
+  assert.match(printed, /\n {2}`yes 'not ok 1 - the long check x+' \| head -n 60; exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap, read from a tail of the output, so names cut with the rest are not listed\): the long check x+\n {4}log: inline tail only \(a check run on a machine keeps its last 3,500 characters inline, and this output was longer\); last 20 of \d+ lines:\n/, printed);
+  assert.match(printed, /\n {2}`exit 4` failed on a runner, in a clean clone at .*: evidence #2, attempt 1 of 1 at this head\n/, printed);
+  // The 20-line tail: 19 of the output's lines, then the sha256 line the recorder appends.
+  assert.equal(printed.split("\n").filter((l) => l.startsWith(`      ${line}`)).length, 19, printed);
+  // The Workflow is sent the same failure fitted to its record's size, not
+  // cut at it: the first line, both checks, and the check-log line survive.
+  assert.equal(wf.events.length, 1);
+  assert.equal(wf.events[0].payload.failed, true);
+  const reason = wf.events[0].payload.reason;
+  assert.ok(reason.length <= WORKSPACE_REASON_MAX, String(reason.length));
+  assert.ok(reason.startsWith("atelier check failed (exit 2):\nFailed checks at "), reason);
+  assert.ok(reason.includes("`exit 4`"), reason);
+  assert.ok(reason.endsWith(`\n${pointer}`), reason);
+  assert.ok(!reason.includes("…\n" + pointer), reason);
 });

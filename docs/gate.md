@@ -52,7 +52,7 @@ In detail:
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants the item atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the holder alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
 | `atelier push` | the item's holder; the developer for an open, unclaimed task | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the developer's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. The developer may also push an open, unclaimed task's workspace (`atelier push --as owner`), as an orchestrator's port or merge before the next builder claims: the push asks the Worker for a five-minute write token for that task's fork alone (`items.owner-port.v1`), recorded as the developer's, which the next claim revokes. |
 | `atelier update` | the item's holder | Brings the workspace up to date with the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the push that follows keeps them. Each step is previewed first (`previewMerge` in `cli/merge-pipeline.mjs`); a declaration problem the result would hold, such as a registry key both sides declare, stops it with nothing moved. A step that needs a generator `bin/merge-manifest.json` declares, because both sides changed what it reads, merges through the merge pipeline, which regenerates the outputs and commits the merge with its provenance, and names `atelier push`. Any other step rebases through the clone's merge drivers and names `atelier push --force`, whose lease keeps the commits Atelier recorded. |
-| `atelier check` | the item's holder; anyone with `--sandbox` | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. A result run on the caller's machine is recorded only for the item's holder, since the gate counts it on the caller's word; anyone the project's tokens reach may ask for a sandbox run, which records its own results. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed, or built by the Worker with `--sandbox`. A check that does not apply to the change is not run merged either. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
+| `atelier check` | the item's holder | Clones the workspace afresh at that head, runs each required check, and records the results as Observed. A result is recorded only for the item's holder, since the gate counts it on the caller's word. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A check runs with the caller's file access, and Atelier has no sandbox for it (t768 removed the container check), so do not check code you do not trust. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed. A check that does not apply to the change is not run merged either. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's holder | Marks the item ready. The gate states what still blocks it. |
 | `atelier handoff t3 --to codex/gpt-5.5` | the item's holder or the developer; the developer only when accepted | Moves the item to a new holder and revokes the old write token. An accepted task returns to claimed and must be submitted and accepted again. The workspace, reviews and acceptance history carry over; a merge holding the landing lease must finish or be cancelled first. |
@@ -137,15 +137,13 @@ and whether the item would merge, and is advisory.
 Beside the preview stand the checks run on that merge. `atelier check
 --merged` makes a temporary merge commit of the head with main's head in the
 clean clone, runs the required checks there and records each result bound to
-both revisions; `--merged --sandbox` has the Worker build the merged tree, as
-the preview reads the merge, and run the checks in a Cloudflare container. A
+both revisions. A
 merge the preview finds conflicts in has no tree to check, and the command
 says so. The preview and that tree read the project's merge declarations
 (`bin/merge-manifest.json`, `src/merge-declarations.ts`): a declared record
 file unites by key, and declared generated outputs are listed apart as
-regenerable, never as conflicts. No generator runs in the Worker, so a
-`--merged --sandbox` check whose merge needs one is refused and names
-`atelier check --merged`, which merges through the merge pipeline in the
+regenerable, never as conflicts. No generator runs in the Worker;
+`atelier check --merged` merges through the merge pipeline in the
 clean clone and regenerates them. Each result names the main head it merged with; the page marks it
 stale once main moves past that commit, and a new head retires it. A merged
 check is shown, not required, with one exception: when main moved after the
@@ -346,12 +344,12 @@ its blocking findings block as before.
 ## Check classes
 
 Atelier runs a check in a clean clone of an item's head whenever anyone asks,
-on an agent's machine or in a Cloudflare container, so a check must be
+on an agent's machine, so a check must be
 read-only: it reads the project and writes only in its clone, the caller's
 caches and temporary files. A command that deploys, installs onto a device or
 the machine, publishes, pushes, reaches another machine or spends money is
 never read-only. `atelier init` refuses to register it, whatever is declared,
-and the sandbox route, the container runner, `atelier check`, `wrap` and the
+and `atelier check`, `wrap` and the
 evidence route refuse to run or count it. The list, in
 [`src/checks.ts`](../src/checks.ts), covers `wrangler deploy` and `publish`
 (and other Cloudflare writes), `npm publish` and package scripts named for a
@@ -391,9 +389,8 @@ and the standing JSON, and in the project page's policy.
 
 The class is of the command as registered. What a script it runs does is
 the item's code: an item could rewrite `package.json`'s `test` script, which
-is why the files a check executes are protected (see How it works, above) and why
-untrusted code belongs in the sandbox, which has no credentials and reaches
-only the npm registry.
+is why the files a check executes are protected (see How it works, above). A
+check runs with the caller's file access; Atelier has no sandbox for it.
 
 ## Checks that apply to some paths
 
@@ -413,9 +410,7 @@ record only when the paths it measures itself from Artifacts show the same;
 otherwise it refuses, saying which changed path the check applies to, and
 the check must be run. The record carries no result and measures the
 changed paths, so a change that no check applies to can still be accepted.
-A check run in a Cloudflare container is handled the same way, and when no
-check applies no container is started. A command given after
-`atelier check --` always runs.
+A command given after `atelier check --` always runs.
 
 `atelier init` takes the globs from a ControlPlane project's
 `project-adapter.v1.json`. A change rule requires capabilities when a

@@ -44,7 +44,7 @@ const CHANGES = {
   t6: { reviews: 0, requests: 0, acceptance: false, override: false, asked: [] },
   t7: { reviews: 1, requests: 0, acceptance: true, override: true, asked: [] },
 };
-const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
+const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [] }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
   // The capability check before new, edit, init, review and merge (t458) reads the version.
@@ -64,7 +64,7 @@ globalThis.fetch = async (url, options = {}) => {
     const rest = m[1] ?? "";
     // t394: the stub records a model-policy switch as the server does, stamped with who and when.
     const familyMode = body?.singleFamily !== undefined ? { familyMode: { single: body.singleFamily || null, by: "owner", at: "2026-10-09T10:00:00.000Z" } } : {};
-    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false, ...familyMode } };
+    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, ...familyMode } };
     if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
     else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
     else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };

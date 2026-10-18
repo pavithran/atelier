@@ -45,7 +45,7 @@ export async function fixture(t, { failed = false, dirtyWorkspace = false, block
       res.end(text === undefined ? JSON.stringify({ error: "no_such_payload", detail: "nothing is stored" }) : text);
       return;
     }
-    let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox, ...policy }, evidence };
+    let data = { item, gate, policy: { checks: [command], ...(sandbox ? { sandboxOnly: true } : {}), ...policy }, evidence };
     if (path === "/api/projects/proj") data = { project: { policy: { prepare } }, items: [item] };
     if (path === "/api/projects") data = [{ name: "proj", title: "Proj" }];
     if (path === "/api/runners") data = [];
@@ -54,8 +54,6 @@ export async function fixture(t, { failed = false, dirtyWorkspace = false, block
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
     if (path.split("?")[0].endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title, kind: "accept", reason: "all checks observed passing at this head", weight: 100 }];
-    if (path.endsWith("/sandbox")) data = { runId: "run" };
-    if (path.endsWith("/sandbox/run")) data = { status: "done", recorded: true, request: { head }, results: [{ claim: command, passed: !failed, seconds: 1, outputTail: "check output" }] };
     const broken = failStep && path.endsWith(`/${failStep}`) && (failStep !== "base-token" || requests.filter((p) => p.endsWith("/base-token")).length === 1);
     res.writeHead(broken ? 503 : 200, { "content-type": "application/json" });
     res.end(JSON.stringify(broken ? { error: "unavailable", detail: "try later" } : data));

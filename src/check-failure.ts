@@ -12,20 +12,17 @@
 // Which runs: effectiveFailures reads the evidence with the gate's own
 // selection (evidenceAt and blockingMergedRuns in src/rules.ts): for each
 // required check that applies at the head, the latest observed run at that
-// head that counts (never a report, never a merged run, and under
-// sandboxOnly never a run on someone's machine); and each failing merged run
+// head that counts (never a report, never a merged run); and each failing merged run
 // that blocks acceptance. A check whose latest run passes is not a failure,
 // however many earlier runs failed; one at another head is not read at all.
 //
 // Which attempt: a run is numbered once, by attemptNumbers, and `show`, both
 // landings and `atelier check-log` print that one number. It counts every
 // observed run of the command at the head, oldest first: the head's own
-// runs, the runs on the merge with main, runs on someone's machine under
-// sandboxOnly and not-applicable records alike, so "attempt 3 of 3" in a
+// runs, the runs on the merge with main and not-applicable records alike, so "attempt 3 of 3" in a
 // summary is the third block check-log prints for that command. Whether the
 // gate counts a run is said beside the number, never by renumbering: a
-// summary names only runs the gate reads, and check-log says of a run on a
-// machine under sandboxOnly that the gate does not count it.
+// summary names only runs the gate reads.
 //
 // Which log: a run made in a Cloudflare container keeps its whole output in
 // R2 by reference (src/large.ts) when the output outgrew the tail held
@@ -95,7 +92,8 @@ import { blockingMergedRuns, countingRunsAt, evidenceAt, type Evidence, type Pro
 // `atelier check` posts the output's last LOCAL_OUTPUT_TAIL characters and a
 // sha256 of the whole (cli/atelier.mjs). The container runner keeps the
 // last SANDBOX_OUTPUT_TAIL inline and the whole log in R2 beside it when the
-// output was longer (src/sandbox/runner.ts).
+// output was longer; it is kept for the results the container check recorded
+// before t768 removed it.
 export const LOCAL_OUTPUT_TAIL = 3500;
 export const SANDBOX_OUTPUT_TAIL = 4000;
 
@@ -637,7 +635,6 @@ export interface CheckAttempt {
   attempt: number;         // which run of the check at the head, counting from 1 (attemptNumbers), as show numbers it
   attempts: number;
   outcome: "passed" | "failed" | "not applicable";
-  uncounted: string | null; // why the gate never counts this run, when the policy says it does not; null otherwise
   merged: boolean;
   mainHead: string | null;
   where: Where;
@@ -652,9 +649,8 @@ export interface CheckAttempt {
 // Every observed check at the head, in the order they were recorded, each
 // numbered by attemptNumbers, as `show` and the landings number it: the
 // retained logs `atelier check-log` prints. Reports are not checks and are
-// left out. Given the project's policy, a run the gate never counts (one on
-// someone's machine under sandboxOnly) says so beside its number.
-export function checkAttemptsAt(evidence: Evidence[], head: string | null, policy?: Pick<ProjectPolicy, "sandboxOnly"> | null): CheckAttempt[] {
+// left out.
+export function checkAttemptsAt(evidence: Evidence[], head: string | null): CheckAttempt[] {
   if (!head) return [];
   const numbers = attemptNumbers(evidence, head);
   return observedAt(evidence, head).map((e) => {
@@ -662,7 +658,6 @@ export function checkAttemptsAt(evidence: Evidence[], head: string | null, polic
     return {
       claim: e.claim, attempt, attempts,
       outcome: e.notApplicable ? "not applicable" : e.passed ? "passed" : "failed",
-      uncounted: policy?.sandboxOnly && e.where !== "sandbox" ? "not counted by the gate: this project counts only runs in a Cloudflare container" : null,
       merged: e.merged === true, mainHead: e.mainHead ?? null,
       where: e.where === "sandbox" ? "sandbox" : "runner", at: e.at, by: e.by,
       id: typeof e.id === "number" ? e.id : null, run: typeof e.run === "string" && e.run ? e.run : null,
@@ -688,5 +683,5 @@ export function headsWithChecks(evidence: Evidence[]): { head: string; runs: num
 // The header of one attempt as check-log prints it.
 export function attemptHeader(a: CheckAttempt): string {
   const ident = [a.id !== null ? `evidence #${a.id}` : null, a.run ? `run ${flatLine(a.run)}` : null].filter(Boolean).join(", ");
-  return `── \`${flatLine(a.claim)}\` · attempt ${a.attempt} of ${a.attempts} · ${a.outcome}${a.merged ? ` on the merge with main at ${short(a.mainHead)}` : ""} · ${WHERE_TEXT[a.where]} · ${when(a.at)}${a.load !== null ? ` · load ${a.load}` : ""}${ident ? ` · ${ident}` : ""}${a.uncounted ? ` · ${a.uncounted}` : ""}`;
+  return `── \`${flatLine(a.claim)}\` · attempt ${a.attempt} of ${a.attempts} · ${a.outcome}${a.merged ? ` on the merge with main at ${short(a.mainHead)}` : ""} · ${WHERE_TEXT[a.where]} · ${when(a.at)}${a.load !== null ? ` · load ${a.load}` : ""}${ident ? ` · ${ident}` : ""}`;
 }

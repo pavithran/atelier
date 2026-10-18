@@ -69,7 +69,7 @@ export function helpGroups(view: View = "web"): HelpGroup[] {
 
 export const HELP_GROUPS: HelpGroup[] = helpGroups("web");
 
-export const HELP_FOOTER = "Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --sandbox-only is on when named alone. It takes the word true or false after it and never any other word: --sandbox-only false or --sandbox-only=false turns it off.";
+export const HELP_FOOTER = "Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --refuse-overlap is on when named alone. It takes the word true or false after it and never any other word: --refuse-overlap false or --refuse-overlap=false turns it off.";
 
 // What `atelier help` prints, without the final newline.
 export function helpText(view: View = "web"): string {
@@ -98,7 +98,7 @@ export const helpForms = (view: View = "web"): string[] => formsOf(view).map((f)
 export const HELP_FORMS: string[] = helpForms("web");
 
 // What the usage of every command that runs checks locally says about them.
-const LOCAL_CHECK = "A local check runs on this machine with your file access: it can read your files and your Keychain and reach the network. It is given only PATH, HOME and the few other environment variables toolchains need, and Atelier's tokens are redacted from its output before it is uploaded. Run untrusted code in the sandbox: atelier check --sandbox, atelier finish --sandbox, or a project set up with atelier init --sandbox-only.";
+const LOCAL_CHECK = "A local check runs on this machine with your file access: it can read your files and your Keychain and reach the network. It is given only PATH, HOME and the few other environment variables toolchains need, and Atelier's tokens are redacted from its output before it is uploaded. Atelier has no sandbox for checks: do not run code you do not trust.";
 
 // The commands with usage of their own: every one that declares its help.
 // `ops` hands --help to the atelier-ops toolkit with everything after it, and

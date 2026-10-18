@@ -45,12 +45,10 @@ so multiple agents work concurrently without touching each other's files.
 
 **The checks run on the exact head.** `atelier check` runs each required
 check in a clean clone of exactly the head Atelier reads from Artifacts, on
-the machine that asks (an agent's or a runner's), or with `--sandbox` in a
-Cloudflare container. Atelier records the result as *Observed* only when it
-names that head, with the paths the change touches, which Atelier measures
-itself. The pass or fail of a local run is the word of the machine that ran
-it; a project that wants results no agent can forge is registered with
-`atelier init --sandbox-only`, and then only container runs count. Anything
+the machine that asks (an agent's or a runner's). Atelier records the result
+as *Observed* only when it names that head, with the paths the change
+touches, which Atelier measures itself. The pass or fail of a run is the word
+of the machine that ran it. Anything
 an agent says it did is *Reported*: shown, never counted. A required check
 with no observed result at the current head is *Pending*. Only Observed
 passes count.
@@ -106,7 +104,7 @@ the commit when multiple agents work at once, and that is what Atelier adds.
 | The question | With Git and a forge alone | With Atelier |
 | --- | --- | --- |
 | Who holds this work? | Commits record authors, not who holds the work; two agents can take the same task, and a crashed one leaves its branch half done. | One holder per task, holding the only write token for its workspace; a handoff is recorded and revokes the old token; a restarted runner takes back the jobs a dead run left. |
-| Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | The required checks run in a clean clone of the exact head Atelier reads, and a merge is refused until every one is observed passing there; with `--sandbox-only`, only runs in a Cloudflare container count. |
+| Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | The required checks run in a clean clone of the exact head Atelier reads, and a merge is refused until every one is observed passing there. |
 | Who checked it independently? | A model can review, and approve, its own work. | A change to a protected path needs approval from a model of another family than every contributor, and an agent's token speaks only for that agent. |
 | Is main still sound after the merge? | Branches drift from main, and what merges may not be what was reviewed. | One merge at a time under a lease: main is merged in, checks run again, and the exact head that was reviewed is the one merged. A plan's parts are integrated on the plan's own branch first. |
 | What needs the developer now? | A stream of pull requests and notifications. | A decision inbox, ranked, each entry with a recommendation; `atelier land` takes a task from review to merge in one command. |
@@ -137,16 +135,14 @@ the merge, not before it.
 | Workers | One Worker (`src/index.ts`) serves the API the CLI calls, the signed-in pages and the public pages, on the custom domain atelier.zone. | Live |
 | Durable Objects | The `Ledger` class, with SQLite storage. One instance per project checks and records a claim in one synchronous step (`claim` in `src/ledger.ts`), which is what makes one holder per task hold; it keeps the project's tasks, events, evidence and reviews. One index instance keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live |
 | Artifacts | Git repositories: each project's baseline, and a fork for every task and every plan. The Worker reads commits, trees and diffs through the binding to measure what a change touches and to preview its merge. Writes come only through a `git push` with a write token minted for one workspace. | Live (Artifacts is in open beta) |
-| Containers | `CheckRunner`, a Durable Object with a container from the Cloudflare-managed `cloudflare/debian-trixie` image, runs a task's required checks with `--sandbox`. The container holds no credential and its Internet is off, except GET and HEAD requests to the npm registry. The image has no git; the Worker streams Debian's git package, pinned by sha256, into each container (docs/setup.md). | Built and configured in `wrangler.jsonc`; a successful run in production has not been established |
 | Workers Analytics Engine | The `atelier_metrics` dataset (binding `METRICS`), with `src/metrics.ts` to write one typed data point (`writeMetric`) and read rows back through the Analytics Engine SQL API (`query`). Model speed (`src/models/speed.ts`) and reviewer precision (`src/models/precision.ts`) are computed from the ledger's own events, not written here. | Bound; nothing writes to it yet |
 | AI Gateway | Runners point opencode's pay-per-use providers at the gateway `atelier` (DeepSeek, OpenRouter and the API-key providers, each base URL `https://gateway.ai.cloudflare.com/v1/{ACCOUNT}/atelier/{provider}`); every call carries a `cf-aig-metadata` header naming the task, role and runner, and subscription harnesses stay direct. | Live: the home runners' DeepSeek and OpenRouter calls go through it ([AI Gateway costs](#ai-gateway-costs)) |
 | GraphQL Analytics API | The Models page and `atelier runner --usage` read the gateway's calls from it (`src/usage/gateway.ts`): each model's calls, failures, tokens, cost, and median and p90 duration over the last 7 days. | Live: the Models page shows each model's calls, failures, cost and durations |
 | Workers Logs | `observability` is enabled in `wrangler.jsonc`, so the Worker's logs are kept. | Live |
 | Queues | A consumer for Artifacts push notices (`cf.artifacts.repo.pushed`) is written in `src/index.ts`, but `wrangler.jsonc` declares no consumer, so no notice is delivered; the CLI reports each push to the Worker instead. | Written, not configured |
 | Cloudflare Access | In front of the developer's pages: the Worker verifies the Access assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). | Live: Access applications on atelier.zone, with the Worker's own check on |
-| Browser Rendering | A render check (`src/render-check.ts`, `test/render-check.test.mjs`) builds `/how` from the pushed tree, posts the page to the reserved host `render.atelier.test`, and the Worker's `BROWSER` binding renders it in Cloudflare's headless browser and reports the laid-out geometry; a label wider than its box, overlapping boxes or a figure that shrinks instead of scrolling fails the check. | Built and configured in `wrangler.jsonc` |
-| R2 | Large check logs and review diffs (`src/large.ts`), kept in the bucket `atelier-large` (binding `LARGE`) and named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. The same bucket caches the pinned Debian git package the check container installs (`fetchPinned` in `src/sandbox/runner.ts`). | Live: the bucket `atelier-large` exists and is bound |
-| Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` runs the checks (in a container with `--checks container`), the submission and the review wait without the landing lease, then takes the lease for the acceptance and the merge alone, as durable steps with retries, and waits for the developer's machine to merge main, push, run the checks (by default) and merge. | Live behind `atelier land --workflow` (local checks by default) |
+| R2 | Large check logs and review diffs (`src/large.ts`), kept in the bucket `atelier-large` (binding `LARGE`) and named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. | Live: the bucket `atelier-large` exists and is bound |
+| Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` waits for the observed results of the checks the developer's machine ran, the submission and the review without the landing lease, then takes the lease for the acceptance and the merge alone, as durable steps with retries, and waits for the developer's machine to merge main, push, run the checks and merge. | Live behind `atelier land --workflow` |
 
 ## Quickstart
 
@@ -291,7 +287,7 @@ accepted work into the real checkout, and the baseline follows.
 | `atelier new "title" --scope GLOB` | the developer | Creates a task. The scope is what it intends to touch; overlapping live scopes are flagged. |
 | `atelier claim t3 --as H/M` | an agent | Grants the task atomically, forks the baseline, mints an eight-hour write token for the holder alone, and clones the workspace. |
 | `atelier push` | the task's holder | Pushes, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | the task's holder; anyone with `--sandbox` | Runs each required check in a fresh clone of that head on the caller's machine, or in a container, and records the results as Observed with the paths the change touches, which the Worker measures itself. |
+| `atelier check` | the task's holder | Runs each required check in a fresh clone of that head on the caller's machine and records the results as Observed with the paths the change touches, which the Worker measures itself. |
 | `atelier submit` | the task's holder | Marks the task ready; the gate states what still blocks it. |
 | `atelier handoff t3 --to H/M` | the task's holder or the developer | Moves the task to a new holder and revokes the old write token; the workspace carries over. |
 | `atelier review t3 --approve` | a model that did not work on the task | Required when the change touches a protected path, from another family than every contributor. |
@@ -353,8 +349,7 @@ gate, check classes and checks that apply to some paths.
 - **The developer's actor and name.** Set `OWNER_ACTOR` and `OWNER_NAME` as
   secrets or `vars`, and `TIMEZONE` to an IANA zone for the pages' times.
 - **Project policy.** `atelier init` again changes only what it names.
-  `--protect GLOB` sets the protected paths, `--sandbox-only` counts only
-  checks run in a container, `--refuse-overlap` refuses a claim whose scope
+  `--protect GLOB` sets the protected paths, `--refuse-overlap` refuses a claim whose scope
   overlaps a live task's, `--regenerate CMD` names the command that
   regenerates fixtures during a landing, and `--review-bar TEXT` states what
   may block a review.
@@ -381,7 +376,7 @@ outside a registered checkout. `done` runs inside the task workspace. It
 pushes, runs the required checks and submits the summary only after checks
 pass and the revision remains unchanged. It stops at the first failed step
 and names that step. The individual steps remain available: `claim`,
-`push`, `update` (take the baseline: a merge that regenerates declared outputs, or a rebase), `check [--sandbox] [--merged]`,
+`push`, `update` (take the baseline: a merge that regenerates declared outputs, or a rebase), `check [--merged]`,
 `report` (a Reported claim), `submit`, `handoff`, `release`, and `block`
 with `unblock` for a task waiting on something outside it.
 
@@ -767,11 +762,10 @@ Trusted, and stated here so nobody assumes otherwise:
   agent included, can forge a local result. It cannot forge what the change
   touches: the changed paths are measured by the Worker from Artifacts for
   every check, so a protected change always needs its independent review,
-  whatever a local result says. Cloudflare container checks execute on the
-  server and are available with `--sandbox`; a project that wants results no
-  agent can forge is registered with `atelier init --sandbox-only`, whose
-  `sandboxOnly` policy counts only that evidence.
-  The container integration still needs deployment and a live runtime check.
+  whatever a local result says. Atelier has no check it runs itself: the
+  container check, which was the one result no agent could forge, was
+  removed in t768, so a local result is always the word of the machine that
+  ran it.
 - **A local check runs with the caller's file access.** `atelier check`,
   `finish` and `done` run the item's check code on the caller's machine as
   the caller, so it can read their files and Keychain and reach the network.
@@ -785,9 +779,8 @@ Trusted, and stated here so nobody assumes otherwise:
   redacts the API token, the read tokens for the fork and the baseline, and
   the workspace's write token. Redaction matches each token exactly as
   written, so a check that prints one encoded, reversed or in pieces is not
-  caught. Run untrusted code in the sandbox: `atelier check --sandbox`,
-  `atelier finish --sandbox`, or a project registered with
-  `atelier init --sandbox-only`.
+  caught. Atelier no longer has a sandbox for checks (t768), so do not run
+  check code you do not trust.
 - **Merging happens locally.** The Artifacts binding and REST API can read
   repositories (commits, trees, blobs, files, a first-parent log) but cannot
   write. The only way to write is a git push with a write token, so Atelier

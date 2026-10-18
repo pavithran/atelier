@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { noProjectMessage, parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
 import { fixture, cli } from "./cli-flags-shared.mjs";
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
-// --sandbox-only) never takes the word after it, so an item id written after
+// --refuse-overlap) never takes the word after it, so an item id written after
 // one is the item id; a flag that needs a value refuses a bare one before any
 // request; a flag a command does not take is refused the same way. The
 // commands run against a fake server: a preload replaces fetch, answers every
@@ -19,10 +19,10 @@ test("parseArgs: a switch keeps the next word as a positional, a text flag takes
   assert.equal(review.note, "fine");
   assert.deepEqual([review.bare, review.problems], [[], []]);
   // The words true and false, and only those, set a switch.
-  assert.equal(parseArgs(["init", "--sandbox-only", "false"])["sandbox-only"], false);
-  assert.deepEqual(parseArgs(["init", "--sandbox-only", "false"])._, ["init"]);
-  assert.equal(parseArgs(["init", "--sandbox-only=false"])["sandbox-only"], false);
-  assert.equal(parseArgs(["init", "--sandbox-only=true"])["sandbox-only"], true);
+  assert.equal(parseArgs(["init", "--refuse-overlap", "false"])["refuse-overlap"], false);
+  assert.deepEqual(parseArgs(["init", "--refuse-overlap", "false"])._, ["init"]);
+  assert.equal(parseArgs(["init", "--refuse-overlap=false"])["refuse-overlap"], false);
+  assert.equal(parseArgs(["init", "--refuse-overlap=true"])["refuse-overlap"], true);
   assert.equal(parseArgs(["ls", "--all", "t1"]).all, true);
   assert.deepEqual(parseArgs(["ls", "--all", "t1"])._, ["ls", "t1"]);
   assert.match(parseArgs(["ls", "--all=maybe"]).problems[0], /--all takes no value/);
@@ -351,22 +351,35 @@ test("init sends a switch as true or false, as it was written, and refuses any o
     const r = f.run(f.checkout, ["init", ...argv]);
     assert.equal(r.status, 0, r.stderr);
     const put = f.requests().find((q) => q.method === "PUT");
-    return { sandboxOnly: put.body.sandboxOnly, refuseOverlap: put.body.refuseOverlap, noOverride: put.body.noOverride };
+    return { refuseOverlap: put.body.refuseOverlap, noOverride: put.body.noOverride };
   };
-  assert.deepEqual(sent(["--sandbox-only"]), { sandboxOnly: true, refuseOverlap: undefined, noOverride: undefined });
-  assert.deepEqual(sent(["--sandbox-only", "false"]), { sandboxOnly: false, refuseOverlap: undefined, noOverride: undefined });
-  assert.deepEqual(sent(["--sandbox-only=false", "--refuse-overlap"]), { sandboxOnly: false, refuseOverlap: true, noOverride: undefined });
-  assert.deepEqual(sent(["--refuse-overlap", "false"]), { sandboxOnly: undefined, refuseOverlap: false, noOverride: undefined });
+  assert.deepEqual(sent(["--refuse-overlap"]), { refuseOverlap: true, noOverride: undefined });
+  assert.deepEqual(sent(["--refuse-overlap", "false"]), { refuseOverlap: false, noOverride: undefined });
+  assert.deepEqual(sent(["--refuse-overlap=false"]), { refuseOverlap: false, noOverride: undefined });
+  assert.deepEqual(sent(["--refuse-overlap=true", "--no-override"]), { refuseOverlap: true, noOverride: true });
+  // The sandbox check mode is gone (t768): its flag is refused like any other unknown one.
+  f.clear();
+  const gone = f.run(f.checkout, ["init", "--sandbox-only"]);
+  assert.equal(gone.status, 1);
+  assert.match(gone.stderr, /--sandbox-only/);
+  assert.deepEqual(f.requests(), []);
+  for (const argv of [["check", "t1", "--sandbox"], ["finish", "--sandbox"], ["done", "x", "--sandbox"]]) {
+    f.clear();
+    const refused = f.run(f.checkout, argv);
+    assert.equal(refused.status, 1, argv.join(" "));
+    assert.match(refused.stderr, /--sandbox/, argv.join(" "));
+    assert.deepEqual(f.requests(), [], argv.join(" "));
+  }
   // --no-override (t371) is a switch like the others: it sends noOverride
   // true, false when turned off, and nothing when it is not given.
-  assert.deepEqual(sent(["--no-override"]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: true });
-  assert.deepEqual(sent(["--no-override=false"]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: false });
-  assert.deepEqual(sent(["--no-override", "false"]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: false });
-  assert.deepEqual(sent([]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: undefined });
+  assert.deepEqual(sent(["--no-override"]), { refuseOverlap: undefined, noOverride: true });
+  assert.deepEqual(sent(["--no-override=false"]), { refuseOverlap: undefined, noOverride: false });
+  assert.deepEqual(sent(["--no-override", "false"]), { refuseOverlap: undefined, noOverride: false });
+  assert.deepEqual(sent([]), { refuseOverlap: undefined, noOverride: undefined });
   f.clear();
-  const bad = f.run(f.checkout, ["init", "--sandbox-only=yes"]);
+  const bad = f.run(f.checkout, ["init", "--refuse-overlap=yes"]);
   assert.equal(bad.status, 1);
-  assert.match(bad.stderr, /--sandbox-only takes no value: write --sandbox-only, or --sandbox-only=false to turn it off/);
+  assert.match(bad.stderr, /--refuse-overlap takes no value: write --refuse-overlap, or --refuse-overlap=false to turn it off/);
   assert.deepEqual(f.requests(), []);
 });
 

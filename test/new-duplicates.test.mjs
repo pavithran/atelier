@@ -40,7 +40,7 @@ globalThis.fetch = async (url, options = {}) => {
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {}, status = 200;
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
-  else if (path === "/api/projects/demo" && method === "GET") data = { project: { name: "demo", title: "Demo", repo: "demo", policy: { checks: [], protected: [], eligible: [], refuseOverlap: false, sandboxOnly: false } }, items: ITEMS, events: [] };
+  else if (path === "/api/projects/demo" && method === "GET") data = { project: { name: "demo", title: "Demo", repo: "demo", policy: { checks: [], protected: [], eligible: [], refuseOverlap: false } }, items: ITEMS, events: [] };
   else if (path === "/api/projects/demo/items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope };
   else { status = 404; data = { error: "no_project", detail: "project not initialised; run atelier init" }; }
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });

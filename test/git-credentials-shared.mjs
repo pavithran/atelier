@@ -48,7 +48,7 @@ process.exit(r.status ?? 1);
     item.owner = claim.owner;
     if (req.url.endsWith("/claim")) claims.push(req.method);
     const origin = `http://127.0.0.1:${server.address().port}`;
-    let data = { item: { ...item, head: forkHead() }, gate: { ready: true, blockers: [] }, policy: { checks: ["true"], sandboxOnly: false } };
+    let data = { item: { ...item, head: forkHead() }, gate: { ready: true, blockers: [] }, policy: { checks: ["true"] } };
     if (req.url === "/api/version") data = { capabilities: SERVER_CAPABILITIES };
     if (req.url.endsWith("/claim")) data = { item, workspace: { token: claim.token, remote: `${origin}/fork.git`, defaultBranch: "main", expiresAt: claim.expiresAt } };
     if (req.url.endsWith("/push")) data = { ...item, head: forkHead() };

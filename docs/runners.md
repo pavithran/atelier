@@ -64,12 +64,11 @@ automatic merges, before build or plan harnesses and harness-free merge
 finishes. Reviews, integrate and refresh jobs do not run preparation. Manual
 claims print the command and workspace directory for the caller to run.
 
-Local and container checks also run this command once in each clean checked
+Local checks also run this command once in each clean checked
 tree, after merging for `--merged`, before any checks or not-applicable
-results. This includes both Workflow check modes. Clean-clone preparation is
+results. Clean-clone preparation is
 not cached between attempts and uses the same command safety policy and
-execution deadline as checks (`ATELIER_CHECK_TIMEOUT`, default 20 minutes,
-locally; 30 minutes in the container). A failure stops the attempt without
+execution deadline as checks (`ATELIER_CHECK_TIMEOUT`, default 20 minutes). A failure stops the attempt without
 adding check evidence; earlier evidence remains. Its report names the command,
 exit status or signal and a redacted output tail of at most 4,000 characters.
 

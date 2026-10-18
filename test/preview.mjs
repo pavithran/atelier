@@ -40,7 +40,7 @@ const BASE = "049ebcc0b7f2e41d9c5a1e8f3d62b7a90c4e5f13";
 const now = new Date("2026-10-04T09:30:00Z");
 const at = (minAgo) => new Date(now.getTime() - minAgo * 60_000).toISOString();
 
-const policy = { checks: ["npm ci && npm test", "npm run types && npm run typecheck"], protected: ["src/rules.ts", "src/ledger.ts", "src/index.ts"], sandboxOnly: true };
+const policy = { checks: ["npm ci && npm test", "npm run types && npm run typecheck"], protected: ["src/rules.ts", "src/ledger.ts", "src/index.ts"] };
 const project = { name: "atelier", repo: "atelier", policy, createdAt: at(900) };
 const make = (id, title, state, owner, head = HEAD) => ({
   id, title, state, scope: ["src/**"], owner, fork: `atelier--${id}`, base: BASE, head,
@@ -95,8 +95,8 @@ const diff = { base: BASE, head: HEAD, truncated: false, files: [
   { path: "src/rules.ts", status: "modified", added: 2, removed: 1, hunks: [{ oldStart: 181, oldLines: 3, newStart: 181, newLines: 4, lines: [
     { op: " ", text: "  const atHead = head ? evidence.filter((e) => e.head === head) : [];" },
     { op: "-", text: "  const counts = (e: Evidence) => e.grade === \"observed\";" },
-    { op: "+", text: "  // Under sandboxOnly, a check run on someone's machine is shown but does not count." },
-    { op: "+", text: "  const counts = (e: Evidence) => e.grade === \"observed\" && (!policy.sandboxOnly || e.where === \"sandbox\");" },
+    { op: "+", text: "  // A merged run is shown beside the preview but is not the head's own check." },
+    { op: "+", text: "  const counts = (e: Evidence) => e.grade === \"observed\" && !e.merged;" },
     { op: " ", text: "  const latest = (claim: string) =>" }] }] },
 ] };
 const entries = [
@@ -172,7 +172,7 @@ const forkLine = (pushes, author) => {
 };
 const repos = {
   "": baseline,
-  t1: forkLine([[full("72701920"), "t1: a container runs the checks"], [HEAD, "t1: count only sandbox runs under sandboxOnly"]], "claude-code/opus-5.5"),
+  t1: forkLine([[full("72701920"), "t1: a container runs the checks"], [HEAD, "t1: a merged run is not the head's own check"]], "claude-code/opus-5.5"),
   t2: forkLine([[full("1a2b3c4d"), "t2: read push events"], [full("5e6f7a8b"), "t2: record each push"], [items[2].head, "t2: fix the failing test"]], "codex/gpt-6"),
   t4: forkLine([[items[1].head, "t4: test the ledger end to end"]], "zcode/glm-5.3"),
   t5: baseline,
@@ -251,7 +251,6 @@ export function route(url) {
     if (chosen.id === "t4") d.gate = { ...d.gate, ready: true, needsAssessor: false, blockers: [] };
   }
   if (state === "local" || state === "local-strict") d.evidence.forEach((x) => { delete x.where; x.by = "codex/gpt-6"; });
-  if (state === "local") d.policy = { ...policy, sandboxOnly: false };
   if (state === "failed") { d.evidence[0].passed = false; d.gate.needsAssessor = false; }
   if (state === "ready") d.gate = { ...d.gate, ready: true, needsAssessor: false, blockers: [] };
   if (state === "accepted" || state === "merged") { d.item.state = state; d.item.acceptedHead = d.item.head; d.gate.needsAssessor = false; }
