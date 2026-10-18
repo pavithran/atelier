@@ -548,7 +548,8 @@ test("Workflow land: an edit in moved code pauses the Workflow at its conflict s
   assert.equal(reported.payload.round, 2);
   assert.equal(reported.payload.head, w.head());
   assert.ok(third.records().some((r) => r.resolvedBy === "owner with --moved-ok"));
-  assert.deepEqual(third.commands, ["push"]);
+  // Checks run locally since t768 removed the container mode, so the round runs them after the push.
+  assert.deepEqual(third.commands, ["push", "check"]);
 });
 
 test("a comparison that fails, or finds no merge base, stops the landing with the reason, Git unchanged and the lease never taken", async (t) => {
