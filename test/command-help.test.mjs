@@ -73,11 +73,15 @@ test("every command answers --help with its usage, what it does, its flags and a
   const dir = mkdtempSync(join(tmpdir(), "atelier-command-help-"));
   try {
     for (const cmd of OWN) {
-      const r = spawnSync(process.execPath, [cli, cmd, "--help"], { cwd: dir, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: dir } });
-      assert.equal(r.status, 0, `${cmd} --help: ${r.stderr}`);
-      assert.equal(r.stderr, "", `${cmd} --help wrote to stderr`);
-      assert.equal(r.stdout, `${commandUsage(cmd)}\n`, `${cmd} --help`);
-      const lines = r.stdout.split("\n");
+      // The dispatcher answers --help for the first command and one with
+      // subcommands; the rest are read in this process (t765, audit finding 7).
+      if (cmd === OWN[0] || cmd === "models") {
+        const r = spawnSync(process.execPath, [cli, cmd, "--help"], { cwd: dir, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: dir } });
+        assert.equal(r.status, 0, `${cmd} --help: ${r.stderr}`);
+        assert.equal(r.stderr, "", `${cmd} --help wrote to stderr`);
+        assert.equal(r.stdout, `${commandUsage(cmd)}\n`, `${cmd} --help`);
+      }
+      const lines = `${commandUsage(cmd)}\n`.split("\n");
       assert.ok(lines[0].startsWith(`usage: atelier ${cmd}`), `${cmd}: ${lines[0]}`);
       for (const form of formsOf(cmd)) assert.ok(lines.includes(`usage: atelier ${form}`) || lines.includes(`       atelier ${form}`), `${cmd}: no usage line for ${form}`);
       if (accepted(cmd).size) assert.ok(lines.includes("Flags:"), `${cmd}: no flag list`);

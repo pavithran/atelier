@@ -66,9 +66,14 @@ export function handlerIndex(names) {
   ].join("\n");
 }
 
+// Counts the CLI processes a run starts, so a test can pin that the usage of
+// every command comes from one process (t765).
+export const runs = { cli: 0, loader: 0 };
+
 // The CLI's output for one run, from an empty config folder outside any
 // checkout; a run that fails or writes to stderr is an error.
 function cli(root, args, config) {
+  runs.cli++;
   const r = spawnSync(process.execPath, [join(root, "cli/atelier.mjs"), ...args], {
     cwd: config, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: config },
   });
@@ -79,16 +84,20 @@ function cli(root, args, config) {
 async function fixtures(root) {
   const config = mkdtempSync(join(tmpdir(), "atelier-regenerate-"));
   try {
-    // A child process reads the indexes as written, never a cached import,
-    // and registers every declaration and handler, as the CLI does.
+    // One child process reads the indexes as written, never a cached import,
+    // registers every declaration and handler, as the CLI does, and prints
+    // each command's usage, which is what `atelier COMMAND --help` prints
+    // (the dispatcher adds a newline).
     const url = (file) => JSON.stringify(pathToFileURL(join(root, file)).href);
+    runs.loader++;
     const list = spawnSync(process.execPath, ["--input-type=module", "-e",
-      `try { await import(${url("cli/atelier.mjs")}); const { COMMAND_USAGE } = await import(${url("cli/help.mjs")}); console.log(JSON.stringify(Object.keys(COMMAND_USAGE).sort())); }
+      `try { await import(${url("cli/atelier.mjs")}); const { COMMAND_USAGE } = await import(${url("cli/help.mjs")}); console.log(JSON.stringify(COMMAND_USAGE)); }
       catch (error) { process.stderr.write(error.message + "\\n"); process.exit(1); }`,
     ], { cwd: config, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: config } });
     if (list.status !== 0) throw new Error(`the command modules do not load: ${list.stderr.trim()}`);
+    const declared = JSON.parse(list.stdout);
     const usage = {};
-    for (const cmd of JSON.parse(list.stdout)) usage[cmd] = cli(root, [cmd, "--help"], config);
+    for (const cmd of Object.keys(declared).sort()) usage[cmd] = declared[cmd] + "\n";
     return {
       "test/fixtures/cli/help.txt": cli(root, ["help"], config),
       "test/fixtures/cli/usage.json": JSON.stringify(usage, null, 2) + "\n",

@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { FLAGS, HANDLERS, registerHandlers } from "../cli/atelier.mjs";
 import { COMMANDS, COMMAND_USAGE, REGISTRY, commandFor } from "../cli/help.mjs";
 import { orderedForms, registerCommands } from "../src/usage/command.ts";
+import { regenerate, runs } from "../cli/regenerate.mjs";
 
 // Each command owns two modules: its declaration, src/usage/commands/NAME.ts
 // (forms, flags, help, aliases, subcommands), which the CLI and the Worker
@@ -208,4 +209,14 @@ test("regenerate fails on a command error, naming the modules, and leaves the in
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /atelier list has no handler: cli\/commands\/list\.mjs/);
   assert.deepEqual(changes(before, snapshot(dir)), ["src/usage/commands/list.ts"]);
+});
+
+// t765, audit finding 7: regenerate started one CLI process per command (96
+// runs, about 20 s). It reads every usage in one process, so the number of runs
+// no longer grows with the commands, and its bytes are the checked-in ones.
+test("regenerate rebuilds the checked-in fixtures from a fixed number of processes, not one per command", async () => {
+  const cli = runs.cli, loader = runs.loader;
+  assert.deepEqual(await regenerate(root, { check: true }), []);
+  assert.equal(runs.loader - loader, 1);
+  assert.ok(runs.cli - cli <= 2, `${runs.cli - cli} CLI runs for ${Object.keys(COMMAND_USAGE).length} commands`);
 });
