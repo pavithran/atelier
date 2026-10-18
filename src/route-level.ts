@@ -97,7 +97,6 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, readonly string[]>> =
 // after the command names a subcommand that declares some, that
 // subcommand's. `atelier models` lists the pool on any server; `atelier
 // models note` needs models.note.v1.
-// new declares area support, but only requires it when --area is supplied;
 // models add declares the standing (t389), but only requires it with
 // --state, --roles or --tier. mode fast, accept and merge declare the
 // developer's direction (t629), but only require it with --quote.
@@ -106,7 +105,6 @@ export function requiredForCommand(command: string, word?: string, flags: Readon
   if (!d) return [];
   const sub = word !== undefined && Object.hasOwn(d.subcommands, word) ? d.subcommands[word] : [];
   return [...new Set([...d.own, ...sub])].filter((name) =>
-    (command !== "new" || name !== "areas.manage.v1" || flags.area !== undefined) &&
     (command !== "models" || word !== "add" || name !== "models.standing.v1" || ["state", "roles", "tier"].some((f) => flags[f] !== undefined)),
   ).filter((name) => name !== DIRECTION || flags.quote !== undefined);
 }

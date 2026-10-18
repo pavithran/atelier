@@ -2,10 +2,8 @@
 import type { CommandModule } from "../command.ts";
 import command_abandon from "./abandon.ts";
 import command_accept from "./accept.ts";
-import command_adopt from "./adopt.ts";
 import command_approvals from "./approvals.ts";
 import command_approve from "./approve.ts";
-import command_area from "./area.ts";
 import command_base_token from "./base-token.ts";
 import command_baseline_token from "./baseline-token.ts";
 import command_block from "./block.ts";
@@ -98,10 +96,8 @@ import command_wrap from "./wrap.ts";
 export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/abandon.ts", spec: command_abandon },
   { path: "src/usage/commands/accept.ts", spec: command_accept },
-  { path: "src/usage/commands/adopt.ts", spec: command_adopt },
   { path: "src/usage/commands/approvals.ts", spec: command_approvals },
   { path: "src/usage/commands/approve.ts", spec: command_approve },
-  { path: "src/usage/commands/area.ts", spec: command_area },
   { path: "src/usage/commands/base-token.ts", spec: command_base_token },
   { path: "src/usage/commands/baseline-token.ts", spec: command_baseline_token },
   { path: "src/usage/commands/block.ts", spec: command_block },

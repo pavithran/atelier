@@ -67,7 +67,6 @@ test/rules.test.ts 19
 test/land-recorded-head.test.mjs 17
 test/model-cards-cli.test.mjs 17
 test/status.test.mjs 16
-test/adopt.test.mjs 16
 test/landing-lease-wait.test.ts 16
 test/plan-cli.test.mjs 15
 test/runner-merge-main.test.mjs 13

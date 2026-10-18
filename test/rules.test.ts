@@ -2,6 +2,7 @@ import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
 import { usageShortages } from "../src/rules.ts";
+import { AREAS_REMOVED, itemFields } from "../src/rules.ts";
 import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateFolderMatches, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import {
@@ -1846,4 +1847,19 @@ test("parseRiskReviews accepts the field and refuses what cannot be read", () =>
   for (const bad of [null, "x", { ...ok, core: "src" }, { ...ok, core: [""] }, { core: [] }, { ...ok, reviews: { ...ok.reviews, core: 4 } }, { ...ok, reviews: { ...ok.reviews, other: 1.5 } }, { ...ok, reviews: { other: 1, core: 2 } }]) {
     assert.throws(() => parseRiskReviews(bad), (e: unknown) => e instanceof RuleError && e.code === "bad_risk_reviews" && e.status === 400);
   }
+});
+
+// t769: function areas were removed, and a server deployed ahead of an older
+// CLI must answer that CLI's new --area, edit --area and edit --clear-area
+// (which send `area`) with 410 Gone, not store the field and not answer 400
+// or 404 as if the request were malformed. The finding it would have caught:
+// a removed field answering with a misleading status.
+test("itemFields answers 410 areas_removed to an older CLI's area field, whatever its value", () => {
+  for (const area of ["a1", null, "Core", "", 3, true]) {
+    assert.throws(() => itemFields({ area }), (error: unknown) => {
+      const e = error as RuleError;
+      return e.code === AREAS_REMOVED && e.status === 410 && /function areas were removed/.test(e.detail);
+    }, JSON.stringify(area));
+  }
+  assert.deepEqual(itemFields({}), {});
 });

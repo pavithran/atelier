@@ -105,7 +105,7 @@ export function pageStates(s: Seeded): PageState[] {
     { id: "project-empty", path: `/p/${EMPTY_PROJECT}`, audience: "owner", status: 200, marker: "Nothing waits on you here", state: "Project with no tasks" },
     { id: "project-unavailable", path: `/p/${UNAVAILABLE_PROJECT}`, audience: "owner", status: 503, marker: "unable to reach its records", state: "Project whose Ledger cannot be read" },
     { id: "tasks", path: "/p/ledger-core/tasks", audience: "owner", status: 200, marker: "Create a task", state: "All 200 tasks in one list" },
-    { id: "tasks-empty", path: `/p/${EMPTY_PROJECT}/tasks`, audience: "owner", status: 200, marker: "No tasks.", state: "Task board with no tasks: one empty Unsorted area" },
+    { id: "tasks-empty", path: `/p/${EMPTY_PROJECT}/tasks`, audience: "owner", status: 200, marker: "No tasks.", state: "Task board with no tasks: an empty list under the Tasks heading" },
     { id: "project-flow", path: "/p/ledger-core/flow", audience: "owner", status: 200, marker: "Ledger Core", state: "One project's flow" },
     { id: "plans", path: "/p/ledger-core/plans", audience: "owner", status: 200, marker: "No plans yet", state: "No plans" },
     { id: "ship", path: "/p/ledger-core/ship", audience: "owner", status: 200, marker: "No action has been approved yet", state: "No protected action approved" },

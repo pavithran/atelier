@@ -1680,3 +1680,30 @@ it("a project's showcase with nothing merged is one quiet line", async () => {
   expect(html).not.toContain("pshow-figures");
   expect(html).not.toContain("pulse-graph");
 });
+
+// t769: an older CLI deployed before this server still lists, creates,
+// renames and removes areas and sends a task's area. Each answers 410 Gone and
+// stores nothing, and its board command still reads the empty areas list.
+it("the removed area routes and the area field answer 410, and the board keeps its areas list empty", async () => {
+  const name = "routes-areas-gone";
+  await project(name);
+  for (const [method, path, body] of [
+    ["GET", "areas", undefined], ["POST", "areas", { name: "Core", purpose: "Foundations" }],
+    ["POST", "areas/a1", { name: "Core", purpose: "Foundations" }], ["DELETE", "areas/a1", undefined],
+  ] as const) {
+    const response = await call(method, `/projects/${name}/${path}`, "owner", body);
+    expect(response.status, `${method} ${path}`).toBe(410);
+    expect(await response.json()).toMatchObject({ error: "areas_removed" });
+  }
+  const made = await call("POST", `/projects/${name}/items`, "owner", { title: "In an area", area: "a1" });
+  expect(made.status).toBe(410);
+  expect(await made.json()).toMatchObject({ error: "areas_removed" });
+  const plain = await (await call("POST", `/projects/${name}/items`, "owner", { title: "Plain" })).json() as { id: string };
+  for (const area of ["a1", null]) {
+    const edited = await call("POST", `/projects/${name}/items/${plain.id}/edit`, "owner", { area });
+    expect(edited.status, String(area)).toBe(410);
+  }
+  const board = await (await call("GET", `/projects/${name}/board`, "owner")).json() as { areas: unknown[]; items: { id: string }[] };
+  expect(board.areas).toEqual([]);
+  expect(board.items.map((i) => i.id)).toEqual([plain.id]);
+});

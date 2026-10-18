@@ -203,5 +203,3 @@ that is how Atelier improves.
 | close a session of direct edits | `atelier wrap "summary"` |
 | clear finished workspaces | `atelier clean --project NAME` |
 | see spend and windows | `atelier runner --usage` |
-
-See [Function areas and the project board](areas.md) for developer commands to create, rename and remove areas, assign tasks and read their stages.

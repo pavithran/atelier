@@ -148,16 +148,15 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "adopt", "area", "board", "branch", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["accept", "board", "branch", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "fast", "identity", "init", "integrated", "integration-failed", "land", "merge", "mode", "models", "new", "plan", "push", "record-merge", "refresh-checked", "refresh-failed", "refresh-lease", "refresh-pushing", "refreshed", "refreshes", "revert", "review", "review-claim", "review-request", "review-unparsable", "review-withdraw", "start", "stuck", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // The task refresh (t462): its queue, lease and reports.
   for (const command of ["refreshes", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["refresh.tasks.v1"], command);
   // land counts the runners that skipped its review request by the request number the answer carries (t353).
   assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
-  // new and edit assign a task to a function area (--area, t456); area manages them and board reads the snapshot.
-  assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1", "areas.manage.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1", "items.context.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.area, ["areas.manage.v1"]);
+  // new and edit no longer assign a function area (t769); board reads the snapshot.
+  assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "items.context.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
   // branch mints the developer's branches token and records each push (t641).
   assert.deepEqual(COMMAND_CAPABILITIES.branch, ["projects.developer-branches.v1"]);
@@ -217,7 +216,7 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   // A prototype key is not a subcommand.
   assert.deepEqual(requiredForCommand("models", "constructor"), []);
   // The command's own are asked under every word.
-  assert.deepEqual(requiredForCommand("edit", "t1"), ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1", "items.context.v1"]);
+  assert.deepEqual(requiredForCommand("edit", "t1"), ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "items.context.v1"]);
 });
 
 test("a module that requires a name no declaration publishes is refused, naming the module", () => {
@@ -375,7 +374,7 @@ test("every job but the review requires the run skip by name, which no legacy le
 test("main's identity and reviewer admission guarantees keep their legacy boundaries", () => {
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 24).map((c) => c.name), ["projects.commit-identity.v1"]);
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 25).map((c) => c.name), ["reviews.admission.v1"]);
-  for (const command of ["adopt", "revert", "claim", "start", "wrap", "init", "land", "merge"]) {
+  for (const command of ["revert", "claim", "start", "wrap", "init", "land", "merge"]) {
     assert.ok(COMMAND_CAPABILITIES[command].includes("projects.commit-identity.v1"), command);
     // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477) and the triage step (28, t475),
     // and init the criteria review (t438) and the publication policy (t433), and merge the developer's direction (t629), which no level guarantees.
@@ -530,7 +529,7 @@ function invocations(root) {
   const reply = join(root, "reply.txt");
   writeFileSync(reply, "no verdict here");
   return [
-    { argv: ["new", "A short title", "--area", "a1", "--project", "proj"], required: COMMAND_CAPABILITIES.new },
+    { argv: ["new", "A short title", "--project", "proj"], required: COMMAND_CAPABILITIES.new },
     { argv: ["edit", "t1", "--title", "Another", "--project", "proj"], required: COMMAND_CAPABILITIES.edit },
     { argv: ["init", "--title", "Proj"], required: COMMAND_CAPABILITIES.init },
     { argv: ["merge", "t1", "--project", "proj"], required: requiredForCommand("merge", "t1", {}) },
@@ -538,7 +537,6 @@ function invocations(root) {
     { argv: ["models", "admit", "gpt", "--project", "proj", "--reason", "independent"], required: ["reviews.admission.v1"] },
     { argv: ["models", "withdraw", "gpt", "--project", "proj", "--reason", "retired"], required: ["reviews.admission.v1"] },
     { argv: ["models", "reviewers", "--project", "proj"], required: ["reviews.admission.v1"] },
-    { argv: ["adopt", "--project", "proj"], required: COMMAND_CAPABILITIES.adopt },
     { argv: ["revert", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.revert },
     { argv: ["claim", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.claim },
     { argv: ["start", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.start },
@@ -550,7 +548,6 @@ function invocations(root) {
     { argv: ["review-unparsable", "t1", "--head", SHA, "--note", "n", "--reply-file", reply, "--project", "proj"], required: COMMAND_CAPABILITIES["review-unparsable"] },
     { argv: ["token", "issue", "--as", "codex/x"], required: ["runners.scoped-token.v1"] },
     { argv: ["token", "store", "--runner", "home:x"], required: ["runners.scoped-token.v1"] },
-    { argv: ["area", "list", "--project", "proj"], required: COMMAND_CAPABILITIES.area },
     { argv: ["board", "--project", "proj"], required: COMMAND_CAPABILITIES.board },
     { argv: ["criteria-review", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES["criteria-review"] },
   ];
@@ -592,7 +589,7 @@ test("a server with every capability a command needs, or more, lets its first re
   assert.deepEqual(behind.requests.map((x) => x.path), ["/api/version"]);
 });
 
-test("new requires areas only when --area is supplied, on named and legacy servers", async (t) => {
+test("new asks only for the brief and criteria, and --area is refused by the CLI before any request (t769)", async (t) => {
   assert.deepEqual(requiredForCommand("new"), ["items.brief-criteria.v1"]);
   assert.deepEqual(requiredForCommand("new", undefined, { area: "a1" }), COMMAND_CAPABILITIES.new);
   for (const version of [{ capabilities: ["items.brief-criteria.v1"] }, { routeLevel: 15 }]) {
@@ -603,8 +600,8 @@ test("new requires areas only when --area is supplied, on named and legacy serve
     f.requests.length = 0;
     const refused = await f.run(["new", "Title", "--area", "a1", "--project", "proj"]);
     assert.equal(refused.status, 1, refused.output);
-    assert.match(refused.output, /lacks capabilities areas\.manage\.v1/);
-    assert.deepEqual(f.requests.map((r) => r.path), ["/api/version"]);
+    assert.match(refused.output, /does not take --area/);
+    assert.deepEqual(f.requests, []);
   }
 });
 
