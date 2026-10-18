@@ -46,7 +46,7 @@ import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
-import { attentionFor } from "./attention.ts";
+import { attentionFor, type Attention } from "./attention.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
@@ -3828,6 +3828,25 @@ async function ownerAttention(env: Env, views: ProjectView[], now: Date) {
   }));
 }
 
+// Each project's tasks and what waits on the owner there, read in one call
+// to its ledger (t762): the owner's bar and Home read this on every page, and
+// asked the ledger for its tasks, with their whole push history, and then for
+// its inbox, which read the tasks again. A project whose ledger cannot be
+// read is listed as unavailable, as projectViews lists it.
+async function ownerViews(env: Env, now: Date): Promise<{ views: ProjectView[]; attention: Attention[] }> {
+  const projects = await index(env).projects();
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  const read = await Promise.all(projects.map(async (project) => {
+    try {
+      const { items, inbox } = await ledgerOf(env, project).ownerRead(now.toISOString(), pool);
+      return { view: { project, items } as ProjectView, attention: attentionFor(project.name, items, inbox, offers, now) };
+    } catch {
+      return { view: { project, items: [], unavailable: true } as ProjectView, attention: attentionFor(project.name, null, null, offers, now) };
+    }
+  }));
+  return { views: read.map((r) => r.view), attention: read.map((r) => r.attention) };
+}
+
 // The owner's bar on every owner page (src/ui.ts page): the Decisions count,
 // one per task waiting on the owner as the Decisions list counts them, said
 // as uncertain where a project was not read in full, and the projects for
@@ -3840,8 +3859,7 @@ async function withShell(env: Env, url: URL, res: Response): Promise<Response> {
   const body = await res.text();
   if (!hasShell(body)) return new Response(body, res);
   const shell = await (async (): Promise<Shell> => {
-    const { views } = await projectViews(env);
-    const attention = await ownerAttention(env, views, new Date());
+    const { views, attention } = await ownerViews(env, new Date());
     const [first, name, ...rest] = url.pathname.split("/").slice(1).map((part) => { try { return decodeURIComponent(part); } catch { return part; } });
     const at = first === "p" ? views.find((v) => v.project.name === name)?.project : undefined;
     return {
@@ -3858,20 +3876,17 @@ async function withShell(env: Env, url: URL, res: Response): Promise<Response> {
 // weeks of moves) and its own inbox (what waits on the owner there).
 async function homePage(c: Ctx): Promise<Response> {
   const { env } = c;
-  const { views } = await projectViews(env);
   const now = new Date();
-  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
-  const home: HomeView[] = await Promise.all(views.map(async (v) => {
+  const { views, attention } = await ownerViews(env, now);
+  const home: HomeView[] = await Promise.all(views.map(async (v, i) => {
     if (v.unavailable) return v;
-    // Each read on its own: the moves or the notices not read are said on
-    // the card, and what waits on the owner from the tasks read still shows.
-    const L = ledgerOf(env, v.project);
-    const [events, inbox] = await Promise.all([
-      (L.events(undefined, STORY_EVENTS) as Promise<unknown>).catch(() => null) as Promise<LedgerEvent[] | null>,
-      L.inbox(now.toISOString(), pool).catch(() => null),
-    ]);
-    const waiting = attentionFor(v.project.name, v.items, inbox, offers, now);
-    return events ? { ...v, events, cut: events.length >= STORY_EVENTS, waiting } : { ...v, eventsUnread: true, waiting };
+    // The moves not read are said on the card, and what waits on the owner
+    // from the tasks read still shows.
+    const waiting = attention[i];
+    try {
+      const events = (await ledgerOf(env, v.project).events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
+      return { ...v, events, cut: events.length >= STORY_EVENTS, waiting };
+    } catch { return { ...v, eventsUnread: true, waiting }; }
   }));
   return html(renderHome(home, ownerName(env), now, ownerActor(env)));
 }
@@ -4108,7 +4123,8 @@ export default {
           const projects = await index(env).projects();
           for (const project of projects) {
             const L = ledgerOf(env, project);
-            const item = (await L.items()).find(i=>i.fork===notice.repo);
+            const itemId = await L.itemIdOfFork(notice.repo);
+            const item = itemId ? await L.item(itemId) : undefined;
             if (!item || ["merged","abandoned"].includes(item.state)) continue;
             // Only a push to the project's branch moves the head headOf reads.
             if (notice.ref !== `refs/heads/${await projectBranch(env, project)}`) break;

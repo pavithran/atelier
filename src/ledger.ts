@@ -2867,7 +2867,7 @@ export class Ledger extends DurableObject<Env> {
     if (idleRunner) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-idle:${idleRunner.toLowerCase()}`, JSON.stringify(new Date().toISOString()));
     const skipped = this.runnerNotes<RunSkip>("run-skip");
     const runners = this.runnerPolls(), now = Date.now();
-    const busy = this.items().filter((i) => i.state === "claimed" && i.owner && i.runner && i.dispatch
+    const busy = this.claimedRows().map(toItem).filter((i) => i.owner && i.runner && i.dispatch
       && !orphanedBy(i, runners, now)
       && !idleMarked(this.runnerMeta<string>(`runner-idle:${i.runner.toLowerCase()}`), now)
       && !(skipped.get(i.id) ?? []).some((s) => s.dispatchAt === i.dispatch!.at && s.runner.toLowerCase() === i.runner!.toLowerCase()))
@@ -3003,9 +3003,17 @@ export class Ledger extends DurableObject<Env> {
   // itself stays as it was: only the asking runner matches, compared without
   // case as claim() compares it.
   heldJobs(runner: string): Item[] {
-    return this.withCriteriaReviews(this.items()
-      .filter((i) => i.state === "claimed" && i.dispatch && (i.runner ?? "").toLowerCase() === runner.toLowerCase())
+    const mine = this.claimedRows().filter((r) => ((r.runner as string | null) ?? "").toLowerCase() === runner.toLowerCase());
+    return this.withCriteriaReviews((mine.length ? this.withPushActors(mine) : [])
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)));
+  }
+
+  // The claimed rows that carry a dispatch, in id order, read from the items
+  // table alone (t762): a runner's poll needs no item's push history, and
+  // reading every item's events for the whole ledger every 30 seconds was
+  // the busiest read the server made.
+  private claimedRows(): Row[] {
+    return this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
   }
 
   // Every build item the queue offers, waiting or held, carries how many
@@ -5616,15 +5624,51 @@ export class Ledger extends DurableObject<Env> {
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
+    return this.inboxOver(this.listedItems(), now, pool);
+  }
+
+  // The items as the owner's lists read them (t762): every row, with push
+  // history only for the submitted and accepted ones, the one reading of an
+  // item's contributors the inbox makes (its gate). The owner's bar and
+  // Home call this on every page, so the history of every other item is not
+  // read; the entries and counts they draw do not use it.
+  private listedItems(): Item[] {
+    const rows = this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
+    const gated = rows.filter((r) => r.state === "submitted" || r.state === "accepted");
+    const full = new Map((gated.length ? this.withPushActors(gated) : []).map((i) => [i.id, i]));
+    return rows.map((r) => full.get(r.id as string) ?? toItem(r));
+  }
+
+  // What an owner page's bar and cards read of a project in one call: its
+  // tasks and its inbox, the inbox null where it could not be read (the
+  // pages say so rather than drop the project).
+  ownerRead(now: string, pool?: readonly ModelEntry[] | null): { items: Item[]; inbox: InboxEntry[] | null } {
+    const items = this.listedItems();
+    try { return { items, inbox: this.inboxOver(items, now, pool) }; }
+    catch { return { items, inbox: null }; }
+  }
+
+  // The id of the first task whose fork is this repository, or null: the
+  // push notice names a repository, and asking for the whole ledger to find
+  // its task read every item's history in every project on every push.
+  itemIdOfFork(repo: string): string | null {
+    const row = this.sql.exec(`SELECT id FROM items WHERE fork = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER) LIMIT 1`, repo).toArray()[0];
+    return row ? row.id as string : null;
+  }
+
+  private inboxOver(items: Item[], now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
     const p = this.project();
-    const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
-    const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
+    // Evidence and reviews are read for the items the inbox gates, the
+    // submitted and the accepted; inboxFor reads no other item's.
+    const gated = `item_id IN (SELECT id FROM items WHERE state IN ('submitted', 'accepted'))`;
+    const all = this.sql.exec(`SELECT json FROM evidence WHERE ${gated}`).toArray().map((r) => JSON.parse(r.json as string));
+    const rv = this.sql.exec(`SELECT json FROM reviews WHERE ${gated}`).toArray().map((r) => JSON.parse(r.json as string));
     // An assess entry carries the reviewer the pool offers, so the owner sees
     // the runnable `atelier land ID --reviewer H/M` command that replaces an
     // override, not the placeholder alone (t395), or null when none in the pool
     // qualifies, which attentionFor places under the owner's override. With no
     // pool given the reviewer is left unset: not read, never "none qualifies".
-    return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p), ...this.prereviewEntries(p.name), ...this.gaveUpEntries(p.name)]
+    return [...inboxFor(p.name, items, p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p, items), ...this.prereviewEntries(p.name), ...this.gaveUpEntries(p.name, items)]
       .map((e) => (e.kind === "assess" && pool ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
@@ -5634,12 +5678,12 @@ export class Ledger extends DurableObject<Env> {
   // each kind (policy.shipKinds, from the checkout's ship files) that no
   // `action.ran` event follows the `item.merged` event for (unrunKinds in
   // src/actions.ts). It ranks with the owner's decisions, under a merge.
-  private shipEntries(p: { name: string; policy: ProjectPolicy }): InboxEntry[] {
+  private shipEntries(p: { name: string; policy: ProjectPolicy }, listed: Item[]): InboxEntry[] {
     const declared = p.policy.shipKinds ?? [];
     if (!declared.length) return [];
     const runs = this.sql.exec(`SELECT seq, data FROM events WHERE kind = 'action.ran'`).toArray()
       .map((r) => ({ kind: (JSON.parse(r.data as string) as ActionRun).kind, seq: r.seq as number }));
-    const items = new Map(this.items().map((i) => [i.id, i]));
+    const items = new Map(listed.map((i) => [i.id, i]));
     return this.sql.exec(`SELECT item_id, seq, data FROM events WHERE kind = 'item.merged' ORDER BY seq`).toArray().flatMap((m) => {
       const item = items.get(m.item_id as string), data = JSON.parse(m.data as string) as { mergeCommit?: unknown };
       if (!item || typeof data.mergeCommit !== "string") return [];
@@ -5657,8 +5701,8 @@ export class Ledger extends DurableObject<Env> {
   // committed and let go of the claim, so nothing holds the core files for it
   // and nothing is working on it. The entry stays until the task is claimed or
   // dispatched again.
-  private gaveUpEntries(project: string): InboxEntry[] {
-    return this.items().filter((i) => i.state === "open" && i.dispatch).flatMap((i) => {
+  private gaveUpEntries(project: string, listed: Item[]): InboxEntry[] {
+    return listed.filter((i) => i.state === "open" && i.dispatch).flatMap((i) => {
       const last = this.sql.exec(`SELECT kind, data FROM events WHERE item_id = ? AND kind IN ('item.claimed', 'item.handoff', 'item.released', 'item.dispatched', 'item.gave_up') ORDER BY seq DESC LIMIT 1`, i.id).toArray()[0];
       if (last?.kind !== "item.released" && last?.kind !== "item.gave_up") return [];
       const note = (JSON.parse(last.data as string) as { note?: unknown }).note;
