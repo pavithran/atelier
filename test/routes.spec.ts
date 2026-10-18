@@ -1388,9 +1388,11 @@ it("the sandbox routes are gone: neither starting a run nor reading one answers"
   await L.setFork("t1", `${name}--t1`, "0".repeat(40), A);
   await L.recordPush("t1", A, H1, H1);
   const started = await call("POST", `/projects/${name}/items/t1/sandbox`, "owner", {});
-  expect(started.status).toBe(404);
+  // 410 with a message, not a 404 a CLI built before t768 would misread as a missing run.
+  expect(started.status).toBe(410);
+  expect(await started.json()).toMatchObject({ error: "sandbox_removed", detail: expect.stringContaining("atelier check") });
   const read = await call("GET", `/projects/${name}/items/t1/sandbox/${encodeURIComponent(`${name}:t1:aaaaaaaaaaaa:1`)}`, "owner");
-  expect(read.status).toBe(404);
+  expect(read.status).toBe(410);
 });
 it("the developer sets, replaces and clears a task's context through the edit route, and it is recorded only on change", async () => {
   await project("routes-ctx");

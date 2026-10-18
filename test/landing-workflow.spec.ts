@@ -439,7 +439,10 @@ it("a summary too long for the record is fitted to it, so every failed check and
   expect((await L.item(id)).state).not.toBe("submitted");
 });
 
-it("the landing-workflow route ignores a checks mode in the body, as a CLI before t768 sends one, and records none", async () => {
+// Finding (Astra, t768 round 1): the CLI at bba67d5e (cli/land.mjs, runLandWorkflow)
+// reads `started.checks !== "local"` from this response as the container mode, so a
+// response without the field broke every existing local Workflow landing.
+it("the landing-workflow route ignores a checks mode in the body, as a CLI before t768 sends one, and always answers checks: local", async () => {
   const project = "wf-route-checks";
   const L = ledger(project);
   const record = { name: project, repo: `${project}--baseline`, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
@@ -457,14 +460,13 @@ it("the landing-workflow route ignores a checks mode in the body, as a CLI befor
   await using introspector = await introspectWorkflow(env.LANDING_WORKFLOW);
   await introspector.modifyAll(async (m) => { await m.disableSleeps(); });
   // The container mode is gone: whatever a client names, the landing waits
-  // for the checks the developer's machine ran, and the record names no mode.
+  // for the checks the developer's machine ran, and the record says local.
   for (const [id, body] of [[ids[0], { checks: "local", pollMs: 10 }], [ids[1], { checks: "container", pollMs: 10 }], [ids[2], { pollMs: 10 }]] as const) {
     const answer = await (await call(id, body)).json() as Record<string, unknown>;
-    expect(answer).toMatchObject({ created: true });
-    expect(answer).not.toHaveProperty("checks");
+    expect(answer).toMatchObject({ created: true, checks: "local" });
   }
   await until(() => L.landingWorkflowOf(ids[1]), (r) => r?.stage === "workspace");
-  expect(await L.landingWorkflowOf(ids[1])).not.toHaveProperty("checks");
+  expect(await L.landingWorkflowOf(ids[1])).toMatchObject({ checks: "local" });
 });
 
 // t353: a review request every runner that offers the reviewer has skipped

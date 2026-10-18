@@ -748,6 +748,8 @@ test("a build job: claim, reads, tokens, push, evidence, submit and release, eac
   assert.equal((await expect(api("POST", `${p.base(id)}/push`, { body: { head: H1 } }), 200, "push")).head, H1);
   const evidence = await expect(api("POST", `${p.base(id)}/evidence`, { body: { kind: "check", claim: "npm test", head: H1, passed: true, outputTail: "ok", changedPaths: [] } }), 200, "evidence");
   assert.ok(evidence.evidence.some((e) => e.claim === "npm test" && e.passed === true && e.by === ACTOR));
+  // A runner built before t768 may still ask for a container run: it is told the check was removed, not refused as an unknown route.
+  assert.equal((await expect(api("POST", `${p.base(id)}/sandbox`, { body: {} }), 410, "sandbox removed")).error, "sandbox_removed");
   const diff = await expect(api("GET", `${p.base(id)}/diff`), 200, "diff");
   assert.deepEqual([diff.base, diff.head, diff.files], [H0, H1, []]);
   // A check log and a review diff kept by reference (src/large.ts), read by their sha.

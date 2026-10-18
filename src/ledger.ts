@@ -370,9 +370,11 @@ export interface LandingWorkflowRecord {
   round: number;
   detail?: string;
   files?: string[];
-  // Records written before t768 carry "local" or "container" here: where
-  // the instance ran the required checks. Nothing reads it; the checks run
-  // on the machine holding the workspace.
+  // Always "local" since t768 removed the container mode. A CLI built before
+  // it (cli/land.mjs at bba67d5e, runLandWorkflow) reads this field of the
+  // start response and the stage record, and takes anything but "local" for
+  // the container mode, so the server keeps saying it. Records written before
+  // t768 may carry "container"; nothing here reads it.
   checks?: "local" | "container";
   // The review options the instance was started with (t430), so a rerun
   // that attaches to it can tell whether a reviewer it names differs.
@@ -392,7 +394,7 @@ export interface LandingWorkflowOptions { reviewer?: string | null; noReview?: b
 function landingWorkflowRecord(instance: string, options: LandingWorkflowOptions): LandingWorkflowRecord {
   const at = new Date().toISOString();
   return {
-    instance, at, stage: "lease", stageAt: at, round: 0,
+    instance, at, stage: "lease", stageAt: at, round: 0, checks: "local",
     ...(options.reviewer ? { reviewer: options.reviewer } : {}),
     ...(options.noReview ? { noReview: true } : {}),
     ...(options.triage ? { triage: true } : {}),

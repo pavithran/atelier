@@ -492,6 +492,12 @@ function projectNameArg(value: unknown): string {
   return value;
 }
 
+// The answer to a CLI built before t768 that still starts or reads a container
+// check run. 410, not 404: its error names the removal instead of a missing route.
+function sandboxRemoved(): RuleError {
+  return new RuleError("sandbox_removed", "the container check was removed (t768); run atelier check in your workspace instead, which checks a clean clone on this machine", 410);
+}
+
 // A name no project has had cannot hold a colon: no new key then begins
 // with another key and a colon (run ids of the removed container check
 // joined a key and an item id with colons). Names a project already has, or
@@ -1934,6 +1940,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // Where the review of the item's acceptance criteria stands (t438): the
   // status, every criteria review and every resolution of a finding.
   if (verb === "criteria-reviews" && parts.length === 5 && m === "GET") return json(await L.criteriaReviewView(id));
+  if (verb === "sandbox") throw sandboxRemoved();
   if (verb === "diff" && m === "GET") {
     const item = await L.item(id);
     if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
@@ -4259,6 +4266,9 @@ export default {
           try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
           catch (e) { console.error("claim refusal not recorded", String(e)); }
         };
+        // The removed container check (t768): a CLI built before it still calls
+        // these routes, with any kind of token, and is told so in words.
+        if (parts[1] === "projects" && parts[3] === "items" && parts[5] === "sandbox") throw sandboxRemoved();
         if (token?.runner) {
           const input = body as Record<string, unknown>;
           if (!runnerRoute(req.method, parts.slice(1), input) || ref && !inScope(token, ref.names)) throw runnerDenied(token);
