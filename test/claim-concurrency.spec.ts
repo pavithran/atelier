@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { taskForkMark } from "../src/rules.ts";
 import { setRetryBaseMs } from "../src/transient.ts";
 
 // These tests inject transient Artifacts failures; the retry backoff would
@@ -286,6 +287,25 @@ it("claims whose repository handles fail at times all succeed, each with one liv
     expect(item.owner).toBe(actors[i]);
     expect(fa.live(item.fork!)).toEqual([await L.tokenId(item.id)]);
   }
+});
+
+// Found by the stress runs of t749: a claim whose earlier attempt made the
+// fork reads the fork's head to check how it was made, and that read alone
+// was not retried, so a repository handle that failed there answered 500.
+it("t749: a claim that finds its earlier fork retries a repository handle that fails while the fork is checked, and succeeds", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const errors: string[] = [];
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
+  // Handle 1 forks the baseline, which answers that the fork exists; handle 2 reads that fork's head.
+  const { L, fa, actors, callers, claim } = await setup("concurrency-checked", 1, 1, {
+    forkBefore: () => false, forkAfter: () => false, inProgress: 0, mint: () => false, get: (k) => k === 2,
+  });
+  fa.repos.set("concurrency-checked--t1", { reads: 0, description: taskForkMark("concurrency-checked--t1") });
+  const res = await callers[0]("POST", claim("t1"));
+  expect(errors).toEqual([]);
+  expect(res.status).toBe(200);
+  expect((await L.item("t1")).owner).toBe(actors[0]);
+  expect(fa.live("concurrency-checked--t1")).toEqual([await L.tokenId("t1")]);
 });
 
 it("a holder's claim again whose revocation stays down answers 503 with Retry-After, keeps the old token, and its retry rotates it", async () => {
