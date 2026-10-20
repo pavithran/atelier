@@ -296,7 +296,7 @@ export default async function mergeCommand() {
         const preview=previewMerge(cwd,local,target,{git});
         let adopt=null;
         if(!preview.error&&(preview.regenerate.length||preview.generated.length)){
-          const verified=await verifyAccepted(cwd,local,target,{git});
+          const verified=await verifyAccepted(cwd,local,target,{git,identity});
           const moved=git(['rev-parse','HEAD'],{cwd});
           if(verified.ok&&moved!==local)Object.assign(verified,{ok:false,reason:`${p.branch} moved from ${short(local)} to ${short(moved)} while the outputs were compared`});
           if(!verified.ok){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}), and ${verified.reason}. Outputs that are not the accepted revision's were never checked or reviewed, so nothing was merged and ${id} stays accepted. The generators' logs and the comparison are in ${verified.kept}. The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}

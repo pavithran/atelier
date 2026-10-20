@@ -183,3 +183,35 @@ test('a comparison record that cannot be written refuses, naming it, and the che
   assert.deepEqual({ at: f.at(), tip: f.tip() }, before);
   assert.equal(f.box.state, 'accepted');
 });
+
+// Identical outputs, as the first test makes them.
+function identical(f) {
+  side(f, f.workspace, { 'in/task.txt': '' }, 'Task adds an empty input');
+  side(f, f.checkout, { 'in/main.txt': '' }, 'Main adds another empty input');
+}
+
+test('a global hook (core.hooksPath) does not run during the verification clone or its checkout', async (t) => {
+  const f = await landing(t);
+  declare(f);
+  identical(f);
+  const hooks = join(f.p, 'global-hooks'), marker = join(f.p, 'hook-ran');
+  mkdirSync(hooks);
+  for (const name of ['post-checkout', 'post-merge', 'pre-merge-commit']) {
+    writeFileSync(join(hooks, name), `#!/bin/sh\necho ${name} $PWD $1 >> '${marker}'\n`, { mode: 0o755 });
+  }
+  writeFileSync(join(f.p, 'gitconfig'), `[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n[core]\n\thooksPath = ${hooks}\n`);
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, 'utf8') : '');
+});
+
+test('identical outputs land with no global identity and user.useConfigOnly: the verification merge brings its own', async (t) => {
+  const f = await landing(t);
+  declare(f);
+  identical(f);
+  writeFileSync(join(f.p, 'gitconfig'), '[user]\n\tuseConfigOnly = true\n');
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.tip(), f.at());
+  assert.equal(f.box.state, 'merged');
+});

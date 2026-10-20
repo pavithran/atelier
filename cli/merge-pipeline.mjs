@@ -476,7 +476,20 @@ export async function mergeThrough(dir, target, { git = localGit, message, commi
 // the merge runs. The generators' logs and the comparison are kept under the
 // checkout's Git directory (merge-logs) whatever the verdict.
 // Answers { ok, tree, regenerated, reason, kept }.
-export async function verifyAccepted(dir, local, target, { git = localGit, run = defaultRun } = {}) {
+export async function verifyAccepted(dir, local, target, { git: callerGit = localGit, run = defaultRun, identity = null } = {}) {
+  // Every Git command of the check, the clone's creation and checkout
+  // included, goes through the caller's git (a landing's has every hook and
+  // fsmonitor off) and under an explicit identity: a clone copies neither the
+  // checkout's identity nor, under user.useConfigOnly, has any other, and
+  // Git wants a committer even for a merge that stops before its commit. A
+  // failure throws, so the logs are kept on the way out.
+  const who = [["user.name", identity?.name || "Atelier verification"], ["user.email", identity?.email || "verification@atelier.invalid"]].flatMap(([k, v]) => ["-c", `${k}=${v}`]);
+  const git = (args, opts = {}) => {
+    const r = callerGit([...who, ...args], { ...opts, allowFail: true });
+    if (opts.allowFail) return r;
+    if (r.error || r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${(r.stderr || r.stdout || r.error?.message || "").toString().trim()}`);
+    return opts.raw ? r.stdout : r.stdout.trim();
+  };
   const kept = join(atelierGitDir(dir, git), "merge-logs");
   mkdirSync(kept, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -486,14 +499,14 @@ export async function verifyAccepted(dir, local, target, { git = localGit, run =
   let verdict;
   try {
     const source = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir });
-    localGit(["clone", "--quiet", "--no-checkout", "--shared", source, clone]);
-    localGit(["checkout", "--quiet", "--detach", local], { cwd: clone });
+    git(["clone", "--quiet", "--no-checkout", "--shared", source, clone], { cwd: dir });
+    git(["checkout", "--quiet", "--detach", local], { cwd: clone });
     if (existsSync(join(dir, "node_modules"))) symlinkSync(join(dir, "node_modules"), join(clone, "node_modules"));
-    const r = await mergeThrough(clone, target, { git: localGit, commit: false, run });
+    const r = await mergeThrough(clone, target, { git, commit: false, run });
     if (r.state !== "merged") verdict = { ok: false, reason: r.state === "conflicts" ? `the merge does not go through the pipeline cleanly:\n${describeConflicts(r, r.manifest)}` : r.reason ?? `the merge ${r.state}`, regenerated: r.regenerated ?? [] };
     else {
-      const tree = localGit(["write-tree"], { cwd: clone });
-      const entry = (rev, path) => { const o = localGit(["ls-tree", rev, "--", path], { cwd: clone, allowFail: true }); return o.status === 0 ? o.stdout.split("\t")[0].trim() : ""; };
+      const tree = git(["write-tree"], { cwd: clone });
+      const entry = (rev, path) => { const o = git(["ls-tree", rev, "--", path], { cwd: clone, allowFail: true }); return o.status === 0 ? o.stdout.split("\t")[0].trim() : ""; };
       const differing = [];
       for (const path of outputsOf(r.manifest)) {
         const got = entry(tree, path), want = entry(target, path);
