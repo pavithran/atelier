@@ -374,3 +374,31 @@ it("a merge a resolver made, who is also the task's holder, carries nothing when
   expect(await retainedAt(L, id, n)).toEqual([]);
   expect((await events(L, id)).find((e) => e.kind === "review.not_retained")?.data.reason).toMatch(/codex\/gpt-6-astra resolved conflicts in the merge/);
 });
+
+// Finding of gpt-6-astra's review of 330ea836: the push event recorded the new
+// head, the reviewer rejected it, and the refresh report then carried the same
+// reviewer's old approval at a later time, which displaced the rejection.
+it("a reviewer who has judged the new head before the refresh report keeps that verdict, and the old approval is not carried over it", async () => {
+  const name = "rr-verdict-first";
+  const record = { name, repo: `${name}--baseline`, branch: "main", policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: at() };
+  const L = ledger(name);
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const { o, m, n, ARTIFACTS } = repos(name, false);
+  const id = await approved(L, "Rejected in between", GPT, "submitted", o);
+  await L.noteMainHead(m);
+  const lease = (await L.leaseRefresh(id, INTEGRATOR, "home:studio", "refresh")).lease;
+  const body = { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n };
+  await L.refreshPushing(id, INTEGRATOR, body);
+  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: (await L.item(id)).fork }, payload: { ref: "refs/heads/main", after: n } };
+  await worker.queue({ messages: [{ body: notice, ack: () => {}, retry: () => { throw new Error("retried"); } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS } as typeof env);
+  await L.addReview({ itemId: id, by: GPT, head: n, criteria: await L.criteria(id), approve: false, note: "The merge broke it.", at: at() }, undefined, true);
+  await L.addEvidence(passed(id, n));
+  const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, body, ARTIFACTS);
+  expect(res.status, await res.clone().text()).toBe(200);
+  expect(await retainedAt(L, id, n)).toEqual([]);
+  const standing = (await reviewsOf(L, id)).filter((r) => r.head === n);
+  expect(standing).toHaveLength(1);
+  expect(standing[0]).toMatchObject({ by: GPT, approve: false });
+  expect((await gateOf(L, id)).ready).toBe(false);
+});

@@ -3245,7 +3245,12 @@ export class Ledger extends DurableObject<Env> {
     if (!read || item.kind || !item.head) return null;
     if (!("unread" in read) && (read.parents.length !== 2 || read.parents[0] !== item.head)) return null;
     const binding = { head: item.head, criteria: criteriaOf(item) };
-    const approvals = retainableApprovals(this.reviewsFor(item.id), binding);
+    // A reviewer who has given any verdict at the new head already (the push
+    // event can record the head before the refresh report, and the review
+    // comes between) keeps that verdict standing: a carried approval would
+    // carry the report's later time and displace it.
+    const all = this.reviewsFor(item.id);
+    const approvals = retainableApprovals(all, binding).filter((r) => !all.some((v) => v.head === newHead && sameActor(v.by, r.by)));
     if (!approvals.length) return null;
     const verdict = retentionVerdict(read, who);
     const facts = verdict.facts;
