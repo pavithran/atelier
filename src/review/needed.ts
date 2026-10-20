@@ -257,9 +257,13 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     const independent = independents[0];
     if (!risk && independent) return no(`${independent.by}, ${single ? `a different ${single} model from every contributor` : "of another family than every contributor"}, approved ${short(head)}`);
     if (risk) {
+      // The class's count is the gate's own (gateApprovals), which tests a
+      // non-protected change by the coordinated rule; the part's integration
+      // asks beside it for one approval that passes the protected test.
       const seen = new Set<string>();
-      partHave = independents.filter((r) => !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by))).map((r) => r.by);
-      if (partHave.length >= Math.max(1, risk.reviews)) return no(`${partHave.join(", ")}, ${single ? `a different ${single} model from every contributor` : "of another family than every contributor"}, approved ${short(head)}: ${partHave.length} of the ${Math.max(1, risk.reviews)} this ${risk.risk} change needs`);
+      const gated = gateApprovals(item, policy, [...input.evidence], reviews, owner);
+      partHave = [...gated, ...independents].filter((r) => !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by))).map((r) => r.by);
+      if (gated.length >= risk.reviews && independent) return no(`${partHave.join(", ")} approved ${short(head)}: ${gated.length} of the ${risk.reviews} this ${risk.risk} change needs, and ${single ? `a different ${single} model from every contributor` : "one of another family than every contributor"} among them`);
     }
   } else if (!input.wanted) {
     const g = gate(item, policy, [...input.evidence], reviews, owner);

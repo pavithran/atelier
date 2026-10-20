@@ -1412,3 +1412,18 @@ test("pickReviewer: a model whose approval already counts is not asked again, un
   assert.equal(none.passedOver.length, 2);
   assert.ok(none.passedOver.every((c) => c.reasons.some((x) => /already counts/.test(x))));
 });
+
+test("reviewNeeded under riskReviews: a non-protected core part built by sonnet is done with opus and gpt, the gate's own count, and asks no third (t143 review)", () => {
+  // gpt-6-astra's review of t143: counting a part's approvals by the protected
+  // test alone saw one of the two, so the plan tick asked a third review while
+  // the gate was already ready.
+  const built = item({ pushActors: ["claude-code/sonnet-5.5"], owner: "claude-code/sonnet-5.5" });
+  const part = (reviews: ReviewRecord[]) => need({ part: true, item: built, policy: risky, evidence: CORE, reviews });
+  assert.equal(part([review(OPUS, true), review(GPT, true)]).needed, false);
+  // Opus alone is the gate's first count of two, and no approval yet passes integration's test: asked on.
+  const one = part([review(OPUS, true)]);
+  assert.ok(one.needed);
+  assert.deepEqual(one.counted, [OPUS]);
+  // Two approvals that pass the gate but not the protected test (the builder's own family) leave integration without its one independent review: asked on.
+  assert.ok(part([review(OPUS, true), review("claude-code/haiku-4.5", true)]).needed);
+});
