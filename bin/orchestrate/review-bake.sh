@@ -5,7 +5,9 @@
 # tasks.txt, one judge/verdict-TASK.md per task).
 #
 #   review-bake.sh run   --sample FILE --out DIR --reviewers LIST [options]
+#   review-bake.sh run   --cases DIR --out DIR --reviewers LIST [options]
 #   review-bake.sh score --out DIR --truth FILE [--labels FILE]
+#   review-bake.sh score --out DIR --cases DIR [--version TEXT] [--write]
 #
 # run   gives every reviewer in LIST the same blind brief and the same diff of
 #       every build in the sample, read-only, and collects each reply. Reviews
@@ -35,7 +37,14 @@
 # SHA"); the change is `git diff BASE HEAD` of the workspace.
 #
 # Options of run:
-#   --sample FILE    the builds to review (required)
+#   --sample FILE    the builds to review (required, unless --cases)
+#   --cases DIR      a portable case set (bin/orchestrate/review-cases/v1): DIR/sample.txt
+#                    is the sample, and each case folder holds the brief, the diff and
+#                    the base commit. A review runs in a clone of --source at that base
+#                    with the diff applied, uncommitted; nothing outside the repository
+#                    is read (--bake and --builds are not used)
+#   --source DIR     the repository a case's base commit is cloned from (default: the
+#                    repository this script is in)
 #   --out DIR        where everything goes (required): reviews/, status/, logs/, inputs/
 #   --reviewers LIST comma-separated harness/model (required)
 #   --skip LIST      reviewers in LIST are not run; they are written to DIR/skipped.txt
@@ -72,8 +81,17 @@ reviewer_family() {
   esac
 }
 
+# prepare_case BUILD: the same inputs, copied from the case set (head is its base commit).
+prepare_case() {
+  local d=$RB_OUT/inputs/$1 c=$RB_CASES/$1
+  [[ -s $c/brief.md && -s $c/diff.txt && -s $c/base ]] || { print -u2 "case $1 in $RB_CASES lacks brief.md, diff.txt or base"; return 1 }
+  git -C $RB_SOURCE cat-file -e "$(<$c/base)^{commit}" 2>/dev/null || { print -u2 "base $(<$c/base) of case $1 is not a commit of $RB_SOURCE"; return 1 }
+  mkdir -p $d && cp $c/brief.md $c/diff.txt $d/ && cp $c/base $d/head
+}
+
 # prepare_inputs BUILD: OUT/inputs/BUILD/{brief.md,diff.txt,head} once, the same for every reviewer.
 prepare_inputs() {
+  [[ -n $RB_CASES ]] && { prepare_case $1; return }
   local build=$1 task=${1##*-} ws=$RB_BUILDS/$1 d=$RB_OUT/inputs/$1 base head
   [[ -d $ws/.git || -f $ws/.git ]] || { print -u2 "no build workspace $ws"; return 1 }
   [[ -s $d/diff.txt && -s $d/brief.md ]] && return 0
@@ -105,12 +123,13 @@ has_verdict() { node $here/review-bake-score.mjs --has-verdict $1 }
 one() {
   local reviewer=$1 build=$2 key=${1//\//_}__$2
   local in=$RB_OUT/inputs/$build ws=$RB_BUILDS/$build
+  [[ -n $RB_CASES ]] && ws=$RB_SOURCE
   local res=$RB_OUT/reviews/$key.md st=$RB_OUT/status/$key.json log=$RB_OUT/logs/$key
   mkdir -p $RB_OUT/reviews $RB_OUT/status $RB_OUT/logs $RB_CACHE
   if [[ -s $res ]] && has_verdict $res; then print "kept   $reviewer $build"; return 0; fi
   local head=$(<$in/head) clone=$RB_CACHE/$$-$key try=0 ok=0 started=$SECONDS
   rm -rf $clone
-  git -c advice.detachedHead=false clone -q $ws $clone && git -C $clone -c advice.detachedHead=false checkout -q --detach $head || { print -u2 "clone failed for $key"; print -r -- "{\"reviewer\":\"$reviewer\",\"build\":\"$build\",\"tries\":0,\"ok\":false,\"seconds\":0,\"error\":\"clone failed\"}" > $st; return 1 }
+  git -c advice.detachedHead=false clone -q $ws $clone && git -C $clone -c advice.detachedHead=false checkout -q --detach $head && { [[ -z $RB_CASES ]] || git -C $clone apply $in/diff.txt; } || { print -u2 "clone failed for $key"; print -r -- "{\"reviewer\":\"$reviewer\",\"build\":\"$build\",\"tries\":0,\"ok\":false,\"seconds\":0,\"error\":\"clone failed\"}" > $st; return 1 }
   git -C $clone remote remove origin 2>/dev/null
   [[ -d $ws/node_modules ]] && ln -s $ws/node_modules $clone/node_modules
   mkdir -p $clone/.scratch; print ".scratch/" >> $clone/.git/info/exclude
@@ -142,6 +161,7 @@ parse() {
   RB_BUILDS=~/Library/Caches/ai-projects/atelier-bake
   RB_CACHE=~/Library/Caches/ai-projects/atelier-review-bake
   RB_TRIES=2 RB_SLEEP=120 RB_TIMEOUT=2400
+  RB_CASES= RB_SOURCE=$repo
   sample= RB_OUT= reviewers= skip= dry=
   while (( $# )); do
     case $1 in
@@ -149,6 +169,8 @@ parse() {
       --out) RB_OUT=${2:A}; shift 2 ;;
       --reviewers) reviewers=$2; shift 2 ;;
       --skip) skip=$2; shift 2 ;;
+      --cases) RB_CASES=${2:A}; shift 2 ;;
+      --source) RB_SOURCE=${2:A}; shift 2 ;;
       --bake) RB_BAKE=${2:A}; shift 2 ;;
       --builds) RB_BUILDS=${2:A}; shift 2 ;;
       --cache) RB_CACHE=${2:A}; shift 2 ;;
@@ -159,14 +181,16 @@ parse() {
       *) die "unknown option $1" ;;
     esac
   done
-  export RB_BAKE RB_BUILDS RB_CACHE RB_TRIES RB_SLEEP RB_TIMEOUT RB_OUT
+  [[ -z $RB_CASES || -d $RB_CASES ]] || die "no case set $RB_CASES"
+  [[ -z $sample && -n $RB_CASES ]] && sample=$RB_CASES/sample.txt
+  export RB_BAKE RB_BUILDS RB_CACHE RB_TRIES RB_SLEEP RB_TIMEOUT RB_OUT RB_CASES RB_SOURCE
 }
 
 case $sub in
-  one) RB_OUT=${RB_OUT:?} ; one "$@"; exit $? ;;
+  one) RB_OUT=${RB_OUT:?} RB_CASES=${RB_CASES:-} RB_SOURCE=${RB_SOURCE:-$repo} ; one "$@"; exit $? ;;
   run)
     parse "$@"
-    [[ -n $sample && -f $sample && -n $RB_OUT && -n $reviewers ]] || die "run needs --sample FILE, --out DIR and --reviewers LIST"
+    [[ -n $sample && -f $sample && -n $RB_OUT && -n $reviewers ]] || die "run needs --sample FILE (or --cases DIR), --out DIR and --reviewers LIST"
     builds=(${(f)"$(grep -vE '^\s*(#|$)' $sample | awk -F'\t' '{print $1}' | awk '{print $1}')"})
     (( ${#builds} )) || die "the sample lists no build"
     mkdir -p $RB_OUT; [[ ${sample:A} == $RB_OUT/sample.txt ]] || cp $sample $RB_OUT/sample.txt

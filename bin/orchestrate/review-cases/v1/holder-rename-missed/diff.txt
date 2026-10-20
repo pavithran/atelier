@@ -1,0 +1,77 @@
+diff --git a/src/ledger.ts b/src/ledger.ts
+index 7962565a..12329584 100644
+--- a/src/ledger.ts
++++ b/src/ledger.ts
+@@ -2814,6 +2814,10 @@ export class Ledger extends DurableObject<Env> {
+     const d = item.dispatch;
+     const heldByRunner = item.state === "claimed" && (item.runner ?? "").toLowerCase() === runner.toLowerCase();
+     if ((item.state !== "open" || item.owner) && !heldByRunner || !d || d.job === "review") return false;
++    // A held task's skip is the holder's word (t669): the developer token with
++    // an X-Atelier-Runner header names any actor, so a report is refused unless
++    // it comes from the actor that holds the task, whatever runner it names.
++    if (heldByRunner && item.owner !== actor) throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot report a run skip for it`, 403);
+     const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
+     this.putRunnerNote("run-skip", id, runner, d.at, skip);
+     return true;
+diff --git a/src/stuck/report.ts b/src/stuck/report.ts
+index 161e28fa..b5984657 100644
+--- a/src/stuck/report.ts
++++ b/src/stuck/report.ts
+@@ -1,7 +1,7 @@
+ // Diagnostics are observations only. Unknown data never establishes absence.
+ import type { Item } from "../rules.ts";
+ import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
+-import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
++import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, servesProject, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
+ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
+ import type { RunReport } from "../models/reliability.ts";
+ import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
+@@ -151,7 +151,10 @@ export function stuckReport(project: string, origin: string, now: Date, limits:
+     }
+   }
+   // Active jobs across projects are required before concluding a runner is idle.
++  // A runner whose token serves only other projects is no idle runner of this
++  // one (t669): it could never take this project's work, however long it idles.
+   if (offers && activeRunners) for (const offer of offers) {
++    if (!servesProject(offer, project)) continue;
+     if (activeRunners.includes(offer.runner)) continue;
+     if (age(offer.at) - OFFER_REFRESH_MS > limits.runnerPollMinutes * 60_000)
+       add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);
+diff --git a/test/orphaned-claim.test.ts b/test/orphaned-claim.test.ts
+index 9dc7ab2c..2f85891d 100644
+--- a/test/orphaned-claim.test.ts
++++ b/test/orphaned-claim.test.ts
+@@ -201,3 +201,17 @@ test("an orphan's recovery names the orphan's own project wherever the hold is p
+   assert.match(holdText(hold, "project a"), /--project 'project b'$/);
+   assert.match(orphanText([inB]), /--project 'project b'$/);
+ });
++
++// t669, follow-up 2 of t652: the idle-runner list named every runner in every
++// project's report. A runner whose token serves only other projects could
++// never take this project's work, so it is no idle runner of this one; a
++// runner with no project limit serves every project and stays listed.
++test("atelier stuck lists as idle only the runners whose token serves the project", () => {
++  const offers = [
++    { ...offer("home:serves-atelier", CLAIMED), projects: ["atelier", "other"] },
++    { ...offer("home:serves-other", CLAIMED), projects: ["other"] },
++    offer("home:serves-all", CLAIMED),
++  ];
++  const r = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([]), offers, [], []);
++  assert.deepEqual(r.entries.filter((e) => e.kind === "idle-runner").map((e) => e.subject).sort(), ["home:serves-all", "home:serves-atelier"]);
++});
+diff --git a/test/queue-why.spec.ts b/test/queue-why.spec.ts
+index 5c302ec5..b44c563a 100644
+--- a/test/queue-why.spec.ts
++++ b/test/queue-why.spec.ts
+@@ -312,6 +312,11 @@ it("a runner's skip of a task it holds is kept for a kind it reports and refused
+   expect(await L.recordRunSkip(task.id, "home:held-skip", "opencode/glm-5.3", "failures", 2, "checks failed")).toBe(true);
+   const refused = await L.recordRunSkip(task.id, "home:held-skip", "opencode/glm-5.3", "claim-refused" as never, 1, "").then(() => null, (e: unknown) => e);
+   expect(parseRuleError(refused)).toMatchObject({ status: 400, code: "bad_kind" });
++  // t669: a report for a held task from an actor that does not hold it is
++  // refused, not kept as the holder's word; the developer token with an
++  // X-Atelier-Runner header names any actor.
++  const stranger = await L.recordRunSkip(task.id, "home:held-skip", "codex/gpt-6", "skipped", 1, "").then(() => null, (e: unknown) => e);
++  expect(parseRuleError(stranger)).toMatchObject({ status: 403, code: "not_owner" });
+   // Another runner's word on a task it does not hold is not kept.
+   expect(await L.recordRunSkip(task.id, "home:other-skip", "opencode/glm-5.3", "skipped", 1, "")).toBe(false);
+ });

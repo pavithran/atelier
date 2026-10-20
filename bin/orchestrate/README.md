@@ -507,11 +507,21 @@ bin/orchestrate/review-bake.sh score --out DIR --truth truth.json
   judge ruled false, approvals of a C or D build, rejections of an A build.
   Per reviewer: the totals, precision (true blocking findings over all) and
   recall (confirmed defects caught over those in the builds it reviewed).
+- **A portable case set** is checked in at `bin/orchestrate/review-cases/v1`
+  (see its README): judged builds, each a base commit of this repository,
+  the build's diff and the blind brief, with `truth.json`, `sample.txt` and a
+  `manifest.json` that names the set and its brief version. `run --cases DIR`
+  reviews them in clones of this repository with the diff applied and reads
+  nothing from the bake-off's folders; `score --cases DIR --write` writes
+  `scores.json` and `scores.md` that record the case-set hash, brief version,
+  harness, model and the `--version` label, with wrong verdicts, failed runs
+  and unjudged findings. Comparing two reviewer versions: "Comparing two
+  versions of a reviewer" in docs/orchestrating.md.
 
-It reads builds and judge verdicts that the bake-off kept; it changes none of
+Without `--cases` it reads builds and judge verdicts that the bake-off kept; it changes none of
 them and runs reviewers only in throwaway clones under
 `~/Library/Caches/ai-projects/atelier-review-bake`. `node --test
-bin/orchestrate/review-bake.test.mjs` tests the scorer and the script against
+bin/orchestrate/review-bake.test.mjs bin/orchestrate/review-bake-cases.test.mjs` tests the scorer and the script against
 stand-ins for the reviewers' CLIs.
 
 ## What the agents may and may not do

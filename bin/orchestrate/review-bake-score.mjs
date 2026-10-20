@@ -1,8 +1,18 @@
 // review-bake-score.mjs: scores the reviews a review-bake.sh run collected
 // against the judge's ground truth.
 //
-//   node review-bake-score.mjs --out DIR --truth truth.json [--sample sample.txt]
-//        [--labels labels.json] [--json] [--write]
+//   node review-bake-score.mjs --out DIR (--truth truth.json | --cases DIR)
+//        [--sample sample.txt] [--labels labels.json] [--version TEXT] [--json] [--write]
+//
+// --cases DIR names a portable case set (bin/orchestrate/review-cases/v1): its
+// truth.json and sample.txt are the defaults, and the report records the case
+// set's name, brief version and hash (caseSetHash: sha256 over every file in
+// the folder, by path and content), so two scores compare only when the hash
+// is the same. --version TEXT is the developer's own label for the reviewer
+// under test (what changed in its brief, harness or model); it is recorded as
+// given. With --write, DIR/scores.json and DIR/scores.md hold the result,
+// including each reviewer's harness and model; a score is evidence for the
+// developer's decision and writes nothing to a ledger.
 //
 // DIR/reviews/REVIEWER__BUILD.md holds each review (REVIEWER is the reviewer
 // with "/" written "_"), DIR/status/REVIEWER__BUILD.json how its run ended,
@@ -37,8 +47,9 @@
 //   true defect the judge did not list), "other" (a blocking finding the
 //   judge's verdict does not mention, true or not: it stays unjudged) or
 //   "none" (counts for nothing). Ids join with "+".
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const VERDICT_LINE = /^[\s>*_`#-]*(?:VERDICT)[\s*_`]*:[\s*_`]*(APPROVE|REJECT)\b/i;
@@ -59,6 +70,25 @@ export function parseReview(text) {
   }
   return { verdict, findings };
 }
+
+// caseSetHash(dir): sha256 over every file under dir, in path order, each as its relative path and its bytes.
+export function caseSetHash(dir) {
+  const files = [];
+  const walk = (d) => { for (const e of readdirSync(d).sort()) { const f = join(d, e); if (statSync(f).isDirectory()) walk(f); else files.push(f); } };
+  walk(dir);
+  const h = createHash("sha256");
+  for (const f of files) { h.update(relative(dir, f)); h.update("\0"); h.update(readFileSync(f)); h.update("\0"); }
+  return h.digest("hex");
+}
+
+// caseSetMeta(dir, version): what a result records about the cases it was scored on.
+export function caseSetMeta(dir, version = null) {
+  const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+  return { caseSet: manifest.caseSet, caseSetVersion: manifest.version, briefVersion: manifest.briefVersion, caseSetHash: caseSetHash(dir), reviewerVersion: version };
+}
+
+// harnessAndModel("codex/gpt-6-astra"): { harness: "codex", model: "gpt-6-astra" }.
+export const harnessAndModel = (reviewer) => { const i = reviewer.indexOf("/"); return i === -1 ? { harness: reviewer, model: null } : { harness: reviewer.slice(0, i), model: reviewer.slice(i + 1) }; };
 
 const matches = (re, s) => new RegExp(re, "i").test(s);
 
@@ -139,6 +169,8 @@ export function scoreRun(reviews, truth, labels = {}) {
   }
   const ratio = (a, b) => (b ? a / b : null);
   for (const t of Object.values(reviewers)) {
+    Object.assign(t, harnessAndModel(t.reviewer));
+    t.wrongVerdicts = t.approvalsCD + t.rejectionsA;
     const blocking = t.trueBlocking + t.falseBlocking + t.unjudgedBlocking;
     t.blocking = blocking;
     t.precision = ratio(t.trueBlocking, blocking);
@@ -153,13 +185,15 @@ const pct = (x) => (x === null ? "n/a" : `${Math.round(x * 100)}%`);
 
 export function renderMarkdown(result) {
   const out = [];
+  const m = result.meta;
+  if (m) out.push(`Case set ${m.caseSet} v${m.caseSetVersion}, hash ${m.caseSetHash}, brief version ${m.briefVersion}${m.reviewerVersion ? `, reviewer version: ${m.reviewerVersion}` : ""}`, "");
   const missing = result.rows.filter((r) => r.missing);
   if (missing.length) out.push(`${missing.length} scheduled review(s) left no result and count as failed: ${missing.map((r) => `${r.reviewer} ${r.build}`).join("; ")}`, "");
   out.push("## Per reviewer", "");
-  out.push("| reviewer | reviews | failed (missing) | approvals of C/D | rejections of A | right verdicts (A/C/D) | defects caught | blocking findings: true / false / unjudged | precision | precision (judged only) | recall | recall (real only) |");
-  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
+  out.push("| reviewer | harness | model | reviews | failed (missing) | wrong verdicts | approvals of C/D | rejections of A | right verdicts (A/C/D) | defects caught | blocking findings: true / false / unjudged | precision | precision (judged only) | recall | recall (real only) |");
+  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const t of result.reviewers) {
-    out.push(`| ${t.reviewer} | ${t.reviews} | ${t.failed} (${t.missing}) | ${t.approvalsCD} | ${t.rejectionsA} | ${t.rightVerdicts}/${t.judgedVerdicts} | ${t.caught}/${t.defects} | ${t.trueBlocking} / ${t.falseBlocking} / ${t.unjudgedBlocking} | ${pct(t.precision)} | ${pct(t.precisionJudged)} | ${pct(t.recall)} | ${pct(t.recallReal)} |`);
+    out.push(`| ${t.reviewer} | ${t.harness} | ${t.model ?? "n/a"} | ${t.reviews} | ${t.failed} (${t.missing}) | ${t.wrongVerdicts} | ${t.approvalsCD} | ${t.rejectionsA} | ${t.rightVerdicts}/${t.judgedVerdicts} | ${t.caught}/${t.defects} | ${t.trueBlocking} / ${t.falseBlocking} / ${t.unjudgedBlocking} | ${pct(t.precision)} | ${pct(t.precisionJudged)} | ${pct(t.recall)} | ${pct(t.recallReal)} |`);
   }
   out.push("", "## Per build", "");
   out.push("| build | grade | reviewer | verdict | caught | missed | blocking true / false / unjudged | flag |");
@@ -212,12 +246,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     process.exit(parseReview(text).verdict ? 0 : 1);
   }
   const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i === -1 ? undefined : process.argv[i + 1]; };
-  const out = arg("out"), truthFile = arg("truth");
-  if (!out || !truthFile) { console.error("usage: review-bake-score.mjs --out DIR --truth truth.json [--sample sample.txt] [--labels labels.json] [--json] [--write]"); process.exit(64); }
+  const out = arg("out"), cases = arg("cases");
+  const truthFile = arg("truth") ?? (cases && join(cases, "truth.json"));
+  if (!out || !truthFile) { console.error("usage: review-bake-score.mjs --out DIR (--truth truth.json | --cases DIR) [--sample sample.txt] [--labels labels.json] [--version TEXT] [--json] [--write]"); process.exit(64); }
   const truth = JSON.parse(readFileSync(truthFile, "utf8"));
   const labelsFile = arg("labels") ?? join(out, "labels.json");
   const labels = existsSync(labelsFile) ? JSON.parse(readFileSync(labelsFile, "utf8")) : {};
-  const sampleFile = arg("sample") ?? join(out, "sample.txt");
+  const sampleFile = arg("sample") ?? (cases ? join(cases, "sample.txt") : join(out, "sample.txt"));
   const builds = readFileSync(sampleFile, "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#")).map((l) => l.split(/\s+/)[0]);
   // The reviewers are those with a review or a status file in the run.
   const names = new Set();
@@ -230,6 +265,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const reviewers = [...names].map((n) => n.replace("_", "/")).sort();
   const pairs = readPairs(out, builds);
   const result = scoreRun(loadReviews(out, builds, reviewers, pairs), truth, labels);
+  if (cases) result.meta = caseSetMeta(cases, arg("version") ?? null);
   if (process.argv.includes("--write")) {
     const slim = { ...result, rows: result.rows.map(({ findings, ...r }) => ({ ...r, findings: findings.map(({ index, severity, where, kind, ids }) => ({ index, severity, where, kind, ids })) })) };
     writeFileSync(join(out, "scores.json"), JSON.stringify(slim, null, 2) + "\n");

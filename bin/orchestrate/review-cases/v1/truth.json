@@ -1,0 +1,23 @@
+{
+  "ruled": [
+    { "id": "sandbox", "desc": "A reviewer sandbox could not run the tests: a limit of the review environment, not a defect of the build.", "re": "sandbox|EPERM|could not start|not logged in" }
+  ],
+  "builds": {
+    "worktree-clean-1": { "grade": "A", "defects": [], "ruled": [] },
+    "worktree-clean-2": { "grade": "A", "defects": [], "ruled": [] },
+    "worktree-bsd-stat": {
+      "grade": "C",
+      "defects": [
+        { "id": "bsd-stat", "severity": "real", "desc": "The new test calls stat -f %HT, which is BSD syntax; GNU stat fails on Linux, so the test throws before the agent runs.", "re": "BSD|GNU|portab|stat -f|%HT|Linux" }
+      ],
+      "ruled": []
+    },
+    "holder-rename-missed": {
+      "grade": "C",
+      "defects": [
+        { "id": "rename", "severity": "real", "desc": "The idle-runner filter compares an offer's projects with the project's current name only, so a runner that polled under a former name before a rename is dropped from the idle list although its token still serves the project.", "re": "renam|former name|old name|previous name|ref\\.names|inScope" }
+      ],
+      "ruled": []
+    }
+  }
+}

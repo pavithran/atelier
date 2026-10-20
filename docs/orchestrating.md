@@ -566,6 +566,39 @@ no one reviewer's queue holds every landing. A reviewer that has rejected
 the same task several rounds running is still the right reviewer; see
 "Judging a review".
 
+### Comparing two versions of a reviewer
+
+A change to what a reviewer is given or who it is (the review brief,
+`REPLY_FORMAT`, `DEFAULT_REVIEW_BAR`, a model, a harness) can make it better or
+worse, and one landing does not show which. Run both versions on the same
+cases and read the two scores side by side. The cases are the checked-in set in
+`bin/orchestrate/review-cases/v1`: judged builds with their confirmed defects,
+and clean builds. They need nothing from your home folder.
+
+```sh
+cases=bin/orchestrate/review-cases/v1
+bin/orchestrate/review-bake.sh run   --cases $cases --out before --reviewers codex/MODEL
+bin/orchestrate/review-bake.sh score --cases $cases --out before --version "current brief" --write
+# change the brief, the model or the harness, then:
+bin/orchestrate/review-bake.sh run   --cases $cases --out after --reviewers codex/MODEL
+bin/orchestrate/review-bake.sh score --cases $cases --out after --version "shorter brief" --write
+```
+
+Each `scores.md` and `scores.json` records the case-set hash, the case set's
+brief version, the harness and model, and your `--version` label, with
+precision, recall, wrong verdicts (an approval of a defective build or a
+rejection of a clean one), failed runs and unjudged blocking findings. Compare
+only two scores with the same hash; a different hash means different cases.
+Read them together: a higher recall bought with more false blocking findings,
+or with more failed runs, is not an improvement. A failed run counts against a
+reviewer and is never left out of its totals. Unjudged findings are not
+counted as true or false: read them and label them in `labels.json` before you
+trust a precision.
+
+The case set is small, so one case moves recall by a large step. Treat a
+difference of one case as noise and run the cases again before you act. The result informs your decision. It changes no assignment,
+writes nothing to the ledger and gates no merge.
+
 ### Landing a wave
 
 Land a wave with `atelier land t1 t2 t3 --reviewer H/M`, or one task with
