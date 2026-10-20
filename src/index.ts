@@ -2391,7 +2391,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
-      return json(await L.block(id, actor, body.reason, !!c.token));
+      return json(await L.block(id, actor, body.reason, !!c.token, body.until));
     case "unblock":
       return json(await L.unblock(id, actor, !!c.token));
     case "clear-secret":

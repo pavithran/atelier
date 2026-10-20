@@ -1339,6 +1339,24 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await refusal(L.accept("t1", "owner", H1), "not_ready", /reject|changes/i);
 });
 
+// t58: --until is stored with the block and returned beside its other fields;
+// a refused date records no block and no event; a block without one is as before.
+it("a block records its until, refuses a bad date with nothing recorded, and is as before without one", async () => {
+  const L = await setup("block-until");
+  const t1 = (await L.newItem("Wire the keys", ["src/**"], "owner")).id;
+  await L.claim(t1, A);
+  for (const bad of ["2000-01-01", "2999-02-29", "soon", "", null, 7]) await refusal(L.block(t1, A, "waiting", false, bad), "block_until", /--until/);
+  expect(await L.item(t1)).toMatchObject({ state: "claimed" });
+  expect(((await L.events(t1)) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.blocked")).toEqual([]);
+  const dated = await L.block(t1, A, "waiting", false, "2999-12-31");
+  expect(dated.blocked).toMatchObject({ reason: "waiting", by: A, from: "claimed", until: "2999-12-31" });
+  expect(dated.state).toBe("blocked");
+  expect(((await L.events(t1)) as unknown as LedgerEvent[]).find((e) => e.kind === "item.blocked")?.data).toEqual({ reason: "waiting", from: "claimed", until: "2999-12-31" });
+  await L.unblock(t1, A);
+  const plain = await L.block(t1, A, "waiting again");
+  expect(Object.keys(plain.blocked ?? {}).sort()).toEqual(["at", "by", "from", "reason"]);
+});
+
 it("a blocked task keeps its owner and fork, refuses every move but abandon, and returns to its state when unblocked", async () => {
   const L = await setup("blocked");
   const t1 = (await L.newItem("Wire the keys", ["src/**"], "owner")).id;

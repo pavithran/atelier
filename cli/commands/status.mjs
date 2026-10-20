@@ -1,8 +1,11 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
+import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
-import { OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
+import { CACHE, OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
+import { cleanableCount } from "../gc.mjs";
+import { mainOf } from "./gc.mjs";
+import { expiredBlocks } from "../../src/rules.ts";
 import { serverFetch } from "../server-fetch.mjs";
 
 import { readInstructions } from "../review-notice.mjs";
@@ -43,7 +46,7 @@ export default async function statusCommand() {
     const live = liveHere(name);
     const path = cfg.projects?.[name]?.path;
     const instructions = path ? readInstructions(path) : [];
-    const record = instructions.length ? await request("GET", P(name), undefined, as).catch(() => null) : null;
+    let record = instructions.length ? await request("GET", P(name), undefined, as).catch(() => null) : null;
     const mismatches = record?.project?.policy ? reviewDisagreements(record.project.policy, instructions) : [];
     const testSlots = await slotStatus();
     const strays = localStrays();
@@ -53,8 +56,13 @@ export default async function statusCommand() {
     const mine = as === OWNER;
     const branches = mine ? await developerBranches(name, as) : null;
     if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
-    console.log(withUsage(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
+    // The project's tasks, for expired blocks and the clean-up count: the read above when it was made, else one now.
+    record ??= await request("GET", P(name), undefined, as).catch(() => null);
+    const items = record?.items;
+    const expired = Array.isArray(items) ? expiredBlocks(items, new Date()) : [];
+    console.log(withUsage(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server(), expired) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
     pointToGuide([name]);
+    printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
   }
   const known = await call("GET", "/projects", undefined, OWNER);
@@ -93,6 +101,13 @@ export default async function statusCommand() {
   console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));
   pointToGuide(chosen.map((p) => p.name));
+  printCleanLines(await Promise.all(views.map(async (v) => ({ project: v.name, count: await cleanableCount({ cache: CACHE, name: v.name, items: v.items, main: mainOf(v.name) }) }))));
+}
+
+// Last in ordinary text status: what clean would remove, a read-only count.
+function printCleanLines(counts) {
+  const lines = cleanLines(counts);
+  if (lines.length) console.log(`\n${lines.join("\n")}`);
 }
 
 // The developer's branches (t641), or null when the server keeps none (one

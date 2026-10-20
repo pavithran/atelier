@@ -19,7 +19,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -3573,15 +3573,17 @@ export class Ledger extends DurableObject<Env> {
   // go on, and either unblocks it. The task keeps its owner, workspace and
   // dispatch record meanwhile; unblocking returns it to the state it was in.
   // An open task has no holder, so only the owner blocks or unblocks it.
-  block(id: string, actor: string, reason: unknown, proved = false): Item {
+  block(id: string, actor: string, reason: unknown, proved = false, until?: unknown): Item {
     const text = blockReason(reason);
+    const now = new Date();
+    const day = blockUntil(until, now);
     const item = this.item(id);
     if (actor !== this.owner) assertOwner(item, actor);
     assertBlockable(item);
-    const at = new Date().toISOString();
-    const record: Block = { reason: text, by: actor, at, from: item.state };
+    const at = now.toISOString();
+    const record: Block = { reason: text, by: actor, at, from: item.state, ...(day ? { until: day } : {}) };
     this.update(id, { state: "blocked", blocked: JSON.stringify(record) }, at);
-    this.log(id, actor, "item.blocked", { reason: text, from: item.state }, at, proved);
+    this.log(id, actor, "item.blocked", { reason: text, from: item.state, ...(day ? { until: day } : {}) }, at, proved);
     return this.item(id);
   }
 

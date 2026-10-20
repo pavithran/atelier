@@ -140,3 +140,17 @@ export async function collectCache({ cache, name, items, getItem, apply, main = 
   if (held) log(`Kept ${held} finished task${held === 1 ? "'s workspace" : "s' workspaces"} holding work Atelier and main lack, or in use; each KEEP line above says why.`);
   return { removed: count, held };
 }
+
+// How many directories `atelier clean` would remove for a project, counted by
+// a dry run that removes nothing and prints nothing: finished tasks'
+// workspaces and check clones both. 0 when there is no cache; null when they
+// cannot be inspected (the tasks were not read, or the inspection failed),
+// which status says rather than guesses (t58).
+export async function cleanableCount({ cache, name, items, main = null, cwd = process.cwd() }) {
+  if (!Array.isArray(items)) return null;
+  if (!existsSync(cache)) return 0;
+  try {
+    const { removed } = await collectCache({ cache, name, items, apply: false, main, cwd, log: () => {} });
+    return removed;
+  } catch { return null; }
+}

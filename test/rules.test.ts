@@ -5,6 +5,7 @@ import { usageShortages } from "../src/rules.ts";
 import { AREAS_REMOVED, itemFields } from "../src/rules.ts";
 import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateFolderMatches, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
+import { blockUntil, blockExpired, expiredBlocks } from "../src/rules.ts";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
@@ -1862,4 +1863,50 @@ test("itemFields answers 410 areas_removed to an older CLI's area field, whateve
     }, JSON.stringify(area));
   }
   assert.deepEqual(itemFields({}), {});
+});
+
+// t58: a block's expiry (atelier block --until). The finding it would have
+// caught: six tasks blocked for reasons that expired on 2026-10-14 stayed in
+// the developer's list as rows beside the real waits.
+test("blockUntil takes only a real UTC calendar date that is today or later, and none when absent", () => {
+  const now = new Date("2026-10-20T23:59:59.000Z");
+  assert.equal(blockUntil(undefined, now), null);
+  assert.equal(blockUntil("2026-10-20", now), "2026-10-20", "today is accepted");
+  assert.equal(blockUntil("2026-10-21", now), "2026-10-21");
+  assert.equal(blockUntil("2028-02-29", now), "2028-02-29", "a leap day is a date");
+  const refused = (value: unknown, at = now) => assert.throws(() => blockUntil(value, at), (e: unknown) => e instanceof RuleError && e.code === "block_until" && e.status === 400, String(value));
+  refused("2026-10-19");
+  refused("2026-02-29");
+  refused("2100-02-29");
+  refused("2026-13-01");
+  refused("2026-04-31");
+  refused("2026-1-5");
+  refused("20261105");
+  refused("2026-11-05T10:00:00Z");
+  refused("");
+  refused(null);
+  refused(true);
+  refused(20261105);
+  // The day is UTC: just after midnight UTC, yesterday's date is already past.
+  refused("2026-10-20", new Date("2026-10-21T00:00:00.000Z"));
+});
+
+test("a block is expired from the day after its until, UTC, and one without a date never is", () => {
+  const block = (until?: unknown) => ({ reason: "r", by: "owner", at: T, from: "claimed" as const, ...(until === undefined ? {} : { until }) });
+  const now = new Date("2026-10-20T00:00:00.000Z");
+  assert.equal(blockExpired(block("2026-10-20"), now), false, "expiring today is not expired");
+  assert.equal(blockExpired(block("2026-10-19"), now), true, "expired yesterday");
+  assert.equal(blockExpired(block("2026-10-19"), new Date("2026-10-19T23:59:59.999Z")), false);
+  assert.equal(blockExpired(block(), now), false, "an undated block");
+  assert.equal(blockExpired(null, now), false);
+  assert.equal(blockExpired(block("soon"), now), false, "a stored value that is not a date is not an expiry");
+  assert.equal(blockExpired(block(20260101), now), false);
+  const items = [
+    item({ id: "t1", state: "blocked", blocked: block("2026-10-19") }),
+    item({ id: "t2", state: "blocked", blocked: block("2026-10-20") }),
+    item({ id: "t3", state: "blocked", blocked: block() }),
+    item({ id: "t4", state: "claimed", blocked: block("2026-10-01") }),
+  ];
+  assert.deepEqual(expiredBlocks(items, now), ["t1"]);
+  assert.deepEqual(expiredBlocks(null, now), []);
 });
