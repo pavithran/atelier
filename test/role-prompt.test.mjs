@@ -222,3 +222,19 @@ test("the guide and the handbook teach landing a wave, not 'Never land two toget
   assert.ok(readFileSync("cli/land.mjs", "utf8").includes("ATELIER_LAND_MAIN_MOVED_ROUNDS"));
   assert.ok(wave.includes("ATELIER_LAND_MAIN_MOVED_ROUNDS"));
 });
+
+// t49: the handover is described once, in the handbook, and the guide links it.
+test("the orchestrate guide links the handbook's handover section, which states what the handover holds", () => {
+  const text = ROLE_PROMPTS.orchestrate;
+  assert.ok(text.includes("https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md#the-handover"));
+  assert.match(text, /holds only open decisions and work in flight\s+that Atelier does not record/);
+  assert.match(text, /deployed commit from `GET \/api\/version`/);
+  const doc = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
+  assert.ok(doc.includes("## The handover "), "the anchor the guide links exists");
+  const section = doc.slice(doc.indexOf("## The handover"), doc.indexOf("## Registering workspace preparation"));
+  assert.match(section, /Decisions still open/);
+  assert.match(section, /Work in flight that Atelier does not record/);
+  assert.match(section, /Task states, holders, reviews and findings/);
+  assert.match(section, /The deployed commit: `GET \/api\/version`/);
+  assert.match(section, /Atelier is right/);
+});
