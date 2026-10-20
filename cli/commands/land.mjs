@@ -6,6 +6,7 @@ import { redactGitArgs } from "../runner.mjs";
 import { runLand } from "../land.mjs";
 import { OWNER, apiToken, args, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
 import { serverFetch } from "../server-fetch.mjs";
+import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../land-queue.mjs";
 
 // The project owner lands one task whole: the lease on the server, the
 // merge of main into the task's workspace, the project's fixture
@@ -13,6 +14,13 @@ import { serverFetch } from "../server-fetch.mjs";
 // (cli/land.mjs). Steps run as this CLI's own commands where they have one,
 // and each is recorded on the ledger as a land.* event.
 export default async function landCommand() {
+  const ids = uniqueIds(args._.slice(1));
+  const { parallel, error: parallelError } = parseParallel(args.parallel);
+  if (parallelError) die(parallelError);
+  if (ids.length > 1) {
+    const flag = ["workflow", "release-lease", "post-merge"].find((k) => args[k] !== undefined);
+    if (flag) die(`several tasks cannot be landed with --${flag}: it acts on one task; give one task, or leave --${flag} out`);
+  }
   const name = project(), id = itemArg();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
   if (!p.path || !existsSync(p.path)) die(`land needs ${name}'s registered checkout; this machine records ${p.path ?? "no folder"}. Run atelier init in that checkout first`);
@@ -46,6 +54,19 @@ export default async function landCommand() {
     if (r.status !== 0) throw new Error(`git ${redactGitArgs(a).join(" ")} failed:\n${(r.stderr || r.stdout || r.error?.message || "").trim()}`);
     return o.raw ? r.stdout : r.stdout.trim();
   };
+  if (ids.length > 1) {
+    const base = `/projects/${encodeURIComponent(name)}`;
+    const flags = childFlags(args.multi);
+    const summary = summarise(await runLandQueue({
+      ids, parallel, print: (line) => console.log(line),
+      argvFor: (task) => [process.execPath, fileURLToPath(new URL("../atelier.mjs", import.meta.url)), "land", task, ...flags],
+      launch: (argv) => spawnLanding(argv),
+      stateOf: async (task) => { const d = await request("GET", `${base}/items/${encodeURIComponent(task)}`); return { merged: d.item?.state === "merged", postMerge: d.postMerge ?? null }; },
+      barrier: async () => (await request("GET", `${base}/landing-lease`)).postMerge ?? null,
+    }));
+    console.log(summary.line);
+    process.exit(summary.status);
+  }
   try {
     await runLand({
       args, name, id, p, request, git: gitOrThrow, die, owner: OWNER,
