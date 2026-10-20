@@ -14,7 +14,7 @@ import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mer
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -48,6 +48,7 @@ import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaime
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor, type Attention } from "./attention.ts";
+import { readAccepted } from "./accepted-main.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
@@ -194,7 +195,15 @@ const TASK_EVENTS = 300;
 // What cannot be read is labelled, not fatal (readStanding).
 async function standingOf(env: Env, key: string): Promise<Standing> {
   const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
-  return readStanding(ledger(env, key) as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date());
+  const L = ledger(env, key);
+  return readStanding(L as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date(), () => acceptedOf(env, L));
+}
+
+// Where each accepted task stands against the main head the Ledger last
+// recorded (t60), read from each task's fork (src/accepted-main.ts).
+async function acceptedOf(env: Env, L: ReturnType<typeof ledger>): Promise<AcceptedAgainstMain[]> {
+  const [items, main] = await Promise.all([L.items(), L.observedMain()]);
+  return readAccepted(items, main, async (fork, head, at) => (await holdsCommit(env, fork, head, at, PREDICT_BUDGET)).holds);
 }
 
 // The runner offers as the index recorded them, or null when they could not

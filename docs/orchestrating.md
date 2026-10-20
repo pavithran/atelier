@@ -682,6 +682,36 @@ steps that follow, and the developer has not yet decided to move them:
 `bin/orchestrate/review.sh` also stays: a session without a runner reviews by
 hand with it until the replacement is confirmed in use.
 
+### Accepted work waiting while main moves
+
+Accepted work that sits unmerged while other tasks land is the costliest
+kind of delay. On 16 October three accepted schema tasks in ikon-weblog
+waited for the developer's migration approval. Three other tasks merged
+into the same files meanwhile, so each held task conflicted at merge time,
+and every resolution made a new head that needed fresh checks and a fresh
+review.
+
+- **Land promptly.** Get any approval a change needs before building it, or
+  land it right after its review, with the wave landing above. Do not let
+  reviewed work wait while other tasks land in the same files.
+- **Merge main early.** When accepted work must wait, merge main into it
+  while it waits (`atelier update`), so the conflict is met with the
+  author's context and not at merge time. A merge of main is retained only
+  under the review-retention rule above, which is conditional; otherwise it
+  is a full review. Acceptance never carries to the new head, and the
+  checks run again at it.
+- **See which work is behind.** `atelier status --project NAME` lists each
+  accepted task whose head does not contain the main head the server last
+  recorded, with both revisions, in text and in the JSON's `accepted`
+  field; a task whose history could not be read says `unknown`. The list
+  reads history only: it runs no check, dispatches nothing and changes no
+  acceptance. Behind is not a conflict. `atelier check ID --merged` runs
+  the checks on the would-be merge and shows whether the two collide.
+  `atelier status --new` is unchanged: it reports what others did to
+  tasks, not how their commits relate.
+- **No stacking.** A task is based on main, never on another task's head.
+  Land the lower task first, then the one above it.
+
 ### Pre-review while the lease is busy
 
 While one landing holds the project's lease, Atelier pre-reviews the next

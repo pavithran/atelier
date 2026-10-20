@@ -3280,3 +3280,33 @@ export function usageShortages(report: { tool: string; windows: { name: string; 
   }
   return out;
 }
+
+// Accepted work and main (t60). An accepted revision waits for the developer
+// to merge it while other tasks land, so main may hold work it lacks. The
+// question asked is ancestry only: does the accepted head contain the main
+// head the Ledger last recorded? `holds` is that answer from the history
+// search (true, false, or null when the search could not answer: history
+// missing, too long for its budget, or unreadable). Unequal hashes alone say
+// nothing, and "behind" is not a conflict: whether the two changes collide is
+// what `atelier check ID --merged` finds out. Nothing here runs a check.
+export type AcceptedState = "current" | "behind" | "unknown";
+export interface AcceptedAgainstMain {
+  id: string;
+  title: string;
+  acceptedHead: string;
+  // The main head the Ledger had recorded when this was read; null when it had recorded none.
+  main: string | null;
+  state: AcceptedState;
+}
+
+export function acceptedState(main: string | null, holds: boolean | null): AcceptedState {
+  if (!main || holds === null) return "unknown";
+  return holds ? "current" : "behind";
+}
+
+// One line per accepted task of the list, in order: those with an accepted head.
+export function acceptedAgainstMain(items: Pick<Item, "id" | "title" | "state" | "acceptedHead">[], main: string | null, holds: Map<string, boolean | null>): AcceptedAgainstMain[] {
+  return items.flatMap((i) => i.state === "accepted" && i.acceptedHead
+    ? [{ id: i.id, title: i.title, acceptedHead: i.acceptedHead, main, state: acceptedState(main, holds.get(i.id) ?? null) }]
+    : []);
+}
