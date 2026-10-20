@@ -149,3 +149,50 @@ test("caseSetMeta reads the manifest and leaves the reviewer version empty when 
   assert.equal(caseSetMeta(cases).reviewerVersion, null);
   assert.equal(caseSetMeta(cases, "v2").reviewerVersion, "v2");
 });
+
+// A copy of the case set whose first case has another diff and brief: same names, a different hash.
+function changedCopy(dir) {
+  const v2 = join(dir, "v2");
+  cpSync(cases, v2, { recursive: true });
+  const n = sampleNames()[0];
+  writeFileSync(join(v2, n, "brief.md"), readFileSync(join(v2, n, "brief.md"), "utf8") + "\nA changed brief.\n");
+  const m = json(join(v2, "manifest.json")); m.version = 2; m.briefVersion = "bake-brief-2";
+  writeFileSync(join(v2, "manifest.json"), JSON.stringify(m));
+  return v2;
+}
+
+test("reviews of v1 are not scored against v2, and an output folder is not rerun on other cases (found by review of a05830e1)", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-review-cases-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const record = join(dir, "codex.jsonl");
+  standIn(join(dir, "codex"), record);
+  const env = { ...process.env, HOME: dir, RB_CODEX: join(dir, "codex") };
+  const sh = (...a) => spawnSync(zsh, [script, ...a], { encoding: "utf8", env, cwd: dir });
+  const have = (sha) => spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: repo }).status === 0;
+  if (!sampleNames().every((n) => have(readFileSync(join(cases, n, "base"), "utf8").trim()))) return t.skip("this clone lacks the history the cases' base commits are in");
+  const v2 = changedCopy(dir), out = join(dir, "out");
+  const runOn = (c) => sh("run", "--cases", c, "--out", out, "--reviewers", "codex/gpt-test", "--cache", join(dir, "cache"), "--retry-sleep", "0");
+  assert.equal(runOn(cases).status, 0);
+  const rec = json(join(out, "case-set.json"));
+  assert.equal(rec.caseSetHash, caseSetHash(cases));
+  // Scoring v1's reviews against v2: refused, naming both hashes; against v1: fine.
+  const bad = sh("score", "--out", out, "--cases", v2, "--write");
+  assert.notEqual(bad.status, 0);
+  assert.ok(bad.stderr.includes(caseSetHash(cases)) && bad.stderr.includes(caseSetHash(v2)), bad.stderr);
+  assert.equal(existsSync(join(out, "scores.json")), false);
+  assert.equal(sh("score", "--out", out, "--cases", cases).status, 0);
+  // Rerunning v2 into the same folder is refused before anything is overwritten.
+  const before = readFileSync(join(out, "inputs", sampleNames()[0], "brief.md"), "utf8");
+  const again = runOn(v2);
+  assert.notEqual(again.status, 0);
+  assert.match(again.stderr, /holds reviews of another case set/);
+  assert.equal(readFileSync(join(out, "inputs", sampleNames()[0], "brief.md"), "utf8"), before);
+  assert.equal(json(join(out, "case-set.json")).caseSetHash, caseSetHash(cases));
+  // The same cases resume as before; a folder with reviews and no record, or a run without cases, is not trusted.
+  assert.match(runOn(cases).stdout, /kept\s+codex\/gpt-test/);
+  const plain = sh("run", "--sample", join(cases, "sample.txt"), "--out", out, "--reviewers", "codex/gpt-test");
+  assert.notEqual(plain.status, 0);
+  rmSync(join(out, "case-set.json"));
+  assert.match(runOn(cases).stderr, /records no case set/);
+  assert.match(spawnSync("node", [join(here, "review-bake-score.mjs"), "--out", out, "--cases", cases], { encoding: "utf8" }).stderr, /records no case set/);
+});

@@ -517,6 +517,9 @@ bin/orchestrate/review-bake.sh score --out DIR --truth truth.json
   harness, model and the `--version` label, with wrong verdicts, failed runs
   and unjudged findings. Comparing two reviewer versions: "Comparing two
   versions of a reviewer" in docs/orchestrating.md.
+  The run records the case set in `DIR/case-set.json`; a rerun into that folder
+  with other cases is refused, and `score --cases` refuses a folder run on a
+  different hash.
 
 Without `--cases` it reads builds and judge verdicts that the bake-off kept; it changes none of
 them and runs reviewers only in throwaway clones under

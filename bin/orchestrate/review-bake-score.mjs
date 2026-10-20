@@ -87,6 +87,19 @@ export function caseSetMeta(dir, version = null) {
   return { caseSet: manifest.caseSet, caseSetVersion: manifest.version, briefVersion: manifest.briefVersion, caseSetHash: caseSetHash(dir), reviewerVersion: version };
 }
 
+// CASE_FILE: what review-bake.sh records in the output folder when it runs a case set.
+export const CASE_FILE = "case-set.json";
+
+// checkCaseSet(out, cases): the recorded identity of the cases DIR was run on must be the hash of `cases` now; throws naming both otherwise.
+export function checkCaseSet(out, cases) {
+  const file = join(out, CASE_FILE);
+  const now = caseSetMeta(cases);
+  if (!existsSync(file)) throw new Error(`${out} records no case set (no ${CASE_FILE}): it was not run with --cases, so its reviews cannot be tied to ${cases} (${now.caseSetHash})`);
+  const rec = JSON.parse(readFileSync(file, "utf8"));
+  if (rec.caseSetHash !== now.caseSetHash) throw new Error(`${out} was run on case set ${rec.caseSetHash} (v${rec.caseSetVersion}, brief ${rec.briefVersion}) but ${cases} is ${now.caseSetHash} (v${now.caseSetVersion}, brief ${now.briefVersion}); score it against the cases it ran on`);
+  return now;
+}
+
 // harnessAndModel("codex/gpt-6-astra"): { harness: "codex", model: "gpt-6-astra" }.
 export const harnessAndModel = (reviewer) => { const i = reviewer.indexOf("/"); return i === -1 ? { harness: reviewer, model: null } : { harness: reviewer.slice(0, i), model: reviewer.slice(i + 1) }; };
 
@@ -239,6 +252,9 @@ export function readPairs(out, builds) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   // --has-verdict FILE: exit 0 when the file holds a verdict this parser reads (review-bake.sh's one test of a reply).
+  // --case-identity DIR: prints DIR's recorded identity as JSON (review-bake.sh records it in the output folder).
+  const ci = process.argv.indexOf("--case-identity");
+  if (ci !== -1) { const { reviewerVersion, ...id } = caseSetMeta(process.argv[ci + 1]); process.stdout.write(JSON.stringify(id) + "\n"); process.exit(0); }
   const hv = process.argv.indexOf("--has-verdict");
   if (hv !== -1) {
     let text = "";
@@ -265,7 +281,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const reviewers = [...names].map((n) => n.replace("_", "/")).sort();
   const pairs = readPairs(out, builds);
   const result = scoreRun(loadReviews(out, builds, reviewers, pairs), truth, labels);
-  if (cases) result.meta = caseSetMeta(cases, arg("version") ?? null);
+  if (cases) result.meta = { ...checkCaseSet(out, cases), reviewerVersion: arg("version") ?? null };
   if (process.argv.includes("--write")) {
     const slim = { ...result, rows: result.rows.map(({ findings, ...r }) => ({ ...r, findings: findings.map(({ index, severity, where, kind, ids }) => ({ index, severity, where, kind, ids })) })) };
     writeFileSync(join(out, "scores.json"), JSON.stringify(slim, null, 2) + "\n");

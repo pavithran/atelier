@@ -193,7 +193,16 @@ case $sub in
     [[ -n $sample && -f $sample && -n $RB_OUT && -n $reviewers ]] || die "run needs --sample FILE (or --cases DIR), --out DIR and --reviewers LIST"
     builds=(${(f)"$(grep -vE '^\s*(#|$)' $sample | awk -F'\t' '{print $1}' | awk '{print $1}')"})
     (( ${#builds} )) || die "the sample lists no build"
-    mkdir -p $RB_OUT; [[ ${sample:A} == $RB_OUT/sample.txt ]] || cp $sample $RB_OUT/sample.txt
+    mkdir -p $RB_OUT
+    # The output folder belongs to one case set: a rerun into it keeps old verdicts, so it must be the same cases.
+    ident=none; [[ -n $RB_CASES ]] && { ident=$(node $here/review-bake-score.mjs --case-identity $RB_CASES) || die "cannot read the case set $RB_CASES"; }
+    if [[ -f $RB_OUT/case-set.json ]]; then
+      [[ $(<$RB_OUT/case-set.json) == $ident ]] || die "$RB_OUT holds reviews of another case set ($(<$RB_OUT/case-set.json)), not $ident; use a new --out"
+    elif [[ -n $RB_CASES && -d $RB_OUT/reviews ]]; then
+      die "$RB_OUT already holds reviews and records no case set; use a new --out"
+    fi
+    [[ -n $RB_CASES ]] && print -r -- $ident > $RB_OUT/case-set.json
+    [[ ${sample:A} == $RB_OUT/sample.txt ]] || cp $sample $RB_OUT/sample.txt
     typeset -a run_list=() skipped=()
     for r in ${(s:,:)reviewers}; do
       reviewer_family $r >/dev/null || die "no such reviewer $r (codex/, antigravity/ or claude-code/ MODEL)"
