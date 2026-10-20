@@ -334,3 +334,51 @@ test("work in progress stays work in progress under merge commits, so finish nee
   assert.ok(harnessRan, "the builder runs on a merge over work in progress");
   assert.ok(!sent.includes("finish"), "nothing is finished without a builder commit");
 });
+
+// t68: the fallback after a failed work-in-progress commit released the claim
+// when HEAD was unchanged (signing, a hook), so another actor's reset could
+// discard the staged work. Any commitWork exception now keeps the claim.
+for (const [name, failAt] of [["HEAD unchanged", "commit"], ["HEAD advanced", "rev-parse"]]) {
+  test(`a work-in-progress commit that fails after staging with ${name} keeps the claim, the index and the files`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "atelier-wip-commit-fails-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const git = async (args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    await git(["init", "--quiet"]);
+    await git(["config", "user.name", "Builder"]);
+    await git(["config", "user.email", "builder@example.test"]);
+    writeFileSync(join(dir, "a"), "1");
+    await git(["add", "a"]);
+    await git(["commit", "--quiet", "-m", "initial"]);
+    const before = (await git(["rev-parse", "HEAD"])).trim();
+    writeFileSync(join(dir, "a"), "2");
+    writeFileSync(join(dir, "b"), "new");
+    let committed = false;
+    const failing = async (args) => {
+      if (args[0] === failAt && (failAt === "commit" || committed)) throw new Error("commit failed:\nsigning refused\tby the hook");
+      const out = await git(args);
+      if (args[0] === "commit") committed = true;
+      return out;
+    };
+    const { io, calls, logs } = fixture();
+    io.head = async () => (await git(["rev-parse", "HEAD"])).trim();
+    // The setup reset before the harness is allowed; none may follow the failure.
+    let failed = false;
+    const resetsAfter = [];
+    io.reset = async (...args) => { if (failed) resetsAfter.push(args); };
+    io.commitWork = (cwd, env, parts) => commitWorkInProgress(failing, parts).catch((error) => { failed = true; throw error; });
+    // The run starts from the real head: the claim read it before the harness ran.
+    const state = await runTask(assignment, config, "home:studio", io);
+    assert.equal(runOutcome(state), "validation_blocked");
+    assert.deepEqual(commands(calls), ["claim"]);
+    assert.ok(failed);
+    assert.deepEqual(resetsAfter, []);
+    assert.equal(state.claimHeldAt, io.workspacePath("atelier", "t13"));
+    const diagnostics = logs.filter((l) => /^work in progress/.test(l));
+    assert.deepEqual(diagnostics, ["work in progress not kept, claim preserved: commit failed: signing refused by the hook"]);
+    assert.ok(!logs.some((l) => /^released/.test(l)));
+    assert.equal((await git(["rev-parse", "HEAD"])).trim() === before, failAt === "commit");
+    assert.equal((await git(["diff", "--cached", "--name-only"])).trim().split("\n").sort().join(), failAt === "commit" ? "a,b" : "");
+    assert.equal(readFileSync(join(dir, "a"), "utf8"), "2");
+    assert.equal(readFileSync(join(dir, "b"), "utf8"), "new");
+  });
+}
