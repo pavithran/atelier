@@ -197,3 +197,18 @@ it("the Overview of a project read in full and empty still says it is empty", as
   expect(sec).not.toContain("could not be read");
   expect(page).toContain("0 tasks queued");
 });
+
+// t60. Finding it would have caught: accepted work held while main moved went
+// unmentioned until merge time (ikon-weblog, 2026-10-16).
+it("GET standing carries where accepted work stands against main only when asked, and says when that could not be read", async () => {
+  const held = [{ id: "a1", title: "Held", acceptedHead: "a".repeat(40), main: "b".repeat(40), state: "behind" as const }];
+  const without = await readStanding(source("alpha", []), OFFERS, [], 300, NOW);
+  expect("accepted" in without).toBe(false);
+  const withHeld = await readStanding(source("alpha", []), OFFERS, [], 300, NOW, () => Promise.resolve(held));
+  expect(withHeld.accepted).toEqual(held);
+  const none = await readStanding(source("alpha", []), OFFERS, [], 300, NOW, () => Promise.resolve([]));
+  expect("accepted" in none).toBe(false);
+  const failed = await readStanding(source("alpha", []), OFFERS, [], 300, NOW, () => Promise.reject(new Error("unavailable")));
+  expect("accepted" in failed).toBe(false);
+  expect(failed.partial).toContain("Whether accepted work is behind main could not be read.");
+});

@@ -370,3 +370,21 @@ else process.exit(require("node:child_process").spawnSync(${JSON.stringify(real)
   assert.deepEqual(processes.agents, [{ pid: 101, command: "codex", age: "30s", project: "demo", id: "t7" }]);
   for (const output of [text.output, json.output]) assert.doesNotMatch(output, /PRIVATE|SECRET|--config|codex exec/);
 });
+
+// t60: accepted work behind main is flagged with both revisions and the command that shows whether they collide.
+test("accepted work that does not contain the recorded main is flagged, unknown ancestry says so, and current work is not listed", () => {
+  const A = "a".repeat(40), M = "b".repeat(40);
+  const out = formatStanding(standing({ accepted: [
+    { id: "t7", title: "Behind", acceptedHead: A, main: M, state: "behind" },
+    { id: "t8", title: "Unread", acceptedHead: A, main: M, state: "unknown" },
+    { id: "t9", title: "No main", acceptedHead: A, main: null, state: "unknown" },
+    { id: "t10", title: "Current", acceptedHead: A, main: M, state: "current" },
+  ] }), "PAVI").split("\n");
+  assert.ok(out.includes("Accepted, not merged, and not known to hold main:"), out.join("\n"));
+  assert.ok(out.includes("  t7  behind main  accepted at aaaaaaaa, which does not contain main as last recorded (bbbbbbbb); behind is not a conflict; next: atelier check t7 --merged --project demo"), out.join("\n"));
+  assert.ok(out.includes("  t8  unknown  accepted at aaaaaaaa; its history could not be read against main as last recorded (bbbbbbbb); next: atelier check t8 --merged --project demo"));
+  assert.ok(out.includes("  t9  unknown  accepted at aaaaaaaa; the server has recorded no main head to compare with; next: atelier check t9 --merged --project demo"));
+  assert.ok(!out.some((l) => l.includes("t10")), "current work is not flagged");
+  assert.ok(!formatStanding(standing(), "PAVI").includes("not known to hold main"), "a standing with no accepted work reads as before");
+  assert.ok(!formatStanding(standing({ accepted: [{ id: "t10", title: "Current", acceptedHead: A, main: M, state: "current" }] }), "PAVI").includes("not known to hold main"));
+});

@@ -47,7 +47,7 @@ import type { PartRoute } from "./plans/route.ts";
 export interface Live { nonce: string; refresh?: number }
 import {
   bindingOf, changeClass, confirmationAt, contributorsOf, directionText, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, protectedNeed, REASON_MAX, recordedText, recordMergeCommand, stateLabel, modelOf, modelKey, singleFamily, standingFastReady,
-  type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
+  type AcceptedAgainstMain, type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 import { STEPS, TAGLINE, TAKEAWAYS, type Verb } from "./how-data.ts";
 
@@ -1411,6 +1411,9 @@ export interface Standing {
   unread?: ("tasks" | "notices")[];
   // While the project is in fast mode, its mode line (modeLine in src/rules.ts).
   mode?: string;
+  // Each accepted task and whether its accepted head contains the main head
+  // the Ledger last recorded (t60); absent when none is accepted.
+  accepted?: AcceptedAgainstMain[];
 }
 
 // How many waiting tasks get a brief, how many merges are listed, and how many

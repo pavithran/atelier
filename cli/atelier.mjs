@@ -1620,6 +1620,13 @@ export function formatStanding(s, ownerName = "the developer", origin = "", expi
       : `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${tail}`;
   }));
   if (expiredLine) lines.push("", expiredLine);
+  // Accepted work whose head does not contain the main head the server last
+  // recorded, or whose ancestry could not be read (t60). Behind is not a
+  // conflict, and nothing was checked: the command shows whether they collide.
+  const flagged = (s.accepted ?? []).filter((a) => a.state !== "current");
+  group("Accepted, not merged, and not known to hold main", flagged.map((a) => a.state === "behind"
+    ? `${flat(a.id)}  behind main  accepted at ${short(a.acceptedHead)}, which does not contain main as last recorded (${short(a.main)}); behind is not a conflict; next: atelier check ${flat(a.id)} --merged --project ${flat(s.project.name)}`
+    : `${flat(a.id)}  unknown  accepted at ${short(a.acceptedHead)}; ${a.main ? `its history could not be read against main as last recorded (${short(a.main)})` : "the server has recorded no main head to compare with"}; next: atelier check ${flat(a.id)} --merged --project ${flat(s.project.name)}`));
   if (s.pipeline?.length) lines.push("", `In the pipeline: ${s.pipeline.reduce((n, x) => n + x.count, 0)} tasks: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(", ")}; none waits on ${flat(ownerName)}.`);
   if (s.overlaps?.length) lines.push("", `Overlapping scopes: ${s.overlaps.length} ${s.overlaps.length === 1 ? "pair" : "pairs"}; nothing waits on ${flat(ownerName)}. The JSON lists them.`);
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${notePreview(q.note) ? `  note: ${flat(notePreview(q.note))}` : ""}`));

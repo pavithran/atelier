@@ -1,4 +1,9 @@
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { acceptedAgainstMain, acceptedState } from "../src/rules.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
 import { usageShortages } from "../src/rules.ts";
@@ -1999,4 +2004,65 @@ test("only an approval standing at the binding, given once, is carried; any stan
   const rejection = approved({ by: "claude-code/fable-5.1", approve: false, at: "2026-10-03T12:01:00.000Z" });
   assert.deepEqual(retainableApprovals([approved(), rejection], bound), [], "a rejection stands beside it");
   assert.deepEqual(retainableApprovals([approved(), approved({ by: "claude-code/fable-5.1" })], bound).map((r) => r.by), ["codex/gpt-6-astra", "claude-code/fable-5.1"]);
+});
+
+// t60. Finding it would have caught: ikon-weblog, 2026-10-16, three accepted
+// schema tasks sat unmerged while main moved under them and nothing said so
+// until merge time. Ancestry comes from a real local Git history here: the
+// accepted head either contains the recorded main head or it does not.
+test("acceptedAgainstMain: current, behind, diverged, missing history and unreadable, from a local Git history", () => {
+  const dir = mkdtempSync(join(tmpdir(), "t60-"));
+  try {
+    const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", ...a], { cwd: dir, encoding: "utf8" }).trim();
+    const commit = (msg: string) => { git("commit", "--allow-empty", "-m", msg); return git("rev-parse", "HEAD"); };
+    git("init", "-q", "-b", "main");
+    const root = commit("root");
+    const main = commit("main moves");
+    git("checkout", "-q", "-b", "built-on-main", main);
+    const current = commit("built on main");
+    git("checkout", "-q", "-b", "built-on-root", root);
+    const diverged = commit("a commit main lacks, on a root main has moved past");
+    // The history search of src/index.ts as a fixture: true or false when Git
+    // can walk the history, null when the head is not in the history it has.
+    const holds = (from: string, target: string): boolean | null => {
+      try { git("cat-file", "-e", `${from}^{commit}`); } catch { return null; }
+      try { git("merge-base", "--is-ancestor", target, from); return true; } catch { return false; }
+    };
+    const mk = (id: string, head: string | null, state: "accepted" | "submitted" = "accepted") => ({ id, title: `Task ${id}`, state, acceptedHead: head });
+    const items = [mk("t1", current), mk("t2", root), mk("t3", diverged), mk("t4", "c".repeat(40)), mk("t5", current), mk("t6", current, "submitted"), mk("t7", null)];
+    const read = (at: string) => new Map<string, boolean | null>(items.map((i) => [i.id, i.id === "t5" ? null : i.acceptedHead ? holds(i.acceptedHead, at) : null]));
+    const out = acceptedAgainstMain(items, main, read(main));
+    assert.deepEqual(out.map((a) => [a.id, a.state]), [["t1", "current"], ["t2", "behind"], ["t3", "behind"], ["t4", "unknown"], ["t5", "unknown"]],
+      "only accepted tasks with an accepted head are listed; one that contains the recorded main is current, one that does not is behind (whether it is main's ancestor or has commits of its own), a head Git cannot find is unknown and so is a search that could not run");
+    assert.ok(out.every((a) => a.main === main), "each says which main was observed");
+    // Main moves on: the head that held the old main no longer holds main.
+    const newer = (git("checkout", "-q", "main"), commit("main, further on"));
+    assert.equal(acceptedAgainstMain(items, newer, read(newer))[0].state, "behind");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("acceptedState: no recorded main head, or a search that could not answer, is unknown; behind is not a conflict", () => {
+  assert.equal(acceptedState(null, true), "unknown");
+  assert.equal(acceptedState("a".repeat(40), null), "unknown");
+  assert.equal(acceptedState("a".repeat(40), false), "behind");
+  assert.equal(acceptedState("a".repeat(40), true), "current");
+  assert.equal(acceptedAgainstMain([{ id: "t1", title: "x", state: "accepted", acceptedHead: H1 }], null, new Map([["t1", true]]))[0].state, "unknown");
+});
+
+test("readAccepted: a fork that cannot be read is unknown while the others are read, and tasks past the cap are unknown without a read", async () => {
+  const { ACCEPTED_READS, readAccepted } = await import("../src/accepted-main.ts");
+  const main = "b".repeat(40);
+  const mk = (n: number, fork: string | null = `f${n}`) => ({ id: `t${n}`, title: "x", state: "accepted" as const, fork, acceptedHead: H1 });
+  const asked: string[] = [];
+  const holds = async (fork: string) => { asked.push(fork); if (fork === "f2") throw new Error("fork unreadable"); return fork === "f3" ? null : fork !== "f4"; };
+  const out = await readAccepted([mk(1), mk(2), mk(3), mk(4), mk(5, null)], main, holds);
+  assert.deepEqual(out.map((a) => [a.id, a.state]), [["t1", "current"], ["t2", "unknown"], ["t3", "unknown"], ["t4", "behind"], ["t5", "unknown"]]);
+  assert.ok(!asked.includes("f5"), "a task with no fork is not read");
+  const many = Array.from({ length: ACCEPTED_READS + 2 }, (_, n) => mk(n + 1));
+  asked.length = 0;
+  const capped = await readAccepted(many, main, async (fork) => { asked.push(fork); return true; });
+  assert.equal(asked.length, ACCEPTED_READS);
+  assert.deepEqual(capped.slice(-2).map((a) => a.state), ["unknown", "unknown"]);
+  asked.length = 0;
+  assert.ok((await readAccepted(many, null, async (fork) => { asked.push(fork); return true; })).every((a) => a.state === "unknown") && asked.length === 0, "no recorded main reads nothing");
 });

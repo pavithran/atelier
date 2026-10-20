@@ -7,7 +7,7 @@
 import { attentionFor } from "./attention.ts";
 import { buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type Standing } from "./ui";
 import type { LedgerEvent, ProjectRecord } from "./ledger";
-import type { Item, InboxEntry } from "./rules";
+import type { AcceptedAgainstMain, Item, InboxEntry } from "./rules";
 import type { SessionNote } from "./sessions.ts";
 import type { SeenOffer } from "./dispatch/rules";
 import type { ModelEntry } from "./models/pool";
@@ -27,8 +27,11 @@ export interface StandingSource {
 
 // `offers` and `pool` are null when they could not be read; `limit` is how
 // many of each task's own events are read.
+// `accepted`, when given, reads where each accepted task stands against main
+// (acceptedAgainstMain in src/rules.ts); a read that fails is said in `partial`.
 export async function readStanding(
   L: StandingSource, offers: readonly SeenOffer[] | null, pool: readonly ModelEntry[] | null, limit: number, now: Date,
+  accepted?: () => Promise<AcceptedAgainstMain[]>,
 ): Promise<Standing> {
   const [project, items] = await Promise.all([L.project(), L.items().catch(() => null)]);
   const inbox = await L.inbox(now.toISOString(), pool).catch(() => null);
@@ -47,6 +50,8 @@ export async function readStanding(
   const mode = L.mode ? await L.mode().catch(() => null) : null;
   const standing = buildStanding(project, items ?? [], taskEvents, limit, attention, details, now);
   if (!sessions) standing.partial.push("The last session's note could not be read.");
+  const held = accepted ? await accepted().catch(() => null) : undefined;
+  if (held === null) standing.partial.push("Whether accepted work is behind main could not be read.");
   const unread = [...items ? [] : ["tasks" as const], ...inbox ? [] : ["notices" as const]];
-  return { ...standing, session: sessions?.[0], ...unread.length ? { unread } : {}, ...mode?.mode === "fast" ? { mode: mode.line } : {} };
+  return { ...standing, session: sessions?.[0], ...held?.length ? { accepted: held } : {}, ...unread.length ? { unread } : {}, ...mode?.mode === "fast" ? { mode: mode.line } : {} };
 }
