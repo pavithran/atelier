@@ -21,7 +21,7 @@ import {
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, blockUntil, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
-  standingReview,
+  standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
@@ -3161,7 +3161,7 @@ export class Ledger extends DurableObject<Env> {
   // write, so the gate blocks until the scan of that exact head completes
   // (setSecret), whatever happens to the scan in between. The Worker's push
   // paths pass it; the Ledger's own tests, which run no scan, do not.
-  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = [], scan = false): Item {
+  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = [], scan = false, retention: RetentionRead | null = null): Item {
     const item = this.item(id);
     // The owner may port work to a released fork without taking its claim
     // or removing its dispatch. The next builder inherits the recorded head.
@@ -3207,8 +3207,72 @@ export class Ledger extends DurableObject<Env> {
       ...(reopened ? { approvalInvalidated: true } : {}),
       ...this.otherAuthors(item, authors),
     }, now, proved);
+    this.retainApprovals(item, observedHead, this.refreshInFlight(id) ? null : retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
     this.afterPlanChange(id);
     return this.item(id);
+  }
+
+  // How many approvals stand at the task's head that a merge of main could
+  // carry to a new one (retainableApprovals): the Worker reads the merge from
+  // Artifacts only when there is one to carry.
+  retainable(id: string, head?: string): number {
+    const item = this.item(id);
+    if (item.kind || item.state === "merged" || item.state === "abandoned" || !item.head) return 0;
+    return retainableApprovals(this.reviewsFor(id), head ? { ...bindingOf(item), head } : bindingOf(item)).length;
+  }
+
+  // Whether a task refresh holds a lease on the task, or whether that cannot
+  // be read: either way a push does not decide retention. The refresh's own
+  // report (taskRefreshed) does, since only it knows who made the merge, a
+  // resolver who may also be the task's holder included.
+  private refreshInFlight(id: string): boolean {
+    try { return !!this.refreshTargetOf(id)?.lease; } catch { return true; }
+  }
+
+  // The approvals standing at `item`'s head, carried to `newHead` when it is
+  // a merge of main that leaves the task's files alone (retentionVerdict in
+  // src/rules.ts, t56). Each stays as the original review gave it, whose
+  // record is untouched; the carried one stands at the new head beside the
+  // proof, and is counted as any review is: the gate still asks for
+  // authorization, independence and one approval per model. Acceptance never
+  // carries (the callers have already cleared it) and the checks are the new
+  // head's own. A merge not carried says why in the record, once, for the
+  // approvals it did not carry. Answers what became of them.
+  private retainApprovals(item: Item, newHead: string, read: RetentionRead | null, who: { resolver: string | null; outsiders: boolean }, at: string): { kept: number; why: string } | null {
+    // A caller that read nothing asks nothing of the merge; a head that is
+    // not a merge of main into the approved one is an ordinary push, which
+    // carries nothing and has nothing to say about it.
+    if (!read || item.kind || !item.head) return null;
+    if (!("unread" in read) && (read.parents.length !== 2 || read.parents[0] !== item.head)) return null;
+    const binding = { head: item.head, criteria: criteriaOf(item) };
+    // A reviewer who has given any verdict at the new head already (the push
+    // event can record the head before the refresh report, and the review
+    // comes between) keeps that verdict standing: a carried approval would
+    // carry the report's later time and displace it.
+    const all = this.reviewsFor(item.id);
+    const approvals = retainableApprovals(all, binding).filter((r) => !all.some((v) => v.head === newHead && sameActor(v.by, r.by)));
+    if (!approvals.length) return null;
+    const verdict = retentionVerdict(read, who);
+    const facts = verdict.facts;
+    if (!verdict.retain || !facts?.main || !facts.base) {
+      this.log(item.id, ORCHESTRATOR, "review.not_retained", { head: newHead, from: item.head, approvals: approvals.map((r) => r.by), reason: verdict.why }, at);
+      return { kept: 0, why: verdict.why };
+    }
+    const cap = (paths: string[]) => paths.slice(0, 50);
+    for (const r of approvals) {
+      const { request: _request, findings: _findings, ...rest } = r;
+      const carried = {
+        ...rest, head: newHead, at,
+        retained: {
+          from: { by: r.by, head: r.head, at: r.at }, oldHead: item.head, newHead, main: facts.main, base: facts.base,
+          taskPaths: facts.task, incomingPaths: facts.incoming, exempt: facts.outputs,
+          paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why,
+        },
+      };
+      this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, item.id, JSON.stringify(carried));
+      this.log(item.id, ORCHESTRATOR, "review.retained", { by: r.by, from: r.head, head: newHead, source: r.at, main: facts.main, base: facts.base, taskPaths: cap(facts.task), incomingPaths: cap(facts.incoming), exempt: cap(facts.outputs), paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why }, at);
+    }
+    return { kept: approvals.length, why: verdict.why };
   }
 
   // A push seen on the fork whose head does not hold the recorded one came
@@ -3222,7 +3286,7 @@ export class Ledger extends DurableObject<Env> {
   // reason saying so. The queue delivers an event at least once, so the
   // same sighting is noted once. `scan` is as recordPush takes it: the head
   // recorded is written with its secret scan pending.
-  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false): Item {
+  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false, retention: RetentionRead | null = null): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
     // While the accepted revision is landing, a push to the fork does not
@@ -3241,6 +3305,7 @@ export class Ledger extends DurableObject<Env> {
       state: item.state === "accepted" ? "submitted" : item.state,
       ...(scan ? { secret_scan: observedHead } : {}) }, now);
     this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted", ...this.otherAuthors(item, authors) }, now);
+    this.retainApprovals(item, observedHead, this.refreshInFlight(id) ? null : retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
     return this.item(id);
   }
 
@@ -8830,7 +8895,7 @@ export class Ledger extends DurableObject<Env> {
   // among the task's contributors. A repeated report answers the recorded
   // outcome. With required checks, the lease stays open while its holder
   // runs them at the new head (refreshChecked).
-  taskRefreshed(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; head: string | null; agent: string | null; diffBefore?: string | null; diffAfter?: string | null; transformations?: string[] }, verified: boolean): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
+  taskRefreshed(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; head: string | null; agent: string | null; diffBefore?: string | null; diffAfter?: string | null; transformations?: string[]; retention?: RetentionRead | null }, verified: boolean): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
     const key = resultKey(id, report.expectedHead, report.mainHead);
     const recorded = this.refreshResultOf(key);
     if (recorded && recorded.by === actor && (recorded.head ?? null) === (report.head ?? null)) return { item: this.item(id), result: recorded, replay: true };
@@ -8864,9 +8929,13 @@ export class Ledger extends DurableObject<Env> {
     if (item.head !== report.expectedHead && item.head !== report.head) {
       throw new RuleError("head_moved", `${id} moved to ${(item.head ?? "").slice(0, 8)} under the refresh; the refresh is not recorded`, 409);
     }
-    const review = refreshReview({ state: item.state, diffBefore: report.diffBefore ?? null, diffAfter: report.diffAfter ?? null, resolver });
     const accepted = item.state === "accepted" || item.acceptedHead !== null;
     this.update(id, { head: report.head, last_push_at: at, ...(accepted ? { state: "submitted", accepted_head: null } : {}) }, at);
+    // Approvals the merge leaves standing: carried here, or by the push event
+    // that recorded the head first (observePush), which reads the same merge.
+    const retention = this.retainApprovals({ ...item, head: report.expectedHead }, report.head, report.retention ?? null, { resolver, outsiders: false }, at);
+    const retained = this.reviewsFor(id).filter((r) => r.retained?.newHead === report.head).length;
+    const review = refreshReview({ state: item.state, diffBefore: report.diffBefore ?? null, diffAfter: report.diffAfter ?? null, resolver, retained, retention: retention?.why ?? null });
     this.log(id, actor, "item.refreshed", {
       mainHead: report.mainHead, from: report.expectedHead, head: report.head, job: lease.job, agent: report.agent,
       ...(resolver ? { resolver, transformations: (report.transformations ?? []).slice(0, 10) } : {}),

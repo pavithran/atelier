@@ -168,13 +168,19 @@ test("the resolver set takes frontier harness/model actors of known providers", 
   assert.throws(() => parseResolvers("x/mystery-9"), /provider is not recognised/);
 });
 
-test("a refreshed head always needs review, and an acceptance never carries to it", () => {
+test("a refreshed head needs review unless its approvals were carried, and an acceptance never carries to it", () => {
   const changed = refreshReview({ state: "accepted", diffBefore: H("d"), diffAfter: H("e"), resolver: "codex/gpt-6-astra" });
   assert.deepEqual([changed.acceptanceDropped, changed.diffChanged, changed.reviewRequired], [true, true, true]);
   assert.match(changed.why, /does not authorize this one.*diff changed.*codex\/gpt-6-astra's resolution/);
   const same = refreshReview({ state: "submitted", diffBefore: H("d"), diffAfter: H("d"), resolver: null });
   assert.deepEqual([same.acceptanceDropped, same.diffChanged, same.reviewRequired], [false, false, true]);
-  assert.match(same.why, /t459/);
+  assert.match(same.why, /no approval was carried over the merge.*reviewed again/);
+  const kept = refreshReview({ state: "accepted", diffBefore: H("d"), diffAfter: H("d"), resolver: null, retained: 1, retention: "the merge brought in only main's changes to files the task does not change" });
+  assert.deepEqual([kept.acceptanceDropped, kept.reviewRequired], [true, false]);
+  assert.match(kept.why, /does not authorize this one.*only main's changes.*approvals given before it stand.*checks run again/);
+  const declined = refreshReview({ state: "submitted", diffBefore: H("d"), diffAfter: H("d"), resolver: null, retained: 0, retention: "main changed src/a.ts, which the task also changes, so the new head is reviewed again" });
+  assert.equal(declined.reviewRequired, true);
+  assert.equal(declined.why, "main changed src/a.ts, which the task also changes, so the new head is reviewed again");
   assert.equal(refreshReview({ state: "submitted", diffBefore: null, diffAfter: H("d"), resolver: null }).diffChanged, null);
 });
 

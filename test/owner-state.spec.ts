@@ -339,3 +339,17 @@ it("in single-family mode the independent-review cell credits a different model 
   d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] };
   expect(ownerState(d, true, NOW).independent.text).toBe("Approved by codex/gpt-6-astra");
 });
+
+// t56: an approval carried over a merge of main reads as carried, naming the
+// approval it came from and main's commit, not as a review of the new head.
+it("an approval carried over a merge of main says so on the task page", () => {
+  const d = detail();
+  d.reviews = [review({ by: "claude-code/opus-5.5", note: "Judged against the criteria.", retained: {
+    from: { by: "claude-code/opus-5.5", head: "c".repeat(40), at: time }, oldHead: "c".repeat(40), newHead: head, main: "d".repeat(40), base: "e".repeat(40),
+    taskPaths: ["src/a.ts"], incomingPaths: ["docs/b.md"], exempt: [], paths: { task: 1, incoming: 1 }, reason: "kept",
+  } })];
+  const html = renderItem(project, d, "PAVI", diff);
+  expect(html).toContain("carried from the approval of cccccccc over a merge of main at dddddddd");
+  d.reviews = [review({ by: "claude-code/opus-5.5", note: "Judged against the criteria." })];
+  expect(renderItem(project, d, "PAVI", diff)).not.toContain("carried from the approval");
+});

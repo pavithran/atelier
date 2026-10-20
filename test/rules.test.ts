@@ -9,10 +9,10 @@ import { blockUntil, blockExpired, expiredBlocks } from "../src/rules.ts";
 import {
   ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
-  riskClass, riskNeed, parseRiskReviews,
+  riskClass, riskNeed, parseRiskReviews, retainableApprovals, retentionVerdict,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
-  type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
+  type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride, type RetentionFacts,
 } from "../src/rules.ts";
 
 const H1 = "a".repeat(40);
@@ -1909,4 +1909,94 @@ test("a block is expired from the day after its until, UTC, and one without a da
   ];
   assert.deepEqual(expiredBlocks(items, now), ["t1"]);
   assert.deepEqual(expiredBlocks(null, now), []);
+});
+
+// ── review retention (t56) ─────────────────────────────────────────────────
+// The finding these would have caught: with no retention rule every merge of
+// main asked a second review of a head whose task files main never touched
+// (src/refresh/review.ts said so), and a rule that keyed on a path under
+// test/fixtures, or on the merge alone, would carry an approval over a merge
+// that rewrote what the reviewer read.
+
+const OLD = "1".repeat(40), NEW = "2".repeat(40), MAIN = "3".repeat(40), BASE = "4".repeat(40);
+const who = { resolver: null, outsiders: false };
+// A merge of main into the approved head that leaves the task's files alone.
+const facts = (over: Partial<RetentionFacts> = {}): RetentionFacts => ({
+  oldHead: OLD, newHead: NEW, parents: [OLD, MAIN], main: MAIN, base: BASE,
+  task: ["src/a.ts", "test/a.test.ts"], incoming: ["src/b.ts"], moved: ["src/b.ts"], offMain: ["src/a.ts", "test/a.test.ts"], outputs: [], ...over,
+});
+
+test("a merge of main that changes none of the task's files keeps the approval", () => {
+  const v = retentionVerdict(facts(), who);
+  assert.equal(v.retain, true, v.why);
+  assert.match(v.why, /only main's changes to files the task does not change/);
+  assert.equal(retentionVerdict(facts({ incoming: [], moved: [] }), who).retain, true, "a merge that brought nothing in");
+});
+
+test("main changing a file the task changes asks for review, a rename or a deletion counted at both ends", () => {
+  const same = retentionVerdict(facts({ incoming: ["src/a.ts"], moved: ["src/a.ts"] }), who);
+  assert.equal(same.retain, false);
+  assert.match(same.why, /main changed src\/a\.ts, which the task also changes/);
+  // The task renamed old.ts to new.ts: its changes list both paths, and main editing either one overlaps.
+  const renamed = { task: ["src/old.ts", "src/new.ts"] };
+  for (const edited of ["src/old.ts", "src/new.ts"]) assert.equal(retentionVerdict(facts({ ...renamed, incoming: [edited], moved: [edited] }), who).retain, false, `main edits ${edited}`);
+  // Main renamed the task's file: its changes list the old path and the new one.
+  assert.equal(retentionVerdict(facts({ incoming: ["src/a.ts", "src/moved.ts"], moved: ["src/a.ts", "src/moved.ts"] }), who).retain, false);
+  // Main deleted a file the task edits, and the task deleted one main edits.
+  assert.equal(retentionVerdict(facts({ incoming: ["src/a.ts"], moved: ["src/a.ts"] }), who).retain, false);
+  assert.equal(retentionVerdict(facts({ task: ["src/gone.ts"], incoming: ["src/gone.ts"], moved: [] }), who).retain, false);
+});
+
+test("a merge that changed what main did not, or left main's content behind, asks for review", () => {
+  const extra = retentionVerdict(facts({ moved: ["src/b.ts", "src/c.ts"] }), who);
+  assert.equal(extra.retain, false);
+  assert.match(extra.why, /the merge changed src\/c\.ts, which main did not/);
+  const dropped = retentionVerdict(facts({ offMain: ["src/a.ts", "src/b.ts"] }), who);
+  assert.equal(dropped.retain, false);
+  assert.match(dropped.why, /did not take main's content of src\/b\.ts/);
+});
+
+test("only a declared output the merge regenerated is left out of the tests; a fixture path alone is not", () => {
+  const out = "test/fixtures/cli/help.txt";
+  // Both sides changed the output and the merge regenerated it: it differs from both.
+  const regenerated = facts({ task: ["src/a.ts", out], incoming: ["src/b.ts", out], moved: ["src/b.ts", out], offMain: ["src/a.ts", out], outputs: [out] });
+  const kept = retentionVerdict(regenerated, who);
+  assert.equal(kept.retain, true, kept.why);
+  assert.match(kept.why, /regenerated test\/fixtures\/cli\/help\.txt/);
+  // The same merge with no declared, regenerated output is an overlap.
+  assert.equal(retentionVerdict({ ...regenerated, outputs: [] }, who).retain, false);
+  // A regenerated output does not excuse another fixture path both sides changed.
+  const other = "test/fixtures/cli/other.txt";
+  const both = retentionVerdict({ ...regenerated, task: [...regenerated.task, other], incoming: [...regenerated.incoming, other], moved: [...regenerated.moved, other] }, who);
+  assert.equal(both.retain, false);
+  assert.match(both.why, /test\/fixtures\/cli\/other\.txt/);
+});
+
+test("a resolver's merge, another actor's commits, an unread merge and a head that is no merge of main ask for review", () => {
+  assert.match(retentionVerdict(facts(), { resolver: "codex/gpt-6-astra", outsiders: false }).why, /codex\/gpt-6-astra resolved conflicts/);
+  assert.match(retentionVerdict(facts(), { resolver: null, outsiders: true }).why, /another actor than the task's holder/);
+  assert.match(retentionVerdict({ unread: "main's commit is not in the baseline" }, who).why, /could not be read \(main's commit is not in the baseline\)/);
+  assert.match(retentionVerdict(null, who).why, /nothing was read/);
+  for (const parents of [[OLD], [MAIN, OLD], [OLD, MAIN, BASE], [OLD, BASE]]) {
+    const v = retentionVerdict(facts({ parents }), who);
+    assert.equal(v.retain, false, parents.join());
+    assert.match(v.why, /not a merge of main into the approved head/);
+  }
+  assert.equal(retentionVerdict(facts({ main: null, base: null }), who).retain, false);
+});
+
+const approved = (over: Partial<Review> = {}): Review => ({ itemId: "t1", by: "codex/gpt-6-astra", head: OLD, approve: true, note: "fine", at: T, criteria: "c1", ...over });
+const bound = { head: OLD, criteria: "c1" };
+
+test("only an approval standing at the binding, given once, is carried; any standing rejection carries nothing", () => {
+  assert.deepEqual(retainableApprovals([approved()], bound).map((r) => r.by), ["codex/gpt-6-astra"]);
+  assert.deepEqual(retainableApprovals([approved({ withdrawn: { at: T, reason: "criteria changed" } })], bound), [], "a withdrawn approval");
+  assert.deepEqual(retainableApprovals([approved({ criteria: "c0" })], bound), [], "criteria that are not the binding now");
+  assert.deepEqual(retainableApprovals([approved({ head: NEW })], bound), [], "another head");
+  assert.deepEqual(retainableApprovals([approved({ postMerge: true })], bound), [], "an audit of a landing");
+  const carried = approved({ retained: { from: { by: "codex/gpt-6-astra", head: BASE, at: T }, oldHead: BASE, newHead: OLD, main: MAIN, base: BASE, taskPaths: [], incomingPaths: [], exempt: [], paths: { task: 0, incoming: 0 }, reason: "r" } });
+  assert.deepEqual(retainableApprovals([carried], bound), [], "a repeated merge asks for a review");
+  const rejection = approved({ by: "claude-code/fable-5.1", approve: false, at: "2026-10-03T12:01:00.000Z" });
+  assert.deepEqual(retainableApprovals([approved(), rejection], bound), [], "a rejection stands beside it");
+  assert.deepEqual(retainableApprovals([approved(), approved({ by: "claude-code/fable-5.1" })], bound).map((r) => r.by), ["codex/gpt-6-astra", "claude-code/fable-5.1"]);
 });
