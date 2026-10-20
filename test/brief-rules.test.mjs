@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execute, runReview, runTask, writeBrief } from "../cli/runner.mjs";
-import { BUILDER_TESTS, BUILD_RULES, jobBrief } from "../src/plans/brief.ts";
+import { briefFor, execute, runReview, runTask, writeBrief } from "../cli/runner.mjs";
+import { BUILDER_SCREENSHOTS, BUILDER_TESTS, BUILD_RULES, jobBrief } from "../src/plans/brief.ts";
 import { REVIEW_RULES, reviewBrief } from "../src/review/brief.ts";
+import { ROLE_PROMPTS } from "../src/usage.ts";
 
 // The rules every build and review brief carries (t376), which lived only in
 // the local wrappers. The fixtures pin the text; a change to it is a change to
@@ -71,6 +72,47 @@ test("every review brief carries the rules, whatever the review", () => {
   }
 });
 
+// t42: a visual change is checked with the project's own screenshot workflow
+// against this workspace's revision, on the server that workflow manages. The
+// build brief says it; the review brief, which reads a diff, does not; a
+// merge's resolution changes no screen of its own, so it does not either. It
+// would have caught the builders of ikon-weblog (2026-10-15) who opened a dev
+// server of their own for every screenshot. The targeted-tests lines stay.
+test("the screenshot lines are in build briefs and not in review or merge briefs", async () => {
+  const finding = { file: "a.ts", line: 1, severity: "blocking", text: "Wrong." };
+  for (const over of [
+    {}, { actor: null, checks: null, attempt: null }, { checks: [] },
+    { job: "rework", findings: { by: "codex/gpt", head: H1, findings: [finding] } },
+  ]) {
+    const { text } = await jobBrief(job(over));
+    assert.ok(text.includes(`- ${BUILDER_SCREENSHOTS}`), JSON.stringify(over));
+  }
+  for (const over of [{ mergeMain: { head: H2 } }, { mergePlan: { head: H2 } }]) {
+    assert.ok(!(await jobBrief(job(over))).text.includes(BUILDER_SCREENSHOTS), JSON.stringify(over));
+  }
+  const rejected = { by: "codex/gpt", head: H2, approve: false, note: "", findings: [finding] };
+  for (const over of [{}, { plan: null, diff: null }, { need: need({ kind: "re-review", round: 2, previous: [rejected] }) }]) {
+    const text = reviewBrief(review(over));
+    assert.ok(!text.includes(BUILDER_SCREENSHOTS) && !/screenshot/i.test(text), JSON.stringify(over));
+  }
+  // The line says what the criteria ask: this workspace's revision, the managed server, never a second, setup as the fallback.
+  assert.match(BUILDER_SCREENSHOTS, /documented screenshot workflow, against this workspace's revision/);
+  assert.match(BUILDER_SCREENSHOTS, /Reuse the server that workflow manages if one exists; never start a second one/);
+  assert.match(BUILDER_SCREENSHOTS, /documents no such workflow, follow its setup instructions/);
+});
+
+test("the builder's test lines still stand beside the screenshot line in every build brief that ran them", async () => {
+  const { text } = await jobBrief(job());
+  for (const line of BUILDER_TESTS) assert.ok(text.includes(`- ${line}`));
+  assert.ok(text.indexOf(BUILDER_TESTS[0]) < text.indexOf(BUILDER_SCREENSHOTS));
+  // The runner's own brief and the guide carry the same two statements.
+  const runner = briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier");
+  assert.ok(runner.includes(BUILDER_SCREENSHOTS));
+  assert.ok(runner.includes("Run the tests for the files you change, and npm run typecheck"));
+  assert.match(ROLE_PROMPTS.build, /do not\nrun the full suite unless the task asks for it\. For a visual change, take\nscreenshots with the project's documented screenshot workflow, against this\nworkspace's revision: reuse the server it manages, never start a second one, and\nwith no documented workflow follow the project's setup\./);
+  assert.doesNotMatch(ROLE_PROMPTS.review, /screenshot/i);
+});
+
 // The generic wrapper bin/orchestrate/README.md gives, as written there: it
 // adds no rules of its own beyond the commit line, so whatever rules its agent
 // reads come from the brief the runner hands it.
@@ -134,6 +176,7 @@ const BYTES = (text) => Buffer.byteLength(text, "utf8");
 const BLOCK_LIMITS = {
   "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "9c9a3037", measured: 887, margin: 150 },
   "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "9c9a3037", measured: 459, margin: 100 },
+  "builder screenshot instruction (BUILDER_SCREENSHOTS)": { text: BUILDER_SCREENSHOTS, at: "93b3198d", measured: 277, margin: 100 },
   "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "9c9a3037", measured: 803, margin: 150 },
 };
 const overLimit = ({ text, measured, margin }) => BYTES(text) > measured + margin;

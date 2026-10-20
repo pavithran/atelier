@@ -225,7 +225,10 @@ review judges the change against them. If the task you claim has none, do not
 build it: run \`atelier block ID "no acceptance criteria"\`, since only the developer
 writes them. Write tests for
 new behaviour. Run the tests for the files you change and the typecheck; do not
-run the full suite unless the task asks for it. When those pass, commit in the
+run the full suite unless the task asks for it. For a visual change, take
+screenshots with the project's documented screenshot workflow, against this
+workspace's revision: reuse the server it manages, never start a second one, and
+with no documented workflow follow the project's setup. When those pass, commit in the
 workspace and run \`atelier done "summary"\`, which pushes, runs the project's
 required checks, the full suite among them, in a clean clone and submits.
 Never end with finished work uncommitted. Relay its final line to the developer.

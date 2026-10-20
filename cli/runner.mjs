@@ -26,7 +26,7 @@ import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
-import { BUILDER_TESTS } from "../src/plans/brief.ts";
+import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
@@ -263,6 +263,7 @@ export function briefFor(item, project) {
     // t552: the tests the change touches and npm run typecheck, not the full
     // npm test, which the finish's clean-clone checks run (BUILDER_TESTS).
     ...BUILDER_TESTS.map((line) => line.replace("and the typecheck", "and npm run typecheck").replace("the full suite unless", "the full npm test suite unless")),
+    BUILDER_SCREENSHOTS,
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
     // and && chain its harness refuses — so the rule names the commands
