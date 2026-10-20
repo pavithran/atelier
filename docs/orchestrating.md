@@ -67,12 +67,14 @@ points at it and states the review path (it does not edit the file).
 - Before asking for the independent review, read the diff against the
   criteria yourself. Your reading does not count at the gate; it catches the
   plain misses before the expensive review does.
-- Land one task at a time with `atelier land ID --reviewer H/M`, where
-  `H/M` names a reviewer of another family than every contributor; the
-  command merges main, checks, submits, waits for the independent review,
-  then accepts and merges. Never land two together. An override while
-  accepting is the developer's last resort when no reviewer qualifies, and
-  never the way to land another agent's work.
+- Land with `atelier land ID --reviewer H/M`, where `H/M` names a reviewer
+  of another family than every contributor; the command merges main, checks,
+  submits, waits for the independent review, then accepts and merges. Land a
+  wave with `atelier land ID ID…`, which runs several of these side by
+  side, up to `--parallel N`, while the project's landing lease lets one
+  merge into main at a time. An override while accepting is the developer's
+  last resort when no reviewer qualifies, and never the way to land another
+  agent's work.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or
@@ -126,8 +128,9 @@ lease names waits in the queue until each claimed blocker submits or is
 released and each landing ends; a submitted or accepted item that is not
 landing holds nothing. `atelier status` names every item it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
 overlap is known to be harmless. Parts of one plan never hold each other,
-since the plan orders overlapping parts already. Landing is the part that
-must not run in parallel.
+since the plan orders overlapping parts already. Landings run beside one
+another (a wave's `--parallel` bounds how many), but merges into main take the
+project's landing lease one at a time ("Landing a wave" below).
 
 ## Starting cold
 
@@ -279,7 +282,7 @@ Count every run that ends without the asked-for result. Atelier records them
 as run reports; a model that stops early often is a model to brief
 differently or to use elsewhere.
 
-## Landing, one task at a time
+## Landing
 
 Every task forks from main as it was when the task was claimed. By the time
 it is approved, main has usually moved, and the merge conflicts or, worse,
@@ -287,7 +290,8 @@ merges cleanly into something broken. On 6 October two tasks merged cleanly
 one after the other and together broke main's type check; another pair broke
 a test neither had touched.
 
-So land one task at a time, in this order:
+So every landing does these steps in this order, and only one task merges
+into main at a time:
 
 1. Merge main into the task's workspace. Resolve conflicts keeping both
    sides' behaviour; regenerate generated files (the CLI's help fixtures)
@@ -302,9 +306,11 @@ So land one task at a time, in this order:
    when a tier model qualifies under the family policy;
    `atelier land` waits only for the independent review, stops on a tier
    rejection, and the acceptance withdraws a tier request still open.
-4. Accept and merge at once, before anything else lands.
+4. Accept and merge under the landing lease, so that nothing else merges
+   between the check that main has not moved and the merge.
 5. Run the type check on main after every merge, and the full suite before
-   pushing main to its own remotes.
+   pushing main to its own remotes. These two steps stay outside
+   `atelier land` ("What stays outside Atelier" below).
 
 `atelier land` (task t187, `cli/land.mjs`) is the default way to land a
 task: `atelier land ID --reviewer H/M` does these steps. Since t550 it
@@ -453,21 +459,22 @@ failure. Check both whenever a harness is updated.
 
 ### Watching
 
-Watch every runner's output and the landing queue's together, for these
-lines only (t434 makes this a command):
+Watch every runner's output, and the output of the `atelier land` command you
+started (kept in a file), together, for these lines only (t434 makes this a
+command):
 
 ```sh
-tail -n0 -F RUNNER-OUTPUTS... | grep -E --line-buffered \
-  "^LANDQ |^t[0-9]+ submitted|^runner: failed: harness|needs the owner's attention|Error loading config"
+tail -n0 -F RUNNER-OUTPUTS... LAND-OUTPUT... | grep -E --line-buffered \
+  "^t[0-9]+ (landed|failed)|^t[0-9]+ submitted|^runner: failed: harness|needs the owner's attention|Error loading config"
 ```
 
 | Line | Meaning | Next step |
 | --- | --- | --- |
-| `tN submitted` | A build finished, pushed and passed its own checks | Triage its diff against every criterion, then queue its landing (below) |
+| `tN submitted` | A build finished, pushed and passed its own checks | Triage its diff against every criterion, then land it (below) |
 | `runner: failed: harness …` | A run ended without a commit or with an error | Read the run's lines above it; `atelier run-report` if the model stopped early |
 | `… needs the owner's attention after 2 failures` | The runner gave up on that task | Read both failures, fix the cause, restart the runner |
 | `Error loading config` | A harness's own configuration is broken | Fix it before anything else: every run of that harness fails |
-| `LANDQ tN: …` | A landing ended | See "Landing outcomes" |
+| `tN landed.` or `tN failed (…)` | One landing of a wave ended | See "Landing outcomes" |
 
 `atelier status` lists dispatches waiting for a runner, with the reason each
 is not being taken.
@@ -483,7 +490,7 @@ run `npm test` and `npm run typecheck`, then remove the stale marker with
 
 ### Choosing a reviewer
 
-Before queueing, read `atelier show tN` and, in the task workspace,
+Before landing, read `atelier show tN` and, in the task workspace,
 `git fetch origin main` then `git diff origin/main...HEAD`. Triage the diff
 against each acceptance criterion. Missing behaviour goes back to the
 builder with `atelier dispatch tN --to home --agent A --model M --note "…"`;
@@ -500,29 +507,121 @@ no one reviewer's queue holds every landing. A reviewer that has rejected
 the same task several rounds running is still the right reviewer; see
 "Judging a review".
 
-### Landing one task at a time
+### Landing a wave
 
-Land one task at a time, with `atelier land` or the orchestrator's own
-queue, and run `bin/orchestrate/post-merge.sh tN` in the project checkout
-after each merge (see "After each merge"): the next task waits until that
-step checks main, deploys and publishes successfully.
+Land a wave with `atelier land t1 t2 t3 --reviewer H/M`, or one task with
+`atelier land t1 --reviewer H/M`. Each task goes through the steps in
+"Landing" above, exactly as `atelier land ID` does them alone; the wave only
+starts several of them at once and keeps the order.
 
-Order the landings so the tasks that touch core files land first: everything
-else will merge around them, and a core-file change landed late conflicts
-with every task that landed before it. Within that, put first the tasks that
-another piece of work waits on.
+- **How many at once.** `--parallel N` (a positive integer) bounds the
+  landings in progress at a time. It is per command, on this machine, not
+  across machines or across commands, and defaults to `DEFAULT_PARALLEL` in
+  `cli/land-queue.mjs` (`atelier land --help` says it). Tasks start in the
+  order named, so name the ones that touch core files first: everything else
+  merges around them, and a core-file change landed late conflicts with every
+  task that landed before it. Within that, put first the tasks that another
+  piece of work waits on. A task named twice lands once.
+- **What runs beside what, and what does not.** Merging main, the checks and
+  the reviews of different tasks overlap. The merge itself does not: each
+  landing takes the project's landing lease only once its head is checked
+  and approved, and the server hands the lease to the waiting landings in the
+  order they queued. The flags you give (`--reviewer`, `--triage`,
+  `--no-review` and the rest) go to every landing of the wave. Leave out
+  `--reviewer` and the server suggests a reviewer for each task, of another
+  company than every contributor to that task; name one only when every task
+  of the wave may be reviewed by that model.
+- **How many reviews.** A project with risk reviews (`atelier init
+  --risk-reviews`) sets how many independent approvals a change needs by its
+  class: docs or tests, other, core. `atelier land` asks only for the
+  approvals the gate still lacks, one reviewer after another, and never asks
+  a model that has already approved (under any name or harness). A rejection
+  ends that landing at once and prints the reviewer's note and each blocking
+  finding. The landing stops after a few asks (`REVIEW_PASSES` in
+  `cli/land.mjs`) and says how many approvals are missing; `atelier show ID`
+  says what the gate counts. A project without risk reviews needs the one
+  review it always did, and `--reviewer` or `--no-review` takes one ask, as
+  before. An approval is bound to the head and the criteria it read: a push,
+  or a change of criteria, starts the count again, except where an
+  approval is retained (next).
+- **Retained approvals.** An approval may stand across a merge of main, and
+  the server alone decides, when the push arrives (the review-retention
+  rule, t56; [Landing](landing.md) has the conditions): the merge must be
+  main merged into the approved head, change no file the task changed, hold
+  only the task holder's commits, resolve no conflict by hand and leave the
+  criteria as they were. Any doubt means a full review. A carried approval
+  is carried once; a second merge of main asks again. Acceptance never
+  carries, and the checks run again at the new head. The landing counts
+  whatever the gate counts, so a carried approval shortens the wait without
+  the CLI judging it; an older server carries nothing and asks.
+- **When main moves.** Under the lease the landing confirms that main is
+  still the commit its head was merged with, checked and reviewed against.
+  If another landing merged first, it releases the lease, merges the new
+  main into its workspace, checks it, asks for the approvals still missing
+  (none, when the merge was retained) and tries again. After
+  `ATELIER_LAND_MAIN_MOVED_ROUNDS` rounds (`cli/land.mjs` says the default)
+  it stops with the task still submitted; run the same command once main
+  settles. A conflict ends that landing, names the files and holds no lease:
+  resolve it as under "Conflicts", then run the command again.
+- **Failures.** Each result prints the moment its landing ends: `tN landed.`,
+  or `tN failed (…)` with what the landing printed, the reviewer's findings
+  included. A failure never stops the others that already run or the tasks
+  not yet started, with one exception below; the command ends with a line
+  that counts what landed, was already merged, failed or never started, and
+  exits non-zero if any failed or never started. A task already merged is
+  reported and not launched again, unless post-merge work for it is still
+  open, which the landing then finishes first.
+- **After a post-merge failure.** When a landing fails with a post-merge run
+  open (a project that declares post-merge steps, `atelier init
+  --post-merge`), no task not yet started is begun, and the server's
+  post-merge barrier holds the merge of any landing already running. Read the
+  run with `atelier land ID --post-merge status`, fix or settle it with the
+  other `--post-merge` actions, then run the same command again.
+- **Recovery.** `atelier land` is resumable: a stopped wave is resumed by
+  running the same command, which reads each task's state from the ledger.
+  Ctrl-C (SIGINT) or SIGTERM reaches every landing, each releases its own
+  lease and no other holder's, and nothing more starts; a landing that has
+  not ended after 30 seconds, or a second signal, is killed. A lease nobody
+  renews is treated as free by the server after 15 minutes; `atelier land ID
+  --release-lease` frees one at once, and only the developer should.
+- **What a wave refuses.** `--workflow`, `--release-lease` and `--post-merge`
+  act on one task, so with several the command refuses them before any
+  request. A landing that runs as a Cloudflare Workflow (`--workflow`) is
+  not pooled, because stopping its client does not stop it.
 
-Wait for a landing with `atelier wait tN --project atelier --for merged`.
-For a runner's build use `--for submitted`, for an agent's review use
-`--for reviewed`, and to observe the next task change use `--for any-change`.
-Add `--timeout 600` to bound the wait, including a stalled server read.
-The command prints the outcome and exits 0 when reached, 1 when the task
-fails, 3 on timeout, or 4 when it cannot read the task. Check that outcome
-before starting dependent work. A merge does not confirm deployment or
-publishing; check the post-merge step's outcome separately.
+Wait for a landing started elsewhere with `atelier wait tN --project atelier
+--for merged`. For a runner's build use `--for submitted`, for an agent's
+review use `--for reviewed`, and to observe the next task change use `--for
+any-change`. Add `--timeout 600` to bound the wait, including a stalled
+server read. The command prints the outcome and exits 0 when reached, 1 when
+the task fails, 3 on timeout, or 4 when it cannot read the task. A merge does
+not confirm deployment or publishing; check the post-merge step's outcome
+separately.
 
-A failed post-merge step stops the landing that ran it: fix the cause and run
-`bin/orchestrate/post-merge.sh tN` again for the already merged task.
+### What stays outside Atelier
+
+`atelier land` merges a task into the project's main. It does not do the
+steps that follow, and the developer has not yet decided to move them:
+
+- **The wave suite.** `atelier land` runs the project's required checks on
+  each task's merged head, in a clean clone, before that task merges. The
+  full suite on main once a whole wave has merged is still the
+  orchestrator's: `bin/orchestrate/post-merge.sh` runs the type check and
+  `npm test` in the checkout. Whether the server should run one suite per
+  wave, in place of the full suite per task or beside it, is the developer's
+  decision and is open; the cost of a per-task suite is measured by `atelier
+  flow`, which a wave's landings feed. Until it is decided, run the suite on
+  main after each wave.
+- **The deploy and the push to the public mirror.** The same script deploys
+  main and pushes it to the `public` remote after the audit under "After
+  each merge". Atelier can run named post-merge steps for a project (`atelier
+  init --post-merge`, with `atelier land ID --post-merge` to read and resolve
+  a run), but a deploy and a push to a remote the project does not host need
+  the developer's decision, so they stay a script a session runs, once after
+  the wave and not once per task.
+
+`bin/orchestrate/review.sh` also stays: a session without a runner reviews by
+hand with it until the replacement is confirmed in use.
 
 ### Pre-review while the lease is busy
 
@@ -590,14 +689,17 @@ waiting row's newest `prereview`.
 
 ### Landing outcomes
 
-| `LANDQ tN:` says | What happened | Next step |
+| `atelier land` printed | What happened | Next step |
 | --- | --- | --- |
-| `tN landed through the landing Workflow` | Merged on main | "After each merge" |
-| `paused at its conflict stage` | Main has moved and the merge conflicts | "Conflicts" |
-| `… rejected tN at SHA: …` | The reviewer asked for changes | "Judging a review" |
-| `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then queue the task again |
-| `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Queue the task again: the next landing starts a fresh run |
-| `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head, or ran out of time (`check exceeded its time limit` in the landing's output) | If it timed out, the machine was too loaded: lower the load, or raise `ATELIER_CHECK_TIMEOUT` for the landing, and queue it again. Otherwise run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
+| `tN landed.` (a wave), or the landing's own closing lines | Merged on main | "After each merge" |
+| A merge that stops on conflicts, naming the files | Main has moved and the merge conflicts | "Conflicts" |
+| `… rejected tN at SHA: …` | The reviewer asked for changes; the landing printed the note and each blocking finding | "Judging a review" |
+| `tN still needs N more approvals at SHA after N reviews` | Every ask was answered with an approval and the gate still lacks some | `atelier show tN` says what the gate counts; look for an approver the gate sets aside (a contributor, or one model asked under two names) |
+| `main moved under the lease N times` | Other landings kept merging first; the task stays submitted | Run the same command once main settles |
+| `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then land the task again |
+| `Starting no more landings: …` | A failed landing left post-merge work open, so a wave starts nothing more | `atelier land tN --post-merge status`, resolve it, then run the same command |
+| `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Land the task again: the next landing starts a fresh run |
+| `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head, or ran out of time (`check exceeded its time limit` in the landing's output) | If it timed out, the machine was too loaded: lower the load, or raise `ATELIER_CHECK_TIMEOUT` for the landing, and land it again. Otherwise run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
 
 ### Conflicts
 
@@ -609,7 +711,7 @@ conflicting files.
   import list, a table or a registry, and generated fixtures (regenerate them
   from the merged code). Keep both sides, run the type check and the tests of
   the files touched, commit the merge with your own `Agent:` line, push with
-  `atelier push --as H/M` from the workspace, and queue the landing again.
+  `atelier push --as H/M` from the workspace, and land it again.
   The commit makes you a contributor, so the reviewer must be of another
   company than you as well as the builder.
 - **A conflict that changes behaviour** (two sides changing the same logic): `git merge --abort` in the workspace, then send it
@@ -621,7 +723,7 @@ conflicting files.
 A task built before a code move is ported by its builder, even if Git can
 merge it cleanly: dispatch `atelier dispatch tN --job merge-main --to home
 --agent A --model M --overlap-ok` and wait for the builder's port and checks
-before queueing it again. Moving paths is not a mechanical resolution when
+before landing it again. Moving paths is not a mechanical resolution when
 imports, registries or behaviour need adapting.
 
 The same files conflict almost every time on Atelier: `cli/atelier.mjs`,
@@ -656,12 +758,15 @@ landing.
 
 ### After each merge
 
-Run `bin/orchestrate/post-merge.sh tN` in the project checkout after each
-merge and wait for it. It requires a clean `main`, pulls with `--ff-only`, runs
-`npm run typecheck` and `npm test`,
-deploys, audits outgoing history and publishes. Any failed command stops it
-and holds the next landing. The steps below explain those operations and
-manual diagnosis; land nothing else while this step is pending.
+Run `bin/orchestrate/post-merge.sh tN` in the project checkout once a wave
+has landed (after each task when you land one by one) and wait for it. It
+works on main as the checkout pulls it, so one run covers every task the wave
+merged; `tN` names the last. It requires a clean `main`, pulls with
+`--ff-only`, runs `npm run typecheck` and `npm test`, deploys, audits
+outgoing history and publishes: the steps that stay outside Atelier. Any
+failed command stops it and holds the next wave. The steps below explain
+those operations and manual diagnosis; start no further landing while this
+step is pending.
 The script runs the full suite in the clean checkout; a clean clone below
 can reproduce failures independently.
 
