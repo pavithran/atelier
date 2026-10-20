@@ -6,7 +6,7 @@ import { foldPath, pathCollisions } from "../../src/rules.ts";
 import { carryBaseline, loadPairs, savePairs, useRealHistory } from "../fresh.mjs";
 import { historyOverride } from "../pull.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { OWNER, P, args, call, cfg, die, gitEnv, identityEnv, landingGit, landingHome, project, short } from "../atelier.mjs";
+import { OWNER, P, args, call, cfg, die, gitEnv, identityEnv, landingGit, landingHome, needCheckout, project, short } from "../atelier.mjs";
 import { NO_IDENTITY } from "../../src/commit-identity.ts";
 import { privateConfigured, privateGuardFor } from "../private-guard.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
@@ -47,7 +47,7 @@ export default async function pullCommand() {
   const git = landingGit;
   if (args._.length > 1) die(COMMAND_USAGE.pull);
   const name = project();
-  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; make its checkout with atelier clone ${name}`), cwd = p.path;
+  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; make its checkout with atelier clone ${name}`), cwd = needCheckout(name, p);
   if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first, then pull");
   // The branch by its full name: a tag of the same name is not main.
   if (git(["symbolic-ref", "-q", "HEAD"], { cwd, allowFail: true }).stdout?.trim() !== `refs/heads/${p.branch}`) die(`check out ${p.branch} in ${cwd} first`);

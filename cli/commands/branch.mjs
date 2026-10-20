@@ -4,7 +4,7 @@ import { developerBranch } from "../../src/rules.ts";
 import { COMMAND_USAGE } from "../help.mjs";
 import { guardedPush, remoteBases } from "../private-guard.mjs";
 import { branchLine, formatDeveloperBranches } from "../status.mjs";
-import { OWNER, P, actor, args, call, cfg, die, landingGit, project, request, short, wsConfig } from "../atelier.mjs";
+import { OWNER, P, actor, args, call, cfg, die, landingGit, needCheckout, project, request, short, wsConfig } from "../atelier.mjs";
 
 // The developer carries work in progress between their Macs (t641) on
 // branches under wip/, kept in the project's branches repository beside the
@@ -31,7 +31,7 @@ export default async function branchCommand() {
   if (!["push", "fetch"].includes(sub) || args._.length > 3 || (sub === "fetch" && given === undefined)) die(COMMAND_USAGE.branch);
   if (wsConfig("project")) die("atelier branch carries the developer's own work between Macs, from the project's checkout; this folder is a task workspace, whose work moves through atelier push");
   const name = project(), as = await actor(OWNER);
-  const dir = cfg.projects?.[name]?.path ?? die(`${name} has no checkout on this Mac; make one with atelier clone ${name}`);
+  const dir = needCheckout(name, cfg.projects?.[name]);
   const current = git(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: dir, allowFail: true });
   const here = current.status === 0 ? current.stdout.trim() : null;
   const asked = given ?? here ?? die(`the checkout at ${dir} has no branch checked out; name the branch: atelier branch push wip/NAME`);

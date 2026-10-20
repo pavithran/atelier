@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -49,4 +49,37 @@ test("init reuses the registered name when the checkout folder differs", () => {
   assert.throws(() => initName(projects, "/work/new", "other", true), /registered checkout/);
   assert.throws(() => initName(projects, "/work/ikon weblog", undefined, true), /--name NAME/);
   assert.throws(() => initName(projects, "/work/ikon weblog", true, false), /needs a project name/);
+});
+
+// t136's finding: initName called real(p.path) for every local config entry,
+// so one entry without a path (a project with no checkout on this Mac)
+// stopped every command with "The paths[0] argument must be of type string.
+// Received undefined", and an entry with an empty path matched the current
+// folder, since resolve("") is the cwd.
+test("initName skips entries whose path is missing, empty or not a string", () => {
+  const projects = { none: {}, empty: { path: "" }, number: { path: 7 }, weblog: { path: "/work/ikon weblog" } };
+  assert.deepEqual(initName(projects, "/work/ikon weblog", undefined, false), { name: "weblog", existing: "weblog" });
+});
+
+test("initName matches no entry when every path is unusable, and falls back to the folder name", () => {
+  assert.deepEqual(initName({ none: {}, empty: { path: "" }, number: { path: 7 } }, "/work/new", undefined, false), { name: "new", existing: undefined });
+});
+
+test("an entry with an empty path never matches the current folder, though resolve of it is the cwd", () => {
+  const cwd = process.cwd();
+  const { name, existing } = initName({ ghost: { path: "" } }, cwd, undefined, false);
+  assert.equal(existing, undefined);
+  assert.equal(name, cwd.split("/").pop());
+});
+
+test("initName still matches a checkout registered under a symlinked path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-init-link-"));
+  try {
+    const real = join(dir, "real");
+    mkdirSync(real);
+    symlinkSync(real, join(dir, "link"));
+    assert.deepEqual(initName({ weblog: { path: join(dir, "link") } }, real, undefined, false), { name: "weblog", existing: "weblog" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
