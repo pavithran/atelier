@@ -361,11 +361,17 @@ for (const [name, failAt] of [["HEAD unchanged", "commit"], ["HEAD advanced", "r
     };
     const { io, calls, logs } = fixture();
     io.head = async () => (await git(["rev-parse", "HEAD"])).trim();
-    io.commitWork = (cwd, env, parts) => commitWorkInProgress(failing, parts);
+    // The setup reset before the harness is allowed; none may follow the failure.
+    let failed = false;
+    const resetsAfter = [];
+    io.reset = async (...args) => { if (failed) resetsAfter.push(args); };
+    io.commitWork = (cwd, env, parts) => commitWorkInProgress(failing, parts).catch((error) => { failed = true; throw error; });
     // The run starts from the real head: the claim read it before the harness ran.
     const state = await runTask(assignment, config, "home:studio", io);
     assert.equal(runOutcome(state), "validation_blocked");
     assert.deepEqual(commands(calls), ["claim"]);
+    assert.ok(failed);
+    assert.deepEqual(resetsAfter, []);
     assert.equal(state.claimHeldAt, io.workspacePath("atelier", "t13"));
     const diagnostics = logs.filter((l) => /^work in progress/.test(l));
     assert.deepEqual(diagnostics, ["work in progress not kept, claim preserved: commit failed: signing refused by the hook"]);
