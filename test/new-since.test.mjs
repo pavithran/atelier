@@ -128,10 +128,12 @@ async function world(t, answer) {
   const url = `http://127.0.0.1:${server.address().port}`;
   writeFileSync(join(config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: {} }));
   const file = join(config, "new-since.json");
-  const run = async (argv, { actor = "owner", now } = {}) => {
+  const run = async (argv, { actor = "owner", closeStdout = false } = {}) => {
     const env = { ...process.env, HOME: dir, ATELIER_CONFIG_DIR: config, ATELIER_CACHE: join(dir, "cache"), ATELIER_SERVER: url, ATELIER_SECRET_STORE: "file", ATELIER_TOKEN: "test-token", ATELIER_ACTOR: actor };
     const child = spawn(process.execPath, [cli, ...argv], { cwd: dir, env });
     let out = "", err = "";
+    // The reader goes away before the command prints: its write fails with EPIPE.
+    if (closeStdout) child.stdout.destroy();
     child.stdout.on("data", (s) => out += s);
     child.stderr.on("data", (s) => err += s);
     const code = await new Promise((done) => child.on("close", done));
@@ -273,4 +275,22 @@ test("a bookmark ahead of the server's record is set aside, said so and replaced
   assert.match(r.out, /is ahead of the server's record/);
   assert.match(r.out, /t1/);
   assert.equal(JSON.parse(readFileSync(w.file, "utf8")).bookmarks[bookmarkKey(w.url, "demo", "owner")].seq, 1);
+});
+
+test("when stdout cannot be written the bookmark is kept and the command fails, so nothing is skipped next time", async (t) => {
+  // Finding (astra, t43 round 2): console.log returning was taken for delivery,
+  // so a closed pipe advanced the bookmark past events no one was shown.
+  const w = await world(t);
+  w.state.events = [recent(1, "t1", "agent/a")];
+  await w.run(["status", "--new", "--project", "demo"]);
+  const kept = readFileSync(w.file, "utf8");
+  w.state.events.push(recent(2, "t3", "agent/b"));
+  for (const flags of [[], ["--json"]]) {
+    const lost = await w.run(["status", "--new", "--project", "demo", ...flags], { closeStdout: true });
+    assert.notEqual(lost.code, 0);
+    assert.equal(readFileSync(w.file, "utf8"), kept);
+  }
+  const next = await w.run(["status", "--new", "--project", "demo"]);
+  assert.equal(next.code, 0);
+  assert.match(next.out, /t3  edited by agent\/b/);
 });

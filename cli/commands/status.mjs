@@ -152,22 +152,29 @@ export async function newCommand(deps = {}) {
   if (result.unread) return say({ status: "unread", reason: result.unread }, { name, as, how });
   if (result.behind) how = `the last 24 hours (the bookmark, ${bookmark.at}, is ahead of the server's record, so it was set aside)`;
   const advance = args.since === undefined && result.complete;
-  const printed = say({ status: result.complete ? "ok" : "incomplete", result }, { name, as, how });
+  const printed = await say({ status: result.complete ? "ok" : "incomplete", result }, { name, as, how });
   if (!advance || printed === false) return;
   const failed = writeBookmark(key, { seq: result.upper ?? 0, at: new Date(now).toISOString() }, file);
-  if (failed) say({ status: "unread", reason: `the bookmark could not be saved (${failed}); the old one is kept, so the next run shows these again` }, { name, as, how: "the bookmark", after: true });
+  if (failed) await say({ status: "unread", reason: `the bookmark could not be saved (${failed}); the old one is kept, so the next run shows these again` }, { name, as, how: "the bookmark", after: true });
 }
 
 // Prints one outcome as text, --brief text or --json; an unread one, or one that
-// could not be saved, sets the exit status. Returns false when it printed unread.
-function say(outcome, { name, as, how, after = false }) {
+// could not be saved, sets the exit status. Resolves to true only when the text
+// was written to stdout and confirmed (a closed pipe fails without throwing, so
+// the write's callback and the stream's error are what say it): false for an
+// unread outcome or a failed write, and nothing is printed after a failed one.
+async function say(outcome, { name, as, how, after = false }) {
   const unread = outcome.status === "unread";
   if (unread) process.exitCode = 1;
-  if (args.json) {
-    const r = outcome.result;
-    console.log(JSON.stringify({ project: name, actor: as, since: how, status: outcome.status, ...(unread ? { reason: outcome.reason } : { complete: r.complete, tasks: r.tasks }) }, null, 2));
-  } else if (unread) {
-    console.log(after ? `Bookmark: unread. ${outcome.reason}.` : formatNew({ result: { unread: outcome.reason }, project: name, as, how, brief: args.brief }));
-  } else console.log(formatNew({ result: outcome.result, project: name, as, how, brief: args.brief }));
-  return !unread;
+  const text = args.json
+    ? JSON.stringify({ project: name, actor: as, since: how, status: outcome.status, ...(unread ? { reason: outcome.reason } : { complete: outcome.result.complete, tasks: outcome.result.tasks }) }, null, 2)
+    : unread ? (after ? `Bookmark: unread. ${outcome.reason}.` : formatNew({ result: { unread: outcome.reason }, project: name, as, how, brief: args.brief }))
+      : formatNew({ result: outcome.result, project: name, as, how, brief: args.brief });
+  const written = await new Promise((done) => {
+    const fail = () => done(false);
+    process.stdout.once("error", fail);
+    try { process.stdout.write(`${text}\n`, (e) => { process.stdout.off("error", fail); done(!e); }); } catch { fail(); }
+  });
+  if (!written) process.exitCode = 1;
+  return written && !unread;
 }
