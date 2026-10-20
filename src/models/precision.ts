@@ -52,7 +52,7 @@ export function precisionWindow(now: Date, days = PRECISION_WINDOW_DAYS): Precis
 }
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
-const isReviewer = (actor: string, owner: string | null) => actor !== owner && actor.includes("/") && !actor.startsWith("atelier/") && validActor(actor);
+export const isReviewer = (actor: string, owner: string | null) => actor !== owner && actor.includes("/") && !actor.startsWith("atelier/") && validActor(actor);
 
 // `projects` are each project's events (a project name keys a finding apart
 // from the same task id in another project). `owner` is never a reviewer

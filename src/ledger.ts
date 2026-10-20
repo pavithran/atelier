@@ -5472,6 +5472,14 @@ export class Ledger extends DurableObject<Env> {
     return rows.map(eventOf);
   }
 
+  // The events the task page's finding judgements are read from (t47), by
+  // kind and outside the window detail().events is: the task's reviews, the
+  // verdicts recorded on their findings and the served annotations, oldest
+  // first. A long record never drops the review a verdict names.
+  judgementEvents(id: string): LedgerEvent[] {
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected', 'review.finding', ?) ORDER BY seq`, id, SERVED).toArray().map(eventOf);
+  }
+
   landedFastReceipt(id: string): FastReceipt | null {
     const e = this.events(id, Number.MAX_SAFE_INTEGER).find((x) => x.kind === "item.landed_fast");
     return e ? e.data as unknown as FastReceipt : null;
@@ -5722,7 +5730,7 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id) };
+    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
