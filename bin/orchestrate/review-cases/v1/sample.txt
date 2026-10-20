@@ -1,0 +1,5 @@
+# BUILD	GRADE	why
+worktree-clean-1	A	correct, minimal, test asserts what the brief asks
+worktree-clean-2	A	correct and the best-asserted test
+worktree-bsd-stat	C	fix right; the test uses BSD-only stat -f
+holder-rename-missed	C	holder check right; idle filter misses renamed projects

@@ -1,0 +1,6 @@
+{
+  "caseSet": "reviewer-cases",
+  "version": 1,
+  "briefVersion": "bake-brief-1",
+  "source": "Judged builds of the 2026-10-15 model bake-off (tasks t669 and t678). Each case is a base commit of this repository, the build's diff, and the blind review brief that run gave its reviewers."
+}
