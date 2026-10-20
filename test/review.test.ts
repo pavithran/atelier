@@ -1338,3 +1338,92 @@ test("reviewNeeded: a rejection the same reviewer later approved at its head is 
   assert.deepEqual(settled.previous.map((r) => r.approve), [true], "the rejection is gone from the latest-per-head list");
   assert.deepEqual(settled.settled, [f]);
 });
+
+// ── riskReviews: the reviews a class needs are asked, one at a time (t143) ──
+// Found by reading how landing schedules reviews (2026-10-20): a plan part
+// stopped asking after one independent approval and a direct change was never
+// asked at all, while the gate waited for the count its class needs.
+
+const risky: ProjectPolicy = { ...policy, riskReviews: { core: ["src/rules.ts"], reviews: { "docs-or-tests": 0, other: 1, core: 2 } } };
+const CORE = [pass({ changedPaths: ["src/rules.ts"] })];
+const OPUS = "claude-code/opus-5.5";
+
+test("reviewNeeded under riskReviews: a core change outside a plan is asked for a second review after the first approves, then no more", () => {
+  const outside = (reviews: ReviewRecord[]) => need({ part: false, policy: risky, evidence: CORE, reviews });
+  const first = outside([]);
+  assert.ok(first.needed);
+  assert.equal(first.basis, "risk");
+  assert.deepEqual(first.risk, { class: "core", reviews: 2, have: 0 });
+  assert.deepEqual(first.counted, []);
+  const second = outside([review(OPUS, true)]);
+  assert.ok(second.needed);
+  assert.deepEqual(second.risk, { class: "core", reviews: 2, have: 1 });
+  assert.deepEqual(second.counted, [OPUS]);
+  assert.equal(second.kind, "review");
+  assert.deepEqual(outside([review(OPUS, true), review(GPT, true)]).needed, false);
+  // The same model under another harness counts once, so a second review is still asked.
+  assert.ok(outside([review(OPUS, true), review("cursor/opus-5.5", true)]).needed);
+  // An approval at an older head counts for nothing at this one.
+  assert.deepEqual(outside([review(OPUS, true, H1), review(GPT, true)]).risk, { class: "core", reviews: 2, have: 1 });
+});
+
+test("reviewNeeded under riskReviews: the class sets the count, docs and tests none and other changes one", () => {
+  const at = (paths: string[], reviews: ReviewRecord[] = []) => need({ part: false, policy: risky, evidence: [pass({ changedPaths: paths })], reviews });
+  assert.deepEqual(at(["docs/a.md"]), { needed: false, reason: "a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed" });
+  assert.deepEqual(at(["src/other.ts"]).needed, true);
+  assert.equal(at(["src/other.ts"], [review(OPUS, true)]).needed, false);
+  // A named reviewer is still asked where the class needs none.
+  assert.ok(need({ part: false, wanted: true, policy: risky, evidence: [pass({ changedPaths: ["docs/a.md"] })] }).needed);
+  // Without riskReviews a coordinated change needs none, as before.
+  assert.equal(need({ part: false, policy, evidence: CORE }).needed, false);
+});
+
+test("reviewNeeded under riskReviews: a part is asked until its class has its approvals, and always once", () => {
+  const part = (paths: string[], reviews: ReviewRecord[]) => need({ part: true, policy: risky, evidence: [pass({ changedPaths: paths })], reviews });
+  const second = part(["src/rules.ts"], [review(OPUS, true)]);
+  assert.ok(second.needed);
+  assert.equal(second.basis, "part");
+  assert.deepEqual(second.risk, { class: "core", reviews: 2, have: 1 });
+  assert.deepEqual(second.counted, [OPUS]);
+  assert.match(second.reason, /has 1 of the 2 such approvals its core class needs/);
+  assert.equal(part(["src/rules.ts"], [review(OPUS, true), review(GPT, true)]).needed, false);
+  // A part of the class that needs none is still reviewed once, since its integration needs one approval.
+  assert.ok(part(["docs/a.md"], []).needed);
+  assert.equal(part(["docs/a.md"], [review(OPUS, true)]).needed, false);
+  // A rejection at the head ends the need, so no later reviewer is asked.
+  assert.match(part(["src/rules.ts"], [review(OPUS, true), review(GPT, false)]).reason, /rejected/);
+  // Without riskReviews one approval ends a part's need, as before.
+  assert.equal(need({ reviews: [review(OPUS, true)] }).needed, false);
+});
+
+test("reviewNeeded under riskReviews: the brief says how many approvals the class needs and how many are in", () => {
+  const n = required({ part: false, policy: risky, evidence: CORE, reviews: [review(OPUS, true)] });
+  const text = reviewBrief({ need: n, item: item(), events: [], plan: null, diff: "diff --git a/x b/x", owner: OWNER, bar: null, proseStandard: null, singleFamily: null } as unknown as BriefInput);
+  assert.match(text, /This project asks 2 independent reviews of a core change, each from a different model; 1 approved this head already/);
+});
+
+test("pickReviewer: a model whose approval already counts is not asked again, under any name or harness", () => {
+  const dup = entry("opus-5.5", { harness: "cursor" });
+  assert.equal(pick({ pool: [opus, dup] }).reviewer!.actor, OPUS);
+  assert.equal(pick({ pool: [opus, dup, gpt], counted: [OPUS] }).reviewer!.actor, GPT);
+  // With every other model counted, nobody remains and the pick says why for each.
+  const none = pick({ pool: [opus, dup], counted: [OPUS] });
+  assert.equal(none.reviewer, null);
+  assert.equal(none.passedOver.length, 2);
+  assert.ok(none.passedOver.every((c) => c.reasons.some((x) => /already counts/.test(x))));
+});
+
+test("reviewNeeded under riskReviews: a non-protected core part built by sonnet is done with opus and gpt, the gate's own count, and asks no third (t143 review)", () => {
+  // gpt-6-astra's review of t143: counting a part's approvals by the protected
+  // test alone saw one of the two, so the plan tick asked a third review while
+  // the gate was already ready.
+  const built = item({ pushActors: ["claude-code/sonnet-5.5"], owner: "claude-code/sonnet-5.5" });
+  const part = (reviews: ReviewRecord[]) => need({ part: true, item: built, policy: risky, evidence: CORE, reviews });
+  assert.equal(part([review(OPUS, true), review(GPT, true)]).needed, false);
+  // Opus alone is the gate's first count of two, and no approval yet passes integration's test: asked on.
+  const one = part([review(OPUS, true)]);
+  assert.ok(one.needed);
+  assert.deepEqual(one.counted, [OPUS]);
+  // Two approvals that pass the gate but not the protected test (the builder's own family) leave integration without its one independent review: asked on.
+  assert.ok(part([review(OPUS, true), review("claude-code/haiku-4.5", true)]).needed);
+});

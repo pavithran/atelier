@@ -1139,3 +1139,76 @@ it("asks the named reviewer whose recorded approval the gate does not count, tho
   expect(events.filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer)).toEqual([gemini, "codex/gpt-6-astra"]);
   expect(events.find((e) => e.kind === "land.review")).toMatchObject({ data: { verdict: "timeout", reviewer: gemini } });
 });
+
+// t143: the landing Workflow asks the reviews the project's riskReviews give
+// the change's class, one at a time, as atelier land does (test/land-risk.test.mjs).
+// Found by reading how landing schedules them (2026-10-20): both waited for
+// one approval, then the gate waited for the rest.
+async function coreSubmitted(project: string, instance: string) {
+  const L = ledger(project);
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: [], protected: [], riskReviews: { core: ["src/**"], reviews: { "docs-or-tests": 0, other: 1, core: 2 } } }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject(record);
+  const id = (await L.newItem("A core change", [], "owner")).id;
+  await L.claim(id, OPUS);
+  await L.setFork(id, `${project}--${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/core.ts"] } as never);
+  await L.submit(id, OPUS);
+  const now = new Date().toISOString();
+  for (const [harness, model] of [["codex", "gpt-6-astra"], ["antigravity", "gemini-3.1-pro"]] as const) await index.putModel({ id: model, harness, where: "home", provider: "subscription", aliases: [], family: familyOf(model), note: "", addedBy: "owner", addedAt: now });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "antigravity", models: ["gemini-3.1-pro"] }] }, now);
+  await L.setLandingWorkflow(id, instance, "owner");
+  return { L, id };
+}
+
+// Answers the review the landing waits for: the reviewer it asked claims and judges it.
+async function answerNext(L: ReturnType<typeof ledger>, id: string, approve: boolean, note: string, findings?: unknown[]): Promise<string> {
+  const rows = await until(() => L.reviewWaiting(), (r) => r.length > 0);
+  const request = rows[0] as unknown as { dispatch?: { agent: string; model: string } };
+  const by = `${request.dispatch!.agent}/${request.dispatch!.model}`;
+  const claim = await L.claimReview(id, by, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  await L.addReview({ itemId: id, by, head: H1, criteria: claim.criteria, request: claim.request, approve, note, ...(findings ? { findings } : {}), at: new Date().toISOString() } as never, undefined, true);
+  return by;
+}
+
+it("a core change is reviewed by two different models in turn, the second asked after the first approves (t143)", async () => {
+  const project = "wf-risk-two", instance = "wf-risk-two-1";
+  const { L, id } = await coreSubmitted(project, instance);
+  await using wf = await startLandingAny(instance, project, id);
+  const first = await answerNext(L, id, true, "Fine.");
+  expect((await L.reviewRequests(id))).toHaveLength(1);
+  const second = await answerNext(L, id, true, "Also fine.");
+  expect(second).not.toBe(first);
+  await wf.waitForStatus("complete");
+  expect((await L.item(id)).state).toBe("accepted");
+  const events = (await L.events(id)) as unknown as LedgerEvent[];
+  expect(events.filter((e) => e.kind === "review.requested").map((e) => e.data.reviewer).reverse()).toEqual([first, second]);
+  expect(events.filter((e) => e.kind === "land.review").map((e) => e.data.reviewer).reverse()).toEqual([first, second]);
+});
+
+it("a rejection by the first reviewer ends the Workflow landing at once with the blocking findings, and no second reviewer is asked (t143)", async () => {
+  const project = "wf-risk-reject", instance = "wf-risk-reject-1";
+  const { L, id } = await coreSubmitted(project, instance);
+  await using wf = await startLandingAny(instance, project, id);
+  const first = await answerNext(L, id, false, "Not yet.", [{ file: "src/core.ts", line: 4, severity: "blocking", text: "the guard is missing" }]);
+  await wf.waitForStatus("errored");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(new RegExp(`^${first} rejected t\\d+ at aaaaaaaa: Not yet\\. Blocking: src/core\\.ts:4 the guard is missing`));
+  const events = (await L.events(id)) as unknown as LedgerEvent[];
+  expect(events.filter((e) => e.kind === "review.requested")).toHaveLength(1);
+  expect(events.some((e) => e.kind === "land.lease")).toBe(false);
+});
+
+async function startLandingAny(instance: string, project: string, id: string) {
+  const wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: H2 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), pollMs: 10, reviewTimeoutMs: 3_600_000 } });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: false });
+  return wf;
+}

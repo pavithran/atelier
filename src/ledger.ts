@@ -6701,7 +6701,7 @@ export class Ledger extends DurableObject<Env> {
       // policy, and was not withdrawn by the developer at this head since it
       // was named.
       const change = record.reviewers?.[p.partKey!];
-      const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors, single)
+      const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !(need.counted ?? []).some((c) => modelKey(c) === modelKey(change.actor)) && !independenceRefusal(change.actor, contributors, single)
         && mayAssess(change.actor, policy, this.owner) && !actorStanding(standing, change.actor, "review")
         && !withdrawnHere.some((w) => sameActor(w.actor, change.actor) && (change.at ?? "") <= w.at) ? change.actor : null;
       // pickReviewer passes over every contributor and every model of a
@@ -6713,6 +6713,7 @@ export class Ledger extends DurableObject<Env> {
         // The request goes home, so the offer is judged there.
         offers: tickOffers, destination: () => "home",
         previous: need.previousReviewer,
+        counted: need.counted,
         // A protected part's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
         tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
@@ -7298,7 +7299,7 @@ export class Ledger extends DurableObject<Env> {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
       const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
-        previous: need.previousReviewer, tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined, assigned: this.reviewAssigned(item, null, need.changedPaths), offers, destination },
+        previous: need.previousReviewer, counted: need.counted, tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined, assigned: this.reviewAssigned(item, null, need.changedPaths), offers, destination },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");
@@ -7310,6 +7311,7 @@ export class Ledger extends DurableObject<Env> {
         // serves the gate and the tier (src/review/tier.ts).
         tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
         avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
+        counted: need.counted,
         owner: this.owner,
         precision: this.reviewPrecision(at),
         assigned: this.reviewAssigned(item, null, need.changedPaths),

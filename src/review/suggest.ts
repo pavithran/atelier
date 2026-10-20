@@ -18,6 +18,7 @@ export interface ReviewerSuggestionInput extends SuggestionInput {
   // t622). `assignments` (the build roles') is not read here.
   assigned?: readonly Assignment[];
   tier?: readonly string[];          // the project's review tier, asked next for a protected change
+  counted?: readonly string[];       // models whose approval of this head already counts; none is asked again (t143)
   destination?: (entry: SuggestionInput["pool"][number]) => "home" | "cloud";  // where the ledger sends the review
 }
 
@@ -26,7 +27,7 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
   const ordered = ranked(input).filter(({ entry }) => !strict || frontier(entry));
   const precision = buildPrecision(input.sources, precisionWindow(now), input.owner);
   const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
-    allowPaid: false, owner: input.owner, avoid, precision, previous: input.previous ?? null, tier: input.tier,
+    allowPaid: false, owner: input.owner, avoid, counted: input.counted, precision, previous: input.previous ?? null, tier: input.tier,
     offers: input.offers, destination: input.destination,
     assigned: input.assigned ?? [],
     // Preserve outcome order between equal precision terms.

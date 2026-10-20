@@ -308,7 +308,9 @@ export function reviewBrief(input: BriefInput): string {
       ? "It needs an independent review before the developer can accept it."
       : need.basis === "coordinated"
         ? "This project's execution policy needs another agent's review of a coordinated change."
-        : "The developer named you to review it, though the gate needs no review of this change.";
+        : need.basis === "risk" && need.risk
+          ? `This project asks ${need.risk.reviews} independent review${need.risk.reviews === 1 ? "" : "s"} of a ${need.risk.class} change, each from a different model; ${need.risk.have} approved this head already, and yours is asked for the next.`
+          : "The developer named you to review it, though the gate needs no review of this change.";
   section(
     "## What to review",
     "",

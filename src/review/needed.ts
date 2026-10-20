@@ -16,8 +16,8 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, roundCapHold, singleFamily,
-  type ChangeClass, type Evidence, type EvidenceView, type Finding, type Item, type ProjectPolicy, type Review,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, gateApprovals, modelKey, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, rejectedRounds, riskNeed, roundCapHold, singleFamily,
+  type ChangeClass, type RiskClass, type Evidence, type EvidenceView, type Finding, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
 
@@ -57,7 +57,9 @@ export type ReviewKind = "review" | "re-review";
 // Why the review is required: every part of a plan, for an item outside a
 // plan the gate's requirement for its change class, or the owner's own
 // request for a named reviewer where the gate needs none.
-export type ReviewBasis = "part" | "protected" | "coordinated" | "requested";
+// "risk": a task outside a plan whose project states riskReviews and whose
+// class needs reviews there, whatever its change class (t143).
+export type ReviewBasis = "part" | "protected" | "coordinated" | "risk" | "requested";
 
 export interface ReviewRequired {
   needed: true;
@@ -79,6 +81,13 @@ export interface ReviewRequired {
   settled?: Finding[];
   previousReviewer: string | null;  // who rejected most recently, asked first on a re-review
   lapsed: string[];                 // reviewers whose claim on a review of this head lapsed
+  // Set when the project states riskReviews (t143): the class, the approvals
+  // it needs and the independent approvals already counted at this head, so a
+  // second review is asked only while one is missing, and `counted` names
+  // the models whose approval stands, which are not asked again. An older
+  // server sends none.
+  risk?: { class: RiskClass; reviews: number; have: number };
+  counted?: string[];
 }
 
 export interface ReviewNotNeeded {
@@ -202,7 +211,13 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   if (!input.postMerge && governed && !policy.execution!.allowed_classes.includes(kind)) {
     return no(`${kind} changes are not allowed by this project's execution policy, and a review cannot make the change acceptable`);
   }
-  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
+  // A project that states riskReviews (t143) asks what the change's risk
+  // class needs, for a direct change as for a protected one: before this a
+  // direct change was never reviewed here, though the gate waited for the
+  // reviews its class needs. A plan's part keeps its basis and is reviewed at
+  // least once, since its integration needs one approval whatever its class.
+  const risk = input.postMerge ? null : riskNeed(view.changedPaths, policy);
+  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : risk ? (risk.reviews > 0 ? "risk" : null) : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
   if (!basis && !input.wanted) {
     return no(kind === "direct"
       ? "a direct change needs no review"
@@ -231,11 +246,25 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   if (!input.postMerge && rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the developer" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);
   const single = singleFamily(policy);
+  // The approvals a part under riskReviews has: one per model, as the gate
+  // counts them, tested as its integration tests them.
+  let partHave: string[] = [];
+  let have: string[] = [];
   if (input.tier) {
     // A tier review is asked beside the gate's; the gate's approval leaves it standing.
   } else if (basis === "part") {
-    const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner, single));
-    if (independent) return no(`${independent.by}, ${single ? `a different ${single} model from every contributor` : "of another family than every contributor"}, approved ${short(head)}`);
+    const independents = atHead.filter((r) => independentApproval(r, "protected", contributors, owner, single));
+    const independent = independents[0];
+    if (!risk && independent) return no(`${independent.by}, ${single ? `a different ${single} model from every contributor` : "of another family than every contributor"}, approved ${short(head)}`);
+    if (risk) {
+      // The class's count is the gate's own (gateApprovals), which tests a
+      // non-protected change by the coordinated rule; the part's integration
+      // asks beside it for one approval that passes the protected test.
+      const seen = new Set<string>();
+      const gated = gateApprovals(item, policy, [...input.evidence], reviews, owner);
+      partHave = [...gated, ...independents].filter((r) => !seen.has(modelKey(r.by)) && !!seen.add(modelKey(r.by))).map((r) => r.by);
+      if (gated.length >= risk.reviews && independent) return no(`${partHave.join(", ")} approved ${short(head)}: ${gated.length} of the ${risk.reviews} this ${risk.risk} change needs, and ${single ? `a different ${single} model from every contributor` : "one of another family than every contributor"} among them`);
+    }
   } else if (!input.wanted) {
     const g = gate(item, policy, [...input.evidence], reviews, owner);
     if (g.overridden) return no(`the developer overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
@@ -244,6 +273,10 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
       return no(`the gate already counts an independent approval of ${short(head)} (${approvers.join(", ")})`);
     }
   }
+  // Under riskReviews the gate's own count, so the models already counted are
+  // not asked again and the brief says how many are still missing.
+  if (risk && basis !== "part") have = gateApprovals(item, policy, [...input.evidence], reviews, owner).map((r) => r.by);
+  const counted = basis === "part" ? partHave : have;
 
   // The ledger recovers expired claims before supplying this view. A live
   // gate request holds the item; a tier request beside it holds nothing.
@@ -290,8 +323,10 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   if (held) return no(held);
 
   const why = basis === "part"
-    ? `every part is reviewed by ${single ? independentReviewerText(single) : "another model family"}, and this ${kind} change has no such approval at ${short(head)}`
-    : basis === "protected"
+    ? `every part is reviewed by ${single ? independentReviewerText(single) : "another model family"}, and this ${kind} change has ${risk ? `${partHave.length} of the ${Math.max(1, risk.reviews)} such approvals its ${risk.risk} class needs` : "no such approval"} at ${short(head)}`
+    : basis === "risk"
+      ? `this project's riskReviews ask ${risk!.reviews} independent review${risk!.reviews === 1 ? "" : "s"} of a ${risk!.risk} change, and ${short(head)} has ${have.length}`
+      : basis === "protected"
       ? `a protected change needs an independent review, and none is recorded at ${short(head)}`
       : basis === "coordinated"
         ? `this project's execution policy needs another agent's review of a coordinated change, and none is recorded at ${short(head)}`
@@ -313,5 +348,6 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     settled: settledFindings(everyReview, verdicts),
     previousReviewer: last?.by ?? null,
     lapsed,
+    ...(risk ? { risk: { class: risk.risk, reviews: basis === "part" ? Math.max(1, risk.reviews) : risk.reviews, have: counted.length }, counted } : {}),
   };
 }
