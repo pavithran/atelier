@@ -56,6 +56,7 @@ import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, standingRoute, type PartRoute } from "./plans/route.ts";
 import { conflictedParts, integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
+import { historyEntries, type HistoryRead } from "./review/history.ts";
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
@@ -5939,7 +5940,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; history?: HistoryRead }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -5962,7 +5963,11 @@ export class Ledger extends DurableObject<Env> {
       // cannot know: the server holds the policy.
       const prose = proseStandardLine(this.project().policy.proseStandard);
       const text = [...sections.map((f) => findingsSection(f)), criteria, prose].filter(Boolean).join("\n\n");
-      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null };
+      // Past findings on the files in scope (t14), beside the text: the
+      // runner alone can tell which of those files exist at the commit its
+      // build starts from, so it filters and renders them. A field an older
+      // runner does not read changes nothing for it.
+      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item) };
     }
     assertOwner(item, actor);
     const project = this.project();
@@ -6022,6 +6027,20 @@ export class Ledger extends DurableObject<Env> {
       }),
       proseStandard: project.policy.proseStandard ?? null,
     };
+  }
+
+  // The findings other tasks of this project had confirmed or fixed on files
+  // in this item's scope (src/review/history.ts). A Ledger holds one
+  // project's events, so no other project's reach it. A read that fails is
+  // reported as unavailable, never as an empty history.
+  private pastFindings(item: Item): HistoryRead {
+    try {
+      const rows = this.sql.exec(`SELECT * FROM events WHERE kind = 'review.finding' ORDER BY seq`).toArray().map(eventOf);
+      const abandoned = new Set(this.sql.exec(`SELECT id FROM items WHERE state = 'abandoned'`).toArray().map((r) => r.id as string));
+      return { entries: historyEntries(rows, item.scope, item.id, abandoned) };
+    } catch {
+      return { unavailable: true };
+    }
   }
 
   // The owner approves the newest valid proposal by its hash, once. Each
