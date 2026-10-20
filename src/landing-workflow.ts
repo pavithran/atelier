@@ -39,9 +39,10 @@
 // accepting and begins a new round from the merge of main. The server
 // carries an approval over that merge, when the executor pushes it, only as
 // far as the review-retention rule lets it (t56, retentionVerdict in
-// src/rules.ts): a merge that leaves the task's files alone. The round's
-// review step then finds the approval standing at the new head and asks for
-// no review; any other merge asks for a new one.
+// src/rules.ts and retainApprovals in src/ledger.ts): a merge that leaves
+// the task's files alone. The round's review step then finds the approval
+// standing at the new head and asks for no review; any other merge asks
+// for a new one.
 // Each lease step records the time the round spent before the lease and in
 // the queue, and each release step the time the lease was held.
 //
@@ -207,9 +208,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // owner resolves it; main moving before the lease releases the lease
       // and begins a new round. The server carries an approval over the
       // merge the executor pushes only as the review-retention rule lets it
-      // (t56, retentionVerdict in src/rules.ts); the round's review step then
-      // finds it standing at the new head and asks for none, and any other
-      // merge asks for a new review. Each round's
+      // (t56, retentionVerdict in src/rules.ts and retainApprovals in
+      // src/ledger.ts); the round's review step then finds it standing at
+      // the new head and asks for none, and any other merge asks for a new
+      // review. Each round's
       // steps are named for it (`p.sfx`), so none answers from a cached
       // step of an earlier round.
       let report: Reported;
