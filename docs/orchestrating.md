@@ -1102,6 +1102,35 @@ developer it read as a defect. The other half were real, and some were serious.
   a defect that shows a refuted or fixed verdict wrong names it with
   `atelier defect ID --note "…" --contradicts SEQ#N`.
 
+## Seeing what others filed
+
+Between two looks at the queue, someone else may file or edit tasks: on
+15 and 16 October 2026 a project session filed about twenty tasks while one
+session orchestrated, and that session never saw them, because nothing in its
+loop listed new filings. Run `atelier status --new --project P` at the start
+of a session and before dispatching each next batch. A batch boundary is the
+point before you dispatch the next batch of tasks, after the last batch has
+landed or been judged.
+
+It lists each task, closed ones included, that someone other than you filed or
+edited since you last looked, with the latest such actor and time. It reads
+the `item.created` and `item.edited` events, never a task's holder or update
+time, and "you" is the actor `--as` or `ATELIER_ACTOR` names, so each agent on
+a Mac has its own place. The place is a bookmark kept on that Mac, per server,
+project and actor; it moves only after a complete read has been printed. The
+first run reads the last 24 hours and says so.
+
+- A line saying the list may be incomplete means the server's newest 50 events
+  do not reach back to your bookmark. The bookmark stays where it was; read
+  `atelier ls --project P` for the tasks and run the command more often.
+- `unread` means the source could not be read, or the bookmark was corrupt or
+  could not be saved, and the command exits with status 1. It never means
+  nothing is new; the old bookmark is kept.
+- `--since 2026-10-16T08:00Z` reads from an instant with a time and a zone
+  instead, refuses an invalid or future one, and leaves the bookmark alone.
+- `--brief` prints one line and `--json` prints the status (`ok`,
+  `incomplete` or `unread`) with the tasks.
+
 ## Keeping the record honest
 
 - The task's holder is who the ledger says did the work. Before another
