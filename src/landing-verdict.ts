@@ -9,7 +9,7 @@
 // share this judgment, so both count the same verdicts the same way.
 
 import { offering, type SeenOffer } from "./dispatch/rules.ts";
-import { DEFAULT_OWNER, gateApprovals, sameActor, type Evidence, type Item, type ProjectPolicy, type Review } from "./rules.ts";
+import { approvalsNeeded, changeClass, DEFAULT_OWNER, evidenceAt, gateApprovals, sameActor, type Evidence, type Finding, type Item, type ProjectPolicy, type Review } from "./rules.ts";
 
 export interface LandingReview {
   by: string;
@@ -17,6 +17,7 @@ export interface LandingReview {
   at: string;
   approve: boolean;
   note?: string;
+  findings?: Finding[];   // the reviewer's findings, when the server sends them
   tier?: boolean;
   topTier?: boolean;
   withdrawn?: unknown;   // set when the task's acceptance criteria changed after it; it never answers
@@ -38,6 +39,18 @@ export function landingVerdict(reviews: LandingReview[], head: string, since: st
   const counted = fresh.filter((v) => !(v.tier && v.approve));
   const verdict = counted.find((v) => !v.approve) ?? counted.at(-1) ?? null;
   return { verdict, tierApprovals };
+}
+
+// What a rejection says (t143): the reviewer's note and, when the server sent
+// the findings, each blocking one with its place, so the landing that stops on
+// it prints what blocks and not only that something does. Without findings it
+// is the note alone, as before.
+export function rejectionText(v: Pick<LandingReview, "note" | "findings">): string {
+  const blocking = (v.findings ?? []).filter((f) => f && f.severity === "blocking");
+  const note = v.note || (blocking.length ? "" : "(no note)");
+  if (!blocking.length) return note;
+  const list = blocking.map((f) => `${f.file}${f.line ? `:${f.line}` : ""} ${f.text}`.trim()).join("; ");
+  return `${note ? `${note} ` : ""}Blocking: ${list}`;
 }
 
 // Whether the owner may accept the task as it stands: submitted, with the
@@ -74,6 +87,19 @@ export function recordedApproval(d: RecordedDetail, head: string, reviewer: stri
   if (d.item.head !== head || !readyToAccept(d)) return null;
   const counted = gateApprovals(d.item, d.policy, d.evidence ?? [], d.reviews ?? [], d.ownerActor ?? DEFAULT_OWNER);
   return counted.filter((v) => reviewer === null || sameActor(v.by, reviewer)).at(-1) ?? null;
+}
+
+// How many more independent approvals the gate needs at the head under the
+// project's riskReviews (t143), counted as the gate counts them (gateApprovals,
+// one per model, and a separate tier approval never among them). Zero for a
+// project without riskReviews, whose landing asks as before, and for a head
+// that is not the one given.
+export function approvalsMissing(d: RecordedDetail, head: string): number {
+  if (d.item.head !== head || !d.policy.riskReviews) return 0;
+  const owner = d.ownerActor ?? DEFAULT_OWNER;
+  const paths = evidenceAt(d.policy, d.evidence ?? [], head).changedPaths;
+  const need = approvalsNeeded(d.policy, paths === null ? null : changeClass(paths, d.policy), paths);
+  return Math.max(0, need.count - gateApprovals(d.item, d.policy, d.evidence ?? [], d.reviews ?? [], owner).length);
 }
 
 // Whether a review request will ever be claimed, by which runners have

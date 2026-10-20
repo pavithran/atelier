@@ -71,10 +71,11 @@ import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, allSkipped, recordedApproval, reviewStall, type RecordedDetail, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
+import { approvalsMissing, landingVerdict, allSkipped, recordedApproval, rejectionText, reviewStall, type RecordedDetail, type LandingReview, type LandingUnparsable, type ReviewStall } from "./landing-verdict.ts";
 import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
 import { fenceText, type PrereviewFence } from "./dispatch/prereview.ts";
 import { offersFor } from "./dispatch/rules.ts";
+import type { Finding } from "./rules.ts";
 
 // What the landing-workflow route passes when it creates the instance.
 // `key` is the project's storage key; `actor` is the project owner;
@@ -131,6 +132,8 @@ const DAY = 86_400_000;
 // Five tries, 2, 4, 8 and 16 seconds apart: enough to outlast a brief 503
 // from Artifacts or a Durable Object reset, short enough that a lasting
 // fault ends the landing with its own message.
+// The most reviews one landing asks (t143), as REVIEW_PASSES in cli/land.mjs.
+const REVIEW_PASSES = 4;
 const RETRIES = { retries: { limit: 5, delay: 2000, backoff: "exponential" as const }, timeout: "5 minutes" as const };
 // The workspace and a conflict are waited for in chunks of this length
 // (step.waitForEvent throws when its timeout passes, so each chunk is one
@@ -612,8 +615,27 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     }
   }
 
+  // The reviews the gate needs, one at a time (t143), as the CLI's landing
+  // asks them (reviewStep in cli/land.mjs): where the project states
+  // riskReviews one approval can leave the change short of its class, so the
+  // next review is asked only after the last approved, for the approvals
+  // still missing, and a rejection ends the landing before any later one is
+  // asked. With a reviewer named, or without riskReviews, one review is asked
+  // as it always was.
   private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string, round: number, report: Reported): Promise<void> {
-    const ask = await step.do(`request the review${p.sfx}`, RETRIES, async () => {
+    for (let pass = 1; ; pass++) {
+      if (!await this.reviewOnce(step, L, p, head, round, report, pass) || p.reviewer !== null) return;
+      const sfx = pass > 1 ? `${p.sfx} (review ${pass})` : p.sfx;
+      const missing = await step.do(`count the approvals still missing${sfx}`, RETRIES, async () => approvalsMissing({ ...((await L.detail(p.item)) as unknown as RecordedDetail), ownerActor: p.actor }, head));
+      if (!missing) return;
+      if (pass >= REVIEW_PASSES) throw new NonRetryableError(`${p.item} still needs ${missing} more approval${missing === 1 ? "" : "s"} at ${short(head)} after ${pass} reviews; the landing stops. Run atelier show ${p.item} for what the gate counts`);
+    }
+  }
+
+  private async reviewOnce(step: WorkflowStep, L: LedgerStub, p: Landing, head: string, round: number, report: Reported, pass: number): Promise<boolean> {
+    // Each pass is its own set of steps, so a later one never replays an earlier.
+    const sfx = pass > 1 ? `${p.sfx} (review ${pass})` : p.sfx;
+    const ask = await step.do(`request the review${sfx}`, RETRIES, async () => {
       await this.stillCurrent(L, p);
       // The triage is asked again whether it stands: criteria changed since
       // the submission stop the landing before any review is asked for.
@@ -651,17 +673,17 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     });
     if (ask.held) {
       const by = ask.held;
-      await step.do(`record the review already approved${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: by, resolvedBy: by, reason: "approval recorded at the head before the landing asked for a review" }); return {}; });
-      return;
+      await step.do(`record the review already approved${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: by, resolvedBy: by, reason: "approval recorded at the head before the landing asked for a review" }); return {}; });
+      return false;
     }
     if (!ask.needed && p.reviewer) throw new NonRetryableError(`the server made no review request for ${p.reviewer} (${ask.reason}); ${p.item} stays submitted`);
     if (!ask.needed) {
-      await step.do(`record the review none needed${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) }); return {}; });
-      return;
+      await step.do(`record the review none needed${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) }); return {}; });
+      return false;
     }
     const maxPolls = Math.max(1, Math.floor(p.review / p.poll));
     for (let i = 0; ; i++) {
-      const poll = await step.do(`wait for the verdict #${i}${p.sfx}`, RETRIES, async () => {
+      const poll = await step.do(`wait for the verdict #${i}${sfx}`, RETRIES, async () => {
         await this.stillCurrent(L, p);
         // The live request is read before the verdicts (t574): a verdict
         // closes the request it answers, so one recorded between the reads is
@@ -671,14 +693,14 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         const d = (await L.detail(p.item)) as unknown as { item: { head: string | null }; reviews: LandingReview[]; unparsable?: LandingUnparsable[] };
         if (d.item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
         const { verdict } = landingVerdict(d.reviews ?? [], head, ask.at);
-        if (verdict) return { approve: verdict.approve, by: verdict.by, note: String(verdict.note ?? ""), tier: verdict.tier === true };
+        if (verdict) return { approve: verdict.approve, by: verdict.by, note: String(verdict.note ?? ""), findings: (verdict.findings ?? []) as Finding[], tier: verdict.tier === true };
         // No verdict: the wait goes on only while one can still come.
         const stall = reviewStall(head, ask.asked ?? ask.at, ask.reviewer, live, d.unparsable ?? []);
         return stall ? { stall } : null;
       });
       if (poll && "stall" in poll) {
         const stall = poll.stall as ReviewStall;
-        await step.do(`record the stalled review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: stall.kind === "unparsable" ? "unparsable" : "no-request", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
+        await step.do(`record the stalled review${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: stall.kind === "unparsable" ? "unparsable" : "no-request", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
         const byHand = `review by hand (atelier review ${p.item} --approve --as H/M --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}`;
         if (stall.kind === "unparsable") {
           throw new NonRetryableError(`${stall.by} replied to the review of ${p.item} at ${short(head)} with no verdict the server could read (${stall.note.slice(0, 300) || "no note"}); the reply is kept on the task (atelier show ${p.item}). The request stays asked of ${stall.by} and ${p.item} stays submitted. Run atelier land ${p.item} --workflow --reviewer H/M to ask another reviewer, which replaces that request, or ${byHand}`);
@@ -687,11 +709,11 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       }
       if (poll) {
         if (!poll.approve) {
-          await step.do(`record the rejected review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "reject", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
-          throw new NonRetryableError(`${poll.by}${poll.tier ? " (tier review)" : ""} rejected ${p.item} at ${short(head)}: ${poll.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
+          await step.do(`record the rejected review${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "reject", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
+          throw new NonRetryableError(`${poll.by}${poll.tier ? " (tier review)" : ""} rejected ${p.item} at ${short(head)}: ${rejectionText({ note: poll.note, findings: poll.findings })}. The task goes back to its holder with the findings; the merge of main stays in its workspace`);
         }
-        await step.do(`record the approved review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
-        return;
+        await step.do(`record the approved review${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
+        return true;
       }
       // t353: a review request every runner that offers the reviewer has
       // skipped will never be claimed, however long the wait runs. Asked once
@@ -699,7 +721,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // the hour. The skips counted are this request's alone, by its number:
       // an earlier request's at the same head are that request's.
       if (ask.reviewer && ask.request !== null) {
-        const stuck = await step.do(`see whether every reviewer skipped #${i}${p.sfx}`, RETRIES, async () => {
+        const stuck = await step.do(`see whether every reviewer skipped #${i}${sfx}`, RETRIES, async () => {
           const [offers, project] = await Promise.all([this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers(), L.project()]);
           const live = await L.liveReviewRequest(p.item, head);
           if (!live) return null;
@@ -708,15 +730,15 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
           return runners ? { runners } : null;
         });
         if (stuck) {
-          await step.do(`record the skipped review${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
+          await step.do(`record the skipped review${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
           throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again, which asks the review anew for the runners to serve`);
         }
       }
       if (i + 1 >= maxPolls) {
-        await step.do(`record the review timeout${p.sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "timeout", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
+        await step.do(`record the review timeout${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "timeout", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
         throw new NonRetryableError(`no verdict${ask.reviewer ? ` from ${ask.reviewer}` : ""} within ${span(p.review)}; the review request stays open and ${p.item} stays submitted. Review by hand, then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again to wait once more`);
       }
-      await step.sleep(`wait for the verdict to settle #${i}${p.sfx}`, p.poll);
+      await step.sleep(`wait for the verdict to settle #${i}${sfx}`, p.poll);
     }
   }
 

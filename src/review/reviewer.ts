@@ -29,7 +29,7 @@ import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { assertEligible, DEFAULT_OWNER, hasRole, independentReviewerText, parseRuleError, sameActor, singleFamily, type Item, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, DEFAULT_OWNER, hasRole, independentReviewerText, modelKey, parseRuleError, sameActor, singleFamily, type Item, type ProjectPolicy } from "../rules.ts";
 import { actorFamily, contributorsOf, describeContributors, familyRefusal } from "./independence.ts";
 
 export interface PickInput {
@@ -44,6 +44,9 @@ export interface PickInput {
   previous?: string | null;                     // the reviewer of the last rejected round
   tier?: readonly string[];                     // the review tier, asked before the routing; a tier model outside the pool is skipped
   avoid?: readonly { actor: string; reason: string }[];       // reviewers to pass over, such as one whose claim lapsed
+  // Models whose approval of this head the gate already counts (t143): a
+  // model counts once, however it is named or run, so none is asked again.
+  counted?: readonly string[];
   profiles?: readonly ModelProfile[];           // context windows; MODEL_PROFILES by default
   owner?: string;
   recordOrder?: readonly string[];             // eligible task suggestions, best outcome record first
@@ -237,6 +240,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   // name is read through this entry's names, as on main.
   const avoided = input.avoid?.find((a) => { const own = exactEntry(input.pool, a.actor); return own ? own === entry : names.some((name) => sameActor(name, a.actor)); });
   if (avoided) failed.push(avoided.reason);
+  if (input.counted?.some((c) => modelKey(c) === modelKey(actor))) failed.push("its approval of this head already counts, and a model counts once");
 
   // Under a governed policy the gate counts only an assessor's review. Without
   // one, addReview refuses a review from a harness the project does not make

@@ -14,7 +14,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { fenceText, prereviewClause } from "../src/dispatch/prereview.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
-import { landingVerdict, allSkipped, recordedApproval, reviewStall } from "../src/landing-verdict.ts";
+import { approvalsMissing, landingVerdict, allSkipped, recordedApproval, rejectionText, reviewStall } from "../src/landing-verdict.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
@@ -912,7 +912,30 @@ async function gateStands(io, { id, itemPath, head }) {
 // reason, where the gate cannot proceed at all. A rejection, a timeout or a
 // request no runner will serve throws, ending the landing with the lease
 // never taken.
-async function reviewStep(io, { id, name, itemPath, reviewer, head: pushed, record }) {
+// The reviews the gate needs, one at a time (t143). Where the project states
+// riskReviews, one approval can leave the change short of what its class
+// needs, so the next review is asked only after the last approved, and only
+// for the approvals still missing: the server leaves out every model already
+// counted. A rejection ends the landing at once, so no later reviewer is
+// asked. With --reviewer, or without riskReviews, one review is asked as it
+// always was. REVIEW_PASSES bounds the asks: a class needs at most three
+// approvals, so a gate still short after more has a count this loop cannot
+// move, and the landing stops rather than asking on.
+const REVIEW_PASSES = 4;
+async function reviewStep(io, args) {
+  for (let pass = 1; ; pass++) {
+    if (await reviewOnce(io, args) !== "approved" || args.reviewer) return;
+    const { request, print } = io;
+    const missing = approvalsMissing(await request("GET", args.itemPath), args.head);
+    if (!missing) return;
+    if (pass >= REVIEW_PASSES) throw new StepError(`${args.id} still needs ${missing} more approval${missing === 1 ? "" : "s"} at ${short(args.head)} after ${pass} reviews; the landing stops. Run atelier show ${args.id} for what the gate counts`);
+    print(`${args.id} still needs ${missing} more approval${missing === 1 ? "" : "s"} under the project's riskReviews; asking the next reviewer.`);
+  }
+}
+
+// One review: "approved" when a reviewer approved it, undefined when none was
+// needed or the gate already counted one.
+async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, record }) {
   const { request, print } = io;
   const t0 = Date.now();
   // A qualifying approval already recorded at the pushed head, which the
@@ -999,11 +1022,11 @@ async function reviewStep(io, { id, name, itemPath, reviewer, head: pushed, reco
     if (verdict) {
       if (!verdict.approve) {
         await record("review", Date.now() - t0, { verdict: "reject", reviewer: verdict.by, resolvedBy: verdict.by });
-        throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${verdict.note || "(no note)"}. The task goes back to its holder with the findings; the merge of main stays in its workspace, and the landing lease was never taken`);
+        throw new StepError(`${verdict.by}${verdict.tier ? " (tier review)" : ""} rejected ${id} at ${short(head)}: ${rejectionText(verdict)}. The task goes back to its holder with the findings; the merge of main stays in its workspace, and the landing lease was never taken`);
       }
       print(`${verdict.by} approved ${id} at ${short(head)}${verdict.topTier ? ", as the gate review and the top tier's" : ""}.`);
       await record("review", Date.now() - t0, { verdict: "approve", reviewer: verdict.by, resolvedBy: verdict.by });
-      return;
+      return "approved";
     }
     if (d.item.head !== head) throw new StepError(`${id}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
     // No verdict: the wait goes on only while one can still come (t613, as

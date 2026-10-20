@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { criteriaOf } from "../src/criteria.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { landingLeaseLapsed, waitingLandingGone } from "../src/landing-lease.ts";
 
@@ -81,7 +82,7 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     // once (t550); without one it never gets a verdict, as before.
     const rv = id === "t1" ? box.review : box.reviewOf?.[id];
     const due = rv && rv.pending && rv.approveAfter !== null && rv.approveAfter-- <= 0;
-    const reviews = due ? (box.reviews[id].push({ by: rv.reviewer, approve: rv.approve, head, note: rv.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString() }), rv.pending = false, box.reviews[id]) : box.reviews[id];
+    const reviews = due ? (box.reviews[id].push({ by: rv.reviewer, approve: rv.approve, head, note: rv.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString(), ...(rv.findings ? { findings: rv.findings } : {}), ...(rv.sequence ? { criteria: criteriaOf({}) } : {}) }), rv.pending = false, box.reviews[id]) : box.reviews[id];
     const state = box.states[id];
     const events = [
       ...(id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : []),
@@ -226,7 +227,11 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     else if (url.endsWith("/review-request")) {
       const rv = item !== "t1" && box.reviewOf?.[item] ? box.reviewOf[item] : box.review;
       box.reviewAsks = [...(box.reviewAsks ?? []), { item, head, at: Date.now() }];
-      if (!rv.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: rv.reason ?? "the gate counts an independent approval already" };
+      // `sequence` (t143): the reviewers the server asks in turn, each with its verdict, as a gate that needs several approvals asks them; none is left once they are asked.
+      const next = rv.sequence && !body.reviewer ? rv.sequence.shift() : null;
+      if (next) { rv.reviewer = next.reviewer; rv.approve = next.approve !== false; rv.findings = next.findings; }
+      if (rv.sequence && !body.reviewer && !next) answer = { needed: false, reason: "the gate counts an independent approval already" };
+      else if (!rv.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: rv.reason ?? "the gate counts an independent approval already" };
       else { rv.reviewer = body.reviewer ?? rv.reviewer; rv.pending = true; rv.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && rv.why ? ` ${rv.why}` : ""}`, at: rv.at, head, reviewer: body.reviewer ?? rv.reviewer, request: rv.request ?? 1, ...(rv.withdrew ? { withdrew: rv.withdrew } : {}) }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
