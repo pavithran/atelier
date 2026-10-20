@@ -51,7 +51,7 @@ const ORCHESTRATE_RULES = [
   /Never override[^.]*except on the developer's own\s+confirmation/,
   /Judge each review finding against the code[^.]*record every\s+verdict/,
   /`atelier finding \.\.\. --as H\/M`, naming yourself/,
-  /Land one task at a time[^.]*--reviewer H\/M/,
+  /Land with `atelier land ID --reviewer H\/M`[\s\S]*?Land a\s+wave\s+with\s+`atelier land ID ID…`/,
   /override[\s\S]*?last resort[\s\S]*?never the\s+way to land another\s+agent's work/,
   /Report every run that ended without a result/,
   /On a stall/,
@@ -193,4 +193,32 @@ test("docs/orchestrating.md says a push comes before landing a workspace with un
   const doc = readFileSync("docs/orchestrating.md", "utf8");
   assert.match(doc, /does\s+not\s+push\s+commits\s+that\s+exist\s+only\s+in\s+the\s+task's\s+workspace/);
   assert.match(doc, /Run\s+`atelier push`\s+in\s+the\s+workspace\s+first,\s+then\s+land/);
+});
+
+// Finding t144: after `atelier land ID ID…` (t54), approval counts (t143) and
+// retained approvals (t56) shipped, the guide and the handbook still told the
+// orchestrator "Never land two together" and taught the local scratch queue
+// (LANDQ lines). Both now teach the wave, name what stays outside Atelier,
+// and every flag and command the wave text names exists in the land help.
+test("the guide and the handbook teach landing a wave, not 'Never land two together' or the scratch queue", () => {
+  const doc = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
+  for (const text of [doc, ROLE_PROMPTS.orchestrate.replace(/\s+/g, " ")]) {
+    assert.doesNotMatch(text, /Never land two together/);
+    assert.doesNotMatch(text, /LANDQ/);
+    assert.match(text, /atelier land ID ID…/);
+    assert.match(text, /--parallel N/);
+    assert.match(text, /post-merge\.sh/);
+  }
+  const wave = doc.slice(doc.indexOf("### Landing a wave"), doc.indexOf("### Pre-review while the lease is busy"));
+  for (const topic of [/How many at once/, /How many reviews/, /Retained approvals/, /When main moves/, /Failures/, /Recovery/]) assert.match(wave, topic);
+  const outside = doc.slice(doc.indexOf("### What stays outside Atelier"), doc.indexOf("### Pre-review while the lease is busy"));
+  assert.match(outside, /The wave suite/);
+  assert.match(outside, /The deploy and the push to the public mirror/);
+  const help = run(["land", "--help"]).stdout;
+  for (const flag of ["--parallel", "--workflow", "--release-lease", "--post-merge", "--reviewer", "--triage", "--no-review"]) {
+    assert.ok(help.includes(flag), `${flag} is in the land help`);
+    assert.ok(wave.includes(flag) || flag === "--no-review" || flag === "--triage" || flag === "--reviewer", `${flag} is in the wave text`);
+  }
+  assert.ok(readFileSync("cli/land.mjs", "utf8").includes("ATELIER_LAND_MAIN_MOVED_ROUNDS"));
+  assert.ok(wave.includes("ATELIER_LAND_MAIN_MOVED_ROUNDS"));
 });

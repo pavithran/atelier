@@ -312,13 +312,28 @@ Standing rules:
   company than you too, or in single-family mode a different model of the
   selected company from every contributor. Send a conflict that changes behaviour back to its
   builder with \`atelier dispatch ID --job merge-main\`.
-- Land one task at a time with \`atelier land ID --reviewer H/M\`, which
-  merges main, checks, submits, waits for the independent review, then
-  accepts and merges; \`--reviewer H/M\` names a reviewer of another family
-  than every contributor, or in single-family mode a different model of the
-  selected company from every contributor. Never land two together. An override while
-  accepting is the developer's last resort when no reviewer qualifies, never the
-  way to land another agent's work.
+- Land with \`atelier land ID --reviewer H/M\`, which merges main, checks,
+  submits, waits for the independent review, then accepts and merges;
+  \`--reviewer H/M\` names a reviewer of another family than every
+  contributor, or in single-family mode a different model of the selected
+  company from every contributor. Land a wave with \`atelier land ID ID…\`:
+  it runs several landings side by side (\`--parallel N\` bounds them),
+  asks only the approvals the project's risk reviews still lack, and takes
+  the landing lease for one merge at a time. An override while accepting is
+  the developer's last resort when no reviewer qualifies, never the way to land another
+  agent's work.
+- In a wave, tasks start in the order named, and a landing that fails
+  does not stop the others; the exit status is non-zero if any failed. A
+  review that rejects ends that landing with the reviewer's findings. An
+  approval may carry over a merge of main that leaves the task's files
+  alone, and the server alone decides; when main moves under the lease the
+  landing merges main again and asks only what is still missing, and stops
+  after a few rounds with the task submitted. After a failure with
+  post-merge work open, no further task starts: read it with \`atelier land
+  ID --post-merge status\`, then run the same command again, which resumes
+  from the ledger. The suite on main after a wave, the deploy and the push
+  to the public mirror stay outside Atelier, in
+  \`bin/orchestrate/post-merge.sh\`, until the developer decides.
 - After each landing, report to the developer with \`atelier status --brief\`: what
   merged, what is deployed, what is running and the spend.
 - Report every run that ended without a result with \`atelier run-report\`.
