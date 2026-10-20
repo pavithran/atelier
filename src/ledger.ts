@@ -3207,7 +3207,7 @@ export class Ledger extends DurableObject<Env> {
       ...(reopened ? { approvalInvalidated: true } : {}),
       ...this.otherAuthors(item, authors),
     }, now, proved);
-    this.retainApprovals(item, observedHead, retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
+    this.retainApprovals(item, observedHead, this.refreshInFlight(id) ? null : retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -3215,10 +3215,18 @@ export class Ledger extends DurableObject<Env> {
   // How many approvals stand at the task's head that a merge of main could
   // carry to a new one (retainableApprovals): the Worker reads the merge from
   // Artifacts only when there is one to carry.
-  retainable(id: string): number {
+  retainable(id: string, head?: string): number {
     const item = this.item(id);
     if (item.kind || item.state === "merged" || item.state === "abandoned" || !item.head) return 0;
-    return retainableApprovals(this.reviewsFor(id), bindingOf(item)).length;
+    return retainableApprovals(this.reviewsFor(id), head ? { ...bindingOf(item), head } : bindingOf(item)).length;
+  }
+
+  // Whether a task refresh holds a lease on the task, or whether that cannot
+  // be read: either way a push does not decide retention. The refresh's own
+  // report (taskRefreshed) does, since only it knows who made the merge, a
+  // resolver who may also be the task's holder included.
+  private refreshInFlight(id: string): boolean {
+    try { return !!this.refreshTargetOf(id)?.lease; } catch { return true; }
   }
 
   // The approvals standing at `item`'s head, carried to `newHead` when it is
@@ -3292,7 +3300,7 @@ export class Ledger extends DurableObject<Env> {
       state: item.state === "accepted" ? "submitted" : item.state,
       ...(scan ? { secret_scan: observedHead } : {}) }, now);
     this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted", ...this.otherAuthors(item, authors) }, now);
-    this.retainApprovals(item, observedHead, retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
+    this.retainApprovals(item, observedHead, this.refreshInFlight(id) ? null : retention, { resolver: null, outsiders: this.otherAuthors(item, authors).authors !== undefined }, now);
     return this.item(id);
   }
 
@@ -8920,7 +8928,7 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { head: report.head, last_push_at: at, ...(accepted ? { state: "submitted", accepted_head: null } : {}) }, at);
     // Approvals the merge leaves standing: carried here, or by the push event
     // that recorded the head first (observePush), which reads the same merge.
-    const retention = this.retainApprovals(item, report.head, report.retention ?? null, { resolver, outsiders: false }, at);
+    const retention = this.retainApprovals({ ...item, head: report.expectedHead }, report.head, report.retention ?? null, { resolver, outsiders: false }, at);
     const retained = this.reviewsFor(id).filter((r) => r.retained?.newHead === report.head).length;
     const review = refreshReview({ state: item.state, diffBefore: report.diffBefore ?? null, diffAfter: report.diffAfter ?? null, resolver, retained, retention: retention?.why ?? null });
     this.log(id, actor, "item.refreshed", {

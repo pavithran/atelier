@@ -646,14 +646,14 @@ const PUSH_AUTHORS_MAX = 200;
 // task has no approval standing that a merge could carry, so a push reads no
 // history it has no use for. Whatever fails to read is an `unread` answer,
 // which carries nothing.
-async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: string; kind?: string | null; plan?: string | null; fork: string | null; head: string | null }, newHead: string): Promise<RetentionRead | null> {
-  if (item.kind || !item.fork || !item.head || item.head === newHead) return null;
+async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: string; kind?: string | null; plan?: string | null; fork: string | null; head: string | null }, newHead: string, oldHead = item.head): Promise<RetentionRead | null> {
+  if (item.kind || !item.fork || !oldHead || oldHead === newHead) return null;
   try {
-    if (!(await L.retainable(item.id))) return null;
+    if (!(await L.retainable(item.id, oldHead))) return null;
     const repo = (await L.project()).repo;
     using fork = await env.ARTIFACTS.get(item.fork);
     using baseline = await env.ARTIFACTS.get(await baseRepo(env, L, item, repo));
-    return await readRetention(fork, baseline, item.head, newHead);
+    return await readRetention(fork, baseline, oldHead, newHead);
   } catch (err) {
     console.error(errorLine(`retention read of ${item.id}`, err));
     return { unread: "the repositories could not be read" };
@@ -1067,7 +1067,7 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
   const patch = (v: unknown) => (typeof v === "string" && hash.test(v) ? v : null);
   // The merge is read for the retention rule before the Ledger records it; the
   // Ledger judges it, with the resolver the lease names.
-  const retention = head && item.head === expectedHead ? await retentionOf(env, L, item, head) : null;
+  const retention = head && (item.head === expectedHead || item.head === head) ? await retentionOf(env, L, item, head, expectedHead) : null;
   const r = await L.taskRefreshed(id, actor, { lease: String(body.lease ?? ""), mainHead, expectedHead, head, agent, diffBefore: patch(body.diffBefore), diffAfter: patch(body.diffAfter), transformations, retention }, true);
   if (r.revoke) await revoke(env, item.fork, r.revoke);
   return r;

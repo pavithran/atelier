@@ -42,13 +42,13 @@ const merge = (over: Partial<RetentionFacts> = {}, head = R1, from = H1, main = 
 });
 
 // A task built to H1 by OPUS, checked, submitted and approved by `by` unless nobody is named.
-async function approved(L: L, title: string, by: string | null = GPT, to: "submitted" | "accepted" = "submitted", head = H1) {
+async function approved(L: L, title: string, by: string | null = GPT, to: "submitted" | "accepted" = "submitted", head = H1, holder = OPUS) {
   const { id } = await L.newItem(title, ["src/**"], "owner");
-  await L.claim(id, OPUS);
-  await L.setFork(id, `fork-${crypto.randomUUID().slice(0, 8)}-${id}`, H0, OPUS);
-  await L.recordPush(id, OPUS, head, head);
+  await L.claim(id, holder);
+  await L.setFork(id, `fork-${crypto.randomUUID().slice(0, 8)}-${id}`, H0, holder);
+  await L.recordPush(id, holder, head, head);
   await L.addEvidence(passed(id, head));
-  await L.submit(id, OPUS);
+  await L.submit(id, holder);
   if (by) await L.addReview({ itemId: id, by, head, criteria: await L.criteria(id), approve: true, note: "Judged against the criteria.", at: at() }, undefined, true);
   if (to === "accepted") await L.accept(id, "owner");
   return id;
@@ -215,13 +215,13 @@ const TOKEN = "review-retention-token";
 
 // The approved head O, main's commit M and the merge N of the two, in the
 // two repositories; with `overlap`, main and the task both change src/a.ts.
-function repos(name: string, overlap: boolean) {
+function repos(name: string, overlap: boolean, agent = INTEGRATOR) {
   const w = world();
   const base = { "src/a.ts": "a\n", "docs/b.md": "b\n" };
   const b0 = w.commit("b0", base);
   const m = w.commit("m", overlap ? { ...base, "src/a.ts": "a\nmain's line\n" } : { ...base, "docs/b.md": "b changed\n" }, [b0]);
   const o = w.commit("o", { ...base, "src/a.ts": overlap ? "task's line\na\n" : "a changed\n" }, [b0]);
-  const n = w.commit("n", overlap ? { ...base, "src/a.ts": "task's line\na\nmain's line\n" } : { "src/a.ts": "a changed\n", "docs/b.md": "b changed\n" }, [o, m], `Merge main\n\nAgent: ${INTEGRATOR}`);
+  const n = w.commit("n", overlap ? { ...base, "src/a.ts": "task's line\na\nmain's line\n" } : { "src/a.ts": "a changed\n", "docs/b.md": "b changed\n" }, [o, m], `Merge main\n\nAgent: ${agent}`);
   const ARTIFACTS = { get: async (repo: string) => Object.assign(repo === `${name}--baseline` ? w.repo(m) : w.repo(n), { [Symbol.dispose]() {} }) } as unknown as Artifacts;
   return { o, m, n, ARTIFACTS };
 }
@@ -309,7 +309,9 @@ it("a push event that recorded the head before the refresh report leaves the ref
   await L.refreshPushing(id, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n });
   const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: (await L.item(id)).fork }, payload: { ref: "refs/heads/main", after: n } };
   await worker.queue({ messages: [{ body: notice, ack: () => {}, retry: () => { throw new Error("retried"); } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS } as typeof env);
-  expect(await retainedAt(L, id, n)).toHaveLength(1);
+  // The head is recorded by the event, but a refresh lease is held, so the report decides.
+  expect((await L.item(id)).head).toBe(n);
+  expect(await retainedAt(L, id, n)).toEqual([]);
   const res = await call(name, `items/${id}/refreshed`, INTEGRATOR, { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n }, ARTIFACTS);
   expect(res.status, await res.clone().text()).toBe(200);
   expect(await retainedAt(L, id, n)).toHaveLength(1);
@@ -344,4 +346,31 @@ it("the carried approval records every compared path of a large merge; the event
   expect(data.taskPaths).toHaveLength(50);
   expect(data.incomingPaths).toHaveLength(50);
   expect(data.paths).toEqual({ task: 70, incoming: 80 });
+});
+
+// Finding of gpt-6-astra's review of 61e1b098: a push event that arrived before
+// the refresh report carried the approval with no resolver known, and when the
+// resolver was also the task's holder nothing else marked the merge as theirs.
+it("a merge a resolver made, who is also the task's holder, carries nothing when the push event comes before the report", async () => {
+  const name = "rr-holder-resolver";
+  const record = { name, repo: `${name}--baseline`, branch: "main", policy: { checks: ["npm test"], protected: [], resolvers: [GPT] }, createdAt: at() };
+  const L = ledger(name);
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const { o, m, n, ARTIFACTS } = repos(name, false, GPT);
+  const id = await approved(L, "Holder resolves", GEMINI, "submitted", o, GPT);
+  await L.noteMainHead(m);
+  const first = (await L.leaseRefresh(id, INTEGRATOR, null, "refresh")).lease;
+  await L.taskRefreshFailed(id, INTEGRATOR, { lease: first.id, mainHead: first.mainHead, expectedHead: first.expectedHead, outcome: "mechanical", reason: "imports" }, [{ runner: "home:gpt", kind: "home", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["task-resolve"], at: at() }]);
+  const lease = (await L.leaseRefresh(id, GPT, "home:gpt", "resolve")).lease;
+  const body = { lease: lease.id, mainHead: lease.mainHead, expectedHead: lease.expectedHead, head: n };
+  await L.refreshPushing(id, GPT, body);
+  const notice = { type: "cf.artifacts.repo.pushed", source: { namespace: "atelier", repoName: (await L.item(id)).fork }, payload: { ref: "refs/heads/main", after: n } };
+  await worker.queue({ messages: [{ body: notice, ack: () => {}, retry: () => { throw new Error("retried"); } }] } as unknown as MessageBatch<unknown>, { ...env, ARTIFACTS } as typeof env);
+  expect((await L.item(id)).head).toBe(n);
+  expect(await retainedAt(L, id, n)).toEqual([]);
+  const res = await call(name, `items/${id}/refreshed`, GPT, body, ARTIFACTS);
+  expect(res.status, await res.clone().text()).toBe(200);
+  expect(await retainedAt(L, id, n)).toEqual([]);
+  expect((await events(L, id)).find((e) => e.kind === "review.not_retained")?.data.reason).toMatch(/codex\/gpt-6-astra resolved conflicts in the merge/);
 });
