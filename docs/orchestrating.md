@@ -1077,10 +1077,41 @@ developer it read as a defect. The other half were real, and some were serious.
 - A rejection is bound to the revision it read. Another reviewer's approval
   of the same revision does not clear it: the gate still sees a reviewer who
   asked for changes with no push since. So a refuted finding is answered
-  either by the same reviewer reading the refutation, or by a new push. When
-  one reviewer rejects the same task round after round on narrower and
-  narrower points, a small change that meets the point usually costs less
-  than another round; the refutation stays on the record either way.
+  either by the same reviewer reading the refutation, or by a new push.
+- Hold each finding against the review bar, which names what may block (the
+  project's own, or the default `atelier init` prints). A finding outside the
+  bar is a follow-up. A defect the change itself introduces still blocks,
+  however small. The bar is not a file glob: a finding in a file the task did
+  not list can still be a defect the change introduces, and a finding in a
+  file it did list can still be outside the bar. A follow-up does not clear
+  any approval: every review the change needs for its risk (a protected path,
+  a coordinated change, a tier review) still has to approve the revision.
+- When one reviewer rejects the same task round after round on narrower and
+  narrower points, do not make another small change to meet each one. Stop
+  and decide against the bar, as the developer's decision. Read the newest
+  finding and ask whether this change introduces the defect, or whether it is
+  a more remote variant of a threat the earlier rounds already closed. If it
+  is inside the bar, fix it. If it is outside, record it with `atelier
+  finding` (`confirmed` when the finding is true, `refuted` when it is not),
+  with a `--note` that names the bar and the earlier finding it varies, and
+  file the follow-up as its own task with `atelier new` and its own criteria.
+  The rejection still stands until the same reviewer reads the note or a push
+  follows, as above, and the other approvals the change needs are unchanged.
+  Atelier decides none of this: no verdict turns a finding into a task, and no
+  task is filed for you.
+
+  Example, fast landing, 2026-10-13: the change let the developer land tasks
+  without the gate, and the threat class was a caller who is not the developer
+  landing that way. Review took ten rounds with one reviewer. Each round
+  found a real case, and each was a more remote variant of that one class: a
+  route or state the fixes before it had not named, reachable only by a
+  caller who already held more than the change gave them. Round by round, a
+  small change met each finding and the next round found another. Against the
+  bar, the first findings were defects the change introduced and rightly
+  blocked. Once the path the change itself opened was closed, the later
+  ones were not: each is a follow-up task that can be built and reviewed on
+  its own, while a finding that the new code opened a fresh path would still
+  block at any round. The developer set that stopping rule after the tenth.
 - When a confirmed finding names a case the criteria did not state, add the
   case to the criteria (`atelier edit tN --accept "…"`, all criteria
   restated) before sending the task back, so the review that follows, and the
