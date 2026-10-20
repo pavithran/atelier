@@ -21,6 +21,7 @@ import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
+import { historySection } from "../src/review/history.ts";
 import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
@@ -1815,7 +1816,11 @@ export async function runTask(assignment, config, name, io) {
       // and adds what the server holds for it, if anything, after it; a
       // merge-main task's adds the job's own instructions (mergeMainSection)
       // beside it.
-      const context = await briefContext();
+      // An ordinary task's brief adds the past findings on its files, checked
+      // against the commit this build starts from (`before`; for a task not
+      // yet pushed, the commit its workspace was made at).
+      const fetched = await briefContext();
+      const context = item.kind === "part" ? fetched : await withHistory({ git: (a, o = {}) => io.git(a, { cwd: workspace, ...o }), log: io.log }, fetched, before);
       const serverBrief = item.kind === "part" ? context : null;
       const reworked = item.kind === "part" ? null : context;
       const local = briefFor({ ...item, owner: actor }, project);
@@ -3784,6 +3789,35 @@ export function runnerUsage(args) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate] [--replace]");
   }
   if (typeof args.name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(args.name)) throw new Error("use --name home:NAME");
+}
+
+// The past findings the server sent (t14) as a section of the brief, after the
+// text it sent. Only this runner knows its starting commit, so it keeps the
+// recorded files that exist in that commit's tree (git ls-tree, exact names,
+// no rename followed) and renders the rest (historySection). A server that
+// sent no history, an older one, adds nothing. Any trouble reading the tree
+// or the head gives the section's "unavailable", never an empty history.
+// `git(args, options)` runs git in the workspace.
+export async function withHistory({ git, log }, context, head) {
+  if (!context || !context.history) return context;
+  const read = Array.isArray(context.history.entries) ? { entries: context.history.entries } : { unavailable: true };
+  let present = null;
+  if (head && "entries" in read) {
+    try {
+      const files = [...new Set(read.entries.map((e) => e.file))];
+      present = new Set();
+      for (let i = 0; i < files.length; i += 200) {
+        const out = await git(["--literal-pathspecs", "ls-tree", "-r", "--name-only", "-z", head, "--", ...files.slice(i, i + 200)], { raw: true });
+        for (const name of String(out).split("\0")) if (name) present.add(name);
+      }
+    } catch (error) {
+      present = null;
+      log(`the tree at ${String(head).slice(0, 8)} could not be read, so the history of past findings is left out: ${error.message}`);
+    }
+  }
+  const section = historySection(read, present, head || null);
+  log(`history of past findings: ${section.eligible === null ? "unavailable" : `${section.shown} of ${section.eligible} shown`}, hash ${section.hash.slice(0, 16)}`);
+  return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
 export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {

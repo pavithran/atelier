@@ -47,7 +47,7 @@ const landingGit = (cwd, args, { token, allowFail = false, raw = false, env = nu
   return raw ? r.stdout : r.stdout.trim();
 };
 
-function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false, noPort = false } = {}) {
+function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false, noPort = false, history = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'atelier-runner-main-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main'), workspace = join(root, 'work');
@@ -90,7 +90,7 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
       catch (error) { return { code: error.status, output: error.stdout }; }
     },
     conflicts: async (cwd) => git(cwd, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean),
-    jobBrief: async () => ({ text: 'Review findings: fix the behavior.' }),
+    jobBrief: async () => ({ text: 'Review findings: fix the behavior.', ...(history ? { history } : {}) }),
     brief: async (cwd, text) => { briefs.push(text); return { file: join(root, `brief-${briefs.length}`) }; },
     removeBrief: async () => {},
     // The builder's commit identity (t451): the policy allows it here.
@@ -183,6 +183,33 @@ for (const rework of [false, true]) test(`a ${rework ? 'fix after findings' : 'f
   // serves, and the latter only for the job it holds.
   assert.deepEqual(f.calls.filter((args) => args[0] === 'base-token'), []);
   assert.deepEqual(f.calls.filter((args) => args[0] === 'baseline-token'), [['baseline-token', '--project', 'atelier', '--as', actor]]);
+});
+
+// t14: past findings reach the builder checked against the commit its build
+// starts from: before any push that is the commit the workspace was made at,
+// for a fix after findings the commit it already holds.
+for (const rework of [false, true]) test(`${rework ? 'a fix after findings' : 'a first build'} is briefed with past findings on files that exist at its starting commit`, async (t) => {
+  const entry = (n, file) => ({ task: `t${n}`, file, line: n, verdict: 'confirmed', text: `past finding ${n}` });
+  const f = fixture(t, { rework, history: { entries: [entry(1, 'shared.txt'), entry(2, 'gone.txt'), entry(3, rework ? 'prior.txt' : 'work.txt')] } });
+  const start = f.job.item.head;
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'submitted', JSON.stringify(state));
+  assert.match(f.briefs[0], /Review findings: fix the behavior\.\n\n## History: past findings on these files/);
+  assert.match(f.briefs[0], /1\. t1 shared\.txt:1, confirmed/);
+  assert.doesNotMatch(f.briefs[0], /gone\.txt/);
+  // work.txt does not exist before the build; prior.txt is the earlier attempt's.
+  assert.equal(/t3 /.test(f.briefs[0]), rework);
+  const listed = f.gitCalls.filter((args) => args.includes('ls-tree'));
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0][listed[0].indexOf('--') - 1], start, 'the tree read is the starting commit, not main');
+  assert.ok(f.logs.some((line) => /^history of past findings: \d of \d shown, hash [0-9a-f]{16}$/.test(line)), f.logs.join('\n'));
+});
+
+test('a server that sends no history leaves the brief as it was and reads no tree', async (t) => {
+  const f = fixture(t, { rework: true });
+  await runTask(f.job, config, 'home', f.io);
+  assert.doesNotMatch(f.briefs[0], /History/);
+  assert.deepEqual(f.gitCalls.filter((args) => args.includes('ls-tree')), []);
 });
 
 test('the merge regenerates the project\'s fixtures and commits what changed, as a landing does', async (t) => {
