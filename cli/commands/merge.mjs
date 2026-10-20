@@ -13,7 +13,7 @@ import { describeConflicts, mergeThrough, previewMerge, readManifest } from "../
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, saveConfig, server, short, writeReceipt } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, refreshControlPlane, request, saveConfig, server, short, writeReceipt } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
@@ -67,7 +67,7 @@ export default async function mergeCommand() {
   // An override is recorded only while accepting, which needs the revision.
   if ((args["override-review"] !== undefined || args.quote !== undefined) && args.head === undefined) die("--override-review is recorded while accepting a submitted revision: atelier merge ID --head FULL_REVISION --override-review REASON");
   const name = project(), id = itemArg();
-  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
+  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = needCheckout(name, p);
   // Ends a landing. It holds the landing lock throughout, as merge does, so
   // it never runs beside a merge of this checkout that may be publishing.
   // The journal is matched by project and item alone, so a landing whose

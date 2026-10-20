@@ -4,7 +4,7 @@ import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
 import { behindRefusal, realHistory } from "../pull.mjs";
 import { guardedPush } from "../private-guard.mjs";
-import { OWNER, P, call, cfg, die, landingGit, landingHome, project, refreshControlPlane, short } from "../atelier.mjs";
+import { OWNER, P, call, cfg, die, landingGit, landingHome, needCheckout, project, refreshControlPlane, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
 // follow the checkout by itself: commits made in the checkout outside
@@ -12,7 +12,7 @@ import { OWNER, P, call, cfg, die, landingGit, landingHome, project, refreshCont
 export default async function syncCommand() {
   const git = landingGit;
   const name = project();
-  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = p.path;
+  const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = needCheckout(name, p);
   const fresh = p.fresh === true;
   // Before anything is sent, the policy included, main must hold the
   // baseline's main (t644): a checkout another Mac has moved past would

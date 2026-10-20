@@ -1,5 +1,5 @@
 // atelier record-merge. Its forms, flags and help are declared in src/usage/commands/record-merge.ts.
-import { I, OWNER, args, call, cfg, die, git, itemArg, listArg, project } from "../atelier.mjs";
+import { I, OWNER, args, call, cfg, die, git, itemArg, listArg, needCheckout, project } from "../atelier.mjs";
 import { loadPairs } from "../fresh.mjs";
 import { realHistory } from "../pull.mjs";
 
@@ -22,7 +22,7 @@ export function parseReview(text) {
 async function pairedMerge(name, id) {
   const entry = cfg.projects?.[name];
   if (entry?.fresh !== true) return null;
-  const cwd = entry.path;
+  const cwd = needCheckout(name, entry);
   const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
   const pairs = loadPairs(gitDir, name);
   const baselineMerge = Object.keys(pairs).find((b) => pairs[b] === args.merge);

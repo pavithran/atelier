@@ -659,9 +659,17 @@ export async function actor(fallback) {
   return a;
 }
 
+// A local config entry's checkout path when it names one this Mac could work
+// in: a string with text. An entry without one (a project with no checkout on
+// this Mac) matches no folder and backs no command (t136).
+export function entryPath(p) {
+  const path = p?.path;
+  return typeof path === "string" && path ? path : null;
+}
+
 export function initName(projects, top, explicit, renameLocal) {
   const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
-  const existing = Object.entries(projects ?? {}).find(([, p]) => real(p.path) === real(top))?.[0];
+  const existing = Object.entries(projects ?? {}).find(([, p]) => { const path = entryPath(p); return path !== null && real(path) === real(top); })?.[0];
   if (explicit !== undefined && (typeof explicit !== "string" || !explicit.trim())) throw new Error("--name needs a project name");
   if (existing && explicit && explicit !== existing && !renameLocal) throw new Error(`this checkout is registered as ${existing}; use --rename-local to change only the local entry`);
   const name = explicit ?? existing ?? top.split("/").pop();
@@ -678,8 +686,19 @@ export function registeredHere() {
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
   const here = top.status === 0 ? top.stdout.trim() : process.cwd();
   const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
-  const name = top.status === 0 ? Object.entries(cfg.projects ?? {}).find(([, p]) => real(p.path) === real(here))?.[0] ?? null : null;
+  const name = top.status === 0 ? Object.entries(cfg.projects ?? {}).find(([, p]) => { const path = entryPath(p); return path !== null && real(path) === real(here); })?.[0] ?? null : null;
   return { here, name };
+}
+
+// The checkout a command that needs a named project's checkout runs git in.
+// An entry whose path is missing, empty or not a string names no checkout on
+// this Mac (t136): a git call made with it anyway would run in whatever
+// folder the command was started in. The message matches branch's, so a
+// missing path and a missing entry read the same.
+export function needCheckout(name, p) {
+  const path = entryPath(p);
+  if (path === null) die(`${name} has no checkout on this Mac; make one with atelier clone ${name}`);
+  return path;
 }
 
 export function project() {
