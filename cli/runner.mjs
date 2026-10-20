@@ -2014,21 +2014,23 @@ export async function runTask(assignment, config, name, io) {
       let kept = null, unstaged = false;
       if (head === startedAt() && error.validationBlocked && runEnv && io.commitWork && !io.stopped() && !failedNow && !failedRun &&
           !merges.some((m) => m.state === "conflicts" || m.state === "skipped")) {
-        try {
-          const wip = await io.commitWork(workspace, runEnv, workInProgressMessage(actor, error.message));
-          if (wip) {
+        let wip;
+        try { wip = await io.commitWork(workspace, runEnv, workInProgressMessage(actor, error.message)); }
+        catch (commitError) {
+          // Any failure of the commit itself (staging, signing, a hook, a
+          // head read after it), whether or not HEAD moved, leaves the work
+          // where it is: nothing is pushed, released, reset or discarded,
+          // and the claim stays so no other actor's reset can take it (t68).
+          unstaged = true;
+          io.log(`work in progress not kept, claim preserved: ${oneLine(commitError.message)}`);
+        }
+        if (wip) {
+          try {
             io.log(`work in progress committed as ${wip.slice(0, 8)}`);
             await io.cli(["push", item.id, "--project", project, "--as", actor], workspace);
             kept = wip;
-          }
-        } catch (keepError) {
-          if (keepError.notStaged) {
-            // Nothing is committed, pushed or released: the claim and the
-            // workspace stay as they are.
-            unstaged = true;
-            io.log(`work in progress not kept, claim preserved: ${keepError.message}`);
-          } else {
-            io.log(`work in progress not kept: ${keepError.message}`);
+          } catch (pushError) {
+            io.log(`work in progress not kept: ${pushError.message}`);
             try { head = await io.head(workspace, { cleanup: true }); } catch { head = undefined; }
           }
         }
