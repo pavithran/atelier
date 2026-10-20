@@ -5,7 +5,7 @@ Setup      login --server URL · login --store · init [--title TEXT] [--check C
            notes-remote [REMOTE | --off]
            branch push [NAME] [--force] · branch fetch NAME [--force] · branch ls
 Items      new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--duplicate-ok] · edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--context TEXT]
-           ls [--all] [--json] · show ID [--reviews] [--json] · check-log ID [--head SHA] · wait ID [--for merged|submitted|reviewed|any-change] [--timeout SECONDS] [--interval SECONDS] · receipt ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--brief] [--json] (with a project: where it stands, as text) · open
+           ls [--all] [--json] · show ID [--reviews] [--json] · check-log ID [--head SHA] · wait ID [--for merged|submitted|reviewed|any-change] [--timeout SECONDS] [--interval SECONDS] · receipt ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--brief] [--json] (with a project: where it stands, as text) · status --new [--project P] [--since T] [--brief] [--json] (what someone else filed or edited since you last looked) · open
            board [--json]
 Agents     start ID [--as H/M] [--runner home:NAME] · done "summary"
            claim ID --as H/M [--runner home:NAME] · fast take ID --as H/M [--runner home:NAME] [--dispatch AT] [--json] · fast ready ID --as H/M [--commit SHA] · finish [--summary T] · push [--force | --rollback] · update · check [--merged] [-- CMD] · report [ID] "what you verified and how" [--item ID] [--project P] · submit [--summary T]

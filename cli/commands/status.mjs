@@ -8,6 +8,7 @@ import { mainOf } from "./gc.mjs";
 import { expiredBlocks } from "../../src/rules.ts";
 import { serverFetch } from "../server-fetch.mjs";
 
+import { bookmarkKey, formatNew, newSince, parseSince, readBookmark, writeBookmark, FIRST_RUN_MS } from "../new-since.mjs";
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
 
@@ -18,6 +19,8 @@ const withUsage = (text, lines) => (lines.length ? `${lines.join("\n")}\n\n${tex
 
 // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
 export default async function statusCommand() {
+  if (args.since !== undefined && !args.new) die("--since belongs to status --new");
+  if (args.new) return newCommand();
   if (args.brief) {
     const name = args.project ?? wsConfig("project") ?? registeredHere().name;
     if (!name) die("--brief reports on one project: add --project NAME");
@@ -115,4 +118,56 @@ function printCleanLines(counts) {
 async function developerBranches(name, as) {
   const read = await request("GET", `${P(name)}/branches`, undefined, as).catch(() => null);
   return Array.isArray(read?.branches) ? read.branches : null;
+}
+
+// status --new (t43): what someone else filed or edited since this caller last
+// looked, for the project --project names, else this checkout's. The time is
+// taken before the read, so a --since in the future is refused against it.
+// An unread source is printed as unread and ends the command with status 1.
+export async function newCommand(deps = {}) {
+  const name = args.project ?? wsConfig("project") ?? registeredHere().name;
+  if (!name) die("--new reports on one project: add --project NAME");
+  const now = (deps.now ?? Date.now)();
+  const as = await actor(OWNER);
+  const key = bookmarkKey(server(), name, as);
+  const file = deps.file;
+  let from, how, bookmark = null;
+  if (args.since !== undefined) {
+    const since = parseSince(args.since, now);
+    if (since.error) die(since.error);
+    from = { ms: since.ms };
+    how = args.since;
+  } else {
+    const read = readBookmark(key, file);
+    if (read.unreadable) return say({ status: "unread", reason: `the bookmark is unreadable (${read.unreadable}); it is kept as it is. Delete the file to start again, or pass --since to read from a time` }, { name, as, how: "the bookmark" });
+    bookmark = read.mark;
+    from = bookmark ? { seq: bookmark.seq, ms: now - FIRST_RUN_MS } :{ ms: now - FIRST_RUN_MS };
+    how = bookmark ? `your last look (${bookmark.at})` : `the last 24 hours (this is the first run for ${as} here; later runs start from the last look)`;
+  }
+  let record;
+  try { record = await request("GET", P(name), undefined, as); } catch (e) {
+    return say({ status: "unread", reason: `the project could not be read: ${e?.message ?? e}` }, { name, as, how });
+  }
+  const result = newSince({ events: record?.events, items: record?.items, as, from });
+  if (result.unread) return say({ status: "unread", reason: result.unread }, { name, as, how });
+  if (result.behind) how = `the last 24 hours (the bookmark, ${bookmark.at}, is ahead of the server's record, so it was set aside)`;
+  const advance = args.since === undefined && result.complete;
+  const printed = say({ status: result.complete ? "ok" : "incomplete", result }, { name, as, how });
+  if (!advance || printed === false) return;
+  const failed = writeBookmark(key, { seq: result.upper ?? 0, at: new Date(now).toISOString() }, file);
+  if (failed) say({ status: "unread", reason: `the bookmark could not be saved (${failed}); the old one is kept, so the next run shows these again` }, { name, as, how: "the bookmark", after: true });
+}
+
+// Prints one outcome as text, --brief text or --json; an unread one, or one that
+// could not be saved, sets the exit status. Returns false when it printed unread.
+function say(outcome, { name, as, how, after = false }) {
+  const unread = outcome.status === "unread";
+  if (unread) process.exitCode = 1;
+  if (args.json) {
+    const r = outcome.result;
+    console.log(JSON.stringify({ project: name, actor: as, since: how, status: outcome.status, ...(unread ? { reason: outcome.reason } : { complete: r.complete, tasks: r.tasks }) }, null, 2));
+  } else if (unread) {
+    console.log(after ? `Bookmark: unread. ${outcome.reason}.` : formatNew({ result: { unread: outcome.reason }, project: name, as, how, brief: args.brief }));
+  } else console.log(formatNew({ result: outcome.result, project: name, as, how, brief: args.brief }));
+  return !unread;
 }
