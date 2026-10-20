@@ -79,6 +79,7 @@ export async function runLandQueue(io) {
   const onSignal = (signal) => {
     if (stoppedBy) { for (const l of running.values()) l.killTree(); return; }
     stoppedBy = signal;
+    wake?.(); wake = null;
     print(`${signal} received: stopping ${running.size} landing${running.size === 1 ? "" : "s"} and starting no more. Run the same command again to carry on.`);
     for (const l of running.values()) l.kill(signal);
     const timer = setTimeout(() => { for (const l of running.values()) l.killTree(); }, graceMs);
@@ -98,52 +99,88 @@ export async function runLandQueue(io) {
     stream.on("end", () => { if (tail) print(`[${id}] ${tail}`); });
   };
 
-  const landOne = async (id) => {
-    // A task merged already, with no post-merge work open, is complete: a
-    // rerun after a stop must not fail on what it landed before. One whose
-    // post-merge run is open goes to the landing, which resumes it (t477).
-    // A ledger that cannot be read sends the task to the landing, which
-    // reads it itself.
-    try {
-      const state = await stateOf(id);
-      if (state?.merged && !state.postMerge) {
-        results.get(id).outcome = "already-merged";
-        print(`${id} is already merged; nothing to land.`);
-        return;
+  // Admission is one task at a time, in input order: a landing starts only
+  // when the one before it has been admitted, so a slow ledger read for one
+  // task cannot let a later one overtake it. Landings, once started, run
+  // together. Nothing is admitted while a failed landing's post-merge check
+  // is pending, after a signal, or under a hold; those are rechecked after the
+  // ledger read, immediately before the process starts.
+  let turn = Promise.resolve(), checking = 0, wake = null;
+  const settled = () => new Promise((ok) => { const was = wake; wake = () => { was?.(); ok(); }; });
+  const blocked = () => stoppedBy || hold || checking > 0;
+
+  // Resolves { run }, the promise for the landing it started (or for a task
+  // found merged), or null when nothing more is to be started.
+  const admit = () => {
+    const mine = turn.then(async () => {
+      for (;;) {
+        while (checking > 0 && !stoppedBy) await settled();
+        if (stoppedBy || hold || next >= ids.length) return null;
+        const id = ids[next];
+        // A task merged already, with no post-merge work open, is complete: a
+        // rerun after a stop must not fail on what it landed before. One whose
+        // post-merge run is open goes to the landing, which resumes it (t477).
+        // A ledger that cannot be read sends the task to the landing, which
+        // reads it itself.
+        let merged = false;
+        try {
+          const state = await stateOf(id);
+          merged = Boolean(state?.merged && !state.postMerge);
+        } catch { /* the landing judges */ }
+        if (blocked()) { if (stoppedBy || hold) return null; continue; }
+        next++;
+        if (merged) {
+          results.get(id).outcome = "already-merged";
+          print(`${id} is already merged; nothing to land.`);
+          return { run: Promise.resolve() };
+        }
+        return { run: start(id) };
       }
-    } catch { /* the landing judges */ }
+    });
+    turn = mine.then(() => {}, () => {});
+    return mine;
+  };
+
+  // Starts the landing and returns a promise for its end; synchronous, so
+  // admission has no gap between its last check and the process.
+  const start = (id) => {
     const l = launch(argvFor(id));
     running.set(id, l);
     lines(l.stdout, id);
     let tail = "";
     l.stderr.setEncoding?.("utf8");
     l.stderr.on("data", (chunk) => { tail = (tail + chunk).slice(-ERROR_TAIL); });
-    const end = await l.done;
-    running.delete(id);
-    const result = results.get(id);
-    if (end.status === 0) {
-      result.outcome = "landed";
-      print(`${id} landed.`);
-    } else {
+    return l.done.then(async (end) => {
+      running.delete(id);
+      const result = results.get(id);
+      if (end.status === 0) {
+        result.outcome = "landed";
+        print(`${id} landed.`);
+        return;
+      }
       result.outcome = "failed";
-      const why = end.error ? end.error.message : end.signal ? `ended by ${end.signal}` : `exit ${end.status}`;
-      print(`${id} failed (${why})${tail.trim() ? `:\n${tail.trim()}` : "."}`);
-    }
-    // A landing that failed may have left post-merge work open (a landing
-    // that succeeded finished its own). That stops what has not started;
-    // what already runs is held by the server's barrier on its merge. A
-    // barrier that cannot be read is treated as open.
-    if (result.outcome === "failed" && !stoppedBy && !hold) {
+      // Admission pauses from here, before anything else is awaited.
+      checking++;
       try {
-        const open = await barrier();
-        if (open) hold = `post-merge run ${open.id ?? ""} is ${open.state ?? "open"}`.replace("  ", " ");
-      } catch (error) { hold = `the post-merge state could not be read (${error.message})`; }
-      if (hold) print(`Starting no more landings: ${hold}. Resolve it with atelier land ${id} --post-merge status, then run the same command again.`);
-    }
+        const why = end.error ? end.error.message : end.signal ? `ended by ${end.signal}` : `exit ${end.status}`;
+        print(`${id} failed (${why})${tail.trim() ? `:\n${tail.trim()}` : "."}`);
+        // A landing that failed may have left post-merge work open (a landing
+        // that succeeded finished its own). That stops what has not started;
+        // what already runs is held by the server's barrier on its merge. A
+        // barrier that cannot be read is treated as open.
+        if (!stoppedBy && !hold) {
+          try {
+            const open = await barrier();
+            if (open) hold = `post-merge run ${open.id ?? ""} is ${open.state ?? "open"}`.replace("  ", " ");
+          } catch (error) { hold = `the post-merge state could not be read (${error.message})`; }
+          if (hold) print(`Starting no more landings: ${hold}. Resolve it with atelier land ${id} --post-merge status, then run the same command again.`);
+        }
+      } finally { checking--; wake?.(); wake = null; }
+    });
   };
 
   const pool = async () => {
-    while (!stoppedBy && !hold && next < ids.length) await landOne(ids[next++]);
+    for (let a = await admit(); a !== null; a = await admit()) await a.run;
   };
   try {
     await Promise.all(Array.from({ length: Math.min(parallel, ids.length) }, pool));

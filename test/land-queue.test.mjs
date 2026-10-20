@@ -195,6 +195,69 @@ test("a signal reaches every running landing, starts no more and ends the status
   assert.equal(o.signals.listenerCount("SIGTERM"), 0);
 });
 
+// A response the test releases by hand.
+const later = () => { let ok; const promise = new Promise((r) => { ok = r; }); return { promise, ok }; };
+
+test("a slow ledger read for one task does not let a later task start first (input order)", async () => {
+  const f = fakeLaunch();
+  const slow = later();
+  const o = io({ ids: ["t1", "t2"], parallel: 2, launch: f.launch, stateOf: async (id) => { if (id === "t1") await slow.promise; return { merged: false, postMerge: null }; } });
+  const run = runLandQueue(o);
+  await tick();
+  assert.deepEqual(f.started.map((l) => l.id), []);
+  slow.ok();
+  await tick();
+  assert.deepEqual(f.started.map((l) => l.id), ["t1", "t2"]);
+  for (const l of [...f.live]) await l.end(0);
+  await run;
+});
+
+test("a signal that comes while a task's ledger is being read starts no landing afterwards", async () => {
+  const f = fakeLaunch();
+  const slow = later();
+  const o = io({ ids: ["t1", "t2"], parallel: 2, launch: f.launch, graceMs: 60_000, stateOf: async () => { await slow.promise; return { merged: false, postMerge: null }; } });
+  const run = runLandQueue(o);
+  await tick();
+  o.signals.emit("SIGTERM", "SIGTERM");
+  slow.ok();
+  const r = await run;
+  assert.deepEqual(f.started, []);
+  assert.deepEqual(r.results.map((x) => x.outcome), ["not-started", "not-started"]);
+  assert.equal(summarise(r).status, 143);
+});
+
+test("while a failed landing's post-merge check is pending, another landing ending does not start the next task", async () => {
+  const f = fakeLaunch();
+  const check = later();
+  const o = io({ ids: ["t1", "t2", "t3"], parallel: 2, launch: f.launch, barrier: () => check.promise });
+  const run = runLandQueue(o);
+  await tick();
+  await f.started[0].end(1, "post-merge deploy failed\n");
+  await f.started[1].end(0);
+  await tick();
+  assert.deepEqual(f.started.map((l) => l.id), ["t1", "t2"]);
+  check.ok({ id: "pm1", state: "failed" });
+  const r = await run;
+  assert.deepEqual(f.started.map((l) => l.id), ["t1", "t2"]);
+  assert.deepEqual(r.results.map((x) => x.outcome), ["failed", "landed", "not-started"]);
+});
+
+test("a task whose ledger read is pending when a failure's check finds an open run is not started either", async () => {
+  const f = fakeLaunch();
+  const read = later(), check = later();
+  const o = io({ ids: ["t1", "t2", "t3"], parallel: 2, launch: f.launch, barrier: () => check.promise, stateOf: async (id) => { if (id === "t3") await read.promise; return { merged: false, postMerge: null }; } });
+  const run = runLandQueue(o);
+  await tick();
+  await f.started[1].end(0);
+  await tick();
+  await f.started[0].end(1);
+  check.ok({ id: "pm1", state: "failed" });
+  read.ok();
+  const r = await run;
+  assert.deepEqual(f.started.map((l) => l.id), ["t1", "t2"]);
+  assert.equal(r.results[2].outcome, "not-started");
+});
+
 // Real processes: the queue runs as its own process group with two landings
 // that trap SIGTERM, as a landing does to release its own lease, and each
 // leaves a marker once it has released. The queue is sent SIGTERM and must
