@@ -307,6 +307,12 @@ export default async function mergeCommand() {
         if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
         const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass,riskClass:d.gate.riskClass,sameTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead)});
         if(receipt)git(['add',receipt],{cwd});
+        // The tree published is the one verifyAccepted compared, plus the
+        // receipt: anything else the merge left in the index refuses.
+        if(adopt){
+          const left=git(['diff-tree','-r','--name-only','--no-renames','-z',adopt.tree,git(['write-tree'],{cwd})],{cwd,raw:true}).split('\0').filter(Boolean);
+          if(left.some(f=>f!==receipt)){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die(`the merge would publish ${left.filter(f=>f!==receipt).join(', ')}, which the compared tree does not hold. Nothing was merged and ${id} stays accepted`);}
+        }
         // The merge commit is the landing's own, made under the project's
         // identity whatever this checkout or its environment would give,
         // with the pipeline's provenance in its trailers.

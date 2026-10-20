@@ -503,15 +503,25 @@ export async function verifyAccepted(dir, local, target, { git = localGit, run =
       verdict = differing.length ? { ok: false, reason: `regenerated outputs differ from the accepted revision's: ${differing.join(", ")}`, regenerated: r.regenerated }
         : { ok: true, tree, regenerated: r.regenerated.map((g) => ({ ...g, outputs: g.outputs.map((o) => ({ path: o.path, matches: "the accepted revision" })) })) };
     }
-    const cloneLogs = join(clone, ".git", "atelier", "merge-logs");
-    if (existsSync(cloneLogs)) for (const name of readdirSync(cloneLogs)) copyFileSync(join(cloneLogs, name), join(kept, name));
+    lines.push(`tree: ${verdict.tree ?? "none"}`);
   } catch (error) {
     verdict = { ok: false, reason: `the check could not run: ${error.message}`, regenerated: [] };
   } finally {
+    // The generators' logs are kept on every path, a throw included, before
+    // the clone goes; a log that cannot be kept refuses the merge, naming it.
+    try {
+      const cloneLogs = join(clone, ".git", "atelier", "merge-logs");
+      if (existsSync(cloneLogs)) for (const name of readdirSync(cloneLogs)) copyFileSync(join(cloneLogs, name), join(kept, name));
+      // A reason that names a log names it where it is kept, not in the clone about to be removed.
+      if (verdict?.reason) verdict = { ...verdict, reason: verdict.reason.split(cloneLogs).join(kept) };
+    } catch (error) {
+      verdict = { ok: false, reason: `the generators' logs could not be kept in ${kept}: ${error.message}`, regenerated: verdict?.regenerated ?? [] };
+    }
     rmSync(scratch, { recursive: true, force: true });
   }
   lines.push(`verdict: ${verdict.ok ? "identical" : `refused, ${verdict.reason}`}`);
   const comparison = join(kept, `${stamp}-verify-accepted.txt`);
-  try { writeFileSync(comparison, `${lines.join("\n")}\n`); } catch { /* the verdict stands without its record */ }
+  try { writeFileSync(comparison, `${lines.join("\n")}\n`); }
+  catch (error) { verdict = { ok: false, reason: `the comparison could not be kept in ${kept}: ${error.message}`, regenerated: verdict.regenerated }; }
   return { ...verdict, kept, comparison };
 }
