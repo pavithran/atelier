@@ -327,3 +327,21 @@ it("nothing is carried from a task with no approval, no head, or a closed state"
   await L.abandon(done, "owner", "no longer wanted");
   expect(await L.retainable(done)).toBe(0);
 });
+
+// Finding of gpt-6-astra's review of 82b94f7a: the saved review cut the
+// compared paths to fifty, so a larger merge had no complete record.
+it("the carried approval records every compared path of a large merge; the event keeps a capped summary and the count", async () => {
+  const L = await setup("rr-large");
+  const id = await approved(L, "Large");
+  const task = Array.from({ length: 70 }, (_, i) => `src/t${String(i).padStart(3, "0")}.ts`);
+  const incoming = Array.from({ length: 80 }, (_, i) => `docs/m${String(i).padStart(3, "0")}.md`);
+  await push(L, id, R1, merge({ task, incoming, moved: incoming, offMain: task }));
+  const [carried] = await retainedAt(L, id, R1);
+  expect(carried.retained!.taskPaths).toEqual(task);
+  expect(carried.retained!.incomingPaths).toEqual(incoming);
+  expect(carried.retained!.paths).toEqual({ task: 70, incoming: 80 });
+  const data = (await events(L, id)).find((e) => e.kind === "review.retained")!.data as { taskPaths: string[]; incomingPaths: string[]; paths: unknown };
+  expect(data.taskPaths).toHaveLength(50);
+  expect(data.incomingPaths).toHaveLength(50);
+  expect(data.paths).toEqual({ task: 70, incoming: 80 });
+});

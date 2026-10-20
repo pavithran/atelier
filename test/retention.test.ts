@@ -153,3 +153,23 @@ test("evidence that cannot be read asks for review: a second parent not on main,
   const huge = await readRetention(big.repo(n1), big.repo(m1), o1, n1);
   assert.ok("unread" in huge && /more than 5000 changed paths/.test(huge.unread), JSON.stringify(huge));
 });
+
+// Finding of gpt-6-astra's review of 82b94f7a: changedPaths reads a tree
+// object that is not there as an empty tree, so an overlapping merge whose
+// trees could not be read came out with four empty lists and was kept.
+test("a tree object that reads as missing is unreadable evidence, as a thrown error is", async () => {
+  const s = merge({ main: { "src/a.ts": "a\nmain's line\n" }, task: { "src/a.ts": "task's line\na\n" }, merged: () => ({ ...FILES, [MANIFEST_PATH]: MANIFEST, ...generated("help v0"), "src/a.ts": "task's line\na\nmain's line\n" }) });
+  assert.match(retentionVerdict(facts(await read(s)), who).why, /main changed src\/a\.ts/, "readable, it is an overlap");
+  const missing = (repo: typeof s.fork, which: "all" | "some") => {
+    let reads = 0;
+    return { ...repo, readTree: async (h: string) => (which === "all" || ++reads > 1 ? null : (repo as any).readTree(h)) } as typeof s.fork;
+  };
+  for (const which of ["all", "some"] as const) {
+    const r = await readRetention(missing(s.fork, which), missing(s.baseline, which), s.o, s.n);
+    assert.ok("unread" in r && /could not be read/.test(r.unread), `${which}: ${JSON.stringify(r)}`);
+    assert.equal(retentionVerdict(r, who).retain, false);
+  }
+  const thrown = { ...s.fork, readTree: async () => { throw new Error("Artifacts is down"); } } as typeof s.fork;
+  const t = await readRetention(thrown, s.baseline, s.o, s.n);
+  assert.ok("unread" in t && /Artifacts is down/.test(t.unread));
+});

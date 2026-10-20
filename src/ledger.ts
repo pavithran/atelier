@@ -3252,12 +3252,12 @@ export class Ledger extends DurableObject<Env> {
         ...rest, head: newHead, at,
         retained: {
           from: { by: r.by, head: r.head, at: r.at }, oldHead: item.head, newHead, main: facts.main, base: facts.base,
-          taskPaths: cap(facts.task), incomingPaths: cap(facts.incoming), exempt: cap(facts.outputs),
+          taskPaths: facts.task, incomingPaths: facts.incoming, exempt: facts.outputs,
           paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why,
         },
       };
       this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, item.id, JSON.stringify(carried));
-      this.log(item.id, ORCHESTRATOR, "review.retained", { by: r.by, from: r.head, head: newHead, source: r.at, main: facts.main, base: facts.base, taskPaths: cap(facts.task), incomingPaths: cap(facts.incoming), exempt: cap(facts.outputs), reason: verdict.why }, at);
+      this.log(item.id, ORCHESTRATOR, "review.retained", { by: r.by, from: r.head, head: newHead, source: r.at, main: facts.main, base: facts.base, taskPaths: cap(facts.task), incomingPaths: cap(facts.incoming), exempt: cap(facts.outputs), paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why }, at);
     }
     return { kept: approvals.length, why: verdict.why };
   }

@@ -59,6 +59,16 @@ export async function regeneratedOutputs(r: Reader, mainTree: string, message: s
   return [...out].sort();
 }
 
+// A reader that refuses a tree object it cannot find. changedPaths reads a
+// missing tree as an empty one, which would make an unreadable merge look like
+// one that changed nothing; for retention a missing object is no evidence.
+function strict(r: Reader): Reader {
+  return {
+    tree: async (h) => { const t = await r.tree(h); if (!t) throw new Error(`tree ${h.slice(0, 8)} could not be read`); return t; },
+    blob: r.blob,
+  };
+}
+
 export async function readRetention(fork: Repo, baseline: Repo, oldHead: string, newHead: string): Promise<RetentionRead> {
   const unread = (why: string): RetentionRead => ({ unread: why });
   try {
@@ -81,7 +91,7 @@ export async function readRetention(fork: Repo, baseline: Repo, oldHead: string,
     const base = mergeBase(workspace, mainLog.map((c) => c.hash));
     const baseCommit = base ? mainLog.find((c) => c.hash === base) : undefined;
     if (!base || !baseCommit?.treeHash) return unread("no commit of main's history is held by the approved head within the history read");
-    const reader = pairReader(fork as ArtifactsRepo, baseline as ArtifactsRepo);
+    const reader = strict(pairReader(fork as ArtifactsRepo, baseline as ArtifactsRepo));
     const diff = (a: string, b: string) => changedPaths(reader, a, b, PATHS_MAX);
     const [task, incoming, moved, offMain] = await Promise.all([
       diff(baseCommit.treeHash, approved.treeHash), diff(baseCommit.treeHash, merged.treeHash),
