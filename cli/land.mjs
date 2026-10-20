@@ -37,10 +37,11 @@ import { workspaceNotice } from "./review-notice.mjs";
 // the head was merged with, checked and reviewed against, and accepts and
 // merges. Where main moved meanwhile it releases the lease without
 // accepting and goes again from the merge of main: the review request on
-// that round is where the server carries the approval over a clean merge
-// of main as far as its rules let it (t459, where deployed), or asks for a
-// new review. The lease step records the time spent before the lease and
-// in the queue, and the release step the time it was held.
+// that round is where the server carries the approval over a merge of
+// main that leaves the task's files alone (retainApprovals in
+// src/ledger.ts, on the facts src/retention.ts reads), or asks for a new
+// review. The lease step records the time spent before the lease and in
+// the queue, and the release step the time it was held.
 //
 // In the task's workspace it merges main (stopping on conflicts, which it
 // leaves for the owner to resolve, naming the files — or sends back to the
@@ -789,9 +790,10 @@ export async function runLand(io) {
       // reviews; --no-review leaves the task submitted for the owner to
       // settle by hand, and never takes the lease. On a later round (main
       // moved under the lease) the same ask is where an approval carries
-      // over the clean merge of main, as far as the server's rules let it
-      // (t459, where deployed): the server answers that none is needed, or
-      // asks for a new review, which this landing waits for as any other.
+      // over a merge of main that leaves the task's files alone
+      // (retainApprovals in src/ledger.ts): the server answers that none
+      // is needed, or asks for a new review, which this landing waits for
+      // as any other.
       if (noReview) {
         print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id} (main is already merged; run atelier land ${id} again if the head moves). The landing lease was never taken.`);
         await record("review", 0, { skipped: true });
@@ -820,8 +822,8 @@ export async function runLand(io) {
       // Main must be the commit the head was checked and reviewed against.
       // Where it moved meanwhile (another landing merged), the lease is
       // released without accepting or merging, and the landing goes again
-      // from the merge of main: a clean merge carries the approval only as
-      // far as the server's rules let it (t459, where deployed), and
+      // from the merge of main: only a merge that leaves the task's files
+      // alone carries the approval (retainApprovals in src/ledger.ts), and
       // otherwise the new head is reviewed again; a conflict ends it.
       guardLease();
       let mainNow = await readMain(io, { dir, id, name });
