@@ -288,6 +288,18 @@ misread:
   (the 3x ratio, with only the Nx filter) wrong by design; reading the test
   before dispatch caught it, and nothing else would have. Write "t52's tests
   pass except the 3x ratio test, which the task rewrites" instead.
+- Tell a builder to iterate on the tests its change touches and the
+  typecheck, not the project's full gate. Atelier runs the required checks in
+  a clean clone of the pushed head afterward, so a builder's own full run
+  repeats them. A merge's resolution and a wave's checks are unchanged: they
+  run whole. A project that wants a quick test command names it in its own
+  instructions (`AGENTS.md`); Atelier has no setting for it. For a visual
+  change the build brief says to use the project's documented screenshot
+  workflow against the workspace's own revision, reusing the server that
+  workflow manages and never starting a second, or to follow the project's
+  setup when it documents none; review briefs do not say it. In ikon-weblog on
+  2026-10-15 and 16 builders ran the full gate after small edits and opened dev
+  servers of their own for screenshots, which multiplied wall time.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the developer's checkout.
 - Point the agent to the project's prose standard, the path `atelier init

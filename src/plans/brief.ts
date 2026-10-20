@@ -173,6 +173,16 @@ export const BUILDER_TESTS = [
   "Report validation_blocked only for a failure in the tests of your own change that you cannot fix, and commit your work before you report it.",
 ] as const;
 
+// A visual change is checked by looking at it. Builders opened a dev server of
+// their own for each screenshot, which multiplied wall time (seen in
+// ikon-weblog, 2026-10-15); the project's own workflow knows its managed server
+// and how to show this workspace's revision. Build briefs only: a reviewer
+// reads the diff and does not take screenshots. The runner's own brief
+// (briefFor in cli/runner.mjs) and the build role prompt (src/usage.ts) say the
+// same.
+export const BUILDER_SCREENSHOTS =
+  "For a visual change, take screenshots with the project's documented screenshot workflow, against this workspace's revision. Reuse the server that workflow manages if one exists; never start a second one. If the project documents no such workflow, follow its setup instructions.";
+
 const short = (head: string) => head.slice(0, 8);
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const visible = (c: string) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`;
@@ -326,6 +336,7 @@ function render(r: Resolved): string {
       : "- Work only in this workspace. Change only paths inside the scope below; a changed file outside it is reported to the developer, and the reviewer judges it as part of the change.",
     ...(merge ? [] : ["- Write tests for new behaviour."]),
     ...(r.checks.length && !wholeChecks ? BUILDER_TESTS.map((line) => `- ${line}`) : []),
+    ...(!wholeChecks ? [`- ${BUILDER_SCREENSHOTS}`] : []),
     ...(r.checks.length && wholeChecks ? ["- Run the required checks under \"Checks\" before you commit. Every one must pass."] : []),
     merge
       ? `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}. Any later fix is an ordinary commit with that same final line. Do not start the merge again, abort it, rebase or reset it.`
