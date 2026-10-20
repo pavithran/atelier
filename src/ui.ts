@@ -26,6 +26,7 @@ import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import { PRECISION_MIN_JUDGED, precisionTerm, type PrecisionRecord, type ReviewerPrecision } from "./models/precision.ts";
+import { findingJudgements, type Judgements } from "./models/finding-judgements.ts";
 import { judged, judgementTotals, type ActingJudgement, type JudgementRecord } from "./models/judgement.ts";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
@@ -263,6 +264,10 @@ export interface Detail {
   // window (definingEvents in src/ledger.ts, t661); read through
   // definingOf in src/brief.ts, which falls back to `events`.
   defining?: LedgerEvent[];
+  // The task's reviews, finding verdicts and served annotations, by kind and
+  // outside that window (judgementEvents in src/ledger.ts, t47); unset where
+  // the page is drawn without a ledger, which then reads `events`.
+  judgementEvents?: LedgerEvent[];
 }
 export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
@@ -2665,6 +2670,7 @@ ${submissionRounds(d)}
     ${pre ? `<ul>${prereviewLines(pre).map((l) => `<li>${e(l.trim())}</li>`).join("")}</ul>` : ""}${fence ? `<p>${e(fenceText(item.id, fence))}</p>` : ""}
     <p class="meta">Pre-review evidence: it neither satisfies nor rejects the gate.</p></div>`
     : "";
+  const judgements = item.state === "merged" ? findingJudgementsBlock(findingJudgements(d.judgementEvents ?? d.events, d.ownerActor ?? DEFAULT_OWNER)) : "";
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   // An override recorded before the project forbade overrides (t371) counts
   // for nothing on a task still in hand, as gate counts none; a merged task's
@@ -2686,13 +2692,32 @@ ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}</p>
   ${notices}
-  ${checkRows}${notApplicableRows}${reports}${reviews}${prereview}${overrideNote}${blockers}
+  ${checkRows}${notApplicableRows}${reports}${reviews}${judgements}${prereview}${overrideNote}${blockers}
   ${item.state === "merged" ? definingOf(d).filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
   ${fastLandingBlock(p, d)}${recordedMergeBlock(d)}${fastReadyBlock(d)}
 </section>
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and handoff" : ""}</summary>${technical}${ownership}${close}</details>`;
+}
+
+// A merged task's blocking findings and what the developer said of each
+// (t47): the newest explicit verdict, or unjudged, with every earlier verdict
+// kept under it. Judged and total are of these findings, and the precision is
+// of the judged alone; no finding is judged by the approval or the merge.
+function findingJudgementsBlock(j: Judgements): string {
+  if (!j.total) return "";
+  const rows = j.findings.map((f) => {
+    const last = f.history.at(-1);
+    const kept = f.history.length > 1
+      ? ` · corrected: ${f.history.map((h) => `${e(h.verdict)} ${when(h.at)}`).join(", then ")}`
+      : "";
+    return `<li>${f.verdict ? tag(f.verdict, f.verdict === "refuted" ? "ask" : "go") : tag("Unjudged")} <code>review ${f.review}, finding ${f.index}</code> ${e(f.file)}${f.line === null ? "" : `:${f.line}`}: ${e(f.text)}
+      <span class="meta">${e(f.by)} · at <code>${short(f.head)}</code>${last ? ` · judged ${when(last.at)}${kept}${last.note ? ` · ${e(last.note)}` : ""}` : ""}</span></li>`;
+  }).join("");
+  const figure = j.precision === null ? "none judged, so no precision" : `${j.upheld} of ${j.judged} judged held up, ${Math.round(j.precision * 100)}% precision`;
+  return `<details class="disclosure"><summary>Blocking findings · ${j.judged} of ${j.total} judged</summary>
+    <p class="meta">${j.judged} of ${j.total} blocking findings have a verdict from the developer (${figure}). An unjudged finding is left out of precision: an approval, a merge or lines that did not change say nothing about it. Record one with atelier finding.</p><ul>${rows}</ul></details>`;
 }
 
 // The error page keeps the owner's name and the rail, and highlights nothing:
