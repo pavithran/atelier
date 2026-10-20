@@ -36,7 +36,7 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIP
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { absolute, overrideTail, taskLink, waitingCommand } from "./status.mjs";
+import { absolute, expiredBlocksLine, overrideTail, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
@@ -1576,19 +1576,23 @@ export const flat = (value) => stripVTControlCharacters(String(value)).replace(/
 // line per item, and any text a person or agent wrote flattened.
 export const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
 // `origin` is the server in use, for the link to each merge by override.
-export function formatStanding(s, ownerName = "the developer", origin = "") {
+// `expired` names the tasks whose block has run past its --until (expiredBlocks):
+// their rows give way to one line (t58). Without it every row stands as before.
+export function formatStanding(s, ownerName = "the developer", origin = "", expired = []) {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const mode = s.familyMode?.single ? ` (single-family: ${flat(s.familyMode.single)})` : "";
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
   // Fast mode, with the developer's words and the model that relayed them when it was switched on their direction (t629).
   if (s.mode) lines.push(flat(s.mode));
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
-  group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
+  group("Held now", s.live.filter((i) => !(i.state === "blocked" && expired.includes(i.id))).map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
   // One line per task waiting on the owner, as attentionFor places it
   // (src/attention.ts): the call, what to do, the link, then the notice and
   // brief, and the command that answers it (t495). A standing from a server
   // before t504 carries only kind and reason, and reads as it did.
-  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => {
+  const lapsed = (w) => expired.includes(w.id) && (w.call ? w.call === "unblock" : w.kind === "blocked");
+  const expiredLine = expiredBlocksLine(s.project.name, s.waiting.filter(lapsed).map((w) => w.id));
+  group(`Waiting on ${flat(ownerName)}`, s.waiting.filter((w) => !lapsed(w)).map((w) => {
     const brief = w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : "";
     const next = waitingCommand(w, s.project.name);
     const tail = `${brief}${next ? `  next: ${flat(next)}` : ""}`;
@@ -1596,6 +1600,7 @@ export function formatStanding(s, ownerName = "the developer", origin = "") {
       ? `${w.id}  ${w.call}  ${flat(w.title)}  ${flat(w.sentence)}  ${absolute(origin, w.href)}  why: ${flat(w.why)}${tail}`
       : `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${tail}`;
   }));
+  if (expiredLine) lines.push("", expiredLine);
   if (s.pipeline?.length) lines.push("", `In the pipeline: ${s.pipeline.reduce((n, x) => n + x.count, 0)} tasks: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(", ")}; none waits on ${flat(ownerName)}.`);
   if (s.overlaps?.length) lines.push("", `Overlapping scopes: ${s.overlaps.length} ${s.overlaps.length === 1 ? "pair" : "pairs"}; nothing waits on ${flat(ownerName)}. The JSON lists them.`);
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${notePreview(q.note) ? `  note: ${flat(notePreview(q.note))}` : ""}`));

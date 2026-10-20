@@ -21,7 +21,7 @@
 import { DEFAULT_THRESHOLDS, isStale, lowBalances, windowShortages } from "../src/usage/report.ts";
 import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { stripVTControlCharacters } from "node:util";
-import { directionText, mergedByOverride } from "../src/rules.ts";
+import { directionText, expiredBlocks, mergedByOverride } from "../src/rules.ts";
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
@@ -274,6 +274,24 @@ function unofferedLine(dead) {
   return `${dead[0].toUpperCase()}${dead.slice(1)}.`;
 }
 
+// The one line that stands for a project's expired blocks (--until has passed,
+// UTC): each id with the commands that lift or close it, project-qualified.
+// The tasks stay blocked; this only replaces their rows. Null when none.
+export function expiredBlocksLine(project, ids) {
+  if (!ids.length) return null;
+  const flag = ` --project ${project}`;
+  return `Expired blocks: ${ids.map((id) => `${id} (unblock: atelier unblock ${id}${flag}; abandon: atelier abandon ${id}${flag})`).join(", ")}`;
+}
+
+// What `atelier clean` would remove, one line per project that has anything to
+// remove or could not be inspected: [{ project, count }], count null when
+// unknown. A project at zero has no line (t58).
+export function cleanLines(counts) {
+  return counts.filter((c) => c.count !== 0).map((c) => c.count === null
+    ? `Clean-up: unknown for ${c.project}; its local directories could not be inspected. atelier clean --project ${c.project} shows them.`
+    : `Clean-up: atelier clean --project ${c.project} would remove ${c.count} local ${c.count === 1 ? "directory" : "directories"}.`);
+}
+
 export function formatStatus(views, waiting = {}) {
   if (!views.length) return "No projects.";
   const offers = Array.isArray(waiting.offers) ? waiting.offers : null;
@@ -281,6 +299,11 @@ export function formatStatus(views, waiting = {}) {
   const lines = [];
   for (const v of views) {
     const a = attentionFor(v.name, v.items, v.inbox, offers, now);
+    // A block whose --until has passed is one line, not a row, and is still
+    // blocked (t58); a task blocked for another reason keeps its row.
+    const expired = new Set(expiredBlocks(v.items, now));
+    const owner = a.owner.filter((t) => !(t.call === "unblock" && expired.has(t.id)));
+    const expiredLine = expiredBlocksLine(v.name, a.owner.filter((t) => t.call === "unblock" && expired.has(t.id)).map((t) => t.id));
     // Each task is said once: a task waiting on the owner is not listed again
     // as in progress or waiting for a runner.
     const theirs = new Set(a.owner.map((t) => t.id));
@@ -294,12 +317,13 @@ export function formatStatus(views, waiting = {}) {
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     // Fast mode, as status --project prints it (t629).
     if (v.mode) lines.push(`  ${flatText(v.mode)}`);
-    if (!a.owner.length) {
+    if (!owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.
       const quiet = !a.pipeline.length && !a.overlaps.length && !reviews.length && !a.unknown.length;
-      lines.push(quiet ? "  Nothing waiting." : a.unknown.length ? "  Nothing known to wait on you." : "  Nothing waiting on you.");
-    } else lines.push("  Waiting for you", ...ownerLines(a.owner, waiting.server));
+      if (!expiredLine) lines.push(quiet ? "  Nothing waiting." : a.unknown.length ? "  Nothing known to wait on you." : "  Nothing waiting on you.");
+    } else lines.push("  Waiting for you", ...ownerLines(owner, waiting.server));
+    if (expiredLine) lines.push(`  ${expiredLine}`);
     if (a.unknown.length) lines.push("  Not read", ...a.unknown.map((x) => `    ${x}`));
     if (v.mismatches?.length) lines.push(formatPolicyDisagreements(v.mismatches));
     if (a.pipeline.length) lines.push(`  In the pipeline: ${pipelineLine(a)}; none waits on you.`);

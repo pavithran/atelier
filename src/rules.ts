@@ -93,6 +93,11 @@ export interface Block {
   by: string;
   at: string;
   from: ItemState;
+  // The last UTC day the developer expects the wait to hold (YYYY-MM-DD), when
+  // `atelier block --until` gave one. It changes how status presents the
+  // block and nothing else: the task stays blocked until it is unblocked or
+  // abandoned. Absent on a block recorded without one.
+  until?: string;
 }
 
 // One entry of the secret flag the push scan records: where a key pattern was
@@ -1415,6 +1420,39 @@ export function blockReason(value: unknown): string {
   if (!reason) throw new RuleError("block_reason", "a block needs a reason: atelier block ID \"what it is waiting on\"", 400);
   if (reason.length > REASON_MAX) throw new RuleError("block_reason", `a block's reason is at most ${REASON_MAX} characters`, 400);
   return reason;
+}
+
+const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const utcDay = (now: Date): string => now.toISOString().slice(0, 10);
+
+// The day a block is expected to last until: absent (undefined) means none,
+// and anything else must be a real UTC calendar date (leap days included, so
+// 2026-02-29 is refused) that is not before today in UTC. A missing value, a
+// malformed date and a past date are refused, not guessed at, and the caller
+// records nothing (t58: six tasks stayed in the owner's list for reasons that
+// had expired on 2026-10-14).
+export function blockUntil(value: unknown, now: Date): string | null {
+  if (value === undefined) return null;
+  const refuse = (why: string): never => { throw new RuleError("block_until", `${why}: atelier block ID "what it is waiting on" --until YYYY-MM-DD`, 400); };
+  if (typeof value !== "string" || !CALENDAR_DAY.test(value)) return refuse("--until needs a date written YYYY-MM-DD");
+  const [y, m, d] = value.split("-").map(Number);
+  if (new Date(Date.UTC(y, m - 1, d)).toISOString().slice(0, 10) !== value) return refuse(`--until ${value} is not a calendar date`);
+  if (value < utcDay(now)) return refuse(`--until ${value} is before today (${utcDay(now)}, UTC)`);
+  return value;
+}
+
+// Whether a block's expiry has passed: from the day after its --until, UTC.
+// A block with none, or one whose stored date is not a plain date, has not
+// expired, so a doubtful record keeps showing as before.
+export function blockExpired(block: { until?: unknown } | null | undefined, now: Date): boolean {
+  const until = block?.until;
+  return typeof until === "string" && CALENDAR_DAY.test(until) && until < utcDay(now);
+}
+
+// The ids of the tasks status shows as expired blocks: blocked, with an
+// expiry that has passed. They stay blocked; only their presentation changes.
+export function expiredBlocks(items: readonly Pick<Item, "id" | "state" | "blocked">[] | null | undefined, now: Date): string[] {
+  return (items ?? []).filter((i) => i.state === "blocked" && blockExpired(i.blocked, now)).map((i) => i.id);
 }
 
 // The reason a secret flag is cleared with. A missing, blank or over-long
