@@ -156,6 +156,53 @@ says it does.
 The scripts this handbook refers to are in `bin/orchestrate/`, with their
 setup in its README.
 
+## The handover
+
+Every turn of an orchestrating session resends what it read at the start, so
+what a session reads at the start is kept small. The note one session leaves
+the next, wherever the orchestrator keeps it, holds only what Atelier cannot
+tell the next session:
+
+- **Decisions still open.** Each with the question, what the developer has
+  said so far, and what the session recommends. A decision the developer has
+  settled is recorded with `atelier decide`, listed by `atelier decisions`,
+  and leaves the note.
+- **Work in flight that Atelier does not record.** A suite, deploy or push to
+  the public mirror started outside Atelier (see What stays outside Atelier),
+  a process still running, a promise made to the developer. Each with how to
+  check it and what to do when it ends.
+
+It does not hold what Atelier already holds, and the next session reads those
+from the source, never from the note:
+
+- Task states, holders, reviews and findings: `atelier status` and `atelier ls
+  --project P`, and `atelier show ID` for one task.
+- Merges: `atelier status --brief` lists the recent ones; the ledger is the
+  record.
+- The deployed commit: `GET /api/version`, not the ledger and not the note.
+  Whether it matches main is the next session's to check.
+
+A note that restates the ledger goes stale the moment a task moves, and the
+session that trusts it dispatches on a state that no longer holds. When the
+note and Atelier disagree, Atelier is right; correct the note.
+
+When the note outgrows one screen, the decisions it holds have usually been
+settled, or the in-flight work has ended. Settle or record them, and move the
+older sections to an archive that no session reads at the start. Standing
+decisions are kept as `atelier decide` entries, summarised where a later one
+supersedes an earlier one. Changing the orchestrator's own skill folder and
+moving old sections to the archive happen outside this repository; this
+section states the shape they aim for.
+
+The same care applies to the briefs Atelier composes. The fixed instruction
+blocks of the build and review briefs, the build rules, the builder's test
+instructions and the review rules, are capped in UTF-8 bytes in
+`test/brief-rules.test.mjs`. Beside each cap are the commit the size was
+measured at, the measured size and the margin. The cap leaves out the task's
+text, the diff and the findings, which vary with the work. A change that
+grows a block past its cap fails there; raising the cap is a decision made in
+that file, with the new measurement.
+
 ## Registering workspace preparation
 
 After deploying the Worker and updating the runner's CLI, the developer registers

@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execute, runReview, runTask, writeBrief } from "../cli/runner.mjs";
-import { BUILD_RULES, jobBrief } from "../src/plans/brief.ts";
+import { BUILDER_TESTS, BUILD_RULES, jobBrief } from "../src/plans/brief.ts";
 import { REVIEW_RULES, reviewBrief } from "../src/review/brief.ts";
 
 // The rules every build and review brief carries (t376), which lived only in
@@ -121,4 +121,35 @@ test("a runner with the README's generic wrapper hands its agents both rule text
   const state = await runReview(assignment({ job: "review" }), config, "home:studio", io);
   assert.equal(state.phase, "reviewed", state.reason);
   assert.ok(readFileSync(told, "utf8").includes(REVIEW), "the reviewer reads the review rules");
+});
+
+// t49: the fixed instruction blocks of the briefs are capped in UTF-8 bytes, so
+// a brief does not grow a sentence at a time (every turn of an agent resends
+// it). Only text that is the same in every brief is capped; the task's text,
+// the diff and the findings are not, and a ceiling on a whole brief would
+// refuse legitimate input. `at` is the commit the size was measured at,
+// `measured` the bytes then, `margin` the room left on purpose. To raise a cap,
+// measure again and change all three here, as a decision.
+const BYTES = (text) => Buffer.byteLength(text, "utf8");
+const BLOCK_LIMITS = {
+  "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "9c9a3037", measured: 887, margin: 150 },
+  "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "9c9a3037", measured: 459, margin: 100 },
+  "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "9c9a3037", measured: 803, margin: 150 },
+};
+const overLimit = ({ text, measured, margin }) => BYTES(text) > measured + margin;
+
+test("each fixed instruction block of the build and review briefs stays within its byte limit", () => {
+  for (const [name, block] of Object.entries(BLOCK_LIMITS)) {
+    assert.equal(overLimit(block), false, `${name} is ${BYTES(block.text)} bytes, over its limit of ${block.measured + block.margin} (measured ${block.measured} at ${block.at})`);
+  }
+});
+
+test("a block over its limit fails, counting bytes and not characters", () => {
+  const block = BLOCK_LIMITS["build rules (BUILD_RULES)"];
+  const room = block.measured + block.margin - BYTES(block.text);
+  assert.ok(room >= 0);
+  assert.equal(overLimit({ ...block, text: block.text + "x".repeat(room) }), false, "exactly at the limit passes");
+  assert.equal(overLimit({ ...block, text: block.text + "x".repeat(room + 1) }), true, "one byte over fails");
+  // A two-byte character counts twice: the same number of characters is over the limit.
+  assert.equal(overLimit({ ...block, text: block.text + "é".repeat(Math.ceil(room / 2) + 1) }), true);
 });

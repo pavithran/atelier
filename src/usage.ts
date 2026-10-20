@@ -358,6 +358,11 @@ landing outcome, conflicts, held dispatches, after each merge) and the detail,
 with the reasons, are in the handbook, docs/orchestrating.md in the
 public repository: https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md.
 \`atelier guide --role orchestrate --full\` prints it.
+
+A note left for the next session holds only open decisions and work in flight
+that Atelier does not record; task states and merges are read from Atelier and
+the deployed commit from \`GET /api/version\`. See The handover in the
+handbook: https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md#the-handover.
 `,
 };
 
