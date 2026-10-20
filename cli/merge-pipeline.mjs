@@ -28,7 +28,8 @@
 //      what each output now matches, and the hash of each generator's log,
 //      kept under the clone's Git directory.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -374,6 +375,10 @@ export function provenanceLines({ regenerated = [], records = [] }) {
 //   generate  false stops a merge that would need a generator to run, as
 //             the owner's merge onto the baseline does: outputs written
 //             there would never have been checked or reviewed
+//   adopt     { tree, regenerated } for a merge verifyAccepted passed: a
+//             generator that would run takes its outputs from `target`
+//             instead, and the merge stops unless the tree it leaves is
+//             `tree`, the one verifyAccepted compared
 //   run       how a generator runs (argv, { cwd, env }), as runGroup answers
 //   log       a line for the caller's output
 // Answers { state } with:
@@ -385,7 +390,7 @@ export function provenanceLines({ regenerated = [], records = [] }) {
 //                outside its outputs, left one out, was not deterministic;
 //                a declaration is misrouted); the merge was aborted.
 //   "failed"     Git could not start the merge; { reason }
-export async function mergeThrough(dir, target, { git = localGit, message, commit = true, leave = false, verify = true, generate = true, config = [], run = defaultRun, log = () => {} } = {}) {
+export async function mergeThrough(dir, target, { git = localGit, message, commit = true, leave = false, verify = true, generate = true, adopt = null, config = [], run = defaultRun, log = () => {} } = {}) {
   await installMergeConfigAwaiting(dir, git);
   const c = config.flatMap(([k, v]) => ["-c", `${k}=${v}`]);
   const ours = await git(["rev-parse", "HEAD"], { cwd: dir });
@@ -424,11 +429,15 @@ export async function mergeThrough(dir, target, { git = localGit, message, commi
   const regenerated = [];
   const changed = manifest?.generators.length || manifest?.records.length ? await sidesChanged(dir, git, ours, theirs) : { mb: null, a: [], b: [] };
   const generators = pickGenerators(manifest, { ...changed, conflicted });
-  if (generators.length && !generate) {
+  if (generators.length && adopt) {
+    const taken = await git(["checkout", theirs, "--", ...generators.flatMap((g) => g.outputs)], { cwd: dir, allowFail: true });
+    if (taken.status !== 0) { await abort(); return { state: "stopped", reason: `the accepted revision does not hold every output of ${generators.map((g) => g.name).join(", ")}`, ...sorted, regenerated }; }
+    regenerated.push(...adopt.regenerated);
+  } else if (generators.length && !generate) {
     await abort();
     return { state: "stopped", reason: `the merge needs ${generators.map((g) => g.name).join(", ")} to regenerate ${generators.flatMap((g) => g.outputs).join(", ")}, and this merge runs no generator`, ...sorted, regenerated };
   }
-  if (generators.length) {
+  if (generators.length && !adopt) {
     const logDir = join(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir }), "atelier", "merge-logs");
     mkdirSync(logDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -446,6 +455,7 @@ export async function mergeThrough(dir, target, { git = localGit, message, commi
     }
   }
   if (await git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir })) { await abort(); return { state: "stopped", reason: "paths were still unmerged after regeneration", ...sorted, regenerated }; }
+  if (adopt && await git(["write-tree"], { cwd: dir }) !== adopt.tree) { await abort(); return { state: "stopped", reason: "the merge left a tree other than the one whose regenerated outputs were compared", ...sorted, regenerated }; }
   // The record files both sides changed: those the records driver united.
   const records = (manifest?.records ?? []).map((rec) => rec.path).filter((path) => changed.a.includes(path) && changed.b.includes(path));
   const lines = provenanceLines({ regenerated, records });
@@ -453,4 +463,55 @@ export async function mergeThrough(dir, target, { git = localGit, message, commi
   if (!commit) return result;
   await git([...c, "commit", "--quiet", ...(verify ? [] : ["--no-verify"]), "-m", withProvenance(message ?? `Merge ${theirs}`, lines)], { cwd: dir });
   return { ...result, head: await git(["rev-parse", "HEAD"], { cwd: dir }) };
+}
+
+// What a merge of `target` (the accepted revision) onto `local` needs
+// regenerated, checked without touching the checkout at `dir`: the merge
+// runs through the pipeline, generators included, in a throwaway clone
+// pinned to those two commits, and every declared output of the tree it
+// leaves must be the accepted revision's own entry, mode and bytes. Anything
+// else is a refusal, since an output the accepted revision does not hold was
+// never checked or reviewed. Compared directly against `target`, never
+// against which side an output "matches", which depends on which way round
+// the merge runs. The generators' logs and the comparison are kept under the
+// checkout's Git directory (merge-logs) whatever the verdict.
+// Answers { ok, tree, regenerated, reason, kept }.
+export async function verifyAccepted(dir, local, target, { git = localGit, run = defaultRun } = {}) {
+  const kept = join(atelierGitDir(dir, git), "merge-logs");
+  mkdirSync(kept, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const scratch = mkdtempSync(join(tmpdir(), "atelier-verify-"));
+  const clone = join(scratch, "clone");
+  const lines = [`ours: ${local}`, `accepted: ${target}`];
+  let verdict;
+  try {
+    const source = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir });
+    localGit(["clone", "--quiet", "--no-checkout", "--shared", source, clone]);
+    localGit(["checkout", "--quiet", "--detach", local], { cwd: clone });
+    if (existsSync(join(dir, "node_modules"))) symlinkSync(join(dir, "node_modules"), join(clone, "node_modules"));
+    const r = await mergeThrough(clone, target, { git: localGit, commit: false, run });
+    if (r.state !== "merged") verdict = { ok: false, reason: r.state === "conflicts" ? `the merge does not go through the pipeline cleanly:\n${describeConflicts(r, r.manifest)}` : r.reason ?? `the merge ${r.state}`, regenerated: r.regenerated ?? [] };
+    else {
+      const tree = localGit(["write-tree"], { cwd: clone });
+      const entry = (rev, path) => { const o = localGit(["ls-tree", rev, "--", path], { cwd: clone, allowFail: true }); return o.status === 0 ? o.stdout.split("\t")[0].trim() : ""; };
+      const differing = [];
+      for (const path of outputsOf(r.manifest)) {
+        const got = entry(tree, path), want = entry(target, path);
+        lines.push(`${path}: regenerated ${got || "missing"}, accepted ${want || "missing"}`);
+        if (!got || got !== want) differing.push(`${path} (${got ? want ? "regenerated differently from the accepted revision" : "the accepted revision holds none" : "missing after regeneration"})`);
+      }
+      verdict = differing.length ? { ok: false, reason: `regenerated outputs differ from the accepted revision's: ${differing.join(", ")}`, regenerated: r.regenerated }
+        : { ok: true, tree, regenerated: r.regenerated.map((g) => ({ ...g, outputs: g.outputs.map((o) => ({ path: o.path, matches: "the accepted revision" })) })) };
+    }
+    const cloneLogs = join(clone, ".git", "atelier", "merge-logs");
+    if (existsSync(cloneLogs)) for (const name of readdirSync(cloneLogs)) copyFileSync(join(cloneLogs, name), join(kept, name));
+  } catch (error) {
+    verdict = { ok: false, reason: `the check could not run: ${error.message}`, regenerated: [] };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  lines.push(`verdict: ${verdict.ok ? "identical" : `refused, ${verdict.reason}`}`);
+  const comparison = join(kept, `${stamp}-verify-accepted.txt`);
+  try { writeFileSync(comparison, `${lines.join("\n")}\n`); } catch { /* the verdict stands without its record */ }
+  return { ...verdict, kept, comparison };
 }

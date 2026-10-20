@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MANIFEST_PATH, mergeRecords, parseManifest } from "../cli/merge-driver.mjs";
-import { atelierGitDir, describeConflicts, installMergeConfig, mergeConfigProblems, mergeThrough, previewMerge, stableNode, withProvenance } from "../cli/merge-pipeline.mjs";
+import { atelierGitDir, describeConflicts, installMergeConfig, mergeConfigProblems, mergeThrough, previewMerge, stableNode, verifyAccepted, withProvenance } from "../cli/merge-pipeline.mjs";
 import { conflictsSection, pipelineMerge } from "../cli/runner.mjs";
 
 // t463: generated outputs and record files merge through one pipeline. The
@@ -422,4 +422,57 @@ test("this repository declares its generated CLI fixtures and routes them to the
   assert.ok(outputs.includes("test/fixtures/cli/help.txt") && outputs.includes("test/fixtures/cli/usage.json"));
   const r = spawnSync("git", ["check-attr", "merge", "--", ...outputs], { encoding: "utf8" });
   for (const path of outputs) assert.match(r.stdout, new RegExp(`${path.replace(/[.]/g, "\\.")}: merge: atelier-generated`));
+});
+
+// t39: verifyAccepted and the adopt option. A merge that would regenerate an
+// output is checked in a clone first; the finding it would have caught is
+// t686's refusal of outputs that were the accepted revision's own.
+test("verifyAccepted passes outputs equal to the accepted revision's and an adopting merge takes them without running the generator", async (t) => {
+  const f = fixture(t, { extra: { "cmds/a.txt": "name: a\ndescription: one\n" } });
+  const s = sides(f, { "cmds/a.txt": "name: a\ndescription: two\n" }, { "cmds/help.txt": "name: help\ndescription: three\n" });
+  const v = await verifyAccepted(f.dir, s.ours, s.theirs);
+  assert.equal(v.ok, true, JSON.stringify(v));
+  assert.deepEqual(v.regenerated[0].outputs, [{ path: "out/index.txt", matches: "the accepted revision" }]);
+  assert.equal(merging(f.dir), false, "the checkout is untouched");
+  const { run, calls } = counting();
+  const r = await mergeThrough(f.dir, "theirs", { message: "m", generate: false, adopt: { tree: v.tree, regenerated: v.regenerated }, run });
+  assert.equal(r.state, "merged", JSON.stringify(r));
+  assert.equal(calls.length, 0, "no generator runs in the checkout");
+  assert.equal(git(f.dir, "rev-parse", "HEAD^{tree}"), v.tree);
+  assert.match(git(f.dir, "log", "-1", "--format=%B"), /Atelier-Regenerated: index .*: out\/index\.txt matches the accepted revision; log sha256 [0-9a-f]{64}/);
+});
+
+test("verifyAccepted refuses outputs that are not the accepted revision's, keeps the comparison and log, and leaves the checkout alone", async (t) => {
+  const f = fixture(t);
+  // The accepted revision left its index stale; regeneration would write another.
+  const s = sides(f, { "cmds/push.txt": "name: push\n" }, { "cmds/land.txt": "name: land\n" }, { theirs: { regenerate: false } });
+  const v = await verifyAccepted(f.dir, s.ours, s.theirs);
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /regenerated outputs differ from the accepted revision's: out\/index\.txt/);
+  assert.equal(merging(f.dir), false);
+  assert.equal(git(f.dir, "status", "--porcelain"), "");
+  assert.match(readFileSync(v.comparison, "utf8"), /verdict: refused, regenerated outputs differ/);
+  assert.ok(existsSync(v.kept));
+});
+
+test("a merge that adopts a compared tree stops, aborted, when the tree it leaves is another (the head moved after the comparison)", async (t) => {
+  const f = fixture(t, { extra: { "cmds/a.txt": "name: a\ndescription: one\n" } });
+  const s = sides(f, { "cmds/a.txt": "name: a\ndescription: two\n" }, { "cmds/help.txt": "name: help\ndescription: three\n" });
+  const v = await verifyAccepted(f.dir, s.ours, s.theirs);
+  const other = commit(f.dir, { "cmds/help.txt": "name: help\ndescription: four\n", "extra.txt": "x\n" }, "main moves on");
+  const r = await mergeThrough(f.dir, "theirs", { message: "m", generate: false, adopt: { tree: v.tree, regenerated: v.regenerated } });
+  assert.equal(r.state, "stopped");
+  assert.match(r.reason, /a tree other than the one whose regenerated outputs were compared/);
+  assert.equal(merging(f.dir), false);
+  assert.equal(git(f.dir, "rev-parse", "HEAD"), other);
+});
+
+test("a merge that adopts takes outputs from the accepted revision, and stops when it holds none", async (t) => {
+  const f = fixture(t, { extra: { "cmds/a.txt": "name: a\ndescription: one\n" } });
+  const s = sides(f, { "cmds/a.txt": "name: a\ndescription: two\n", "out/index.txt": null }, { "cmds/help.txt": "name: help\ndescription: three\n" }, { theirs: { regenerate: false } });
+  const r = await mergeThrough(f.dir, "theirs", { message: "m", generate: false, adopt: { tree: "0".repeat(40), regenerated: [] } });
+  assert.equal(r.state, "stopped");
+  assert.match(r.reason, /the accepted revision does not hold every output of index/);
+  assert.equal(merging(f.dir), false);
+  assert.equal(git(f.dir, "rev-parse", "HEAD"), s.ours);
 });
