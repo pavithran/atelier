@@ -36,9 +36,12 @@
 // checks passing and an approval it counts does the Workflow queue for the
 // lease (stage `lease`), and under it confirm that main is still the commit
 // the executor merged; where main moved, it releases the lease without
-// accepting and begins a new round from the merge of main, whose review
-// request is where the server carries the approval over a clean merge as
-// far as its rules let it (t459, where deployed) or asks for a new review.
+// accepting and begins a new round from the merge of main. The server
+// carries an approval over that merge, when the executor pushes it, only as
+// far as the review-retention rule lets it (t56, retentionVerdict in
+// src/rules.ts): a merge that leaves the task's files alone. The round's
+// review step then finds the approval standing at the new head and asks for
+// no review; any other merge asks for a new one.
 // Each lease step records the time the round spent before the lease and in
 // the queue, and each release step the time the lease was held.
 //
@@ -202,9 +205,11 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // lease and confirm main is still the commit that head was merged
       // with. A conflict pauses the landing (no lease is held) until the
       // owner resolves it; main moving before the lease releases the lease
-      // and begins a new round, whose review request is where the server
-      // carries the approval over a clean merge of main as far as its rules
-      // let it (t459, where deployed) or asks for a new review. Each round's
+      // and begins a new round. The server carries an approval over the
+      // merge the executor pushes only as the review-retention rule lets it
+      // (t56, retentionVerdict in src/rules.ts); the round's review step then
+      // finds it standing at the new head and asks for none, and any other
+      // merge asks for a new review. Each round's
       // steps are named for it (`p.sfx`), so none answers from a cached
       // step of an earlier round.
       let report: Reported;

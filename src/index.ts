@@ -1,6 +1,7 @@
 import { reportLimits, stuckReport, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
+import { readRetention } from "./retention.ts";
 import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, fastJobRefusal } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
@@ -13,7 +14,7 @@ import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mer
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -640,6 +641,25 @@ async function pushLineage(env: Env, fork: string, observed: string, recorded: s
 // rebase brought from main are never taken for the task's. At most
 // PUSH_AUTHORS_MAX commits are read; a commit naming no actor is skipped.
 const PUSH_AUTHORS_MAX = 200;
+// The merge of main a push or a refresh made, read for the review-retention
+// rule (src/retention.ts, retentionVerdict in src/rules.ts): nothing when the
+// task has no approval standing that a merge could carry, so a push reads no
+// history it has no use for. Whatever fails to read is an `unread` answer,
+// which carries nothing.
+async function retentionOf(env: Env, L: ReturnType<typeof ledger>, item: { id: string; kind?: string | null; plan?: string | null; fork: string | null; head: string | null }, newHead: string): Promise<RetentionRead | null> {
+  if (item.kind || !item.fork || !item.head || item.head === newHead) return null;
+  try {
+    if (!(await L.retainable(item.id))) return null;
+    const repo = (await L.project()).repo;
+    using fork = await env.ARTIFACTS.get(item.fork);
+    using baseline = await env.ARTIFACTS.get(await baseRepo(env, L, item, repo));
+    return await readRetention(fork, baseline, item.head, newHead);
+  } catch (err) {
+    console.error(errorLine(`retention read of ${item.id}`, err));
+    return { unread: "the repositories could not be read" };
+  }
+}
+
 async function pushedAuthors(env: Env, fork: string, observed: string, item: { head: string | null; base: string | null }, againstRepo: string): Promise<PushAuthor[]> {
   if (observed === item.head) return [];
   using r = await env.ARTIFACTS.get(fork);
@@ -1045,7 +1065,10 @@ async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string,
   }
   const transformations = Array.isArray(body.transformations) ? body.transformations.filter((t: unknown): t is string => typeof t === "string").map((t: string) => t.slice(0, 40)) : [];
   const patch = (v: unknown) => (typeof v === "string" && hash.test(v) ? v : null);
-  const r = await L.taskRefreshed(id, actor, { lease: String(body.lease ?? ""), mainHead, expectedHead, head, agent, diffBefore: patch(body.diffBefore), diffAfter: patch(body.diffAfter), transformations }, true);
+  // The merge is read for the retention rule before the Ledger records it; the
+  // Ledger judges it, with the resolver the lease names.
+  const retention = head && item.head === expectedHead ? await retentionOf(env, L, item, head) : null;
+  const r = await L.taskRefreshed(id, actor, { lease: String(body.lease ?? ""), mainHead, expectedHead, head, agent, diffBefore: patch(body.diffBefore), diffAfter: patch(body.diffAfter), transformations, retention }, true);
   if (r.revoke) await revoke(env, item.fork, r.revoke);
   return r;
 }
@@ -2225,7 +2248,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // more history is read for it.
       const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
       const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
-      const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true);
+      const retention = refused ? null : await retentionOf(env, L, item, observed);
+      const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true, retention);
       // The push scan (t332): the added lines at the recorded head are read
       // for key patterns, and the flag records only file and line, never the
       // value. The head was recorded with its scan pending, so a scan that
@@ -4172,7 +4196,8 @@ export default {
               // head that should have moved and did not.
               const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
               const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors,true);
+              const retention = holdsRecorded ? await retentionOf(env, L, item, current) : null;
+              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors,true,retention);
               // The push scan for a push seen on the fork, as the push route
               // runs it: file and line only, never the value. It runs for the
               // head recorded with its scan pending, which a sighting that

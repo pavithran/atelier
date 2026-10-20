@@ -130,12 +130,22 @@ the checks and the review. Now:
    and reviewed against. If another landing merged meanwhile, it releases
    the lease without accepting or merging and goes round again from step 1:
    it merges the new main into the workspace, checks it and asks for the
-   review again. That review request is where an approval may carry over a
-   clean merge of main: the server decides, by its own rules (t459's
-   approval carry, where deployed, answers that an approval already covers
-   the change; a server without it asks for a new review, which the landing
-   waits for as any other). The CLI never judges the carry itself, so the
-   landing works with or without t459. A new conflict ends the landing as
+   review again. An approval may carry over that merge of main, and the
+   server decides when it is pushed (the review-retention rule, t56): it
+   carries only a merge of main into the approved head that changes none of
+   the task's files, in which nobody but the task's holder committed and
+   no conflict was resolved, and where the only files both sides changed
+   are outputs the project's generator manifest declares and the merge
+   regenerated. A carried approval stands at the new head as a record of its
+   own, naming the approval it came from, both heads, main's commit and the
+   paths compared; the original review stays as it was given. Acceptance
+   never carries, the required checks run again at the new head, and the
+   gate counts the carried approval as any other: its reviewer must still be
+   authorized and independent, one approval per model. A merge it does not
+   cover, or one the server could not read, asks for a new review, which the
+   landing waits for as any other. The CLI never judges the carry itself, so
+   an older server asks for a new review and the landing still works. A new
+   conflict ends the landing as
    in step 1. After five rounds (`ATELIER_LAND_MAIN_MOVED_ROUNDS`) of main
    moving, it stops, unmerged.
 5. **Accept and merge**, renewing the lease first (t232), then release it.

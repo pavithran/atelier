@@ -414,6 +414,26 @@ export interface Review {
   // review stays in the record, and never counts again, even if the
   // criteria return to what it judged.
   withdrawn?: { at: string; reason: string };
+  // Set on an approval carried across a merge of main (retentionVerdict): the
+  // approval it was carried from stays in the record as it was given, and
+  // this one stands at the new head beside the proof it was carried on.
+  retained?: Retained;
+}
+
+// What a retained approval records (t56): the approval it came from, the
+// heads either side of the merge, main's commit, the commit both sides
+// descend from, the paths compared, and why it was kept.
+export interface Retained {
+  from: { by: string; head: string; at: string };
+  oldHead: string;
+  newHead: string;
+  main: string;
+  base: string;
+  taskPaths: string[];
+  incomingPaths: string[];
+  exempt: string[];
+  paths: { task: number; incoming: number };
+  reason: string;
 }
 
 // A reviewer's reply no verdict could be read from (parseVerdict refused it,
@@ -451,6 +471,75 @@ export const bindingOf = (item: Pick<Item, "head" | "accept" | "partAccept">): R
 // bound) stands for nothing, so it neither satisfies nor blocks a gate.
 export function standingReview(r: Review, at: ReviewBinding): boolean {
   return !!at.head && r.head === at.head && r.criteria === at.criteria && !r.withdrawn;
+}
+
+// What the Worker read of a merge of main into an approved head (src/retention.ts),
+// for retentionVerdict. `unread` says why it could not be read.
+export interface RetentionFacts {
+  oldHead: string;
+  newHead: string;
+  parents: string[];     // the new head's parents
+  main: string | null;   // the second parent, main's commit, when it is on main
+  base: string | null;   // the newest main commit both sides hold
+  task: string[];        // paths the approved head changed since the base
+  incoming: string[];    // paths main changed between the base and its commit
+  moved: string[];       // paths the merge changed from the approved head
+  offMain: string[];     // paths the new head holds differently from main's commit
+  outputs: string[];     // declared outputs the merge's own provenance says it regenerated
+}
+export type RetentionRead = { unread: string } | RetentionFacts;
+
+export interface RetentionVerdict {
+  retain: boolean;
+  why: string;
+  facts: RetentionFacts | null;
+}
+
+const listed = (paths: readonly string[], max = 3) => `${paths.slice(0, max).join(", ")}${paths.length > max ? `, and ${paths.length - max} more` : ""}`;
+
+// Whether an approval of `oldHead` still stands at `newHead`, a merge of main
+// into it (t56). The simplest reading that fails safe: it stands only when
+// the merge is exactly main's changes laid beside the task's, and every
+// doubt is a full review, as before.
+//   - the head is a merge whose first parent is the approved head and whose
+//     second parent is a commit on main, read by the Worker, and nobody but
+//     the holder pushed it, and no resolver made it;
+//   - no path main changed since the base is a path the task changed, a
+//     rename or deletion counting at both of its paths;
+//   - the merge changed no path main did not, and took main's content of
+//     every path main changed;
+//   - only a path a declared generator regenerated, as the merge's own
+//     provenance says, is left out of those tests: a path under
+//     test/fixtures earns nothing by being there.
+export function retentionVerdict(read: RetentionRead | null, who: { resolver: string | null; outsiders: boolean }): RetentionVerdict {
+  const no = (why: string, facts: RetentionFacts | null = null): RetentionVerdict => ({ retain: false, why, facts });
+  if (!read) return no("nothing was read of the merge, so the new head is reviewed again");
+  if ("unread" in read) return no(`the merge could not be read (${read.unread}), so the new head is reviewed again`);
+  if (who.resolver) return no(`${who.resolver} resolved conflicts in the merge, so the new head is reviewed again`, read);
+  if (who.outsiders) return no("commits by another actor than the task's holder came with the push, so the new head is reviewed again", read);
+  if (read.parents.length !== 2 || read.parents[0] !== read.oldHead || !read.main || read.parents[1] !== read.main || !read.base) {
+    return no("the new head is not a merge of main into the approved head, so it is reviewed again", read);
+  }
+  const exempt = new Set(read.outputs);
+  const kept = (paths: readonly string[]) => paths.filter((p) => !exempt.has(p));
+  const incoming = new Set(read.incoming);
+  const overlap = kept(read.task).filter((p) => incoming.has(p));
+  if (overlap.length) return no(`main changed ${listed(overlap)}, which the task also changes, so the new head is reviewed again`, read);
+  const extra = kept(read.moved).filter((p) => !incoming.has(p));
+  if (extra.length) return no(`the merge changed ${listed(extra)}, which main did not, so the new head is reviewed again`, read);
+  const dropped = kept(read.offMain).filter((p) => incoming.has(p));
+  if (dropped.length) return no(`the merge did not take main's content of ${listed(dropped)}, so the new head is reviewed again`, read);
+  return { retain: true, why: `the merge brought in only main's changes to files the task does not change${exempt.size ? `, and regenerated ${listed([...exempt])}` : ""}`, facts: read };
+}
+
+// The approvals standing at a binding that may be carried across a merge:
+// each reviewer's latest, none of them carried before (a repeated merge asks
+// for a review), and none at all while a standing review of the same head
+// rejects, since the carried approvals would leave that rejection behind.
+export function retainableApprovals(reviews: Review[], at: ReviewBinding): Review[] {
+  const standing = latestReviews(reviews, at);
+  if (standing.some((r) => !r.approve)) return [];
+  return standing.filter((r) => r.approve && !r.retained && !r.postMerge);
 }
 
 export type ChangeClass = "direct" | "coordinated" | "protected";

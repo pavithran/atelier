@@ -64,12 +64,12 @@ test("main moved before the lease and merges clean: the lease is released unmerg
 });
 
 
-test("main moved before the lease: an approval the server carries over the clean merge needs no second review (t550, t459 where deployed)", async (t) => {
+test("main moved before the lease: an approval the server carries over the clean merge needs no second review (t550, t56)", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   await mainMovesDuringReview(f);
-  // The server answers the second round's ask as a server with t459's
-  // approval carry would: the approval covers the clean merge of main.
+  // The server answers the second round's ask as a server with t56's
+  // approval retention would: the approval covers the clean merge of main.
   const ask = f.box.review;
   let asked = 0;
   Object.defineProperty(ask, "needed", { get: () => ++asked === 1, configurable: true });
