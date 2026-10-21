@@ -1,0 +1,39 @@
+atelier atelier/t139 "status-expired test asserts status leaves workspaces and check clones on disk"
+accepted head 1cff41cc6ae16008feca4fd1020709cc252f005d
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR opencode/glm-5.3 (zai)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-21T03:14:26.888Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-21T03:14:31.138Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-21T03:38:00.724Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/glm-5.3 2026-10-21T03:38:01.848Z
+OBSERVED pass npm run types && npm run typecheck — opencode/glm-5.3 2026-10-21T03:38:04.818Z
+CHECKED TREE 302431ddfaee334196b7b5a1c2d9ac33b48136a9: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-20T17:41:05.632Z pavi item.created
+2026-10-20T17:41:05.632Z pavi criteria.revised
+2026-10-21T02:38:00.847Z pavi item.edited
+2026-10-21T02:38:00.847Z pavi criteria.revised
+2026-10-21T02:38:00.847Z pavi item.criteria_changed
+2026-10-21T02:41:11.627Z pavi item.edited
+2026-10-21T02:41:11.627Z pavi criteria.revised
+2026-10-21T02:41:11.627Z pavi item.criteria_changed
+2026-10-21T02:42:21.014Z opencode/glm-5.3 item.claimed
+2026-10-21T02:42:35.132Z opencode/glm-5.3 item.claim_failed
+2026-10-21T02:43:47.597Z opencode/glm-5.3 item.claimed
+2026-10-21T02:44:27.223Z opencode/glm-5.3 fork.created
+2026-10-21T02:54:30.321Z opencode/glm-5.3 push.observed
+2026-10-21T03:14:28.087Z opencode/glm-5.3 evidence.observed
+2026-10-21T03:14:31.319Z opencode/glm-5.3 evidence.observed
+2026-10-21T03:14:35.396Z opencode/glm-5.3 item.submitted
+2026-10-21T03:16:11.283Z pavi land.merge
+2026-10-21T03:16:12.129Z pavi land.regenerate
+2026-10-21T03:16:14.925Z pavi land.push
+2026-10-21T03:38:01.719Z opencode/glm-5.3 evidence.observed
+2026-10-21T03:38:02.016Z opencode/glm-5.3 evidence.observed
+2026-10-21T03:38:04.966Z opencode/glm-5.3 evidence.observed
+2026-10-21T03:38:05.685Z pavi land.check
+2026-10-21T03:38:06.083Z opencode/glm-5.3 item.submitted
+2026-10-21T03:38:06.313Z pavi land.submit
+2026-10-21T03:38:11.251Z pavi land.review
+2026-10-21T03:38:11.635Z pavi land.lease
+2026-10-21T03:38:13.625Z pavi item.accepted
+2026-10-21T03:38:13.798Z pavi land.accept
