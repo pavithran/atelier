@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -118,19 +118,24 @@ test("the generated command runs from another workspace: slot held, nested reuse
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const cwd = join(work, "other workspace");
   mkdirSync(cwd);
+  // A copy of the wrapper with a pool of its own (as test/load-process.test.mjs
+  // does). With the host's pool this command asked for a second slot of the
+  // suite's own host (the check holds the only one since t161, the default
+  // capacity of one) and waited for it until the test's timeout.
+  const wrapper = join(work, "load.mjs");
+  writeFileSync(wrapper, readFileSync(SLOT_WRAPPER, "utf8").replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(join(work, "pool.sqlite"))));
   const task = `t479-${randomUUID()}`;
   const inner = `
     const { spawnSync } = require("node:child_process");
-    const wrapper = ${JSON.stringify(SLOT_WRAPPER)};
+    const wrapper = ${JSON.stringify(wrapper)};
     const status = JSON.parse(spawnSync("node", [wrapper, "--status", "--json"], { encoding: "utf8" }).stdout);
     const mine = status.active.filter((e) => e.task === ${JSON.stringify(task)});
     const nested = spawnSync("node", [wrapper, "--", "node", "-e", "process.exit(7)"], { encoding: "utf8", env: process.env });
     const after = JSON.parse(spawnSync("node", [wrapper, "--status", "--json"], { encoding: "utf8" }).stdout);
     console.log(JSON.stringify({ cwd: process.cwd(), held: mine.length, cls: mine[0]?.class, nested: nested.status, still: after.active.filter((e) => e.task === ${JSON.stringify(task)}).length, args: process.argv.slice(1) }));
     process.exit(5);`;
-  const line = `${commandOf(slotNote(SLOT_WRAPPER))} -- ${quoteShell(process.execPath)} -e ${quoteShell(inner)} 'a b' "it's"`;
+  const line = `${commandOf(slotNote(wrapper))} -- ${quoteShell(process.execPath)} -e ${quoteShell(inner)} 'a b' "it's"`;
   const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ATELIER_TEST_TASK: task, ATELIER_TEST_PROJECT: "atelier", ATELIER_TEST_ACTOR: "claude-code/test", ATELIER_TEST_PRIORITY: "review" };
-  if (process.env.ATELIER_TEST_SLOTS) env.ATELIER_TEST_SLOTS = process.env.ATELIER_TEST_SLOTS;
   const r = spawnSync("sh", ["-c", line], { cwd, env, encoding: "utf8", timeout: 50000 });
   assert.equal(r.status, 5, r.stderr + r.stdout);
   const out = JSON.parse(r.stdout.trim().split("\n").at(-1));
