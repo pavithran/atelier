@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { runReview, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { REVIEW_RENEW_MS } from "../src/rules.ts";
 
 // Pin the load under the runner's limit so these tests are not held back by
 // this machine's real load; the gate is tested with an injected load.
@@ -686,7 +687,7 @@ function reviewRepos(t) {
 
 // Serves one review through the runner with the real git helpers, answering
 // the claim with `claim`, and returns the diff the reviewer read and its brief.
-async function serveReview(t, dir, claim, answers = {}) {
+async function serveReview(t, dir, claim, answers = {}, { renew = false } = {}) {
   const reviewer = { agent: "codex", models: ["gpt-6-astra"], command: ["reviewer", "{brief_file}", "{diff_file}", "{verdict_file}", "{model}"] };
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify({ agents: [reviewer], jobs: ["review"], tokens: { "gpt-6-astra": "agent.gpt-6-astra" } }));
@@ -695,28 +696,38 @@ async function serveReview(t, dir, claim, answers = {}) {
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   const seen = {}, posted = [];
+  const executeChild = async (argv, options) => {
+    if (argv[0] === "git") return execute(argv, options);
+    if (argv[0] === "reviewer") {
+      if (renew) { t.mock.timers.tick(REVIEW_RENEW_MS); await tick(); }
+      seen.brief = readFileSync(argv[1], "utf8");
+      seen.diff = readFileSync(argv[2], "utf8");
+      seen.diffPath = argv[2];
+      seen.cwd = options.cwd;
+      seen.head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8" }).trim();
+      seen.status = execFileSync("git", ["status", "--porcelain", "--ignored=no"], { cwd: options.cwd, encoding: "utf8" });
+      writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.\nBLOCKING: 0\nCRITERION 1: met — Ran the tests in the clone; they pass.");
+      return { code: 0 };
+    }
+    posted.push(argv[2]);
+    (seen.calls ??= []).push(argv.slice(2));
+    if (argv[2] in answers) return { code: 0, output: JSON.stringify(answers[argv[2]]) };
+    return { code: 0, output: argv[2] === "review-claim" ? JSON.stringify(claim) : "{}" };
+  };
   await runRunner(args, {
     workspacePath: () => join(dir, "t21"), wait: () => tick(), queue: async () => [task],
-    taskIO: { readSecret: () => FAKE_TOKEN },
-    async executeChild(argv, options) {
-      if (argv[0] === "git") return execute(argv, options);
-      if (argv[0] === "reviewer") {
-        seen.brief = readFileSync(argv[1], "utf8");
-        seen.diff = readFileSync(argv[2], "utf8");
-        seen.diffPath = argv[2];
-        seen.cwd = options.cwd;
-        seen.head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8" }).trim();
-        seen.status = execFileSync("git", ["status", "--porcelain", "--ignored=no"], { cwd: options.cwd, encoding: "utf8" });
-        writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.\nBLOCKING: 0\nCRITERION 1: met — Ran the tests in the clone; they pass.");
-        return { code: 0 };
-      }
-      posted.push(argv[2]);
-      (seen.calls ??= []).push(argv.slice(2));
-      if (argv[2] in answers) return { code: 0, output: JSON.stringify(answers[argv[2]]) };
-      return { code: 0, output: argv[2] === "review-claim" ? JSON.stringify(claim) : "{}" };
+    taskIO: {
+      readSecret: () => FAKE_TOKEN,
+      // This fixture tests real Git and briefs. Evidence collection has its
+      // own tests; its host-slot typecheck would deadlock behind this suite.
+      runnerEvidence: undefined,
+      // Lease helpers stay inside the same fake CLI as claims and verdicts.
+      cli: async (argv, cwd, options) => (await executeChild([process.execPath, "fixture-cli", ...argv], { cwd, ...options })).output,
     },
+    executeChild,
   });
   assert.ok(posted.includes("review"), `the verdict is posted: ${posted.join(", ")}`);
+  assert.doesNotMatch(seen.brief, /## Clean-clone run/, "the Git-diff fixture must not collect runner evidence");
   return seen;
 }
 
@@ -755,6 +766,20 @@ test("a review of a task that merged main after its fork reads only the task's o
   const fallback = await serveReview(t, dir, claimFor({ base: forkPoint, fork }, head, null));
   assert.deepEqual(changed(fallback.diff), ["main.txt", "task.txt"]);
   assert.ok(fallback.brief.includes(`Base: ${forkPoint}, the fork point. The merge base with the branch the task merges into could not be found`));
+});
+
+test("the Git review fixture renews through its fake CLI after thirty simulated seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { dir, commit, fork, work, git } = reviewRepos(t);
+  const base = commit(work, "base.txt", "base\n");
+  const head = commit(work, "task.txt", "task\n");
+  git(work, "push", "--quiet", fork, "HEAD:main");
+  const seen = await serveReview(t, dir, claimFor({ base, fork }, head, null), {}, { renew: true });
+  const renewal = seen.calls.find((argv) => argv[0] === "review-renew");
+  assert.ok(renewal, "the interval renews the claim through the fake helper");
+  assert.equal(renewal[renewal.indexOf("--request") + 1], String(claimed.request));
+  assert.ok(seen.calls.indexOf(renewal) < seen.calls.findIndex((argv) => argv[0] === "review"));
+  assert.deepEqual(changed(seen.diff), ["task.txt"]);
 });
 
 test("a part's review diffs against its plan's branch, not main", async (t) => {
