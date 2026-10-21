@@ -1742,8 +1742,9 @@ it("the settings, project and task pages render a legacy ledger's historical pol
     return res.text();
   };
   const settings = await page(`/p/${name}/settings`);
-  expect(settings).toContain("ControlPlane policy, approved: PAVI, 2026-10-01: approved the copy");
-  expect(settings).toContain("Eligible agents: claude");
+  // The stored approval and eligible list are kept but no longer drawn (t153).
+  expect(settings).not.toContain("ControlPlane policy");
+  expect(settings).not.toContain("Eligible agents");
   expect(settings).toContain("security/**");
   expect(settings).toContain("capability verify is local-read-only");
   expect(settings).toContain("Refused"); // the overlap rule

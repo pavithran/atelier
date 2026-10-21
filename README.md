@@ -646,8 +646,8 @@ atelier ship --dry-run
 atelier ship
 ```
 
-`atelier ship` composes the order from the project's own files
-(`docs/atelier/ship.json`, or ControlPlane's ship policy), refuses before
+`atelier ship` composes the order from the project's ship file
+(`docs/atelier/ship.json`), refuses before
 running anything when a protected step lacks its approval, stops at the
 first failure, never forces a push, and records every step on the ledger.
 The ship files and what they run are protected like check scripts. The
@@ -659,9 +659,8 @@ confining it is [docs/harness-confinement.md](docs/harness-confinement.md).
 (`atelier unwrap` and `atelier wrap`), projects that use Git LFS or have a
 history too large for Artifacts, removing and renaming projects, the private
 operations toolkit behind `atelier ops`, and cleaning finished workspaces
-with `atelier clean` are in [docs/owner.md](docs/owner.md). Projects governed by
-ControlPlane are in
-[docs/control-plane.md](docs/control-plane.md).
+with `atelier clean` are in [docs/owner.md](docs/owner.md). What became of
+ControlPlane is in [docs/control-plane.md](docs/control-plane.md).
 [docs/using-atelier.md](docs/using-atelier.md) is the developer's guide to using
 Atelier well, and [docs/orchestrating.md](docs/orchestrating.md) the
 handbook for a session that runs Atelier for a project.

@@ -1,15 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  adapterClasses, checkClassOf, classText, classifyCommand, knownReadOnly, parseDeclarations, refusalOf, settleCheckClasses, simpleCommands,
+  checkClassOf, classText, classifyCommand, knownReadOnly, parseDeclarations, refusalOf, settleCheckClasses, simpleCommands,
   type CheckDeclaration,
 } from "../src/checks.ts";
 import { parseRuleError } from "../src/rules.ts";
 
 // A check runs in a clean clone whenever anyone asks, so it must be
 // read-only. These tests pin the refusal list, the known build and test
-// forms, the classes recorded on a project and what a ControlPlane adapter
-// says, against the commands projects register.
+// forms and the classes recorded on a project, against the commands projects
+// register.
 
 const refusedWith = (fn: () => unknown) => {
   try { fn(); } catch (err) { return parseRuleError(err); }
@@ -197,32 +197,6 @@ test("a declaration from a request names a command, is by the adapter or the own
   for (const bad of [null, {}, [{ command: "x", by: "command", note: "n" }], [{ command: "", by: "owner", note: "n" }], [{ command: "x", by: "owner", note: "  " }], [{ command: "x", by: "owner", note: "n".repeat(501) }], [{ command: 3, by: "owner", note: "n" }]]) {
     assert.equal(refusedWith(() => parseDeclarations(bad))?.status, 400, JSON.stringify(bad));
   }
-});
-
-test("a ControlPlane adapter declares the checks it lists as read-only capabilities and refuses those it lists under any other class", () => {
-  const adapter = {
-    capabilities: {
-      "unit-tests": { action_class: "local-read-only", command: ["npm", "test"] },
-      "production-build": { action_class: "local-write", command: ["npm", "run", "build"] },
-      "app-build": { action_class: "local-read-only", command: ["xcodebuild", "-destination", "generic/platform=iOS Simulator", "build"] },
-      verify: { action_class: "local-read-only", command: ["bin/control-plane-check.sh"] },
-      install: { action_class: "device", command: ["bin/device-delivery.sh", "install", "--target", "canonical-ipad"] },
-      deploy: { action_class: "deploy", command: ["npm", "run", "deploy"] },
-    },
-  };
-  const checks = ["npm test", "npm run build", "xcodebuild -destination 'generic/platform=iOS Simulator' build", "bin/control-plane-check.sh", "bin/device-delivery.sh install --target canonical-ipad", "./other.sh", "npm ci && npm test"];
-  const { declarations, refusals } = adapterClasses(adapter, checks);
-  assert.deepEqual(declarations, [
-    { command: "npm test", by: "adapter", note: "capability unit-tests is local-read-only" },
-    { command: "npm run build", by: "adapter", note: "capability production-build is local-write" },
-    { command: "xcodebuild -destination 'generic/platform=iOS Simulator' build", by: "adapter", note: "capability app-build is local-read-only" },
-    { command: "bin/control-plane-check.sh", by: "adapter", note: "capability verify is local-read-only" },
-  ]);
-  assert.deepEqual(refusals.map((r) => r.command), ["bin/device-delivery.sh install --target canonical-ipad"]);
-  assert.match(refusals[0].text, /is ControlPlane capability install, of class device/);
-  // Capabilities may be a list, and an adapter without them says nothing.
-  assert.deepEqual(adapterClasses({ capabilities: [{ name: "t", action_class: "local-read-only", command: ["./t.sh"] }] }, ["./t.sh"]).declarations, [{ command: "./t.sh", by: "adapter", note: "capability t is local-read-only" }]);
-  assert.deepEqual(adapterClasses(null, ["npm test"]), { declarations: [], refusals: [] });
 });
 
 test("an unreadable command is neither refused nor known", () => {

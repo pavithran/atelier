@@ -301,6 +301,9 @@ test("CLI init with ControlPlane files still sends Atelier's own checks, protect
   assert.equal(body.refuseOverlap, true);
   assert.ok(Array.isArray(body.shipRuns) && Array.isArray(body.shipKinds));
   assert.equal(body.agents, undefined);
+  // The summary prints the policy Atelier recorded and no eligible-agents line (t153).
+  assert.match(result.stdout, /^Overlap:/m);
+  assert.doesNotMatch(result.stdout, /Eligible/);
 }));
 
 test("CLI init asks for no approval on a checkout with ControlPlane files", () => fixture(({ command, initial, calls }) => {

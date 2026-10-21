@@ -24,9 +24,9 @@ submits and merges once every part is integrated. A `refresh` job merges
 main's head into the plan's branch: the tick dispatches it before a part when
 main has moved, and the developer runs it with `atelier plan refresh` (section
 5); a refresh that conflicts adds a merge-main part to the plan, which a
-model builds and resolves. Every merge writes a landing receipt
-(`writeReceipt` in `cli/atelier.mjs`), but it names the item, not the plan's
-parts: the merge receipt that lists the parts is not built. A goal walked
+model builds and resolves. A merge writes no landing receipt
+(ControlPlane's, retired), and its provenance note names the item, not the
+plan's parts: no merge record that lists the parts is built. A goal walked
 end to end through the running orchestrator, command by command, is in
 [docs/demo.md](demo.md).
 
@@ -390,7 +390,7 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 11. **Integration rules.** The `integrated` state, `planGate`, and integration verification, in `src/plans/integrate.ts`. Built.
 12. **Measuring parts against the plan's fork.** `baseRepoOf`: the claim source, the `base-token` route, and CLI `check`, `diff` and `update`. Built.
 13. **Integrate jobs.** The `integrated` and `integration-failed` routes, the `mergeability` pre-check at the integrator's claim, marking parts merged when the plan merges, and the reserved integrator actor. Built.
-14. **Runner `--integrate`.** The integrate and refresh jobs. Built. The refresh is dispatched by the tick when main has moved and by `atelier plan refresh`, and recorded through the `refreshed` and `refresh-failed` routes. A conflicted refresh, or `atelier plan refresh --resolve`, adds a merge-main part that the runner sets up by merging main into the part's workspace. A part sent back for a conflict with the plan's branch is dispatched with the branch's head, which the runner merges into its workspace the same way. The merge receipt still lists no parts: every merge writes the landing receipt (`writeReceipt` in `cli/atelier.mjs`), and it names the item, not the plan's parts. Tests: `test/plan-refresh.spec.ts`, `test/plan-merge-main.spec.ts`, `test/plan-merge-plan.spec.ts`, `test/integrate-runner.test.mjs`, `test/runner-merge-main.test.mjs`, `test/runner-merge-plan.test.mjs`.
+14. **Runner `--integrate`.** The integrate and refresh jobs. Built. The refresh is dispatched by the tick when main has moved and by `atelier plan refresh`, and recorded through the `refreshed` and `refresh-failed` routes. A conflicted refresh, or `atelier plan refresh --resolve`, adds a merge-main part that the runner sets up by merging main into the part's workspace. A part sent back for a conflict with the plan's branch is dispatched with the branch's head, which the runner merges into its workspace the same way. No merge record lists the parts: a merge writes no landing receipt (retired with ControlPlane), and its provenance note names the item, not the plan's parts. Tests: `test/plan-refresh.spec.ts`, `test/plan-merge-main.spec.ts`, `test/plan-merge-plan.spec.ts`, `test/integrate-runner.test.mjs`, `test/runner-merge-main.test.mjs`, `test/runner-merge-plan.test.mjs`.
 
 ## Deferred work
 

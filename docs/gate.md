@@ -71,8 +71,7 @@ approval at that head from a model of another family than every recorded
 contributor's, or the developer's override of that review. A model's
 family is read from its name ([`src/models/pool.ts`](../src/models/pool.ts)), and
 a family no name pattern recognises never qualifies, whether it is the
-reviewer's or a contributor's. This holds in every project, with or without
-ControlPlane policy files. Models are compared without letter case or a
+reviewer's or a contributor's. This holds in every project. Models are compared without letter case or a
 `:profile` suffix, and a name the model registry
 ([`src/models/registry.ts`](../src/models/registry.ts)) lists for a model, such as
 `claude-opus-5-5` for `opus-5.5`, is that model. What a check executes is protected automatically: a script it runs (`./check.sh`,
@@ -97,14 +96,14 @@ as the code under test, are not protected, and nor is test configuration such
 as `vitest.config.ts` unless the project protects it. Protected paths match
 whatever the letter case or Unicode form, because the developer's Mac stores
 `claude.md` and `CLAUDE.md`, or `AGENTſ.md` (with a long s) and `AGENTS.md`, as
-one file; item scopes and `direct.allowed_path_patterns` match as written, so a
+one file; item scopes match as written, so a
 variant falls outside them. `atelier merge` refuses, before it changes the
 checkout, a merge whose tree would hold two such paths, on any platform.
 
 The ship files and what they run are protected the same way: `docs/atelier/**`
 in every project, and every file the ship order's commands execute, derived
 from the commands `atelier init` and `atelier sync` record from
-`docs/atelier/ship.json` or the ControlPlane adapter exactly as a check's
+`docs/atelier/ship.json` exactly as a check's
 files are derived from its line. An item therefore cannot quietly change what
 the developer's `atelier ship` runs with their environment; see
 [docs/ship.md](ship.md).
@@ -115,10 +114,7 @@ configuration can run files from the tree: a hooks folder that
 defined in configuration, or a configuration file the checkout includes.
 `atelier merge` lists those paths from the checkout's configuration and
 refuses, before it changes the checkout, an accepted change that touches one,
-naming each; the developer reviews those files and lands the change by hand. It
-also refuses a symlink where the landing reads or writes its ControlPlane
-files (the policy files, the receipt template, the receipts folder), which
-would take the read or the write outside the checkout. Every Git command of
+naming each; the developer reviews those files and lands the change by hand. Every Git command of
 `merge`, `merge --cancel` and `sync` runs with hooks off:
 `core.hooksPath=/dev/null` for a hooks folder, and `hook.NAME.enabled=false`
 for each hook defined in configuration, which Git 2.54 still runs under
@@ -178,7 +174,7 @@ rejections, including a rejection caused only by the reviewer’s environment.
 It records which rejections it waives; a later rejection still blocks, as do
 failing checks and the developer’s own rejection. Atelier refuses an override
 where no review is missing and no agent rejection stands. The task page, the inbox and the decision brief
-show it with its reason, and the landing receipt records it. The merge's
+show it with its reason. The merge's
 provenance note, which can be pushed to a public remote, names the override and
 who made it but not its reason; it names each review's reviewer, verdict, head
 and recorder in the same way, without the review's note. Both stay in the
@@ -194,7 +190,7 @@ atelier accept t3 --override-review "no other family is available" --quote "over
 
 Both are required, and both are recorded with the override, on its
 `review.overridden` event (`confirmed: "direction"`), and shown on the task
-page, in `atelier status` and in the landing receipt, so every override says
+page and in `atelier status`, so every override says
 afterwards who asked and why. Without them, the developer token alone does
 not override: the developer first presses "Allow an override from the
 command line" on the task's page, under their Cloudflare Access sign-in or
@@ -363,15 +359,11 @@ allowed. Atelier reads the command as a shell would: each command joined by
 `&&`, `|` or `;`, inside `$( )`, `sh -c '…'`, `trap '…'` or `eval`, and
 behind `env`, `timeout`, `xargs`, `npx` or `sudo`, is classed.
 
-A check is read-only in one of three ways, recorded with the project:
+A check is read-only in one of two ways, recorded with the project:
 
 - its command is a known build or test form, such as `npm ci && npm test`,
   `npm run typecheck`, `xcodebuild build-for-testing …`, `swift test`,
   `python3 -m unittest …` or `git diff --exit-code`;
-- the project's ControlPlane adapter lists the same command, word for word,
-  as a capability of class `local-read-only` or `local-write` (a build's
-  writes stay in the clone); a capability of any other class (`deploy`,
-  `device`, `network` and the rest) is refused;
 - the developer declares it, with the reason, as init records its
   approval: `atelier init --check "./check.sh" --declare-read-only "PAVI,
   2026-10-06: check.sh runs the unit tests and builds nothing it ships"`.
@@ -395,7 +387,7 @@ check runs with the caller's file access; Atelier has no sandbox for it.
 ## Checks that apply to some paths
 
 A required check may apply only when an item changes a path its globs match,
-as ControlPlane's `change_rules` said which checks a change needs. The gate
+as ControlPlane's `change_rules` once said which checks a change needs. The gate
 requires such a check exactly when one of the item's changed paths, measured
 by the Worker against main's head, matches its globs, whatever the letter
 case or Unicode form, so a variant spelling of a path still needs the check.
@@ -412,23 +404,11 @@ the check must be run. The record carries no result and measures the
 changed paths, so a change that no check applies to can still be accepted.
 A command given after `atelier check --` always runs.
 
-`atelier init` takes the globs from a ControlPlane project's
-`project-adapter.v1.json`. A change rule requires capabilities when a
-changed path matches its patterns. A registered check runs a capability when
-every command the capability runs is one of the check's, word for word, so
-`npm ci && npm run check && npm test` runs the capabilities `npm run check`
-and `npm test`. Such a check applies where any rule requiring a capability
-it runs applies; a check that runs none applies to every change. ControlPlane
-matched patterns as Python's `fnmatch` does, where `*` crosses directories,
-so each `*` is recorded as `**`. Init's summary prints each check's globs
-and names any capability a rule requires that no registered check runs, and
-`atelier status --project NAME` and the project page show the globs. An
-adapter without change rules leaves every check applying to every change.
-A re-init that names no check takes none of the rules (PAVI's decision of
-2026-10-06): conditioning a check to some paths can drop coverage outright,
-since a change to none of the checks' paths then runs no check (on that day
-Omniscope's rules would have left a change to `family/**` or `package.json`
-running no check). Such an init keeps the paths recorded for the checks and
-names each narrowing the rules would make; the first init, and any init that
-names the checks with `--check` or starts over with `--reset`, takes the
-rules as the adapter holds them.
+A project's check globs came from ControlPlane's `change_rules`, which
+`atelier init` imported. It no longer does (ControlPlane is retired): init
+records no globs and keeps the ones a project already holds, which apply as
+before. Init's summary prints each check's globs, and `atelier status
+--project NAME` and the project page show them. A check with no globs applies
+to every change. Conditioning a check to some paths can drop coverage outright,
+since a change to none of the checks' paths then runs no check, so a re-init
+that names no check leaves the recorded globs as they are.

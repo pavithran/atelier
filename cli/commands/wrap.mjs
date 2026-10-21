@@ -28,7 +28,7 @@ export default async function wrapCommand() {
   // Skipped checks cannot fail, so the override would record nothing: the
   // owner says which of the two is meant.
   if (allowFailing && data.checksSkipped) die("--allow-failing and --no-check together: skipped checks cannot fail; give one or the other");
-  wrapReady(name, cwd, true);
+  wrapReady(name, cwd);
   const { project: record } = await call("GET", P(name), undefined, as);
   try { pinCheckoutIdentity(cwd, record.policy.commitIdentity); } catch (error) { die(`${error.message}; nothing was staged`); }
   const refused = data.checksSkipped ? [] : record.policy.checks.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
@@ -70,7 +70,7 @@ export default async function wrapCommand() {
   }
   const tree = sessionTree(cwd);
   console.log(`Uncommitted files:\n${tree || "none"}`);
-  const branch = wrapReady(name, cwd, false);
+  const branch = wrapReady(name, cwd);
   const remotes = args.push ? git(["remote"], { cwd }).split("\n").filter(Boolean) : [];
   if (remotes.length > 100) die("wrap supports at most 100 remote results");
   data = cleanSession(data);

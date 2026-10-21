@@ -479,8 +479,8 @@ landing. In order:
    write the stage `workspace` of a new round saying main moved, and go
    back to step 2: the executor merges main again, and the new head is
    checked, submitted and reviewed as before, where the server carries the
-   approval over a clean merge of main as far as its rules let it (t459,
-   where deployed) or asks for a new review. Each round's steps are named
+   approval over a clean merge of main as far as its rules let it (t459)
+   or asks for a new review. Each round's steps are named
    for it, so none answers from an earlier round's cached result. After
    five rounds of main moving, the landing ends unmerged.
    Where main has not moved, record it with the head on the Ledger, so the

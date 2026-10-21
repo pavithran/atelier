@@ -1498,7 +1498,7 @@ export function buildStanding(
     merged,
     overrides: mergedByOverride(items).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((i) => ({ id: i.id, title: i.title, at: i.reviewOverride!.at, reason: i.reviewOverride!.reason, ...(i.reviewOverride!.quote ? { quote: i.reviewOverride!.quote, acting: i.reviewOverride!.acting } : {}) })),
     handoffs,
-    // A project governed by ControlPlane carries the owner's recorded approval.
+    // Kept for older CLIs, which read it; nothing in the current CLI or pages draws it (t153).
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
       : null,
@@ -1924,8 +1924,8 @@ export function renderProjectShip(p: ProjectRecord, actions: string, ownerName: 
 }
 
 // Settings: the project's own rules. Checks with their classes and path
-// conditions, the protected paths, the eligible agents, and the ControlPlane
-// policy when the project is governed by one.
+// conditions, the protected paths and the model, overlap and override rules.
+// A stored ControlPlane approval or eligible list is kept but not drawn (t153).
 // The fast mode row (Astra's audit of 2026-10-13, finding 3): refused where
 // overrides are; else the permission `atelier mode fast` needs, given here
 // with the factor no agent holds, as the task page's override permission is.
@@ -1946,19 +1946,14 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
     <dt>Check execution</dt><dd>Checks count from a runner's clean clone</dd>
     <dt>Models</dt><dd>${e(familyModeText(p.policy))}</dd>
-    <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, on the developer's direction (their quoted words and the model acting on them, with the developer token) or confirmed by the developer on the task's page with the Cloudflare Access sign-in or the server's confirmation secret"}</dd>
     <dt>Fast mode</dt><dd>${fastModeSetting(p, ownerFactor)}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
-  const cp = p.policy.approval
-    ? `<p class="meta standing-policy">ControlPlane policy, approved: ${e(p.policy.approval)}. Protected areas: ${p.policy.protected.map(e).join(", ") || "none"}. Eligible agents: ${p.policy.eligible?.map(e).join(", ") || "any"}. Overlapping claims: ${p.policy.refuseOverlap ? "refused" : "flagged"}.</p>`
-    : '<p class="meta standing-policy">No ControlPlane policy is recorded for this project.</p>';
   return projectPage(p, "Settings", `<section class="standing" aria-label="Project policy">
   <h2 class="section-title">Policy</h2>
   ${policy}
-  ${cp}
 </section>`, ownerName, `Settings · ${titleOf(p)}`);
 }
 

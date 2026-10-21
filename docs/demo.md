@@ -33,7 +33,6 @@ Checks:     npm test
   npm test: read-only, a known build or test command
 Ship:       0 protected commands
 Protected:  src/rules.ts
-Eligible:   any agent
 Overlap:    flagged
 ```
 

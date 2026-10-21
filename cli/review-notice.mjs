@@ -36,7 +36,7 @@ export function changedFromMain(git, dir, baseline) {
 // Name a local policy only when its relevant rule matches the recorded rule.
 // Merely having an execution policy file does not make it the source of every
 // protection: checks, ship files and explicit server protections have theirs.
-export function policySource(dir, rule, policy) {
+export function policySource(dir, rule) {
   const read = (file) => {
     try { return JSON.parse(readFileSync(join(dir, file), "utf8")); } catch { return null; }
   };
@@ -44,11 +44,7 @@ export function policySource(dir, rule, policy) {
   const adapterFile = "docs/control-plane/project-adapter.v1.json";
   const adapter = read(adapterFile);
   let file, doc;
-  if (rule?.origin.includes("execution policy") && execution && policy?.execution
-      && JSON.stringify(execution.direct) === JSON.stringify(policy.execution.direct)
-      && JSON.stringify(execution.protected_path_patterns) === JSON.stringify(policy.execution.protected_path_patterns)) {
-    file = EXECUTION_POLICY; doc = execution;
-  } else if (rule?.origin === "the project's protected paths" && rule.glob) {
+  if (rule?.origin === "the project's protected paths" && rule.glob) {
     if (execution?.protected_path_patterns?.includes(rule.glob) || execution?.maintenance_path_rules?.some((r) => r.paths?.includes(rule.glob))) {
       file = EXECUTION_POLICY; doc = execution;
     } else if (adapter?.protected_surfaces?.some((s) => s.pattern === rule.glob)) {
@@ -67,7 +63,7 @@ export function policySource(dir, rule, policy) {
 export function workspaceNotice(git, dir, policy, { baseline, part = false } = {}) {
   if (!policy) return null;
   const paths = changedFromMain(git, dir, baseline);
-  return paths ? reviewNotice(paths, policy, (rule) => policySource(dir, rule, policy), part) : null;
+  return paths ? reviewNotice(paths, policy, (rule) => policySource(dir, rule), part) : null;
 }
 
 // The instruction files the checkout holds.

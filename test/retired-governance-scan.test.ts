@@ -21,8 +21,7 @@ const READ = /\bpolicy\??\.(agents|execution|eligible)\b/g;
 // What may still read them, and why.
 const ALLOWED: Record<string, { reads: number; why: string }> = {
   "src/rules.ts": { reads: 1, why: "the merge comparison of an older acceptance's recorded eligible list, a warning overridable with --policy-changed-ok" },
-  "src/ui.ts": { reads: 3, why: "the Settings page and the standing data show the stored policy as history; standing.controlPlane keeps its wire shape" },
-  "cli/review-notice.mjs": { reads: 3, why: "a branch that names a local execution file as a rule's source; no rule names one now" },
+  "src/ui.ts": { reads: 1, why: "standing.controlPlane keeps its wire shape for older CLIs; no page or current command draws it (t153)" },
 };
 
 test("no decision reads a policy's stored agents, execution rules or eligible list", () => {

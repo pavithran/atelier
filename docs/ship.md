@@ -3,7 +3,7 @@
 A protected action runs only with the developer's approval for one exact
 revision of the project's main line, and each approval is used by one run.
 `atelier ship`, run by the developer in the registered checkout, composes the
-project's ship order from its own files, refuses before running anything when
+project's ship order from its ship file, refuses before running anything when
 a protected step has no approval at the revision being shipped, runs the steps
 in order, stops at the first failure, and records every step on the ledger.
 This follows PAVI's decision of 2026-10-05, recorded in atelier-ops'
@@ -31,9 +31,8 @@ revision of the main line, and `--push` is the developer's own act there, so it
 needs no approval (PAVI's decision of 2026-10-06); `deploy`, `install`,
 `paid-run` and `photos-writeback` keep their revision-bound approvals.
 
-A project's own files may name further kinds: an approval kind given in
-`docs/atelier/ship.json`, or a capability name or action class in
-`docs/control-plane/project-adapter.v1.json`. `atelier approve` refuses any
+A project's ship file may name further kinds: an approval kind given in
+`docs/atelier/ship.json`. `atelier approve` refuses any
 other kind, since nothing would use it. The Worker accepts any kind written in
 lower-case letters, digits and dashes, because it does not read the
 project's files.
@@ -88,16 +87,14 @@ withdrawn and expired ones.
 
 ## The composed order
 
-`atelier ship` reads the project's ship order from the first of these the
-checkout holds:
+`atelier ship` reads the project's ship order from one file, the project's
+`docs/atelier/ship.json`, described below. A checkout with only ControlPlane's
+files (`docs/control-plane/`) has no ship order: ship refuses before it runs a
+command, takes an approval or records a run, and names the file to add.
+ControlPlane's ship policy, adapter and device set are not read, valid or
+not (ControlPlane is retired).
 
-1. **ControlPlane's ship policy**, `docs/control-plane/ship-policy.v1.json`,
-   with `docs/control-plane/project-adapter.v1.json` for the commands and the
-   newest of `docs/control-plane/canonical-device-set.v3.json`, `v2` and
-   `v1` for the device targets.
-2. **Atelier's ship file**, `docs/atelier/ship.json`, described below.
-
-The orders are ControlPlane's:
+The class gives the order:
 
 | Class | Order |
 |---|---|
@@ -106,47 +103,13 @@ The orders are ControlPlane's:
 | hybrid | install, verify-delivery, commit, deploy, verify-delivery, wrap, push |
 | other | commit, wrap, push |
 
-### From a ControlPlane policy
-
-A policy whose `effect_order` has the rule `compose-from-declared-capabilities`
-composes the order from the delivery classes the adapter declares, as
-ControlPlane does: a capability with `action_class` `device` puts install and
-verify-delivery before commit, and one with `deploy` puts deploy and
-verify-delivery after it. A project that declares both is hybrid, and one
-that declares neither closes on commit, wrap and push. A policy without the
-rule takes its `application_classes` row for the class the canonical device
-set names.
-
-Each step runs adapter capabilities, each command as its list of words with
-no shell, in the checkout:
-
-- **install** runs, for each required target of the canonical device set,
-  the capability the target names as `install_capability`. A command that
-  ends with an option takes the target's `selector` as its value, as
-  MicahApp's `ios/bin/to-phone-adhoc.sh --device` takes the device's UDID.
-  A target marked `"requirement": "optional"` is left out and named in a
-  note. Without a device set, every `device` capability whose name starts
-  with `install` runs.
-- **verify-delivery after install** runs each required target's
-  `verify_capability` the same way, or every `device` capability whose name
-  starts with `verify`.
-- **deploy** runs every capability with `action_class` `deploy`.
-- **verify-delivery after deploy** runs every capability whose name starts
-  with `verify` and whose `action_class` is not `device`.
-
-A step with nothing to run refuses the ship before anything runs, naming what
-to declare. On 2026-10-06 none of the adapters read for this design (ikon
-weblog, list, Photograph, ControlPlane) declares a verify capability for its
-deploy, so each needs one, such as a `verify-deploy` capability running
-`curl -fsS` against the live site, before `atelier ship` runs for it.
-
-A capability's `timeout_seconds` is its timeout; without one it is 20
-minutes. The push goes to the branch's tracked upstream; a policy asking for
-a forced push is refused.
+A verify step with nothing to run refuses the ship before anything runs,
+naming what to declare: a web project needs a `verify-deploy` run, such as a
+request to the live site, before `atelier ship` runs for it.
 
 ### From `docs/atelier/ship.json`
 
-For a project without ControlPlane files. Atelier's own:
+Atelier's own:
 
 ```json
 {

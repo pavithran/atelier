@@ -750,31 +750,6 @@ export const singleFamily = (policy: Pick<ProjectPolicy, "familyMode"> | null | 
 export const independentReviewerText = (single: PoolFamily | null): string =>
   single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor";
 
-// Reject malformed policy at the boundary instead of silently widening access.
-export function parseAgents(value: unknown): Record<string, AgentPolicy> {
-  const roles = ["assessor", "consultant", "designer", "executor", "planner", "reconciler"];
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new RuleError("bad_policy", "agents must be an object", 400);
-  const entries = Object.entries(value).map(([name, a]) => {
-    if (!a || typeof a.available !== "boolean" || !Array.isArray(a.eligible_roles)
-      || !a.eligible_roles.every((r: unknown) => typeof r === "string" && roles.includes(r))
-      || (a.preferred_roles !== undefined && (!Array.isArray(a.preferred_roles) || !a.preferred_roles.every((r: unknown) => typeof r === "string" && roles.includes(r))))) {
-      throw new RuleError("bad_policy", `invalid roles for agent ${name}`, 400);
-    }
-    return [name, { available: a.available, eligible_roles: a.eligible_roles, ...(a.preferred_roles ? { preferred_roles: a.preferred_roles } : {}) }];
-  });
-  return Object.fromEntries(entries);
-}
-
-export function parseExecution(value: unknown): ExecutionPolicy {
-  const v = value as ExecutionPolicy | null;
-  const strings = (a: unknown): a is string[] => Array.isArray(a) && a.every((s) => typeof s === "string");
-  if (!v || !strings(v.allowed_classes) || !v.allowed_classes.every((c) => ["direct", "coordinated", "protected"].includes(c))
-    || !v.direct || typeof v.direct.enabled !== "boolean" || !strings(v.direct.allowed_path_patterns) || !strings(v.protected_path_patterns)) {
-    throw new RuleError("bad_policy", "invalid execution policy", 400);
-  }
-  return { allowed_classes: [...v.allowed_classes], direct: { enabled: v.direct.enabled, allowed_path_patterns: [...v.direct.allowed_path_patterns] }, protected_path_patterns: [...v.protected_path_patterns] };
-}
-
 // The actor that stands for the project owner. A deployment names its own with
 // OWNER_ACTOR; "owner" is the default.
 export const DEFAULT_OWNER = "owner";
