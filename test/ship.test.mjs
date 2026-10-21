@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { composeShip, knownKinds, neededKinds, ORDERS } from "../cli/ship.mjs";
+import { composeShip, knownKinds, neededKinds, ORDERS, stepEnv } from "../cli/ship.mjs";
 
 // atelier ship and its approvals. The composition is read from files in
 // temporary folders. ControlPlane's ship files are retired and never read.
@@ -49,8 +49,8 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.deepEqual(p.problems, []);
   assert.equal(p.source, "docs/atelier/ship.json");
   assert.equal(p.class, "web");
-  assert.deepEqual(outline(p), [["commit"], ["deploy", "npx wrangler deploy [deploy]"], ["verify-delivery", "https://atelier.zone"], ["wrap"], ["push"]]);
-  assert.equal(p.steps[2].runs[0].status, 200);
+  assert.deepEqual(outline(p), [["commit"], ["deploy", "node scripts/ship-worker.mjs deploy [deploy]"], ["verify-delivery", "node scripts/ship-worker.mjs verify"], ["wrap"], ["push"]]);
+  assert.equal(p.steps[2].runs[0].timeoutMs, 45_000);
   assert.deepEqual(p.steps[4].push, { remote: "github", branch: "main" });
   assert.equal(p.steps[1].runs[0].timeoutMs, 1200_000);
 });
@@ -198,7 +198,7 @@ async function fixture(t, { approve = [], ship, extra = {}, email = "t@x.test" }
   git(dir, "clone", "-q", "--bare", checkout, github);
   git(checkout, "remote", "add", "github", github);
   writeFileSync(join(checkout, "bin", "deploy.sh"), `#!/bin/sh
-echo "deploying; atelier token: \${ATELIER_TOKEN:-none}; api token: $MY_API_TOKEN"
+echo "deploying; atelier token: \${ATELIER_TOKEN:-none}; api token: $MY_API_TOKEN; source: $ATELIER_SHIP_HEAD"
 echo deployed >> "$SHIP_MARKER"
 exit \${DEPLOY_EXIT:-0}
 `);
@@ -206,7 +206,7 @@ exit \${DEPLOY_EXIT:-0}
   mkdirSync(join(checkout, "docs", "atelier"), { recursive: true });
   for (const [path, value] of Object.entries(extra)) {
     mkdirSync(dirname(join(checkout, path)), { recursive: true });
-    writeFileSync(join(checkout, path), JSON.stringify(value));
+    writeFileSync(join(checkout, path), typeof value === "string" ? value : JSON.stringify(value));
   }
   if (ship !== null) writeFileSync(join(checkout, "docs", "atelier", "ship.json"), JSON.stringify(ship ?? {
     schema_version: 1, kind: "atelier.ship", class: "web",
@@ -290,8 +290,10 @@ test("ship runs each step in order with its approvals, records each one redacted
   const f = await fixture(t, { approve: ["deploy"] });
   // The github remote is behind: the push fast-forwards it.
   assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
-  const r = await f.run(["ship", "--push"]);
+  const r = await f.run(["ship", "--push"], { ATELIER_SHIP_HEAD: "untrusted-caller-value" });
   assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, new RegExp(`source: ${f.head}`));
+  assert.doesNotMatch(r.stdout, /untrusted-caller-value/);
   assert.equal(readFileSync(f.marker, "utf8"), "deployed\n", "the deploy ran once");
   assert.match(r.stdout, /deploy: using approval a1 for deploy at /);
   assert.doesNotMatch(r.stdout, /push: using approval/, "--push is the owner's own act and takes no approval");
@@ -464,4 +466,35 @@ test("ship --push carries no commit holding a private file to the remote", async
   const push = f.state.runs.find((x) => x.step === "push");
   assert.match(push.outputTail, new RegExp(`Not pushed to github: main would carry private files: PROJECT\\.md in ${leak.slice(0, 12)}`));
   assert.equal(git(f.github, "rev-parse", "main"), before, "the remote got nothing");
+});
+
+test("ship source binding replaces caller input without exposing Atelier credentials (t182)", () => {
+  const head = "a".repeat(40);
+  assert.deepEqual(stepEnv({ PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_TOKEN: "owner-secret", ATELIER_SHIP_HEAD: "spoofed" }, head), { PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_SHIP_HEAD: head });
+});
+
+for (const matches of [true, false]) test(`canonical ship source verification ${matches ? "passes" : "stops wrap and push on mismatch"} (t182)`, async (t) => {
+  const plan = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
+  const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: { "scripts/ship-worker.mjs": readFileSync(resolve("scripts/ship-worker.mjs"), "utf8") } });
+  const bin = join(f.dir, "tools"); mkdirSync(bin);
+  const argsFile = join(f.dir, "deploy-args.txt");
+  writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$@" > "$DEPLOY_ARGS"\n`);
+  chmodSync(join(bin, "npx"), 0o755);
+  const preload = join(f.dir, "version-response.mjs");
+  writeFileSync(preload, `const original = globalThis.fetch; globalThis.fetch = (url, options) => String(url) === "https://atelier.zone/api/version" ? Promise.resolve(Response.json({commit:process.env.SHIP_TEST_COMMIT,main:process.env.SHIP_TEST_MAIN})) : original(url, options);`);
+  const r = await f.run(["ship", "--push"], { PATH: bin + ":" + process.env.PATH, DEPLOY_ARGS: argsFile, NODE_OPTIONS: "--import=" + preload, SHIP_TEST_COMMIT: matches ? f.head : "a".repeat(40), SHIP_TEST_MAIN: f.head, ATELIER_SHIP_HEAD: "spoofed" });
+  assert.ok(existsSync(argsFile), r.stderr + r.stdout);
+  assert.deepEqual(readFileSync(argsFile, "utf8").trim().split("\n"), ["wrangler", "deploy", "--keep-vars", "--var", `DEPLOYED_MAIN:${f.head}`]);
+  const verified = f.state.runs.find(run => run.step === "verify-delivery");
+  assert.equal(verified.passed, matches);
+  if (matches) {
+    assert.equal(r.status, 0, r.stderr + r.stdout);
+    assert.ok(f.state.runs.some(run => run.step === "wrap"));
+    assert.ok(f.state.runs.some(run => run.step === "push"));
+  } else {
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr + r.stdout, /live deployed commit does not match/);
+    assert.ok(!f.state.runs.some(run => ["wrap", "push"].includes(run.step)));
+    assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
+  }
 });
