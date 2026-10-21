@@ -74,7 +74,7 @@ function fenceFor(text) {
 // whose current folder is an empty scratch one (t140), the clone it reads.
 function lookFor(clone) {
   return clone
-    ? `The clone under review is ${clone}: read it there and run the project's tests against it, but your current folder is an empty scratch folder, the only place you may write, and the clone is read-only to you.`
+    ? `The clone under review is ${clone}: read it there and run the project's tests against it, but your current folder is an empty scratch folder, where you may write, as you may the system temp folder; the clone is read-only to you.`
     : "In the current folder you may read files and run the project's tests.";
 }
 
@@ -217,8 +217,9 @@ export const HARNESSES = {
       // the clone (t140): read-only refuses mkdtemp under the system temp
       // folder, so gpt-6-astra could not run a test that makes a scratch
       // folder. Under workspace-write it can write that folder and the system
-      // temp folder; the clone, its .git and the network stay closed to it.
-      if (kind === "review") return { argv: [...setup.noMcp, "exec", "--model", args.model, "--skip-git-repo-check", "--cd", setup.scratch, "--sandbox", "workspace-write", "--output-last-message", args.verdict, "-"], verdictFrom: "file" };
+      // temp folder; the clone, its .git and the network stay closed to it, and
+      // the two overrides keep a config.toml from opening them again.
+      if (kind === "review") return { argv: [...setup.noMcp, "exec", "--model", args.model, "--skip-git-repo-check", "--cd", setup.scratch, "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "--output-last-message", args.verdict, "-"], verdictFrom: "file" };
       const common = [...setup.noMcp, "exec", "--model", args.model, "--skip-git-repo-check", "--cd", args.workspace];
       // Its workspace-write sandbox keeps .git read-only unless it is named
       // a writable root, and a build has to commit.

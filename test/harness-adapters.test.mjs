@@ -709,7 +709,8 @@ test("a codex review runs workspace-write in a fresh empty folder outside the cl
   assert.ok(existed && entries.length === 0, "an existing, empty folder");
   assert.equal(argv[argv.indexOf("--cd") + 1], cwd, "codex is rooted in the scratch folder");
   assert.equal(argv[argv.indexOf("--sandbox") + 1], "workspace-write");
-  assert.ok(!argv.some((a) => a.startsWith("sandbox_workspace_write")), "no extra writable root, so the clone and its .git stay closed");
+  const overrides = argv.filter((a, i) => argv[i - 1] === "-c");
+  assert.deepEqual(overrides.filter((a) => a.startsWith("sandbox_workspace_write")), ["sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false"], "a config.toml cannot reopen the clone, its .git or the network (Astra on 3db03d0d)");
   assert.ok(!argv.includes(s.ws), "the clone is not a root of the run");
   assert.ok(cwd.startsWith(realpathSync(tmpdir())) || cwd.startsWith(tmpdir()));
   assert.ok(!cwd.startsWith(s.ws) && !s.ws.startsWith(cwd), "outside the clone");
