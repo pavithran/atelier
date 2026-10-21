@@ -874,11 +874,10 @@ it('the standing section and the Settings tab escape everything a person or agen
  const sec=page.split('id="standing"')[1].split('<details class="disclosure"')[0];
  for(const raw of ['<b>task</b>','<script>x</script>','<i>small</i>','<b>PAVI</b>','<u>summary</u>'])expect(page).not.toContain(raw);
  for(const esc of ['Read &lt;script&gt;x&lt;/script&gt; first','&lt;i&gt;small&lt;/i&gt;','Held &lt;b&gt;task&lt;/b&gt;'])expect(sec).toContain(esc);
- // The ControlPlane policy the project records is drawn on the Settings tab, escaped.
+ // The approval a project records is no longer drawn on the Settings tab (t153).
  expect(page).not.toContain('ControlPlane');
  const settings=f.renderProjectSettings(f.p);
- for(const esc of ['ControlPlane policy, approved: &lt;b&gt;PAVI&lt;/b&gt;','Protected areas: src/**. Eligible agents: claude. Overlapping claims: refused.'])expect(settings).toContain(esc);
- expect(settings).not.toContain('<b>PAVI</b>');
+ for(const gone of ['ControlPlane','Eligible agents','PAVI</b>','&lt;b&gt;PAVI'])expect(settings).not.toContain(gone);
 });
 // t394: a project on one company's models says so under its title on every
 // tab, on the Settings tab under Models, and in the standing data; the

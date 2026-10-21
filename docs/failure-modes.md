@@ -27,7 +27,7 @@ src/index.ts). Tests: test/check-env.test.mjs, "a passing local check sees no
 credentials and uploads none" and "a check still runs its toolchain: node and
 git from PATH, a temporary folder, its own HOME", both of which drive the real
 check path in a clean clone; test/lists.spec.ts, "a project's checks,
-protected paths and eligible agents must each be a list of non-empty strings".
+protected paths and ship settings must each be a list of non-empty strings".
 
 ## A2. Writing a test that encodes a defect instead of catching it
 
@@ -144,19 +144,15 @@ twelve days. The same self-audit found one defect fixed in installable and
 missed in web, one branch above it in the same function, and three validators
 reported as load-bearing on the count of twenty files that were retired stubs.
 
-Partly prevented. The surfaces a reader must consume are bounded by a policy
-committed in the tree: `wrapReady` in cli/atelier.mjs reads the context budget
-at HEAD (docs/control-plane/context-budget.v1.json, `evaluateCeilings` in
-src/context-budget.ts) and refuses wrap when a surface passes its ceiling, and
-a working copy of the policy that differs from HEAD's is named. Accumulated
-workspaces are retired only against proof, after each merge and by `atelier
+Partly prevented. Wrap once refused when a surface passed a ceiling in a
+context budget committed in the tree, as ControlPlane did; ControlPlane is
+retired (t153), so wrap reads no such budget and nothing in Atelier bounds
+those surfaces now. A project that wants a ceiling registers a check for it.
+Accumulated workspaces are retired only against proof, after each merge and by `atelier
 clean`: `finishedWorkspaceReason` in src/rules.ts refuses removal unless the
 item is merged or abandoned, the head is a head Atelier recorded or in main,
 the tree is clean, every ignored file is rebuildable output, and every commit
-the workspace reaches is under a recorded head or in main (t561). Tests: test/context-budget.test.ts,
-the generated case "ceiling at 5 lines" (refused) and "a working copy that
-differs from HEAD's policy is named, and HEAD's is the one applied";
-test/gc.test.mjs, "gc previews, then removes only clean closed
+the workspace reaches is under a recorded head or in main (t561). Tests: test/gc.test.mjs, "gc previews, then removes only clean closed
 clones; preserves all local work" and "a finished workspace goes once its
 HEAD is in main or the recorded head, and one holding work main lacks is kept
 and named (t561)" and "a finished workspace holding ignored files other than

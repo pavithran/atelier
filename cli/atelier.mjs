@@ -19,7 +19,6 @@ import { basename, join, resolve } from "node:path";
 
 import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from "../src/sessions.ts";
 
-import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 import { proseStandardLine } from "../src/prose-standard.ts";
 
 import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
@@ -1497,9 +1496,6 @@ export function formatStanding(s, ownerName = "the developer", origin = "", expi
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
   if (lines.length === 1) lines.push("", s.partial?.length ? "Nothing held, waiting, queued or recently merged is shown in the part read." : "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
-  if (s.controlPlane) {
-    lines.push("", `ControlPlane policy, approved: ${flat(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(flat).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(flat).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.`);
-  }
   group("Checks", (s.checks ?? []).map((c) => `${flat(c.command)}  ${flat(c.text)}${c.paths?.length ? `; applies only when the change touches ${c.paths.map(flat).join(", ")}` : ""}`));
   return lines.join("\n");
 }
@@ -1914,11 +1910,9 @@ export function sessionTree(cwd) {
 // registered checks, which can change the tree. It refuses a detached HEAD, a
 // merge, cherry-pick, revert, rebase or landing in progress, unmerged files in
 // the index (a squash merge or a stash pop leaves those with no marker file),
-// another branch than the registered one, and a surface over its ceiling. The
-// ceiling is the policy committed at HEAD: the working tree's copy can be
-// edited or deleted in the session that goes over it, so it is only compared.
-// `report` prints advisories; a refusal always prints what it counted.
-export function wrapReady(name, cwd, report) {
+// and another branch than the registered one. A ControlPlane context budget in
+// the checkout is not read (ControlPlane is retired, t153).
+export function wrapReady(name, cwd) {
   const branch = git(["branch", "--show-current"], { cwd });
   // The landing marker is the journal under the cache, or one an earlier CLI
   // left in the Git directory and merge has not yet moved; the others are
@@ -1932,25 +1926,6 @@ export function wrapReady(name, cwd, report) {
   const unmerged = unmergedPaths(git(["ls-files", "-u", "-z"], { cwd, raw: true }));
   const refusal = wrapRefusal({ branch, registered: cfg.projects[name].branch, inProgress, unmerged });
   if (refusal) die(refusal);
-  const committed = git(["ls-tree", "--name-only", "HEAD", "--", CONTEXT_BUDGET_PATH], { cwd }) ? git(["show", `HEAD:${CONTEXT_BUDGET_PATH}`], { cwd, raw: true }) : undefined;
-  let working;
-  try { working = readFileSync(join(cwd, CONTEXT_BUDGET_PATH), "utf8"); } catch { /* absent or unreadable: it differs from HEAD's */ }
-  const notice = policyNotice(committed, working);
-  if (notice && report) console.log(notice);
-  if (committed === undefined) return branch;
-  let policy;
-  try { policy = contextBudget(JSON.parse(committed)); }
-  catch (err) { die(`${CONTEXT_BUDGET_PATH} at HEAD is not a valid policy: ${err.message}`); }
-  const contents = Object.create(null);
-  for (const surface of policy.surfaces) {
-    const path = join(cwd, surface.path);
-    if (!existsSync(path)) continue;
-    if (!realpathSync(path).startsWith(realpathSync(cwd) + "/")) die(`context surface escapes checkout: ${surface.path}`);
-    contents[surface.path] = readFileSync(path, "utf8");
-  }
-  const result = evaluateCeilings(policy, contents);
-  if (report || result.refused) result.messages.forEach((message) => console.log(message));
-  if (result.refused) die("wrap refused: context ceiling exceeded");
   return branch;
 }
 

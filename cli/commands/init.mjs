@@ -259,7 +259,6 @@ export default async function initCommand() {
   if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
   const checkInputs = checkFiles(pol.checks ?? []);
   console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
-  console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
   console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
   console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the developer confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
   // A server older than --no-override ignores it and answers without it.

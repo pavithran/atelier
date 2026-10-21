@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { acceptancePolicy, mergeContext, mergePolicyDecision, policyChanges } from "../src/rules.ts";
 import { blockUntil, blockExpired, expiredBlocks } from "../src/rules.ts";
 import {
-  ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, approvalsNeeded, protectedRuleGroups, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, approvalsNeeded, protectedRuleGroups, measuredPaths, changeClass, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, foldPath, harnessRefusal, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   riskClass, riskNeed, parseRiskReviews, retainableApprovals, retentionVerdict,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
@@ -546,13 +546,6 @@ test("a stored execution policy blocks no class and implies no nothing-to-merge 
   const empty = gate(item(), p, [pass({ changedPaths: [] })], [review("codex/gpt-6")]);
   assert.doesNotMatch(empty.blockers.join(), /nothing to merge/);
   assert.equal(changeClass([], governed), null);
-});
-
-test("policy parsing rejects malformed roles and execution rules", () => {
-  assert.deepEqual(parseAgents(governed.agents), governed.agents);
-  assert.deepEqual(parseExecution(governed.execution), governed.execution);
-  for (const value of [null, [], { codex: { available: "yes", eligible_roles: ["executor"] } }, { codex: { available: true, eligible_roles: ["admin"] } }]) assert.throws(() => parseAgents(value), /400\|bad_policy/);
-  for (const value of [null, {}, { ...governed.execution, allowed_classes: ["unknown"] }, { ...governed.execution, direct: { enabled: "true", allowed_path_patterns: [] } }]) assert.throws(() => parseExecution(value), /400\|bad_policy/);
 });
 
 test("ungoverned gates need another family for a protected change, and count neither the same family nor the owner", () => {

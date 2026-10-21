@@ -32,78 +32,55 @@ const POLICY = "docs/control-plane/context-budget.v1.json";
 
 const policyOf = (ceiling) => JSON.stringify({ schema_version: 1, kind: "control-plane.context-budget", advisory: true, drift_multiple: 3, surfaces: [{ path: "STATE.md", baseline_lines: 1, required: true, ceiling_lines: ceiling }] });
 
-// Commits a policy at HEAD, as a project that keeps one has.
-function commitPolicy(f, ceiling) {
+// Commits a ControlPlane context budget at HEAD, as a project that once kept one has.
+function commitPolicy(f, text) {
   mkdirSync(join(f.checkout, "docs/control-plane"), { recursive: true });
-  writeFileSync(join(f.checkout, POLICY), policyOf(ceiling));
+  writeFileSync(join(f.checkout, POLICY), text);
   f.git("add", POLICY);
   f.git("commit", "-qm", "Context policy");
-  return f.git("rev-parse", "HEAD");
 }
 
-function refused(f, say) {
-  const before = snapshot(f.checkout), head = f.git("rev-parse", "HEAD");
-  const r = f.run("wrap", "Too large");
-  assert.equal(r.status, 1, r.stdout);
-  assert.match(r.stdout, /STATE.md: 2 lines, ceiling 1.*docs\/history/);
-  if (say) assert.match(r.stdout, say);
-  assert.deepEqual(snapshot(f.checkout), before, "nothing was staged or committed");
-  assert.equal(f.git("rev-parse", "HEAD"), head);
-  assert.deepEqual(f.requests().filter((q) => q.method !== "GET"), []);
+// ControlPlane is retired (t153): a surface over a committed ceiling, a malformed
+// budget, or one that differs from HEAD would each have refused the wrap before.
+for (const [name, committed, work] of [
+  ["a surface over its committed ceiling", policyOf(1), () => {}],
+  ["a malformed budget at HEAD", "{ not json", () => {}],
+  ["a budget at HEAD that is valid JSON of no known shape", JSON.stringify({ surfaces: "none" }), () => {}],
+  ["a budget edited in the working tree", policyOf(1), (f) => writeFileSync(join(f.checkout, POLICY), policyOf(100))],
+  ["a budget deleted in the working tree", policyOf(1), (f) => rmSync(join(f.checkout, POLICY))],
+]) {
+  test(`wrap ignores a ControlPlane context budget: ${name}`, (t) => {
+    const f = fixture(t);
+    commitPolicy(f, committed);
+    writeFileSync(join(f.checkout, "STATE.md"), "One\nTwo\nThree\n");
+    work(f);
+    const r = f.run("wrap", "Too large", "--no-check");
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.doesNotMatch(r.stdout + r.stderr, /ceiling|not a valid policy|wrap refused/);
+    assert.match(f.git("ls-tree", "-r", "--name-only", "HEAD"), /STATE\.md/);
+  });
 }
 
-
-test("wrap refuses a ceiling before staging or committing", (t) => {
-  const f = fixture(t);
-  commitPolicy(f, 1);
-  writeFileSync(join(f.checkout, "STATE.md"), "One\nTwo\n");
-  refused(f);
-});
-
-
-test("a policy edited in the working tree does not lift the ceiling committed at HEAD", (t) => {
-  const f = fixture(t);
-  commitPolicy(f, 1);
-  writeFileSync(join(f.checkout, "STATE.md"), "One\nTwo\n");
-  writeFileSync(join(f.checkout, POLICY), policyOf(100));
-  refused(f, /context-budget\.v1\.json differs from HEAD.*applies the policy committed at HEAD/);
-});
-
-
-test("a policy deleted in the working tree does not lift the ceiling committed at HEAD", (t) => {
-  const f = fixture(t);
-  commitPolicy(f, 1);
-  writeFileSync(join(f.checkout, "STATE.md"), "One\nTwo\n");
-  rmSync(join(f.checkout, POLICY));
-  refused(f, /context-budget\.v1\.json is deleted in the working tree.*applies the policy committed at HEAD/);
-});
-
-
-test("a policy that is not committed yet applies from the session after it is", (t) => {
+test("wrap ignores a ControlPlane context budget that is not committed", (t) => {
   const f = fixture(t);
   mkdirSync(join(f.checkout, "docs/control-plane"), { recursive: true });
   writeFileSync(join(f.checkout, POLICY), policyOf(1));
   writeFileSync(join(f.checkout, "STATE.md"), "One\nTwo\n");
-  const r = f.run("wrap", "Introduce the policy", "--no-check");
+  const r = f.run("wrap", "Introduce the budget", "--no-check");
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /is not committed at HEAD, so no ceiling applies until it is/);
-  assert.match(f.git("ls-tree", "-r", "--name-only", "HEAD"), /context-budget\.v1\.json/);
+  assert.doesNotMatch(r.stdout, /ceiling|not committed at HEAD/);
   const next = f.run("wrap", "The next session", "--no-check");
-  assert.equal(next.status, 1, next.stdout);
-  assert.match(next.stdout, /STATE.md: 2 lines, ceiling 1.*docs\/history/);
+  assert.equal(next.status, 0, next.stdout + next.stderr);
 });
 
-
-test("wrap asks again about the ceiling once the registered checks have run", (t) => {
-  if (!canInspectSlots(t)) return;
+test("wrap still refuses a merge in progress beside a committed ControlPlane context budget", (t) => {
   const f = fixture(t);
-  commitPolicy(f, 2);
+  commitPolicy(f, policyOf(1));
   f.clean();
-  const r = f.runWith({ FAKE_CHECKS: JSON.stringify(["printf 'a\\nb\\nc\\n' > STATE.md"]) }, "wrap", "Grew", "--next", "x");
+  writeFileSync(join(f.checkout, ".git", "MERGE_HEAD"), f.head + "\n");
+  const r = f.run("wrap", "Late", "--no-check");
   assert.equal(r.status, 1, r.stdout);
-  assert.match(r.stdout, /STATE.md: 3 lines, ceiling 2.*docs\/history/);
-  assert.equal(f.git("diff", "--cached", "--name-only"), "");
-  assert.deepEqual(f.requests().filter((q) => q.method !== "GET"), []);
+  assert.match(r.stderr, /a merge in progress/);
 });
 
 // A pre-push hook that records the remote it was given and what it saw of GIT_LFS_SKIP_PUSH:

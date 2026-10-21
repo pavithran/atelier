@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { checkApplies, evidenceAt, gate, parseRuleError, type Evidence, type Item, type ProjectPolicy } from "../src/rules.ts";
-import { adapterCheckPaths, appliesReason, appliesText, fromFnmatch, parseCheckPaths, settleCheckPaths } from "../src/checks.ts";
+import { appliesReason, appliesText, parseCheckPaths, settleCheckPaths } from "../src/checks.ts";
 import { briefFor } from "../src/brief.ts";
 
 // A check can apply only when an item's changed paths match its globs. The
@@ -99,47 +99,3 @@ test("an init gives paths only for registered checks, and keeps those of checks 
   }
 });
 
-test("ControlPlane's fnmatch patterns become globs that match the same paths", () => {
-  assert.equal(fromFnmatch("*.md"), "**.md");
-  assert.equal(fromFnmatch("src/**"), "src/**");
-  assert.equal(fromFnmatch("astro.config.*"), "astro.config.**");
-  const p = { checkPaths: [{ command: "c", paths: ["*.md", "astro.config.*"].map(fromFnmatch) }] };
-  assert.equal(checkApplies(p, "c", ["docs/guide.md"]), true);
-  assert.equal(checkApplies(p, "c", ["astro.config.mjs"]), true);
-  assert.equal(checkApplies(p, "c", ["src/a.ts"]), false);
-});
-
-test("init imports change_rules: a check applies where the rules requiring the capabilities it runs apply", () => {
-  // ikon weblog's adapter, in part, with its registered check.
-  const adapter = {
-    capabilities: {
-      "unit-tests": { action_class: "local-read-only", command: ["npm", "test"] },
-      "astro-check": { action_class: "local-read-only", command: ["npm", "run", "check"] },
-      "production-build": { action_class: "local-write", command: ["npm", "run", "build"] },
-      "diff-check": { action_class: "local-read-only", command: ["git", "diff", "--check"] },
-      "app-build": { action_class: "local-read-only", command: ["/bin/sh", "-c", "xcodegen generate && xcodebuild build"] },
-      deploy: { action_class: "deploy", command: ["npx", "wrangler", "deploy"] },
-    },
-    change_rules: [
-      { patterns: ["src/**", "astro.config.*", "package.json"], reason: "runtime", requires: ["unit-tests", "astro-check", "production-build", "diff-check"] },
-      { patterns: ["AGENTS.md", "docs/**"], reason: "docs", requires: ["diff-check"] },
-      { patterns: ["App/**"], reason: "app", requires: ["app-build"] },
-      { patterns: [], reason: "empty", requires: ["unit-tests"] },
-      { patterns: ["x/**"], reason: "unknown", requires: ["no-such-capability"] },
-    ],
-  };
-  const checks = [
-    "npm ci --prefer-offline --no-audit --no-fund && npm run check && npm test",
-    "cd ios && xcodegen generate && xcodebuild build",
-    "swift test",
-  ];
-  const { paths, unrun } = adapterCheckPaths(adapter, checks);
-  assert.deepEqual(paths, [
-    { command: checks[0], paths: ["src/**", "astro.config.**", "package.json"] },
-    { command: checks[1], paths: ["App/**"] },
-  ]);
-  assert.deepEqual(unrun, [{ name: "production-build", command: "npm run build" }, { name: "diff-check", command: "git diff --check" }]);
-  // No change rules, no paths: every check applies to every change.
-  assert.deepEqual(adapterCheckPaths({ capabilities: adapter.capabilities, change_rules: [] }, checks), { paths: [], unrun: [] });
-  assert.deepEqual(adapterCheckPaths(null, checks), { paths: [], unrun: [] });
-});

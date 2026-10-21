@@ -53,14 +53,11 @@ an agent's included. They read what the remote holds from the remote itself;
 when its head is not in the checkout, the whole history is checked. A remote
 the policy does not declare is pushed as before, whoever committed.
 
-When `docs/control-plane/context-budget.v1.json` is committed at HEAD, wrap
-counts lines in its named surfaces. Any absolute ceiling exceeded refuses the
-commit, even with an advisory policy. Move history into `docs/history/` rather
-than raising the ceiling. Wrap reads the policy as committed at HEAD, never the
-working tree's copy, so editing or deleting it in the same session does not lift
-a ceiling; when the copy differs, wrap says so and applies HEAD's. A policy not
-yet committed applies from the session after it is. Baseline drift is advisory.
-No policy at HEAD means no ceiling.
+Wrap reads no ControlPlane context budget: a `docs/control-plane/context-budget.v1.json`
+in the checkout, valid or malformed, over its ceilings or not, changes nothing
+(ControlPlane is retired). Its other refusals stand: a detached HEAD, a merge,
+cherry-pick, revert, rebase or landing in progress, unmerged files, and another
+branch than the registered one.
 
 Before closing, file defects in Atelier or project tooling as tasks in the
 project they belong to with `atelier new "…" --project NAME`. Atelier defects
@@ -77,8 +74,7 @@ remote results and filed task IDs are limited to 100 each.
 
 ## Where a project stands
 
-For a project on Atelier, this replaces ControlPlane's pickup card and a
-hand-written `STATE.md`. Atelier already records who holds each task, what is
+The summary replaces a pickup card and a hand-written `STATE.md`. Atelier already records who holds each task, what is
 waiting, what merged and what each handoff said, so the summary is generated
 from that record and cannot go stale or be written wrongly by hand.
 
@@ -86,9 +82,7 @@ from that record and cannot go stale or be written wrongly by hand.
   submitted or accepted) and since when, what waits on the developer with each
   task's one-line brief, the tasks queued for a runner, the last five merges
   with the agent's summary and the date, the latest handoff note on each live
-  task, and, for a project with ControlPlane policy, its protected areas,
-  eligible agents and overlap rule on one line. The record holds no ControlPlane
-  change classes, so none are shown.
+  task.
   Each part reads its own source, not a window over the project's record:
   holders from the items, since when and handoff notes from each live task's
   own events, merges from the merged items. A waiting task says what to do,

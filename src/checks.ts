@@ -9,11 +9,11 @@ import { matchesFolded, RuleError, type CheckPaths, type ProjectPolicy } from ".
 // another machine or spends money is never read-only, whatever anyone
 // declares, and Atelier refuses to register or run it.
 //
-// A check is read-only by one of three things: its command is a known build
-// or test form, read here word by word (knownReadOnly); the project's
-// ControlPlane adapter lists the command as a capability of class
-// local-read-only or local-write; or the project owner declares it, with the
-// reason, as init records its approval. A check registered before checks had
+// A check is read-only by one of two things now: its command is a known build
+// or test form, read here word by word (knownReadOnly), or the developer
+// declares it, with the reason, as init records its approval. A project's
+// ControlPlane adapter once listed commands too; a declaration it left on a
+// project (by "adapter") is kept and read, and nothing makes a new one (t153). A check registered before checks had
 // classes has none recorded: it is read-only when its command is a known form
 // and undeclared otherwise. An undeclared check still runs, so a project's
 // existing checks keep working, and the next init that names it must declare it.
@@ -22,7 +22,8 @@ export type CheckClass = "read-only" | "undeclared" | "refused";
 
 // How a check is known to be read-only, as recorded on the project.
 //   command  its command is a known build or test form
-//   adapter  the ControlPlane adapter lists it as a read-only capability; the note says which
+//   adapter  history: a ControlPlane adapter listed it as a read-only capability, as the note says;
+//            nothing records a new one
 //   owner    the project owner declared it; the note is the owner's reason
 export interface CheckDeclaration {
   command: string;
@@ -813,54 +814,6 @@ export function settleCheckClasses(
   return out;
 }
 
-// ── a ControlPlane adapter ─────────────────────────────────────────────────
-
-export interface Capability { name: string; command: string[]; actionClass: string }
-
-// The capabilities a ControlPlane adapter lists, as an object from name to
-// capability or as a list; entries without an argv command are skipped.
-export function adapterCapabilities(adapter: unknown): Capability[] {
-  const list = (adapter as { capabilities?: unknown } | null)?.capabilities;
-  const entries: [string, unknown][] = Array.isArray(list)
-    ? list.map((c, i) => [String((c as { name?: unknown })?.name ?? i), c])
-    : list && typeof list === "object" ? Object.entries(list) : [];
-  return entries.flatMap(([name, c]) => {
-    const cap = c as { command?: unknown; action_class?: unknown } | null;
-    return Array.isArray(cap?.command) && cap.command.length && cap.command.every((w) => typeof w === "string")
-      ? [{ name, command: cap.command as string[], actionClass: typeof cap.action_class === "string" ? cap.action_class : "" }]
-      : [];
-  });
-}
-
-// ControlPlane's classes for a capability that changes nothing beyond the
-// machine running it. local-write is a build's: it writes build products and
-// caches, which in a clean clone are thrown away.
-const ADAPTER_READ_ONLY = new Set(["none", "local-read-only", "local-write"]);
-
-// The capability whose command is the check's, word for word, if any.
-export function capabilityOf(caps: Capability[], command: string): Capability | null {
-  const commands = simpleCommands(command);
-  if (!commands || commands.length !== 1) return null;
-  const words = commands[0];
-  return caps.find((c) => c.command.length === words.length && c.command.every((w, i) => w === words[i])) ?? null;
-}
-
-// What a ControlPlane adapter says of each check: a declaration for one it
-// lists as a read-only capability, a refusal for one it lists under another
-// class (deploy, device, network and the rest), nothing for one it does not list.
-export function adapterClasses(adapter: unknown, checks: string[]): { declarations: CheckDeclaration[]; refusals: { command: string; text: string }[] } {
-  const caps = adapterCapabilities(adapter);
-  const declarations: CheckDeclaration[] = [];
-  const refusals: { command: string; text: string }[] = [];
-  for (const command of checks) {
-    const cap = capabilityOf(caps, command);
-    if (!cap) continue;
-    if (ADAPTER_READ_ONLY.has(cap.actionClass)) declarations.push({ command, by: "adapter", note: `capability ${cap.name} is ${cap.actionClass}` });
-    else refusals.push({ command, text: refusalText(command, `is ControlPlane capability ${cap.name}, of class ${cap.actionClass || "none given"}`) });
-  }
-  return { declarations, refusals };
-}
-
 // ── checks that apply to some paths ────────────────────────────────────────
 
 // A check may apply only when an item changes a path its globs match; the
@@ -902,61 +855,4 @@ export function appliesReason(policy: Pick<ProjectPolicy, "checkPaths">, command
 export function appliesText(policy: Pick<ProjectPolicy, "checkPaths">, command: string): string {
   const paths = policy.checkPaths?.find((c) => c.command === command)?.paths;
   return paths?.length ? `applies only when the change touches ${paths.join(", ")}` : "applies to every change";
-}
-
-// ControlPlane matches its patterns as Python's fnmatch does, where `*`
-// crosses directories. Atelier's `*` stops at a slash and `**` crosses one,
-// so each `*` is written `**`: `*.md` covers docs/a.md, as it did there.
-export function fromFnmatch(pattern: string): string {
-  return pattern.replace(/\*+/g, "**");
-}
-
-interface ChangeRule { patterns: string[]; requires: string[] }
-
-function changeRules(adapter: unknown): ChangeRule[] {
-  const rules = (adapter as { change_rules?: unknown } | null)?.change_rules;
-  if (!Array.isArray(rules)) return [];
-  return rules.flatMap((r) => {
-    const rule = r as { patterns?: unknown; requires?: unknown } | null;
-    const patterns = Array.isArray(rule?.patterns) ? rule.patterns.filter((p): p is string => typeof p === "string" && !!p.trim()) : [];
-    const requires = Array.isArray(rule?.requires) ? rule.requires.filter((n): n is string => typeof n === "string") : [];
-    return patterns.length && requires.length ? [{ patterns, requires }] : [];
-  });
-}
-
-// The commands a capability runs: the script it hands to `sh -c`, or its argv as one command.
-function capabilityCommands(cap: Capability): string[][] | null {
-  const [head, flag, script] = cap.command;
-  if (SHELLS.has(toolName(head)) && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(flag ?? "") && script !== undefined) return simpleCommands(script);
-  return [cap.command];
-}
-
-// What a ControlPlane adapter's change_rules say of each check. A rule
-// requires its capabilities when an item changes a path its patterns match.
-// A check runs a capability when every command the capability runs is one of
-// the check's, word for word, so `npm ci && npm test` runs `npm test`. A check
-// that runs a capability some rule requires applies exactly when one of
-// those rules matches; one that runs none applies to every change. `unrun`
-// names each capability a rule requires that no check runs.
-export function adapterCheckPaths(adapter: unknown, checks: string[]): { paths: CheckPaths[]; unrun: { name: string; command: string }[] } {
-  const caps = new Map(adapterCapabilities(adapter).map((c) => [c.name, c]));
-  const rules = changeRules(adapter);
-  const same = (a: string[], b: string[]) => a.length === b.length && a.every((w, i) => w === b[i]);
-  const ran = new Set<string>();
-  const paths: CheckPaths[] = [];
-  for (const command of checks) {
-    const own = simpleCommands(command);
-    if (!own) continue;
-    const runs = (cap: Capability) => { const cmds = capabilityCommands(cap); return !!cmds?.length && cmds.every((c) => own.some((d) => same(c, d))); };
-    const globs = new Set<string>();
-    for (const rule of rules) {
-      const run = rule.requires.filter((name) => caps.has(name) && runs(caps.get(name)!));
-      run.forEach((name) => ran.add(name));
-      if (run.length) rule.patterns.forEach((p) => globs.add(fromFnmatch(p)));
-    }
-    if (globs.size) paths.push({ command, paths: [...globs] });
-  }
-  const unrun = [...new Set(rules.flatMap((r) => r.requires))].filter((name) => caps.has(name) && !ran.has(name))
-    .map((name) => ({ name, command: caps.get(name)!.command.join(" ") }));
-  return { paths, unrun };
 }

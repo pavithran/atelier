@@ -105,11 +105,11 @@ test("the checkout line is one line whatever the project or branch is called", (
   }
 });
 
-test("an empty project says so, and ControlPlane policy is one line", () => {
+test("an empty project says so, and a stored ControlPlane policy is not drawn", () => {
   const empty = formatStanding(standing({ live: [], waiting: [], queued: [], merged: [], handoffs: [] }));
   assert.match(empty, /Nothing is held, waiting, queued or recently merged\./);
   const cp = formatStanding(standing({ controlPlane: { approval: "PAVI, 2026-10-01", protected: ["AGENTS.md", "docs/control-plane/**"], eligible: ["claude"], refuseOverlap: true } }));
-  assert.ok(cp.split("\n").includes("ControlPlane policy, approved: PAVI, 2026-10-01. Protected areas: AGENTS.md, docs/control-plane/**. Eligible agents: claude. Overlapping claims: refused."));
+  assert.doesNotMatch(cp, /ControlPlane|Eligible agents|approved: PAVI/);
 });
 
 test("the checkout line for each way a checkout can be in or out of step", () => {

@@ -70,7 +70,7 @@ const spec: CommandSpec = {
       "--require-criteria-review": "dispatches and claims a build only while a criteria review approves the task's acceptance criteria as they are now (atelier criteria-review); a plan asks for one before each part, and an edit of the criteria takes the approval back; --require-criteria-review=false turns it off",
       "--no-override": "refuses every override of the independent review in the project; --no-override=false allows them again, with the developer's confirmation",
       "--core GLOB": "a core file pattern: the queue holds a dispatch whose scope overlaps a claimed or landing item's within one until it submits, is released or ends its landing; once per pattern, replacing the recorded ones; --core \"\" alone clears them",
-      "--approval TEXT": "records the developer's approval of the copy in Artifacts; a ControlPlane project needs it",
+      "--approval TEXT": "records the developer's approval of the copy in Artifacts",
       "--reset": "rebuilds the policy from the defaults and the options given",
       "--history-since YYYY-MM-DD": "builds the baseline from the commits since that day only, for a project too large for Artifacts",
       "--regenerate CMD": "the command that regenerates the project's generated fixtures, run by atelier land in a task's workspace after it merges main; --regenerate \"\" clears it",
