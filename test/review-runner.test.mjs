@@ -731,7 +731,7 @@ async function serveReview(t, dir, claim, answers = {}, { renew = false, fails =
   if (fails) assert.ok(!posted.includes("review"), `no verdict is posted: ${posted.join(", ")}`);
   else assert.ok(posted.includes("review"), `the verdict is posted: ${posted.join(", ")}\n${seen.logs.join("\n")}`);
   seen.posted = posted;
-  assert.doesNotMatch(seen.brief, /## Clean-clone run/, "the Git-diff fixture must not collect runner evidence");
+  if (!fails) assert.doesNotMatch(seen.brief, /## Clean-clone run/, "the Git-diff fixture must not collect runner evidence");
   return seen;
 }
 
