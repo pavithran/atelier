@@ -1,0 +1,40 @@
+atelier atelier/t184 "Wrap kills successful checks after only 1 MiB of output"
+accepted head c3abaf3336c703b7f1aed0cb313f620ecf37d792
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6.1-sol 2026-10-21T20:41:03.085Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6.1-sol 2026-10-21T20:41:08.458Z
+REVIEW approve by claude-code/opus-5.5 at c3abaf3336c703b7f1aed0cb313f620ecf37d792, recorded by pavi with the developer's token, answering a claimed review request
+CHECKED TREE 4b4d86bec52e94f215e77f9f0cdd8378c2a7fc32: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-21T20:09:11.260Z pavi item.created
+2026-10-21T20:09:11.260Z pavi criteria.revised
+2026-10-21T20:09:21.367Z codex/gpt-6.1-sol item.claimed
+2026-10-21T20:09:56.689Z pavi criteria_review.requested
+2026-10-21T20:11:07.139Z claude-code/opus-5.5 criteria_review.claimed
+2026-10-21T20:11:19.763Z claude-code/opus-5.5 criteria_review.approved
+2026-10-21T20:11:50.752Z pavi item.edited
+2026-10-21T20:11:50.752Z pavi criteria.revised
+2026-10-21T20:11:50.752Z pavi item.criteria_changed
+2026-10-21T20:11:51.421Z pavi criteria_review.finding
+2026-10-21T20:11:52.178Z pavi criteria_review.finding
+2026-10-21T20:11:52.795Z pavi criteria_review.requested
+2026-10-21T20:12:10.776Z pavi criteria_review.finding
+2026-10-21T20:12:34.609Z claude-code/opus-5.5 criteria_review.claimed
+2026-10-21T20:12:43.931Z claude-code/opus-5.5 criteria_review.approved
+2026-10-21T20:27:01.996Z codex/gpt-6.1-sol fork.created
+2026-10-21T20:30:30.600Z codex/gpt-6.1-sol push.observed
+2026-10-21T20:30:55.546Z pavi land.merge
+2026-10-21T20:30:56.652Z pavi land.regenerate
+2026-10-21T20:30:59.621Z pavi land.push
+2026-10-21T20:41:04.996Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T20:41:08.875Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T20:41:10.204Z pavi land.check
+2026-10-21T20:41:11.003Z codex/gpt-6.1-sol item.submitted
+2026-10-21T20:41:13.923Z pavi review.requested
+2026-10-21T20:41:13.923Z pavi review.tier_unasked
+2026-10-21T20:42:07.583Z claude-code/opus-5.5 review.claimed
+2026-10-21T20:42:39.377Z claude-code/opus-5.5 review.approved
+2026-10-21T20:42:45.654Z pavi land.review
+2026-10-21T20:42:47.021Z pavi land.lease
+2026-10-21T20:42:51.304Z pavi item.accepted
+2026-10-21T20:42:52.058Z pavi land.accept
