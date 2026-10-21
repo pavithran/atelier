@@ -75,6 +75,7 @@ elif has rev-parse "$@"; then echo ${shq(head)}
 elif [ "$1" = merge-base ] && ! has --is-ancestor "$@"; then echo "$TEST_FORK_POINT"
 # Diffed from the recorded base, the revision shows a path the baseline
 # changed since the fork; from its real fork point, only its own.
+elif has diff "$@" && [ -n "$TEST_DIFF" ]; then printf '%b' "$TEST_DIFF"
 elif has diff "$@"; then if has ${shq(base)} "$@"; then printf 'src/secret.ts\0'; else printf 'docs/own.md\0'; fi
 # The commits a landing checks for their identity (t451): none unless the
 # test names some, as a printf %b string, since the environment cannot carry a NUL.
@@ -361,3 +362,19 @@ test("merge refuses a check required now that was not observed passing at the ac
   assert.match(result.stderr, /checks required now were not observed passing at the accepted revision: `npm run lint`/);
   assert.ok(!gitCalls().some((args) => args.includes("merge")));
 }, { now: { checks: ["npm test", "npm run lint"] }, accepted: FULL }));
+
+// The finding (gpt-6-astra, t150 round 2): the ledger omits shipRuns from an
+// acceptance made with no ship order, and filling the missing field from the
+// stored policy hid a ship command added since, so a revision that rewrote the
+// deploy script landed with no warning and no refusal.
+test("merge refuses a revision that touches a ship command added since an acceptance made with none", () => commandFixture(({ command, gitCalls }) => {
+  const env = { TEST_FORK_POINT: "f".repeat(40), TEST_DIFF: "bin/deploy.sh\\0000" };
+  const result = command(["merge", "t1"], env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Warning: the project's policy changed since acceptance: ship commands: \[\] -> \["bin\/deploy\.sh"\]/);
+  assert.match(result.stderr, /newly protected paths: bin\/deploy\.sh/);
+  assert.ok(!gitCalls().some((args) => args.includes("merge")));
+  assert.match(command(["merge", "t1", "--policy-changed-ok"], env).stderr, /merge conflicts/);
+  // A revision that leaves the script alone is not charged with it.
+  assert.doesNotMatch(command(["merge", "t1"], { TEST_FORK_POINT: "f".repeat(40) }).stderr, /newly protected/);
+}, { now: { shipRuns: ["bin/deploy.sh"] }, accepted: FULL }));

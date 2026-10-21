@@ -3334,15 +3334,18 @@ export function policyChanges(before: PolicyFields, after: PolicyFields) {
 
 // The policy an acceptance was made under, for the comparison at merge: the
 // fields the acceptance recorded, over the project's stored policy, which
-// stands in for an acceptance made before every field was recorded. An
-// acceptance that recorded no protected paths is taken as having protected
-// none.
+// stands in for an acceptance made before every field was recorded (eligible,
+// overlap and checks, which every current acceptance records). An acceptance
+// that recorded no protected paths is taken as having protected none.
 export function acceptancePolicy(detail: { policy: PolicyFields; acceptanceProtected?: string[] | null; acceptancePolicy?: PolicyFields | null }, before: PolicyFields): PolicyFields {
   const accepted = detail.acceptancePolicy ?? {};
   return {
     ...detail.policy, eligible: before.eligible, refuseOverlap: before.refuseOverlap, checks: before.checks,
-    ...(before.shipRuns !== undefined || accepted.shipRuns !== undefined ? { shipRuns: accepted.shipRuns ?? before.shipRuns ?? [] } : {}),
     ...accepted, protected: detail.acceptanceProtected ?? [],
+    // The ledger omits shipRuns from an acceptance made with no ship order, so
+    // an absent list is an empty one, never the order now: filling it from the
+    // stored policy would hide a ship command added since (t150 review).
+    shipRuns: accepted.shipRuns ?? [],
   };
 }
 

@@ -2154,12 +2154,15 @@ test("the acceptance's policy is its snapshot over the server's policy before th
   const server = { ...before, eligible: ["codex"], checks: ["npm test"] };
   // A full snapshot stands over the server's earlier policy.
   const full = { protected: ["AGENTS.md"], eligible: ["gemini"], refuseOverlap: false, checks: ["npm test"] };
-  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: full }, server), { ...current, ...full });
+  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: full }, server), { ...current, ...full, shipRuns: [] });
   // An acceptance that recorded protected paths alone: those, and the server's earlier values for the rest.
   assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: { protected: ["AGENTS.md"] } }, server),
-    { ...current, protected: ["AGENTS.md"], eligible: ["codex"], refuseOverlap: false, checks: ["npm test"] });
+    { ...current, protected: ["AGENTS.md"], eligible: ["codex"], refuseOverlap: false, checks: ["npm test"], shipRuns: [] });
   // The oldest acceptances recorded nothing: no protected paths.
   assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: null, acceptancePolicy: null }, server).protected, []);
+  // An acceptance made with no ship order omits shipRuns: that is none, not the order the project has since gained.
+  assert.deepEqual(acceptancePolicy({ policy: { ...current, shipRuns: ["bin/deploy.sh"] }, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: full }, { ...server, shipRuns: ["bin/deploy.sh"] }).shipRuns, []);
+  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: [], acceptancePolicy: { shipRuns: ["bin/a.sh"] } }, server).shipRuns, ["bin/a.sh"]);
 });
 
 test("the merge context names the item's contributors, the checks observed passing at the accepted revision and the live items its scope overlaps", () => {
