@@ -299,7 +299,7 @@ const SKIPPED = /^\s*not ok \d+.*# (?:SKIP|TODO)\b/i;
 // t176: progress and captured stdout can contain whole failing fixtures.
 // Prefer the last completed outer report. A transcript cannot authenticate
 // an unframed fixture that copies that final report; uncertain counts qualify names.
-// Atelier runs Node before Vitest. A complete Vitest transcript before the
+// This repository's npm test runs Node before Vitest. A complete transcript before the
 // final Node report is treated as fixture output; reverse-order runs cannot
 // be distinguished from that fixture without external reporter framing.
 function outerReports(lines: string[]): { lines: string[]; reporters: string[]; uncertain: boolean } | null {
