@@ -5,11 +5,8 @@
 // The push is not a protected step: ship is owner-only and runs at one exact
 // revision, so --push is the owner's own act and takes no approval.
 //
-// The order comes from ControlPlane's ship policy when the project has one
-// (docs/control-plane/ship-policy.v1.json, with project-adapter.v1.json for
-// the commands and the newest canonical-device-set for the device targets),
-// and otherwise from Atelier's own docs/atelier/ship.json. docs/ship.md
-// describes both and the schema of the second.
+// The order comes from the project's docs/atelier/ship.json alone; ControlPlane
+// files are not read (ControlPlane is retired). docs/ship.md gives the schema.
 //
 // cli/atelier.mjs owns the server, git and the process: the ship command
 // there passes them in, so this module holds the rules and stays testable.
@@ -21,13 +18,8 @@ import { runGroup } from "./group.mjs";
 import { pushCheckoutRemote } from "./checkout-push.mjs";
 
 export const SHIP_FILE = "docs/atelier/ship.json";
-const CP = "docs/control-plane";
-const CP_POLICY = `${CP}/ship-policy.v1.json`;
-const CP_ADAPTER = `${CP}/project-adapter.v1.json`;
-const DEVICE_SETS = [3, 2, 1].map((v) => `${CP}/canonical-device-set.v${v}.json`);
 
-// The order for each application class, as ControlPlane's ship policy gives
-// it; `other` has no delivery step.
+// The order for each application class; `other` has no delivery step.
 export const ORDERS = {
   web: ["commit", "deploy", "verify-delivery", "wrap", "push"],
   installable: ["install", "verify-delivery", "commit", "wrap", "push"],
@@ -59,105 +51,10 @@ function readJson(top, path) {
 // a ship before it runs anything; `notes` what the owner should know.
 export function composeShip(top) {
   const problems = [], notes = [];
-  let policy, doc;
-  try { policy = readJson(top, CP_POLICY); } catch (error) { return { source: CP_POLICY, steps: [], problems: [error.message], notes }; }
-  if (policy !== undefined) return controlPlaneShip(top, policy, problems, notes);
+  let doc;
   try { doc = readJson(top, SHIP_FILE); } catch (error) { return { source: SHIP_FILE, steps: [], problems: [error.message], notes }; }
   if (doc !== undefined) return atelierShip(doc, problems, notes);
-  return { source: null, steps: [], notes, problems: [`this project has no ship policy: atelier ship reads ${CP_POLICY} with ${CP_ADAPTER}, or ${SHIP_FILE}. Add ${SHIP_FILE}; docs/ship.md in Atelier gives its schema`] };
-}
-
-// ControlPlane's rule: the delivery classes the adapter declares (device,
-// then deploy) are put before or after commit as the effect order says, so a
-// device-only project gets the installable order and a deploy-only one the
-// web order. A policy without the rule takes its application_classes row for
-// the class the canonical device set names.
-export function composeEffectOrder(order, declared) {
-  const before = [], after = [];
-  for (const name of order.precedence ?? []) {
-    if (!declared.has(name)) continue;
-    const spec = order.delivery?.[name];
-    if (!isObject(spec) || !Array.isArray(spec.steps)) throw new Error(`${CP_POLICY}: effect_order.delivery.${name} must give its steps and position`);
-    (spec.position === "before-commit" ? before : after).push(...spec.steps);
-  }
-  return (order.base ?? []).flatMap((step) => (step === "commit" ? [...before, "commit", ...after] : [step]));
-}
-
-function controlPlaneShip(top, policy, problems, notes) {
-  if (!isObject(policy) || policy.kind !== "control-plane.ship-policy" || policy.schema_version !== 1) problems.push(`${CP_POLICY} is not a control-plane.ship-policy with schema_version 1`);
-  let adapter, devices;
-  try { adapter = readJson(top, CP_ADAPTER); } catch (error) { problems.push(error.message); }
-  const caps = isObject(adapter?.capabilities) ? adapter.capabilities : {};
-  const declared = new Set(Object.values(caps).filter(isObject).map((c) => c.action_class));
-  for (const path of DEVICE_SETS) {
-    try { devices = readJson(top, path); } catch (error) { problems.push(error.message); break; }
-    if (devices !== undefined) { devices = { ...devices, path }; break; }
-  }
-  let order, cls;
-  if (isObject(policy?.effect_order) && policy.effect_order.rule === "compose-from-declared-capabilities") {
-    try { order = composeEffectOrder(policy.effect_order, declared); } catch (error) { problems.push(error.message); order = []; }
-    cls = declared.has("device") ? (declared.has("deploy") ? "hybrid" : "installable") : declared.has("deploy") ? "web" : "other";
-  } else {
-    cls = devices?.application_class;
-    order = policy?.application_classes?.[cls];
-    if (!Array.isArray(order)) { problems.push(`${CP_POLICY} gives no order for this project: it has no effect_order to compose from, and its application_classes has no row for ${cls ? `the class ${cls}` : "a class"} (named by ${CP}/canonical-device-set)`); order = []; }
-  }
-  // ControlPlane pushes to the branch's tracked upstream, and never forces.
-  let push = { upstream: true };
-  if (policy?.push?.force === true) {
-    problems.push(`${CP_POLICY} asks for a forced push, which atelier ship never does`);
-    push = null;
-  }
-  const delivery = {
-    install: () => deviceRuns(caps, devices, "install", problems, notes),
-    deploy: () => Object.entries(caps).filter(([, c]) => isObject(c) && c.action_class === "deploy").sort(([a], [b]) => a.localeCompare(b))
-      .map(([name]) => capabilityRun(caps, name, null, problems)).filter(Boolean),
-    "verify-install": () => deviceRuns(caps, devices, "verify", problems, notes),
-    "verify-deploy": () => Object.entries(caps).filter(([name, c]) => isObject(c) && c.action_class !== "device" && name.startsWith("verify")).sort(([a], [b]) => a.localeCompare(b))
-      .map(([name]) => capabilityRun(caps, name, null, problems)).filter(Boolean),
-  };
-  const hint = {
-    install: `declare a capability with "action_class": "device" whose name starts with install in ${CP_ADAPTER}, or bind one to each target of the canonical device set`,
-    deploy: `declare a capability with "action_class": "deploy" in ${CP_ADAPTER}`,
-    "verify-install": `declare a capability with "action_class": "device" whose name starts with verify in ${CP_ADAPTER}, or bind one to each target of the canonical device set`,
-    "verify-deploy": `declare a capability whose name starts with verify and whose action_class is not device, such as "verify-deploy" running curl -fsS against the live site, in ${CP_ADAPTER}`,
-  };
-  return { source: CP_POLICY, class: cls, ...buildSteps(order, (field) => delivery[field](), hint, push, problems), problems, notes };
-}
-
-// The device targets ship delivers to: each required target of the newest
-// canonical device set, through the capability it binds. An optional target
-// (v3's "requirement": "optional") is left out and named in the notes.
-// Without a device set, every device capability whose name starts with the
-// step's word runs.
-function deviceRuns(caps, devices, which, problems, notes) {
-  const targets = Array.isArray(devices?.targets) ? devices.targets.filter(isObject) : [];
-  if (!targets.length) {
-    return Object.entries(caps).filter(([name, c]) => isObject(c) && c.action_class === "device" && name.startsWith(which))
-      .sort(([a], [b]) => a.localeCompare(b)).map(([name]) => capabilityRun(caps, name, null, problems)).filter(Boolean);
-  }
-  const required = targets.filter((t) => t.requirement !== "optional");
-  const optional = targets.filter((t) => t.requirement === "optional").map((t) => t.id);
-  if (which === "install" && optional.length) notes.push(`optional device targets are left out, since ship delivers to required targets only: ${optional.join(", ")}`);
-  return required.map((t) => {
-    const name = t[`${which}_capability`];
-    if (typeof name !== "string") { problems.push(`${devices.path}: target ${t.id ?? "?"} names no ${which}_capability`); return null; }
-    return capabilityRun(caps, name, typeof t.selector === "string" ? t.selector : null, problems, t.id);
-  }).filter(Boolean);
-}
-
-// One adapter capability as a run. A command that ends with an option takes
-// the target's selector as that option's value, as MicahApp's
-// `ios/bin/to-phone-adhoc.sh --device` takes the device's UDID.
-function capabilityRun(caps, name, selector, problems, target) {
-  const cap = caps[name];
-  if (!isObject(cap) || !Array.isArray(cap.command) || !cap.command.length || cap.command.some((w) => typeof w !== "string" || !w)) {
-    problems.push(`${CP_ADAPTER}: capability ${name} has no command to run`);
-    return null;
-  }
-  const argv = [...cap.command];
-  if (selector && argv.at(-1).startsWith("--")) argv.push(selector);
-  return { label: `${name}${target ? ` for ${target}` : ""}`, argv, timeoutMs: seconds(cap.timeout_seconds, RUN_SECONDS) * 1000, kind: null };
+  return { source: null, steps: [], notes, problems: [`this project has no ship file: atelier ship reads only ${SHIP_FILE}, and no longer reads ControlPlane's ship policy or adapter. Add ${SHIP_FILE}; docs/ship.md in Atelier gives its schema`] };
 }
 
 // The steps for an order. `runsFor(field)` gives the runs for install, deploy,
@@ -240,22 +137,14 @@ function parseRuns(value, field, problems) {
   }).filter(Boolean);
 }
 
-// The kinds a project's own files name, beside the five Atelier knows: each
-// approval kind its ship order needs, and its adapter's capability names and
-// action classes. `atelier approve` refuses any other kind, which would match
-// nothing ship runs.
+// The kinds a project's ship file names, beside the five Atelier knows: each
+// approval kind its ship order needs. `atelier approve` refuses any other
+// kind, which would match nothing ship runs.
 export function knownKinds(top) {
   const kinds = new Set(ACTION_KINDS);
   if (!top) return kinds;
   const plan = composeShip(top);
   for (const s of plan.steps) for (const r of s.runs) if (r.kind) kinds.add(r.kind);
-  try {
-    const caps = readJson(top, CP_ADAPTER)?.capabilities;
-    if (isObject(caps)) for (const [name, c] of Object.entries(caps)) {
-      if (KIND.test(name)) kinds.add(name);
-      if (isObject(c) && typeof c.action_class === "string" && KIND.test(c.action_class)) kinds.add(c.action_class);
-    }
-  } catch { /* an unreadable adapter names nothing */ }
   return kinds;
 }
 

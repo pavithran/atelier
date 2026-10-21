@@ -6,11 +6,11 @@ import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { composeEffectOrder, composeShip, knownKinds, neededKinds, ORDERS } from "../cli/ship.mjs";
+import { composeShip, knownKinds, neededKinds, ORDERS } from "../cli/ship.mjs";
 
 // atelier ship and its approvals. The composition is read from files in
-// temporary folders shaped like the real ControlPlane projects' (MicahApp,
-// Photograph, ikon weblog). The command runs end to end in a temporary
+// temporary folders. ControlPlane's ship files are retired and never read.
+// The command runs end to end in a temporary
 // repository against a stand-in server, with a stand-in deploy script, a
 // stand-in live site and local bare repositories as the baseline and the
 // github remote: nothing here deploys, installs or pushes anywhere real.
@@ -32,28 +32,17 @@ const plan = (t, tree) => {
 };
 const outline = (p) => p.steps.map((s) => [s.step, ...s.runs.map((r) => (r.argv ? r.argv.join(" ") : r.request) + (r.kind ? ` [${r.kind}]` : ""))]);
 
-// ControlPlane's ship policy as the projects hold it.
-const EFFECT_ORDER = {
-  base: ["commit", "wrap", "push"],
-  delivery: { deploy: { position: "after-commit", steps: ["deploy", "verify-delivery"] }, device: { position: "before-commit", steps: ["install", "verify-delivery"] } },
-  precedence: ["device", "deploy"],
-  rule: "compose-from-declared-capabilities",
+// ControlPlane's ship files as the projects held them: a policy, the adapter
+// whose capabilities carried the commands, and a canonical device set.
+const CP_FILES = {
+  "docs/control-plane/ship-policy.v1.json": { kind: "control-plane.ship-policy", schema_version: 1, application_classes: { web: ORDERS.web }, effect_order: { rule: "compose-from-declared-capabilities", base: ORDERS.other, delivery: {}, precedence: [] }, push: { force: false } },
+  "docs/control-plane/project-adapter.v1.json": { capabilities: {
+    deploy: { action_class: "deploy", command: ["./cp-deploy"], description: "x" },
+    "captioning-run": { action_class: "paid-provider", command: ["./cp-caption"], description: "y" },
+  } },
+  "docs/control-plane/canonical-device-set.v3.json": { application_class: "web", targets: [] },
 };
-const POLICY = {
-  application_classes: { installable: ORDERS.installable, web: ORDERS.web },
-  effect_order: EFFECT_ORDER,
-  kind: "control-plane.ship-policy",
-  push: { create_remote: false, force: false, repair_remote: false, required: true, source: "tracked-upstream" },
-  schema_version: 1,
-};
-const cap = (action_class, command, extra = {}) => ({ action_class, command, description: "x", ...extra });
-
-test("ControlPlane's rule reproduces its published orders, and composes a hybrid", () => {
-  assert.deepEqual(composeEffectOrder(EFFECT_ORDER, new Set(["device"])), ORDERS.installable);
-  assert.deepEqual(composeEffectOrder(EFFECT_ORDER, new Set(["deploy"])), ORDERS.web);
-  assert.deepEqual(composeEffectOrder(EFFECT_ORDER, new Set(["device", "deploy"])), ORDERS.hybrid);
-  assert.deepEqual(composeEffectOrder(EFFECT_ORDER, new Set(["local-read-only"])), ORDERS.other);
-});
+const WEB_SHIP = { schema_version: 1, kind: "atelier.ship", class: "web", deploy: { run: ["./atelier-deploy"] }, "verify-deploy": { run: ["./atelier-verify"] } };
 
 test("Atelier's own ship file composes its deploy, the live check and the push to github", () => {
   const p = composeShip(resolve("."));
@@ -66,78 +55,31 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.equal(p.steps[1].runs[0].timeoutMs, 1200_000);
 });
 
-test("an installable project installs to each required target through the capability it binds", (t) => {
-  // MicahApp's shape: one capability for every target, ending in --device.
-  const p = plan(t, {
-    "docs/control-plane/ship-policy.v1.json": POLICY,
-    "docs/control-plane/project-adapter.v1.json": { capabilities: {
-      "diff-check": cap("local-read-only", ["git", "diff", "--check"]),
-      "install-device": cap("device", ["ios/bin/to-phone-adhoc.sh", "--device"], { timeout_seconds: 1800 }),
-      "verify-device": cap("device", ["xcrun", "devicectl", "device", "info", "apps", "--device"]),
-    } },
-    "docs/control-plane/canonical-device-set.v3.json": { application_class: "installable", targets: [
-      { id: "ipad", install_capability: "install-device", verify_capability: "verify-device", selector: "IPAD-UDID", requirement: "optional" },
-      { id: "iphone", install_capability: "install-device", verify_capability: "verify-device", selector: "PHONE-UDID", requirement: "required" },
-    ] },
+test("with both formats present Atelier's ship file wins, and a malformed ControlPlane file is ignored", (t) => {
+  const both = plan(t, { ...CP_FILES, "docs/atelier/ship.json": WEB_SHIP });
+  assert.deepEqual(both.problems, []);
+  assert.equal(both.source, "docs/atelier/ship.json");
+  assert.deepEqual(outline(both), [["commit"], ["deploy", "./atelier-deploy [deploy]"], ["verify-delivery", "./atelier-verify"], ["wrap"], ["push"]]);
+  const broken = plan(t, {
+    "docs/control-plane/ship-policy.v1.json": "{ not json",
+    "docs/control-plane/project-adapter.v1.json": "[",
+    "docs/control-plane/canonical-device-set.v3.json": "nope",
+    "docs/atelier/ship.json": WEB_SHIP,
   });
-  assert.deepEqual(p.problems, []);
-  assert.equal(p.class, "installable");
-  assert.deepEqual(outline(p), [
-    ["install", "ios/bin/to-phone-adhoc.sh --device PHONE-UDID [install]"],
-    ["verify-delivery", "xcrun devicectl device info apps --device PHONE-UDID"],
-    ["commit"], ["wrap"], ["push"],
-  ]);
-  assert.equal(p.steps[0].runs[0].timeoutMs, 1800_000);
-  assert.deepEqual(p.notes, ["optional device targets are left out, since ship delivers to required targets only: ipad"]);
-  assert.deepEqual(p.steps[4].push, { upstream: true });
+  assert.deepEqual(broken.problems, []);
+  assert.equal(broken.source, "docs/atelier/ship.json");
+  assert.deepEqual(outline(broken), outline(both));
 });
 
-test("a hybrid project composes install before commit and deploy after it, each verified", (t) => {
-  // Photograph's shape: a capability per target, and a deploy.
-  const p = plan(t, {
-    "docs/control-plane/ship-policy.v1.json": POLICY,
-    "docs/control-plane/project-adapter.v1.json": { capabilities: {
-      deploy: cap("deploy", ["npm", "--prefix", "web", "run", "deploy"]),
-      "install-canonical-iphone": cap("device", ["bin/device-delivery.sh", "install", "--target", "canonical-iphone"]),
-      "verify-canonical-iphone": cap("device", ["bin/device-delivery.sh", "verify", "--target", "canonical-iphone"]),
-      "verify-site": cap("network", ["curl", "-fsS", "https://example.test"]),
-    } },
-  });
-  assert.deepEqual(p.problems, []);
-  assert.equal(p.class, "hybrid");
-  assert.deepEqual(outline(p), [
-    ["install", "bin/device-delivery.sh install --target canonical-iphone [install]"],
-    ["verify-delivery", "bin/device-delivery.sh verify --target canonical-iphone"],
-    ["commit"],
-    ["deploy", "npm --prefix web run deploy [deploy]"],
-    ["verify-delivery", "curl -fsS https://example.test"],
-    ["wrap"], ["push"],
-  ]);
-  assert.deepEqual(neededKinds(p.steps), ["install", "deploy"]);
-});
-
-test("a deploy with nothing declared to verify it, a forced push, or no ship file is refused", (t) => {
-  // ikon weblog's shape: a deploy and no verify capability.
-  const web = plan(t, {
-    "docs/control-plane/ship-policy.v1.json": { ...POLICY, push: { ...POLICY.push, force: true } },
-    "docs/control-plane/project-adapter.v1.json": { capabilities: { deploy: cap("deploy", ["npx", "wrangler", "deploy"]), "unit-tests": cap("local-read-only", ["npm", "test"]) } },
-  });
-  assert.equal(web.problems.length, 2, web.problems.join("\n"));
-  assert.match(web.problems[0], /forced push, which atelier ship never does/);
-  assert.match(web.problems[1], /verifies the deploy and has nothing to run for it: declare a capability whose name starts with verify/);
-  assert.match(plan(t, { "README.md": "x" }).problems[0], /has no ship policy: atelier ship reads docs\/control-plane\/ship-policy\.v1\.json .* or docs\/atelier\/ship\.json/);
+test("a ControlPlane-only checkout, valid or malformed, or none, has no ship order and names the Atelier file it needs", (t) => {
+  for (const tree of [CP_FILES, { "docs/control-plane/ship-policy.v1.json": "{ not json" }, { "README.md": "x" }]) {
+    const p = plan(t, tree);
+    assert.deepEqual(p.steps, []);
+    assert.equal(p.problems.length, 1, p.problems.join("\n"));
+    assert.match(p.problems[0], /has no ship file: atelier ship reads only docs\/atelier\/ship\.json/);
+    assert.match(p.problems[0], /Add docs\/atelier\/ship\.json/);
+  }
   assert.match(plan(t, { "docs/atelier/ship.json": "{ not json" }).problems[0], /docs\/atelier\/ship\.json is not valid JSON/);
-  // Without effect_order the device set's class picks the row.
-  const { effect_order: _, ...table } = POLICY;
-  const unclassed = plan(t, { "docs/control-plane/ship-policy.v1.json": table, "docs/control-plane/project-adapter.v1.json": { capabilities: {} } });
-  assert.match(unclassed.problems[0], /no effect_order to compose from, and its application_classes has no row for a class/);
-  const classed = plan(t, {
-    "docs/control-plane/ship-policy.v1.json": table,
-    "docs/control-plane/project-adapter.v1.json": { capabilities: { "ship-it": cap("deploy", ["./ship"]), "verify-it": cap("network", ["./check"]) } },
-    "docs/control-plane/canonical-device-set.v2.json": { application_class: "web", targets: [] },
-  });
-  assert.deepEqual(classed.problems, []);
-  assert.deepEqual(outline(classed), [["commit"], ["deploy", "./ship [deploy]"], ["verify-delivery", "./check"], ["wrap"], ["push"]]);
 });
 
 test("the Atelier ship file is read strictly", (t) => {
@@ -163,17 +105,23 @@ test("the Atelier ship file is read strictly", (t) => {
   assert.match(plan(t, { "docs/atelier/ship.json": { kind: "atelier.ship" } }).problems[0], /"schema_version": 1/);
 });
 
-test("the kinds approve accepts: Atelier's four and those the project's files name", (t) => {
+test("the kinds approve accepts: Atelier's own and those its ship file names, never an adapter's capability names", (t) => {
   const dir = files({
-    "docs/control-plane/ship-policy.v1.json": POLICY,
-    "docs/control-plane/project-adapter.v1.json": { capabilities: { "install-canonical-iphone": cap("device", ["x"]), "captioning-run": cap("paid-provider", ["y"]) } },
+    ...CP_FILES,
+    "docs/atelier/ship.json": { ...WEB_SHIP, deploy: [{ run: ["./atelier-deploy"] }, { run: ["./caption"], approval: "photos-writeback" }, { run: ["./other"], approval: "caption-spend" }] },
   });
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const kinds = knownKinds(dir);
-  for (const k of ["deploy", "install", "paid-run", "photos-writeback", "install-canonical-iphone", "captioning-run", "paid-provider", "device"]) assert.ok(kinds.has(k), k);
+  for (const k of ["deploy", "install", "paid-run", "photos-writeback", "caption-spend"]) assert.ok(kinds.has(k), k);
+  // ControlPlane's capability names and action classes supply no kind now.
+  for (const k of ["captioning-run", "paid-provider", "device"]) assert.ok(!kinds.has(k), k);
   assert.ok(!kinds.has("deplyo"));
   // Push is no approval kind: --push is the owner's own act at the exact head.
   assert.ok(!kinds.has("push"));
+  // A ControlPlane-only checkout names none either.
+  const only = files(CP_FILES);
+  t.after(() => rmSync(only, { recursive: true, force: true }));
+  assert.deepEqual([...knownKinds(only)], [...knownKinds(null)]);
   assert.deepEqual([...knownKinds(null)], ["deploy", "install", "paid-run", "photos-writeback"]);
 });
 
@@ -229,7 +177,7 @@ function standIn(state) {
 // A checkout registered as demo, whose docs/atelier/ship.json deploys with a
 // stand-in script, checks a stand-in live site and pushes to a local bare
 // repository named github. The baseline is a local bare repository at HEAD.
-async function fixture(t, { approve = [], ship, email = "t@x.test" } = {}) {
+async function fixture(t, { approve = [], ship, extra = {}, email = "t@x.test" } = {}) {
   const git = gitAs(email);
   const dir = mkdtempSync(join(tmpdir(), "atelier-ship-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -256,7 +204,11 @@ exit \${DEPLOY_EXIT:-0}
 `);
   chmodSync(join(checkout, "bin", "deploy.sh"), 0o755);
   mkdirSync(join(checkout, "docs", "atelier"), { recursive: true });
-  writeFileSync(join(checkout, "docs", "atelier", "ship.json"), JSON.stringify(ship ?? {
+  for (const [path, value] of Object.entries(extra)) {
+    mkdirSync(dirname(join(checkout, path)), { recursive: true });
+    writeFileSync(join(checkout, path), JSON.stringify(value));
+  }
+  if (ship !== null) writeFileSync(join(checkout, "docs", "atelier", "ship.json"), JSON.stringify(ship ?? {
     schema_version: 1, kind: "atelier.ship", class: "web",
     deploy: { run: ["bin/deploy.sh"] },
     "verify-deploy": { request: `${url}/live`, status: 200 },
@@ -314,6 +266,24 @@ test("ship with an approval missing refuses before running anything, naming the 
   assert.match(r.stdout, /bin\/deploy\.sh  \[deploy: no approval at this revision\]/);
   assert.ok(!existsSync(f.marker));
   assert.deepEqual(f.writes(), [], "nothing used, run or recorded");
+});
+
+test("a ControlPlane-only checkout refuses before any command, approval or run record, naming the Atelier ship file", async (t) => {
+  const f = await fixture(t, { ship: null, approve: ["deploy"], extra: CP_FILES });
+  const cpDeploy = join(f.checkout, "cp-deploy");
+  for (const args of [["ship", "--push"], ["ship"]]) {
+    const r = await f.run(args);
+    assert.equal(r.status, 1, r.stdout);
+    assert.match(r.stderr, /ship refused before running anything:\n  this project has no ship file: atelier ship reads only docs\/atelier\/ship\.json/);
+    assert.ok(!existsSync(f.marker) && !existsSync(cpDeploy), "no command ran");
+    assert.deepEqual(f.writes(), [], "nothing used, run or recorded");
+    assert.ok(f.state.approvals.every((a) => !a.consumed), "the approval is not consumed");
+  }
+  const dry = await f.run(["ship", "--dry-run"]);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /from no ship file:/);
+  assert.match(dry.stdout, /Refused: this project has no ship file: atelier ship reads only docs\/atelier\/ship\.json/);
+  assert.deepEqual(f.writes(), []);
 });
 
 test("ship runs each step in order with its approvals, records each one redacted, and pushes without force or a push approval", async (t) => {
