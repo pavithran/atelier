@@ -171,3 +171,15 @@ test("cancelling a running release sequence leaves no reservation", { timeout: 3
   assert.equal((await child.finished).code, 143, child.output);
   assert.equal((await f.status()).usage, 0);
 });
+
+
+test("reservation clocks share a high-resolution origin across processes", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), before = Number(process.hrtime.bigint()) / 1e6;
+  const child = f.run([process.execPath, "-e", "process.exit(0)"], "release", randomUUID(), { sequenceId: randomUUID(), sequenceStep: 0 });
+  assert.equal((await child.finished).code, 0, child.output);
+  const after = Number(process.hrtime.bigint()) / 1e6;
+  const reservation = (await f.status()).active[0];
+  assert.ok(reservation.reservedAt >= before && reservation.reservedAt <= after, "child timestamps share the parent's clock origin");
+  assert.equal(reservation.reservedUntil - reservation.reservedAt, 5000);
+});

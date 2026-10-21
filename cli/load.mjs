@@ -1,4 +1,4 @@
-import { cpus, hostname, uptime } from "node:os";
+import { cpus, hostname } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -10,8 +10,8 @@ export const HOST_POOL = "/tmp/atelier-test-slots-v1.sqlite";
 export const SLOT_WRAPPER = fileURLToPath(import.meta.url);
 export const SEQUENCE_GRACE_MS = 5000;
 export const SEQUENCE_CONTINUATIONS = 3;
-// Host uptime is shared by processes and cannot move with wall-clock corrections.
-const now = (options) => (options.now ?? (() => uptime() * 1000))();
+// The host high-resolution clock is shared by processes and ignores wall-clock changes.
+const now = (options) => (options.now ?? (() => Number(process.hrtime.bigint()) / 1e6))();
 const isSequence = (metadata) => typeof metadata.sequenceId === "string" && /^[a-f0-9-]{36}$/.test(metadata.sequenceId) && Number.isSafeInteger(metadata.sequenceStep) && metadata.sequenceStep >= 0;
 const MARKER = "ATELIER_TEST_LEASE";
 const classes = { release: 0, landing: 0, review: 1, ordinary: 2 };

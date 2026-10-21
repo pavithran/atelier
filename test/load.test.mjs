@@ -405,3 +405,16 @@ test("reservation state is internal and status marks an idle reservation", async
   clock = 0;
   assert.equal((await slotStatus(f.options)).usage, 0, "a restarted monotonic clock cannot retain a previous boot reservation");
 });
+
+
+test("idle grace preserves fractional milliseconds through its exact boundary", async (t) => {
+  const f = fixture(t); let clock = 1000.75; f.options.now = () => clock;
+  const seq = releaseSequence({ class: "release" }, f.options);
+  const first = { ...f.owner("release"), ...seq.next() };
+  await acquireSlot(first, f.options);
+  await releaseSlot(first.lease, { ...f.options, retainSequence: true }, first.pid);
+  clock = 6000.74;
+  assert.equal((await slotStatus(f.options)).usage, 1);
+  clock = 6000.75;
+  assert.equal((await slotStatus(f.options)).usage, 0);
+});

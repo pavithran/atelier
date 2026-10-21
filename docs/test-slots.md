@@ -78,7 +78,7 @@ starve lower classes. Ordinary checks keep their existing behaviour.
 
 Failure or cancellation retains no idle reservation. Normal caller cleanup
 removes only its idle reservations; abrupt caller exit leaves them to expire
-within five seconds of host uptime, unaffected by wall-clock corrections.
+within five seconds on the host high-resolution clock, unaffected by wall-clock corrections.
 A sequence identity is cooperative metadata visible in
 wrapper arguments, not a secret or a security boundary. All participating
 CLIs must use this version to retain reservations across gaps; older callers
