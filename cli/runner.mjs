@@ -2391,9 +2391,9 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       await io.checkout(workspace, claimed.head);
     }
     await (io.prepareReview ?? prepareReviewDependencies)(workspace, io.workspacePath(project, item.id));
-    const compare = await reviewBase(io, workspace, claimed);
+    const compare = await reviewBase(io, workspace, claimed, { project });
     if (io.stopped()) throw new Error("interrupted");
-    if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
+    if (compare.fallback) io.log(`review diff from the fork point: ${project}/${item.id} at ${claimed.head.slice(0, 12)}: ${compare.fallback}`);
     // A merge-main job's merge is reviewed by what it resolved (mergeReview);
     // every other head by the diff from `compare`.
     const merged = claimed.landed ? null : await mergeReview(io, workspace, claimed);
@@ -3066,10 +3066,14 @@ export async function verifyBlockers(io, ctx, blockers) {
 // diff from its fork point would show them as the task's own; the merge
 // base leaves them out, as git merge-base HEAD main does in
 // bin/orchestrate/review.sh. When the branch cannot be fetched or shares no
-// history with the head, the diff runs from the fork point and the reason is
-// returned, for the brief to say so.
-export async function reviewBase(io, workspace, claimed) {
-  const forkPoint = (fallback) => ({ from: claimed.item.base, fallback });
+// history with the head, the diff runs from the fork point the claim records
+// and the reason is returned, for the brief to say so. A fork point the clone
+// cannot read is no fallback: the review stops here, before any harness
+// starts, with an error that names the job and the operation that failed,
+// so the notice (a fork-point diff is in use) and the terminal error (there
+// is no diff to give) are told apart in the log (t173).
+// `job` is { project }, for the names in those two messages.
+export async function reviewBase(io, workspace, claimed, job = {}) {
   const target = claimed.target;
   if (claimed.landed) {
     // Never use today's main as the merge base: it already contains the
@@ -3082,19 +3086,34 @@ export async function reviewBase(io, workspace, claimed) {
     if (!from) throw new Error("post-merge review has no readable original base");
     return { from, target: from };
   }
-  if (!target?.remote || !target?.branch) return forkPoint("the review claim named no branch the task merges into");
+  if (!target?.remote || !target?.branch) return { from: claimed.item.base, fallback: "the review claim named no branch the task merges into" };
+  let operation = "the fetch of the target branch", failure = null;
   try {
     await io.fetch(workspace, target.remote, target.token, target.branch);
     // The fetched branch's head, returned as `target` so the review role's
     // instructions can be read from it (reviewRoleText), never from the head
     // under review: FETCH_HEAD after the clone is that head, so only a head
     // captured here is safe to read.
+    operation = "the read of the fetched target branch";
     const targetHead = (await io.revParse(workspace, "FETCH_HEAD")).trim();
+    operation = "the merge-base lookup";
     const from = (await io.mergeBase(workspace, "FETCH_HEAD", claimed.head)).trim();
-    return from ? { from, branch: target.branch, target: targetHead } : forkPoint(`the head shares no history with ${target.branch}`);
+    if (from) return { from, branch: target.branch, target: targetHead };
+    failure = "the head shares no history with the branch";
   } catch (error) {
-    return forkPoint(`the merge base with ${target.branch} could not be found: ${error.message}`);
+    if (io.stopped?.()) throw error;
+    // git merge-base exits 1, saying nothing, when the two share no commit.
+    failure = operation === "the merge-base lookup" && error.code === 1 ? "the head and the branch share no commit" : String(error.message).split("\n").filter(Boolean).at(-1) ?? "git gave no message";
   }
+  const base = claimed.item.base;
+  let readable = !!base;
+  if (readable && io.hasCommit) {
+    try { readable = await io.hasCommit(workspace, base); } catch { readable = false; }
+  }
+  if (!readable) {
+    throw new Error(`review of ${job.project ?? "?"}/${claimed.item.id} at ${String(claimed.head).slice(0, 12)} cannot start, with target branch ${target.branch}: ${operation} failed (${failure}) and the fork point ${base ? String(base).slice(0, 12) : "(none recorded)"} cannot be read in the clone`);
+  }
+  return { from: base, fallback: `${operation} on ${target.branch} failed (${failure})` };
 }
 
 // The conflict resolution of a merge commit: its diff from the merge git
