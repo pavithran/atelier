@@ -70,7 +70,15 @@ function fenceFor(text) {
   return "`".repeat(longest + 1);
 }
 
-export function reviewPrompt(brief, diff) {
+// Where the reviewer may look: the current folder, or for a Codex review,
+// whose current folder is an empty scratch one (t140), the clone it reads.
+function lookFor(clone) {
+  return clone
+    ? `The clone under review is ${clone}: read it there and run the project's tests against it, but your current folder is an empty scratch folder, the only place you may write, and the clone is read-only to you.`
+    : "In the current folder you may read files and run the project's tests.";
+}
+
+export function reviewPrompt(brief, diff, clone) {
   const fence = fenceFor(diff);
   return [
     brief.replace(/\n+$/, ""),
@@ -80,7 +88,7 @@ export function reviewPrompt(brief, diff) {
     diff.replace(/\n+$/, ""),
     fence,
     "",
-    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it.",
+    `${lookFor(clone)} Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it.`,
     VERDICT_DEMAND,
   ].join("\n");
 }
@@ -106,7 +114,7 @@ export function demandFor(brief) {
   return brief.includes(VERIFY_BASE_LINE) ? VERIFY_DEMAND_BASE : VERIFY_DEMAND;
 }
 
-export function verificationPrompt(brief, diff) {
+export function verificationPrompt(brief, diff, clone) {
   const fence = fenceFor(diff);
   return [
     brief.replace(/\n+$/, ""),
@@ -116,7 +124,7 @@ export function verificationPrompt(brief, diff) {
     diff.replace(/\n+$/, ""),
     fence,
     "",
-    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; confirm a finding only when you have shown it yourself.",
+    `${lookFor(clone)} Edit nothing, do not push and run no atelier command; confirm a finding only when you have shown it yourself.`,
     demandFor(brief),
   ].join("\n");
 }
@@ -159,7 +167,9 @@ export function promptFor(harness, args, read = (f) => readFileSync(f, "utf8")) 
   const brief = read(args.brief);
   if (jobKind(args) === "review") {
     const diff = args.diff ? read(args.diff) : "";
-    return isVerification(brief) ? verificationPrompt(brief, diff) : reviewPrompt(brief, diff);
+    // A Codex review runs in a scratch folder, so its prompt names the clone.
+    const clone = harness === "codex" ? args.workspace : undefined;
+    return isVerification(brief) ? verificationPrompt(brief, diff, clone) : reviewPrompt(brief, diff, clone);
   }
   return `${agentRules(harness, args.model, args.workspace, args.plan)}\n\n${brief}`;
 }
@@ -203,8 +213,13 @@ export const HARNESSES = {
   codex: {
     executable: "codex",
     command(args, kind, setup) {
+      // A review starts in setup.scratch, a fresh empty folder made outside
+      // the clone (t140): read-only refuses mkdtemp under the system temp
+      // folder, so gpt-6-astra could not run a test that makes a scratch
+      // folder. Under workspace-write it can write that folder and the system
+      // temp folder; the clone, its .git and the network stay closed to it.
+      if (kind === "review") return { argv: [...setup.noMcp, "exec", "--model", args.model, "--skip-git-repo-check", "--cd", setup.scratch, "--sandbox", "workspace-write", "--output-last-message", args.verdict, "-"], verdictFrom: "file" };
       const common = [...setup.noMcp, "exec", "--model", args.model, "--skip-git-repo-check", "--cd", args.workspace];
-      if (kind === "review") return { argv: [...common, "--sandbox", "read-only", "--output-last-message", args.verdict, "-"], verdictFrom: "file" };
       // Its workspace-write sandbox keeps .git read-only unless it is named
       // a writable root, and a build has to commit.
       return { argv: [...common, "--sandbox", "workspace-write", "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify([join(args.workspace, ".git")])}`, "-"], verdictFrom: "stdout" };
@@ -466,7 +481,7 @@ export function runAdapter(harness, argv, io = {}) {
   let args;
   try { args = parseArgs(argv); } catch (error) { return fail(error.message); }
   const kind = jobKind(args);
-  let childEnv = env, setup, runDir;
+  let childEnv = env, setup, runDir, scratchDir;
   try {
     if (harness === "opencode") {
       setup = opencodeSetup(args.model, args.options.providers ?? defaultProvidersDir(env));
@@ -484,15 +499,20 @@ export function runAdapter(harness, argv, io = {}) {
       // opencode 2 gets the deny at every run, over whatever config was stored.
       if (major >= 2) childEnv.OPENCODE_CONFIG_CONTENT = OPENCODE2_CONFIG_CONTENT;
     }
-    if (harness === "codex") setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
+    if (harness === "codex") {
+      setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
+      if (kind === "review") setup.scratch = scratchDir = mkdtempSync(join(tmpdir(), "atelier-codex-review-"));
+    }
   } catch (error) {
     if (runDir) rmSync(runDir, { recursive: true, force: true });
+    if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
     return fail(error.message);
   }
   try {
     return runHarness(harness, args, kind, setup, childEnv, io, fail);
   } finally {
     if (runDir) rmSync(runDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    if (scratchDir) rmSync(scratchDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   }
 }
 
@@ -508,7 +528,7 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
   const options = {
-    cwd: args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    cwd: setup?.scratch ?? args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     stdio: ["pipe", capture ? "pipe" : "inherit", "inherit"],
   };
   const limit = harness === "opencode" && kind === "build" ? RUN_LIMITS[setup.providerModel] : null;

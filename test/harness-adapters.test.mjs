@@ -257,7 +257,8 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.deepEqual(codex.slice(codex.indexOf("exec"), codex.indexOf("exec") + 3), ["exec", "--model", "gpt-6-astra"]);
   assert.equal(codex.at(-1), "-", "codex reads the prompt from standard input");
   assert.equal(codex[codex.indexOf("--sandbox") + 1], "workspace-write");
-  assert.equal(run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv[codex.indexOf("--sandbox") + 1], "read-only");
+  const codexReview = run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv;
+  assert.equal(codexReview[codexReview.indexOf("--sandbox") + 1], "workspace-write", "t140: read-only refused mkdtemp, so astra could not run a test that makes a scratch folder");
   const agy = run("antigravity", s, { model: "gemini-3.1-pro" }).seen.argv;
   assert.equal(agy[agy.indexOf("--model") + 1], "gemini-3.1-pro-high");
   const argon = run("antigravity", s, { model: "gemini-4-argon" }).seen.argv;
@@ -680,4 +681,63 @@ test("a verification brief with a base is given a final demand offering CONFIRME
     const plain = run(harness, s, { model, review: true, env: { FAKE_ANSWER: answer } }).seen.input.trimEnd();
     assert.ok(plain.endsWith(VERIFY_DEMAND) && !plain.includes("PRE-EXISTING"), `${harness}: no base, no PRE-EXISTING`);
   }
+});
+
+// t140: gpt-6-astra reviewed t68, t58 and t136 by inspection only, because
+// `codex exec -s read-only` refuses mkdtemp under os.tmpdir() (EPERM) and so
+// every test that makes a scratch folder. A review now runs workspace-write
+// in a fresh empty folder outside the clone.
+function codexReviewIn(t, spawnResult) {
+  const s = setup(t);
+  const seen = [];
+  const spawn = (exe, argv, options) => {
+    if (argv.includes("mcp")) return { status: 0, stdout: "[]" };
+    const cwd = options.cwd;
+    seen.push({ argv, cwd, existed: existsSync(cwd), entries: readdirSync(cwd), input: options.input });
+    return spawnResult;
+  };
+  const err = [];
+  const status = runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir }, spawn, stderr: (x) => err.push(x) });
+  return { s, seen, status, err: err.join("") };
+}
+
+test("a codex review runs workspace-write in a fresh empty folder outside the clone, named in the prompt, and the folder is removed", (t) => {
+  const { s, seen, status } = codexReviewIn(t, { status: 0 });
+  assert.equal(status, 0);
+  assert.equal(seen.length, 1);
+  const { argv, cwd, existed, entries, input } = seen[0];
+  assert.ok(existed && entries.length === 0, "an existing, empty folder");
+  assert.equal(argv[argv.indexOf("--cd") + 1], cwd, "codex is rooted in the scratch folder");
+  assert.equal(argv[argv.indexOf("--sandbox") + 1], "workspace-write");
+  assert.ok(!argv.some((a) => a.startsWith("sandbox_workspace_write")), "no extra writable root, so the clone and its .git stay closed");
+  assert.ok(!argv.includes(s.ws), "the clone is not a root of the run");
+  assert.ok(cwd.startsWith(realpathSync(tmpdir())) || cwd.startsWith(tmpdir()));
+  assert.ok(!cwd.startsWith(s.ws) && !s.ws.startsWith(cwd), "outside the clone");
+  assert.ok(input.includes(`The clone under review is ${s.ws}`), "the prompt names the clone");
+  assert.ok(input.endsWith(VERDICT_DEMAND));
+  assert.equal(existsSync(cwd), false, "removed after success");
+});
+
+test("a codex review's scratch folder is removed after a nonzero exit and after a spawn failure", (t) => {
+  const failed = codexReviewIn(t, { status: 3 });
+  assert.equal(failed.status, 3);
+  assert.equal(existsSync(failed.seen[0].cwd), false);
+  const broken = codexReviewIn(t, { error: Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" }) });
+  assert.equal(broken.status, 1);
+  assert.match(broken.err, /could not run codex/);
+  assert.equal(existsSync(broken.seen[0].cwd), false);
+});
+
+test("a codex review that cannot start leaves no scratch folder, and a build gets none and runs in the clone", (t) => {
+  const before = readdirSync(tmpdir()).filter((n) => n.startsWith("atelier-codex-review-"));
+  const s = setup(t);
+  const status = runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir }, spawn: () => ({ status: 1, stdout: "" }), stderr: () => {} });
+  assert.equal(status, 1, "codex's MCP list failed, so the job did not run");
+  assert.deepEqual(readdirSync(tmpdir()).filter((n) => n.startsWith("atelier-codex-review-")), before);
+  const calls = [];
+  runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", "undefined", "undefined"], { env: { PATH: process.env.PATH, HOME: s.dir }, spawn: (exe, argv, o) => { if (!argv.includes("mcp")) calls.push({ argv, cwd: o.cwd }); return argv.includes("mcp") ? { status: 0, stdout: "[]" } : { status: 0 }; }, stderr: () => {} });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cwd, s.ws);
+  assert.equal(calls[0].argv[calls[0].argv.indexOf("--cd") + 1], s.ws);
+  assert.ok(calls[0].argv.some((a) => a.startsWith("sandbox_workspace_write.writable_roots=")), "a build's argv is unchanged");
 });
