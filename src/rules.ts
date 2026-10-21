@@ -632,6 +632,11 @@ export function splitHarness(name: string): { harness?: string; model: string } 
 export interface ProjectPolicy {
   postMerge?: PostMergePolicy;
   reviewerAdmissions?: ReviewerAdmission[];
+  // Raw ControlPlane compatibility data (retired, t149 and t152): stored as
+  // written, shown as history and answered in responses, and read by no
+  // decision. agents, execution and eligible (below) restrict no claim, route,
+  // review or change class; test/retired-governance-scan.test.ts fails on a
+  // read that decides.
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
   prepare?: {
@@ -683,7 +688,7 @@ export interface ProjectPolicy {
   // (storedActor in src/models/identity.ts).
   exactNames?: "reviewTier"[];
   protected: string[];      // globs whose changes need an independent assessor
-  eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
+  eligible?: string[];      // retired ControlPlane list of harness families, stored and shown, read by no decision
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
   // Every task is filed, and kept, with acceptance criteria (`atelier init
   // --require-criteria`): a review judges a change against them, so a task
@@ -1115,36 +1120,8 @@ export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEF
     if (admission?.active) return;
     if (admission) throw new RuleError("ineligible", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
   }
-  if (policy.agents) {
-    if (!hasRole(actor, policy, role)) throw new RuleError("ineligible", `${actor} needs an available agent with the ${role} role`, 403);
-    return;
-  }
-  if (actor === owner || !policy.eligible?.length) return;
-  const harness = actor.split("/")[0];
-  if (!policy.eligible.some((k) => harness === k || harness.startsWith(`${k}-`))) {
-    throw new RuleError("ineligible", `${harness} is not an eligible agent here (eligible: ${policy.eligible.join(", ")})`, 403);
-  }
-}
-
-// ControlPlane names agents separately from the harness that runs a model.
-export function agentOf(actor: string, agents: Record<string, AgentPolicy>): string | null {
-  const [harness, named] = actor.toLowerCase().split("/");
-  if (!named) return null;
-  // The model by modelKey, so a profile suffix or another name for the same
-  // model never maps the actor to another agent.
-  const model = modelKey(actor);
-  const fixed = harness === "claude-code" ? "claude" : harness === "codex" ? "codex"
-    : harness === "zcode" || (harness === "opencode" && model.startsWith("glm")) ? "glm" : null;
-  const family = familyOf(model);
-  const names: Record<string, string> = { anthropic: "claude", openai: "gpt", zai: "glm", google: "gemini", meta: "llama" };
-  if (fixed) return Object.hasOwn(agents, fixed) ? fixed : null;
-  // A ControlPlane policy's "antigravity" agent means Gemini through
-  // Antigravity (its CLI is agy). Antigravity also serves other vendors'
-  // models, and those are matched by their own family, like any harness.
-  if (harness === "antigravity" && family === "google" && Object.hasOwn(agents, "antigravity")) return "antigravity";
-  const name = names[family] ?? (family === "other" ? model.match(/^[a-z]+/)?.[0] : family);
-  if (name && Object.hasOwn(agents, name)) return name;
-  return family !== "other" && Object.hasOwn(agents, family) ? family : null;
+  // ControlPlane's agents, roles and eligible list are retired (t152): the
+  // project record keeps them, and nothing here reads them.
 }
 
 export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): boolean {
@@ -1152,36 +1129,14 @@ export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): 
     const admission = reviewerAdmission(actor, policy);
     if (admission) return admission.active;
   }
-  if (!policy.agents) return true;
-  const name = agentOf(actor, policy.agents);
-  return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
-}
-
-// The agent names a governed policy marks available for a role, for a
-// refusal said ahead of a claim (a dispatch, a named reviewer) to name who
-// would pass (t405). Only governed policies have agents; without one,
-// eligibility is by harness and assertEligible names those.
-export function eligibleAgents(policy: ProjectPolicy, role: AgentRole): string[] {
-  if (!policy.agents) return [];
-  return Object.entries(policy.agents)
-    .filter(([, a]) => a.available && a.eligible_roles.includes(role))
-    .map(([name]) => name);
+  return true;
 }
 
 // Why a claim by `actor` under `role` would be refused by the project's
-// policy, or null when it would pass. The reason is the one assertEligible
-// gives, extended, under a governed policy, with the agents that would be
-// eligible, so a refusal said ahead of the claim names who would pass
-// (t405). A caller that refuses on this reason refuses the same rule the
-// claim would apply.
+// policy, or null when it would pass: the reason assertEligible gives. A
+// caller that refuses on this reason refuses the same rule the claim would
+// apply.
 export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
-  if (policy.agents) {
-    const foreign = actor === owner ? null : companyRefusal(actor, singleFamily(policy));
-    if (foreign) return `${foreign}: use one of ${singleFamily(policy)}'s models, or return to cross-family review with atelier init --cross-family`;
-    if (hasRole(actor, policy, role)) return null;
-    const names = eligibleAgents(policy, role);
-    return `${actor} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
-  }
   try {
     assertEligible(actor, policy, owner, role);
     return null;
@@ -1194,38 +1149,11 @@ export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRol
 
 // Why a dispatch that names only a harness, no model, would be refused by
 // the project's policy for every model under that harness, or null when the
-// policy has nothing to say about the harness alone. A claim names an actor
-// (harness/model), so a harness-only dispatch is checked only for the
-// restrictions the harness itself decides: under a governed policy the fixed
-// agent a harness runs (claude-code → claude, codex → codex, zcode → glm),
-// whose role and availability hold for every model of that harness; under
-// legacy eligibility the harness list, which names no model at all. A
-// harness whose agent depends on the model (opencode's glm models against
-// its others) cannot be judged here, and the claim's own check applies when
-// the runner names a model (t405).
+// policy has nothing to say about the harness alone. A harness names no
+// model, so no company: the claim judges the model the runner names
+// (assertEligible).
 export function harnessRefusal(harness: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
-  if (policy.agents) {
-    // agentOf reads the harness lowercased, so the fixed mapping matches the
-    // claim's own, whatever letter case the dispatch carried.
-    const fixed = harness.toLowerCase() === "claude-code" ? "claude" : harness.toLowerCase() === "codex" ? "codex" : harness.toLowerCase() === "zcode" ? "glm" : null;
-    if (!fixed) {
-      // A harness whose governed agent depends on the model (opencode's glm
-      // models against its others) cannot be judged per model here, and the
-      // claim's own check applies once the runner names a model. But when no
-      // governed agent holds the role at all, no model under any harness
-      // could qualify, and the refusal is said now with the claim's reason.
-      const names = eligibleAgents(policy, role);
-      if (names.length) return null;
-      return `${harness} needs an available agent with the ${role} role; no agent is available with the ${role} role`;
-    }
-    const agent = policy.agents[fixed];
-    if (agent?.available && agent.eligible_roles.includes(role)) return null;
-    const names = eligibleAgents(policy, role);
-    return `${harness} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
-  }
   try {
-    // A harness names no model, so no company: the claim judges the model
-    // the runner names (assertEligible).
     assertEligible(`${harness}/x`, { ...policy, familyMode: undefined }, owner, role);
     return null;
   } catch (err) {
@@ -1264,7 +1192,6 @@ export function protectedRuleGroups(policy: ProjectPolicy): [string, string[]][]
   return [
     ["the project's protected paths", policy.protected ?? []],
     ["the files its required checks run", checkFiles(policy.checks)],
-    ["the execution policy's protected_path_patterns", policy.execution?.protected_path_patterns ?? []],
     ["the ship files", SHIP_FILES],
     ["the files its ship order runs", checkFiles(policy.shipRuns ?? [])],
     ["the post-merge policy (all repository paths)", policy.postMerge ? ["**"] : []],
@@ -1276,8 +1203,10 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
   if (!paths.length) return null;
   const guarded = protectedRuleGroups(policy).flatMap(([, globs]) => globs);
   if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
-  const direct = policy.execution?.direct;
-  return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
+  // The stored execution policy's direct paths are retired (t152): a change
+  // that touches no guarded path is coordinated, which needs no review unless
+  // the project's riskReviews ask for one.
+  return "coordinated";
 }
 
 // The files that are docs or tests: a change made only of them is the lowest
@@ -2064,15 +1993,14 @@ export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evide
 }
 
 // How many independent approvals a change needs, and by which test each one
-// counts. Without the project's riskReviews: one for a protected change (and
-// for a coordinated one under an execution policy), none for any other, each
-// tested as its class is. With them (t631): what the change's risk class
+// counts. Without the project's riskReviews: one for a protected change,
+// none for any other, tested as a protected change's. With them (t631): what the change's risk class
 // needs, each approval tested as a protected change's if the change is
 // protected and as a coordinated change's otherwise.
 export function approvalsNeeded(policy: ProjectPolicy, kind: ChangeClass | null, paths: readonly string[] | null | undefined): { count: number; as: "protected" | "coordinated" | null; risk: RiskClass | null } {
   const risk = riskNeed(paths, policy);
   if (risk) return { count: risk.reviews, as: kind === "protected" ? "protected" : "coordinated", risk: risk.risk };
-  const as = kind === "protected" || (policy.execution !== undefined && kind === "coordinated") ? kind : null;
+  const as = kind === "protected" ? kind : null;
   return { count: as ? 1 : 0, as, risk: null };
 }
 
@@ -2103,15 +2031,10 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (view.changedPaths === null) blockers.push("changed paths not yet observed");
   const changed = view.changedPaths ?? [];
   const kind = view.changedPaths === null ? null : changeClass(changed, policy);
-  const governed = policy.execution !== undefined;
-  if (governed && view.changedPaths?.length === 0) blockers.push("nothing to merge");
-  const requirement = kind ? classRequirement(kind, singleFamily(policy)) : view.changedPaths === null ? "Change class pending: changed paths not yet observed" : "Nothing to merge";
   let needsAssessor = false;
   let overridden: ReviewOverride | null = null;
-  if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
-  // A protected change needs an independent review in every project, and a
-  // coordinated one does under an execution policy, unless the review is
-  // held outside the item (reviewHeld). Models are compared by modelKey,
+  // A protected change needs an independent review in every project, unless
+  // the review is held outside the item (reviewHeld). Models are compared by modelKey,
   // and protected reviews must also pass familyRefusal, so a contributor's
   // model under another harness, case, profile or name is never independent of
   // itself. Without a qualifying approval, the owner's override at this head
@@ -2132,7 +2055,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
       overridden = forReview?.rejectionsOnly ? null : forReview;
       if (!overridden) {
         needsAssessor = true;
-        blockers.push(need.risk ? riskBlocker(need.risk, need.count, have, single) : governed ? requirement : protectedNeed(single));
+        blockers.push(need.risk ? riskBlocker(need.risk, need.count, have, single) : protectedNeed(single));
         // An approval that would count had the model's own token or a claimed
         // request shown it is named, so the owner sees why it does not.
         if (kindNeeded === "protected") {
@@ -2151,7 +2074,6 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   const outOfScope = item.scope.length ? changed.filter((p) => !matchesAny(p, item.scope)) : [];
   return {
     ready: blockers.length === 0, blockers, needsAssessor, outOfScope,
-    ...(governed ? { changeClass: kind, requirement } : {}),
     ...(need.risk ? { riskClass: need.risk } : {}),
     ...(overridden ? { overridden } : {}),
   };
@@ -3375,7 +3297,9 @@ export function mergeContext(
   };
 }
 
-// Eligibility as assertEligible reads the list: by the actor's harness.
+// Eligibility as assertEligible read the list: by the actor's harness. Only
+// the merge comparison reads it now, against an acceptance that recorded one
+// (t152: new acceptances record none, and no claim or review reads it).
 const harnessEligible = (actor: string, list: string[] | undefined) => {
   const harness = actor.split("/")[0];
   return !list?.length || list.some((k) => harness === k || harness.startsWith(`${k}-`));

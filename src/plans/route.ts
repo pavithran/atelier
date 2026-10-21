@@ -40,7 +40,7 @@ import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../mode
 import { byPrecision, precisionLine, precisionOf, precisionTerm, type PrecisionRecord } from "../models/precision.ts";
 import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { measureText, stalledText, type SpeedRecord } from "../models/speed.ts";
-import { assertEligible, hasRole, modelKey, parseRuleError, singleFamily, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, modelKey, parseRuleError, singleFamily, type ProjectPolicy } from "../rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
 // What the owner knows about a tool's usage limits, keyed by actor
@@ -66,7 +66,7 @@ export interface RouteInput {
   // (gpt-6-astra's twenty-first review of t622).
   buildJob?: Dispatch["job"];
   events: readonly LedgerEvent[];         // the project's ledger; buildRecord() makes the track record
-  policy: ProjectPolicy;                  // governed when it names agents
+  policy: ProjectPolicy;
   allowPaid: boolean;                     // the owner's approval of paid-per-token models
   spend?: { cap: number; used: number };  // for paid models, in the owner's unit; paid models are excluded once used reaches cap
   availability?: Readonly<Record<string, Availability>>;
@@ -224,10 +224,9 @@ export function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEv
 }
 
 // The rule a claim applies, so routing never names a builder the claim
-// would refuse: under a governed policy the executor role, otherwise the
-// project's eligible harnesses, and the company single-family mode allows,
-// whose refusal the single-family rule in judge() already says in its own
-// words (t394).
+// would refuse. The company single-family mode allows is left to the
+// single-family rule in judge(), which says its refusal in its own words
+// (t394).
 function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   try {
     assertEligible(actor, policy);
@@ -239,9 +238,8 @@ function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   }
 }
 
-// The rule a review applies outside a governed policy, so routing never
-// names a reviewer whose review the ledger would refuse: the eligible
-// harnesses and the reviewer admissions. Single-family mode is judged in
+// The rule a review applies, so routing never names a reviewer whose review
+// the ledger would refuse: the reviewer admissions. Single-family mode is judged in
 // judge() in its own words.
 function assessorRefusal(actor: string, policy: ProjectPolicy): string | null {
   try {
@@ -267,7 +265,6 @@ interface Context {
   paces: Map<string, Pace> | null;         // null unless the input asks for speed
   availability: Map<string, { key: string; value: Availability }>;
   offered: Map<string, string[]> | null;   // actors live runners offer, whatever job; null when the offers were not read or none is live, and routing restricts nothing
-  governed: boolean;
   reviewOffered: Offering | null;          // what the live runners offer for the review job; null when none were read or no runner is live
   buildOffered: Offering | null;           // the same for a part's build, home
   offersRead: boolean;                     // whether the caller read runner offers at all
@@ -359,11 +356,10 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   if (ctx.buildOffered && ctx.offered?.has(actor.toLowerCase()) && !claimants({ to: "home", job: ctx.input.buildJob, agent: entry.harness, model: entry.id }, ctx.input.offers ?? [])?.length)
     build.push(`no live runner offers ${actor} for ${ctx.input.buildJob ? `the ${ctx.input.buildJob} job` : "a build"} at home: ${ctx.buildOffered.instead.join("; ")}`);
   if (heldBuild) build.push(heldBuild);
-  // The reviewer's eligibility as pickReviewer judges it: under a governed
-  // policy the assessor role; otherwise the project's eligible harnesses and
-  // its reviewer admissions, so a model whose admission was withdrawn is
+  // The reviewer's eligibility as pickReviewer judges it: its reviewer
+  // admissions, so a model whose admission was withdrawn is
   // never routed to review (gpt-6-astra's review of t622, finding 5).
-  const reviewerRefusal = ctx.governed ? (hasRole(actor, ctx.input.policy, "assessor") ? null : `${actor} needs an available agent with the assessor role`) : assessorRefusal(actor, ctx.input.policy);
+  const reviewerRefusal = assessorRefusal(actor, ctx.input.policy);
   const review = reviewerRefusal ? [...both, reviewerRefusal] : [...both];
   if (heldReview) review.push(heldReview);
   // The offer the review job asks of a runner: a review is claimed only by
@@ -389,7 +385,6 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
 
 function choice(verdict: Verdict, lead: string[], role: string, ctx: Context): Choice {
   const reasons = [...lead];
-  if (ctx.governed) reasons.push(`Governed policy: holds the ${role} role`);
   const pace = ctx.paces?.get(verdict.actor);
   return { actor: verdict.actor, reasons: [...reasons, ...verdict.passed, ...verdict.candidate.reasons, ...(pace ? [pace.reason] : [])] };
 }
@@ -580,7 +575,6 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     paces: input.speed ? pacesFor(pool, input.speed) : null,
     availability: new Map(Object.entries(input.availability ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }])),
     offered: live.length ? offeredActors(live) : null,
-    governed: input.policy.agents !== undefined,
     reviewOffered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
     buildOffered: input.offers != null ? offering({ ...BUILD_JOB, job: input.buildJob }, input.offers) : null,
     offersRead: input.offers != null,

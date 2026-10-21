@@ -356,13 +356,14 @@ test("a dispatch refuses a named agent and model the claim would refuse, and an 
   const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
   const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
   const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
-  // A governed policy gives the named actor no executor role, so the claim
-  // would refuse it; the dispatch names the agent that would be eligible.
+  // Stored ControlPlane agents and eligible harnesses refuse nothing (t152):
+  // the claim refuses no such actor either.
   const governed = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } } });
-  assert.throws(() => assertDispatchClaimable(open, [], governed, d({ agent: "codex", model: "gpt-6" })), /codex\/gpt-6 needs an available agent with the executor role; available agents with the executor role: claude/);
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], governed, d({ agent: "codex", model: "gpt-6" })));
   assert.doesNotThrow(() => assertDispatchClaimable(open, [], governed, d({ agent: "claude-code", model: "opus-5.5" })));
-  // A legacy policy refuses an ineligible harness, naming the eligible ones.
-  assert.throws(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "codex", model: "gpt-6" })), /codex is not an eligible agent here \(eligible: claude\)/);
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "codex", model: "gpt-6" })));
+  // What the claim still refuses, a dispatch refuses: another company's model in a single-family project.
+  assert.throws(() => assertDispatchClaimable(open, [], policy({ familyMode: { single: "anthropic", by: "pavi", at: T } }), d({ agent: "codex", model: "gpt-6" })), /anthropic/);
   // A scope a refuseOverlap policy refuses is refused, naming the live item,
   // whatever agent is named, and left alone where the policy does not refuse.
   const live = item({ id: "t28", scope: ["relay/test/**"], state: "claimed", owner: "codex/gpt-6" });
@@ -374,48 +375,17 @@ test("a dispatch refuses a named agent and model the claim would refuse, and an 
 });
 
 // A dispatch that names only a harness is refused where the claim would be
-// for every model under that harness (t405): a harness whose governed agent
-// is unavailable or lacks the executor role, or whose harness the legacy
-// eligibility list excludes. The refusal names the eligible agents, or the
-// eligible harnesses, exactly as the claim's would.
-test("a dispatch naming only a harness refuses the harness the claim would refuse", () => {
+// for every model under that harness (t405). The stored ControlPlane agents
+// and eligible list no longer refuse any harness (t152).
+test("a dispatch naming only a harness is refused by no stored agent or eligible list", () => {
+  // Would have caught: a stored agents list that refused the codex and opencode harnesses their executor role after ControlPlane was retired.
   const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
   const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
   const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
-  // Codex's governed agent lacks the executor role, so no codex model could
-  // claim; the refusal names the agent that would be eligible.
   const assessorOnly = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } } });
-  assert.throws(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "codex" })), /codex needs an available agent with the executor role; available agents with the executor role: claude/);
-  // Codex's governed agent is unavailable, so no codex model could claim.
   const unavailable = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: false, eligible_roles: ["executor"] } } });
-  assert.throws(() => assertDispatchClaimable(open, [], unavailable, d({ agent: "codex" })), /codex needs an available agent with the executor role; available agents with the executor role: claude/);
-  // A legacy policy excludes the codex harness, naming the eligible ones.
-  assert.throws(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "codex" })), /codex is not an eligible agent here \(eligible: claude\)/);
-  // A harness the policy would let claim is not refused, and a harness whose
-  // governed agent depends on the model is left to the claim's own check.
-  assert.doesNotThrow(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "claude-code" })));
-  assert.doesNotThrow(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "claude" })));
-  assert.doesNotThrow(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "opencode" })));
-});
-
-// A harness whose governed agent depends on the model (opencode) cannot be
-// judged per model ahead of the claim, but when no governed agent holds the
-// role at all no model under any harness could qualify, so the refusal is
-// said now with the claim's own reason (t405).
-test("a dispatch naming only a harness refuses it when no agent holds the role, even a model-dependent harness", () => {
-  const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
-  const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
-  const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
-  // No governed agent holds the executor role: a claim by any model would be
-  // refused, so a harness-only dispatch for opencode is refused too.
-  const assessorOnly = policy({ agents: { codex: { available: true, eligible_roles: ["assessor"] } } });
-  assert.throws(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "opencode" })), /opencode needs an available agent with the executor role; no agent is available with the executor role/);
-  // An agent that is present but unavailable for the role also leaves no
-  // model that could qualify.
-  const unavailable = policy({ agents: { glm: { available: false, eligible_roles: ["executor"] } } });
-  assert.throws(() => assertDispatchClaimable(open, [], unavailable, d({ agent: "opencode" })), /no agent is available with the executor role/);
-  // When some agent holds the role, opencode is left to the claim's own
-  // check, since a model that maps to that agent could qualify.
-  const exec = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] } } });
-  assert.doesNotThrow(() => assertDispatchClaimable(open, [], exec, d({ agent: "opencode" })));
+  const noExecutor = policy({ agents: { codex: { available: true, eligible_roles: ["assessor"] } } });
+  for (const p of [assessorOnly, unavailable, noExecutor, policy({ eligible: ["claude"] })]) {
+    for (const agent of ["codex", "claude-code", "opencode", "zcode"]) assert.doesNotThrow(() => assertDispatchClaimable(open, [], p, d({ agent })), agent);
+  }
 });

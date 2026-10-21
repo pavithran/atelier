@@ -36,9 +36,9 @@ it("renders without a session, with or without a server token, and says it is pu
   }
 });
 
-it("states that coordinated review requires a different contributor model under any harness", async () => {
+it("states that a coordinated change needs a review only under riskReviews, from a different contributor model under any harness, and that stored ControlPlane governance restricts nothing", async () => {
   const { body } = await page();
-  const coordinatedRule = "Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from a model different from every contributor's, under any harness name, and the developer's approval is not that review either.";
+  const coordinatedRule = "A coordinated change, one that touches no protected path, needs no review unless the project's riskReviews ask for one; where they do, the review must come from a model different from every contributor's, under any harness name, and the developer's approval is not that review either. What a ControlPlane policy left stored on a project, its agents, execution rules and eligible list, restricts no claim, route, review or change class.";
   expect(body).toContain(escapeText(coordinatedRule));
   expect(body).not.toContain("any agent who did not contribute");
 });

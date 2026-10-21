@@ -142,18 +142,18 @@ test("independentApproval and the gate: under single-family mode another company
   assert.equal(independentApproval(review(GPT), "coordinated", [OPUS], OWNER, "anthropic"), false);
   assert.equal(independentApproval(review("zcode/glm-5.3"), "coordinated", [OPUS], OWNER, "anthropic"), false);
   assert.equal(independentApproval(review(GPT), "coordinated", [OPUS], OWNER), true);
-  const execution: ProjectPolicy["execution"] = { allowed_classes: ["direct", "coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [] };
-  const governed: ProjectPolicy = { ...anthropic, execution };
+  // A change outside the guarded paths is reviewed only where riskReviews ask for it; the stored execution policy ControlPlane left asks for nothing (t152).
+  const riskReviews: ProjectPolicy["riskReviews"] = { core: [], reviews: { "docs-or-tests": 0, other: 1, core: 1 } };
+  const governed: ProjectPolicy = { ...anthropic, riskReviews };
   const coordinated = item();
   const changed = [pass({ changedPaths: ["src/review/x.ts"] })];
   const g = gate(coordinated, governed, changed, [review(GPT)], OWNER);
-  assert.equal(g.changeClass, "coordinated");
   assert.equal(g.ready, false);
   assert.equal(g.needsAssessor, true);
-  assert.ok(g.blockers.includes("Coordinated change: needs one review from a different anthropic model than every contributor (single-family mode)"), g.blockers.join("; "));
+  assert.ok(g.blockers.some((b) => /^other change: needs 1 independent review, each from a different anthropic model from every contributor \(single-family mode\)/.test(b)), g.blockers.join("; "));
   assert.equal(gate(coordinated, governed, changed, [review(SONNET)], OWNER).ready, true);
   // The default counts the same GPT approval.
-  assert.equal(gate(coordinated, { ...crossFamily, execution }, changed, [review(GPT)], OWNER).ready, true);
+  assert.equal(gate(coordinated, { ...crossFamily, riskReviews }, changed, [review(GPT)], OWNER).ready, true);
 });
 
 // t394 with t371: single-family mode and --no-override together. The mode

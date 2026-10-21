@@ -5,7 +5,7 @@ import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { assign, type SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
-import { hasRole, independentApproval, parseRuleError, type Gate, type Review, type ProjectPolicy } from "../src/rules.ts";
+import { hasRole, independentApproval, parseRuleError, reviewerAdmission, type Gate, type Review, type ProjectPolicy } from "../src/rules.ts";
 
 const BUILDER = "codex/gpt-6-astra", REVIEWER = "opencode/Qwen3-Coder-Next", ALIAS = "opencode/studio-review";
 const HEAD = "a".repeat(40), BASE = "0".repeat(40);
@@ -65,7 +65,7 @@ it("owner-only admission, withdrawal and readmission record canonical identity, 
   const admitted = await response.json();
   expect(admitted).toMatchObject({ id: POOL[0].id, aliases: ["studio-review"], active: true, by: "owner", reason: "Qualified", at: expect.stringMatching(/^\d{4}-/) });
   expect(hasRole(ALIAS, (await L.project()).policy, "assessor")).toBe(true);
-  expect(hasRole(ALIAS, (await other.project()).policy, "assessor")).toBe(false);
+  expect(reviewerAdmission(ALIAS, (await other.project()).policy)).toBeUndefined();
   expect((await call("admission-owner", "DELETE", "studio-review", BUILDER)).status).toBe(403);
   expect((await call("admission-owner", "DELETE", "studio-review")).status).toBe(200);
   expect(hasRole(REVIEWER, (await L.project()).policy, "assessor")).toBe(false);
@@ -91,10 +91,10 @@ it("unknown family, unregistered models, ambiguous aliases and non-owner ledger 
 
 it("a proved alias approval counts, is not retroactive, and keeps its recorded admission after withdrawal", async () => {
   const L = await setup("admission-binding");
+  // A registered model counts as a reviewer with no admission, whatever agents the stored policy names (t152).
   await L.addReview(await review(L), undefined, true);
-  expect((await detail(L)).gate.ready).toBe(false);
+  expect((await detail(L)).gate.ready).toBe(true);
   const admission = await admit(L);
-  expect((await detail(L)).gate.ready).toBe(false);
   await L.addReview(await review(L, ALIAS), undefined, true);
   expect((await detail(L)).gate.ready).toBe(true);
   const saved = (await detail(L)).reviews.at(-1)!;
@@ -295,7 +295,8 @@ it("a model admitted in atelier reviews in every project until a project withdra
     for (const L of [other, late]) await L.setStandardReviewers(admissions.filter((a) => a.active), version);
   };
   const asked = () => other.requestReview("t1", "owner", REVIEWER, POOL, false, false, undefined, offers());
-  await refusal(asked(), "ineligible");
+  await refusal(other.requestReview("t1", "owner", "opencode/unregistered", POOL, false, false, undefined, offers()), "ineligible");
+  expect(await other.reviewerListing()).toEqual([]);
   const admitted = await home.admitReviewer(`opencode/${POOL[0].id}`, true, "Qualified", "owner", POOL);
   expect(admitted).toMatchObject({ id: POOL[0].id, active: true });
   await sendStandard();
@@ -317,7 +318,7 @@ it("a model admitted in atelier reviews in every project until a project withdra
   // Atelier withdrawing ends the sharing for projects with no record of their own.
   await home.admitReviewer(POOL[0].id, false, "Retired", "owner", POOL);
   await sendStandard();
-  expect(hasRole(REVIEWER, (await late.project()).policy, "assessor")).toBe(false);
+  expect((await late.reviewerListing()).some((r) => r.inherited === "atelier")).toBe(false);
 });
 
 // astra, t687 finding 1: a broadcast that captured the model admitted could arrive
@@ -332,5 +333,5 @@ it("a standard set older than the one a project holds is dropped", async () => {
   await other.setStandardReviewers(newer.admissions.filter((a) => a.active), newer.version);
   await other.setStandardReviewers(older.admissions.filter((a) => a.active), older.version);
   expect(await other.standardReviewers()).toEqual([]);
-  expect(hasRole(REVIEWER, (await other.project()).policy, "assessor")).toBe(false);
+  expect((await other.reviewerListing()).some((r) => r.inherited === "atelier")).toBe(false);
 });

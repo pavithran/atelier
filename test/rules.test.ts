@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import { acceptancePolicy, mergeContext, mergePolicyDecision, policyChanges } from "../src/rules.ts";
 import { blockUntil, blockExpired, expiredBlocks } from "../src/rules.ts";
 import {
-  ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, approvalsNeeded, protectedRuleGroups, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  assertClaimAllowed, assertCriteriaAllowed, assertEligible, assertBaselineName, branchesRepoName, branchHost, checkFiles, developerBranch, foldPath, harnessRefusal, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   riskClass, riskNeed, parseRiskReviews, retainableApprovals, retentionVerdict,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
@@ -304,16 +304,14 @@ test("the ship files and what a ship runs are protected like a check's files", (
   assert.equal(changeClass(["bin/deploy.sh"], plain), "coordinated", "a project that records no ship order guards only the ship files' folder");
 });
 
-test("eligibility follows ControlPlane's agent families; the project owner always qualifies", () => {
+test("a stored eligible list restricts no claim: any harness qualifies, and the project owner always does (t152)", () => {
+  // Would have caught: a ControlPlane import's eligible list that kept refusing codex and antigravity claims after ControlPlane was retired.
   const p: ProjectPolicy = { checks: [], protected: [], eligible: ["claude", "codex", "glm"] };
-  assert.doesNotThrow(() => assertEligible("claude-code/opus-5.5", p));
-  assert.doesNotThrow(() => assertEligible("codex/gpt-5.5", p));
+  for (const actor of ["claude-code/opus-5.5", "codex/gpt-5.5", "antigravity/gemini-3", "claudette/x"]) assert.doesNotThrow(() => assertEligible(actor, p));
   assert.doesNotThrow(() => assertEligible("owner", p));
-  assert.doesNotThrow(() => assertEligible("pavi", p, "pavi"));
-  assert.throws(() => assertEligible("pavi", p), /not an eligible agent/);
-  assert.throws(() => assertEligible("antigravity/gemini-3", p), /not an eligible agent/);
-  assert.throws(() => assertEligible("claudette/x", p), /not an eligible agent/);
+  assert.doesNotThrow(() => assertEligible("pavi", p));
   assert.doesNotThrow(() => assertEligible("anything/x", { checks: [], protected: [] }));
+  assert.equal(roleRefusal("antigravity/gemini-3", p, "executor"), null);
 });
 
 test("overlapping claims are refused when the project says so, and only then", () => {
@@ -332,28 +330,19 @@ test("overlapping claims are refused when the project says so, and only then", (
   assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
 
-test("roleRefusal says why a claim would be refused and names the agents that would pass", () => {
-  const governed: ProjectPolicy = { checks: [], protected: [], agents: { claude: { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: true, eligible_roles: ["assessor"] }, glm: { available: false, eligible_roles: ["executor"] } } };
-  assert.equal(roleRefusal("codex/gpt-6-astra", governed, "executor"), "codex/gpt-6-astra needs an available agent with the executor role; available agents with the executor role: claude");
-  assert.equal(roleRefusal("glm/glm-4.6", governed, "executor"), "glm/glm-4.6 needs an available agent with the executor role; available agents with the executor role: claude");
-  assert.equal(roleRefusal("codex/gpt-6-astra", governed, "assessor"), null, "codex holds the assessor role");
-  assert.equal(roleRefusal("claude-code/opus-5.5", governed, "assessor"), null);
-  // No agent holds the role: the refusal says so rather than naming none.
-  const onlyExec: ProjectPolicy = { checks: [], protected: [], agents: { claude: { available: true, eligible_roles: ["executor"] } } };
-  assert.equal(roleRefusal("claude-code/opus-5.5", onlyExec, "assessor"), "claude-code/opus-5.5 needs an available agent with the assessor role; no agent is available with the assessor role");
-  // A legacy policy falls back to assertEligible's own words, which name the eligible harnesses.
-  const legacy: ProjectPolicy = { checks: [], protected: [], eligible: ["claude"] };
-  assert.equal(roleRefusal("codex/gpt-6-astra", legacy, "assessor"), "codex is not an eligible agent here (eligible: claude)");
-  assert.equal(roleRefusal("claude-code/opus-5.5", legacy, "assessor"), null);
+test("stored ControlPlane agents restrict no role; the model admission and single-family rules still refuse (t152)", () => {
+  // Would have caught: an agents list that refused codex the executor role, and glm, marked unavailable, every role.
+  const legacy: ProjectPolicy = { checks: [], protected: [], eligible: ["claude"], agents: { claude: { available: true, eligible_roles: ["executor"] }, glm: { available: false, eligible_roles: ["executor"] } } };
+  for (const role of ["executor", "assessor", "planner"] as const) {
+    for (const actor of ["codex/gpt-6-astra", "glm/glm-4.6", "claude-code/opus-5.5"]) assert.equal(roleRefusal(actor, legacy, role), null, `${actor} as ${role}`);
+    assert.equal(harnessRefusal("codex", legacy, role), null);
+  }
+  // A withdrawn reviewer admission still refuses, and a single-family project still refuses another company.
+  const withdrawn: ReviewerAdmission = { id: "gpt-6-astra", aliases: [], by: "owner", reason: "r", at: T, active: false };
+  assert.match(roleRefusal("codex/gpt-6-astra", { ...legacy, reviewerAdmissions: [withdrawn] }, "assessor")!, /admission was withdrawn/);
+  assert.match(roleRefusal("codex/gpt-6-astra", { ...legacy, familyMode: { single: "anthropic", by: "owner", at: T } }, "executor")!, /anthropic/i);
   // Without a policy restriction nothing is refused.
   assert.equal(roleRefusal("anything/x", { checks: [], protected: [] }, "assessor"), null);
-});
-
-test("eligibleAgents names only the available agents holding the role", () => {
-  const governed: ProjectPolicy = { checks: [], protected: [], agents: { claude: { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: true, eligible_roles: ["assessor"] }, glm: { available: false, eligible_roles: ["executor"] } } };
-  assert.deepEqual(eligibleAgents(governed, "executor"), ["claude"]);
-  assert.deepEqual(eligibleAgents(governed, "assessor"), ["claude", "codex"]);
-  assert.deepEqual(eligibleAgents({ checks: [], protected: [] }, "executor"), []);
 });
 
 test("overlappingRefusal names the same live items with the same words as the claim", () => {
@@ -472,8 +461,13 @@ test("an actor name is at most 200 characters, whatever its shape", () => {
   assert.equal(validActor("a".repeat(201)), false);
 });
 
+// A policy as ControlPlane left it: stored agents and execution rules, which
+// no decision reads any more (t152). Its riskReviews ask one independent review
+// of any change outside docs and tests, which is what these tests judge, the
+// way a coordinated change was reviewed under the retired execution policy.
 const governed: ProjectPolicy = {
   ...policy,
+  riskReviews: { core: ["AGENTS.md", "wrangler.*"], reviews: { "docs-or-tests": 0, other: 1, core: 1 } },
   agents: {
     claude: { available: true, eligible_roles: ["executor", "assessor"] },
     codex: { available: true, eligible_roles: ["executor", "assessor"] },
@@ -489,79 +483,69 @@ const governed: ProjectPolicy = {
 };
 const review = (by: string, over: Partial<Review> = {}): Review => ({ itemId: "t1", by, head: H1, criteria: NO_CRITERIA, approve: true, note: "", at: T, ...over });
 
-test("ControlPlane actor mapping uses harness aliases and listed model families", () => {
-  for (const [actor, name] of [
-    ["claude-code/opus-5.5", "claude"], ["codex/gpt-6-astra", "codex"],
-    ["zcode/anything", "glm"], ["opencode/GLM-5.3:local", "glm"],
-    ["opencode/sonnet-5.5", "claude"], ["gemini-cli/gemini-3", "gemini"],
-    ["opencode/qwen3-coder", "qwen"], ["other/deepseek-v4", null],
-    ["opencode/unknown", null], ["owner", null],
-  ]) assert.equal(agentOf(actor!, governed.agents!), name);
-  assert.equal(agentOf("codex/gpt-6", {}), null);
-  // Antigravity is its own agent where a policy names it, and Gemini by family otherwise.
-  const withAntigravity = { ...governed.agents!, antigravity: governed.agents!.claude };
-  assert.equal(agentOf("antigravity/gemini-3.1-pro", withAntigravity), "antigravity");
-  assert.equal(agentOf("antigravity/gemini-3.1-pro", governed.agents!), "gemini");
-  assert.equal(agentOf("antigravity/claude-opus-5-5", { claude: governed.agents!.claude }), "claude");
-  // Antigravity also serves Claude: that model is never the policy's antigravity agent.
-  assert.equal(agentOf("antigravity/claude-opus-5-5", withAntigravity), "claude");
-  assert.equal(agentOf("antigravity/claude-opus-5-5", { antigravity: governed.agents!.claude }), null);
-  assert.equal(agentOf("opencode/gpt-6", { openai: governed.agents!.codex }), "openai");
-});
-
-test("claims and handoff eligibility require an available executor, not a preferred role", () => {
+test("claims and handoff by any actor pass the stored agents of a legacy policy (t152)", () => {
   const open = item({ state: "open", owner: null });
-  for (const actor of ["opencode/qwen3", "gemini-cli/gemini-3", "other/unknown", "owner"]) {
-    assert.throws(() => assertClaimAllowed(open, [], governed, actor), /executor role/);
-    assert.throws(() => assertEligible(actor, governed), /executor role/);
+  for (const actor of ["opencode/qwen3", "gemini-cli/gemini-3", "other/unknown", "owner", "opencode/glm-5.3"]) {
+    assert.doesNotThrow(() => assertClaimAllowed(open, [], governed, actor));
+    assert.doesNotThrow(() => assertEligible(actor, governed));
   }
-  assert.doesNotThrow(() => assertClaimAllowed(open, [], governed, "opencode/glm-5.3"));
-  assert.throws(() => assertClaimAllowed(open, [], { ...governed, agents: {} }, "codex/gpt-6"), /executor role/);
+  assert.doesNotThrow(() => assertClaimAllowed(open, [], { ...governed, agents: {} }, "codex/gpt-6"));
 });
 
-test("changed paths take the strictest class and retain implicit check protection", () => {
+test("changed paths take the strictest class and retain implicit check protection; a stored execution policy changes none (t152)", () => {
+  // Would have caught: execution.protected_path_patterns still guarding docs/secret/**, and its direct paths still exempting docs from review, after ControlPlane was retired.
   for (const [paths, kind] of [
-    [["docs/a.md"], "direct"], [["src/a.ts"], "coordinated"],
+    [["docs/a.md"], "coordinated"], [["src/a.ts"], "coordinated"],
     [["docs/a.md", "src/a.ts"], "coordinated"],
-    [["docs/a.md", "docs/secret/key"], "protected"],
+    [["docs/a.md", "docs/secret/key"], "coordinated"],
     [["src/a.ts", "AGENTS.md"], "protected"], [["package.json"], "protected"],
   ] as [string[], string][]) assert.equal(changeClass(paths, governed), kind);
-  assert.equal(changeClass(["docs/a.md"], { ...governed, execution: { ...governed.execution!, direct: { enabled: false, allowed_path_patterns: ["**"] } } }), "coordinated");
+  assert.equal(changeClass(["docs/a.md", "docs/secret/key"], { ...governed, execution: undefined }), "coordinated");
+  assert.equal(protectedRuleGroups(governed).some(([origin]) => /execution/.test(origin)), false);
 });
 
-test("direct needs no review, coordinated needs another model, protected needs another family", () => {
-  const direct = [pass({ changedPaths: ["docs/a.md"] })];
-  const coordinated = [pass()];
+test("a change needs no review beside the project's riskReviews, whatever a stored execution policy allowed (t152)", () => {
+  const docs = [pass({ changedPaths: ["docs/a.md"] })];
+  const other = [pass()];
   const protectedChange = [pass({ changedPaths: ["AGENTS.md"] })];
-  assert.equal(gate(item(), governed, direct, []).ready, true);
-  assert.equal(gate(item(), governed, coordinated, []).needsAssessor, true);
-  assert.equal(gate(item(), governed, coordinated, [review(item().owner!)]).ready, false);
-  assert.equal(gate(item(), governed, coordinated, [review("claude-code/sonnet-5.5")]).ready, true);
+  assert.equal(gate(item(), governed, docs, []).ready, true);
+  assert.equal(gate(item(), governed, other, []).needsAssessor, true);
+  assert.equal(gate(item(), governed, other, [review(item().owner!)]).ready, false);
+  assert.equal(gate(item(), governed, other, [review("claude-code/sonnet-5.5")]).ready, true);
   assert.equal(gate(item(), governed, protectedChange, [review("claude-code/sonnet-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("opencode/opus-5.5")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6")]).ready, true);
   assert.equal(gate(item(), governed, protectedChange, [review("owner")]).ready, false);
-  assert.equal(gate(item(), governed, coordinated, [review("owner")]).ready, false);
+  assert.equal(gate(item(), governed, other, [review("owner")]).ready, false);
   assert.equal(gate(item(), governed, protectedChange, [review("codex/gpt-6", { head: H2 })]).ready, false);
+  // Without riskReviews a change outside the guarded paths needs no review, as in a project ControlPlane never governed.
+  const legacyOnly: ProjectPolicy = { ...governed, riskReviews: undefined };
+  assert.equal(gate(item(), legacyOnly, other, []).ready, true);
+  assert.equal(approvalsNeeded(legacyOnly, "coordinated", ["src/a.ts"]).count, 0);
 });
 
-test("reviews without an available assessor role do not approve or reject the gate", () => {
+test("a review counts by the same rules whatever agent a stored policy marked available (t152)", () => {
+  // Would have caught: the retired agents list, which kept counting only a marked assessor's review and ignoring every other model's rejection.
   for (const by of ["opencode/glm-5.3", "gemini-cli/gemini-3", "other/unknown"]) {
-    assert.equal(gate(item(), governed, [pass()], [review(by)]).ready, false);
-    assert.equal(gate(item(), governed, [pass()], [review("codex/gpt-6"), review(by, { approve: false })]).ready, true);
+    assert.equal(gate(item(), governed, [pass()], [review(by)]).ready, true, `${by} approves`);
+    assert.equal(gate(item(), governed, [pass()], [review("codex/gpt-6"), review(by, { approve: false })]).ready, false, `${by} rejects`);
   }
   assert.equal(gate(item(), governed, [pass()], [review("codex/gpt-6"), review("codex/gpt-6", { approve: false, at: "2026-10-04" })]).ready, false);
 });
 
-test("disallowed classes block even with approval; missing paths do not imply direct", () => {
+test("a stored execution policy blocks no class and implies no nothing-to-merge or class fields (t152)", () => {
+  // Would have caught: allowed_classes [] blocking every change with "not allowed by this project's execution policy".
   const p = { ...governed, execution: { ...governed.execution!, allowed_classes: [] } };
   for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
-    assert.match(gate(item(), p, [pass({ changedPaths: [path] })], [review("codex/gpt-6")]).blockers.join(), /not allowed/);
+    const g = gate(item(), p, [pass({ changedPaths: [path] })], [review("codex/gpt-6")]);
+    assert.doesNotMatch(g.blockers.join(), /not allowed|execution policy/);
+    assert.equal(g.ready, true, path);
+    assert.equal(g.changeClass, undefined);
+    assert.equal(g.requirement, undefined);
   }
-  const g = gate(item(), governed, [], []);
-  assert.equal(g.changeClass, null);
-  assert.equal(g.ready, false);
-  assert.match(g.requirement!, /pending/);
+  const empty = gate(item(), p, [pass({ changedPaths: [] })], [review("codex/gpt-6")]);
+  assert.doesNotMatch(empty.blockers.join(), /nothing to merge/);
+  assert.equal(changeClass([], governed), null);
 });
 
 test("policy parsing rejects malformed roles and execution rules", () => {
@@ -579,15 +563,6 @@ test("ungoverned gates need another family for a protected change, and count nei
   assert.equal(gate(item(), policy, [pass()], []).changeClass, undefined);
 });
 
-
-test("empty governed changes have no class and nothing to merge", () => {
-  assert.equal(changeClass([], governed), null);
-  const g = gate(item(), governed, [pass({ changedPaths: [] })], []);
-  assert.equal(g.changeClass, null);
-  assert.equal(g.ready, false);
-  assert.match(g.blockers.join(), /nothing to merge/);
-  assert.equal(gate(item(), policy, [pass({ changedPaths: [] })], []).ready, true);
-});
 
 test("the project owner's rejection blocks every class, and the owner's approval is no class's independent review", () => {
   for (const owner of ["owner", "pavi"]) for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
@@ -694,13 +669,11 @@ test("a contributor's model under another letter case, profile or registered nam
   assert.equal(gate(item(), governed, coordinated, [review("codex/claude-opus-5-5")]).ready, false);
   assert.equal(gate(item(), governed, coordinated, [review("codex/gpt-6-astra")]).ready, true);
 
-  // Governed, protected: a profile suffix never changes a model's family, nor
-  // the agent its review is counted for.
-  const anyAssessor: ProjectPolicy = { ...governed, agents: { ...governed.agents!, gemini: { available: true, eligible_roles: ["assessor"] } } };
+  // A stored-agents project, protected: a profile suffix never changes a
+  // model's family.
   const qwen = item({ owner: "opencode/qwen3-coder:studio-code", pushActors: ["opencode/qwen3-coder:studio-code"] });
-  assert.equal(agentOf("opencode/qwen3.8-27b:google-eval", anyAssessor.agents!), "qwen");
-  assert.equal(gate(qwen, anyAssessor, touching, [review("opencode/qwen3.8-27b:google-eval")]).ready, false);
-  assert.equal(gate(qwen, anyAssessor, touching, [review("codex/gpt-6-astra")]).ready, true);
+  assert.equal(gate(qwen, governed, touching, [review("opencode/qwen3.8-27b:google-eval")]).ready, false);
+  assert.equal(gate(qwen, governed, touching, [review("codex/gpt-6-astra")]).ready, true);
 });
 
 test("t418: changing harness never makes a contributor model independent", () => {
@@ -803,7 +776,7 @@ test("decision 2026-10-06: an override is recorded only with a reason, and only 
     contributors: ["claude-code/opus-5.5"],
   });
   const governedMade = reviewOverrideFor(item(), governed, touching, [], "owner", "reason", T);
-  assert.equal(governedMade.waived, "Protected change: needs one review from another model family");
+  assert.equal(governedMade.waived, PROTECTED_NEED, "a stored execution policy no longer words the requirement");
   // The reason is required, as text, and bounded rather than cut.
   for (const reason of [undefined, "", "   ", 5, true, "x".repeat(OVERRIDE_REASON_MAX + 1)]) {
     assert.throws(() => reviewOverrideFor(item(), policy, touching, [], "owner", reason, T), /400\|override_reason\|/);
@@ -862,7 +835,7 @@ test("a path differing from a guarded path only by letter case or Unicode form i
     "DOCS/CAF\u00c9/a.md",
   ]) assert.equal(changeClass([path], defaults), "protected", path);
   for (const path of ["claude.mdx", "src/CLAUDE.md", "docs/cafe/a.md", "AGENTS\u200c.md"]) assert.equal(changeClass([path], defaults), "coordinated", path);
-  assert.equal(changeClass(["Docs/Secret/key"], governed), "protected");
+  assert.equal(changeClass(["Docs/Secret/key"], governed), "coordinated", "a stored execution policy's secret paths guard nothing now");
   // Folding only adds: a path that matches as written still matches.
   assert.ok(matchesFolded("stra\u00dfe.md", ["stra?e.md"]));
 });
@@ -878,10 +851,7 @@ test("an ungoverned gate asks for a review when claude.md stands in for CLAUDE.m
   assert.equal(gate(held, defaults, observed, [review("codex/gpt-6-astra")]).ready, true);
 });
 
-test("item scopes and the direct allow-list are matched as written", () => {
-  // A variant path is not granted the direct class: it needs the review.
-  assert.equal(changeClass(["docs/a.md"], governed), "direct");
-  assert.equal(changeClass(["DOCS/a.md"], governed), "coordinated");
+test("item scopes are matched as written", () => {
   // A variant path is reported outside the scope.
   assert.deepEqual(gate(item(), policy, [pass({ changedPaths: ["src/a.ts", "SRC/b.ts"] })], []).outOfScope, ["SRC/b.ts"]);
 });
@@ -1035,15 +1005,15 @@ test("a review counts only for the head and the acceptance criteria it was bound
   assert.equal(gate(task, policy, touching, [no({ by: "codex/gpt-6" }), yes({ criteria: NO_CRITERIA, at: "2026-10-04" })]).ready, false);
   // Binding takes nothing away from the rules before it: a contributor, the
   // project owner, an owner-recorded approval no claim backs, a tier
-  // approval, a contributor's family, and under a role policy a reviewer
-  // without the assessor role do not count.
+  // approval and a contributor's family do not count.
   assert.equal(gate(task, policy, touching, [yes({ by: "claude-code/opus-5.5" })]).ready, false);
   assert.equal(gate(task, policy, touching, [yes({ by: "owner" })]).ready, false);
   assert.equal(gate(task, policy, touching, [yes({ proved: false, claimed: false, recordedBy: "owner" })]).ready, false);
   assert.equal(gate(task, policy, touching, [yes({ tier: true })]).ready, false);
   assert.equal(gate(task, policy, touching, [yes({ by: "anthropic/sonnet-5.5" })]).ready, false);
-  const g = gate(item({ accept, owner: "zcode/glm-5.3" }), governed, [pass({ changedPaths: ["docs/secret/a.md"] })], [review("gemini-cli/gemini-3", { criteria: bound })]);
-  assert.equal(g.ready, false, "gemini has no available assessor role");
+  // A stored agents list that marks gemini unavailable does not stop its bound review counting (t152).
+  const g = gate(item({ accept, owner: "zcode/glm-5.3" }), governed, [pass({ changedPaths: ["src/a.ts"] })], [review("gemini-cli/gemini-3", { criteria: bound })]);
+  assert.equal(g.ready, true, "gemini's review counts, whatever the stored agents say");
 });
 
 test("reviews recorded before reviews were bound stay visible but neither satisfy nor block, with or without criteria", () => {

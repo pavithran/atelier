@@ -206,22 +206,16 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   if (view.changedPaths === null) return no(`changed paths not yet observed at ${short(head)}`);
   if (!input.postMerge && !view.changedPaths.length) return no(`${short(head)} changes no paths, so there is nothing to review`);
 
-  const kind = changeClass(view.changedPaths, policy) ?? "direct";   // null only for no paths, refused above
-  const governed = policy.execution !== undefined;
-  if (!input.postMerge && governed && !policy.execution!.allowed_classes.includes(kind)) {
-    return no(`${kind} changes are not allowed by this project's execution policy, and a review cannot make the change acceptable`);
-  }
+  const kind = changeClass(view.changedPaths, policy) ?? "coordinated";   // null only for no paths, refused above
   // A project that states riskReviews (t143) asks what the change's risk
   // class needs, for a direct change as for a protected one: before this a
   // direct change was never reviewed here, though the gate waited for the
   // reviews its class needs. A plan's part keeps its basis and is reviewed at
   // least once, since its integration needs one approval whatever its class.
   const risk = input.postMerge ? null : riskNeed(view.changedPaths, policy);
-  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : risk ? (risk.reviews > 0 ? "risk" : null) : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
+  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : risk ? (risk.reviews > 0 ? "risk" : null) : kind === "protected" ? "protected" : null;
   if (!basis && !input.wanted) {
-    return no(kind === "direct"
-      ? "a direct change needs no review"
-      : "a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed");
+    return no("a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed");
   }
 
   // Reviews at this head. A rejection by anyone the gate counts waits for
@@ -328,9 +322,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
       ? `this project's riskReviews ask ${risk!.reviews} independent review${risk!.reviews === 1 ? "" : "s"} of a ${risk!.risk} change, and ${short(head)} has ${have.length}`
       : basis === "protected"
       ? `a protected change needs an independent review, and none is recorded at ${short(head)}`
-      : basis === "coordinated"
-        ? `this project's execution policy needs another agent's review of a coordinated change, and none is recorded at ${short(head)}`
-        : `the developer asked for a review of ${short(head)}, whether or not the gate needs one`;
+      : `the developer asked for a review of ${short(head)}, whether or not the gate needs one`;
   return {
     needed: true,
     reason: last ? `${why}; round ${round}, after ${last.by} rejected ${short(last.head)}` : why,

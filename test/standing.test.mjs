@@ -183,14 +183,16 @@ test("status --project --json prints the standing record and the checkout line f
 for (const json of [false, true]) test(`status --project reports instruction disagreements${json ? " in JSON" : " in text"} for an agent`, async (t) => {
   const r = await run(t, ({ checkout }) => {
     writeFileSync(join(checkout, "AGENTS.md"), "# Rules\nReview is optional for non-authority changes.\n");
-    return { policy: { checks: [], protected: [], execution: {
+    // The stored execution policy, which allows coordinated changes, adds no requirement (t152); the protected path does.
+    return { policy: { checks: [], protected: ["AGENTS.md"], execution: {
       allowed_classes: ["coordinated"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [],
     } } };
   }, ["status", "--project", "demo", ...(json ? ["--json"] : [])], { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
   assert.equal(r.status, 0, r.output);
   const text = json ? JSON.parse(r.output).mismatches.join("\n") : r.output;
   assert.match(text, /AGENTS\.md:2 calls review optional/);
-  assert.match(text, /a coordinated change needs a review from a different model than every contributor/);
+  assert.match(text, /a protected change \(AGENTS\.md[^)]*\) needs a review from another model family/);
+  assert.doesNotMatch(text, /coordinated change needs a review/);
   assert.ok(r.seen.includes("GET /api/projects/demo"));
   assert.ok(r.seen.every((request) => request.startsWith("GET ")));
 });

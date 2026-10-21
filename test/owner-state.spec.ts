@@ -299,30 +299,22 @@ it("the header states each state once and keeps the action it needs", () => {
 // eligibility is kept on the record but blocks nothing. The page reads the
 // reviews the same way: no "Rejected by", no wait for a new push, and the
 // landing command that asks for a qualifying review stays offered.
-it("criterion 2: a rejection from a reviewer who has since lost eligibility is read as the gate reads it", () => {
+it("criterion 2: a stored agents list that takes the assessor role from a reviewer changes nothing in how its rejection is read (t152)", () => {
+  // Would have caught: a stored agents list that voided a rejection ("not counted: the reviewer is no longer authorised") after ControlPlane was retired.
   const rejected = review({ by: "claude-code/opus-5.5", approve: false, note: "fix the copy" });
   const eligible = { ...project.policy, agents: { claude: { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: true, eligible_roles: ["executor"] } } } as Detail["policy"];
   const ineligible = { ...eligible, agents: { ...eligible.agents!, claude: { available: true, eligible_roles: ["executor"] } } } as Detail["policy"];
 
-  // While the reviewer may review, the rejection stands and sends the task back.
-  const before = detail(); before.policy = eligible; before.reviews = [rejected];
-  const was = ownerState(before, true, NOW);
-  expect(was.independent.text).toBe("Rejected by claude-code/opus-5.5 at aaaaaaaa");
-  expect(was.next.text).toContain("push a new revision");
-  expect(renderItem({ ...project, policy: eligible }, before, "PAVI", diff)).not.toContain("atelier land t1");
-
-  // Once the policy takes assessor away from it, the rejection counts for nothing.
-  const after = detail(); after.policy = ineligible; after.reviews = [rejected];
-  const now = ownerState(after, true, NOW);
-  expect(now.independent.text).not.toMatch(/Rejected/);
-  expect(now.independent.text).toMatch(/^Required/);
-  expect(now.next.text).not.toContain("push a new revision");
-  expect(now.next.text).toContain("landing command below");
-  const html = renderItem({ ...project, policy: ineligible }, after, "PAVI", diff);
-  expect(html).toContain("atelier land t1 --project");
-  // The rejection stays in the reviews shown, marked as not counted.
-  expect(html).toContain("fix the copy");
-  expect(html).toContain("not counted: the reviewer is no longer authorised to review this project");
+  for (const policy of [eligible, ineligible]) {
+    const d = detail(); d.policy = policy; d.reviews = [rejected];
+    const state = ownerState(d, true, NOW);
+    expect(state.independent.text).toBe("Rejected by claude-code/opus-5.5 at aaaaaaaa");
+    expect(state.next.text).toContain("push a new revision");
+    const html = renderItem({ ...project, policy }, d, "PAVI", diff);
+    expect(html).not.toContain("atelier land t1");
+    expect(html).toContain("fix the copy");
+    expect(html).not.toContain("not counted: the reviewer is no longer authorised");
+  }
 
   // The owner's own rejection is always counted, whatever the policy.
   const own = detail(); own.policy = ineligible; own.reviews = [review({ approve: false, note: "tighten" })];

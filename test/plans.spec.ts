@@ -432,7 +432,8 @@ it("a plan completes when every part has merged; stopping one closes its open pa
   expect((await S.newPlan("Next", [], "owner", PLANNER, [])).item.kind).toBe("plan");
 });
 
-it("a governed project's planner needs the planner role, and its builders the executor role", async () => {
+it("a stored agents list names no planner role, and picks no planner or builder (t152)", async () => {
+  // Would have caught: codex, which the stored agents give no planner role, refused as a named planner, and the pick limited to claude.
   const governed: ProjectPolicy = {
     checks: [], protected: [],
     agents: {
@@ -440,12 +441,11 @@ it("a governed project's planner needs the planner role, and its builders the ex
       codex: { available: true, eligible_roles: ["executor", "assessor"] },
     },
   };
-  const L = await setup("plan-governed", governed);
-  await refusal(L.newPlan("Ship", [], "owner", GPT, []), "ineligible", /needs an available agent with the planner role/);
-  const { item } = await L.newPlan("Ship", [], "owner", null, POOL);
-  expect(item.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
-  await L.claim(item.id, PLANNER, RUNNER);
-  expect((await L.item(item.id)).owner).toBe(PLANNER);
+  const named = await (await setup("plan-governed-named", governed)).newPlan("Ship", [], "owner", GPT, []);
+  expect(named.item.dispatch).toMatchObject({ agent: "codex" });
+  const picked = (await (await setup("plan-governed", governed)).newPlan("Ship again", [], "owner", null, POOL)).item.dispatch;
+  const plain = (await (await setup("plan-ungoverned")).newPlan("Ship again", [], "owner", null, POOL)).item.dispatch;
+  expect({ agent: picked?.agent, model: picked?.model }).toEqual({ agent: plain?.agent, model: plain?.model });
 });
 
 it("a tick that fails is undone and logged, and the change that ran it stands", async () => {

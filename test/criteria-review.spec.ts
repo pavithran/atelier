@@ -502,44 +502,28 @@ it("a criteria review flags a criterion the builder cannot verify as the owner's
 // A named criteria reviewer meets the project's policy for reviewing, as a
 // code reviewer does: an available agent with the assessor role. The policy
 // is asked again at the claim and at the verdict, since it may change.
-it("a named criteria reviewer that is unavailable or lacks the assessor role is refused at the request, the claim and the verdict; an eligible one reviews", async () => {
-  const agents = (codex: boolean, claude: { available: boolean; assessor: boolean }): ProjectPolicy => ({
+it("a stored agents list refuses no named criteria reviewer, at the request, the claim or the verdict (t152)", async () => {
+  // Would have caught: an agents list marking codex unavailable and claude without the assessor role that kept refusing them as criteria reviewers after ControlPlane was retired.
+  const stored: ProjectPolicy = {
     ...gated,
     agents: {
-      claude: { available: claude.available, eligible_roles: claude.assessor ? ["executor", "assessor"] : ["executor"] },
-      codex: { available: codex, eligible_roles: ["executor", "assessor"] },
+      claude: { available: true, eligible_roles: ["executor"] },
+      codex: { available: false, eligible_roles: ["executor", "assessor"] },
       glm: { available: true, eligible_roles: ["executor"] },
     },
-  });
-  const eligible = agents(false, { available: true, assessor: true });
-  const L = await setup("criteria-named-policy", eligible);
-  const policyIs = (policy: ProjectPolicy) => L.setProject({ name: "criteria-named-policy", repo: "criteria-named-policy--baseline", policy, createdAt: AT }, "owner");
+  };
+  const L = await setup("criteria-named-policy", stored);
   const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
-  // At the request: codex is unavailable, glm lacks the assessor role.
-  await refusal(L.requestCriteriaReview(id, "owner", GPT, POOL), "ineligible", /codex\/gpt-6-astra cannot review t\d+'s acceptance criteria: .*needs an available agent with the assessor role; available agents with the assessor role: claude/);
-  await refusal(L.requestCriteriaReview(id, "owner", GLM, POOL), "ineligible", /zcode\/glm-5\.3 cannot review .*needs an available agent with the assessor role/);
-  expect(await L.criteriaReviewsFor(id)).toEqual([]);
-  // An eligible named reviewer is asked; at its claim the policy is asked again.
-  const asked = await L.requestCriteriaReview(id, "owner", OPUS, POOL);
-  expect(asked).toMatchObject({ requested: true, reviewer: OPUS });
-  await policyIs(agents(false, { available: false, assessor: true }));
-  await refusal(L.claimCriteriaReview(id, OPUS, RUNNER), "ineligible", /claude-code\/opus-5\.5 cannot review .*needs an available agent with the assessor role/);
-  await policyIs(agents(false, { available: true, assessor: false }));
-  await refusal(L.claimCriteriaReview(id, OPUS, RUNNER), "ineligible", /needs an available agent with the assessor role/);
-  expect((await L.criteriaReviewsFor(id)).at(-1)?.state).toBe("open");
-  await policyIs(eligible);
-  const claim = await L.claimCriteriaReview(id, OPUS, RUNNER) as unknown as CriteriaReviewClaim;
-  // And at its verdict.
-  const verdict = { itemId: id, by: OPUS, rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, summary: "Observable." };
-  await policyIs(agents(false, { available: false, assessor: true }));
-  await refusal(L.addCriteriaReview(verdict, true), "ineligible", /needs an available agent with the assessor role/);
-  await policyIs(agents(false, { available: true, assessor: false }));
-  await refusal(L.addCriteriaReview(verdict, true), "ineligible", /needs an available agent with the assessor role/);
-  expect((await L.criteriaReviewsFor(id)).at(-1)?.state).toBe("claimed");
-  expect((await status(L, id)).approved).toBe(false);
-  await policyIs(eligible);
-  expect(await L.addCriteriaReview(verdict, true)).toMatchObject({ state: "approved", reviewer: OPUS });
-  expect((await status(L, id)).approved).toBe(true);
+  for (const reviewer of [GPT, GLM, OPUS]) {
+    const fresh = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+    const asked = await L.requestCriteriaReview(fresh.id, "owner", reviewer, POOL);
+    expect(asked, reviewer).toMatchObject({ requested: true, reviewer });
+    const claim = await L.claimCriteriaReview(fresh.id, reviewer, RUNNER) as unknown as CriteriaReviewClaim;
+    const verdict = { itemId: fresh.id, by: reviewer, rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, summary: "Observable." };
+    expect(await L.addCriteriaReview(verdict, true), reviewer).toMatchObject({ state: "approved", reviewer });
+    expect((await status(L, fresh.id)).approved).toBe(true);
+  }
+  expect(id).toBeTruthy();
 });
 
 // The owner's standing for a model (paused, reserved, its roles) holds at
@@ -569,8 +553,9 @@ it("a criteria reviewer the owner's standing holds from reviewing is refused whe
 // unblocked by the approval of the reviewer the owner names, and dispatched;
 // blocked, it held a slot of the plan's parallel limit with no work in it.
 it("a part blocked for want of a criteria reviewer is unblocked and dispatched once the reviewer the owner names approves", async () => {
-  // Under a governed policy gpt-6-astra plans and reviews, glm builds and
-  // does not review, and Opus, which reviews, is not in the plan's pool.
+  // gpt-6-astra plans and wrote the criteria, and Opus, which would review,
+  // is not in the plan's pool; the stored agents list names roles, and
+  // nothing reads it (t152).
   const L = await setup("criteria-named-unblock", {
     ...gated,
     agents: {
@@ -581,14 +566,14 @@ it("a part blocked for want of a criteria reviewer is unblocked and dispatched o
   });
   const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", GPT, []);
   await L.claim(item.id, GPT, RUNNER);
-  const spec = (key: string): PlanPart => ({ key, title: `Part ${key}`, kind: "build", taskKind: "feature", scope: [`src/${key}/**`], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" });
+  const spec = (key: string): PlanPart => ({ key, title: `Part ${key}`, kind: "build", taskKind: "feature", scope: [`src/${key}/**`], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S", prefer: { actor: GLM, reason: "builds alone" } });
   const post = await L.postPlan(item.id, GPT, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [spec("a"), spec("b"), spec("c")] });
   if (!post.valid) throw new Error(post.errors.join("; "));
   await L.release(item.id, GPT, "proposed");
-  // In the pool, gpt-6-astra wrote the criteria and glm may not review, so
-  // no reviewer qualifies: the two parts the parallel limit lets go are
-  // blocked, holding both slots.
-  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode")], []);
+  // In the pool, gpt-6-astra wrote the criteria and glm is registered for
+  // builds alone, so no reviewer qualifies: the two parts the parallel limit
+  // lets go are blocked, holding both slots.
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [entry("gpt-6-astra", "codex"), { ...entry("glm-5.3", "zcode"), roles: ["build"] }], []);
   const [a, b, c] = parts.map((p) => p.id);
   for (const p of [a, b]) {
     const part = await L.item(p);

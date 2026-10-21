@@ -105,11 +105,11 @@ test("integration needs an approval from another model family at the part's head
   // A counting rejection at the head blocks beside an approval; the latest review from each reviewer counts.
   assert.deepEqual(blocked([review(a), review(a, SAME_FAMILY, false)]), ["part a (t2) was rejected at aaaaaaaa by claude-code/sonnet-5.5: breaks the API"]);
   assert.deepEqual(blocked([{ ...review(a, REVIEWER, false), at: "2026-10-05T11:00:00.000Z" }, review(a)]), []);
-  // Under a governed policy only an assessor's review counts.
+  // A stored agents list restricts nothing (t152): a review counts whatever roles it gives its reviewer's agent.
   const governed = (roles: AgentRole[]): ProjectPolicy => ({
     ...policy, agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: roles } },
   });
-  assert.deepEqual(blocked([review(a)], a, governed(["executor"])), none);
+  assert.deepEqual(blocked([review(a)], a, governed(["executor"])), []);
   assert.deepEqual(blocked([review(a)], a, governed(["assessor"])), []);
 });
 
@@ -274,10 +274,10 @@ test("planGate: a plan at its integration head needs no review of its own, thoug
   const plan = planItem({ owner: "owner", pushActors: ["atelier/integrator"] });
   const g = planGate(gateInput({ policy: guarded, plan }));
   assert.deepEqual([g.ready, g.blockers, g.needsAssessor, g.overridden], [true, [], false, undefined]);
-  // Under an execution policy a coordinated change is held to the same rule.
+  // A stored execution policy asks nothing more of a coordinated change (t152).
   const governed: ProjectPolicy = { ...policy, execution: { allowed_classes: ["direct", "coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [] } };
   const coordinated = planGate(gateInput({ policy: governed, plan }));
-  assert.deepEqual([coordinated.changeClass, coordinated.blockers], ["coordinated", []]);
+  assert.deepEqual([coordinated.changeClass, coordinated.blockers], [undefined, []]);
   // A refresh merged main's head onto the integration head, and the Ledger
   // recorded the refresh as the integration head: it counts as an integration.
   const R = h("d");
