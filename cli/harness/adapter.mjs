@@ -14,9 +14,9 @@
 // and gives them to opencode alone; the others use their harness's own login.
 
 import { execFile, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 import { NO_VERDICT, VERIFY_BASE_LINE, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
@@ -352,7 +352,7 @@ export const CODEX_FEATURES_OFF = ["plugins", "apps", "browser_use", "browser_us
   .flatMap((feature) => ["--disable", feature]);
 
 // The servers `codex mcp list --json` prints with `flags` before the
-// subcommand, from `workspace` so a project's own servers are found too: a
+// subcommand, from the folder the job starts in: a
 // list of { name, enabled, ... } or, in older releases, an object keyed by name.
 function codexMcpList(exe, flags, workspace, env, spawn) {
   const shown = `codex ${[...flags, "mcp", "list", "--json"].join(" ")}`;
@@ -475,6 +475,25 @@ export function runHome(env, dir) {
 
 // Runs one job; returns the exit status. `io` replaces the process's own
 // spawn, environment, output and secret reads in tests.
+// The fresh empty folder a Codex review starts in, made under the system temp
+// folder `tmp`. Codex's workspace-write sandbox also writes the system temp
+// folder, so a clone at or inside it, or a scratch folder inside the clone
+// (TMPDIR naming the clone), would be writable to the review: both refuse the
+// review (t140, Astra on 9a9228b5). Real paths are compared.
+function within(path, root) {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+export function codexScratch(workspace, tmp) {
+  const clone = realpathSync(workspace), root = realpathSync(tmp);
+  if (within(clone, root)) throw new Error(`the clone ${clone} is inside the system temp folder ${root}, which a Codex review may write, so the review does not run`);
+  const scratch = mkdtempSync(join(root, "atelier-codex-review-"));
+  if (within(realpathSync(scratch), clone)) {
+    rmSync(scratch, { recursive: true, force: true });
+    throw new Error(`the system temp folder ${root} is inside the clone ${clone}, so the review's scratch folder would be inside the clone, which it must not write; the review does not run`);
+  }
+  return scratch;
+}
+
 export function runAdapter(harness, argv, io = {}) {
   const env = io.env ?? process.env;
   const err = io.stderr ?? ((text) => process.stderr.write(text));
@@ -501,8 +520,12 @@ export function runAdapter(harness, argv, io = {}) {
       if (major >= 2) childEnv.OPENCODE_CONFIG_CONTENT = OPENCODE2_CONFIG_CONTENT;
     }
     if (harness === "codex") {
-      setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
-      if (kind === "review") setup.scratch = scratchDir = mkdtempSync(join(tmpdir(), "atelier-codex-review-"));
+      // A review starts in its scratch folder, so the MCP servers are
+      // discovered and checked from there: from the clone, a project-only
+      // server would get a switch-off override into a run that never sees it.
+      if (kind === "review") scratchDir = codexScratch(args.workspace, io.tmp ?? tmpdir());
+      setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), scratchDir ?? args.workspace, childEnv, io.spawn) };
+      if (scratchDir) setup.scratch = scratchDir;
     }
   } catch (error) {
     if (runDir) rmSync(runDir, { recursive: true, force: true });

@@ -36,7 +36,7 @@ workspace, a clone under `~/Library/Caches/ai-projects/cloudflare-git/work/`:
   fresh empty folder made under the system temp folder and removed after the
   run, so a review can write that folder and the system temp folder (tests
   make scratch folders there) but not the clone, its `.git` or the network
-  (t140; `read-only` refused `mkdtemp`). A plan runs in `workspace-write`
+  (t140; `read-only` refused `mkdtemp`). A review whose clone is at or inside the system temp folder, or whose temp folder is inside the clone, is refused, since the temp folder is writable to it. A plan runs in `workspace-write`
   in the clone. The hand wrapper `~/.local/bin/atelier-codex` is outside the
   repository and still runs a review `-s read-only`; it needs the same change
   by the developer. A Codex build gets none: the runner refuses a Codex
