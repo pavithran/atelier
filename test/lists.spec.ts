@@ -59,8 +59,8 @@ it("an item's scope must be a list of non-empty strings", { timeout: 30_000 }, a
   expect(((await open.json()) as { scope: string[] }).scope).toEqual([]);
 });
 
-it("a project's checks, protected paths and eligible agents must each be a list of non-empty strings", { timeout: 30_000 }, async () => {
-  for (const field of ["checks", "protected", "eligible", "shipRuns", "shipKinds"]) {
+it("a project's checks, protected paths and ship settings must each be a list of non-empty strings", { timeout: 30_000 }, async () => {
+  for (const field of ["checks", "protected", "shipRuns", "shipKinds"]) {
     // Every one of these is refused before anything is written, so they are
     // independent; asking them all at once keeps a loaded machine's
     // per-round-trip stretch from stacking fifty of them past the timeout.
@@ -77,10 +77,28 @@ it("a project's checks, protected paths and eligible agents must each be a list 
   const listed = (await env.LEDGER.get(env.LEDGER.idFromName("__index")).projects()) as { name: string }[];
   expect(listed.some((p) => p.name === "lists-policy")).toBe(false);
   const ok = await call("PUT", "/projects/lists-policy", {
-    checks: [" npm test "], protected: ["AGENTS.md"], eligible: ["codex"],
+    checks: [" npm test "], protected: ["AGENTS.md"],
     shipRuns: [" bin/deploy.sh "], shipKinds: ["deploy"],
   });
   expect(ok.status, await ok.clone().text()).toBe(200);
   expect(((await ok.json()) as { project: { policy: Record<string, string[]> } }).project.policy)
-    .toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md"], eligible: ["codex"], shipRuns: ["bin/deploy.sh"], shipKinds: ["deploy"] });
+    .toMatchObject({ checks: ["npm test"], protected: ["AGENTS.md"], shipRuns: ["bin/deploy.sh"], shipKinds: ["deploy"] });
+});
+
+// t152: ControlPlane's eligible list is retired. A request that still carries
+// one, valid or not, is answered like any other: the stored list stays and
+// the request's other settings apply. Would have caught: PUT parsing eligible,
+// refusing a malformed value with bad_list or replacing the stored list.
+it("PUT ignores eligible, whatever its value, keeps the stored list and applies the other settings sent with it", { timeout: 30_000 }, async () => {
+  const name = "lists-eligible-retired";
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["AGENTS.md"], eligible: ["claude"] }, createdAt: new Date().toISOString() };
+  await env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`)).setProject(record as never, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record as never);
+  for (const value of [...BAD, ["codex"], [], null]) {
+    const res = await call("PUT", `/projects/${name}`, { eligible: value, protected: ["AGENTS.md", `x${JSON.stringify(value)?.length}/**`] });
+    expect(res.status, JSON.stringify(value)).toBe(200);
+    const policy = ((await res.json()) as { project: { policy: Record<string, unknown> } }).project.policy;
+    expect(policy.eligible, JSON.stringify(value)).toEqual(["claude"]);
+    expect((policy.protected as string[]).length, "the same request's protected list applies").toBe(2);
+  }
 });
