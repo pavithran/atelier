@@ -116,7 +116,7 @@ Atelier's own:
   "schema_version": 1,
   "kind": "atelier.ship",
   "class": "web",
-  "description": "Atelier's own delivery: the Worker deployed to atelier.zone, the live site checked, then main pushed to the github remote.",
+  "description": "Atelier's own delivery: deploy the captured source commit, verify its live binding, then push main to the github remote.",
   "deploy": { "run": ["node", "scripts/ship-worker.mjs", "deploy"], "timeout_seconds": 1200 },
   "verify-deploy": { "run": ["node", "scripts/ship-worker.mjs", "verify"], "timeout_seconds": 45 },
   "push": { "remote": "github", "branch": "main" }

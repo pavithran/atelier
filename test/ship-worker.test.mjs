@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 import { deployWorker, sourceHead, verifyWorker, VERSION_URL } from "../scripts/ship-worker.mjs";
 
 function fixture(t) {
@@ -86,4 +87,27 @@ test("verification refuses an absent source binding before making a request", as
   const f = fixture(t); let calls = 0;
   await assert.rejects(verifyWorker({ ...f, env: {}, fetchImpl: async () => { calls++; return Response.json({ commit: f.head }); } }), /ATELIER_SHIP_HEAD/);
   assert.equal(calls, 0); assert.equal(sourceHead(f), f.head);
+});
+
+
+test("t182 real Node fetch accepts verification options and refuses HTTP redirects", async (t) => {
+  const f = fixture(t); let redirect = false; let targetRequests = 0;
+  const server = createServer((request, response) => {
+    if (request.url === "/redirect-target") targetRequests++;
+    if (redirect && request.url === "/api/version") {
+      response.writeHead(302, { location: "/redirect-target" }); response.end();
+    } else {
+      response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ commit: f.head }));
+    }
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const fetchImpl = (url, options) => {
+    assert.equal(url, VERSION_URL);
+    return fetch(`http://127.0.0.1:${server.address().port}/api/version`, options);
+  };
+  assert.equal(await verifyWorker({ ...f, fetchImpl }), f.head);
+  redirect = true;
+  await assert.rejects(verifyWorker({ ...f, fetchImpl }), /fetch failed/);
+  assert.equal(targetRequests, 0);
 });
