@@ -483,9 +483,23 @@ export function runHome(env, dir) {
 function within(path, root) {
   return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
 }
-export function codexScratch(workspace, tmp) {
+// Every folder the sandbox may write without being told: the system temp
+// folder, $TMPDIR, and the fixed ones macOS and Linux share (Astra on
+// f0fa13da: /tmp is writable though TMPDIR is /var/folders/.../T). Real paths;
+// a folder that does not exist is skipped. `extra` adds roots (tests).
+export const IMPLICIT_TEMP_ROOTS = ["/tmp", "/private/tmp", "/var/tmp"];
+function tempRoots(tmp, env, extra) {
+  const roots = new Set();
+  for (const dir of [tmp, env.TMPDIR, ...IMPLICIT_TEMP_ROOTS, ...extra]) {
+    if (!dir) continue;
+    try { roots.add(realpathSync(dir)); } catch { /* not there: nothing to write */ }
+  }
+  return [...roots];
+}
+export function codexScratch(workspace, tmp, { env = process.env, extra = [] } = {}) {
   const clone = realpathSync(workspace), root = realpathSync(tmp);
-  if (within(clone, root)) throw new Error(`the clone ${clone} is inside the system temp folder ${root}, which a Codex review may write, so the review does not run`);
+  const hit = tempRoots(tmp, env, extra).find((r) => within(clone, r));
+  if (hit) throw new Error(`the clone ${clone} is inside the temp folder ${hit}, which a Codex review may write, so the review does not run`);
   const scratch = mkdtempSync(join(root, "atelier-codex-review-"));
   if (within(realpathSync(scratch), clone)) {
     rmSync(scratch, { recursive: true, force: true });
@@ -523,7 +537,7 @@ export function runAdapter(harness, argv, io = {}) {
       // A review starts in its scratch folder, so the MCP servers are
       // discovered and checked from there: from the clone, a project-only
       // server would get a switch-off override into a run that never sees it.
-      if (kind === "review") scratchDir = codexScratch(args.workspace, io.tmp ?? tmpdir());
+      if (kind === "review") scratchDir = codexScratch(args.workspace, io.tmp ?? tmpdir(), { env, extra: io.tempRoots });
       setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), scratchDir ?? args.workspace, childEnv, io.spawn) };
       if (scratchDir) setup.scratch = scratchDir;
     }

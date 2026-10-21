@@ -793,10 +793,10 @@ test("a codex review refuses a clone inside the system temp folder, the temp fol
   mkdirSync(inside);
   const a = review(inside, s.tmp);
   assert.equal(a.status, 1);
-  assert.match(a.err, /is inside the system temp folder/);
+  assert.match(a.err, /is inside the temp folder/);
   const b = review(s.tmp, s.tmp);
   assert.equal(b.status, 1, "the temp folder is the clone");
-  assert.match(b.err, /is inside the system temp folder/);
+  assert.match(b.err, /is inside the temp folder/);
   const clone = join(s.dir, "clone2");
   mkdirSync(join(clone, "tmp"), { recursive: true });
   const c = review(clone, join(clone, "tmp"));
@@ -811,5 +811,42 @@ test("a codex review refuses a clone inside the system temp folder, the temp fol
   let started = 0;
   const build = runAdapter("codex", ["gpt-6-astra", s.brief, inside, "undefined", "undefined", "undefined"], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp: s.tmp, spawn: (e, argv) => { if (!argv.includes("mcp")) started++; return argv.includes("mcp") ? { status: 0, stdout: "[]" } : { status: 0 }; }, stderr: () => {} });
   assert.equal(build, 0);
+  assert.equal(started, 1);
+});
+
+// Astra on f0fa13da: Codex's workspace-write also permits /tmp, which is not
+// TMPDIR on macOS (/var/folders/.../T), so a clone at /tmp/review-clone passed.
+test("a codex review refuses a clone inside /tmp, $TMPDIR or another implicit temp folder when they differ from the system temp folder, and accepts a clone elsewhere", (t) => {
+  const s = setup(t);
+  const never = () => assert.fail("codex was started");
+  const fakeTmp = mkdtempSync(join(tmpdir(), "atelier-fake-tmp-"));
+  const envTmp = mkdtempSync(join(tmpdir(), "atelier-env-tmp-"));
+  t.after(() => { rmSync(fakeTmp, { recursive: true, force: true }); rmSync(envTmp, { recursive: true, force: true }); });
+  const review = (ws, extra = {}) => {
+    const err = [];
+    const status = runAdapter("codex", ["gpt-6-astra", s.brief, ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir, ...extra.env }, tmp: s.tmp, tempRoots: extra.tempRoots, spawn: extra.spawn ?? never, stderr: (x) => err.push(x) });
+    return { status, err: err.join("") };
+  };
+  // A stand-in /tmp that is not the system temp folder.
+  mkdirSync(join(fakeTmp, "review-clone"));
+  const a = review(join(fakeTmp, "review-clone"), { tempRoots: [fakeTmp] });
+  assert.equal(a.status, 1);
+  assert.match(a.err, new RegExp(`inside the temp folder ${realpathSync(fakeTmp)}`));
+  assert.equal(review(fakeTmp, { tempRoots: [fakeTmp] }).status, 1, "the temp folder itself");
+  // $TMPDIR of the environment, apart from the system temp folder.
+  mkdirSync(join(envTmp, "clone"));
+  assert.equal(review(join(envTmp, "clone"), { env: { TMPDIR: envTmp } }).status, 1);
+  // The real /tmp.
+  if (existsSync("/tmp")) {
+    const real = mkdtempSync("/tmp/atelier-t140-");
+    t.after(() => rmSync(real, { recursive: true, force: true }));
+    const r = review(real);
+    assert.equal(r.status, 1);
+    assert.match(r.err, /inside the temp folder (\/private)?\/tmp/);
+  }
+  // A clone in none of those folders (as ~/Library/Caches/ai-projects/... is) still runs.
+  let started = 0;
+  const spawn = (e, argv) => { if (!argv.includes("mcp")) started++; return argv.includes("mcp") ? { status: 0, stdout: "[]" } : { status: 0 }; };
+  assert.equal(review(s.ws, { tempRoots: [fakeTmp], spawn }).status, 0);
   assert.equal(started, 1);
 });
