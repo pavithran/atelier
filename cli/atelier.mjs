@@ -24,7 +24,6 @@ import { proseStandardLine } from "../src/prose-standard.ts";
 
 import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
 import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
-import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
 import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
@@ -50,7 +49,6 @@ export { checkEnv } from "./check-env.mjs";
 import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
-import { shipPolicy } from "./ship.mjs";
 import { serverFetch } from "./server-fetch.mjs";
 import { lowSpeedEnv, secondsOf, serverTimeoutMs, talksToRemote, timedOut, tooSlow, withTimeout } from "./timeouts.mjs";
 import { saveWholeConfig, useConfig } from "./private-guard.mjs";
@@ -1449,84 +1447,19 @@ export function removeClone(dir) {
 }
 
 // ── ControlPlane ───────────────────────────────────────────────────────────
-// Where a project is governed by ControlPlane, its policy files say who may act
-// and what is protected. Atelier reads them and never writes them.
+// Stored ControlPlane records stay readable on the server; the checkout's
+// files are no longer read.
 
 export function readJson(path) {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
 }
 
-export function readControlPlane(top) {
-  const dir = join(top, "docs", "control-plane");
-  const read = (name) => {
-    try {
-      const value = JSON.parse(readFileSync(join(dir, name), "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) throw new Error("empty, or not a JSON object");
-      return value;
-    }
-    catch (error) { if (error.code === "ENOENT") return null; throw new Error(`${join("docs", "control-plane", name)}: ${error.message}`); }
-  };
-  const agent = read("agent-policy.v1.json");
-  const exec = read("execution-policy.v1.json");
-  const adapter = read("project-adapter.v1.json");
-  if (!agent && !exec && !adapter) return null;
-  const sources = [];
-  const protectedPaths = new Set(["AGENTS.md", "CLAUDE.md", "GLM.md", "docs/control-plane/**", "tools/control-plane/**"]);
-  let eligible = null;
-  let refuseOverlap = null;
-  if (agent) {
-    sources.push("agent-policy.v1.json");
-    eligible = Object.entries(agent.agents ?? {}).filter(([, a]) => a.available).map(([k]) => k);
-    refuseOverlap = agent.authority?.overlapping_claims === "refuse";
-  }
-  if (exec) {
-    sources.push("execution-policy.v1.json");
-    for (const p of exec.protected_path_patterns ?? []) protectedPaths.add(p);
-    for (const rule of exec.maintenance_path_rules ?? []) for (const p of rule.paths ?? []) protectedPaths.add(p);
-  }
-  if (adapter) {
-    sources.push("project-adapter.v1.json");
-    for (const s of adapter.protected_surfaces ?? []) if (s.pattern) protectedPaths.add(s.pattern);
-  }
-  return {
-    sources, protected: [...protectedPaths], eligible, refuseOverlap,
-    ...(adapter ? { adapter } : {}),
-    ...(agent ? { agents: agent.agents ?? {} } : {}),
-    ...(exec ? { execution: {
-      allowed_classes: exec.allowed_classes ?? ["direct", "coordinated", "protected"],
-      direct: { enabled: exec.direct?.enabled ?? false, allowed_path_patterns: exec.direct?.allowed_path_patterns ?? [] },
-      protected_path_patterns: exec.protected_path_patterns ?? [],
-    } } : {}),
-  };
-}
-
-export async function refreshControlPlane(top, name, request = call, report = console.log) {
-  let cp;
-  try { cp = readControlPlane(top); }
-  catch (error) {
-    report(`Warning: ControlPlane policy could not be read: ${error.message}. The stored policy was not refreshed.`);
-    return { skipped: true, changes: [], error: error.message };
-  }
-  if (!cp) return null;
-  const current = await request("GET", P(name), undefined, OWNER);
-  const before = current.project.policy;
-  // The ship order is the checkout's own declaration too: its commands and
-  // kinds travel with the policy, so the gate guards what ship runs and the
-  // inbox knows what a merged revision still needs.
-  const ship = shipPolicy(top);
-  const policy = { protected: [...new Set([...cp.protected, ...(cfg.projects?.[name]?.protect ?? [])])], eligible: cp.eligible ?? [], refuseOverlap: cp.refuseOverlap ?? false, shipRuns: ship.runs, shipKinds: ship.kinds, ...(cp.agents ? { agents: cp.agents } : {}), ...(cp.execution ? { execution: cp.execution } : {}) };
-  // Roles and change classes are compared here too, as whole values with their
-  // keys in a fixed order; the merge guard compares the fields an acceptance
-  // records (mergePolicyDecision), and the ship order with shipChanges.
-  const canon = (v) => JSON.stringify(v ?? null, (_, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
-  const changes = [...controlPlaneChanges(before, policy),
-    ...["agents", "execution"].filter((k) => policy[k] !== undefined && canon(before[k]) !== canon(policy[k])).map((k) => `${k} changed`),
-    ...shipChanges(before, policy)];
-  if (changes.length) {
-    await request("PUT", P(name), policy, OWNER);
-    for (const change of changes) report(`ControlPlane ${change}`);
-  }
-  return { before, policy: { ...before, ...policy }, changes, items: current.items ?? [] };
+// ControlPlane retirement, slice 1 (t149): no policy is imported from a
+// checkout's docs/control-plane files, and none is refreshed. merge still
+// calls this until slice 2 removes the caller; it reads nothing and sends
+// nothing, and answers null as it does for a checkout with no such files.
+export async function refreshControlPlane() {
+  return null;
 }
 
 // The receipt goes only into a real folder reached through no symlink, the

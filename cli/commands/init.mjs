@@ -3,13 +3,13 @@ import { postMergeArgs } from "../post-merge-policy.mjs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkFiles, parseRiskReviews, preparationPaths } from "../../src/rules.ts";
-import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
+import { appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
 import { discoverPrivate, guardedPush, moveProjectEntryOnDisk, privateGuardFor, remoteBases } from "../private-guard.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { familyModeText } from "../status.mjs";
-import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
+import { OWNER, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, saveConfig, short, wsConfig } from "../atelier.mjs";
 
 // The project owner, in the project's checkout.
 export default async function initCommand() {
@@ -36,24 +36,9 @@ export default async function initCommand() {
     return;
   }
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: top });
-  let cp;
-  try { cp = readControlPlane(top); }
-  catch (error) { die(`ControlPlane policy could not be read: ${error.message}. Fix the file, then run atelier init again.`); }
-  // A ControlPlane project is copied into Artifacts with the owner's
-  // approval recorded on it. An init that changes the checks, the title or
-  // the policy of a project already registered keeps that approval; it is
-  // asked for again when --reset starts the policy over, which drops it,
-  // and when --history-since replaces the baseline.
-  if (cp && !args.approval) {
-    const replaced = args.reset === true ? "--reset starts the policy over" : args["history-since"] !== undefined ? "--history-since replaces the baseline" : null;
-    const recorded = replaced ? null : await recordedApproval(name);
-    if (!recorded) {
-      die(`${name} is governed by ControlPlane, and copying it into Artifacts is an off-machine copy.${replaced ? ` ${replaced}, so the approval recorded on the project does not carry over.` : ""}\nRecord the developer's approval: atelier init --approval "${OWNER_NAME}, ${new Date().toISOString().slice(0, 10)}: …"`);
-    }
-  }
   // Only what this command names is sent; the server keeps everything else
   // as it is. --reset starts the policy over from these options and the
-  // defaults. A ControlPlane project always sends the policy ControlPlane holds.
+  // defaults. A ControlPlane checkout's files are not read (t149).
   const reset = args.reset === true;
   // --risk-reviews JSON replaces the reviews each risk class needs (t631,
   // t756); off sends null, which clears them; omitted keeps them. An invalid
@@ -86,10 +71,9 @@ export default async function initCommand() {
   // the ones registered now, and only declarations are sent.
   const declaring = args["declare-read-only"];
   if (declaring !== undefined && (typeof declaring !== "string" || !declaring.trim())) die('--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"');
-  let registered = null, onServer = false;
-  if (!policy.checks && (cp?.adapter || declaring !== undefined)) {
+  let registered = null;
+  if (!policy.checks && declaring !== undefined) {
     const list = await call("GET", "/projects", undefined, OWNER);
-    onServer = Array.isArray(list) && list.some((p) => p.name === name);
     registered = (Array.isArray(list) ? list.find((p) => p.name === name)?.policy : null) ?? { checks: [] };
   }
   if (args["prepare-input"] !== undefined || args["prepare-output"] !== undefined) {
@@ -102,64 +86,36 @@ export default async function initCommand() {
       const command = args.prepare.trim();
       if (!command) die("--prepare needs a nonempty command, or an empty value to clear it");
       const why = refusalOf(command);
-      const adapter = cp?.adapter ? adapterClasses(cp.adapter, [command]) : { declarations: [], refusals: [] };
-      if (why || adapter.refusals.length) die(`${why ? refusalText(command, why) : adapter.refusals[0].text}.\nNothing was sent.`);
+      if (why) die(`${refusalText(command, why)}.\nNothing was sent.`);
       let inputs, outputs;
       try {
         inputs = preparationPaths(listArg("prepare-input", "init"));
         outputs = preparationPaths(listArg("prepare-output", "init"));
       } catch (error) { die(error.message); }
-      const declaration = adapter.declarations[0] ?? (!knownReadOnly(command) && declaring !== undefined ? { command, by: "owner", note: declaring.trim() } : undefined);
+      const declaration = (!knownReadOnly(command) && declaring !== undefined ? { command, by: "owner", note: declaring.trim() } : undefined);
       policy.prepare = { command, inputs, outputs, ...(declaration ? { declaration } : {}) };
     }
   }
   const classed = policy.checks ?? registered?.checks ?? [];
-  const fromAdapter = cp?.adapter ? adapterClasses(cp.adapter, classed) : { declarations: [], refusals: [] };
   const byWords = classed.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
-  const byAdapter = fromAdapter.refusals.filter((r) => !refusalOf(r.command)).map((r) => r.text);
-  if (policy.checks && (byWords.length || byAdapter.length)) die(`${[...byWords, ...byAdapter].join(".\n")}.\nNothing was sent.`);
-  // A registered check is refused at run time by its words alone; what the adapter says is read here only.
+  if (policy.checks && byWords.length) die(`${byWords.join(".\n")}.\nNothing was sent.`);
+  // A registered check is refused at run time by its words alone.
   for (const refusal of byWords) console.log(`Warning: ${refusal}. It is registered, and Atelier runs it nowhere; replace it with atelier init --check.`);
-  for (const refusal of byAdapter) console.log(`Warning: ${refusal}. It is registered, and Atelier still runs it, since its words do not show this; replace it with atelier init --check.`);
-  const settled = new Set([...fromAdapter.refusals, ...fromAdapter.declarations, ...(registered?.checkClasses ?? [])].map((d) => d.command));
+  const settled = new Set([...(registered?.checkClasses ?? [])].map((d) => d.command));
   const needing = classed.filter((cmd) => !refusalOf(cmd) && !knownReadOnly(cmd) && !settled.has(cmd));
   const owned = declaring === undefined ? [] : needing.map((command) => ({ command, by: "owner", note: declaring.trim() }));
   if (declaring !== undefined && !owned.length && !policy.prepare?.declaration) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
-  if (fromAdapter.declarations.length || owned.length) policy.checkClasses = [...fromAdapter.declarations, ...owned];
-  // The adapter's change_rules say which checks apply to which paths. A
-  // first init, or one that names the checks with --check or starts over
-  // with --reset, takes them, as it takes protected paths. A re-init that
-  // names no check narrows nothing: rules that condition a check to some
-  // paths can drop coverage outright, since a change to none of the checks'
-  // paths then runs no check at all (on 2026-10-06 Omniscope's check would
-  // have applied only to **.py, omniscope/**, tests/**, frontend/** and
-  // **.sh, leaving family/** and package.json with no check). The recorded
-  // paths stand, and each narrowing the rules would make is named here.
-  const fromRules = cp?.adapter ? adapterCheckPaths(cp.adapter, classed) : null;
-  const reinit = onServer && !policy.checks;
-  if (fromRules && !reinit) policy.checkPaths = fromRules.paths;
-  if (fromRules && reinit) {
-    for (const rule of fromRules.paths) {
-      const current = registered.checkPaths?.find((c) => c.command === rule.command);
-      if (current && current.paths.join("\u0000") === rule.paths.join("\u0000")) continue;
-      console.log(`Warning: ControlPlane's change rules would set \`${rule.command}\` to apply only when the change touches ${rule.paths.join(", ")}; as registered it applies to ${current ? `${current.paths.join(", ")} only` : "every change"}, and a re-init does not narrow a check's coverage. Take the rules with atelier init --reset.`);
-    }
-  }
+  if (owned.length) policy.checkClasses = owned;
   // The ship order's commands and kinds are recorded with the policy from
   // the checkout's own files, so the gate guards what ship runs like a
   // check's files and the inbox can say a merged revision is not delivered.
   const ship = shipPolicy(top);
   policy.shipRuns = ship.runs;
   policy.shipKinds = ship.kinds;
-  if (cp || args.multi.protect || reset) policy.protected = [...new Set([...(cp?.protected ?? ["AGENTS.md", "CLAUDE.md", "wrangler.*"]), ...protect])];
-  if (cp) {
-    policy.eligible = cp.eligible ?? [];
-    if (cp.agents) policy.agents = cp.agents;
-    if (cp.execution) policy.execution = cp.execution;
-  }
+  if (args.multi.protect || reset) policy.protected = [...new Set(["AGENTS.md", "CLAUDE.md", "wrangler.*", ...protect])];
   // --refuse-overlap is a switch: given, it turns the setting on; given as
   // --refuse-overlap=false or --refuse-overlap false, off.
-  if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
+  if (args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = args["refuse-overlap"] === true;
   if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
   if (args["require-criteria-review"] !== undefined || reset) policy.requireCriteriaReview = args["require-criteria-review"] === true;
   // --no-override is a switch too (t371): given, overrides of the
@@ -279,10 +235,8 @@ export default async function initCommand() {
   console.log(fresh
     ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
     : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
-  if (cp) console.log(`Policy read from ControlPlane (${cp.sources.join(", ")}).`);
   console.log(`Checks:     ${pol.checks.join(" | ") || "none"}`);
   for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
-  if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
   if (pol.prepare) console.log(`Prepare:    ${pol.prepare.command} (inputs: ${pol.prepare.inputs.join(", ")}; outputs: ${pol.prepare.outputs.join(", ")})`);
   if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
