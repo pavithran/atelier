@@ -365,6 +365,13 @@ export function provenanceLines({ regenerated = [], records = [] }) {
   ];
 }
 
+// The paths the index holds that differ from `tree`: what `atelier merge`
+// would publish beyond the tree verifyAccepted compared. Any path refuses the
+// merge; no file, such as a landing receipt, is expected to be added (t150).
+export function indexBeyond(dir, tree, { git = localGit } = {}) {
+  return git(["diff-tree", "-r", "--name-only", "--no-renames", "-z", tree, git(["write-tree"], { cwd: dir })], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+}
+
 // Merges `target` into the clone at `dir` through the pipeline.
 //   message   the merge commit's message; provenance lines are added to it
 //   commit    false leaves the finished merge staged and uncommitted

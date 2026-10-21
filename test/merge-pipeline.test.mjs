@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MANIFEST_PATH, mergeRecords, parseManifest } from "../cli/merge-driver.mjs";
-import { atelierGitDir, describeConflicts, installMergeConfig, mergeConfigProblems, mergeThrough, previewMerge, stableNode, verifyAccepted, withProvenance } from "../cli/merge-pipeline.mjs";
+import { atelierGitDir, describeConflicts, indexBeyond, installMergeConfig, mergeConfigProblems, mergeThrough, previewMerge, stableNode, verifyAccepted, withProvenance } from "../cli/merge-pipeline.mjs";
 import { conflictsSection, pipelineMerge } from "../cli/runner.mjs";
 
 // t463: generated outputs and record files merge through one pipeline. The
@@ -475,4 +475,20 @@ test("a merge that adopts takes outputs from the accepted revision, and stops wh
   assert.match(r.reason, /the accepted revision does not hold every output of index/);
   assert.equal(merging(f.dir), false);
   assert.equal(git(f.dir, "rev-parse", "HEAD"), s.ours);
+});
+
+// t150: merge allowed one added file in the index, the landing receipt, on top
+// of the compared tree. It allows none now: any path the index holds beyond the
+// tree refuses the merge, a file under the receipts folder included. The
+// finding it would have caught: a file other than the receipt, put at the
+// receipt's path, passed the exception.
+test("indexBeyond names every path the index holds beyond the tree, with no exception for a landing receipt", (t) => {
+  const f = fixture(t);
+  const tree = git(f.dir, "rev-parse", "HEAD^{tree}");
+  assert.deepEqual(indexBeyond(f.dir, tree), []);
+  write(f.dir, { "docs/control-plane/landing-receipts/2026-10-20-atelier-t1-abcdef12.json": "{}\n", "extra.txt": "x\n" });
+  git(f.dir, "add", "-A");
+  assert.deepEqual(indexBeyond(f.dir, tree).sort(), ["docs/control-plane/landing-receipts/2026-10-20-atelier-t1-abcdef12.json", "extra.txt"]);
+  git(f.dir, "rm", "-q", "--cached", "extra.txt");
+  assert.deepEqual(indexBeyond(f.dir, tree), ["docs/control-plane/landing-receipts/2026-10-20-atelier-t1-abcdef12.json"]);
 });

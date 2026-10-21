@@ -9,10 +9,12 @@ import { actorFamily, contributorsOf } from "../src/rules.ts";
 // single-family review as a cross-company one, each contributor with its
 // company as the acceptance recorded it, the checks at it, each review at it
 // (who reviewed, the verdict, the head and who recorded it) and the owner's
-// override where one stands, then the task's events by time, actor and kind.
+// override where one stands, the tree the checks passed on when the merge
+// produced exactly that tree (checkedTree, which the caller measures), then the
+// task's events by time, actor and kind.
 // It carries no review note text and no override reason (the owner's decision
 // of 2026-10-06): those stay in the ledger, which only the owner reads.
-export function provenanceNote({ name, id, item, view, reviews, events, policy = null, acceptanceFamily = null }) {
+export function provenanceNote({ name, id, item, view, reviews, events, policy = null, acceptanceFamily = null, checkedTree = null }) {
   const override = item.reviewOverride?.head === item.acceptedHead ? item.reviewOverride : null;
   const contributors = acceptanceFamily?.contributors ?? contributorsOf(item).map((actor) => ({ actor, company: actorFamily(actor) }));
   return [
@@ -23,6 +25,7 @@ export function provenanceNote({ name, id, item, view, reviews, events, policy =
     ...view.map((e) => `${e.grade.toUpperCase()} ${e.passed === true ? "pass " : e.passed === false ? "FAIL " : ""}${e.claim} — ${e.by} ${e.at}`),
     ...reviews.map((r) => `REVIEW ${r.approve ? "approve" : "reject"} by ${r.by} at ${r.head}, recorded by ${r.recordedBy ?? "an unrecorded actor"}${r.proved === false ? ` with the developer's token${r.claimed ? ", answering a claimed review request" : ""}` : ""}`),
     ...(override ? [`REVIEW OVERRIDDEN by ${override.by} at ${override.head}`] : []),
+    ...(checkedTree ? [`CHECKED TREE ${checkedTree.tree}: the merge produced exactly the tree these checks passed on (${checkedTree.claims.join(", ")}), so a deploy gate may accept them instead of running them again`] : []),
     ...events.slice().reverse().map((e) => `${e.at} ${e.actor} ${e.kind}`),
   ].join("\n");
 }

@@ -4,13 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { controlPlaneChanges, mergePolicyDecision, refreshControlPlane } from "../cli/atelier.mjs";
-import { acceptancePolicy, mergeContext } from "../src/control-plane.ts";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
-const agents = { codex: { available: true, eligible_roles: ["executor"], preferred_roles: ["planner"] }, claude: { available: false, eligible_roles: ["assessor"] } };
-const execution = { allowed_classes: ["direct", "protected"], direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: ["src/security/**"] };
-
+// ControlPlane is retired. These tests keep ControlPlane files in the checkout
+// to show that merge, sync and init neither read nor write them; the policy
+// merge compares is Atelier's own, as the ledger stores it.
 function fixture(run) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-control-plane-"));
   const cp = join(dir, "docs/control-plane");
@@ -22,142 +20,17 @@ function fixture(run) {
 const before = { protected: ["AGENTS.md"], eligible: ["claude"], refuseOverlap: false, approval: "Owner approved the copy", checks: ["npm test"] };
 const IDENTITY = { name: "Project Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"] };
 
-// ControlPlane is retired (t149). Before it, a valid file made this send the
-// policy it named, and a malformed one made it answer `skipped` and stop merge
-// and sync. Now no file of any kind is read: nothing is requested or printed.
-test("refresh reads no ControlPlane file: valid, empty, malformed or absent, it requests and prints nothing", () => {
-  const kinds = {
-    valid: [["agent-policy", { agents }], ["execution-policy", execution], ["project-adapter", { protected_surfaces: [{ pattern: "secrets/**" }] }]],
-    empty: [["agent-policy", {}], ["execution-policy", {}], ["project-adapter", {}]],
-    absent: [],
-  };
-  return Promise.all([...Object.entries(kinds).map(([kind, files]) => fixture(async ({ dir, write }) => {
-    for (const [name, data] of files) write(name, data);
-    assert.equal(await refreshControlPlane(dir, "example", assert.fail, assert.fail), null, kind);
-  })), fixture(async ({ dir }) => {
-    writeFileSync(join(dir, "docs/control-plane/agent-policy.v1.json"), "{");
-    assert.equal(await refreshControlPlane(dir, "example", assert.fail, assert.fail), null, "malformed");
-  })]);
-});
-
-test("comparison treats lists as sets and absent optional fields as defaults", () => {
-  assert.deepEqual(controlPlaneChanges({ protected: ["b", "a", "a"] }, { protected: ["a", "b"], eligible: [], refuseOverlap: false }), []);
-});
-
-test("merge warns and refuses newly protected touched paths unless overridden", () => {
-  const after = { ...before, protected: ["AGENTS.md", "src/**"] };
-  const decision = mergePolicyDecision(before, after, ["src/secret.ts"]);
-  assert.match(decision.warning, /policy changed since acceptance.*protected:/);
-  assert.match(decision.refusal, /src\/secret.ts.*Review the task again on its page and accept again/);
-  assert.match(decision.refusal, /--policy-changed-ok/);
-  const allowed = mergePolicyDecision(before, after, ["src/secret.ts"], true);
-  assert.equal(allowed.warning, decision.warning);
-  assert.equal(allowed.refusal, null);
-  assert.equal(mergePolicyDecision(before, after, ["AGENTS.md"]).refusal, null);
-  assert.deepEqual(mergePolicyDecision(before, before, ["AGENTS.md"]), { warning: null, refusal: null });
-});
-
-test("a script the ship order runs is newly protected when the order changed since acceptance", () => {
-  // The acceptance recorded no ship order; the checkout now deploys through
-  // bin/deploy.sh, so an accepted item touching that script is refused as
-  // newly protected, exactly as a newly protected ControlPlane path is.
-  const after = { ...before, shipRuns: ["bin/deploy.sh"] };
-  const decision = mergePolicyDecision(before, after, ["bin/deploy.sh"]);
-  assert.match(decision.warning, /ship commands: \[\] -> \["bin\/deploy\.sh"\]/);
-  assert.match(decision.refusal, /newly protected paths: bin\/deploy\.sh/);
-  assert.equal(mergePolicyDecision(before, after, ["src/a.ts"]).refusal, null);
-  assert.equal(mergePolicyDecision(after, after, ["bin/deploy.sh"]).refusal, null, "the order the acceptance was made under refuses nothing new");
-});
-
-test("merge matches newly protected paths whatever their letter case or Unicode form", () => {
-  const after = { ...before, protected: ["AGENTS.md", "src/**", "CLAUDE.md"] };
-  for (const path of ["SRC/secret.ts", "claude.md", "Src/Secret.ts"]) {
-    assert.ok(mergePolicyDecision(before, after, [path]).refusal?.includes(`newly protected paths: ${path}.`), path);
-  }
-  // A variant of a path protected at acceptance is not newly protected.
-  assert.equal(mergePolicyDecision(before, after, ["agents.md", "AGENT\u017f.md"]).refusal, null);
-});
-
-test("merge warns on eligibility and overlap changes without refusing unrelated paths", () => {
-  const result = mergePolicyDecision(before, { ...before, eligible: ["codex"], refuseOverlap: true }, ["src/a.ts"]);
-  assert.match(result.warning, /eligible:.*refuseOverlap:/);
-  assert.equal(result.refusal, null);
-  assert.equal(mergePolicyDecision(before, { ...before, protected: ["AGENTS.md", "package.json"] }, ["package.json"]).refusal, null);
-});
-
-test("merge compares eligible agents, the overlap rule and checks with the acceptance, and refuses what the accepted item no longer satisfies", () => {
-  const context = { contributors: ["codex/gpt-6-astra"], passed: ["npm test"], overlapping: ["t4 (claude-code/opus-5.5)"] };
-  // A contributor eligible at acceptance and not now.
-  let d = mergePolicyDecision({ ...before, eligible: ["codex"] }, { ...before, eligible: ["claude"] }, ["src/a.ts"], false, context);
-  assert.match(d.warning, /eligible:/);
-  assert.match(d.refusal, /its contributors are no longer eligible here: codex\/gpt-6-astra \(eligible: claude\)\. Review the task again on its page and accept again/);
-  // An eligibility change that keeps every contributor: the warning alone.
-  assert.equal(mergePolicyDecision({ ...before, eligible: [] }, { ...before, eligible: ["codex", "claude"] }, ["src/a.ts"], false, context).refusal, null);
-  // A check required now that was not observed passing at the accepted revision.
-  const lint = { ...before, checks: ["npm test", "npm run lint"] };
-  d = mergePolicyDecision(before, lint, ["src/a.ts"], false, context);
-  assert.match(d.warning, /^Warning: the required checks changed since acceptance: checks: \["npm test"\] -> \["npm run lint","npm test"\]$/);
-  assert.ok(!d.warning.includes("ControlPlane"), "checks are not ControlPlane's to set, so the warning does not name it");
-  assert.match(d.refusal, /checks required now were not observed passing at the accepted revision: `npm run lint`\. Review/);
-  assert.equal(mergePolicyDecision(before, lint, ["src/a.ts"], false, { ...context, passed: ["npm test", "npm run lint"] }).refusal, null);
-  // Checks are compared only when both sides carry them: the policy read from the files does not.
-  assert.deepEqual(controlPlaneChanges(before, { protected: before.protected, eligible: before.eligible, refuseOverlap: false }), []);
-  // Overlapping claims newly refused, with a live overlap.
-  d = mergePolicyDecision(before, { ...before, refuseOverlap: true }, ["src/a.ts"], false, context);
-  assert.match(d.refusal, /overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5.5\)\. Review/);
-  assert.equal(mergePolicyDecision(before, { ...before, refuseOverlap: true }, ["src/a.ts"], false, { ...context, overlapping: [] }).refusal, null);
-  // Every reason at once, and the override.
-  const after = { ...lint, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true };
-  d = mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], false, context);
-  assert.match(d.warning, /^Warning: ControlPlane policy changed since acceptance: .+; the required checks changed since acceptance: checks: /);
-  assert.match(d.refusal, /^the accepted revision touches newly protected paths: src\/a.ts; its contributors are no longer eligible here: [^;]+; checks required now [^;]+; overlapping claims are now refused, and its scope overlaps live t4 \(claude-code\/opus-5\.5\)\. Review/);
-  assert.equal(mergePolicyDecision({ ...before, eligible: ["codex"] }, after, ["src/a.ts"], true, context).refusal, null);
-});
-
-test("the acceptance's policy is its snapshot over the server's policy before the refresh, with the current policy for the rest", () => {
-  const current = { ...before, protected: ["AGENTS.md", "src/**"], eligible: ["claude"], refuseOverlap: true, checks: ["npm test", "npm run lint"] };
-  const server = { ...before, eligible: ["codex"], checks: ["npm test"] };
-  // A full snapshot stands over the server's earlier policy.
-  const full = { protected: ["AGENTS.md"], eligible: ["gemini"], refuseOverlap: false, checks: ["npm test"] };
-  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: full }, server), { ...current, ...full });
-  // An acceptance that recorded protected paths alone: those, and the server's earlier values for the rest.
-  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: ["AGENTS.md"], acceptancePolicy: { protected: ["AGENTS.md"] } }, server),
-    { ...current, protected: ["AGENTS.md"], eligible: ["codex"], refuseOverlap: false, checks: ["npm test"] });
-  // The oldest acceptances recorded nothing: no protected paths.
-  assert.deepEqual(acceptancePolicy({ policy: current, acceptanceProtected: null, acceptancePolicy: null }, server).protected, []);
-});
-
-test("the merge context names the item's contributors, the checks observed passing at the accepted revision and the live items its scope overlaps", () => {
-  const head = "a".repeat(40), at = "2026-10-06T00:00:00.000Z";
-  const detail = {
-    item: { id: "t1", scope: ["src/**"], acceptedHead: head },
-    policy: { ...before, checks: ["npm test", "npm run lint"] },
-    evidence: [
-      { itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6-astra", at, where: "sandbox" },
-      { itemId: "t1", claim: "npm run lint", grade: "observed", head, passed: false, by: "codex/gpt-6-astra", at, where: "sandbox" },
-    ],
-    events: [
-      { actor: "codex/gpt-6-astra", kind: "item.claimed", data: {} },
-      { actor: "owner", kind: "item.handoff", data: { from: "codex/gpt-6-astra", to: "claude-code/opus-5.5" } },
-    ],
-  };
-  const items = [
-    { id: "t1", state: "accepted", owner: "claude-code/opus-5.5", scope: ["src/**"] },
-    { id: "t2", state: "claimed", owner: "zcode/glm-5.3", scope: ["src/ui/**"] },
-    { id: "t3", state: "submitted", owner: "zcode/glm-5.3", scope: ["docs/**"] },
-    { id: "t4", state: "merged", owner: null, scope: [] },
-  ];
-  assert.deepEqual(mergeContext(detail, items), { contributors: ["codex/gpt-6-astra", "claude-code/opus-5.5"], passed: ["npm test"], overlapping: ["t2 (zcode/glm-5.3)"] });
-  assert.deepEqual(mergeContext(detail).overlapping, []);
-});
-
 // A string as one single-quoted word in a /bin/sh script.
 const shq = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
 
-function commandFixture(run) {
+// `now` is the project's stored policy over the default, and `accepted` the
+// policy snapshot the ledger recorded at acceptance (absent: protected paths
+// alone, as an older acceptance recorded them).
+function commandFixture(run, { now = {}, accepted = null } = {}) {
   return fixture(async ({ dir, write }) => {
     write("agent-policy", { agents: { codex: { available: true } } });
     write("execution-policy", { protected_path_patterns: ["src/**"] });
+    write("project-adapter", { protected_surfaces: [{ pattern: "secrets/**" }] });
     const head = "a".repeat(40), base = "b".repeat(40);
     const log = join(dir, "calls.jsonl"), gitLog = join(dir, "git.jsonl"), gitDir = join(dir, "git-state");
     mkdirSync(gitDir);
@@ -202,6 +75,7 @@ elif has rev-parse "$@"; then echo ${shq(head)}
 elif [ "$1" = merge-base ] && ! has --is-ancestor "$@"; then echo "$TEST_FORK_POINT"
 # Diffed from the recorded base, the revision shows a path the baseline
 # changed since the fork; from its real fork point, only its own.
+elif has diff "$@" && [ -n "$TEST_DIFF" ]; then printf '%b' "$TEST_DIFF"
 elif has diff "$@"; then if has ${shq(base)} "$@"; then printf 'src/secret.ts\0'; else printf 'docs/own.md\0'; fi
 # The commits a landing checks for their identity (t451): none unless the
 # test names some, as a printf %b string, since the environment cannot carry a NUL.
@@ -211,7 +85,7 @@ elif [ "$1" = merge-base ] && [ "$last" != HEAD ]; then exit 1
 fi
 `, { mode: 0o755 });
     const storage = join(dir, "server.json");
-    writeFileSync(storage, JSON.stringify({ policy: { ...before, commitIdentity: IDENTITY }, state: "accepted", acceptanceProtected: before.protected }));
+    writeFileSync(storage, JSON.stringify({ policy: { ...before, commitIdentity: IDENTITY, ...now }, state: "accepted", acceptanceProtected: accepted?.protected ?? before.protected, acceptancePolicy: accepted }));
     const preload = join(dir, "fetch.mjs");
     writeFileSync(preload, `import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 const storage = ${JSON.stringify(storage)};
@@ -367,3 +241,140 @@ test("init --protect extras stay local and later inits send no ControlPlane path
   assert.ok(body.protected.includes("owner/**"));
   assert.ok(!body.protected.includes("new/**") && !body.protected.includes("src/**"));
 }));
+
+// ── merge's acceptance-policy comparison, against Atelier's own policy ───────
+// Slice 1 (t149) deleted the nine merge tests that reached the comparison
+// through ControlPlane files. They are back here, with the project's stored
+// policy now (`now`) and the snapshot the acceptance recorded (`accepted`) as
+// the only inputs. The finding they would have caught: with the refresh gone,
+// merge's comparison had no test at all (ctx-t149.md), so a regression could
+// have let an accepted revision land on a rule it was never accepted under.
+const NEW_PROTECT = { now: { protected: ["AGENTS.md", "src/**"] } };
+const calledProject = (calls) => calls.filter((c) => new URL(c.url).pathname === "/api/projects/example");
+
+test("merge compares the stored policy with the acceptance's and refuses before Git merge, writing nothing to the project", () => commandFixture(({ command, calls, gitCalls }) => {
+  const result = command(["merge", "t1"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Warning: the project's policy changed since acceptance: protected: /);
+  assert.match(result.stderr, /newly protected paths: src\/secret.ts/);
+  assert.match(result.stderr, /https:\/\/atelier.test\/p\/example\/t1/);
+  assert.deepEqual(calledProject(calls()), [], "the policy is read from the item's detail; nothing is read from or put to the project");
+  assert.ok(!gitCalls().some((args) => args.includes("merge")));
+  assert.ok(gitCalls().some((args) => args.includes("diff") && args.includes("--no-renames") && args.includes("-z")));
+}, NEW_PROTECT));
+
+test("merge override proceeds to Git merge while retaining the warning", () => commandFixture(({ command, gitCalls }) => {
+  const result = command(["merge", "t1", "--policy-changed-ok"]);
+  assert.match(result.stderr, /Warning: the project's policy changed/);
+  assert.doesNotMatch(result.stderr, /newly protected paths/);
+  assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
+}, NEW_PROTECT));
+
+test("acceptance during merge is read under the stored policy before review and acceptance", () => commandFixture(({ command, calls, gitCalls }) => {
+  const result = command(["merge", "t1", "--head", "a".repeat(40), "--approve"], { TEST_SUBMITTED: "1" });
+  assert.doesNotMatch(result.stderr, /policy changed since acceptance|newly protected/);
+  assert.deepEqual(calls().slice(0, 3).map((c) => [c.method, c.url.split("/").at(-1)]), [["GET", "t1"], ["POST", "review"], ["POST", "accept"]]);
+  assert.ok(!calls().some((c) => c.method === "PUT"));
+  assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
+}, NEW_PROTECT));
+
+for (const first of ["merge", "dirty"]) {
+  test(`${first} followed by repeated merges keeps refusing the acceptance`, () => commandFixture(({ command, gitCalls }) => {
+    const initial = command(["merge", "t1"], first === "dirty" ? { TEST_DIRTY: "1" } : {});
+    assert.equal(initial.status, 1);
+    for (let i = 0; i < 2; i++) assert.match(command(["merge", "t1"]).stderr, /newly protected paths: src\/secret.ts/);
+    assert.ok(!gitCalls().some((args) => args.includes("merge")));
+  }, NEW_PROTECT));
+}
+
+test("re-acceptance after refusal records the stored policy, and merge stops refusing", () => commandFixture(({ command, gitCalls }) => {
+  assert.match(command(["merge", "t1"]).stderr, /newly protected paths/);
+  const accepted = command(["accept", "t1"]);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  for (let i = 0; i < 2; i++) {
+    const result = command(["merge", "t1"]);
+    assert.doesNotMatch(result.stderr, /newly protected paths|policy changed since acceptance/);
+    assert.match(result.stderr, /merge conflicts/);
+  }
+  assert.ok(gitCalls().some((args) => args.includes("--no-ff")));
+}, NEW_PROTECT));
+
+test("override still reaches Git after repeated refusals", () => commandFixture(({ command }) => {
+  for (let i = 0; i < 2; i++) assert.match(command(["merge", "t1"]).stderr, /newly protected paths/);
+  for (let i = 0; i < 2; i++) assert.match(command(["merge", "t1", "--policy-changed-ok"]).stderr, /merge conflicts/);
+}, NEW_PROTECT));
+
+test("merge honours --policy-changed-ok=true, and --policy-changed-ok=false leaves the refusal", () => commandFixture(({ command, gitCalls }) => {
+  const on = command(["merge", "t1", "--policy-changed-ok=true"]);
+  assert.match(on.stderr, /Warning: the project's policy changed/);
+  assert.doesNotMatch(on.stderr, /newly protected paths/);
+  assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
+  assert.match(command(["merge", "t1", "--policy-changed-ok=false"]).stderr, /newly protected paths/);
+}, NEW_PROTECT));
+
+test("merge diffs the accepted revision from its real fork point, so the baseline's changes since the fork are not charged to it", () => commandFixture(({ command, gitCalls }) => {
+  // After atelier update the accepted revision sits on a newer baseline commit.
+  // Diffed from the recorded base it would carry every path the baseline
+  // changed since, here the newly protected src/secret.ts; from the fork
+  // point it carries its own docs/own.md, and the merge goes ahead.
+  const forkPoint = "f".repeat(40);
+  const result = command(["merge", "t1"], { TEST_FORK_POINT: forkPoint });
+  assert.match(result.stderr, /Warning: the project's policy changed/);
+  assert.doesNotMatch(result.stderr, /newly protected paths/);
+  assert.match(result.stderr, /merge conflicts/);
+  assert.ok(gitCalls().some((args) => args[0] === "merge-base" && args.includes("a".repeat(40))));
+  assert.ok(gitCalls().some((args) => args.includes("diff") && args.includes(forkPoint) && !args.includes("b".repeat(40))));
+}, NEW_PROTECT));
+
+const FULL = { protected: ["AGENTS.md"], eligible: ["claude"], refuseOverlap: false, checks: ["npm test"] };
+
+test("merge refuses when a contributor is no longer eligible under the stored policy", () => commandFixture(({ command, gitCalls }) => {
+  // Eligible when accepted: claude. The stored policy now names codex.
+  const events = JSON.stringify([{ actor: "claude-code/opus-5.5", kind: "item.claimed", data: {}, at: "2026-10-06T00:00:00.000Z" }]);
+  const result = command(["merge", "t1"], { TEST_EVENTS: events, TEST_FORK_POINT: "f".repeat(40) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /its contributors are no longer eligible here: claude-code\/opus-5.5 \(eligible: codex\)\. Review the task again on its page and accept again/);
+  assert.ok(!gitCalls().some((args) => args.includes("merge")));
+  assert.match(command(["merge", "t1", "--policy-changed-ok"], { TEST_EVENTS: events, TEST_FORK_POINT: "f".repeat(40) }).stderr, /merge conflicts/);
+}, { now: { eligible: ["codex"] }, accepted: FULL }));
+
+test("merge refuses when overlapping claims are newly refused and a live item overlaps the task's scope", () => commandFixture(({ command, calls, gitCalls }) => {
+  const env = { TEST_FORK_POINT: "f".repeat(40), TEST_SCOPE: JSON.stringify(["src/ui/**"]), TEST_ITEMS: JSON.stringify([
+    { id: "t2", state: "claimed", owner: "codex/gpt-6-astra", scope: ["src/**"] },
+    { id: "t3", state: "claimed", owner: "codex/gpt-6-astra", scope: ["docs/**"] },
+  ]) };
+  const result = command(["merge", "t1"], env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /overlapping claims are now refused, and its scope overlaps live t2 \(codex\/gpt-6-astra\)\. Review the task/);
+  assert.doesNotMatch(result.stderr, /t3/);
+  assert.ok(!gitCalls().some((args) => args.includes("merge")));
+  assert.deepEqual(calledProject(calls()).map((c) => c.method), ["GET"], "the live items are read, and only for this change");
+  // With no live overlap the change is a warning, and the merge goes ahead.
+  const alone = command(["merge", "t1"], { ...env, TEST_ITEMS: JSON.stringify([{ id: "t3", state: "claimed", owner: "codex/gpt-6-astra", scope: ["docs/**"] }]) });
+  assert.doesNotMatch(alone.stderr, /overlapping claims are now refused/);
+  assert.match(alone.stderr, /merge conflicts/);
+}, { now: { refuseOverlap: true }, accepted: FULL }));
+
+test("merge refuses a check required now that was not observed passing at the accepted revision", () => commandFixture(({ command, gitCalls }) => {
+  const result = command(["merge", "t1"], { TEST_FORK_POINT: "f".repeat(40) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Warning: the required checks changed since acceptance: checks: /);
+  assert.match(result.stderr, /checks required now were not observed passing at the accepted revision: `npm run lint`/);
+  assert.ok(!gitCalls().some((args) => args.includes("merge")));
+}, { now: { checks: ["npm test", "npm run lint"] }, accepted: FULL }));
+
+// The finding (gpt-6-astra, t150 round 2): the ledger omits shipRuns from an
+// acceptance made with no ship order, and filling the missing field from the
+// stored policy hid a ship command added since, so a revision that rewrote the
+// deploy script landed with no warning and no refusal.
+test("merge refuses a revision that touches a ship command added since an acceptance made with none", () => commandFixture(({ command, gitCalls }) => {
+  const env = { TEST_FORK_POINT: "f".repeat(40), TEST_DIFF: "bin/deploy.sh\\0000" };
+  const result = command(["merge", "t1"], env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Warning: the project's policy changed since acceptance: ship commands: \[\] -> \["bin\/deploy\.sh"\]/);
+  assert.match(result.stderr, /newly protected paths: bin\/deploy\.sh/);
+  assert.ok(!gitCalls().some((args) => args.includes("merge")));
+  assert.match(command(["merge", "t1", "--policy-changed-ok"], env).stderr, /merge conflicts/);
+  // A revision that leaves the script alone is not charged with it.
+  assert.doesNotMatch(command(["merge", "t1"], { TEST_FORK_POINT: "f".repeat(40) }).stderr, /newly protected/);
+}, { now: { shipRuns: ["bin/deploy.sh"] }, accepted: FULL }));

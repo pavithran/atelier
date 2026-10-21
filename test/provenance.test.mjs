@@ -86,3 +86,16 @@ test("an override at the accepted head is named without its reason", () => {
   assert.ok(note.includes(`REVIEW OVERRIDDEN by pavi at ${H}`), note);
   assert.ok(!note.includes("PRIVATE REASON"), note);
 });
+
+// t150: the tree the checks passed on, which the landing receipt carried (t708),
+// is stated by the note now, only when the caller measured one.
+test("the note states the checked tree when the merge produced the tree the checks passed on, and says nothing otherwise", () => {
+  const tree = "b".repeat(40);
+  const base = { name: "atelier", id: "t9", item: item(), view: [], reviews: [], events: [{ at: "2026-10-06T12:01:00Z", actor: "pavi", kind: "item.accepted", data: {} }] };
+  const note = provenanceNote({ ...base, checkedTree: { tree, claims: ["npm test", "npm run typecheck"] } });
+  const lines = note.split("\n");
+  assert.equal(lines.at(-2), `CHECKED TREE ${tree}: the merge produced exactly the tree these checks passed on (npm test, npm run typecheck), so a deploy gate may accept them instead of running them again`);
+  assert.equal(lines.at(-1), "2026-10-06T12:01:00Z pavi item.accepted");
+  assert.doesNotMatch(provenanceNote(base), /CHECKED TREE/);
+  assert.doesNotMatch(provenanceNote({ ...base, checkedTree: null }), /CHECKED TREE/);
+});

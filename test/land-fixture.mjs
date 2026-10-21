@@ -93,6 +93,8 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
     return {
       item: { id, title: `Fixture ${id}`, state, owner: box.holder ?? "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}), ...box.policy },
+      // The protected paths the acceptance recorded, as the ledger does: merge compares them with the policy now (t150).
+      acceptanceProtected: box.policy?.protected ?? ["work.txt"],
       gate: box.gate ?? { ready: true, outOfScope: [], blockers: [] }, evidence: box.evidence[id] ?? [], reviews, events,
       // The live gate request and the replies the server could not read
       // (t613), where a test gives them: `liveReview` null is a request

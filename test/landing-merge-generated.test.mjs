@@ -19,7 +19,7 @@ function declare(f, command = 'cat in/*.txt > gen.txt', { outputs = ['gen.txt'] 
   mkdirSync(join(f.checkout, 'bin')); mkdirSync(join(f.checkout, 'in'));
   writeFileSync(join(f.checkout, 'bin', 'merge-manifest.json'), manifest);
   writeFileSync(join(f.checkout, '.gitattributes'), outputs.map((o) => `${o} merge=atelier-generated\n`).join(''));
-  // The landing writes its ControlPlane receipt into this folder when it exists.
+  // ControlPlane's receipts folder exists, as in the projects that had one: the landing writes nothing into it (t150).
   mkdirSync(join(f.checkout, 'docs', 'control-plane', 'landing-receipts'), { recursive: true });
   writeFileSync(join(f.checkout, 'docs', 'control-plane', 'landing-receipts', '.gitkeep'), '');
   writeFileSync(join(f.checkout, 'in', 'base.txt'), 'base\n'); writeFileSync(join(f.checkout, 'gen.txt'), 'base\n');
@@ -83,11 +83,10 @@ test('the tree published is the tree that was compared', async (t) => {
   assert.equal(r.status, 0, r.output);
   const compared = readFileSync(join(kept(f), keptFiles(f).find((n) => n.endsWith('-verify-accepted.txt'))), 'utf8');
   assert.match(compared, /gen\.txt: regenerated 100644 blob [0-9a-f]+, accepted 100644 blob [0-9a-f]+\ntree: [0-9a-f]+\nverdict: identical/);
-  // The published tree is the compared tree plus the landing's receipt and nothing else (t39 review: the receipt is written after the comparison).
+  // The published tree is the compared tree and nothing else: the landing adds no receipt, though its folder exists (t39 review, t150).
   const comparedTree = /^tree: ([0-9a-f]+)$/m.exec(compared)[1];
-  const changed = f.git(f.checkout, 'diff-tree', '-r', '--name-only', comparedTree, f.git(f.checkout, 'rev-parse', 'HEAD^{tree}')).split('\n');
-  assert.equal(changed.length, 1, changed.join(', '));
-  assert.match(changed[0], /^docs\/control-plane\/landing-receipts\/\d{4}-\d\d-\d\d-atelier-t1-[0-9a-f]+\.json$/);
+  assert.equal(f.git(f.checkout, 'rev-parse', 'HEAD^{tree}'), comparedTree);
+  assert.equal(f.git(f.checkout, 'ls-tree', '-r', '--name-only', 'HEAD', '--', 'docs/control-plane/landing-receipts'), 'docs/control-plane/landing-receipts/.gitkeep');
   assert.equal(f.git(f.checkout, 'ls-tree', '-r', comparedTree, '--', 'gen.txt'), f.git(f.checkout, 'ls-tree', '-r', f.box.acceptedHead, '--', 'gen.txt'));
 });
 

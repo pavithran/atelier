@@ -3310,3 +3310,101 @@ export function acceptedAgainstMain(items: Pick<Item, "id" | "title" | "state" |
     ? [{ id: i.id, title: i.title, acceptedHead: i.acceptedHead, main, state: acceptedState(main, holds.get(i.id) ?? null) }]
     : []);
 }
+
+// ── The acceptance-policy comparison at merge ─────────────────────────────
+// What `atelier merge` compares: the policy an acceptance was made under with
+// the project's stored policy now. (Moved here from src/control-plane.ts, a
+// name it kept after ControlPlane was retired.)
+
+type PolicyFields = { protected?: string[]; checks?: string[]; shipRuns?: string[]; shipKinds?: string[]; eligible?: string[]; refuseOverlap?: boolean };
+
+export function policyChanges(before: PolicyFields, after: PolicyFields) {
+  // A side that carries no checks is not compared on them.
+  const checksCompared = before.checks !== undefined && after.checks !== undefined;
+  const fields = (policy: PolicyFields) => ({
+    protected: [...new Set(policy.protected ?? [])].sort(),
+    eligible: [...new Set(policy.eligible ?? [])].sort(),
+    refuseOverlap: policy.refuseOverlap ?? false,
+    ...(checksCompared ? { checks: [...new Set(policy.checks)].sort() } : {}),
+  });
+  const old = fields(before), current = fields(after);
+  return (Object.keys(current) as (keyof typeof current)[]).filter((key) => JSON.stringify(old[key]) !== JSON.stringify(current[key]))
+    .map((key) => `${key}: ${JSON.stringify(old[key])} -> ${JSON.stringify(current[key])}`);
+}
+
+// The policy an acceptance was made under, for the comparison at merge: the
+// fields the acceptance recorded, over the project's stored policy, which
+// stands in for an acceptance made before every field was recorded (eligible,
+// overlap and checks, which every current acceptance records). An acceptance
+// that recorded no protected paths is taken as having protected none.
+export function acceptancePolicy(detail: { policy: PolicyFields; acceptanceProtected?: string[] | null; acceptancePolicy?: PolicyFields | null }, before: PolicyFields): PolicyFields {
+  const accepted = detail.acceptancePolicy ?? {};
+  return {
+    ...detail.policy, eligible: before.eligible, refuseOverlap: before.refuseOverlap, checks: before.checks,
+    ...accepted, protected: detail.acceptanceProtected ?? [],
+    // The ledger omits shipRuns from an acceptance made with no ship order, so
+    // an absent list is an empty one, never the order now: filling it from the
+    // stored policy would hide a ship command added since (t150 review).
+    shipRuns: accepted.shipRuns ?? [],
+  };
+}
+
+// The ship order a checkout declares (cli/ship.mjs shipPolicy) is compared as
+// a whole, since the gate guards the files its commands run: a ship order that
+// changed since acceptance is a policy change for the merge guard.
+export function shipChanges(before: PolicyFields, after: PolicyFields): string[] {
+  return (["shipRuns", "shipKinds"] as const)
+    .filter((k) => JSON.stringify(before[k] ?? []) !== JSON.stringify(after[k] ?? []))
+    .map((k) => `ship ${k === "shipRuns" ? "commands" : "approval kinds"}: ${JSON.stringify(before[k] ?? [])} -> ${JSON.stringify(after[k] ?? [])}`);
+}
+
+// What the merge guard needs of the item beyond its changed paths: who
+// contributed to it, which required checks were observed passing at the
+// accepted revision, and which live items its scope overlaps.
+export interface MergeContext { contributors?: string[]; passed?: string[]; overlapping?: string[] }
+
+export function mergeContext(
+  detail: { item: { id: string; scope: string[]; acceptedHead: string | null }; policy: ProjectPolicy; evidence: Evidence[]; events: { actor: string; kind: string; data: Record<string, unknown> }[] },
+  items: { id: string; state: string; owner: string | null; scope: string[] }[] = [],
+): MergeContext {
+  const { item } = detail;
+  return {
+    contributors: pushActors(detail.events),
+    passed: evidenceAt(detail.policy, detail.evidence, item.acceptedHead).checks.filter((c) => c.grade === "observed" && c.passed).map((c) => c.claim),
+    overlapping: items.filter((o) => o.id !== item.id && holdsScope(o) && scopesOverlap(item.scope, o.scope)).map((o) => `${o.id} (${o.owner ?? "unowned"})`),
+  };
+}
+
+// Eligibility as assertEligible reads the list: by the actor's harness.
+const harnessEligible = (actor: string, list: string[] | undefined) => {
+  const harness = actor.split("/")[0];
+  return !list?.length || list.some((k) => harness === k || harness.startsWith(`${k}-`));
+};
+
+export function mergePolicyDecision(before: PolicyFields, after: PolicyFields, paths: string[], allowChanged = false, context: MergeContext = {}) {
+  const changes = [...policyChanges(before, after), ...shipChanges(before, after)];
+  // A change among the checks alone is named as the required checks.
+  const checkChanges = changes.filter((c) => c.startsWith("checks:"));
+  const others = changes.filter((c) => !c.startsWith("checks:"));
+  const warned = [
+    ...(others.length ? [`the project's policy changed since acceptance: ${others.join("; ")}`] : []),
+    ...(checkChanges.length ? [`the required checks changed since acceptance: ${checkChanges.join("; ")}`] : []),
+  ];
+  // Matched as changeClass matches the guarded set: whatever the letter case or Unicode form.
+  const guarded = (policy: PolicyFields) => [...(policy.protected ?? []), ...checkFiles(policy.checks ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])];
+  const newlyProtected = paths.filter((path) => matchesFolded(path, guarded(after)) && !matchesFolded(path, guarded(before)));
+  // What the accepted item satisfied under the policy it was accepted under
+  // and no longer does under the policy as it is now.
+  const reasons: string[] = [];
+  if (newlyProtected.length) reasons.push(`the accepted revision touches newly protected paths: ${newlyProtected.join(", ")}`);
+  const ineligible = (context.contributors ?? []).filter((actor) => harnessEligible(actor, before.eligible) && !harnessEligible(actor, after.eligible));
+  if (ineligible.length) reasons.push(`its contributors are no longer eligible here: ${ineligible.join(", ")} (eligible: ${(after.eligible ?? []).join(", ")})`);
+  const unchecked = before.checks && after.checks ? after.checks.filter((c) => !before.checks!.includes(c) && !(context.passed ?? []).includes(c)) : [];
+  if (unchecked.length) reasons.push(`checks required now were not observed passing at the accepted revision: ${unchecked.map((c) => `\`${c}\``).join(", ")}`);
+  if (after.refuseOverlap && !before.refuseOverlap && context.overlapping?.length) reasons.push(`overlapping claims are now refused, and its scope overlaps live ${context.overlapping.join(", ")}`);
+  return {
+    warning: warned.length ? `Warning: ${warned.join("; ")}` : null,
+    refusal: changes.length && reasons.length && !allowChanged
+      ? `${reasons.join("; ")}. Review the task again on its page and accept again, or use --policy-changed-ok after reviewing this policy change.` : null,
+  };
+}
