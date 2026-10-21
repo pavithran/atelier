@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { acquireSlot, setSlotCapacity, releaseSlot, slotStatus, slotCapacity, poolSize, slotPriority, parseSlotProcesses, formatSlots, poolTransaction, orderedWaiters, slotInvocation, SLOT_WRAPPER } from "../cli/load.mjs";
+import { acquireSlot, setSlotCapacity, releaseSlot, slotStatus, slotCapacity, poolSize, slotPriority, parseSlotProcesses, formatSlots, poolTransaction, orderedWaiters, slotInvocation, SLOT_WRAPPER, releaseSequence, SEQUENCE_GRACE_MS } from "../cli/load.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 
 function fixture(t, capacity = 1) {
@@ -309,4 +309,56 @@ test("a test pool takes its slot's share of the cores, at least one, whatever th
   assert.equal(poolSize({ ATELIER_TEST_SLOTS: "nonsense" }, 36), 4);
   assert.equal(poolSize({}, 0), 1);
   for (const slots of [1, 2, 3, 5, 9, 12]) assert.ok(slots * poolSize({ ATELIER_TEST_SLOTS: String(slots) }, 36) <= 36);
+});
+
+
+test("release reservations preserve admission, bound continuations and yield deterministically", async (t) => {
+  const f = fixture(t); let clock = 1000;
+  f.options.now = () => clock;
+  const seq = releaseSequence({ class: "release" }, f.options);
+  const first = { ...f.owner("release"), ...seq.next() };
+  await acquireSlot(first, f.options);
+  const ordinary = f.owner();
+  let queued, poll;
+  const ready = new Promise((r) => queued = r);
+  const waiting = acquireSlot(ordinary, { ...f.options, wait: () => { queued(); return new Promise((r) => poll = r); } });
+  await ready;
+  let current = first;
+  for (let i = 0; i < 3; i++) {
+    await releaseSlot(current.lease, { ...f.options, retainSequence: true }, current.pid);
+    f.processes.splice(f.processes.findIndex((p) => p.lease === current.lease), 1); // process identity need not survive idle handoff
+    assert.equal((await slotStatus(f.options)).usage, 1);
+    current = { ...f.owner("release"), ...seq.next() };
+    await acquireSlot(current, f.options);
+    assert.equal((await slotStatus(f.options)).active[0].lease, current.lease);
+  }
+  await releaseSlot(current.lease, { ...f.options, retainSequence: true }, current.pid);
+  const fourth = { ...f.owner("release"), ...seq.next() };
+  const cancel = new AbortController();
+  await assert.rejects(acquireSlot(fourth, { ...f.options, signal: cancel.signal, wait: async () => cancel.abort() }), /cancelled/);
+  assert.equal((await slotStatus(f.options)).active[0].lease, ordinary.lease, "ordinary wins even when continuation polls first");
+  poll(); await waiting;
+  await releaseSlot(ordinary.lease, f.options, ordinary.pid);
+  await seq.close();
+});
+
+test("idle reservations expire, close only idle entries, and respect capacity reductions", async (t) => {
+  const f = fixture(t, 2); let clock = 100;
+  f.options.now = () => clock;
+  const seq = releaseSequence({ class: "release" }, f.options);
+  const first = { ...f.owner("release"), ...seq.next() }, other = f.owner();
+  await acquireSlot(first, f.options); await acquireSlot(other, f.options);
+  await seq.close();
+  assert.equal((await slotStatus(f.options)).usage, 2, "close cannot free running trees");
+  await releaseSlot(first.lease, { ...f.options, retainSequence: true }, first.pid);
+  await setSlotCapacity(1, f.options);
+  const next = { ...f.owner("release"), ...seq.next() }, cancel = new AbortController();
+  await assert.rejects(acquireSlot(next, { ...f.options, signal: cancel.signal, wait: async () => cancel.abort() }), /cancelled/);
+  assert.equal((await slotStatus(f.options)).usage, 1);
+  await releaseSlot(other.lease, f.options, other.pid);
+  const last = { ...f.owner("release"), ...seq.next() };
+  await acquireSlot(last, f.options);
+  await releaseSlot(last.lease, { ...f.options, retainSequence: true }, last.pid);
+  clock += SEQUENCE_GRACE_MS;
+  assert.equal((await slotStatus(f.options)).usage, 0, "expiry applies even while the old supervisor is alive");
 });

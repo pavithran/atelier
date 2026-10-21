@@ -29,9 +29,9 @@ function fixture(t) {
     await Promise.all(children.map((child) => child.finished));
     rmSync(root, { force: true, recursive: true });
   });
-  const run = (command, cls = "ordinary", lease = randomUUID()) => {
+  const run = (command, cls = "ordinary", lease = randomUUID(), sequence = {}) => {
     const script = `import { runSlotCommand } from ${JSON.stringify(moduleURL)};
-      try { await runSlotCommand(${JSON.stringify(command)}, { class: ${JSON.stringify(cls)}, project: 'project-' + process.pid, actor: 'codex/test', task: 't1' }, { path: ${JSON.stringify(path)} }); }
+      try { await runSlotCommand(${JSON.stringify(command)}, { class: ${JSON.stringify(cls)}, project: 'project-' + process.pid, actor: 'codex/test', task: 't1', ...${JSON.stringify(sequence)} }, { path: ${JSON.stringify(path)} }); }
       catch (error) { console.error(error); process.exitCode = 1; }`;
     const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
       detached: true, env: { ...process.env, ...env, ATELIER_TEST_LEASE: lease }, stdio: ["ignore", "pipe", "pipe"],
@@ -128,4 +128,46 @@ test("real wrapper CLI sets capacity, preserves launch tokens, drains and report
   assert.match(nested.stdout, /[a-f0-9-]{36}/);
   assert.match(nested.stderr, /warning:.*invalid/);
   assert.equal((await f.status()).active.length, 0);
+});
+
+
+test("release sequence real processes retain gaps, then yield before the fourth continuation", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), sequenceId = randomUUID(), order = join(f.root, "order");
+  const command = (label) => [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(order)}, ${JSON.stringify(label)});`];
+  const first = f.run(command("0"), "release", randomUUID(), { sequenceId, sequenceStep: 0 });
+  assert.equal((await first.finished).code, 0, first.output);
+  const ordinary = f.run(command("O"));
+  await until(async () => (await f.status()).waiters.length === 1, "ordinary did not queue behind reservation");
+  for (let step = 1; step <= 4; step++) {
+    const child = f.run(command(String(step)), "release", randomUUID(), { sequenceId, sequenceStep: step });
+    assert.equal((await child.finished).code, 0, child.output);
+  }
+  assert.equal((await ordinary.finished).code, 0, ordinary.output);
+  assert.equal(readFileSync(order, "utf8"), "0123O4");
+});
+
+test("release sequence failure frees immediately and an abandoned idle reservation expires", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), sequenceId = randomUUID();
+  const failure = f.run([process.execPath, "-e", "process.exit(9)"], "release", randomUUID(), { sequenceId, sequenceStep: 0 });
+  assert.equal((await failure.finished).code, 9, failure.output);
+  assert.equal((await f.status()).usage, 0);
+  const success = f.run([process.execPath, "-e", "process.exit(0)"], "release", randomUUID(), { sequenceId, sequenceStep: 0 });
+  assert.equal((await success.finished).code, 0, success.output);
+  assert.equal((await f.status()).usage, 1, "exited caller retains only bounded idle reservation");
+  const ordinary = f.run([process.execPath, "-e", "process.exit(0)"]);
+  assert.equal((await ordinary.finished).code, 0, ordinary.output);
+  assert.equal((await f.status()).usage, 0);
+});
+
+
+test("cancelling a running release sequence leaves no reservation", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), marker = join(f.root, "started");
+  const child = f.run([process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000);`], "release", randomUUID(), { sequenceId: randomUUID(), sequenceStep: 0 });
+  await until(() => existsSync(marker), "release never started");
+  child.kill("SIGTERM");
+  assert.equal((await child.finished).code, 143, child.output);
+  assert.equal((await f.status()).usage, 0);
 });

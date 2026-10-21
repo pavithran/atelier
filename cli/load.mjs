@@ -8,6 +8,10 @@ import { resolve } from "node:path";
 // runner configuration. Containers have their own /tmp and process namespace.
 export const HOST_POOL = "/tmp/atelier-test-slots-v1.sqlite";
 export const SLOT_WRAPPER = fileURLToPath(import.meta.url);
+export const SEQUENCE_GRACE_MS = 5000;
+export const SEQUENCE_CONTINUATIONS = 3;
+const now = (options) => (options.now ?? Date.now)();
+const isSequence = (metadata) => typeof metadata.sequenceId === "string" && /^[a-f0-9-]{36}$/.test(metadata.sequenceId) && Number.isSafeInteger(metadata.sequenceStep) && metadata.sequenceStep >= 0;
 const MARKER = "ATELIER_TEST_LEASE";
 const classes = { release: 0, landing: 0, review: 1, ordinary: 2 };
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -94,7 +98,7 @@ export async function poolTransaction(options = {}, update = () => {}) {
         (options.warn ?? console.warn)(`test slots: warning: ATELIER_TEST_SLOTS ${requested === undefined ? "is invalid" : `requests ${requested}`}; using stored capacity ${state.capacity}`);
       }
       const processes = options.skipEmpty && !state.entries.length ? [] : (options.processes ?? slotProcesses)();
-      state.entries = state.entries.filter((entry) => processes.some((p) => p.lease === entry.lease));
+      state.entries = state.entries.filter((entry) => entry.reservedUntil ? entry.reservedUntil > now(options) : processes.some((p) => p.lease === entry.lease));
       const result = update(state, processes);
       db.prepare("INSERT INTO pool(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(JSON.stringify(state));
       db.exec("COMMIT");
@@ -144,6 +148,17 @@ export async function acquireSlot(metadata = {}, options = {}) {
         if (!processes.some((p) => p.pid === (metadata.pid ?? process.pid) && p.lease === lease)) {
           throw new Error("test process identity is not visible; refusing slot admission");
         }
+        const sequence = priority === classes.release && isSequence(metadata);
+        const reserved = sequence && state.entries.find((e) => e.reservedUntil && e.sequenceId === metadata.sequenceId && e.sequenceStep + 1 === metadata.sequenceStep);
+        if (reserved) {
+          // An idle reservation cannot become running work above a reduced capacity.
+          if (state.entries.filter((e) => e.started).length <= state.capacity) {
+            Object.assign(reserved, metadata, { lease, pid: metadata.pid ?? process.pid, birth: processes.find((p) => p.pid === (metadata.pid ?? process.pid)).birth, claimed: true });
+            delete reserved.reservedUntil;
+            return { lease, reused: false };
+          }
+          state.entries = state.entries.filter((e) => e !== reserved);
+        }
         let entry = state.entries.find((e) => e.lease === lease);
         if (entry?.started) {
           const reused = entry.claimed === true;
@@ -152,7 +167,7 @@ export async function acquireSlot(metadata = {}, options = {}) {
         }
         if (!entry) {
           const identity = processes.find((p) => p.pid === (metadata.pid ?? process.pid));
-          entry = { ...metadata, birth: identity.birth, lease, pid: metadata.pid ?? process.pid, class: metadata.class ?? process.env.ATELIER_TEST_PRIORITY ?? "ordinary", priority,
+          entry = { ...metadata, birth: identity.birth, lease, pid: metadata.pid ?? process.pid, class: sequence && metadata.sequenceStep > 0 ? "ordinary" : metadata.class ?? process.env.ATELIER_TEST_PRIORITY ?? "ordinary", priority: sequence && metadata.sequenceStep > 0 ? classes.ordinary : priority,
             sequence: ++state.sequence, queued: new Date().toISOString() };
           state.entries.push(entry);
         }
@@ -178,9 +193,33 @@ export async function acquireSlot(metadata = {}, options = {}) {
 export async function releaseSlot(lease, options = {}, self = process.pid) {
   return poolTransaction(options, (state, processes) => {
     if (processes.some((p) => p.lease === lease && p.pid !== self)) return false;
-    state.entries = state.entries.filter((e) => e.lease !== lease);
+    const entry = state.entries.find((e) => e.lease === lease);
+    if (options.retainSequence && entry && isSequence(entry) && entry.sequenceStep % (SEQUENCE_CONTINUATIONS + 1) < SEQUENCE_CONTINUATIONS) {
+      entry.reservedUntil = now(options) + SEQUENCE_GRACE_MS;
+    } else state.entries = state.entries.filter((e) => e.lease !== lease);
     return true;
   });
+}
+
+// Each caller owns only its idle handoff reservations. Live command trees
+// still belong to their launch leases and cannot be freed by this cleanup.
+export function releaseSequence(metadata = {}, options = {}) {
+  const sequenceId = randomUUID();
+  const cls = metadata.class ?? process.env.ATELIER_TEST_PRIORITY ?? "ordinary";
+  const enabled = slotPriority(cls) === classes.release;
+  let step = 0;
+  return {
+    next: () => ({ ...metadata, class: cls, ...(enabled ? { sequenceId, sequenceStep: step++ } : {}) }),
+    close: async () => {
+      if (!enabled || !step) return;
+      try { await poolTransaction({ ...options, skipEmpty: true }, (state) => {
+        state.entries = state.entries.filter((e) => !e.reservedUntil || e.sequenceId !== sequenceId);
+      }); } catch (error) {
+        if (!error.message.startsWith("cannot inspect test process trees:")) throw error;
+        console.warn(`test slots: ${error.message}; idle sequence reservations will expire`);
+      }
+    },
+  };
 }
 
 export function slotInvocation(argv, metadata = {}, base = process.env) {
@@ -207,7 +246,10 @@ integer). Lowering drains running work without preemption or a restart.
 The database is /tmp/atelier-test-slots-v1.sqlite.
 Release/landing precedes review, then ordinary, FIFO within each class by an
 atomic enqueue sequence. Admission never preempts active commands. Lower
-classes may starve. Select a class with --priority or ATELIER_TEST_PRIORITY.
+classes may starve across separate releases. Release check/wrap sequences retain
+an idle slot for five seconds and at most three continuations; without a valid
+reservation a continuation queues at ordinary priority behind existing work.
+Select a class with --priority or ATELIER_TEST_PRIORITY.
 Landings set release and review harnesses set review; other checks default to
 ordinary. SIGINT/SIGTERM cancel waiting or terminate the running tree.
 A killed wrapper's surviving children keep its slot until they exit. A status
@@ -271,7 +313,7 @@ export async function runSlotCommand(command, metadata = {}, options = {}) {
   const stop = (signal) => { interrupted = signal; controller.abort(); };
   const onInt = () => stop("SIGINT"), onTerm = () => stop("SIGTERM");
   process.on("SIGINT", onInt).on("SIGTERM", onTerm);
-  let acquired, exitSignal;
+  let acquired, exitSignal, retainSequence = false;
   try {
     // Probe before opening SQLite: read-only review sandboxes can forbid both.
     try { (options.processes ?? slotProcesses)(); }
@@ -306,13 +348,14 @@ export async function runSlotCommand(command, metadata = {}, options = {}) {
       await delay(50);
     }
     if (spawnError) throw spawnError;
+    retainSequence = code === 0 && !interrupted && !exitSignal && slotPriority(metadata.class ?? process.env.ATELIER_TEST_PRIORITY) === classes.release;
     process.exitCode = interrupted === "SIGINT" ? 130 : interrupted ? 143 : code;
   } catch (error) {
     if (!interrupted) throw error;
     process.exitCode = interrupted === "SIGINT" ? 130 : 143;
   } finally {
     process.off("SIGINT", onInt).off("SIGTERM", onTerm);
-    if (acquired && !acquired.reused) await releaseSlot(acquired.lease, options);
+    if (acquired && !acquired.reused) await releaseSlot(acquired.lease, { ...options, retainSequence });
   }
   // Preserve the command's signal outcome after releasing its tree, so local
   // checks can still distinguish a signalled command from an ordinary exit.
