@@ -2255,6 +2255,12 @@ export function fastBuildSection(base) {
 // skippedBy counts, while a release or a push under one dispatch does not.
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.at ?? null]);
 
+// The queue entries of the projects a config names; every entry when it names
+// none (t172). An entry with no project name is dropped when a list is given.
+export function onlyProjects(entries, projects) {
+  return projects ? entries.filter((entry) => projects.includes(entry?.project)) : entries;
+}
+
 // The order a poll's jobs are taken in: the gate's reviews first, in the
 // queue's order (t213), alongside criteria reviews (t438), then
 // pre-reviews (t524), then everything else.
@@ -4260,8 +4266,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     const sayIdleWhy = async (passed) => {
       let waiting = [], unread = null;
       if (idleWhy) { try { waiting = await idleWhy(pollOffer, controller.signal); } catch (error) { if (controller.signal.aborted) return; unread = error.message; } }
+      waiting = onlyProjects(Array.isArray(waiting) ? waiting : [], config.projects);
       const own = new Set(passed.map((p) => p.task));
-      const reasons = [...passed, ...(Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
+      const reasons = [...passed, ...waiting.filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
         .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
       if (!reasons.length && !unread) { lastWhy = null; return; }
       const signature = [...reasons.map((r) => `${r.task}  ${r.line}`), unread ?? ""].join("\n");
@@ -4293,6 +4300,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         if (misses) line(`queue answering again after ${misses} failed poll${misses === 1 ? "" : "s"}`);
         misses = 0;
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
+        // A config that names projects serves those alone (t172): the rest of
+        // the queue is dropped here, before any job is chosen or skip reported.
+        tasks = onlyProjects(tasks, config.projects);
         if (controller.signal.aborted) break;
         polls++;
         // Skip reports the server did not take are tried again first, once
