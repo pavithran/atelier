@@ -298,7 +298,10 @@ const SKIPPED = /^\s*not ok \d+.*# (?:SKIP|TODO)\b/i;
 
 // t176: progress and captured stdout can contain whole failing fixtures.
 // Prefer the last completed outer report. A transcript cannot authenticate
-// an unframed fixture that copies that final report; uncertain counts name none.
+// an unframed fixture that copies that final report; uncertain counts qualify names.
+// Atelier runs Node before Vitest. A complete Vitest transcript before the
+// final Node report is treated as fixture output; reverse-order runs cannot
+// be distinguished from that fixture without external reporter framing.
 function outerReports(lines: string[]): { lines: string[]; reporters: string[]; uncertain: boolean } | null {
   const last = (pattern: RegExp) => lines.findLastIndex((line) => pattern.test(line));
   const nodeCount = last(/^ℹ fail \d+\s*$/);
@@ -347,7 +350,7 @@ function outerReports(lines: string[]): { lines: string[]; reporters: string[]; 
     if (viteCount >= 0) selected.push(lines[viteCount]);
     if (!Number.isFinite(count) || (count > 0 && !hasTests) || (failedFiles > 0 && count === 0 && !hasSuites)) uncertain = true;
   }
-  if (lines.some((line) => /^\[atelier\] and \d+ more failure lines not kept/.test(line))) uncertain = true;
+  if (lines.some((line) => /^\[atelier\] and \d+ more failure lines? not kept/.test(line))) uncertain = true;
   return { lines: selected, reporters, uncertain };
 }
 
@@ -376,7 +379,14 @@ export function collectFailureLines(output: string): string {
   }
   if (picked.length <= FAILURE_LINES_MAX && picked.join("\n").length <= FAILURE_LINES_CHARS) return picked.join("\n");
   // Keep the outer counts even when the diagnostic list is cut.
-  const counts = picked.filter((line) => FAIL_COUNT.test(line));
+  const counts: string[] = [];
+  const kinds = new Set<string>();
+  let countSize = 0;
+  for (const line of picked.toReversed()) {
+    const kind = line.replace(/\d+/g, "N");
+    if (!FAIL_COUNT.test(line) || kinds.has(kind) || counts.length >= 6 || countSize + line.length + 1 > Math.floor(FAILURE_LINES_CHARS / 3)) continue;
+    kinds.add(kind); counts.unshift(line); countSize += line.length + 1;
+  }
   const reserve = counts.join("\n").length + 100;
   const kept: string[] = [];
   let size = 0;
@@ -518,7 +528,7 @@ export function failingTestsLine(tests: FailingTests | null, whole = true, names
   }
   const shown = tests.names.slice(0, Math.max(1, names));
   const more = tests.names.length - shown.length;
-  const from = whole ? "" : fromLines ? ", read from the failure lines kept from the whole output and from its tail" : ", read from a tail of the output, so names cut with the rest are not listed";
+  const from = whole ? "" : fromLines ? ", read from the failure lines kept from the whole output" : ", read from a tail of the output, so names cut with the rest are not listed";
   return `failing tests (${tests.reporters.join(", ")}${from}): ${shown.map(flatLine).join("; ")}${more ? `; and ${more} more` : ""}${tests.note ? `; ${tests.note}` : ""}`;
 }
 

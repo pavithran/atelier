@@ -548,7 +548,7 @@ test("a failed run on a machine keeps the lines naming its failure beside a tail
   const [f] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail, failureLines })], H1), none);
   assert.deepEqual(f.tests?.names, ["fails: the release waits for its review"]);
   const summary = failureSummary("t1", H1, [f]);
-  assert.ok(summary.includes("failing tests (node:test, read from the failure lines kept from the whole output and from its tail): fails: the release waits for its review"), summary);
+  assert.ok(summary.includes("failing tests (node:test, read from the failure lines kept from the whole output): fails: the release waits for its review"), summary);
   const lines = summary.split("\n");
   const at = lines.findIndex((line) => line.includes("failure lines, read from the whole output: 4 lines:"));
   assert.ok(at > 0 && at < lines.findIndex((line) => line.includes("log: inline tail only")), summary);
@@ -668,4 +668,32 @@ test("t176 an incomplete second reporter does not erase known outer failures", (
   assert.deepEqual(read?.names, ["fails: the cap is enforced", "fails inside: names are read"]);
   assert.match(failingTestsLine(read), /partial/);
   assert.match(collectFailureLines(output), /Test Files  1 failed/);
+});
+
+
+test("t176 count reservations stay within shared bounds for generic reporter output", () => {
+  const output = Array.from({length: 120}, (_, i) => `# fail ${i + 1}\nnot ok ${i + 1} - diagnostic ${i}`).join("\n");
+  const longCounts = Array.from({length: 80}, (_, i) => `# fail ${i + 1}${"9".repeat(500)}`).join("\n");
+  for (const input of [output, longCounts]) {
+    const kept = collectFailureLines(input);
+    assert.ok(kept.length <= FAILURE_LINES_CHARS, String(kept.length));
+    assert.ok(kept.split("\n").length <= FAILURE_LINES_MAX);
+    assert.match(kept, /more failure lines? not kept/);
+  }
+  assert.match(collectFailureLines(output), /# fail 120/);
+});
+
+test("t176 exactly one omitted diagnostic still labels names partial", () => {
+  const failures = Array.from({length: 20}, (_, i) => `✖ leaf ${String(i).padStart(2, "0")} ${"x".repeat(172)} (1ms)`);
+  failures.push(`✖ final ${"y".repeat(400)} (1ms)`);
+  const kept = collectFailureLines(`ℹ fail 21\n✖ failing tests:\n${failures.join("\n")}`);
+  assert.match(kept, /1 more failure line not kept/);
+  assert.ok(failingTests(kept)?.names.length);
+  assert.match(failingTestsLine(failingTests(kept)), /partial/);
+});
+
+test("t176 documents the Node-before-Vitest boundary for unframed transcripts", () => {
+  const reverse = `${fixture("vitest.txt")}\n${fixture("node-spec.txt")}`;
+  assert.deepEqual(failingTests(reverse)?.reporters, ["node:test"]);
+  assert.ok(!collectFailureLines(reverse).includes("sample.spec.ts"));
 });
