@@ -1051,68 +1051,33 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
 // earlier attempt made it (t349), and its head read, which waits for a fork
 // Artifacts is still preparing. Only an earlier attempt's fork is taken: a
 // repository made for anything else under this name is refused before any
-// token is made for it (the reviews of t641). A fork this call made is
-// recorded as made by Atelier, which is what lets a stuck one be made again
-// (readyTaskFork).
+// token is made for it (the reviews of t641).
+//
+// A fork that does not become ready within the request is reported (t18, from
+// 2026-10-11, when every claim of one task for half an hour answered not_ready
+// and nothing told the developer the fork was stuck). The Ledger remembers the
+// first not_ready across retries and releases, the answer says how long the
+// fork has been preparing and what to do next, and after FORK_STUCK_MS a
+// fork.stuck event names the repository and the remedy. Atelier deletes no
+// fork. A claim that is no longer held when the answer comes records nothing.
 type TaskFork = { id: string; name: string; from: string; project: string; names: string[]; actor: string; generation: number; proved: boolean };
-async function prepareTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork): Promise<string | null> {
-  const made = await artifactsStep(`fork ${t.from} as ${t.name}`, async () => {
-    using base = await env.ARTIFACTS.get(t.from);
-    await base.fork(t.name, { description: taskForkMark(t.name), defaultBranchOnly: true });
-    return true;
-  }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
-    if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
-    return false;
-  });
-  if (made) await L.forkMade(t.id, t.name, t.actor, t.generation);
-  else await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
-  return headOf(env, t.name);
-}
-
-// The answer for a fork still being prepared, with how long it has been and
-// what happens next.
-function forkNotReady(t: TaskFork, view: ForkPreparationView): RuleError {
-  return new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503);
-}
-
-// prepareTaskFork, and what to do when the fork does not become ready within
-// the request (t18, from 2026-10-11, when every claim of one task for half an
-// hour answered not_ready and nothing told the developer the fork was stuck).
-// The first not_ready is remembered by the Ledger across retries and releases.
-// After FORK_STUCK_MS the fork is deleted and made again, once (a delete that fails is not a recreation), only when
-// Atelier made it and no commit of the task can be in it; any other fork is
-// kept, and recorded as stuck with the remedy. A claim that is no longer
-// held when the answer comes records nothing.
 async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork): Promise<string | null> {
-  const stuck = async (err: unknown): Promise<ForkPreparationView> => {
+  try {
+    const made = await artifactsStep(`fork ${t.from} as ${t.name}`, async () => {
+      using base = await env.ARTIFACTS.get(t.from);
+      await base.fork(t.name, { description: taskForkMark(t.name), defaultBranchOnly: true });
+      return true;
+    }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+      if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+      return false;
+    });
+    if (!made) await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
+    return await headOf(env, t.name);
+  } catch (err) {
     if (parseRuleError(err)?.code !== "not_ready") throw err;
     const view = await L.forkNotReady(t.id, t.name, t.actor, t.generation, t.proved);
     if (!view) throw err;
-    return view;
-  };
-  try {
-    return await prepareTaskFork(env, L, t);
-  } catch (err) {
-    const view = await stuck(err);
-    if (view.action !== "recreate" || !await L.forkRecreating(t.id, t.name, t.actor, t.generation)) throw forkNotReady(t, view);
-    // The Ledger records no fork for the item while the delete runs (the
-    // fence of forkRecreating), so a claim made meanwhile cannot take the
-    // repository. A delete that fails lifts the fence and leaves the fork as it
-    // was, to be tried again.
-    try {
-      await artifactsStep(`delete ${t.name}`, async () => { await env.ARTIFACTS.delete(t.name); }, (e) => NOT_FOUND.test(codeOf(e))).catch((e) => {
-        if (!NOT_FOUND.test(codeOf(e))) throw e;
-      });
-    } catch (e) {
-      await L.forkRecreateFailed(t.id, t.name).catch((x) => console.error(errorLine(`lift the fence on ${t.name}`, x)));
-      throw e;
-    }
-    await L.forkRecreated(t.id, t.name, t.actor, t.proved);
-    try {
-      return await prepareTaskFork(env, L, t);
-    } catch (again) {
-      throw forkNotReady(t, await stuck(again));
-    }
+    throw new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503);
   }
 }
 
@@ -2178,7 +2143,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
             // attempt made, in this call or in a claim that failed after it
             // (t349): no fork is recorded for the item, so no token was ever
             // made for it, and it is taken as this claim's fork. One that stays
-            // unready is remade once, or reported (t18).
+            // unready is reported (t18).
             const head = await readyTaskFork(env, L, { id, name, from, project: p.name, names: [...new Set([p.name, ...ref.names])], actor, generation, proved: !!c.token });
             await L.setFork(id, name, head, actor, !!c.token, generation);
           } catch (err) {

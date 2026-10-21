@@ -10,7 +10,8 @@ import { setForkWaitMs, setRetryBaseMs } from "../src/transient.ts";
 // nothing told the developer that the fork was stuck or what to do. These
 // tests claim against an Artifacts fake whose fork stays unready until the
 // test says it is ready, and age the stored first not_ready time instead of
-// waiting for the clock. Every credential here is a dummy.
+// waiting for the clock. Atelier only reports a stuck fork: the fake records
+// every delete, and no test expects one. Every credential here is a dummy.
 
 beforeAll(() => { setRetryBaseMs(1); setForkWaitMs(1); });
 afterAll(() => { setRetryBaseMs(); setForkWaitMs(); });
@@ -29,7 +30,7 @@ type Repo = { ready: boolean; description?: string };
 function fakeArtifacts(name: string) {
   const repos = new Map<string, Repo>([[name, { ready: true }]]);
   const forks: string[] = [], deletes: string[] = [];
-  const hooks: { onHead?: (repo: string) => Promise<void> | void; onDelete?: (repo: string) => Promise<void> | void; afterDelete?: (repo: string) => Promise<void> | void; readyOnFork: boolean } = { readyOnFork: false };
+  const hooks: { onHead?: (repo: string) => Promise<void> | void; readyOnFork: boolean } = { readyOnFork: false };
   let tokens = 0;
   const minted: string[] = [];
   const artifacts = {
@@ -59,11 +60,8 @@ function fakeArtifacts(name: string) {
       };
     },
     delete: async (repo: string) => {
-      await hooks.onDelete?.(repo);
       deletes.push(repo);
-      const had = repos.delete(repo);
-      await hooks.afterDelete?.(repo);
-      return had;
+      return repos.delete(repo);
     },
   } as unknown as Artifacts;
   return { artifacts, repos, forks, deletes, hooks, minted };
@@ -113,7 +111,6 @@ const kinds = async (L: any) => ((await L.events("t1")) as { kind: string }[]).m
 it("a fork that is not ready is remembered across retries and becomes ready on a later claim", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const { L, fa, fork, claim, owner } = await setup("fork-prep-ready");
-  fa.hooks.readyOnFork = false;
   const first = await claim();
   expect(first.status).toBe(503);
   expect(first.headers.get("retry-after")).toMatch(/^\d+$/);
@@ -129,7 +126,6 @@ it("a fork that is not ready is remembered across retries and becomes ready on a
   expect(second.status).toBe(503);
   expect((await L.forkPreparations()).t1.since).toBe(since);
   expect(fa.forks).toEqual([fork]);
-  expect(fa.deletes).toEqual([]);
   // The fork becomes ready: the claim succeeds and the record is gone.
   fa.repos.get(fork)!.ready = true;
   const ready = await claim();
@@ -141,80 +137,56 @@ it("a fork that is not ready is remembered across retries and becomes ready on a
   const record = await (await owner("GET", "/projects/fork-prep-ready")).json() as { items: Record<string, unknown>[] };
   expect(record.items.every((i) => !("preparing" in i))).toBe(true);
   expect(await (await owner("GET", "/projects/fork-prep-ready/standing")).json()).not.toHaveProperty("preparing");
+  expect(fa.deletes).toEqual([]);
 });
 
-it("a fork Atelier made that stays unready past the limit is deleted and made again once, and claims on", async () => {
+it("a fork still not ready after the limit is reported once, with the repository and the remedy by hand, and is never deleted", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
-  const { L, fa, fork, claim } = await setup("fork-prep-recreate");
-  expect((await claim()).status).toBe(503);
-  await age(L);
-  // The fork made again is ready at once.
-  fa.hooks.readyOnFork = true;
-  const res = await claim();
-  expect(res.status).toBe(200);
-  expect(fa.deletes).toEqual([fork]);
-  expect(fa.forks).toEqual([fork, fork]);
-  expect(await L.item("t1")).toMatchObject({ state: "claimed", fork });
-  expect(await kinds(L)).toContain("fork.recreated");
-  expect(await L.forkPreparations()).toEqual({});
-});
-
-it("a fork made again that is not ready either is kept and reported, with the repository and the remedy", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const { L, fa, fork, claim, owner } = await setup("fork-prep-twice");
-  expect((await claim()).status).toBe(503);
-  await age(L);
-  const second = await claim();
-  expect(second.status).toBe(503);
-  expect(fa.deletes).toEqual([fork]);
-  expect((await answer(second)).detail).toContain("is still being prepared");
-  // Past the limit again: the fork is not deleted a second time.
-  await age(L);
-  const third = await claim();
-  expect(third.status).toBe(503);
-  const detail = (await answer(third)).detail!;
-  expect(detail).toContain(`${fork} was made again once and is still not ready, so Atelier keeps it`);
-  expect(detail).toContain(`delete the Artifacts repository ${fork}`);
-  expect(fa.deletes).toEqual([fork]);
-  expect(fa.forks).toEqual([fork, fork]);
-  // The stuck fork is recorded once, naming the repository and the remedy, however often it is claimed.
-  await claim();
-  const events = ((await L.events("t1")) as { kind: string; data: { fork: string; next: string } }[]).filter((e) => e.kind === "fork.stuck");
-  expect(events.length).toBe(1);
-  expect(events[0].data.fork).toBe(fork);
-  expect(events[0].data.next).toContain(`delete the Artifacts repository ${fork}`);
-  // The task's status and its list row say how long the fork has waited and what to do.
-  const detailRoute = await (await owner("GET", "/projects/fork-prep-twice/items/t1")).json() as { preparing: { fork: string; action: string; next: string; ageMs: number } };
-  expect(detailRoute.preparing).toMatchObject({ fork, action: "keep" });
-  expect(detailRoute.preparing.ageMs).toBeGreaterThanOrEqual(FORK_STUCK_MS);
-  const rows = await (await owner("GET", "/projects/fork-prep-twice/items")).json() as { id: string; preparing?: { next: string } }[];
-  expect(rows.find((r) => r.id === "t1")!.preparing!.next).toContain(fork);
-  // `atelier status` reads the project's record, and `atelier status --project` reads its standing.
-  const record = await (await owner("GET", "/projects/fork-prep-twice")).json() as { items: { id: string; preparing?: { fork: string; action: string; next: string; ageMs: number } }[] };
-  expect(record.items.find((r) => r.id === "t1")!.preparing).toMatchObject({ fork, action: "keep" });
-  const standing = await (await owner("GET", "/projects/fork-prep-twice/standing")).json() as { preparing?: { id: string; fork: string; next: string; ageMs: number }[] };
-  expect(standing.preparing).toHaveLength(1);
-  expect(standing.preparing![0]).toMatchObject({ id: "t1", fork, action: "keep" });
-  expect(standing.preparing![0].next).toContain(`delete the Artifacts repository ${fork}`);
-});
-
-it("a fork found already there is not proven empty, so it is kept past the limit and reported once", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  // An earlier attempt's fork, in the form this server makes: the repository is
-  // taken, but nothing shows that no commit of the task is in it.
-  const { L, fa, fork, claim } = await setup("fork-prep-unknown", { ready: false, description: taskForkMark("fork-prep-unknown--t1") });
+  const { L, fa, fork, claim, owner } = await setup("fork-prep-stuck");
   expect((await claim()).status).toBe(503);
   await age(L);
   const res = await claim();
   expect(res.status).toBe(503);
-  expect((await answer(res)).detail).toContain(`Atelier cannot show that ${fork} holds none of the task's commits, so it keeps the repository`);
+  const detail = (await answer(res)).detail!;
+  expect(detail).toContain(`${fork} has not become ready in`);
+  expect(detail).toContain("Atelier deletes no fork");
+  expect(detail).toContain(`delete the Artifacts repository ${fork} by hand and claim t1 again`);
+  // However often it is claimed, the stuck fork is recorded once.
   await claim();
+  await claim();
+  const events = ((await L.events("t1")) as { kind: string; data: { fork: string; next: string } }[]).filter((e) => e.kind === "fork.stuck");
+  expect(events.length).toBe(1);
+  expect(events[0].data.fork).toBe(fork);
+  expect(events[0].data.next).toContain(`delete the Artifacts repository ${fork} by hand`);
   expect(fa.deletes).toEqual([]);
-  expect(fa.forks).toEqual([]);
-  expect((await kinds(L)).filter((k) => k === "fork.stuck").length).toBe(1);
+  expect(fa.forks).toEqual([fork]);
+  // The item's detail, the project record `atelier status` reads and the standing `atelier status --project` reads say how long and what next.
+  const shown = await (await owner("GET", "/projects/fork-prep-stuck/items/t1")).json() as { preparing: { fork: string; action: string; next: string; ageMs: number } };
+  expect(shown.preparing).toMatchObject({ fork, action: "stuck" });
+  expect(shown.preparing.ageMs).toBeGreaterThanOrEqual(FORK_STUCK_MS);
+  const record = await (await owner("GET", "/projects/fork-prep-stuck")).json() as { items: { id: string; preparing?: { fork: string; action: string } }[] };
+  expect(record.items.find((r) => r.id === "t1")!.preparing).toMatchObject({ fork, action: "stuck" });
+  const rows = await (await owner("GET", "/projects/fork-prep-stuck/items")).json() as { id: string; preparing?: { next: string } }[];
+  expect(rows.find((r) => r.id === "t1")!.preparing!.next).toContain(fork);
+  const standing = await (await owner("GET", "/projects/fork-prep-stuck/standing")).json() as { preparing?: { id: string; fork: string; next: string }[] };
+  expect(standing.preparing).toHaveLength(1);
+  expect(standing.preparing![0]).toMatchObject({ id: "t1", fork, action: "stuck" });
+  expect(standing.preparing![0].next).toContain(`delete the Artifacts repository ${fork} by hand`);
 });
 
-it("a fork Atelier made is kept when the task records a head, since an unread fork is not proof", async () => {
+it("a fork found already there, as the t496 fork was, is reported too, and kept", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, claim } = await setup("fork-prep-there", { ready: false, description: taskForkMark("fork-prep-there--t1") });
+  expect((await claim()).status).toBe(503);
+  await age(L);
+  expect((await claim()).status).toBe(503);
+  expect((await kinds(L)).filter((k) => k === "fork.stuck").length).toBe(1);
+  expect(fa.deletes).toEqual([]);
+  expect(fa.forks).toEqual([]);
+  expect(fa.repos.has(fork)).toBe(true);
+});
+
+it("a stuck fork of a task with a recorded head is not offered for deletion, since it may hold the task's commits", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const { L, fa, fork, claim } = await setup("fork-prep-pushed");
   expect((await claim()).status).toBe(503);
@@ -223,14 +195,16 @@ it("a fork Atelier made is kept when the task records a head, since an unread fo
   await inside(L, (instance) => instance.sql.exec(`UPDATE items SET head = ? WHERE id = 't1'`, "a".repeat(40)));
   const res = await claim();
   expect(res.status).toBe(503);
-  expect((await answer(res)).detail).toContain("cannot show");
+  const detail = (await answer(res)).detail!;
+  expect(detail).toContain("may hold the task's commits: do not delete it");
+  expect(detail).not.toContain("by hand");
+  const event = ((await L.events("t1")) as { kind: string; data: { next: string } }[]).find((e) => e.kind === "fork.stuck")!;
+  expect(event.data.next).toContain("do not delete it");
   expect(fa.deletes).toEqual([]);
-  expect(await kinds(L)).toContain("fork.stuck");
-  expect(await kinds(L)).not.toContain("fork.recreated");
   expect(fa.repos.has(fork)).toBe(true);
 });
 
-it("an answer that arrives after the claim was released records nothing and spends no recreation", async () => {
+it("an answer that arrives after the claim was released starts no clock and records nothing", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const { L, fa, actor, claim } = await setup("fork-prep-late");
   // The first claim's fork is read as unready, but the task is released while it waits.
@@ -244,92 +218,6 @@ it("an answer that arrives after the claim was released records nothing and spen
   expect(res.status).toBe(503);
   expect((await answer(res)).error).toBe("not_ready");
   expect(await L.forkPreparations()).toEqual({});
-  // The fork's making was recorded while the claim held it; no clock was started by the late answer.
-  const stored = await inside(L, (instance) => JSON.parse(instance.sql.exec(`SELECT value FROM meta WHERE key = 'fork-prep:t1'`).one().value as string));
-  expect(stored).toMatchObject({ since: null, recreatedAt: null, reportedAt: null });
+  expect(await inside(L, (instance) => instance.sql.exec(`SELECT COUNT(*) AS n FROM meta WHERE key = 'fork-prep:t1'`).one().n)).toBe(0);
   expect(await kinds(L)).not.toContain("fork.stuck");
-  expect(await kinds(L)).not.toContain("fork.recreated");
-});
-
-it("a delete that fails keeps the fork's age and the recreation unspent, and the next claim tries again", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  vi.spyOn(console, "error").mockImplementation(() => {});
-  const { L, fa, fork, claim } = await setup("fork-prep-delete");
-  expect((await claim()).status).toBe(503);
-  await age(L);
-  const aged = (await L.forkPreparations()).t1.since;
-  const real = (fa.artifacts as unknown as { delete: (r: string) => Promise<boolean> }).delete;
-  (fa.artifacts as unknown as { delete: (r: string) => Promise<boolean> }).delete = async () => { throw artifactsError("UNAVAILABLE", "delete failed"); };
-  const res = await claim();
-  expect(res.status).toBe(503);
-  expect((await answer(res)).error).toBe("artifacts_unavailable");
-  // Nothing was deleted, so the repository is listed with the age it had and no recreation recorded.
-  const left = (await L.forkPreparations()).t1;
-  expect(left).toMatchObject({ fork, since: aged, action: "recreate", recreatedAt: null });
-  expect(left.ageMs).toBeGreaterThanOrEqual(FORK_STUCK_MS);
-  expect(await kinds(L)).not.toContain("fork.recreated");
-  // The next claim, with no new aging, deletes and makes the fork again.
-  (fa.artifacts as unknown as { delete: (r: string) => Promise<boolean> }).delete = real;
-  fa.hooks.readyOnFork = true;
-  const next = await claim();
-  expect(next.status).toBe(200);
-  expect(fa.deletes).toEqual([fork]);
-  expect(await kinds(L)).toContain("fork.recreated");
-});
-
-it("a claim made while the stuck fork is being deleted cannot take it or be given a token for it", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const { L, fa, fork, claim } = await setup("fork-prep-fence");
-  expect((await claim()).status).toBe(503);
-  await age(L);
-  fa.hooks.readyOnFork = true;
-  // While the delete waits, the fork becomes ready and the same agent claims again.
-  let second: Response | undefined;
-  fa.hooks.onDelete = async () => {
-    fa.hooks.onDelete = undefined;
-    fa.repos.get(fork)!.ready = true;
-    second = await claim();
-  };
-  const first = await claim();
-  expect(second!.status).toBe(503);
-  expect((await answer(second!)).error).toBe("fork_recreating");
-  expect(fa.minted.filter((r) => r === fork)).toEqual([]);
-  // The first request, whose claim the second superseded, records nothing either.
-  expect(first.status).toBe(409);
-  expect(await L.item("t1")).toMatchObject({ fork: null, head: null });
-  expect(fa.deletes).toEqual([fork]);
-  // Once the delete is done the fence is lifted: the next claim takes the new fork.
-  const third = await claim();
-  expect(third.status).toBe(200);
-  expect(await L.item("t1")).toMatchObject({ state: "claimed", fork });
-  expect(fa.minted.filter((r) => r === fork)).toEqual([fork]);
-});
-
-it("a delete that takes effect but answers with an error keeps the fence, so a claim made meanwhile records nothing and the retry deletes no recorded fork", async () => {
-  vi.spyOn(console, "warn").mockImplementation(() => {});
-  const { L, fa, fork, claim } = await setup("fork-prep-lost");
-  expect((await claim()).status).toBe(503);
-  await age(L);
-  fa.hooks.readyOnFork = true;
-  // The first delete is done, but its answer is an error. Before the retry,
-  // the same agent claims again: it makes the fork anew, which is ready.
-  let second: Response | undefined, failed = false, seen: { fork: string | null; minted: number } | undefined;
-  fa.hooks.afterDelete = async () => {
-    if (failed) return;
-    failed = true;
-    second = await claim();
-    seen = { fork: (await L.item("t1")).fork, minted: fa.minted.filter((r) => r === fork).length };
-    throw artifactsError("UNAVAILABLE", "the answer was lost");
-  };
-  const first = await claim();
-  expect(second!.status).toBe(503);
-  expect((await answer(second!)).error).toBe("fork_recreating");
-  expect(seen).toEqual({ fork: null, minted: 0 });
-  expect(fa.deletes).toEqual([fork, fork]);
-  expect(first.status).toBe(409);
-  // The delete is over and the fence lifted: the next claim takes the fork once.
-  const third = await claim();
-  expect(third.status).toBe(200);
-  expect(await L.item("t1")).toMatchObject({ state: "claimed", fork });
-  expect(fa.minted.filter((r) => r === fork)).toEqual([fork]);
 });

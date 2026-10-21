@@ -564,7 +564,7 @@ test("a held task names every blocker and when each stops holding, claimed or la
 // told the developer): status lists a task whose fork is not ready with how
 // long it has waited and what happens next; the JSON carries it; a task with
 // no such fork has neither.
-const preparing = { fork: "demo--t4", since: "2026-10-20T12:00:00.000Z", ageMs: 12 * 60_000, action: "keep", next: "Atelier keeps it. The developer can delete the Artifacts repository demo--t4 and claim t4 again.", recreatedAt: null };
+const preparing = { fork: "demo--t4", since: "2026-10-20T12:00:00.000Z", ageMs: 12 * 60_000, action: "stuck", next: "demo--t4 has not become ready in 12 minutes. Atelier deletes no fork. The developer can delete the Artifacts repository demo--t4 by hand and claim t4 again." };
 
 test("status names a fork still being prepared, its age and the next action", () => {
   const view = { name: "demo", title: "Demo", items: [item("t4", "open", { preparing }), item("t5", "open")], inbox: [] };

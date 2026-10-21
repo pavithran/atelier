@@ -2155,11 +2155,11 @@ test("the merge context names the item's contributors, the checks observed passi
 
 // t18, the finding of 2026-10-11 (t496): a task fork stuck in preparing
 // answered not_ready for half an hour and nothing said what to do. The view
-// decides between waiting, making the fork again and keeping it.
+// says how long it has waited and what next; Atelier deletes no fork.
 {
   const SINCE = "2026-10-20T12:00:00.000Z";
   const at = (ms: number) => Date.parse(SINCE) + ms;
-  const prep = { fork: "demo--t1", since: SINCE, madeAt: "2026-10-20T11:59:00.000Z", recreatedAt: null, reportedAt: null };
+  const prep = { fork: "demo--t1", since: SINCE, reportedAt: null };
   const open = { id: "t1", fork: null, head: null };
 
   test("a fork preparing for less than the limit is waited for, and says how long and what next", () => {
@@ -2169,26 +2169,19 @@ test("the merge context names the item's contributors, the checks observed passi
     assert.match(v.next, /claim t1 again/);
   });
 
-  test("a fork Atelier made that is unready at the limit is made again", () => {
+  test("a fork unready at the limit is stuck, and the remedy is by hand", () => {
     const v = forkPreparationView(prep, open, at(FORK_STUCK_MS));
-    assert.equal(v.action, "recreate");
+    assert.equal(v.action, "stuck");
+    assert.match(v.next, /Atelier deletes no fork/);
+    assert.match(v.next, /delete the Artifacts repository demo--t1 by hand and claim t1 again/);
   });
 
-  test("a fork already made again once is kept, with the repository to delete", () => {
-    const v = forkPreparationView({ ...prep, recreatedAt: "2026-10-20T12:11:00.000Z" }, open, at(FORK_STUCK_MS * 3));
-    assert.equal(v.action, "keep");
-    assert.match(v.next, /delete the Artifacts repository demo--t1/);
-  });
-
-  test("a fork not proven empty is kept: one found already there, a recorded fork or a recorded head", () => {
-    for (const [name, p, i] of [
-      ["found there", { ...prep, madeAt: null }, open],
-      ["fork recorded", prep, { ...open, fork: "demo--t1" }],
-      ["head recorded", prep, { ...open, head: H1 }],
-    ] as const) {
-      const v = forkPreparationView(p, i, at(FORK_STUCK_MS * 2));
-      assert.equal(v.action, "keep", name);
-      assert.match(v.next, /cannot show that demo--t1 holds none of the task's commits/, name);
+  test("a stuck fork of a task with a recorded fork or head is not offered for deletion", () => {
+    for (const [name, i] of [["fork recorded", { ...open, fork: "demo--t1" }], ["head recorded", { ...open, head: H1 }]] as const) {
+      const v = forkPreparationView(prep, i, at(FORK_STUCK_MS * 2));
+      assert.equal(v.action, "stuck", name);
+      assert.match(v.next, /may hold the task's commits: do not delete it/, name);
+      assert.doesNotMatch(v.next, /by hand/, name);
     }
   });
 
