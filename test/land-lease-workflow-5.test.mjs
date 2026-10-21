@@ -230,7 +230,7 @@ test("a landing whose check fails ends with the failure summary every landing pr
   assert.equal(r.status, 1, r.output);
   const head = git(f.workspace("t1"), "rev-parse", "HEAD");
   assert.ok(r.output.includes(`atelier check failed (exit 2):\nFailed checks at ${head.slice(0, 8)}, as the gate reads them (the latest counting run of each required check at this head):`), r.output);
-  assert.match(r.output, /\n {2}`printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3` failed on a runner, in a clean clone at \d{4}-\d\d-\d\d \d\d:\d\d UTC: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap\): the cap is enforced\n {4}log: whole output, inline; 3 lines, whole:\n {6}not ok 1 - the cap is enforced\n/, r.output);
+  assert.match(r.output, /\n {2}`printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3` failed on a runner, in a clean clone at \d{4}-\d\d-\d\d \d\d:\d\d UTC: evidence #2, attempt 2 of 2 at this head\n {4}failing tests \(tap\): the cap is enforced\n {4}log: whole output, inline; 3 lines, whole:\n {6}not ok 1 - the cap is enforced\n/, r.output);
   assert.match(r.output, /\n {2}Whole logs of every attempt at this head: atelier check-log t1\n/);
   // The step is recorded as failed, nothing is submitted, and the lease is released.
   assert.equal(f.posts("/land").find((x) => x.body.step === "check")?.body.failed, true);
@@ -249,7 +249,7 @@ test("land --workflow with a failing local check reports the workspace failed, n
   assert.match(r.output, /atelier check failed/);
   // The same summary as the plain landing's; a check that names no test says so.
   assert.match(r.output, /atelier check failed \(exit 2\):\nFailed checks at [0-9a-f]{8}, as the gate reads them/);
-  assert.match(r.output, /`exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests: names unavailable \(no test reporter format this summary reads was recognised in the output\)\n {4}log: whole output, inline; 1 line, whole:\n {6}\[sha256 of full output: [0-9a-f]{64}\]/, r.output);
+  assert.match(r.output, /`exit 3` failed on a runner, in a clean clone at .*: evidence #2, attempt 2 of 2 at this head\n {4}failing tests: names unavailable \(no test reporter format this summary reads was recognised in the output\)\n {4}log: whole output, inline; 1 line, whole:\n {6}\[sha256 of full output: [0-9a-f]{64}\]/, r.output);
   assert.equal(wf.events.length, 1);
   assert.equal(wf.events[0].payload.failed, true);
   assert.equal(wf.events[0].payload.head, undefined);
@@ -276,8 +276,8 @@ test("land --workflow fits a long local-check failure to what the Workflow recor
   // The terminal prints the summary whole: both checks, the first's 20-line tail, then the pointer.
   const printed = r.output.slice(r.output.indexOf("Failed checks at"), r.output.indexOf(pointer) + pointer.length);
   assert.ok(printed.length > WORKSPACE_REASON_MAX, String(printed.length));
-  assert.match(printed, /\n {2}`yes 'not ok 1 - the long check x+' \| head -n 60; exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap, read from a tail of the output, so names cut with the rest are not listed\): the long check x+\n {4}log: inline tail only \(a check run on a machine keeps its last 3,500 characters inline, and this output was longer\); last 20 of \d+ lines:\n/, printed);
-  assert.match(printed, /\n {2}`exit 4` failed on a runner, in a clean clone at .*: evidence #2, attempt 1 of 1 at this head\n/, printed);
+  assert.match(printed, /\n {2}`yes 'not ok 1 - the long check x+' \| head -n 60; exit 3` failed on a runner, in a clean clone at .*: evidence #2, attempt 2 of 2 at this head\n {4}failing tests \(tap, read from a tail of the output, so names cut with the rest are not listed\): the long check x+\n {4}log: inline tail only \(a check run on a machine keeps its last 3,500 characters inline, and this output was longer\); last 20 of \d+ lines:\n/, printed);
+  assert.match(printed, /\n {2}`exit 4` failed on a runner, in a clean clone at .*: evidence #4, attempt 2 of 2 at this head\n/, printed);
   // The 20-line tail: 19 of the output's lines, then the sha256 line the recorder appends.
   assert.equal(printed.split("\n").filter((l) => l.startsWith(`      ${line}`)).length, 19, printed);
   // The Workflow is sent the same failure fitted to its record's size, not
