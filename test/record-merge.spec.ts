@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { setRetryBaseMs } from "../src/transient.ts";
 import worker from "../src/index.ts";
@@ -433,4 +434,57 @@ it("a ship recorded after an older merge retires the ship that merge owed, and a
   expect(await ships()).toEqual([]);
   expect((await call(newer.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
   expect(await ships()).toEqual([newer.id]);
+});
+
+// t142: after ship.sh recorded t68, t58 and t136 as merged, GET /api/version
+// still answered "main": null, because a record moved no observed main. The
+// first record while none is stored takes the baseline tip read while the
+// merge was verified (the finding: record-merge never wrote main's head).
+const mainOf = (L: Awaited<ReturnType<typeof setup>>["L"]) => runInDurableObject(L, (inst: { observedMain(): string | null }) => inst.observedMain());
+const eventsOf = async (L: Awaited<ReturnType<typeof setup>>["L"], id: string) => ((await L.events(id)) as unknown as LedgerEvent[]).length;
+const claimed = async (L: Awaited<ReturnType<typeof setup>>["L"], name: string, title: string) => {
+  const item = await L.newItem(title, [], "owner");
+  const { generation } = await L.claim(item.id, BUILDER);
+  await L.setFork(item.id, `${name}--${item.id}`, BASE, BUILDER);
+  await L.recordToken(item.id, BUILDER, generation, null, `tok-${item.id}`);
+  return item;
+};
+
+it("the first record stores the baseline tip, not the historical merge, as observed main, and a repeat after a newer head adds nothing", async () => {
+  const { L, call } = await setup("record-merge-main");
+  const item = await claimed(L, "record-merge-main", "Merged by hand");
+  expect(await mainOf(L)).toBeNull();
+  expect((await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+  // main is LATER, newer than the merge recorded.
+  expect(await mainOf(L)).toBe(LATER);
+  // Main is observed to move; the same record again changes neither it nor the events.
+  const NEWER = "7".repeat(40), count = await eventsOf(L, item.id);
+  await L.noteMainHead(NEWER);
+  const total = await eventsOf(L, item.id);
+  expect((await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+  expect(await mainOf(L)).toBe(NEWER);
+  expect(await eventsOf(L, item.id)).toBe(total);
+  expect(count).toBeLessThanOrEqual(total);
+});
+
+it("a merge named by its baselineMerge stores the baseline tip too", async () => {
+  const { L, call } = await setup("record-merge-main-flat");
+  const item = await claimed(L, "record-merge-main-flat", "Flattened");
+  expect((await call(item.id, { mergeCommit: "1".repeat(40), baselineMerge: FLAT, head: HEAD, reviews })).status).toBe(200);
+  expect(await mainOf(L)).toBe(LATER);
+});
+
+it("a later record leaves the stored main, a refused record stores none, and a part's record stores none", async () => {
+  const { L, call } = await setup("record-merge-main-kept");
+  const refused = await claimed(L, "record-merge-main-kept", "Refused");
+  await refusal(await call(refused.id, { mergeCommit: OTHER, head: HEAD, reviews }), 409, "merge_not_on_main");
+  expect(await mainOf(L)).toBeNull();
+  const part = await claimed(L, "record-merge-main-kept", "A part");
+  await runInDurableObject(L, (_: unknown, state: DurableObjectState) => { state.storage.sql.exec("UPDATE items SET kind = 'part' WHERE id = ?", part.id); });
+  expect((await call(part.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+  expect(await mainOf(L)).toBeNull();
+  const first = await claimed(L, "record-merge-main-kept", "First");
+  await L.noteMainHead(SOLO);
+  expect((await call(first.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
+  expect(await mainOf(L)).toBe(SOLO);
 });
