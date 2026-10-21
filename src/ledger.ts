@@ -5411,7 +5411,7 @@ export class Ledger extends DurableObject<Env> {
   // `workspace` is what workspaceOf answered before the route revoked its
   // token: the record is refused if the fork or the token has changed since,
   // so no token the route did not revoke is taken off the record.
-  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null }, workspace: { fork: string | null; token: string | null }): { item: Item; record: RecordedMerge } {
+  recordMerge(id: string, actor: string, body: Record<string, unknown>, baseline: { parents: readonly string[] | null; holds: boolean | null; tip?: string | null }, workspace: { fork: string | null; token: string | null }): { item: Item; record: RecordedMerge } {
     const at = new Date().toISOString();
     const { item, record, repeat } = this.recordMergeAllowed(id, actor, body, baseline, at);
     if (repeat) return { item, record: repeat };
@@ -5425,6 +5425,12 @@ export class Ledger extends DurableObject<Env> {
       this.dropToken(id, workspace.token);
       this.update(id, { head: record.commit, state: "merged", owner: null, blocked: null }, at);
       this.sql.exec(`DELETE FROM meta WHERE key IN (?, ?)`, `landing:${id}`, `landing-workflow:${id}`);
+      // GET /api/version reads main's head from the ledger (t142). The first
+      // record made while none is stored takes the baseline tip read while
+      // the merge was verified, never the historical merge, which main has
+      // gone past. A part's merge is its plan's work, and a later record
+      // leaves what is stored; the other paths move it.
+      if (item.kind !== "part" && baseline.tip && /^[a-f0-9]{40,64}$/.test(baseline.tip) && this.mainHead() === null) this.setMainHead(baseline.tip, at);
       this.log(id, actor, "item.merge_recorded", { ...record, ...(item.head && item.head !== item.base && item.head !== record.commit ? { recordedHead: item.head } : {}) }, at);
       this.log(id, actor, "item.merged", { mergeCommit: record.mergeCommit, head: record.commit, observedOnBaseline: true, outside: true }, at);
       // The developer says the declared protected actions already ran (t754):

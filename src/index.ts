@@ -3014,13 +3014,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // (t726), which is the one looked up.
       const paired = typeof body.baselineMerge === "string" && /^[a-f0-9]{40,64}$/.test(body.baselineMerge) ? body.baselineMerge : null;
       const merge = paired ?? (typeof body.mergeCommit === "string" && /^[a-f0-9]{40,64}$/.test(body.mergeCommit) ? body.mergeCommit : null);
-      let parents: string[] | null = null, holds: boolean | null = false;
+      let parents: string[] | null = null, holds: boolean | null = false, tip: string | null = null;
       if (merge) {
         using baseline = await env.ARTIFACTS.get(p.repo);
         const found = await baseline.readCommit(merge);
         parents = found ? found.parents : null;
         const top = found ? await headOf(env, p.repo) : null;
         holds = top ? (await holdsCommit(env, p.repo, top, merge)).holds : false;
+        tip = top;
       }
       // As abandon and release do: check, revoke the workspace token, then
       // record. The fork and token are read together after the baseline
@@ -3030,7 +3031,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.checkRecordMerge(id, actor, { ...body, commit }, { parents, holds });
       const workspace = await L.workspaceOf(id);
       await revoke(env, workspace.fork, workspace.token);
-      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds }, workspace));
+      return json(await L.recordMerge(id, actor, { ...body, commit }, { parents, holds, tip }, workspace));
     }
     case "landing": {
       requireOwner(env, actor);
