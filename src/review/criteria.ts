@@ -38,7 +38,7 @@
 import { standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import type { Choice } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { actorFamily, assertEligible, companyRefusal, DEFAULT_OWNER, familyRefusal, hasRole, modelKey, parseRuleError, sameActor, singleFamily, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
+import { actorFamily, assertEligible, companyRefusal, DEFAULT_OWNER, familyRefusal, modelKey, parseRuleError, sameActor, singleFamily, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { CRITERIA_REPLY_FORMAT } from "./verdict.ts";
 import { proseStandardLine } from "../prose-standard.ts";
@@ -232,13 +232,8 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
       : `A recognised family (${actorFamily(actor)}); the criteria were written by ${input.authors.join(", ")}, no model among them, so any recognised family may review them`);
     const avoided = input.avoid?.find((a) => namesOf(entry).includes(a.actor.toLowerCase()));
     if (avoided) failed.push(avoided.reason);
-    if (input.policy.agents) {
-      if (hasRole(actor, input.policy, "assessor")) passed.push("Governed policy: holds the assessor role");
-      else failed.push(`${actor} needs an available agent with the assessor role`);
-    } else {
-      const refusal = eligibility(actor, input.policy, owner);
-      if (refusal) failed.push(`${refusal}, so the ledger would refuse its review`);
-    }
+    const refusal = eligibility(actor, input.policy, owner);
+    if (refusal) failed.push(`${refusal}, so the ledger would refuse its review`);
     // The owner's standing (paused, reserved, kept from reviewing) is the
     // one check every pick makes (standingRefusal, src/models/pool.ts).
     const standing = standingRefusal(entry, "review");
@@ -260,12 +255,13 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
 
 function eligibility(actor: string, policy: ProjectPolicy, owner: string): string | null {
   try {
-    assertEligible(actor, policy, owner);
+    assertEligible(actor, policy, owner, "assessor");
     return null;
   } catch (err) {
     const rule = parseRuleError(err);
     if (!rule) throw err;
-    return rule.detail;
+    // Single-family mode is said by criteriaIndependenceRefusal.
+    return rule.code === "single_family" ? null : rule.detail;
   }
 }
 

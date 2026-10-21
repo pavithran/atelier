@@ -28,28 +28,29 @@ test("a protected change names the glob that made it protected, and its origin",
   assert.equal(rule.kind, "protected");
   assert.equal(rule.glob, "AGENTS.md");
   assert.equal(rule.path, "AGENTS.md");
+  // A stored execution policy's protected_path_patterns guard nothing now (t152).
   const exec = controllingRule(["src/auth/login.ts"], governed)!;
-  assert.match(exec.origin, /protected_path_patterns/);
+  assert.equal(exec.kind, "coordinated");
+  assert.doesNotMatch(exec.origin, /execution/);
 });
 
 test("the notice names the policy file and version and the exact rule", () => {
-  const lines = reviewNotice(["src/auth/login.ts"], governed, { file: "docs/control-plane/execution-policy.v1.json", version: "3" })!;
+  const lines = reviewNotice(["AGENTS.md"], open, { file: "docs/control-plane/execution-policy.v1.json", version: "3" })!;
   const text = lines.join("\n");
   assert.match(text, /review will be needed/);
-  assert.match(text, /execution-policy\.v1\.json \(version 3\)/);
-  assert.match(text, /src\/auth\/login\.ts matches the protected glob src\/auth\/\*\*/);
+  assert.match(text, /AGENTS\.md matches the protected glob AGENTS\.md/);
   assert.match(text, /another model family/);
+  // A source handed in as a plain value names no rule: only the caller's own lookup (a function) does.
+  assert.doesNotMatch(text, /execution-policy\.v1\.json/);
+  const named = reviewNotice(["AGENTS.md"], open, () => ({ file: "docs/control-plane/execution-policy.v1.json", version: "3" }))!.join("\n");
+  assert.match(named, /execution-policy\.v1\.json \(version 3\)/);
 });
 
-test("a coordinated change needs a notice only under an execution policy", () => {
+test("a stored execution policy needs no notice: a coordinated or direct change gets none, and its protected paths name no rule (t152)", () => {
+  // Would have caught: a stored execution policy that kept asking for a review of a coordinated change, and printed its own protected paths as the controlling rule.
   assert.equal(reviewNotice(["src/a.ts"], open), null);
-  const text = reviewNotice(["src/a.ts"], governed)!.join("\n");
-  assert.match(text, /not within the execution policy's direct paths/);
-  assert.match(text, /a different model than every contributor/);
-  assert.match(text, /as stored on the server/);
-});
-
-test("a direct change gets no notice", () => {
+  assert.equal(reviewNotice(["src/a.ts"], governed), null);
+  assert.equal(reviewNotice(["src/auth/login.ts"], governed), null);
   assert.equal(reviewNotice(["docs/a.md"], governed), null);
 });
 
@@ -105,11 +106,13 @@ test("a plan's part keeps the notice for a direct change, and says why", () => {
   assert.ok(reviewNotice(["src/a.ts"], open, null, true));
 });
 
-test("an execution policy's protected paths count in the disagreement", () => {
-  const policy: ProjectPolicy = { checks: [], protected: [], execution: { allowed_classes: ["protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["src/**"] } };
+test("a stored execution policy's protected paths and allowed classes make no disagreement (t152)", () => {
+  const policy: ProjectPolicy = { checks: [], protected: [], execution: { allowed_classes: ["protected", "coordinated"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["src/**"] } };
+  // The ship files' folder is guarded in every project, so one disagreement remains, and it names neither the execution paths nor a coordinated class.
   const found = reviewDisagreements(policy, [{ file: "AGENTS.md", text: "Review is optional for non-authority changes.\n" }]);
   assert.equal(found.length, 1);
-  assert.match(found[0], /src\/\*\*/);
+  assert.doesNotMatch(found[0], /src\/\*\*|coordinated/);
+  assert.match(found[0], /docs\/atelier\/\*\*/);
 });
 
 test("implicit protections still disagree with instructions making all review optional", () => {

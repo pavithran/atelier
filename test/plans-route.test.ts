@@ -6,7 +6,7 @@ import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { typedActor } from "../src/models/identity.ts";
 import { paidPerToken, routeParts, SIZE_M_CONTEXT, type PartRoute, type RouteInput } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
-import type { ProjectPolicy } from "../src/rules.ts";
+import type { ProjectPolicy, ReviewerAdmission } from "../src/rules.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
 const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
@@ -95,37 +95,26 @@ test("a profile suffix never makes a reviewer look like another family than the 
   assert.equal(r.unrouted, "no reviewer of another family than qwen (opencode/Qwen3-Coder-Next-4bit:studio-code): opencode/Qwen3.8-27B-6bit:google-eval (same family, qwen)");
 });
 
-test("a governed policy keeps executors as builders and assessors as reviewers", () => {
-  const governed: ProjectPolicy = { ...policy, agents: {
+test("stored ControlPlane agents and eligible harnesses route nothing differently (t152)", () => {
+  // Would have caught: a stored agents list that kept codex out of the builders and claude out of the reviewers, and an eligible list that kept excluding codex, after ControlPlane was retired.
+  const bare = one([opus, gpt, glm]);
+  const governed: ProjectPolicy = { ...policy, eligible: ["claude"], agents: {
     claude: { available: true, eligible_roles: ["executor"] },
     codex: { available: true, eligible_roles: ["assessor"] },
-    glm: { available: true, eligible_roles: ["executor", "assessor"] },
+    glm: { available: false, eligible_roles: ["executor", "assessor"] },
   } };
   const r = one([opus, gpt, glm], { policy: governed });
+  assert.deepEqual(r, bare);
   assert.equal(r.unrouted, null);
-  assert.equal(r.builder!.actor, "zcode/glm-5.3");
-  assert.deepEqual(actors(r.alternates), ["claude-code/opus-5.5"]);
-  assert.deepEqual(r.excluded, [{ actor: "codex/gpt-6-astra", reasons: ["codex/gpt-6-astra needs an available agent with the executor role"] }]);
-  has(r.builder, /Governed policy: holds the executor role/);
-  // opus is of another family but not an assessor; gpt is.
-  assert.equal(r.reviewer!.actor, "codex/gpt-6-astra");
-  has(r.reviewer, /Governed policy: holds the assessor role/);
-  const noAssessor = one([opus, gpt], { policy: { ...governed, agents: { ...governed.agents, codex: { available: true, eligible_roles: ["executor"] } } } });
-  assert.equal(noAssessor.builder!.actor, "codex/gpt-6-astra");
-  assert.equal(noAssessor.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (claude-code/opus-5.5 needs an available agent with the assessor role)");
-  // An unavailable agent holds no role.
-  const paused = one([opus, gpt, glm], { policy: { ...governed, agents: { ...governed.agents, glm: { available: false, eligible_roles: ["executor", "assessor"] } } } });
-  assert.equal(paused.builder!.actor, "claude-code/opus-5.5");
-  assert.deepEqual(actors(paused.excluded), ["zcode/glm-5.3", "codex/gpt-6-astra"]);
-  // Without agents, the project's eligible harnesses are the claim's rule, and the review's too, as
-  // pickReviewer and the ledger apply it (gpt-6-astra's review of t622, finding 5): a
-  // reviewer whose review the ledger would refuse is never routed.
-  const legacy = one([opus, gpt], { policy: { ...policy, eligible: ["claude"] } });
-  assert.equal(legacy.builder!.actor, "claude-code/opus-5.5");
-  assert.deepEqual(legacy.excluded, [{ actor: "codex/gpt-6-astra", reasons: ["codex is not an eligible agent here (eligible: claude)"] }]);
-  assert.equal(legacy.reviewer, null);
-  assert.match(legacy.unrouted!, /codex\/gpt-6-astra \(codex is not an eligible agent here \(eligible: claude\)\)/);
-  assert.ok(!legacy.builder!.reasons.some((reason) => reason.startsWith("Governed policy")));
+  assert.deepEqual(r.excluded, []);
+  assert.ok(![r.builder, r.reviewer, ...r.alternates].some((c) => c?.reasons.some((reason) => reason.startsWith("Governed policy") || /eligible agent|available agent/.test(reason))));
+  // The model admission rules still apply: a reviewer whose admission was withdrawn is never routed.
+  const withdrawn: ReviewerAdmission = { id: "gpt-6-astra", aliases: [], by: "owner", reason: "r", at: "2026-10-01T00:00:00Z", active: false };
+  const prefer = part("a", { prefer: { actor: "claude-code/opus-5.5", reason: "knows the module" } });
+  assert.equal(one([opus, gpt], { policy: governed }, prefer).reviewer?.actor, "codex/gpt-6-astra");
+  const refused = one([opus, gpt], { policy: { ...governed, reviewerAdmissions: [withdrawn] } }, prefer);
+  assert.equal(refused.reviewer, null);
+  assert.match(refused.unrouted!, /codex\/gpt-6-astra/);
 });
 
 test("a preference is honoured when the actor passes every rule, and refused with the reason otherwise", () => {

@@ -312,20 +312,20 @@ test("cleanSummary trims and replaces control characters, and refuses a summary 
   assert.equal(cleanSummary(42), undefined);
 });
 
-test("governed briefs show the class requirement even after approval", () => {
+test("a stored execution policy puts no class requirement in a brief (t152)", () => {
+  // Would have caught: a retired execution policy's "Direct change:" and "Coordinated change:" lines still stating a class requirement in every brief.
   const p: ProjectPolicy = { ...policy, execution: {
     allowed_classes: ["direct", "coordinated", "protected"],
     direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: [],
   } };
-  for (const [path, label] of [["docs/a.md", "Direct"], ["src/a.ts", "Coordinated"], ["AGENTS.md", "Protected"]]) {
+  for (const path of ["docs/a.md", "src/a.ts", "AGENTS.md"]) {
     for (const reviews of [[], [rev()]]) {
       const b = briefFor(detail({ policy: p, evidence: [pass({ changedPaths: [path] })], reviews }));
-      assert.ok(b.evidence.some((line) => line.startsWith(`${label} change:`) && line.includes("Developer acceptance is required")));
+      assert.ok(!b.evidence.some((line) => /^(Direct|Coordinated|Protected) change:/.test(line)), `${path}: ${b.evidence.join(" | ")}`);
     }
   }
   const b = briefFor(detail({ policy: p }));
-  assert.match(b.recommendation.reason, /Coordinated change/);
-  assert.doesNotMatch(b.recommendation.reason, /protected/);
+  assert.doesNotMatch(b.recommendation.reason, /Coordinated change/);
 });
 
 

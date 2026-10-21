@@ -29,7 +29,7 @@ import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { assertEligible, DEFAULT_OWNER, hasRole, independentReviewerText, modelKey, parseRuleError, sameActor, singleFamily, type Item, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, DEFAULT_OWNER, independentReviewerText, modelKey, parseRuleError, sameActor, singleFamily, type Item, type ProjectPolicy } from "../rules.ts";
 import { actorFamily, contributorsOf, describeContributors, familyRefusal } from "./independence.ts";
 
 export interface PickInput {
@@ -242,16 +242,12 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   if (avoided) failed.push(avoided.reason);
   if (input.counted?.some((c) => modelKey(c) === modelKey(actor))) failed.push("its approval of this head already counts, and a model counts once");
 
-  // Under a governed policy the gate counts only an assessor's review. Without
-  // one, addReview refuses a review from a harness the project does not make
-  // eligible, so the claim's rule applies to reviewers too.
-  if (policy.agents) {
-    if (hasRole(actor, policy, "assessor")) passed.push("Governed policy: holds the assessor role");
-    else failed.push(`${actor} needs an available agent with the assessor role`);
-  } else {
-    const refusal = eligibility(actor, policy, input.owner ?? DEFAULT_OWNER);
-    if (refusal) failed.push(`${refusal}, so the ledger would refuse its review`);
-  }
+  // addReview refuses a review the claim's rule refuses (a withdrawn
+  // reviewer admission, single-family mode), so the rule applies to
+  // reviewers too. The stored ControlPlane agents and eligible list are
+  // retired and read by nothing here (t152).
+  const refusal = eligibility(actor, policy, input.owner ?? DEFAULT_OWNER);
+  if (refusal) failed.push(`${refusal}, so the ledger would refuse its review`);
 
   const to = input.destination?.(entry) ?? entry.where;
   const reviewOffer = input.offers ? offering({ to, job: "review" }, input.offers) : null;

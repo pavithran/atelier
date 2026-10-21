@@ -43,14 +43,15 @@ test("a goal is cleaned as plan text and capped; the plan's title is its first 8
   assert.ok(long.endsWith("…"));
 });
 
-test("a named planner or builder is harness/model, not the owner, and holds the role the work needs", () => {
+test("a named planner or builder is harness/model, not the owner, and a stored agents list gives it no role to hold (t152)", () => {
   assert.equal(namedActor(" codex/gpt-6-astra ", policy, "planner"), "codex/gpt-6-astra");
   for (const bad of ["owner", "codex", "a/b/c", "", 7]) assert.equal(ruleOf(() => namedActor(bad, policy, "planner"))?.code, "bad_actor", String(bad));
   const governed: ProjectPolicy = { ...policy, agents: { claude: { available: true, eligible_roles: ["planner"] }, codex: { available: true, eligible_roles: ["executor"] } } };
   assert.equal(namedActor("claude-code/opus-5.5", governed, "planner"), "claude-code/opus-5.5");
-  assert.equal(ruleOf(() => namedActor("claude-code/opus-5.5", governed, "executor"))?.detail, "claude-code/opus-5.5 needs an available agent with the executor role");
-  assert.equal(ruleOf(() => namedActor("codex/gpt-6-astra", governed, "planner"))?.detail, "codex/gpt-6-astra needs an available agent with the planner role");
-  // The executor role stays the default for every other caller of assertEligible.
+  // Would have caught: the stored roles refusing claude an executor and codex a planner.
+  assert.equal(namedActor("claude-code/opus-5.5", governed, "executor"), "claude-code/opus-5.5");
+  assert.equal(namedActor("codex/gpt-6-astra", governed, "planner"), "codex/gpt-6-astra");
+  assert.equal(namedActor("codex/gpt-6-astra", governed, "assessor"), "codex/gpt-6-astra");
   assert.equal(ruleOf(() => assertEligible("codex/gpt-6-astra", governed)), null);
 });
 
@@ -70,7 +71,8 @@ test("the default planner is the first model for research work that is not refus
   assert.match(none.reasons[0], /opencode\/gemini-3\.1-pro \(paid per token \(google\); name it with --planner to use it\)/);
   assert.match(none.reasons[0], /zcode\/glm-5\.3 \(status refused, reported by home:studio at /);
   const governed: ProjectPolicy = { ...policy, agents: { claude: { available: true, eligible_roles: ["planner"] } } };
-  assert.equal(pickPlanner([opus, gpt], record, governed).actor, "claude-code/opus-5.5");
+  // A stored agents list picks no planner: the same pick as without it (t152).
+  assert.equal(pickPlanner([opus, gpt], record, governed).actor, "codex/gpt-6-astra");
   assert.deepEqual(pickPlanner([], [], policy), { actor: null, reasons: ["the model pool is empty"], passedOver: [] });
   // The default planner is one a live runner offers: the plan job would wait
   // for a runner that never asks for a model it does not offer. gpt-6-astra

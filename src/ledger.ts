@@ -3412,13 +3412,13 @@ export class Ledger extends DurableObject<Env> {
     if (r.findings !== undefined && !validFindings(r.findings)) {
       throw new RuleError("bad_findings", "findings must be a list of {file, line, severity, text}, severity blocking or follow-up; a label (pre-existing or unverified) is only for a follow-up", 400);
     }
-    // Under a role policy any agent may record a review, and the gate counts
-    // only an assessor's; the executor role is for taking work, not reviewing.
+    // The claim's rule applies to a review too: a harness the rule refuses
+    // does not review (the stored ControlPlane roles are retired, t152).
     const policy = this.project().policy;
     const recordedActor = r.by;
     const admission = reviewerAdmission(r.by, policy);
     if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
-    if (!policy.agents && !admission?.active) assertEligible(r.by, policy, this.owner);
+    if (!admission?.active) assertEligible(r.by, policy, this.owner);
     // Never trust a client-supplied admission snapshot.
     r = { ...r, by: admission?.active ? admissionActor(r.by, admission) : r.by, reviewerAdmission: admission?.active ? admission : undefined };
     // Under single-family mode no other company's model reviews, however its
@@ -3918,7 +3918,7 @@ export class Ledger extends DurableObject<Env> {
     // the one the project runs in by the time it lands, and never reads work
     // done before a switch as the current company's.
     this.log(id, actor, "item.accepted", {
-      head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
+      head: item.head, protected: [...policy.protected], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
       singleFamily: singleFamily(policy), contributors: contributorsOf(item).map((c) => ({ actor: c, company: actorFamily(c) })),
       ...(policy.shipRuns ? { shipRuns: [...policy.shipRuns] } : {}),
       ...(override ? { reviewOverridden: true } : {}),
@@ -7980,9 +7980,9 @@ export class Ledger extends DurableObject<Env> {
 
   // A named criteria reviewer, and every claim and verdict, meets the
   // project's policy for reviewing as a code reviewer does (namedActor,
-  // mayAssess): an available agent with the assessor role, or an active
-  // reviewer admission. The policy may change between request and verdict,
-  // so each step asks again.
+  // mayAssess): a withdrawn reviewer admission or another company's model in
+  // single-family mode is refused, whatever agents the stored policy names. The
+  // policy may change between request and verdict, so each step asks again.
   private assertCriteriaAssessor(actor: string, id: string): void {
     const refusal = roleRefusal(actor, this.project().policy, "assessor", this.owner);
     if (refusal) throw new RuleError("ineligible", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403);

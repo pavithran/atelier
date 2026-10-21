@@ -2261,7 +2261,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
   // latest of them when several do. An earlier approval of a contributor's
   // own family is never named in its place.
   const kind = changed === null ? null : changeClass(changed, d.policy);
-  const reviewed = kind === "protected" || (d.policy.execution !== undefined && kind === "coordinated") ? kind : null;
+  const reviewed = kind === "protected" ? kind : null;
   const contributors = contributorsOf(item);
   const independentReview = reviewed
     ? countingReviews(d.reviews, binding, d.policy, owner).filter((r) => independentApproval(r, reviewed, contributors, owner, singleFamily(d.policy))).sort((a, b) => b.at.localeCompare(a.at))[0]

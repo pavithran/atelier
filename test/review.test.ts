@@ -66,11 +66,11 @@ test("reviewNeeded: every submitted part with passing checks and measured paths 
   assert.deepEqual(n.checks, [{ claim: "npm test", grade: "observed", passed: true, where: "sandbox" }]);
   assert.deepEqual([n.previous, n.previousReviewer, n.lapsed], [[], null, []]);
   assert.equal(n.reason, "every part is reviewed by another model family, and this coordinated change has no such approval at bbbbbbbb");
-  // A governed direct change: the gate asks no review, a part still gets one.
+  // A stored execution policy's direct paths class nothing (t152); the gate asks no review, a part still gets one.
   const direct = required({ policy: governed, evidence: [pass({ changedPaths: ["docs/x.md", "README.md"] })] });
   assert.equal(direct.changeClass, "coordinated");
   const docsOnly = required({ policy: governed, item: item({ scope: ["docs/**"] }), evidence: [pass({ changedPaths: ["docs/x.md"] })] });
-  assert.equal(docsOnly.changeClass, "direct");
+  assert.equal(docsOnly.changeClass, "coordinated");
   assert.equal(docsOnly.basis, "part");
   // Paths outside the scope are carried for the brief, as the gate measures them.
   assert.deepEqual(required({ evidence: [pass({ changedPaths: ["src/review/a.ts", "src/rules.ts"] })] }).outOfScope, ["src/rules.ts"]);
@@ -85,10 +85,10 @@ test("reviewNeeded: an item outside a plan is reviewed only when the gate needs 
   assert.equal(protectedChange.reason, "a protected change needs an independent review, and none is recorded at bbbbbbbb");
   // A check's own script is protected, as the gate reads it.
   assert.ok(outside({ policy: { checks: ["sh ./check.sh"], protected: [] }, evidence: [pass({ claim: "sh ./check.sh", changedPaths: ["check.sh"] })] }).needed);
-  const coordinated = outside({ policy: governed });
-  assert.ok(coordinated.needed);
-  assert.equal(coordinated.basis, "coordinated");
-  assert.deepEqual(outside({ policy: governed, evidence: [pass({ changedPaths: ["docs/x.md"] })] }), { needed: false, reason: "a direct change needs no review" });
+  // Would have caught: a stored execution policy that made a coordinated change need a review, and called a docs change direct.
+  const noReview = { needed: false, reason: "a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed" };
+  assert.deepEqual(outside({ policy: governed }), noReview);
+  assert.deepEqual(outside({ policy: governed, evidence: [pass({ changedPaths: ["docs/x.md"] })] }), noReview);
 });
 
 test("reviewNeeded: waits for submission, a head, passing checks and measured paths", () => {
@@ -100,8 +100,10 @@ test("reviewNeeded: waits for submission, a head, passing checks and measured pa
   assert.equal(need({ evidence: [pass({ head: H1 }), pass({ grade: "reported" })] }).reason, "`npm test` not yet observed passing at bbbbbbbb");
   assert.equal(need({ policy: { checks: [], protected: [] }, evidence: [] }).reason, "changed paths not yet observed at bbbbbbbb");
   assert.equal(need({ evidence: [pass({ changedPaths: [] })] }).reason, "bbbbbbbb changes no paths, so there is nothing to review");
+  // A stored execution policy that allows no coordinated change refuses nothing (t152).
   const narrow = { ...governed, execution: { ...governed.execution!, allowed_classes: ["direct" as const] } };
-  assert.equal(need({ policy: narrow }).reason, "coordinated changes are not allowed by this project's execution policy, and a review cannot make the change acceptable");
+  assert.doesNotMatch(need({ policy: narrow }).reason!, /not allowed/);
+  assert.deepEqual(need({ policy: narrow }), need({}));
   // A project with no required checks needs only the measured paths.
   assert.ok(need({ policy: { checks: [], protected: [] }, evidence: [pass({ claim: "anything" })] }).needed);
 });
@@ -124,9 +126,9 @@ test("reviewNeeded: a part's need ends only with an approval from another family
   assert.ok(need({ reviews: [review("opencode/mystery-1", true)] }).needed);
   // An approval at an older head does not count at this one.
   assert.ok(need({ reviews: [review("codex/gpt-6-astra", true, H1)] }).needed);
-  // Under a governed policy only an assessor's review counts.
-  assert.ok(need({ policy: governed, reviews: [review("claude-code/opus-5.5", true)] }).needed);
-  assert.equal(need({ policy: governed, reviews: [review("codex/gpt-6-astra", true)] }).needed, false);
+  // A stored agents list decides which review counts no more than none does (t152).
+  const stored = { ...governed, protected: policy.protected, checks: policy.checks };
+  for (const by of ["claude-code/opus-5.5", "codex/gpt-6-astra", "zcode/glm-5.3"]) assert.deepEqual(need({ policy: stored, reviews: [review(by, true)] }), need({ reviews: [review(by, true)] }), by);
   // The owner's approval does not end it: it is not the independent review.
   assert.ok(need({ reviews: [review(OWNER, true)] }).needed);
   assert.equal(need({ reviews: [review(OWNER, true), review("codex/gpt-6-astra", true)] }).needed, false);
@@ -236,8 +238,8 @@ test("reviewNeeded: a re-review counts the earlier heads a model rejected and na
   assert.equal(n.reason, "every part is reviewed by another model family, and this coordinated change has no such approval at bbbbbbbb; round 3, after codex/gpt-6-astra rejected aaaaaaaa");
   const ownerOnly = required({ reviews: [review(OWNER, false, H1)] });
   assert.deepEqual([ownerOnly.kind, ownerOnly.round, ownerOnly.previousReviewer, ownerOnly.previous.length], ["review", 1, null, 1]);
-  // Under a governed policy a non-assessor's earlier review is not counted.
-  assert.equal(required({ policy: governed, reviews: [review("claude-code/opus-5.5", false, H1)] }).round, 1);
+  // A stored agents list does not hide an earlier review from the round count (t152).
+  assert.equal(required({ policy: governed, reviews: [review("claude-code/opus-5.5", false, H1)] }).round, required({ reviews: [review("claude-code/opus-5.5", false, H1)] }).round);
 });
 
 // ── pickReviewer ─────────────────────────────────────────────────────────
@@ -378,15 +380,19 @@ test("pickReviewer: paid models only with allowPaid and under the spend cap", ()
   assert.equal(pick({ item: anthropic, pool: [coder] }).reviewer!.actor, "opencode/Qwen3-Coder-Next-4bit:studio-code");
 });
 
-test("pickReviewer: a governed project needs an assessor; otherwise the reviewer's harness must be one the ledger accepts reviews from", () => {
-  const r = pick({ policy: governed, pool: [opus, gpt], route: { reviewer: { actor: "claude-code/opus-5.5", reasons: [] }, alternates: [] } });
-  assert.equal(r.reviewer!.actor, "codex/gpt-6-astra");
-  assert.ok(r.reviewer!.reasons.includes("Governed policy: holds the assessor role"));
-  assert.deepEqual(r.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["claude-code/opus-5.5 needs an available agent with the assessor role"] }]);
-  // Without agents, addReview refuses a harness the project does not make eligible.
+test("pickReviewer: stored ControlPlane agents and eligible harnesses pass over no reviewer (t152)", () => {
+  // Would have caught: an agents list without the assessor role passing opus over, and an eligible list excluding codex, after ControlPlane was retired.
+  const route = { reviewer: { actor: "claude-code/opus-5.5", reasons: [] }, alternates: [] };
+  const r = pick({ policy: governed, pool: [opus, gpt], route });
+  const plain = pick({ policy: { ...governed, agents: undefined, execution: undefined }, pool: [opus, gpt], route });
+  assert.equal(r.reviewer!.actor, plain.reviewer!.actor);
+  assert.deepEqual(r.passedOver, plain.passedOver);
+  assert.ok(!r.reviewer!.reasons.some((reason) => /Governed policy|available agent/.test(reason)));
   const legacy = pick({ policy: { ...policy, eligible: ["claude", "zcode"] }, pool: [gpt, opus] });
-  assert.equal(legacy.reviewer!.actor, "claude-code/opus-5.5");
-  assert.deepEqual(legacy.passedOver, [{ actor: "codex/gpt-6-astra", reasons: ["codex is not an eligible agent here (eligible: claude, zcode), so the ledger would refuse its review"] }]);
+  const unrestricted = pick({ policy, pool: [gpt, opus] });
+  assert.equal(legacy.reviewer!.actor, unrestricted.reviewer!.actor);
+  assert.deepEqual(legacy.passedOver, unrestricted.passedOver);
+  assert.ok(!legacy.passedOver.some((c) => c.reasons.some((reason) => /not an eligible agent/.test(reason))));
 });
 
 test("pickReviewer: refused, reserved and small-window models are passed over in routing order, then the pool is asked", () => {

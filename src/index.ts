@@ -1619,10 +1619,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try { return parseResolvers(body.resolvers); } catch (error) { throw new RuleError("bad_resolver", `${(error as Error).message}; --resolver takes frontier harness/model actors, such as claude-code/opus-5.5,codex/gpt-6-astra, or "" to clear them`, 400); }
       })() } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
-      // ControlPlane's roles and change classes are retired (t149): a request
-      // that still carries agents or execution is answered like any other, and
-      // the recorded values stay as they are (the Ledger keeps them).
-      ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
+      // ControlPlane's roles, change classes and eligible list are retired
+      // (t149, t152): a request that still carries agents, execution or
+      // eligible is answered like any other, and the recorded values stay as
+      // they are (the Ledger keeps them, and no decision reads them).
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
       ...(has("requireCriteriaReview") ? { requireCriteriaReview: Boolean(body.requireCriteriaReview) } : {}),

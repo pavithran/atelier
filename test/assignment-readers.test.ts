@@ -210,16 +210,16 @@ test("routeParts: an assigned builder or reviewer that fails a rule is passed ov
 // routing never read reviewer admissions or the eligible harnesses, so an
 // assignment promoted a reviewer whose admission was withdrawn, which
 // pickReviewer refuses.
-test("routeParts: a reviewer whose admission was withdrawn, or whose harness is not eligible, is never routed", () => {
+test("routeParts: a reviewer whose admission was withdrawn is never routed, and a stored eligible list changes nothing (t152)", () => {
   const review = assigned("review", ["codex/gpt-6-astra"]);
   const withdrawn = { ...policy, reviewerAdmissions: [{ id: "gpt-6-astra", aliases: [], by: "owner", reason: "retired", at: AT, active: false }] };
   const [r] = routeParts(plan(part("a")), { pool: POOL, events: [], policy: withdrawn, allowPaid: false, assignments: [assigned("build", ["claude-code/opus-5.5"]), review] });
   assert.notEqual(r.reviewer?.actor, "codex/gpt-6-astra");
   said(r.reviewer?.reasons, /codex\/gpt-6-astra: .*admission was withdrawn/);
+  // Would have caught: an eligible list that kept the codex reviewer out of the routing after ControlPlane was retired.
   const eligible = { ...policy, eligible: ["claude-code", "antigravity", "zcode"] };
   const [e] = routeParts(plan(part("a")), { pool: POOL, events: [], policy: eligible, allowPaid: false, assignments: [assigned("build", ["claude-code/opus-5.5"]), review] });
-  assert.notEqual(e.reviewer?.actor, "codex/gpt-6-astra");
-  said(e.reviewer?.reasons, /codex\/gpt-6-astra: .*not an eligible agent here/);
+  assert.equal(e.reviewer?.actor, "codex/gpt-6-astra");
 });
 
 test("pickPlanner: a plan assignment puts its eligible choice first; a paid one stays passed over", () => {

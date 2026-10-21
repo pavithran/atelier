@@ -385,7 +385,7 @@ it("the holder under another letter case, profile or registered name cannot revi
   expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
 });
 
-it("exactly one owner: claims are serialised, scoped and eligible", async () => {
+it("exactly one owner: claims are serialised and scoped, and a stored eligible list refuses none (t152)", async () => {
   const strict: ProjectPolicy = { checks: [], protected: [], eligible: ["claude", "codex"], refuseOverlap: true };
   const L = await setup("sole-owner", strict);
   await L.newItem("First", ["src/**"], "owner");
@@ -402,7 +402,8 @@ it("exactly one owner: claims are serialised, scoped and eligible", async () => 
   const winner = raced.find((r) => r.status === "fulfilled");
   expect(await L.item("t3")).toMatchObject({ owner: winner!.value.item.owner });
 
-  await refusal(L.claim("t2", "glm/glm-4.6"), "ineligible", /glm is not an eligible agent/);
+  // glm is outside the stored eligible list, which no longer refuses it: the claim meets the overlap rule alone.
+  await refusal(L.claim("t2", "glm/glm-4.6"), "overlap", /overlaps live t1 \(claude-code\/opus-5\.5\)/);
   await refusal(L.claim("t2", B), "overlap", /overlaps live t1 \(claude-code\/opus-5\.5\)/);
   // The holder of the overlapping item may take a second overlapping item.
   expect(await L.claim("t2", A)).toMatchObject({ item: { owner: A } });
@@ -448,7 +449,6 @@ it("ownership moves by handoff, ends by release or abandonment", async () => {
   await L.setFork("t1", "handoff--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
 
-  await refusal(L.handoff("t1", A, "glm/glm-4.6", "no"), "ineligible", /glm is not an eligible agent/);
   const moved = await L.handoff("t1", A, B, "off to a second opinion");
   expect(moved).toMatchObject({ owner: B, state: "claimed" });
 
@@ -789,19 +789,19 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.dispatched", "item.undispatched", "item.released"]));
 });
 
-it("a dispatch refuses the claim rules ahead of the claim: role under a governed policy and refused overlap", async () => {
+it("a dispatch refuses the claim rules ahead of the claim: refused overlap, and no stored agents role (t152)", async () => {
   const governed: ProjectPolicy = {
     checks: [], protected: [],
     agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } },
   };
   const L = await setup("dispatch-claim-rules", governed);
   const t1 = (await L.newItem("Build it", ["src/**"], "owner")).id;
-  // The named actor has no executor role, so the claim would refuse it; the
-  // dispatch refuses now, naming the agent that would be eligible.
-  await refusal(L.dispatch(t1, "owner", { to: "home", agent: "codex", model: "gpt-5.5" }), "ineligible", /codex\/gpt-5\.5 needs an available agent with the executor role; available agents with the executor role: claude/);
-  expect((await L.item(t1)).dispatch).toBeNull();
-  const queued = await L.dispatch(t1, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
-  expect(queued.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
+  // The stored agents list gives codex no executor role, and the claim no
+  // longer reads it, so a dispatch naming codex is queued as one naming claude.
+  const queued = await L.dispatch(t1, "owner", { to: "home", agent: "codex", model: "gpt-5.5" });
+  expect(queued.dispatch).toMatchObject({ agent: "codex", model: "gpt-5.5" });
+  const t1b = (await L.newItem("Build it too", ["docs/**"], "owner")).id;
+  expect((await L.dispatch(t1b, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" })).dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
 
   const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
   const S = await setup("dispatch-claim-overlap", strict);
@@ -1267,7 +1267,7 @@ it("repo policy keeps re-init available for legacy duplicate registrations", asy
   expect(() => assertRepoAvailable(projects, "LEGACY", "legacy")).toThrow(/repo_taken/);
 });
 
-it("governed policy persists across init and gates claims, handoffs, reviews and acceptance", async () => {
+it("stored agents and execution persist across init and gate no claim, handoff, review or acceptance (t152)", async () => {
   const agents: NonNullable<ProjectPolicy["agents"]> = {
     claude: { available: true, eligible_roles: ["executor", "assessor"] },
     codex: { available: true, eligible_roles: ["assessor"] },
@@ -1282,16 +1282,14 @@ it("governed policy persists across init and gates claims, handoffs, reviews and
   await L.initProject({ name: "governed", repo: "governed", reset: false, title: "Governed" }, "owner");
   expect((await L.project()).policy).toMatchObject({ agents, execution });
   await L.newItem("Coordinated change", ["src/**"], "owner");
-  await refusal(L.claim("t1", B), "ineligible", /executor role/);
-  await L.claim("t1", A);
-  await refusal(L.handoff("t1", A, B, "handoff"), "ineligible", /executor role/);
+  // Would have caught: codex, which the stored agents give no executor role, refused a claim and a handoff, and glm, no assessor role, a review.
+  await L.claim("t1", B);
+  await L.handoff("t1", B, A, "handoff");
   await L.setFork("t1", "governed--t1", H0, A);
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
   await L.addReview(review("t1", "opencode/glm-5.3", H1, true));
-  await refusal(L.accept("t1", "owner"), "not_ready", /different model than every contributor/);
-  await L.addReview(review("t1", B, H1, true));
   await refusal(L.accept("t1", B), "not_project_owner", /only the developer/);
   expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
   await L.initProject({ name: "governed", repo: "governed", reset: false, agents: {} }, "owner");
@@ -1312,7 +1310,10 @@ it("keeps acceptance protection until re-acceptance passes the current gate", as
   await L.accept("t1", "owner", H1);
   expect((await L.detail("t1") as unknown as { acceptanceProtected: string[] }).acceptanceProtected).toEqual(policy.protected);
   // The acceptance records the whole policy it was made under, for the merge guard.
-  expect((await L.detail("t1") as unknown as { acceptancePolicy: unknown }).acceptancePolicy).toEqual({ protected: policy.protected, eligible: [], refuseOverlap: false, checks: policy.checks });
+  // It records no eligible list: ControlPlane's governance is retired (t152).
+  expect((await L.detail("t1") as unknown as { acceptancePolicy: unknown }).acceptancePolicy).toEqual({ protected: policy.protected, refuseOverlap: false, checks: policy.checks });
+  const firstAcceptance = (await L.events("t1") as unknown as LedgerEvent[]).find((e) => e.kind === "item.accepted")!;
+  expect(Object.keys(firstAcceptance.data)).not.toContain("eligible");
   const changed = { ...policy, protected: [...policy.protected, "src/**"] };
   await L.setProject({ ...(await L.project()), policy: changed }, "owner");
   for (let i = 0; i < 2; i++) {

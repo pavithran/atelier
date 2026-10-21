@@ -29,33 +29,24 @@ export function controllingRule(paths: readonly string[], policy: ProjectPolicy)
       if (glob !== undefined) return { kind: "protected", path, glob, origin, requirement: classRequirement("protected") };
     }
   }
-  const direct = policy.execution?.direct;
-  if (direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns))) {
-    return { kind: "direct", path: null, glob: null, origin: "the execution policy's direct paths", requirement: classRequirement("direct") };
-  }
-  const outside = direct?.enabled ? paths.find((p) => !matchesAny(p, direct.allowed_path_patterns)) ?? null : paths[0] ?? null;
-  return { kind: "coordinated", path: outside, glob: null, origin: "the execution policy", requirement: classRequirement("coordinated") };
+  // The stored execution policy and its direct paths are retired (t152): a
+  // change outside the guarded paths is coordinated.
+  return { kind: "coordinated", path: paths[0] ?? null, glob: null, origin: "the project's protected paths", requirement: classRequirement("coordinated") };
 }
 
 // The lines `atelier done` and `atelier land` print before the checks run,
-// or null where the change needs no review: a direct change, and a
-// coordinated one in a project without an execution policy, need none.
+// or null where the change needs no review: a coordinated one needs none.
 // A part of a plan is reviewed whatever its class (reviewNeeded's basis
-// "part"), so `part` keeps the notice for a direct change or a project
-// without an execution policy.
+// "part"), so `part` keeps the notice for a coordinated change.
 export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, source?: PolicySource | null | ((rule: ControllingRule) => PolicySource | null), part = false): string[] | null {
   const rule = controllingRule(paths, policy);
   if (!rule) return null;
-  if (!part && (rule.kind === "direct" || (rule.kind === "coordinated" && !policy.execution))) return null;
-  const resolved = typeof source === "function" ? source(rule) : rule.origin.includes("execution policy") ? source : null;
+  if (!part && rule.kind !== "protected") return null;
+  const resolved = typeof source === "function" ? source(rule) : null;
   const controlling = part ? "Atelier's plan-part review rule (src/review/needed.ts: reviewNeeded)" : resolved ? `${resolved.file}${resolved.version ? ` (version ${resolved.version})` : ""}` : rule.origin === "the ship files" ? "Atelier's built-in SHIP_FILES rule (src/rules.ts)" : `the project's recorded policy, as stored on the server (${rule.origin})`;
   const classWhy = rule.glob !== null
     ? `${rule.path} matches the protected glob ${rule.glob}, from ${rule.origin}`
-    : rule.kind === "direct"
-      ? `every changed path is within ${rule.origin}`
-      : policy.execution
-        ? `${rule.path ?? "this change"} is not within the execution policy's direct paths`
-        : `${rule.path ?? "this change"} is outside the project's protected paths, and the project has no execution policy`;
+    : `${rule.path ?? "this change"} is outside the project's protected paths, and the project has no execution policy`;
   const why = part ? `this task is a part of a plan, and every part of a plan is reviewed by ${singleFamily(policy) ? `a different ${singleFamily(policy)} model than its contributors (single-family mode)` : "another family than its contributors"} (${classWhy})` : classWhy;
   return [
     `A review will be needed before this lands: ${part ? classRequirement("protected", singleFamily(policy)) : rule.requirement}.`,
@@ -75,7 +66,6 @@ export function reviewDisagreements(policy: ProjectPolicy, instructions: readonl
   const protectedGlobs = [...new Set(protectedRuleGroups(policy).flatMap(([, globs]) => globs))];
   if (protectedGlobs.length) requires.push(`a protected change (${protectedGlobs.slice(0, 4).join(", ")}${protectedGlobs.length > 4 ? ", …" : ""}) needs a review from another model family`);
   if (policy.postMerge) requires.push("the post-merge policy protects all repository paths (**), so every change needs a review from another model family");
-  if (policy.execution?.allowed_classes.includes("coordinated")) requires.push("a coordinated change needs a review from a different model than every contributor");
   if (!requires.length) return [];
   const out: string[] = [];
   for (const { file, text } of instructions) {

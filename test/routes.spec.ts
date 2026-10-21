@@ -1753,6 +1753,46 @@ it("the settings, project and task pages render a legacy ledger's historical pol
   expect(task).toContain("Edit a doc");
 });
 
+// ControlPlane retirement, slice 4 (t152). The stored agents, execution rules
+// and eligible list of a ledger ControlPlane governed decide nothing: not a
+// claim, a change class, a review or an acceptance. Every read still answers,
+// and a new acceptance records none of them.
+it("a legacy ledger's stored agents, execution and eligible list decide nothing, its reads stay whole, and a new acceptance records none of them (t152)", async () => {
+  // Would have caught: codex, marked unavailable and outside the eligible list, refused a claim; a docs change still needing a review under the stored execution rules; and the acceptance still recording the eligible list.
+  const { name, agents, execution, policy, L } = await seedLegacy("legacy-inert");
+  const read = async (path: string) => { const res = await call("GET", path, "owner"); expect(res.status, path).toBe(200); return res.json() as Promise<Record<string, any>>; };
+  const agent = "claude-code/opus-5.5", head = "a".repeat(40);
+  await L.addEvidence({ itemId: "t1", claim: "bin/verify.sh", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["docs/a.md"], where: "sandbox" } as never);
+
+  // Detail: the gate asks no review of a change the stored execution rules would have classed, and the response keeps every field an older CLI reads.
+  const detail = await read(`/projects/${name}/items/t1`);
+  expect(detail.gate).toMatchObject({ ready: true, needsAssessor: false });
+  expect(detail.gate).not.toHaveProperty("changeClass");
+  expect(detail.policy).toMatchObject({ agents, execution, eligible: ["claude"], refuseOverlap: true, protected: policy.protected, checks: policy.checks, approval: policy.approval });
+  for (const key of ["policy", "acceptanceProtected", "acceptancePolicy", "gate", "reviews", "evidence", "events"]) expect(detail, key).toHaveProperty(key);
+
+  // Claims and plans: codex is marked unavailable, outside the eligible list and without the executor role.
+  await L.newItem("Code change", ["src/**"], "owner");
+  expect(await L.claim("t2", "codex/gpt-6-astra")).toMatchObject({ item: { owner: "codex/gpt-6-astra" } });
+  const { item: plan } = await L.newPlan("Ship it", [], "owner", "codex/gpt-6-astra", []);
+  expect(plan.dispatch).toMatchObject({ agent: "codex" });
+
+  // Acceptance: ready without a review, and the record carries the paths, overlap rule and checks, never the eligible list or the retired rules.
+  await L.accept("t1", "owner", head);
+  const accepted = await read(`/projects/${name}/items/t1`);
+  expect(accepted.acceptanceProtected).toEqual(policy.protected);
+  expect(accepted.acceptancePolicy).toEqual({ protected: policy.protected, refuseOverlap: true, checks: policy.checks });
+  const event = (accepted.events as { kind: string; data: Record<string, unknown> }[]).find((e) => e.kind === "item.accepted")!;
+  for (const retired of ["eligible", "agents", "execution", "approval"]) expect(Object.keys(event.data), retired).not.toContain(retired);
+
+  // The other reads answer: the standing keeps its controlPlane shape, the brief and the plan read without a crash.
+  expect((await read(`/projects/${name}/standing`)).controlPlane ?? (await read(`/projects/${name}/standing`)).standing?.controlPlane)
+    .toEqual({ approval: policy.approval, protected: policy.protected, eligible: ["claude"], refuseOverlap: true });
+  expect((await read(`/projects/${name}/items/t1/brief`)).title).toBe("Edit a doc");
+  expect((await read(`/projects/${name}/items/${plan.id}/plan`))).toBeTruthy();
+  expect((await read(`/projects/${name}`)).project.policy).toMatchObject({ agents, execution, eligible: ["claude"] });
+});
+
 // ControlPlane retirement, slice 1 (t149). A ledger written while ControlPlane
 // governed the project holds roles, change classes and an eligible list in its
 // stored policy, and a project.set event carrying them. Before t149 an init
