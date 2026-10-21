@@ -615,7 +615,9 @@ starts several of them at once and keeps the order.
   task that landed before it. Within that, put first the tasks that another
   piece of work waits on. A task named twice lands once.
 - **What runs beside what, and what does not.** Merging main, the checks and
-  the reviews of different tasks overlap. The merge itself does not: each
+  the reviews of different tasks overlap, except that the checks queue for the
+  machine's test slots, one at a time unless the developer raised the capacity
+  (`atelier slots set N`; `docs/test-slots.md`). The merge itself does not: each
   landing takes the project's landing lease only once its head is checked
   and approved, and the server hands the lease to the waiting landings in the
   order they queued. The flags you give (`--reviewer`, `--triage`,

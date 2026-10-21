@@ -1,3 +1,4 @@
+import { releaseSequence } from "../load.mjs";
 // atelier check. Its forms, flags and help are declared in src/usage/commands/check.ts.
 import { prepareChecks } from "../../src/check-preparation.ts";
 import { join } from "node:path";
@@ -48,6 +49,7 @@ export default async function checkCommand() {
       ...(mainHead ? { merged: true, mainHead } : {}),
     };
   };
+  const sequence = releaseSequence({ project: name, task: id, actor: as });
   try {
     // --merged checks the would-be merge: the head merged with main's head,
     // in this clone. The evidence is bound to both revisions, and the
@@ -55,7 +57,7 @@ export default async function checkCommand() {
     // regenerated or united, and where its generator logs are kept, goes at
     // the head of each check's output, which outlives the clone.
     if (args.merged) ({ main: mainHead, provenance } = await mergeWithMain(dir, id, name));
-    await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, { project: name, task: id, actor: as }), secrets).catch((error) => die(error.message, 2));
+    await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next()), secrets).catch((error) => die(error.message, 2));
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
     for (const cmd of cmds) {
       // A registered check whose paths this change does not touch is not
@@ -69,7 +71,7 @@ export default async function checkCommand() {
         console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
         continue;
       }
-      let r = await runCheck(cmd, dir, secrets, { project: name, task: id, actor: as });
+      let r = await runCheck(cmd, dir, secrets, sequence.next());
       // A check that fails is run once more at the same head (t744): a
       // result that changes with nothing else changed is the machine's, not
       // the change's. Both results are recorded, the failure first, so the
@@ -79,7 +81,7 @@ export default async function checkCommand() {
       if (!r.passed && !r.timedOut) {
         process.stderr.write(`atelier: \`${cmd}\` failed; running it once more at the same head\n`);
         const first = r;
-        r = await runCheck(cmd, dir, secrets, { project: name, task: id, actor: as });
+        r = await runCheck(cmd, dir, secrets, sequence.next());
         flake = r.passed;
         if (flake) await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, first, ""), as);
       }
@@ -99,8 +101,8 @@ export default async function checkCommand() {
       if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
     }
   } finally {
-    process.off("exit", cleanup);
-    cleanup();
+    try { await sequence.close(); }
+    finally { process.off("exit", cleanup); cleanup(); }
   }
   const paths = recorded === undefined ? changed : recorded;
   if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
