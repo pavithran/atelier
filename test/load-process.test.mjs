@@ -140,7 +140,10 @@ test("real wrapper CLI sets capacity, preserves launch tokens, drains and report
 // Three landing processes run a step of their own that must overlap (each
 // waits until all three are in it, so serialising the steps would hang), then
 // a check through the real wrapper under the default capacity (no
-// ATELIER_TEST_SLOTS anywhere): the checks must never run two at once.
+// ATELIER_TEST_SLOTS anywhere): the checks must never run two at once. Each
+// landing reports 36 cores to cli/load.mjs, so the old default (a quarter of
+// them, nine slots) would let all three checks run together on any host, a
+// small one included.
 test("real landings under the default capacity run their checks one at a time while their other steps overlap", { timeout: 60000 }, async (t) => {
   if (!canInspectSlots(t)) return;
   const f = fixture(t, {});
@@ -150,8 +153,12 @@ test("real landings under the default capacity run their checks one at a time wh
   writeFileSync(check, `import { appendFileSync } from "node:fs";
     appendFileSync(process.argv[2], "start\\n");
     setTimeout(() => appendFileSync(process.argv[2], "end\\n"), 400);`);
-  const script = `import { runSlotCommand } from ${JSON.stringify(moduleURL)};
-    import { appendFileSync, readdirSync, writeFileSync } from "node:fs";
+  const script = `import os from "node:os";
+    import { syncBuiltinESMExports } from "node:module";
+    import { readdirSync, writeFileSync } from "node:fs";
+    os.cpus = () => Array.from({ length: 36 }, () => ({}));
+    syncBuiltinESMExports();
+    const { runSlotCommand } = await import(${JSON.stringify(moduleURL)});
     const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
     // The step beside the others: in it until all three landings are.
     writeFileSync(${JSON.stringify(steps)} + "/" + process.pid, "");
