@@ -1,0 +1,47 @@
+atelier atelier/t185 "Post-merge checks kill passing output above 1 MiB"
+accepted head bd119806cf3dc87dfb2d4b92f50cef7f27318098
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6.1-sol 2026-10-21T22:18:36.936Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6.1-sol 2026-10-21T22:18:41.192Z
+REVIEW approve by claude-code/opus-5.5 at bd119806cf3dc87dfb2d4b92f50cef7f27318098, recorded by pavi with the developer's token, answering a claimed review request
+CHECKED TREE 05e4af414e15e9ee5a267979a60b61401fa5bc47: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-21T20:12:00.639Z pavi item.created
+2026-10-21T20:12:00.639Z pavi criteria.revised
+2026-10-21T21:07:24.451Z pavi item.edited
+2026-10-21T21:07:24.451Z pavi criteria.revised
+2026-10-21T21:07:24.451Z pavi item.criteria_changed
+2026-10-21T21:07:25.780Z pavi criteria_review.requested
+2026-10-21T21:08:19.014Z claude-code/opus-5.5 criteria_review.claimed
+2026-10-21T21:08:30.116Z claude-code/opus-5.5 criteria_review.approved
+2026-10-21T21:08:51.398Z pavi item.edited
+2026-10-21T21:08:51.398Z pavi criteria.revised
+2026-10-21T21:08:51.398Z pavi item.criteria_changed
+2026-10-21T21:08:52.716Z pavi criteria_review.finding
+2026-10-21T21:08:53.917Z pavi criteria_review.finding
+2026-10-21T21:08:55.284Z pavi criteria_review.requested
+2026-10-21T21:09:30.739Z claude-code/opus-5.5 criteria_review.claimed
+2026-10-21T21:09:38.119Z claude-code/opus-5.5 criteria_review.approved
+2026-10-21T21:09:56.497Z codex/gpt-6.1-sol item.claimed
+2026-10-21T21:24:14.743Z codex/gpt-6.1-sol fork.created
+2026-10-21T21:27:23.399Z codex/gpt-6.1-sol push.observed
+2026-10-21T21:50:23.075Z atelier/orchestrator refresh.queued
+2026-10-21T22:07:27.955Z atelier/orchestrator refresh.queued
+2026-10-21T22:08:21.794Z pavi land.merge
+2026-10-21T22:08:23.264Z pavi land.regenerate
+2026-10-21T22:08:30.687Z codex/gpt-6.1-sol push.observed
+2026-10-21T22:08:31.594Z pavi land.push
+2026-10-21T22:18:38.003Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T22:18:41.534Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T22:18:42.584Z pavi land.check
+2026-10-21T22:18:43.045Z codex/gpt-6.1-sol item.submitted
+2026-10-21T22:18:43.367Z pavi land.submit
+2026-10-21T22:18:43.726Z pavi review.requested
+2026-10-21T22:18:43.726Z pavi review.requested
+2026-10-21T22:19:31.098Z claude-code/opus-5.5 review.claimed
+2026-10-21T22:19:42.720Z claude-code/opus-5.5 review.approved
+2026-10-21T22:19:45.774Z pavi land.review
+2026-10-21T22:19:46.407Z pavi land.lease
+2026-10-21T22:19:48.727Z atelier/orchestrator review.withdrawn
+2026-10-21T22:19:48.727Z pavi item.accepted
+2026-10-21T22:19:48.887Z pavi land.accept
