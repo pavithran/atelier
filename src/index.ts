@@ -981,7 +981,7 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
 // are gone. A move that only records the head returns false: the fork and
 // its tokens stand.
 const MOVE_BUDGET = { commits: 500, reads: 5 };
-async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean): Promise<boolean> {
+async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean, generation: number): Promise<boolean> {
   if (item.kind === "plan" || (item.kind === "part" && !item.plan) || !item.fork) return false;
   if (item.head && item.head !== item.base) return false;
   // The branch the fork starts from: the plan's, for a part; main, for a task.
@@ -996,7 +996,15 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
     ? await headOf(env, planFork)
     : await mainHeadOf(env, L);
   if (!planHead || planHead === item.base) return false;
-  const forkHead = () => headOf(env, fork).catch((err) => {
+  // A read of this task's fork that finds it still being prepared is reported
+  // as a claim of a new fork is (reportNotReady, t18); the plan's fork and
+  // main are other repositories, and answer not_ready as they did.
+  const onFork = <T>(read: () => Promise<T>): Promise<T> => read().catch((err) => reportNotReady(L, { id: item.id, name: fork, actor, generation, proved }, err));
+  const forkHead = () => onFork(async () => {
+    const head = await headOf(env, fork);
+    await L.forkReady(item.id);
+    return head;
+  }).catch((err) => {
     if (!NOT_FOUND.test(codeOf(err))) throw err;
     return null;
   });
@@ -1017,7 +1025,7 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
   // found done by its retry: the fork already gone, or already made again
   // under its name. A fork that is gone counts as deleted; one that stands
   // with a head other than `observed` is kept, and nothing is moved.
-  const deleted = await artifactsStep(`delete ${fork}`, async () => {
+  const deleted = await onFork(() => artifactsStep(`delete ${fork}`, async () => {
     const now = await headOf(env, fork).catch((err) => {
       if (!NOT_FOUND.test(codeOf(err))) throw err;
       return undefined;
@@ -1026,7 +1034,7 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
     if (now !== observed) return false;
     await env.ARTIFACTS.delete(fork);
     return true;
-  }, (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
+  }, (err) => NOT_FOUND.test(codeOf(err)))).catch((err) => {
     if (!NOT_FOUND.test(codeOf(err))) throw err;
     return true;
   });
@@ -1040,8 +1048,8 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
     return false;
   });
   // A fork found under the name is taken only as this move's own (t641).
-  if (!remade) await assertMadeAs(env, fork, (d) => madeAsTaskFork(d, fork, [project.name], item.id), `${project.name} ${item.id}'s fork`);
-  const base = await headOf(env, fork);
+  if (!remade) await onFork(() => assertMadeAs(env, fork, (d) => madeAsTaskFork(d, fork, [project.name], item.id), `${project.name} ${item.id}'s fork`));
+  const base = await onFork(() => headOf(env, fork));
   if (!base) throw new RuleError("empty", `${item.id}'s fork of the plan's branch has no commits`, 503);
   await L.moveFork(item.id, actor, item.fork, item.base, base, proved);
   return true;
@@ -1074,11 +1082,22 @@ async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork
     if (!made) await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
     return await headOf(env, t.name);
   } catch (err) {
-    if (parseRuleError(err)?.code !== "not_ready") throw err;
-    const view = await L.forkNotReady(t.id, t.name, t.actor, t.generation, t.proved);
-    if (!view) throw err;
-    throw new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503);
+    return reportNotReady(L, t, err);
   }
+}
+
+// A not_ready answer for the task's fork, as the claim gives it: the Ledger
+// remembers when the fork was first seen unready, the answer says how long it
+// has been and what to do next, and a fork stuck past the limit is recorded
+// once as an event (t18). Any other failure, and a claim no longer held, are
+// thrown as they came. Both ways of reading a task's fork on a claim use it:
+// a new fork (readyTaskFork) and a fork moved to a branch that has advanced
+// (moveEmptyFork).
+async function reportNotReady(L: ReturnType<typeof ledger>, t: { id: string; name: string; actor: string; generation: number; proved: boolean }, err: unknown): Promise<never> {
+  if (parseRuleError(err)?.code !== "not_ready") throw err;
+  const view = await L.forkNotReady(t.id, t.name, t.actor, t.generation, t.proved);
+  if (!view) throw err;
+  throw new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503);
 }
 
 // Main's head as the baseline holds it now, for the Ledger, which cannot read
@@ -2159,7 +2178,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A failed move gives up a claim this call took; a holder claiming
           // again keeps the item and can retry.
           try {
-            moved = await moveEmptyFork(env, L, item, p, actor, !!c.token);
+            moved = await moveEmptyFork(env, L, item, p, actor, !!c.token, generation);
           } catch (err) {
             if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
             throw err;

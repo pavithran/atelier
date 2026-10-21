@@ -3147,14 +3147,21 @@ export class Ledger extends DurableObject<Env> {
     return view;
   }
 
+  // A read of the task's recorded fork found it ready: it is no longer being
+  // prepared, whatever an earlier claim saw.
+  forkReady(id: string): void {
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
+  }
+
   // The forks being prepared, by item, as the views say them: only those
-  // that have been waited on, of an item still open that has no fork.
+  // that have been waited on, of an item not yet merged or abandoned, whether
+  // the fork is a new one or a recorded one made again for a claim.
   forkPreparations(): Record<string, ForkPreparationView> {
     const now = Date.now(), out: Record<string, ForkPreparationView> = {};
     for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'fork-prep:%'`).toArray()) {
       const id = (row.key as string).slice("fork-prep:".length);
       const prep = JSON.parse(row.value as string) as ForkPreparation;
-      const item = this.sql.exec(`SELECT id FROM items WHERE id = ? AND fork IS NULL AND state NOT IN ('merged', 'abandoned')`, id).toArray()[0];
+      const item = this.sql.exec(`SELECT id FROM items WHERE id = ? AND state NOT IN ('merged', 'abandoned')`, id).toArray()[0];
       if (prep.since && item) out[id] = forkPreparationView({ ...prep, since: prep.since }, this.item(id), now);
     }
     return out;
@@ -3173,6 +3180,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409);
     }
     this.update(id, { base, head: base }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
     this.log(id, actor, "fork.moved", { fork, from, base }, at, proved);
   }
 

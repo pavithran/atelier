@@ -19,6 +19,7 @@ afterEach(() => vi.restoreAllMocks());
 
 const TOKEN = "fork-preparation-owner";
 const H0 = "0".repeat(40);
+const H1 = "1".repeat(40);
 const inside = runInDurableObject as unknown as (stub: unknown, fn: (instance: any) => unknown) => Promise<any>;
 const artifactsError = (code: string, message: string) => Object.assign(new Error(message), { code });
 
@@ -30,7 +31,7 @@ type Repo = { ready: boolean; description?: string };
 function fakeArtifacts(name: string) {
   const repos = new Map<string, Repo>([[name, { ready: true }]]);
   const forks: string[] = [], deletes: string[] = [];
-  const hooks: { onHead?: (repo: string) => Promise<void> | void; readyOnFork: boolean } = { readyOnFork: false };
+  const hooks: { onHead?: (repo: string) => Promise<void> | void; readyOnFork: boolean; heads: Map<string, string> } = { readyOnFork: false, heads: new Map() };
   let tokens = 0;
   const minted: string[] = [];
   const artifacts = {
@@ -46,7 +47,7 @@ function fakeArtifacts(name: string) {
         log: async () => {
           await hooks.onHead?.(repo);
           if (!known().ready) throw artifactsError("FORK_IN_PROGRESS", "fork in progress");
-          return [{ hash: H0 }];
+          return [{ hash: hooks.heads.get(repo) ?? H0 }];
         },
         info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main", description: known().description ?? null }),
         createToken: async (scope: string) => {
@@ -220,4 +221,50 @@ it("an answer that arrives after the claim was released starts no clock and reco
   expect(await L.forkPreparations()).toEqual({});
   expect(await inside(L, (instance) => instance.sql.exec(`SELECT COUNT(*) AS n FROM meta WHERE key = 'fork-prep:t1'`).one().n)).toBe(0);
   expect(await kinds(L)).not.toContain("fork.stuck");
+});
+
+it("a task claimed again after its branch moved, whose fork made again stays unready, is remembered and reported like a new fork", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, actor, claim, owner } = await setup("fork-prep-moved");
+  // The first claim takes a ready fork; the task is released with no commit; main moves on.
+  fa.hooks.readyOnFork = true;
+  expect((await claim()).status).toBe(200);
+  expect(await L.item("t1")).toMatchObject({ fork, base: H0, head: H0 });
+  await L.release("t1", actor, "nothing yet");
+  fa.hooks.heads.set("fork-prep-moved", H1);
+  // The claim again deletes the empty fork and makes it from main's head; Artifacts keeps preparing it.
+  fa.hooks.readyOnFork = false;
+  const first = await claim();
+  expect(first.status).toBe(503);
+  const body = await answer(first);
+  expect(body.error).toBe("not_ready");
+  expect(body.detail).toContain(`${fork} is still being prepared (less than a minute so far)`);
+  expect(fa.deletes).toEqual([fork]);
+  // The first time it was seen unready is kept, though the task has a recorded fork.
+  const since = (await L.forkPreparations()).t1.since;
+  expect(since).toBeTruthy();
+  expect((await claim()).status).toBe(503);
+  expect((await L.forkPreparations()).t1.since).toBe(since);
+  expect(await L.item("t1")).toMatchObject({ owner: null, fork, base: H0 });
+  // Past the limit it is reported once, with the remedy, and shown where status and show read.
+  await age(L);
+  const stuck = await claim();
+  expect(stuck.status).toBe(503);
+  expect((await answer(stuck)).detail).toContain(`${fork} has not become ready in`);
+  await claim();
+  const events = ((await L.events("t1")) as { kind: string; data: { fork: string; next: string } }[]).filter((e) => e.kind === "fork.stuck");
+  expect(events.length).toBe(1);
+  expect(events[0].data.fork).toBe(fork);
+  expect(fa.deletes).toEqual([fork]);
+  const shown = await (await owner("GET", "/projects/fork-prep-moved/items/t1")).json() as { preparing: { fork: string; action: string } };
+  expect(shown.preparing).toMatchObject({ fork, action: "stuck" });
+  const record = await (await owner("GET", "/projects/fork-prep-moved")).json() as { items: { id: string; preparing?: { action: string } }[] };
+  expect(record.items.find((r) => r.id === "t1")!.preparing).toMatchObject({ action: "stuck" });
+  const standing = await (await owner("GET", "/projects/fork-prep-moved/standing")).json() as { preparing?: { id: string }[] };
+  expect(standing.preparing!.map((p) => p.id)).toEqual(["t1"]);
+  // Once the fork is ready the next claim reads it, and nothing is shown.
+  fa.repos.get(fork)!.ready = true;
+  fa.hooks.heads.set(fork, H1);
+  expect((await claim()).status).toBe(200);
+  expect(await L.forkPreparations()).toEqual({});
 });
