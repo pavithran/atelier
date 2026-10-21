@@ -2214,12 +2214,17 @@ export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
 //   madeAt:      this server's own fork call made the repository, which is the
 //                only proof it holds no task commit: nothing could be pushed
 //                to it, since no token is minted before the fork is recorded;
-//   recreatedAt: the repository was deleted and made again, which is done
-//                once per item;
-//   reportedAt:  the stuck fork was recorded as an event.
+//   recreatedAt: the repository was deleted, which is done once per item; a
+//                delete that failed leaves this, and `since`, as they were;
+//   reportedAt:  the stuck fork was recorded as an event;
+//   recreatingUntil: a request is deleting the repository, and until then the
+//                Ledger records no fork for the item, so a later claim cannot
+//                take the repository, and be given a token for it, while it
+//                is being deleted.
 export const FORK_STUCK_MS = 10 * 60_000;
+export const FORK_RECREATE_LEASE_MS = 5 * 60_000;
 
-export type ForkPreparation = { fork: string; since: string | null; madeAt: string | null; recreatedAt: string | null; reportedAt: string | null };
+export type ForkPreparation = { fork: string; since: string | null; madeAt: string | null; recreatedAt: string | null; reportedAt: string | null; recreatingUntil?: string | null };
 export type ForkPreparationView = { fork: string; since: string; ageMs: number; action: "wait" | "recreate" | "keep"; next: string; recreatedAt: string | null };
 
 export function forkAgeText(ms: number): string {

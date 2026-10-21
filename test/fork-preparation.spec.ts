@@ -29,8 +29,9 @@ type Repo = { ready: boolean; description?: string };
 function fakeArtifacts(name: string) {
   const repos = new Map<string, Repo>([[name, { ready: true }]]);
   const forks: string[] = [], deletes: string[] = [];
-  const hooks: { onHead?: (repo: string) => Promise<void> | void; readyOnFork: boolean } = { readyOnFork: false };
+  const hooks: { onHead?: (repo: string) => Promise<void> | void; onDelete?: (repo: string) => Promise<void> | void; readyOnFork: boolean } = { readyOnFork: false };
   let tokens = 0;
+  const minted: string[] = [];
   const artifacts = {
     get: async (repo: string) => {
       const known = () => { const r = repos.get(repo); if (!r) throw artifactsError("NOT_FOUND", `repo not found: ${repo}`); return r; };
@@ -50,6 +51,7 @@ function fakeArtifacts(name: string) {
         createToken: async (scope: string) => {
           known();
           const id = `tok${++tokens}`;
+          minted.push(repo);
           return { id, plaintext: `art_secret_${id}`, scope, expiresAt: new Date(Date.now() + 8 * 3600e3).toISOString() };
         },
         revokeToken: async () => true,
@@ -57,11 +59,12 @@ function fakeArtifacts(name: string) {
       };
     },
     delete: async (repo: string) => {
+      await hooks.onDelete?.(repo);
       deletes.push(repo);
       return repos.delete(repo);
     },
   } as unknown as Artifacts;
-  return { artifacts, repos, forks, deletes, hooks };
+  return { artifacts, repos, forks, deletes, hooks, minted };
 }
 
 // A project with one open task and one agent. `existing` says whether the
@@ -235,21 +238,56 @@ it("an answer that arrives after the claim was released records nothing and spen
   expect(await kinds(L)).not.toContain("fork.recreated");
 });
 
-it("a fork that fails to delete is not tried again, and the claim answers 503", async () => {
+it("a delete that fails keeps the fork's age and the recreation unspent, and the next claim tries again", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   const { L, fa, fork, claim } = await setup("fork-prep-delete");
   expect((await claim()).status).toBe(503);
   await age(L);
+  const aged = (await L.forkPreparations()).t1.since;
   const real = (fa.artifacts as unknown as { delete: (r: string) => Promise<boolean> }).delete;
   (fa.artifacts as unknown as { delete: (r: string) => Promise<boolean> }).delete = async () => { throw artifactsError("UNAVAILABLE", "delete failed"); };
   const res = await claim();
   expect(res.status).toBe(503);
   expect((await answer(res)).error).toBe("artifacts_unavailable");
+  // Nothing was deleted, so the repository is listed with the age it had and no recreation recorded.
+  const left = (await L.forkPreparations()).t1;
+  expect(left).toMatchObject({ fork, since: aged, action: "recreate", recreatedAt: null });
+  expect(left.ageMs).toBeGreaterThanOrEqual(FORK_STUCK_MS);
+  expect(await kinds(L)).not.toContain("fork.recreated");
+  // The next claim, with no new aging, deletes and makes the fork again.
   (fa.artifacts as unknown as { delete: (r: string) => Promise<boolean> }).delete = real;
-  // The one recreation is spent: the next claim keeps the fork and reports it.
-  await age(L);
+  fa.hooks.readyOnFork = true;
   const next = await claim();
-  expect((await answer(next)).detail).toContain(`${fork} was made again once`);
-  expect(fa.deletes).toEqual([]);
+  expect(next.status).toBe(200);
+  expect(fa.deletes).toEqual([fork]);
+  expect(await kinds(L)).toContain("fork.recreated");
+});
+
+it("a claim made while the stuck fork is being deleted cannot take it or be given a token for it", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { L, fa, fork, claim } = await setup("fork-prep-fence");
+  expect((await claim()).status).toBe(503);
+  await age(L);
+  fa.hooks.readyOnFork = true;
+  // While the delete waits, the fork becomes ready and the same agent claims again.
+  let second: Response | undefined;
+  fa.hooks.onDelete = async () => {
+    fa.hooks.onDelete = undefined;
+    fa.repos.get(fork)!.ready = true;
+    second = await claim();
+  };
+  const first = await claim();
+  expect(second!.status).toBe(503);
+  expect((await answer(second!)).error).toBe("fork_recreating");
+  expect(fa.minted.filter((r) => r === fork)).toEqual([]);
+  // The first request, whose claim the second superseded, records nothing either.
+  expect(first.status).toBe(409);
+  expect(await L.item("t1")).toMatchObject({ fork: null, head: null });
+  expect(fa.deletes).toEqual([fork]);
+  // Once the delete is done the fence is lifted: the next claim takes the new fork.
+  const third = await claim();
+  expect(third.status).toBe(200);
+  expect(await L.item("t1")).toMatchObject({ state: "claimed", fork });
+  expect(fa.minted.filter((r) => r === fork)).toEqual([fork]);
 });

@@ -1068,7 +1068,7 @@ function forkNotReady(t: TaskFork, view: ForkPreparationView): RuleError {
 // the request (t18, from 2026-10-11, when every claim of one task for half an
 // hour answered not_ready and nothing told the developer the fork was stuck).
 // The first not_ready is remembered by the Ledger across retries and releases.
-// After FORK_STUCK_MS the fork is deleted and made again, once, only when
+// After FORK_STUCK_MS the fork is deleted and made again, once (a delete that fails is not a recreation), only when
 // Atelier made it and no commit of the task can be in it; any other fork is
 // kept, and recorded as stuck with the remedy. A claim that is no longer
 // held when the answer comes records nothing.
@@ -1083,10 +1083,20 @@ async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork
     return await prepareTaskFork(env, L, t);
   } catch (err) {
     const view = await stuck(err);
-    if (view.action !== "recreate" || !await L.forkRecreating(t.id, t.name, t.actor, t.generation, t.proved)) throw forkNotReady(t, view);
-    await artifactsStep(`delete ${t.name}`, async () => { await env.ARTIFACTS.delete(t.name); }, (e) => NOT_FOUND.test(codeOf(e))).catch((e) => {
-      if (!NOT_FOUND.test(codeOf(e))) throw e;
-    });
+    if (view.action !== "recreate" || !await L.forkRecreating(t.id, t.name, t.actor, t.generation)) throw forkNotReady(t, view);
+    // The Ledger records no fork for the item while the delete runs (the
+    // fence of forkRecreating), so a claim made meanwhile cannot take the
+    // repository. A delete that fails lifts the fence and leaves the fork as it
+    // was, to be tried again.
+    try {
+      await artifactsStep(`delete ${t.name}`, async () => { await env.ARTIFACTS.delete(t.name); }, (e) => NOT_FOUND.test(codeOf(e))).catch((e) => {
+        if (!NOT_FOUND.test(codeOf(e))) throw e;
+      });
+    } catch (e) {
+      await L.forkRecreateFailed(t.id, t.name).catch((x) => console.error(errorLine(`lift the fence on ${t.name}`, x)));
+      throw e;
+    }
+    await L.forkRecreated(t.id, t.name, t.actor, t.proved);
     try {
       return await prepareTaskFork(env, L, t);
     } catch (again) {

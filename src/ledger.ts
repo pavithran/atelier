@@ -28,7 +28,7 @@ import {
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
-  forkPreparationView, type ForkPreparation, type ForkPreparationView,
+  forkPreparationView, FORK_RECREATE_LEASE_MS, type ForkPreparation, type ForkPreparationView,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -3098,6 +3098,10 @@ export class Ledger extends DurableObject<Env> {
     if (item.state === "merged" || item.state === "abandoned" || (generation !== undefined && (item.owner !== actor || row.claim_gen !== generation))) {
       throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409);
     }
+    const prep = this.forkPrep(id);
+    if (prep?.recreatingUntil && Date.parse(prep.recreatingUntil) > Date.now()) {
+      throw new RuleError("fork_recreating", `${fork} is being made again because it stayed unready; claim ${id} again in a moment`, 503);
+    }
     this.update(id, { fork, base, head: base }, at);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
     this.log(id, actor, "fork.created", { fork, base }, at, proved);
@@ -3155,18 +3159,40 @@ export class Ledger extends DurableObject<Env> {
     return view;
   }
 
-  // Spends the item's one recreation of its stuck fork, and answers whether
-  // this call has it. The record says so before the repository is deleted, so
-  // a delete or a fork that fails is not tried a second time.
-  forkRecreating(id: string, fork: string, actor: string, generation: number, proved = false): boolean {
+  // Takes the item's one recreation of its stuck fork for this call, which
+  // answers whether it has it, and fences the item: until forkRecreated or
+  // forkRecreateFailed, or the lease runs out, setFork records no fork, so no
+  // claim can take the repository and be given a token for it while this call
+  // deletes it. Nothing else changes: the fork's age stays, and the recreation
+  // is spent only when the delete is done (forkRecreated).
+  forkRecreating(id: string, fork: string, actor: string, generation: number): boolean {
     if (!this.claimHeld(id, actor, generation)) return false;
-    const at = new Date().toISOString();
+    const now = Date.now();
     const prep = this.forkPrep(id);
     if (!prep || prep.fork !== fork || !prep.since) return false;
-    if (forkPreparationView({ ...prep, since: prep.since }, this.item(id), Date.parse(at)).action !== "recreate") return false;
-    this.saveForkPrep(id, { fork, since: null, madeAt: null, recreatedAt: at, reportedAt: null });
-    this.log(id, actor, "fork.recreated", { fork, since: prep.since }, at, proved);
+    if (prep.recreatingUntil && Date.parse(prep.recreatingUntil) > now) return false;
+    if (forkPreparationView({ ...prep, since: prep.since }, this.item(id), now).action !== "recreate") return false;
+    this.saveForkPrep(id, { ...prep, recreatingUntil: new Date(now + FORK_RECREATE_LEASE_MS).toISOString() });
     return true;
+  }
+
+  // The delete is done: the repository is gone whoever holds the claim now, so
+  // the recreation is spent, the new repository's clock starts when it is made,
+  // and the fence is lifted.
+  forkRecreated(id: string, fork: string, actor: string, proved = false): void {
+    const at = new Date().toISOString();
+    const prep = this.forkPrep(id);
+    if (!prep || prep.fork !== fork) return;
+    this.saveForkPrep(id, { fork, since: null, madeAt: null, recreatedAt: at, reportedAt: null, recreatingUntil: null });
+    this.log(id, actor, "fork.recreated", { fork, since: prep.since }, at, proved);
+  }
+
+  // The delete failed: the repository stands as it was, with its age and its
+  // recreation unspent, and the fence is lifted, so the next claim tries again.
+  forkRecreateFailed(id: string, fork: string): void {
+    const prep = this.forkPrep(id);
+    if (!prep || prep.fork !== fork) return;
+    this.saveForkPrep(id, { ...prep, recreatingUntil: null });
   }
 
   // The forks being prepared, by item, as the views say them: only those
