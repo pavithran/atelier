@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -84,7 +84,12 @@ else process.stdout.write(answer);
 function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-adapters-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const ws = join(dir, "ws"), record = join(dir, "record.json"), fake = join(dir, "fake-harness");
+  // The mock clone lives outside every implicit temp root (/tmp, TMPDIR, the
+  // system temp folder), as the real one does under ~/Library/Caches, since a
+  // Codex review refuses a clone inside one (t140), whatever TMPDIR is.
+  const clones = mkdtempSync(join(homedir(), "atelier-adapters-clone-"));
+  t.after(() => rmSync(clones, { recursive: true, force: true }));
+  const ws = join(clones, "ws"), record = join(dir, "record.json"), fake = join(dir, "fake-harness");
   mkdirSync(ws);
   // A system temp folder of the run's own, apart from the clone (t140: a
   // Codex review refuses a clone inside the system temp folder).
@@ -104,7 +109,7 @@ function setup(t) {
   const store = join(dir, "store");
   mkdirSync(store);
   writeFileSync(join(store, "secrets.json"), JSON.stringify({ "deepseek.API_KEY": "DUMMY-deepseek", CF_AIG_TOKEN: "DUMMY-gateway" }), { mode: 0o600 });
-  return { dir, ws, tmp, record, fake, brief, diff, providers, store };
+  return { dir, clones, ws, tmp, record, fake, brief, diff, providers, store };
 }
 
 function run(harness, s, { model, review = false, plan = false, env: extraEnv = {}, timeout = 10_000, secretStore = "file" }) {
@@ -797,7 +802,7 @@ test("a codex review refuses a clone inside the system temp folder, the temp fol
   const b = review(s.tmp, s.tmp);
   assert.equal(b.status, 1, "the temp folder is the clone");
   assert.match(b.err, /is inside the temp folder/);
-  const clone = join(s.dir, "clone2");
+  const clone = join(s.clones, "clone2");
   mkdirSync(join(clone, "tmp"), { recursive: true });
   const c = review(clone, join(clone, "tmp"));
   assert.equal(c.status, 1, "TMPDIR names a folder in the clone");
@@ -831,7 +836,7 @@ test("a codex review refuses a clone inside /tmp, $TMPDIR or another implicit te
   mkdirSync(join(fakeTmp, "review-clone"));
   const a = review(join(fakeTmp, "review-clone"), { tempRoots: [fakeTmp] });
   assert.equal(a.status, 1);
-  assert.match(a.err, new RegExp(`inside the temp folder ${realpathSync(fakeTmp)}`));
+  assert.match(a.err, /inside the temp folder \//, "names the root it is inside (the stand-in, or /tmp when TMPDIR is /tmp)");
   assert.equal(review(fakeTmp, { tempRoots: [fakeTmp] }).status, 1, "the temp folder itself");
   // $TMPDIR of the environment, apart from the system temp folder.
   mkdirSync(join(envTmp, "clone"));
