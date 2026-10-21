@@ -34,11 +34,11 @@ const none = async () => null;
 
 const FORMATS: [string, string[], string[]][] = [
   ["node-spec.txt", ["node:test"], ["fails: the cap is enforced", "fails inside: names are read"]],
-  // Cut before its summary, the spec output lists every ✖ line, the failed suite among them.
-  ["node-spec-cut.txt", ["node:test"], ["fails: the cap is enforced", "fails inside: names are read", "a suite"]],
+  // Without its final summary, progress lines cannot establish outer failures.
+  ["node-spec-cut.txt", ["node:test"], []],
   ["tap.txt", ["tap"], ["fails: the cap is enforced", "fails inside: names are read", "a suite"]],
   ["vitest.txt", ["vitest"], ["test/sample.spec.ts > fails: the cap is enforced", "test/sample.spec.ts > a suite > fails inside: names are read"]],
-  ["vitest-tree-only.txt", ["vitest"], ["fails: the cap is enforced", "a suite > fails inside: names are read"]],
+  ["vitest-tree-only.txt", ["vitest"], []],
   ["jest.txt", ["jest"], ["cap › fails: the cap is enforced", "a suite › fails inside: names are read"]],
   ["pytest.txt", ["pytest"], ["tests/test_cap.py::test_cap_is_enforced", "tests/test_cap.py::test_names[are-read]", "tests/test_cap.py::test_fixture"]],
   ["go.txt", ["go test"], ["TestCapIsEnforced", "TestSuite", "TestSuite/names_are_read"]],
@@ -51,9 +51,10 @@ for (const [file, reporters, names] of FORMATS) test(`failing tests are read fro
   assert.ok(read, `${file} is recognised`);
   assert.deepEqual(read.reporters, reporters);
   assert.deepEqual(read.names, names);
-  assert.equal(read.note, null);
+  if (names.length) assert.equal(read.note, null);
+  else assert.match(read.note!, /unavailable/);
   const line = failingTestsLine(read);
-  assert.ok(line.startsWith(`failing tests (${reporters.join(", ")}): `), line);
+  if (names.length) assert.ok(line.startsWith(`failing tests (${reporters.join(", ")}): `), line);
   for (const name of names) assert.ok(line.includes(name), `${line} names ${name}`);
 });
 
@@ -84,7 +85,7 @@ test("one output can hold two reporters, as this project's npm test does, and co
   const both = failingTests(`${fixture("node-spec.txt")}\n${fixture("vitest.txt")}`)!;
   assert.deepEqual(both.reporters, ["node:test", "vitest"]);
   assert.deepEqual(both.names, ["fails: the cap is enforced", "fails inside: names are read", "test/sample.spec.ts > fails: the cap is enforced", "test/sample.spec.ts > a suite > fails inside: names are read"]);
-  const coloured = failingTests("\x1b[31m✖ \x1b[1mred test\x1b[0m (1.2ms)\x1b[0m\nℹ fail 1\n")!;
+  const coloured = failingTests("ℹ fail 1\n✖ failing tests:\n\x1b[31m✖ \x1b[1mred test\x1b[0m (1.2ms)\x1b[0m\n")!;
   assert.deepEqual(coloured.names, ["red test"]);
 });
 
@@ -101,16 +102,17 @@ test("the summary lists at most SUMMARY_TEST_NAMES names and counts the rest, or
 const VITEST_SUMMARY_ONLY = "\n Test Files  1 failed (1)\n      Tests  2 failed | 1 passed (3)\n   Start at  12:00:00\n   Duration  1.20s\n";
 
 test("a log kept as a tail says the names may have been cut with the rest, instead of concluding the check failed for another reason", async () => {
-  // Whole output: no FAIL line means no test is named, and the check failed for another reason.
+  // A summary without final diagnostics cannot establish failing names.
   const whole = failingTests(VITEST_SUMMARY_ONLY)!;
-  assert.deepEqual([whole.reporters, whole.names, whole.note], [["vitest"], [], null]);
-  assert.equal(failingTestsLine(whole), "failing tests: none named (the vitest output names no failing test, so the check failed for another reason)");
+  assert.deepEqual([whole.reporters, whole.names, whole.note], [["vitest"], [], "outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable"]);
+  assert.equal(failingTestsLine(whole), "failing tests: none named (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)");
   // The same lines at the end of a tail: the FAIL lines may be in the part cut.
-  assert.equal(failingTestsLine(whole, false), "failing tests: none named in the tail of the output that was kept (the vitest output in it names no failing test; the lines naming them may have been cut with the rest, or the check failed for another reason)");
+  assert.equal(failingTestsLine(whole, false), "failing tests: none named in the tail of the output that was kept (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)");
   assert.equal(failingTestsLine(null, false), "failing tests: names unavailable (no test reporter format this summary reads was recognised in the tail of the output that was kept; the lines naming them may have been cut with the rest)");
-  // Names found in a tail are listed, with the caveat that others may be cut.
+  // A stray FAIL line after the summary does not complete its diagnostics.
   const some = failingTests(`${VITEST_SUMMARY_ONLY} FAIL  test/sample.spec.ts > a suite > names are read\n`)!;
-  assert.equal(failingTestsLine(some, false), "failing tests (vitest, read from a tail of the output, so names cut with the rest are not listed): test/sample.spec.ts > a suite > names are read");
+  assert.deepEqual(some.names, []);
+  assert.match(failingTestsLine(some, false), /unavailable/);
   // A typecheck names no test whether or not its output was cut.
   assert.equal(failingTestsLine(failingTests(fixture("tsc.txt")), false), "failing tests: none named (the output holds 2 TypeScript errors, which name no test)");
   // As the summary reads it: an inline tail of a check run on a machine is a tail, a short inline output is whole.
@@ -120,8 +122,8 @@ test("a log kept as a tail says the names may have been cut with the rest, inste
     ev({ claim: "npm run typecheck", passed: false, outputTail: VITEST_SUMMARY_ONLY }),
   ], H1), none);
   assert.equal(cut.logRead.whole, false);
-  assert.ok(failureSummary("t1", H1, [cut]).includes("    failing tests: none named in the tail of the output that was kept (the vitest output in it names no failing test; the lines naming them may have been cut with the rest, or the check failed for another reason)\n    log: inline tail only"));
-  assert.ok(failureSummary("t1", H1, [wholeRun]).includes("    failing tests: none named (the vitest output names no failing test, so the check failed for another reason)\n    log: whole output, inline"));
+  assert.ok(failureSummary("t1", H1, [cut]).includes("    failing tests: none named in the tail of the output that was kept (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)\n    log: inline tail only"));
+  assert.ok(failureSummary("t1", H1, [wholeRun]).includes("    failing tests: none named (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)\n    log: whole output, inline"));
   // A stored log that was itself cut is a tail too.
   const capped = `${"x".repeat(LARGE_MAX - VITEST_SUMMARY_ONLY.length - 1)}\n${VITEST_SUMMARY_ONLY}`;
   const [stored] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, where: "sandbox", log: ref({ bytes: LARGE_MAX }), outputTail: "t" })], H1), async () => capped);
@@ -513,6 +515,9 @@ test("a failed run on a machine keeps the lines naming its failure beside a tail
     "ℹ tests 2",
     "ℹ pass 1",
     "ℹ fail 1",
+    "✖ failing tests:",
+    "✖ fails: the release waits for its review (2.3ms)",
+    "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
     " RUN  v3.2.4 /repo",
     " ✓ test/sample.spec.ts (1 test) 3ms",
     " Test Files  1 passed (1)",
@@ -527,9 +532,10 @@ test("a failed run on a machine keeps the lines naming its failure beside a tail
 
   const failureLines = collectFailureLines(output);
   assert.equal(failureLines, [
+    "ℹ fail 1",
+    "✖ failing tests:",
     "✖ fails: the release waits for its review (2.3ms)",
     "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
-    "ℹ fail 1",
   ].join("\n"));
 
   // What check-log prints first.
@@ -544,7 +550,7 @@ test("a failed run on a machine keeps the lines naming its failure beside a tail
   const summary = failureSummary("t1", H1, [f]);
   assert.ok(summary.includes("failing tests (node:test, read from the failure lines kept from the whole output and from its tail): fails: the release waits for its review"), summary);
   const lines = summary.split("\n");
-  const at = lines.findIndex((line) => line.includes("failure lines, read from the whole output: 3 lines:"));
+  const at = lines.findIndex((line) => line.includes("failure lines, read from the whole output: 4 lines:"));
   assert.ok(at > 0 && at < lines.findIndex((line) => line.includes("log: inline tail only")), summary);
   // Fitted to the landing's record, the failure lines give way after the
   // tail and before the names: the failing test is still named.
@@ -564,6 +570,7 @@ test("a failed run on a machine keeps the lines naming its failure beside a tail
 
 test("the failure lines are bounded in lines and characters, read vitest's and TAP's formats, and count what they leave out", () => {
   const vitest = collectFailureLines([
+    "⎯⎯ Failed Tests 1 ⎯⎯",
     " FAIL  test/a.spec.ts > a suite > it breaks",
     "AssertionError: expected 1 to be 2",
     " Test Files  1 failed | 3 passed (4)",
@@ -572,7 +579,8 @@ test("the failure lines are bounded in lines and characters, read vitest's and T
     "  error: 'boom'",
     "not ok 4 - skipped # SKIP later",
   ].join("\n"));
-  assert.equal(vitest.split("\n").length, 6);
+  assert.equal(vitest.split("\n").length, 5);
+  assert.ok(!vitest.includes("a tap test"), "fixture output after a complete outer report is not another failure");
   assert.ok(!vitest.includes("SKIP"));
   const many = collectFailureLines(Array.from({ length: 500 }, (_, i) => `not ok ${i} - test ${i} ${"x".repeat(150)}`).join("\n"));
   const kept = many.split("\n");
@@ -580,4 +588,30 @@ test("the failure lines are bounded in lines and characters, read vitest's and T
   assert.match(kept.at(-1)!, /^\[atelier\] and \d+ more failure lines not kept$/);
   assert.equal(collectFailureLines("all fine\nℹ fail 0"), "");
   assert.equal(collectFailureLines("# tests 3\n# pass 3\n# fail 0"), "");
+});
+
+
+test("t176 final reports exclude fixture errors but retain real nested failures", () => {
+  const real = fixture("node-spec.txt").replaceAll("fails: the cap is enforced", "real top failure").replaceAll("fails inside: names are read", "real nested failure");
+  const output = `${fixture("vitest.txt")}\n${fixture("node-spec.txt")}\n✔ fixture assertions pass (1ms)\n${real}`;
+  assert.deepEqual(failingTests(output)?.names, ["real top failure", "real nested failure"]);
+  const kept = collectFailureLines(output);
+  assert.ok(kept.includes("real nested failure"));
+  assert.ok(!kept.includes("sample.spec.ts") && !kept.includes("cap is enforced"));
+  assert.deepEqual(failingTests(kept)?.names, ["real top failure", "real nested failure"]);
+  const vite = fixture("vitest.txt").replaceAll("sample.spec.ts", "real.spec.ts");
+  const withVite = `${fixture("vitest.txt")}\n${fixture("node-spec.txt")}\n${vite}`;
+  assert.deepEqual(failingTests(withVite)?.names, ["fails: the cap is enforced", "fails inside: names are read", "test/real.spec.ts > fails: the cap is enforced", "test/real.spec.ts > a suite > fails inside: names are read"]);
+});
+
+test("t176 missing, conflicting and cancelled diagnostics never guess fixture names", () => {
+  for (const output of [fixture("node-spec-cut.txt"), fixture("vitest-tree-only.txt"), fixture("node-spec.txt").replace("ℹ fail 2", "ℹ fail 3"), fixture("node-spec.txt").replace("ℹ cancelled 0", "ℹ cancelled 1"), fixture("vitest.txt").replace("Tests  2 failed", "Tests  3 failed")]) {
+    assert.deepEqual(failingTests(output)?.names, []);
+    assert.match(failingTests(output)?.note ?? "", /unavailable/);
+    assert.equal(collectFailureLines(output), "");
+  }
+  const passing = `${fixture("vitest.txt")}\n${fixture("node-spec.txt")}\n✔ fixture pass (1ms)\nℹ tests 1\nℹ fail 0\nℹ cancelled 0`;
+  assert.deepEqual(failingTests(passing)?.names, []);
+  assert.equal(collectFailureLines(passing), "");
+  assert.deepEqual(failingTests(fixture("tap.txt"))?.names, ["fails: the cap is enforced", "fails inside: names are read", "a suite"]);
 });

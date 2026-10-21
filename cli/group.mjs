@@ -73,12 +73,14 @@ function untrack(pid) {
 //
 // Resolves { status, signal, stdout, stderr, error, timedOut }; `error` is
 // set when the command could not start, ran past its time or overran its
-// output, and the output then keeps its last half of `maxBytes`.
-export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, onData, stdio = "pipe" } = {}) {
+// output. Each stream then keeps its last half of maxBytes characters.
+// captureOrder additionally returns output in arrival order, capped to the
+// last maxBytes characters on overflow, under the same byte-counted stop.
+export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, onData, captureOrder = false, stdio = "pipe" } = {}) {
   return new Promise((done) => {
     const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ["ignore", stdio, stdio] });
     const pid = child.pid;
-    let stdout = "", stderr = "", error, timedOut = false, bytes = 0, closed, ending = false, ended = !pid;
+    let stdout = "", stderr = "", output = "", error, timedOut = false, bytes = 0, closed, ending = false, ended = !pid;
     const left = () => { try { process.kill(-pid, 0); return true; } catch { return false; } };
     const onExit = () => killTree(pid);
     if (pid) { process.on("exit", onExit); track(pid); onSpawn?.(pid); }
@@ -88,7 +90,7 @@ export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes =
       untrack(pid);
       clearTimeout(deadline);
       signal?.removeEventListener("abort", onAbort);
-      done({ ...closed, stdout, stderr, timedOut, error: error ?? (closed.signal ? new Error(`terminated by ${closed.signal}`) : undefined) });
+      done({ ...closed, stdout, stderr, ...(captureOrder ? { output } : {}), timedOut, error: error ?? (closed.signal ? new Error(`terminated by ${closed.signal}`) : undefined) });
     };
     function end() {
       if (ending || ended) return;
@@ -113,12 +115,14 @@ export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes =
       if (onData) return onData(key, chunk);
       if (error) return;
       bytes += Buffer.byteLength(chunk);
+      if (captureOrder) output += chunk;
       if (key === "stdout") stdout += chunk; else stderr += chunk;
       if (bytes > maxBytes) {
         error = new Error(`output exceeds ${Math.round(maxBytes / (1024 * 1024))} MiB`);
         end();
         stdout = stdout.slice(-maxBytes / 2);
         stderr = stderr.slice(-maxBytes / 2);
+        if (captureOrder) output = output.slice(-maxBytes);
       }
     };
     child.stdout?.setEncoding("utf8").on("data", (s) => append("stdout", s));

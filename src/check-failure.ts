@@ -296,8 +296,51 @@ const FAIL_COUNT = /^\s*(?:ℹ fail [1-9]\d*\b|# fail [1-9]\d*\b|Test Files\b.*\
 const ASSERTION = /\b(?:AssertionError|[A-Z]\w*Error)\b|^\s*(?:error|expected|actual|Expected|Received):/;
 const SKIPPED = /^\s*not ok \d+.*# (?:SKIP|TODO)\b/i;
 
+// t176: progress and captured stdout can contain whole failing fixtures.
+// Prefer the last completed outer report. A transcript cannot authenticate
+// an unframed fixture that copies that final report; uncertain counts name none.
+function outerReports(lines: string[]): { lines: string[]; reporters: string[]; uncertain: boolean } | null {
+  const last = (pattern: RegExp) => lines.findLastIndex((line) => pattern.test(line));
+  const nodeCount = last(/^ℹ fail \d+\s*$/);
+  const viteCount = last(/^\s{2,}Tests\s{2,}.*\d+ (?:failed|passed|skipped)/);
+  const viteRun = last(/^ RUN  /);
+  const nodeSeen = nodeCount >= 0 || lines.some((line) => /^✖ failing tests:|^ℹ tests \d+|^[✔✖] .+ \(\d/.test(line));
+  const viteSeen = viteCount >= 0 || lines.some((line) => /^ RUN  |^ Test Files |^ FAIL {2}|^ ❯ \S+ \(\d+ tests?/.test(line));
+  if (!nodeSeen && !viteSeen) return null;
+  const selected: string[] = [], reporters: string[] = [];
+  let uncertain = false;
+  // A Node summary printed inside a later-running Vitest suite is fixture output.
+  if (nodeSeen && !(viteRun >= 0 && viteRun < nodeCount && nodeCount < viteCount)) {
+    reporters.push("node:test");
+    const count = nodeCount < 0 ? NaN : Number(lines[nodeCount].match(/\d+/)![0]);
+    const marker = last(/^✖ failing tests:\s*$/);
+    const end = viteRun > nodeCount ? viteRun : lines.length;
+    const diagnostics = marker > nodeCount && marker < end ? lines.slice(marker + 1, end) : [];
+    const named = diagnostics.filter((line) => /^✖ .+ \(\d[\d.]*m?s\)\s*$/.test(line));
+    const cancelled = lines.slice(nodeCount + 1, marker > nodeCount ? marker : end).some((line) => /^ℹ cancelled [1-9]/.test(line));
+    if (count === 0 && !cancelled) selected.push(lines[nodeCount]);
+    else if (count > 0 && named.length === count && !cancelled) selected.push(lines[nodeCount], "✖ failing tests:", ...diagnostics);
+    else uncertain = true;
+  }
+  // The final Node summary supersedes a Vitest fixture printed by a Node test.
+  if (viteSeen && !(nodeCount > viteCount && viteRun < nodeCount)) {
+    reporters.push("vitest");
+    const count = viteCount < 0 ? NaN : Number(lines[viteCount].match(/(\d+) failed/)?.[1] ?? 0);
+    const marker = last(/^[⎯─-]+ Failed Tests \d+ [⎯─-]+\s*$/);
+    const diagnostics = marker >= 0 && marker < viteCount && marker > viteRun ? lines.slice(marker + 1, viteCount) : [];
+    const named = diagnostics.filter((line) => /^ FAIL {2}(?:\|[^|]+\| )?\S+ > .+/.test(line));
+    const declared = marker < 0 ? NaN : Number(lines[marker].match(/Failed Tests (\d+)/)![1]);
+    if (count === 0) selected.push(lines[viteCount]);
+    else if (count > 0 && named.length === count && declared === count) selected.push(lines[marker], ...diagnostics, lines[viteCount]);
+    else uncertain = true;
+  }
+  return { lines: selected, reporters, uncertain };
+}
+
 export function collectFailureLines(output: string): string {
-  const all = plainLines(output).map((line) => line.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").trimEnd());
+  const raw = plainLines(output);
+  const outer = outerReports(raw);
+  const all = (outer?.lines ?? raw).map((line) => line.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").trimEnd());
   const picked: string[] = [];
   const seen = new Set<string>();
   const take = (line: string) => {
@@ -306,6 +349,7 @@ export function collectFailureLines(output: string): string {
   };
   for (let i = 0; i < all.length; i++) {
     const line = all[i];
+    if (/^✖ failing tests:|^[⎯─-]+ Failed Tests /.test(line)) { take(line); continue; }
     if (FAIL_COUNT.test(line)) { take(line); continue; }
     if (!FAILED_TEST.test(line) || SKIPPED.test(line)) continue;
     take(line);
@@ -422,17 +466,19 @@ export const plainLines = (text: string): string[] => text.replace(ANSI, "").spl
 // check can run more than one suite (this project's `npm test` runs
 // node:test and then vitest).
 export function failingTests(output: string): FailingTests | null {
-  const lines = plainLines(output);
-  const reporters: string[] = [], names: string[] = [], notes: string[] = [];
+  const raw = plainLines(output);
+  const outer = outerReports(raw);
+  const lines = outer?.lines ?? raw;
+  const reporters: string[] = outer?.reporters.slice() ?? [], names: string[] = [], notes: string[] = [];
   for (const r of REPORTERS) {
     if (!r.recognised.test(lines.join("\n"))) continue;
-    reporters.push(r.name);
+    if (!reporters.includes(r.name)) reporters.push(r.name);
     const found = r.names(lines);
     for (const name of found) if (!names.includes(name)) names.push(name);
     if (!found.length && r.note) { const n = r.note(lines); if (n) notes.push(n); }
   }
   if (!reporters.length) return null;
-  return { reporters, names, note: names.length || !notes.length ? null : notes.join("; ") };
+  return { reporters, names, note: outer?.uncertain ? "outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable" : names.length || !notes.length ? null : notes.join("; ") };
 }
 
 // What the summary says of the failing tests, in one line. `whole` says
@@ -447,7 +493,7 @@ export function failingTestsLine(tests: FailingTests | null, whole = true, names
       : "failing tests: names unavailable (no test reporter format this summary reads was recognised in the tail of the output that was kept; the lines naming them may have been cut with the rest)";
   }
   if (!tests.names.length) {
-    if (tests.note) return `failing tests: none named (${tests.note})`;
+    if (tests.note) return `failing tests: none named${whole || !tests.note.includes("unavailable") ? "" : " in the tail of the output that was kept"} (${tests.note})`;
     const reporters = tests.reporters.join(" and ");
     return whole
       ? `failing tests: none named (the ${reporters} output names no failing test, so the check failed for another reason)`
@@ -472,7 +518,7 @@ export async function resolveFailures(failures: CheckFailure[], read: LogReader)
     const logRead = await readCheckLog({ outputTail: f.outputTail, log: f.log ?? undefined, where: f.where, failureLines: f.failureLines }, read);
     // The failure lines read from the whole output come first: they name
     // the tests a tail of the output may have lost.
-    out.push({ ...f, logRead, tests: failingTests(logRead.failureLines ? `${logRead.failureLines.join("\n")}\n${logRead.text}` : logRead.text) });
+    out.push({ ...f, logRead, tests: failingTests(logRead.failureLines ? logRead.failureLines.join("\n") : logRead.text) });
   }
   return out;
 }

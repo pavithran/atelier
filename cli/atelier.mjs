@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { saveFailedOutput } from "./check-output.mjs";
 // atelier — the command agents and the project owner run. No dependencies: Node and git.
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
@@ -1386,10 +1387,13 @@ export async function mergeWithMain(dir, id, name = "") {
 export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${redact(cmd, secrets)}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
-  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
+  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, captureOrder: true, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
-  const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
-  return { passed: r.status === 0 && !r.error, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
+  const output = redact(`${r.output ?? `${r.stdout}${r.stderr}`}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
+  const passed = r.status === 0 && !r.error;
+  const logPath = passed ? undefined : saveFailedOutput(CACHE, output);
+  if (logPath) process.stderr.write(`atelier: full redacted failed-check log: ${logPath}\n`);
+  return { passed, logPath, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
 // One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
@@ -1398,11 +1402,11 @@ export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
 // the check's group, so each ends this process, and runGroup ends the group
 // on the way out; a slot whose wrapper died that way is reclaimed at the
 // next admission or status read.
-export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes }) {
+export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes, captureOrder }) {
   const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
   process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
   const invocation = slotInvocation(["/bin/sh", "-c", cmd], metadata, env);
-  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
+  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn, captureOrder }); }
   finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
 }
 
