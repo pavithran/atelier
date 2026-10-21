@@ -1,0 +1,59 @@
+atelier atelier/t182 "Atelier ship omits deployed source binding"
+accepted head ce329a5ec2f91904059b7f5efd2c798660cb5343
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6.1-sol 2026-10-21T22:07:00.935Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6.1-sol 2026-10-21T22:07:05.863Z
+REVIEW approve by claude-code/opus-5.5 at ce329a5ec2f91904059b7f5efd2c798660cb5343, recorded by pavi with the developer's token, answering a claimed review request
+REVIEW approve by antigravity/gemini-4-argon at ce329a5ec2f91904059b7f5efd2c798660cb5343, recorded by pavi with the developer's token, answering a claimed review request
+CHECKED TREE 996683ad044af10fb0d1a7b76f079bc330178180: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-21T17:42:35.812Z codex/gpt-6.1-sol item.created
+2026-10-21T17:42:35.812Z codex/gpt-6.1-sol criteria.revised
+2026-10-21T21:08:38.500Z pavi item.context
+2026-10-21T21:08:38.500Z pavi item.edited
+2026-10-21T21:08:38.500Z pavi criteria.revised
+2026-10-21T21:08:38.500Z pavi item.criteria_changed
+2026-10-21T21:08:39.783Z pavi criteria_review.requested
+2026-10-21T21:08:40.679Z claude-code/opus-5.5 criteria_review.claimed
+2026-10-21T21:09:54.504Z claude-code/opus-5.5 criteria_review.approved
+2026-10-21T21:10:32.519Z pavi item.context
+2026-10-21T21:10:33.277Z pavi criteria_review.finding
+2026-10-21T21:10:33.933Z pavi criteria_review.finding
+2026-10-21T21:10:35.207Z codex/gpt-6.1-sol item.claimed
+2026-10-21T21:11:08.985Z codex/gpt-6.1-sol fork.created
+2026-10-21T21:16:09.433Z codex/gpt-6.1-sol push.observed
+2026-10-21T21:18:41.983Z codex/gpt-6.1-sol push.observed
+2026-10-21T21:19:03.258Z pavi land.merge
+2026-10-21T21:19:04.460Z pavi land.regenerate
+2026-10-21T21:19:06.811Z pavi land.push
+2026-10-21T21:48:33.665Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T21:48:34.263Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T21:48:37.948Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T21:48:39.016Z pavi land.check
+2026-10-21T21:48:39.534Z codex/gpt-6.1-sol item.submitted
+2026-10-21T21:48:39.810Z pavi land.submit
+2026-10-21T21:48:40.160Z pavi review.requested
+2026-10-21T21:48:40.160Z pavi review.requested
+2026-10-21T21:50:20.955Z claude-code/opus-5.5 review.claimed
+2026-10-21T21:50:23.075Z atelier/orchestrator refresh.queued
+2026-10-21T21:50:45.403Z claude-code/opus-5.5 review.approved
+2026-10-21T21:50:46.700Z pavi land.review
+2026-10-21T21:51:16.687Z pavi review.requested
+2026-10-21T21:53:40.784Z antigravity/gemini-4-argon review.claimed
+2026-10-21T21:54:27.528Z antigravity/gemini-4-argon review.approved
+2026-10-21T21:55:44.016Z pavi land.merge
+2026-10-21T21:55:45.294Z pavi land.regenerate
+2026-10-21T21:55:50.517Z atelier/orchestrator review.withdrawn
+2026-10-21T21:55:50.517Z codex/gpt-6.1-sol push.observed
+2026-10-21T21:55:50.517Z atelier/orchestrator review.retained
+2026-10-21T21:55:50.517Z atelier/orchestrator review.retained
+2026-10-21T21:55:51.383Z pavi land.push
+2026-10-21T22:07:02.407Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T22:07:06.319Z codex/gpt-6.1-sol evidence.observed
+2026-10-21T22:07:07.496Z pavi land.check
+2026-10-21T22:07:07.968Z codex/gpt-6.1-sol item.submitted
+2026-10-21T22:07:08.278Z pavi land.submit
+2026-10-21T22:07:08.503Z pavi land.review
+2026-10-21T22:07:08.869Z pavi land.lease
+2026-10-21T22:07:11.394Z pavi item.accepted
+2026-10-21T22:07:11.607Z pavi land.accept
