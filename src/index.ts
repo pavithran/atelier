@@ -14,7 +14,7 @@ import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mer
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -1036,6 +1036,65 @@ async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item,
   return true;
 }
 
+// A task's fork: made from `from` under the item's name, or taken when an
+// earlier attempt made it (t349), and its head read, which waits for a fork
+// Artifacts is still preparing. Only an earlier attempt's fork is taken: a
+// repository made for anything else under this name is refused before any
+// token is made for it (the reviews of t641). A fork this call made is
+// recorded as made by Atelier, which is what lets a stuck one be made again
+// (readyTaskFork).
+type TaskFork = { id: string; name: string; from: string; project: string; names: string[]; actor: string; generation: number; proved: boolean };
+async function prepareTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork): Promise<string | null> {
+  const made = await artifactsStep(`fork ${t.from} as ${t.name}`, async () => {
+    using base = await env.ARTIFACTS.get(t.from);
+    await base.fork(t.name, { description: taskForkMark(t.name), defaultBranchOnly: true });
+    return true;
+  }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
+    if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
+    return false;
+  });
+  if (made) await L.forkMade(t.id, t.name, t.actor, t.generation);
+  else await assertMadeAs(env, t.name, (d) => madeAsTaskFork(d, t.name, t.names, t.id), `${t.project} ${t.id}'s fork`);
+  return headOf(env, t.name);
+}
+
+// The answer for a fork still being prepared, with how long it has been and
+// what happens next.
+function forkNotReady(t: TaskFork, view: ForkPreparationView): RuleError {
+  return new RuleError("not_ready", `${t.name} is still being prepared (${forkAgeText(view.ageMs)} so far). ${view.next}`, 503);
+}
+
+// prepareTaskFork, and what to do when the fork does not become ready within
+// the request (t18, from 2026-10-11, when every claim of one task for half an
+// hour answered not_ready and nothing told the developer the fork was stuck).
+// The first not_ready is remembered by the Ledger across retries and releases.
+// After FORK_STUCK_MS the fork is deleted and made again, once, only when
+// Atelier made it and no commit of the task can be in it; any other fork is
+// kept, and recorded as stuck with the remedy. A claim that is no longer
+// held when the answer comes records nothing.
+async function readyTaskFork(env: Env, L: ReturnType<typeof ledger>, t: TaskFork): Promise<string | null> {
+  const stuck = async (err: unknown): Promise<ForkPreparationView> => {
+    if (parseRuleError(err)?.code !== "not_ready") throw err;
+    const view = await L.forkNotReady(t.id, t.name, t.actor, t.generation, t.proved);
+    if (!view) throw err;
+    return view;
+  };
+  try {
+    return await prepareTaskFork(env, L, t);
+  } catch (err) {
+    const view = await stuck(err);
+    if (view.action !== "recreate" || !await L.forkRecreating(t.id, t.name, t.actor, t.generation, t.proved)) throw forkNotReady(t, view);
+    await artifactsStep(`delete ${t.name}`, async () => { await env.ARTIFACTS.delete(t.name); }, (e) => NOT_FOUND.test(codeOf(e))).catch((e) => {
+      if (!NOT_FOUND.test(codeOf(e))) throw e;
+    });
+    try {
+      return await prepareTaskFork(env, L, t);
+    } catch (again) {
+      throw forkNotReady(t, await stuck(again));
+    }
+  }
+}
+
 // Main's head as the baseline holds it now, for the Ledger, which cannot read
 // Artifacts; null when the baseline cannot be read, so a view still renders.
 async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<string | null> {
@@ -1997,7 +2056,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
     return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields), 201);
   }
-  if (parts.length === 3 && m === "GET") return json(await L.items());
+  if (parts.length === 3 && m === "GET") {
+    // A task whose fork is still being prepared says so (t18); the other rows are as they were.
+    const [items, preparing] = await Promise.all([L.items(), L.forkPreparations()]);
+    return json(items.map((i) => (preparing[i.id] ? { ...i, preparing: preparing[i.id] } : i)));
+  }
 
   const id = parts[3];
   const verb = parts[4];
@@ -2097,20 +2160,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
             // A fork already there under the item's name is one an earlier
             // attempt made, in this call or in a claim that failed after it
             // (t349): no fork is recorded for the item, so no token was ever
-            // made for it, and it is taken as this claim's fork.
-            const made = await artifactsStep(`fork ${from} as ${name}`, async () => {
-              using base = await env.ARTIFACTS.get(from);
-              await base.fork(name, { description: taskForkMark(name), defaultBranchOnly: true });
-              return true;
-            }, (err) => ALREADY_EXISTS.test(codeOf(err))).catch((err) => {
-              if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
-              return false;
-            });
-            // Only an earlier attempt's fork is taken: a repository made for
-            // anything else under this name is refused before any token is
-            // made for it (the reviews of t641).
-            if (!made) await assertMadeAs(env, name, (d) => madeAsTaskFork(d, name, [...new Set([p.name, ...ref.names])], id), `${p.name} ${id}'s fork`);
-            const head = await headOf(env, name);
+            // made for it, and it is taken as this claim's fork. One that stays
+            // unready is remade once, or reported (t18).
+            const head = await readyTaskFork(env, L, { id, name, from, project: p.name, names: [...new Set([p.name, ...ref.names])], actor, generation, proved: !!c.token });
             await L.setFork(id, name, head, actor, !!c.token, generation);
           } catch (err) {
             // A give-up that fails is logged, and the claim's own failure is

@@ -2204,6 +2204,51 @@ export function assertBaselineName(repo: string): void {
 // made for any other purpose is refused (the reviews of t641).
 export const baselineMark = (project: string) => `Atelier baseline for ${project}`;
 export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
+
+// A task fork that Artifacts is still preparing (t18). Each claim waits a
+// few seconds for the fork and then answers not_ready, and a failed claim
+// gives the item back, so nothing in the claim remembers how long the fork
+// has been stuck. The Ledger keeps the record below per item, outside the
+// claim, from the first not_ready answer until the fork is recorded.
+//   since:       the first not_ready answer for the repository as it stands;
+//   madeAt:      this server's own fork call made the repository, which is the
+//                only proof it holds no task commit: nothing could be pushed
+//                to it, since no token is minted before the fork is recorded;
+//   recreatedAt: the repository was deleted and made again, which is done
+//                once per item;
+//   reportedAt:  the stuck fork was recorded as an event.
+export const FORK_STUCK_MS = 10 * 60_000;
+
+export type ForkPreparation = { fork: string; since: string | null; madeAt: string | null; recreatedAt: string | null; reportedAt: string | null };
+export type ForkPreparationView = { fork: string; since: string; ageMs: number; action: "wait" | "recreate" | "keep"; next: string; recreatedAt: string | null };
+
+export function forkAgeText(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  return minutes < 1 ? "less than a minute" : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+
+// What to do with a fork that has not become ready. A fork is recreated only
+// when it is proven to hold no task commit: this server made it, and the item
+// records no fork and no head. A repository found already there, a fork whose
+// answer was lost, and a head that could not be read are not proof, so the
+// fork is kept and the developer is told the remedy. When in doubt the fork
+// is kept and the claim is tried again.
+export function forkPreparationView(prep: ForkPreparation & { since: string }, item: { id: string; fork?: string | null; head?: string | null }, now: number): ForkPreparationView {
+  const ageMs = Math.max(0, now - Date.parse(prep.since));
+  const base = { fork: prep.fork, since: prep.since, ageMs, recreatedAt: prep.recreatedAt };
+  const minutes = FORK_STUCK_MS / 60_000;
+  if (ageMs < FORK_STUCK_MS) {
+    return { ...base, action: "wait", next: `Atelier tries the fork again on each claim: claim ${item.id} again in a few minutes. After ${minutes} minutes without a ready fork, Atelier makes it again when it holds none of the task's commits.` };
+  }
+  const remedy = `The developer can delete the Artifacts repository ${prep.fork} and claim ${item.id} again; Atelier then makes a new fork.`;
+  if (prep.recreatedAt) {
+    return { ...base, action: "keep", next: `${prep.fork} was made again once and is still not ready, so Atelier keeps it. ${remedy}` };
+  }
+  if (!prep.madeAt || item.fork || item.head) {
+    return { ...base, action: "keep", next: `Atelier cannot show that ${prep.fork} holds none of the task's commits, so it keeps the repository. The developer should check it first. ${remedy}` };
+  }
+  return { ...base, action: "recreate", next: `${prep.fork} holds none of the task's commits, so Atelier makes it again.` };
+}
 export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
 const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 export function developerBranch(name: unknown, defaultBranch = "main"): string {

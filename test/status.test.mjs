@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { familyModeText, formatRunners, formatStatus, isLive, runnerLine, singleFamilyLine, statusJson } from "../cli/status.mjs";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
+import { forkAgeText } from "../src/rules.ts";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
 const entry = (itemId, kind, over = {}) => ({ project: "demo", itemId, title: `Task ${itemId}`, kind, reason: `because ${kind}`, weight: 1, ...over });
@@ -557,4 +558,25 @@ test("a held task names every blocker and when each stops holding, claimed or la
   assert.equal(line([landing("t5")]), `      Held: waits on t5 (accepted by claude-code/opus-5.5): ${reach}; offered once the landing of t5 ends${override}`);
   assert.equal(line([claimed("t1"), claimed("t3")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released and t3 submits or is released${override}`);
   assert.equal(line([claimed("t1"), claimed("t3"), landing("t5")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; t5 (accepted by claude-code/opus-5.5): ${reach}; offered once t1 submits or is released, t3 submits or is released and the landing of t5 ends${override}`);
+});
+
+// t18 (the finding of 2026-10-11, t496: a fork stuck in preparing, and nothing
+// told the developer): status lists a task whose fork is not ready with how
+// long it has waited and what happens next; the JSON carries it; a task with
+// no such fork has neither.
+const preparing = { fork: "demo--t4", since: "2026-10-20T12:00:00.000Z", ageMs: 12 * 60_000, action: "keep", next: "Atelier keeps it. The developer can delete the Artifacts repository demo--t4 and claim t4 again.", recreatedAt: null };
+
+test("status names a fork still being prepared, its age and the next action", () => {
+  const view = { name: "demo", title: "Demo", items: [item("t4", "open", { preparing }), item("t5", "open")], inbox: [] };
+  const lines = formatStatus([view]).split("\n");
+  assert.ok(lines.includes("  Waiting for a fork"), lines.join("\n"));
+  assert.ok(lines.includes(`    t4  demo--t4 has been preparing for ${forkAgeText(preparing.ageMs)}. ${preparing.next}`), lines.join("\n"));
+  assert.ok(!lines.some((l) => l.startsWith("    t5  ") && l.includes("preparing")));
+  assert.ok(!formatStatus([{ ...view, items: [item("t5", "open")] }]).includes("Waiting for a fork"));
+});
+
+test("status --json carries the preparation only on the task that has one", () => {
+  const [project] = statusJson([{ name: "demo", items: [item("t4", "open", { preparing }), item("t5", "open")], inbox: [] }]);
+  assert.deepEqual(project.items.find((i) => i.id === "t4").preparing, preparing);
+  assert.ok(!("preparing" in project.items.find((i) => i.id === "t5")));
 });
