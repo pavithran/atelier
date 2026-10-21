@@ -397,3 +397,20 @@ test("a part's own criteria and the plan's are numbered as one list, so a check 
   assert.ok(format.includes("Criterion 3 was flagged"));
   assert.equal(parseVerdict("VERDICT: APPROVE\nSUMMARY: Fine.\nCRITERION 1: met — Ran it.\nCRITERION 2: met — Ran it.\nCRITERION 3: deferred — The timing is checked after deploy.", 3, { deferred: [3] }).ok, true);
 });
+
+// t152 review (gemini-4-argon): the pick once judged the assessor role; asked
+// as the default executor it passed a model whose admission was withdrawn, and
+// the claim then refused it. Would have caught: a criteria review dispatched
+// to a withdrawn reviewer.
+test("pickCriteriaReviewer passes over a model whose reviewer admission was withdrawn, with no agents in the policy, and picks the next", () => {
+  const wrote = pickCriteriaReviewer({ authors: ["owner"], pool: POOL, policy });
+  const first = wrote.reviewer!.actor;
+  const withdrawn = { id: first.split("/")[1], aliases: [], by: "owner", reason: "retired", at: T, active: false };
+  const held = pickCriteriaReviewer({ authors: ["owner"], pool: POOL, policy: { ...policy, reviewerAdmissions: [withdrawn] } });
+  assert.ok(held.reviewer, "the next qualifying model is picked");
+  assert.notEqual(held.reviewer!.actor, first);
+  assert.ok(held.passedOver.some((c) => c.actor === first && c.reasons.some((r) => /admission was withdrawn/.test(r))), JSON.stringify(held.passedOver));
+  // Single-family mode is said once, by the independence rule.
+  const single = pickCriteriaReviewer({ authors: ["owner"], pool: POOL, policy: { ...policy, familyMode: { single: "anthropic", by: "owner", at: T } } });
+  for (const c of single.passedOver) assert.equal(c.reasons.filter((r) => /single-family/.test(r)).length <= 1, true, JSON.stringify(c));
+});

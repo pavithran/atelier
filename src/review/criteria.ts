@@ -255,12 +255,13 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
 
 function eligibility(actor: string, policy: ProjectPolicy, owner: string): string | null {
   try {
-    assertEligible(actor, policy, owner);
+    assertEligible(actor, policy, owner, "assessor");
     return null;
   } catch (err) {
     const rule = parseRuleError(err);
     if (!rule) throw err;
-    return rule.detail;
+    // Single-family mode is said by criteriaIndependenceRefusal.
+    return rule.code === "single_family" ? null : rule.detail;
   }
 }
 
