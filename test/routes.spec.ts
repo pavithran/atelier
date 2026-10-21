@@ -1708,6 +1708,51 @@ it("the removed area routes and the area field answer 410, and the board keeps i
   expect(board.items.map((i) => i.id)).toEqual([plain.id]);
 });
 
+// A ledger as ControlPlane left it: roles, change classes, an eligible list,
+// an adapter check declaration and an approval in the stored policy, with a
+// task submitted at a head whose evidence names the paths it changed.
+async function seedLegacy(name: string) {
+  const agents = { claude: { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: false, eligible_roles: ["assessor"] } };
+  const execution = { allowed_classes: ["coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };
+  const policy = {
+    checks: ["npm test", "bin/verify.sh"], protected: ["AGENTS.md", "security/**"], eligible: ["claude"], refuseOverlap: true, agents, execution,
+    checkClasses: [{ command: "bin/verify.sh", by: "adapter", note: "capability verify is local-read-only" }],
+    approval: "PAVI, 2026-10-01: approved the copy",
+  };
+  const record = { name, repo: name, policy, createdAt: "2026-10-01T00:00:00.000Z" } as never;
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const agent = "claude-code/opus-5.5", head = "a".repeat(40);
+  await L.newItem("Edit a doc", ["docs/**"], "owner");
+  await L.claim("t1", agent);
+  await L.setFork("t1", `${name}--t1`, "0".repeat(40), agent);
+  await L.recordPush("t1", agent, head, head);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: agent, at: new Date().toISOString(), changedPaths: ["docs/a.md"], where: "sandbox" } as never);
+  await L.submit("t1", agent, "Did the work");
+  return { name, agents, execution, policy, L };
+}
+
+it("the settings, project and task pages render a legacy ledger's historical policy without throwing", async () => {
+  const { name } = await seedLegacy("legacy-pages");
+  const signedIn = await signIn(TOKEN, testEnv);
+  const page = async (path: string) => {
+    const res = await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), testEnv);
+    expect(res.status, path).toBe(200);
+    return res.text();
+  };
+  const settings = await page(`/p/${name}/settings`);
+  expect(settings).toContain("ControlPlane policy, approved: PAVI, 2026-10-01: approved the copy");
+  expect(settings).toContain("Eligible agents: claude");
+  expect(settings).toContain("security/**");
+  expect(settings).toContain("capability verify is local-read-only");
+  expect(settings).toContain("Refused"); // the overlap rule
+  expect(await page(`/p/${name}`)).toContain("Edit a doc");
+  // The task page reads the legacy execution policy to class the change.
+  const task = await page(`/p/${name}/t1`);
+  expect(task).toContain("Edit a doc");
+});
+
 // ControlPlane retirement, slice 1 (t149). A ledger written while ControlPlane
 // governed the project holds roles, change classes and an eligible list in its
 // stored policy, and a project.set event carrying them. Before t149 an init
@@ -1715,16 +1760,7 @@ it("the removed area routes and the area field answer 410, and the board keeps i
 // files) replaced them; now the record is kept, and everything else in the
 // same request still applies.
 it("a legacy ledger loads, renders and takes an unrelated update that keeps its historical policy and events", async () => {
-  const name = "legacy-governed";
-  const agents = { "claude-code": { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: false, eligible_roles: ["assessor"] } };
-  const execution = { allowed_classes: ["coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };
-  const policy = { checks: ["npm test"], protected: ["AGENTS.md", "security/**"], eligible: ["claude-code"], refuseOverlap: true, agents, execution, approval: "PAVI, 2026-10-01: approved the copy" };
-  const record = { name, repo: name, policy, createdAt: "2026-10-01T00:00:00.000Z" } as never;
-  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  await L.setProject(record, "owner");
-  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
-  await L.newItem("Edit a doc", ["docs/**"], "owner");
-
+  const { name, agents, execution, policy } = await seedLegacy("legacy-governed");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
     method: "PUT",
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
@@ -1733,7 +1769,7 @@ it("a legacy ledger loads, renders and takes an unrelated update that keeps its 
   const read = async (path: string) => { const res = await call("GET", path, "owner"); expect(res.status, path).toBe(200); return res.json() as Promise<Record<string, any>>; };
 
   // Loads and renders.
-  expect((await read(`/projects/${name}`)).project.policy).toMatchObject({ agents, execution, eligible: ["claude-code"], refuseOverlap: true });
+  expect((await read(`/projects/${name}`)).project.policy).toMatchObject({ agents, execution, eligible: ["claude"], refuseOverlap: true });
   expect((await read(`/projects/${name}/standing`)).project.name).toBe(name);
   expect((await read(`/projects/${name}/items/t1`)).item.id).toBe("t1");
 
@@ -1744,7 +1780,7 @@ it("a legacy ledger loads, renders and takes an unrelated update that keeps its 
   expect(updated.status).toBe(200);
   const stored = ((await updated.json()) as { project: { title: string; policy: Record<string, unknown> } }).project;
   expect(stored.title).toBe("Governed once");
-  expect(stored.policy).toMatchObject({ agents, execution, eligible: ["claude-code"], refuseOverlap: true, reviewBar: "Block only for data loss.", approval: policy.approval });
+  expect(stored.policy).toMatchObject({ agents, execution, eligible: ["claude"], refuseOverlap: true, reviewBar: "Block only for data loss.", approval: policy.approval });
   const sets = (await events()).filter((e) => e.kind === "project.set");
   expect(sets.length).toBe(before + 1);
   expect(sets[0]!.data.policy?.agents).toEqual(agents);
