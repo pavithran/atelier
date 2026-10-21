@@ -38,7 +38,7 @@ export default async function wrapCommand() {
   const sequence = releaseSequence({ project: name, actor: as, class: "release" });
   try {
     if (!data.checksSkipped) for (const command of record.policy.checks) {
-      const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: sequence.next(), maxBytes: 1024 * 1024 });
+      const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: sequence.next() });
       const passed = result.status === 0 && !result.error;
       data.checks.push({ command, passed, grade: "reported" });
       console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
