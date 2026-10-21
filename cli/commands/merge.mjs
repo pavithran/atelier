@@ -2,34 +2,35 @@ import { executePostMerge } from "../post-merge.mjs";
 // atelier merge. Its forms, flags and help are declared in src/usage/commands/merge.ts.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { acceptancePolicy, mergeContext, mergePolicyDecision } from "../../src/control-plane.ts";
 import { pathCollisions } from "../../src/rules.ts";
-import { evidenceAt } from "../../src/rules.ts";
-import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, landingSymlinks, touchedExecutables, treeEntries } from "../landing.mjs";
+import { acceptancePolicy, evidenceAt, mergeContext, mergePolicyDecision } from "../../src/rules.ts";
+import { adoptOldLanding, describeTouched, executablePaths, landingJournal, landingLeft, landingLock, touchedExecutables, treeEntries } from "../landing.mjs";
 import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { guardedPush, privateGuardFor, privateRefusal } from "../private-guard.mjs";
-import { describeConflicts, mergeThrough, previewMerge, readManifest, verifyAccepted } from "../merge-pipeline.mjs";
+import { describeConflicts, indexBeyond, mergeThrough, previewMerge, readManifest, verifyAccepted } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { collectCache } from "../gc.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, refreshControlPlane, request, saveConfig, server, short, writeReceipt } from "../atelier.mjs";
+import { CACHE, I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, directionArg, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, needCheckout, overrideArg, project, request, saveConfig, server, short } from "../atelier.mjs";
 import { pinCheckoutIdentity } from "../identity.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
-// t708: the tree the merge produced (the index, before the receipt is added)
-// when every required check's latest counting run at the accepted head passed:
-// the gate's own reading (evidenceAt), so a later failing run of a check is not
-// masked by an earlier pass. The accepted head's
-// tree must be that tree. Anything that cannot be read or compared gives null,
-// and a null makes the receipt claim nothing, so the deploy gate runs again.
-function checkedTreeMatch(cwd,evidence,policy,head){
+// t708: the tree of the merge commit when every required check's latest
+// counting run at the accepted head passed: the gate's own reading
+// (evidenceAt), so a later failing run of a check is not masked by an earlier
+// pass. The accepted head's tree must be that tree. Anything that cannot be
+// read or compared gives null, and a null makes the provenance note claim
+// nothing, so the deploy gate runs again. (The claim used to go in a
+// ControlPlane receipt, written with the merge; the note carries it now, read
+// from the merge commit, so a resumed merge states it too.)
+function checkedTreeMatch(cwd,evidence,policy,head,mergeCommit){
   try{
     const checks=evidenceAt(policy,evidence,head).checks;
     if(!checks.length||!checks.every(c=>c.grade==='observed'&&c.passed===true))return null;
     const out=(...a)=>{const r=landingGit(a,{cwd,allowFail:true});return r.status===0?r.stdout.trim():'';};
-    const tree=out('write-tree');
+    const tree=out('rev-parse','--verify','--quiet',`${mergeCommit}^{tree}`);
     if(!/^[0-9a-f]{40,64}$/.test(tree)||out('rev-parse','--verify','--quiet',`${head}^{tree}`)!==tree)return null;
     return{tree,claims:checks.map(c=>c.claim)};
   }catch{return null;}
@@ -154,10 +155,6 @@ export default async function mergeCommand() {
       return console.log(`${id}: the landing in this checkout is cancelled. ${id} is ${now}, and nothing changed on the server${item.state === "accepted" ? `; merge its accepted revision with: atelier merge ${id}` : ""}.`);
     } finally { unlock(); }
   }
-  const refreshed = await refreshControlPlane(cwd, name);
-  // The merge compares the policy as it is now with the one the acceptance
-  // was made under, so a policy it cannot read stops it here.
-  if (refreshed?.skipped) die(`ControlPlane policy could not be read: ${refreshed.error}. Fix the file, then run atelier merge ${id} again.`);
   if (args.head !== undefined) {
     if (!/^[a-f0-9]{40,64}$/.test(args.head)) die(COMMAND_USAGE.merge);
     const reason=overrideArg("merge ID --head FULL_REVISION");
@@ -189,11 +186,16 @@ export default async function mergeCommand() {
     if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
     const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
     if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); await cleanWorkspace(name, id, p.branch, cwd); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
-    const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
-    if (refreshed?.policy) {
-      const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
-      if (decision.warning) console.error(decision.warning);
-    }
+    // The merge compares the project's stored policy as the item's detail
+    // states it now with the policy the acceptance was made under
+    // (mergePolicyDecision in src/rules.ts). Nothing is read from the checkout
+    // or written to the project. The live items are read only when overlapping
+    // claims became refused since the acceptance, the one change that needs them.
+    const nowPolicy = d.policy, acceptedPolicy = acceptancePolicy(d, nowPolicy);
+    const items = nowPolicy.refuseOverlap && !acceptedPolicy.refuseOverlap ? (await call("GET", P(name), undefined, OWNER)).items ?? [] : [];
+    const context = mergeContext(d, items);
+    const warning = mergePolicyDecision(acceptedPolicy, nowPolicy, [], false, context).warning;
+    if (warning) console.error(warning);
     if (git(["status","--porcelain"],{cwd})) die("the registered checkout has uncommitted changes; preserve them before retrying");
     if (git(["rev-parse","--abbrev-ref","HEAD"],{cwd})!==p.branch) die(`check out ${p.branch} in ${cwd} first`);
     const base=await call("POST",`${P(name)}/baseline-token`,{scope:'write'},OWNER);
@@ -214,16 +216,15 @@ export default async function mergeCommand() {
     if (guard.refusal) die(`${id} was not merged: ${guard.refusal}`);
     const taskPrivate=privateRefusal(cwd,guard.paths,item.acceptedHead,[baselineHead],`${id}'s accepted revision`);
     if (taskPrivate) die(`${taskPrivate} Nothing was merged.`);
-    if (refreshed?.policy) {
-      if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
-      // The accepted revision's own changes: those since the newest baseline
-      // commit it holds, which atelier update moves past the recorded base.
-      const forkPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
-      const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base;
-      const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
-      const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, paths, args['policy-changed-ok'] === true, context);
-      if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
-    }
+    // The accepted revision's own changes: those since the newest baseline
+    // commit it holds, which atelier update moves past the recorded base. With
+    // neither, every path that differs from the baseline: more than the
+    // revision's own, so the comparison errs toward refusing.
+    const forkPoint = git(['merge-base', baselineHead, item.acceptedHead], { cwd, allowFail: true });
+    const since = forkPoint.status === 0 && forkPoint.stdout.trim() ? forkPoint.stdout.trim() : item.base ?? baselineHead;
+    const paths = git(['diff', '--name-only', '--no-renames', '-z', since, item.acceptedHead], { cwd, raw: true }).split('\0').filter(Boolean);
+    const decision = mergePolicyDecision(acceptedPolicy, nowPolicy, paths, args['policy-changed-ok'] === true, context);
+    if (decision.refusal) die(`${decision.refusal}\n${server()}/p/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
     const local=git(['rev-parse','HEAD'],{cwd});
     const owners=[...new Set(d.events.filter(e=>['item.claimed','item.handoff'].includes(e.kind)).map(e=>e.data.to??e.actor))];
     const view=d.evidence.filter(e=>e.head===item.acceptedHead), reviews=d.reviews.filter(r=>r.head===item.acceptedHead);
@@ -269,11 +270,6 @@ export default async function mergeCommand() {
         const entries=treeEntries(git(['ls-tree','-r','-z','--full-tree',tree],{cwd,raw:true}));
         const clashes=pathCollisions(entries.map(e=>e.path));
         if(clashes.length){journal.clear();die(`the merge would hold paths that a Mac stores as one file, since they differ only by letter case or Unicode form: ${clashes.map(g=>g.join(' and ')).join('; ')}. Git would write one over the other in this checkout and in every clone on a Mac. Nothing was merged; the task's holder must rename or remove all but one of each and submit a new revision`);}
-        // The landing reads the ControlPlane policy and receipt template
-        // and writes the receipt; a symlink on one of those paths would
-        // take the read or the write outside the checkout.
-        const links=landingSymlinks(entries);
-        if(links.length){journal.clear();die(`the merge would put a symlink where the landing reads or writes its ControlPlane files: ${links.join(', ')}. The landing would follow it out of the checkout. Nothing was merged; the task's holder must replace each with the file or folder itself and submit a new revision`);}
         // A file that this checkout's Git configuration runs (a hook, a
         // filter or merge driver script, an included configuration file)
         // and that the merge would change would run during the merge, or
@@ -305,13 +301,11 @@ export default async function mergeCommand() {
         const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false,adopt});
         if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The developer can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
         if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
-        const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass,riskClass:d.gate.riskClass,sameTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead)});
-        if(receipt)git(['add',receipt],{cwd});
-        // The tree published is the one verifyAccepted compared, plus the
-        // receipt: anything else the merge left in the index refuses.
+        // The tree published is the one verifyAccepted compared: anything
+        // else the merge left in the index refuses.
         if(adopt){
-          const left=git(['diff-tree','-r','--name-only','--no-renames','-z',adopt.tree,git(['write-tree'],{cwd})],{cwd,raw:true}).split('\0').filter(Boolean);
-          if(left.some(f=>f!==receipt)){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die(`the merge would publish ${left.filter(f=>f!==receipt).join(', ')}, which the compared tree does not hold. Nothing was merged and ${id} stays accepted`);}
+          const left=indexBeyond(cwd,adopt.tree,{git});
+          if(left.length){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();die(`the merge would publish ${left.join(', ')}, which the compared tree does not hold. Nothing was merged and ${id} stays accepted`);}
         }
         // The merge commit is the landing's own, made under the project's
         // identity whatever this checkout or its environment would give,
@@ -329,7 +323,7 @@ export default async function mergeCommand() {
     // merge commit is kept for reconciliation.
     await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
-    const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily});
+    const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily,checkedTree:checkedTreeMatch(cwd,d.evidence,d.policy,item.acceptedHead,mergeCommit)});
     // The notes commits refs/notes/atelier holds that FROM (a remote's notes
     // tip, or nothing) does not, checked against the policy's identity.
     // A remote the policy declares a public mirror takes only the project's own

@@ -394,31 +394,10 @@ export function touchedExecutables(changed, executables) {
 // and the setting that runs it, or the changed paths that reach it.
 export const describeTouched = (runs) => runs.map((r) => r.changed.length === 1 && r.changed[0] === r.path ? `${r.path}, ${r.setting}` : `${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ');
 
-// The paths a landing reads or writes in the ControlPlane folder: its policy
-// files, read at every merge and sync; the receipt template; the receipts
-// folder and the receipt written into it.
-const CONTROL_PLANE = 'docs/control-plane';
-export const RECEIPTS_DIR = `${CONTROL_PLANE}/landing-receipts`;
-export const RECEIPT_TEMPLATE = `${CONTROL_PLANE}/landing-receipt.v1.json`;
-const LANDING_PATHS = ['docs', CONTROL_PLANE, RECEIPTS_DIR, RECEIPT_TEMPLATE, ...['agent-policy.v1.json', 'execution-policy.v1.json', 'project-adapter.v1.json'].map((name) => `${CONTROL_PLANE}/${name}`)];
-
 // The entries of a tree, from `git ls-tree -r -z --full-tree`: mode and path.
 export function treeEntries(listing) {
   return listing.split('\0').filter(Boolean).map((line) => {
     const tab = line.indexOf('\t');
     return { mode: line.slice(0, line.indexOf(' ')), path: line.slice(tab + 1) };
   });
-}
-
-// The symlinks in a tree on a path a landing reads or writes, or directly in
-// the receipts folder, where the receipt is written. A landing that follows
-// one reads or writes outside the checkout. Compared folded, as a Mac's disk
-// finds them.
-export function landingSymlinks(entries) {
-  const exact = new Set(LANDING_PATHS.map(foldPath)), receipts = `${foldPath(RECEIPTS_DIR)}/`;
-  return entries.filter(({ mode, path }) => {
-    if (mode !== '120000') return false;
-    const f = foldPath(path);
-    return exact.has(f) || (f.startsWith(receipts) && !f.slice(receipts.length).includes('/'));
-  }).map(({ path }) => path);
 }

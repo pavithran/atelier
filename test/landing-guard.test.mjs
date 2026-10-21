@@ -2,9 +2,7 @@
 // agent code in the owner's checkout and commits it there, so a hook or a
 // script that the checkout's Git configuration runs, changed by the accepted
 // head, would run during the landing and stay to run at the owner's next Git
-// command; and a symlink in the accepted tree where the landing reads or
-// writes its ControlPlane receipt would take that read or write outside the
-// checkout. Each landing here is the real CLI against a fake ledger on
+// command. Each landing here is the real CLI against a fake ledger on
 // 127.0.0.1, in scratch repositories with their own Git configuration.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +12,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-import { commandWords, executablePaths, hooksOff, landingDir, landingJournalFile, landingSymlinks, touchedExecutables, treeEntries } from '../cli/landing.mjs';
+import { commandWords, executablePaths, hooksOff, landingDir, landingJournalFile, touchedExecutables, treeEntries } from '../cli/landing.mjs';
 import { SERVER_CAPABILITIES } from '../src/route-level.ts';
 
 // The client hooks a landing's Git commands could start.
@@ -281,53 +279,49 @@ test('every Git command of a landing runs with hooks off, in a hooks folder or d
   for (const name of ['.git/hooks/pre-commit', 'configured local', 'configured global']) assert.ok(after.includes(`${name} ${f.checkout}`), `${name} in ${after}`);
 });
 
-// ── symlinks where the landing reads or writes its receipt ──────────────────
+// ── the receipt ControlPlane had merge write ────────────────────────────────
 
-// The accepted head replaces the receipts folder with a symlink to a folder
-// outside the checkout, or the receipt template with a symlink to a JSON file
-// outside it. Followed, the first writes the receipt out there and leaves the
-// merge half done; the second copies the outside file's project_id into the
-// receipt the landing commits and pushes.
-for (const [what, path] of [['receipts folder', 'docs/control-plane/landing-receipts'], ['receipt template', 'docs/control-plane/landing-receipt.v1.json']]) {
-  test(`merge refuses a symlink in place of the ${what} before the checkout changes`, async (t) => {
-    const f = await landFixture(t, {
-      controlPlane: true,
-      change: ({ ws, git, outside }) => {
-        if (path.endsWith('.json')) {
-          writeFileSync(join(outside, 'private.json'), JSON.stringify({ project_id: 'PRIVATE-VALUE-FROM-OUTSIDE' }) + '\n');
-          rmSync(join(ws, path));
-          symlinkSync(join(outside, 'private.json'), join(ws, path));
-        } else {
-          git(ws, 'rm', '-q', '-r', path);
-          symlinkSync(outside, join(ws, path));
-        }
-      },
-    });
-    const r = await f.run('merge', 't1');
-    assert.equal(r.status, 1, r.output);
-    assert.ok(r.output.includes(`the merge would put a symlink where the landing reads or writes its ControlPlane files: ${path}. `), r.output);
-    assert.match(r.output, /Nothing was merged/);
-    assert.deepEqual(readdirSync(f.outside).filter((name) => name !== 'private.json'), [], 'nothing was written outside');
-    assert.ok(!lstatSync(join(f.checkout, path)).isSymbolicLink());
-    f.assertUntouched();
+// ControlPlane is retired (t150): a landing writes no receipt, whether or not
+// the checkout has the receipts folder and the template, and reads neither.
+// The finding this would have caught: the receipt took its project_id from
+// the template and was opened inside the folder, so an accepted head that
+// replaced either with a symlink made the landing read or write outside the
+// checkout. With nothing read or written, there is nothing to follow.
+test('merge writes no receipt, though the receipts folder and template exist, and leaves earlier receipts untouched', async (t) => {
+  const f = await landFixture(t, {
+    controlPlane: true,
+    setup: ({ checkout, write }) => write(checkout, 'docs/control-plane/landing-receipts/2026-10-01-atelier-t0-abcdef12.json', '{"receipt_id":"earlier"}\n'),
+    change: ({ ws, write }) => write(ws, 'README.md', 'task\n'),
   });
-}
-
-test('merge writes the receipt into the real receipts folder, from the real template', async (t) => {
-  const f = await landFixture(t, { controlPlane: true, change: ({ ws, write }) => write(ws, 'README.md', 'task\n') });
+  const earlier = 'docs/control-plane/landing-receipts/2026-10-01-atelier-t0-abcdef12.json';
   const r = await f.run('merge', 't1');
   assert.equal(r.status, 0, r.output);
-  const receipts = f.git(f.checkout, 'diff', '--name-only', 'HEAD^1', 'HEAD').split('\n').filter((name) => name.startsWith('docs/control-plane/landing-receipts/'));
-  assert.equal(receipts.length, 1, receipts.join(' '));
-  const receipt = JSON.parse(readFileSync(join(f.checkout, receipts[0]), 'utf8'));
-  assert.equal(receipt.kind, 'control-plane.landing-receipt');
-  assert.equal(receipt.project_id, 'demo-from-template');
-  assert.equal(receipt.implementation_commit, f.head);
+  assert.deepEqual(f.git(f.checkout, 'diff', '--name-only', 'HEAD^1', 'HEAD').split('\n'), ['README.md']);
+  assert.equal(readFileSync(join(f.checkout, earlier), 'utf8'), '{"receipt_id":"earlier"}\n');
+  assert.deepEqual(readdirSync(join(f.checkout, 'docs/control-plane/landing-receipts')).sort(), ['.gitkeep', '2026-10-01-atelier-t0-abcdef12.json']);
+});
+
+// A symlink where the receipt used to be written is an ordinary file in the
+// accepted tree now: the landing follows none, so it merges and writes outside
+// the checkout nothing.
+test('merge follows no symlink where it used to write its receipt', async (t) => {
+  const f = await landFixture(t, {
+    controlPlane: true,
+    change: ({ ws, git, outside }) => {
+      git(ws, 'rm', '-q', '-r', 'docs/control-plane/landing-receipts');
+      symlinkSync(outside, join(ws, 'docs/control-plane/landing-receipts'));
+    },
+  });
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(readdirSync(f.outside).filter((name) => name !== 'exec.log'), [], 'nothing was written outside');
+  assert.ok(lstatSync(join(f.checkout, 'docs/control-plane/landing-receipts')).isSymbolicLink());
 });
 
 // t708: ikon-weblog ran each task's checks three times on one tree. The
-// receipt says when the merge produced the tree a check passed on; a check
-// that failed, or ran on a merge with main, is never claimed for the tree.
+// provenance note on the merge commit says when the merge produced the tree a
+// check passed on (it used to be the receipt's checked_tree); a check that
+// failed, or ran on a merge with main, is never claimed for the tree.
 const OTHER = 'c'.repeat(40);
 for (const [what, observed, claimed, policy] of [
   ['passed on the accepted head', [{}], true],
@@ -338,16 +332,14 @@ for (const [what, observed, claimed, policy] of [
   ['passed on a runner under a stored sandboxOnly policy, which t768 removed', [{}], true, { sandboxOnly: true }],
   ['passed on another head', [{ head: OTHER }], false],
 ]) {
-  test(`merge's receipt ${claimed ? 'names' : 'does not name'} the checked tree when the check ${what}`, async (t) => {
+  test(`merge's provenance note ${claimed ? 'names' : 'does not name'} the checked tree when the check ${what}`, async (t) => {
     const f = await landFixture(t, { controlPlane: true, observed, sandboxOnly: policy?.sandboxOnly, change: ({ ws, write }) => write(ws, 'README.md', 'task\n') });
     const r = await f.run('merge', 't1');
     assert.equal(r.status, 0, r.output);
-    const file = f.git(f.checkout, 'diff', '--name-only', 'HEAD^1', 'HEAD').split('\n').find((name) => name.startsWith('docs/control-plane/landing-receipts/'));
-    const receipt = JSON.parse(readFileSync(join(f.checkout, file), 'utf8'));
-    if (!claimed) return assert.equal(receipt.checked_tree, undefined);
-    assert.equal(receipt.checked_tree.tree, f.git(f.checkout, 'rev-parse', `${f.head}^{tree}`));
-    assert.deepEqual(receipt.checked_tree.claims, ['npm test']);
-    assert.match(receipt.checked_tree.statement, /instead of running them again/);
+    const note = f.git(f.checkout, 'notes', '--ref=atelier', 'show', 'HEAD');
+    if (!claimed) return assert.doesNotMatch(note, /CHECKED TREE/);
+    assert.ok(note.includes(`CHECKED TREE ${f.git(f.checkout, 'rev-parse', `${f.head}^{tree}`)}: `), note);
+    assert.match(note, /\(npm test\), so a deploy gate may accept them instead of running them again/);
   });
 }
 
@@ -373,12 +365,6 @@ test('touchedExecutables matches a path, a path inside a folder, and a folder or
     { path: 'café.sh', setting: 'nfc', changed: ['café.sh'] },
   ]);
   assert.deepEqual(touchedExecutables(['scripts/hooksmith', 'tools/smudge.sh.bak'], executables), []);
-});
-
-test('landingSymlinks names symlinks where a landing reads or writes, in any case, and nowhere else', () => {
-  const tree = ['120000 blob a\tDocs', '100644 blob a\tdocs/control-plane/execution-policy.v1.json', '120000 blob a\tdocs/control-plane/agent-policy.v1.json',
-    '120000 blob a\tdocs/control-plane/landing-receipts/2026-10-06-atelier-t1-abcdef12.json', '120000 blob a\tdocs/control-plane/landing-receipts/old/x.json', '120000 blob a\tdocs/guide.md'].join('\0') + '\0';
-  assert.deepEqual(landingSymlinks(treeEntries(tree)), ['Docs', 'docs/control-plane/agent-policy.v1.json', 'docs/control-plane/landing-receipts/2026-10-06-atelier-t1-abcdef12.json']);
 });
 
 test('executablePaths and hooksOff read the checkout as its Git commands do', (t) => {

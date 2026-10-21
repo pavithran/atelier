@@ -37,7 +37,7 @@ const spec: CommandSpec = {
       "--note TEXT": "with --approve, the review's note",
       "--override-review REASON": "with --head, accepts with the developer's override of a missing independent review, on the developer's direction (--quote) or once allowed on the task's page with the Access sign-in or the confirmation secret; --as H/M names the harness/model overriding for the developer",
       "--quote WORDS": "with --override-review, the developer's own words directing the override; with --as H/M, the model acting on them, they confirm it with the developer token alone, and both are recorded with it",
-      "--policy-changed-ok": "lands a change that touches paths the ControlPlane policy began to protect after acceptance, once that change of policy is reviewed",
+      "--policy-changed-ok": "lands a change that touches paths the project's policy began to protect after acceptance, or that no longer meets a rule it was accepted under, once that change of policy is reviewed",
       "--cancel": "ends an interrupted merge, so the task's holder can push again",
       "--discard-local": "with --cancel, removes the unpublished merge commit from the checkout",
     },

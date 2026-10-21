@@ -11,7 +11,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
@@ -29,9 +29,8 @@ import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL, capabilityFallback, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
 import { callPath, declaredCall, declaredHelperCall, RUNNER_COMMANDS, terminalTaskExit } from "../src/tokens.ts";
-export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
-import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
+import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile } from "./landing.mjs";
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
@@ -1444,78 +1443,6 @@ export function removeClone(dir) {
   } catch (error) {
     process.stderr.write(`atelier: warning: the check's clone ${dir} could not be removed (${error.code ?? error.message}); atelier gc --apply removes it later\n`);
   }
-}
-
-// ── ControlPlane ───────────────────────────────────────────────────────────
-// Stored ControlPlane records stay readable on the server; the checkout's
-// files are no longer read.
-
-export function readJson(path) {
-  try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
-}
-
-// ControlPlane retirement, slice 1 (t149): no policy is imported from a
-// checkout's docs/control-plane files, and none is refreshed. merge still
-// calls this until slice 2 removes the caller; it reads nothing and sends
-// nothing, and answers null as it does for a checkout with no such files.
-export async function refreshControlPlane() {
-  return null;
-}
-
-// The receipt goes only into a real folder reached through no symlink, the
-// template is read only when it is a regular file, and the receipt file is
-// opened with O_NOFOLLOW, so the receipt never reads or writes outside the
-// checkout. merge refuses a tree with a symlink on these paths before the
-// checkout changes (landingSymlinks); these checks hold even if one is there.
-export function writeReceipt(cwd, { name, id, item, owners, view, reviews, policy, branch, notesRemote, changeClass, riskClass, sameTree }) {
-  const dir = join(cwd, RECEIPTS_DIR);
-  const kind = (path) => lstatSync(join(cwd, path), { throwIfNoEntry: false });
-  if (!["docs", "docs/control-plane", RECEIPTS_DIR].every((path) => kind(path)?.isDirectory())) return null;
-  const template = (kind(RECEIPT_TEMPLATE)?.isFile() ? readJson(join(cwd, RECEIPT_TEMPLATE)) : null) ?? {};
-  const date = new Date().toISOString().slice(0, 10);
-  const file = join(dir, `${date}-atelier-${id}-${short(item.acceptedHead)}.json`);
-  // The owner's override of the independent review, when one stands at the accepted head.
-  const override = item.reviewOverride?.head === item.acceptedHead ? item.reviewOverride : null;
-  const receipt = {
-    schema_version: 1,
-    kind: "control-plane.landing-receipt",
-    receipt_id: `atelier-${name}-${id}-${date}`,
-    project_id: template.project_id ?? name,
-    execution_class: changeClass ?? "coordinated",
-    // The risk class the gate counted this merge's approvals by (t631); absent in a project without riskReviews.
-    ...(riskClass ? { risk_class: riskClass } : {}),
-    closure: "compact",
-    implementation_commit: item.acceptedHead,
-    delivery: {
-      kind: "atelier-merge",
-      target: `${name}/${id}`,
-      evidence: [
-        `Atelier item ${id}, "${item.title}", worked by ${owners.join(" then ") || "nobody recorded"}, accepted by ${OWNER_NAME} at ${item.acceptedHead} and merged with --no-ff.`,
-        policy.approval ? `The Atelier baseline copy in Artifacts was approved as: ${policy.approval.replace(/[.\s]*$/, "")}.` : null,
-        reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : override ? null : "No review was required at the accepted head.",
-        override ? `${OWNER_NAME} overrode the independent review at the accepted head: ${override.reason.replace(/[.\s]*$/, "")}.` : null,
-        override?.quote ? `The override was made on ${OWNER_NAME}'s words, \u201c${override.quote}\u201d, relayed by ${override.acting ?? "an unnamed model"}.` : null,
-        `Provenance is on refs/notes/atelier for the merge commit${notesRemote ? `, and that ref alone is pushed to ${notesRemote}` : ""}.`,
-      ].filter(Boolean).join(" "),
-    },
-    tests: view.map((e) =>
-      e.grade === "observed"
-        ? `Observed by Atelier in a clean clone at ${short(e.head)}${e.merged ? ` merged with main at ${short(e.mainHead)}` : ""}: \`${e.claim}\` ${e.passed ? "passed" : "failed"} (${e.by}, ${e.at})`
-        : `Reported, not verified: ${e.claim} (${e.by}, ${e.at})`),
-    ...(sameTree ? { checked_tree: { tree: sameTree.tree, claims: sameTree.claims, statement: `The merge produced tree ${sameTree.tree}, exactly the tree these checks passed on, so a deploy gate may accept them instead of running them again. This receipt file is the only addition to that tree.` } } : {}),
-    next_gate: `${OWNER_NAME} chooses the next work. The merge is not deployed and not pushed to the project's own remotes.`,
-    protected_actions_not_taken: [
-      "deploy",
-      notesRemote ? `push of ${branch} to the project's own remotes (only refs/notes/atelier went to ${notesRemote})` : "push to the project's own remotes",
-      "migration",
-      "credential change",
-      "Observatory publication",
-    ],
-    unrelated_dirty: [],
-    session_continuing: true,
-  };
-  writeFileSync(file, JSON.stringify(receipt, null, 2) + "\n", { flag: fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW });
-  return file.slice(cwd.length + 1);
 }
 
 // What an agent relays is one line per field: text a person or an agent
