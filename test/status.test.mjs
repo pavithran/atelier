@@ -239,7 +239,7 @@ async function runLocal(t, setup, argv) {
     if (req.url === "/api/projects") body = [STANDING.project];
     else if (req.url === "/api/inbox") body = [];
     else if (req.url === "/api/projects/demo/baseline-head") body = { head: git(state.checkout, "rev-parse", "HEAD") };
-    else if (req.url === "/api/projects/demo/standing") body = STANDING;
+    else if (req.url === "/api/projects/demo/standing") body = state.standing ?? STANDING;
     else if (req.url === "/api/projects/demo") body = { project: { ...STANDING.project, policy: state.policy }, items: state.items ?? [], events: [] };
     else if (req.url === "/api/projects/demo/landing-lease") {
       if (state.noLeaseRoute) { status = 404; body = { error: "not_found", detail: "no such route" }; }
@@ -579,4 +579,26 @@ test("status --json carries the preparation only on the task that has one", () =
   const [project] = statusJson([{ name: "demo", items: [item("t4", "open", { preparing }), item("t5", "open")], inbox: [] }]);
   assert.deepEqual(project.items.find((i) => i.id === "t4").preparing, preparing);
   assert.ok(!("preparing" in project.items.find((i) => i.id === "t5")));
+});
+
+// The same through the commands, against a stand-in server that answers the
+// routes as the Worker does (test/fork-preparation.spec.ts reads the real
+// routes): `atelier status` reads the project's record, and `atelier status
+// --project` its standing. Neither command is given the field directly.
+test("atelier status --project prints the forks being prepared from the standing", async (t) => {
+  const r = await runLocal(t, () => ({ standing: { ...STANDING, preparing: [{ id: "t4", ...preparing }] } }));
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("\nWaiting for a fork:\n"), r.output);
+  assert.ok(r.output.includes(`\n  t4  demo--t4 has been preparing for 12 minutes. ${preparing.next}\n`), r.output);
+  const plain = await runLocal(t, () => ({}));
+  assert.ok(!plain.output.includes("Waiting for a fork"), plain.output);
+});
+
+test("atelier status prints the forks being prepared from each project's record", async (t) => {
+  const r = await runLocal(t, () => ({ items: [item("t4", "open", { preparing })] }), ["status"]);
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("\n  Waiting for a fork\n"), r.output);
+  assert.ok(r.output.includes(`\n    t4  demo--t4 has been preparing for 12 minutes. ${preparing.next}\n`), r.output);
+  const json = await runLocal(t, () => ({ items: [item("t4", "open", { preparing })] }), ["status", "--json"]);
+  assert.deepEqual(JSON.parse(json.output)[0].items[0].preparing, preparing);
 });

@@ -20,6 +20,7 @@ import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, definingOf, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
+import type { ForkPreparationView } from "./rules";
 import { fenceText, prereviewLines, type PrereviewFence, type PrereviewView } from "./dispatch/prereview.ts";
 import { drawImported } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
@@ -1399,6 +1400,8 @@ export interface Standing {
   // An override on the developer's direction (t629) carries their words and the acting model.
   overrides: { id: string; title: string; at: string; reason: string; quote?: string; acting?: string }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
+  // Task forks Artifacts is still preparing (t18), present only while there are any.
+  preparing?: ({ id: string } & ForkPreparationView)[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
   // The project's model policy (t394): single-family mode naming the
   // company, or a recorded return to cross-family review; null when never

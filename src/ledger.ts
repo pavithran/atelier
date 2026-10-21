@@ -3137,7 +3137,12 @@ export class Ledger extends DurableObject<Env> {
     if (!this.claimHeld(id, actor, generation)) return;
     const at = new Date().toISOString();
     const prep = this.forkPrep(id);
-    this.saveForkPrep(id, { fork, since: null, madeAt: at, recreatedAt: prep?.fork === fork ? prep.recreatedAt : null, reportedAt: null });
+    // A fork made while a delete of the repository is under way (a claim that
+    // came after the delete took effect, whose answer was lost) leaves the
+    // fence as it is: only the end of that delete lifts it, so its retry and
+    // setFork see the fence the whole time.
+    const same = prep?.fork === fork ? prep : null;
+    this.saveForkPrep(id, { fork, since: null, madeAt: at, recreatedAt: same?.recreatedAt ?? null, reportedAt: null, recreatingUntil: same?.recreatingUntil ?? null });
   }
 
   // The claim waited out the fork and it is not ready. Starts the clock at the

@@ -196,7 +196,18 @@ const TASK_EVENTS = 300;
 async function standingOf(env: Env, key: string): Promise<Standing> {
   const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const L = ledger(env, key);
-  return readStanding(L as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date(), () => acceptedOf(env, L));
+  const standing = await readStanding(L as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date(), () => acceptedOf(env, L));
+  // The task forks Artifacts is still preparing, with their age and next
+  // action (t18), only while there are any; `atelier status --project` prints them.
+  const preparing = Object.entries(await L.forkPreparations().catch(() => ({}))).map(([id, view]) => ({ id, ...view }));
+  return preparing.length ? { ...standing, preparing } : standing;
+}
+
+// The project's tasks, each with the preparation of its fork where the fork is
+// still being prepared (t18); the other rows are as they were.
+async function itemsWithPreparation(L: ReturnType<typeof ledger>) {
+  const [items, preparing] = await Promise.all([L.items(), L.forkPreparations().catch(() => ({}) as Record<string, ForkPreparationView>)]);
+  return items.map((i) => (preparing[i.id] ? { ...i, preparing: preparing[i.id] } : i));
 }
 
 // Where each accepted task stands against the main head the Ledger last
@@ -1770,7 +1781,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Runner clients need policy/configuration here, not unrelated tasks or
     // their history. Job detail routes below enforce the claim binding.
     if (c.token?.runner) return json({ project: await L.project(), items: [], events: [] });
-    return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
+    return json({ project: await L.project(), items: await itemsWithPreparation(L), events: await L.events(undefined, 50) });
   }
   // The owner gives the project a new name. The index decides and refuses a
   // clash; the project's own record follows. If that second write did not
@@ -2066,11 +2077,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
     return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields), 201);
   }
-  if (parts.length === 3 && m === "GET") {
-    // A task whose fork is still being prepared says so (t18); the other rows are as they were.
-    const [items, preparing] = await Promise.all([L.items(), L.forkPreparations()]);
-    return json(items.map((i) => (preparing[i.id] ? { ...i, preparing: preparing[i.id] } : i)));
-  }
+  if (parts.length === 3 && m === "GET") return json(await itemsWithPreparation(L));
 
   const id = parts[3];
   const verb = parts[4];
