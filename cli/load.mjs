@@ -1,4 +1,4 @@
-import { cpus, hostname } from "node:os";
+import { cpus, hostname, uptime } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,8 @@ export const HOST_POOL = "/tmp/atelier-test-slots-v1.sqlite";
 export const SLOT_WRAPPER = fileURLToPath(import.meta.url);
 export const SEQUENCE_GRACE_MS = 5000;
 export const SEQUENCE_CONTINUATIONS = 3;
-const now = (options) => (options.now ?? Date.now)();
+// Host uptime is shared by processes and cannot move with wall-clock corrections.
+const now = (options) => (options.now ?? (() => uptime() * 1000))();
 const isSequence = (metadata) => typeof metadata.sequenceId === "string" && /^[a-f0-9-]{36}$/.test(metadata.sequenceId) && Number.isSafeInteger(metadata.sequenceStep) && metadata.sequenceStep >= 0;
 const MARKER = "ATELIER_TEST_LEASE";
 const classes = { release: 0, landing: 0, review: 1, ordinary: 2 };
@@ -98,7 +99,7 @@ export async function poolTransaction(options = {}, update = () => {}) {
         (options.warn ?? console.warn)(`test slots: warning: ATELIER_TEST_SLOTS ${requested === undefined ? "is invalid" : `requests ${requested}`}; using stored capacity ${state.capacity}`);
       }
       const processes = options.skipEmpty && !state.entries.length ? [] : (options.processes ?? slotProcesses)();
-      state.entries = state.entries.filter((entry) => entry.reservedUntil ? entry.reservedUntil > now(options) : processes.some((p) => p.lease === entry.lease));
+      state.entries = state.entries.filter((entry) => entry.reservedUntil ? entry.reservedAt <= now(options) && entry.reservedUntil > now(options) : processes.some((p) => p.lease === entry.lease));
       const result = update(state, processes);
       db.prepare("INSERT INTO pool(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(JSON.stringify(state));
       db.exec("COMMIT");
@@ -132,7 +133,7 @@ export async function slotStatus(options = {}) {
 }
 
 export function formatSlots(status) {
-  const row = (e) => `  ${e.class} #${e.sequence} ${e.project ?? "?"}/${e.task ?? "?"} ${e.actor ?? "?"} pid=${e.pid} identity=${e.lease} ${e.started ? "started=" + e.started : "queued=" + e.queued}`;
+  const row = (e) => `  ${e.class} #${e.sequence} ${e.project ?? "?"}/${e.task ?? "?"} ${e.actor ?? "?"} pid=${e.pid} identity=${e.lease} ${e.reservedUntil ? "reserved=idle" : e.started ? "started=" + e.started : "queued=" + e.queued}`;
   return [`Test slots: ${status.active.length}/${status.capacity} on ${status.host}${status.draining ? ` (draining excess: ${status.draining})` : ""}`, ...status.active.map(row), "Waiting (priority, FIFO):", ...status.waiters.map(row)].join("\n");
 }
 
@@ -155,6 +156,7 @@ export async function acquireSlot(metadata = {}, options = {}) {
           if (state.entries.filter((e) => e.started).length <= state.capacity) {
             Object.assign(reserved, metadata, { lease, pid: metadata.pid ?? process.pid, birth: processes.find((p) => p.pid === (metadata.pid ?? process.pid)).birth, claimed: true });
             delete reserved.reservedUntil;
+            delete reserved.reservedAt;
             return { lease, reused: false };
           }
           state.entries = state.entries.filter((e) => e !== reserved);
@@ -169,6 +171,8 @@ export async function acquireSlot(metadata = {}, options = {}) {
           const identity = processes.find((p) => p.pid === (metadata.pid ?? process.pid));
           entry = { ...metadata, birth: identity.birth, lease, pid: metadata.pid ?? process.pid, class: sequence && metadata.sequenceStep > 0 ? "ordinary" : metadata.class ?? process.env.ATELIER_TEST_PRIORITY ?? "ordinary", priority: sequence && metadata.sequenceStep > 0 ? classes.ordinary : priority,
             sequence: ++state.sequence, queued: new Date().toISOString() };
+          delete entry.reservedUntil;
+          delete entry.reservedAt;
           state.entries.push(entry);
         }
         const free = Math.max(0, state.capacity - state.entries.filter((e) => e.started).length);
@@ -195,7 +199,8 @@ export async function releaseSlot(lease, options = {}, self = process.pid) {
     if (processes.some((p) => p.lease === lease && p.pid !== self)) return false;
     const entry = state.entries.find((e) => e.lease === lease);
     if (options.retainSequence && entry && isSequence(entry) && entry.sequenceStep % (SEQUENCE_CONTINUATIONS + 1) < SEQUENCE_CONTINUATIONS) {
-      entry.reservedUntil = now(options) + SEQUENCE_GRACE_MS;
+      entry.reservedAt = now(options);
+      entry.reservedUntil = entry.reservedAt + SEQUENCE_GRACE_MS;
     } else state.entries = state.entries.filter((e) => e.lease !== lease);
     return true;
   });
@@ -206,7 +211,7 @@ export async function releaseSlot(lease, options = {}, self = process.pid) {
 export function releaseSequence(metadata = {}, options = {}) {
   const sequenceId = randomUUID();
   const cls = metadata.class ?? process.env.ATELIER_TEST_PRIORITY ?? "ordinary";
-  const enabled = slotPriority(cls) === classes.release;
+  const enabled = Object.hasOwn(classes, cls) && classes[cls] === classes.release;
   let step = 0;
   return {
     next: () => ({ ...metadata, class: cls, ...(enabled ? { sequenceId, sequenceStep: step++ } : {}) }),
@@ -215,7 +220,6 @@ export function releaseSequence(metadata = {}, options = {}) {
       try { await poolTransaction({ ...options, skipEmpty: true }, (state) => {
         state.entries = state.entries.filter((e) => !e.reservedUntil || e.sequenceId !== sequenceId);
       }); } catch (error) {
-        if (!error.message.startsWith("cannot inspect test process trees:")) throw error;
         console.warn(`test slots: ${error.message}; idle sequence reservations will expire`);
       }
     },

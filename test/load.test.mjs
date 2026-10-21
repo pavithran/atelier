@@ -362,3 +362,46 @@ test("idle reservations expire, close only idle entries, and respect capacity re
   clock += SEQUENCE_GRACE_MS;
   assert.equal((await slotStatus(f.options)).usage, 0, "expiry applies even while the old supervisor is alive");
 });
+
+
+test("sequence cleanup warns when the pool is inaccessible; invalid priority stays a command error", async (t) => {
+  const f = fixture(t), warnings = [], previous = console.warn;
+  console.warn = (text) => warnings.push(text);
+  try {
+    const seq = releaseSequence({ class: "release" }, { ...f.options, path: join(f.options.path, "missing", "pool.sqlite") });
+    seq.next();
+    await seq.close();
+    assert.match(warnings.join("\n"), /idle sequence reservations will expire/);
+  } finally { console.warn = previous; }
+  const invalid = releaseSequence({ class: "invalid" }, f.options);
+  assert.equal(invalid.next().class, "invalid");
+  await invalid.close();
+});
+
+test("a continuation without a reservation queues behind an existing review waiter", async (t) => {
+  const f = fixture(t), held = f.owner(), review = f.owner("review");
+  await acquireSlot(held, f.options);
+  let queued, poll;
+  const ready = new Promise((r) => queued = r);
+  const waiting = acquireSlot(review, { ...f.options, wait: () => { queued(); return new Promise((r) => poll = r); } });
+  await ready;
+  await releaseSlot(held.lease, f.options, held.pid);
+  const seq = releaseSequence({ class: "release" }, f.options); seq.next();
+  const retry = { ...f.owner("release"), ...seq.next() }, cancel = new AbortController();
+  await assert.rejects(acquireSlot(retry, { ...f.options, signal: cancel.signal, wait: async () => cancel.abort() }), /cancelled/);
+  assert.equal((await slotStatus(f.options)).active[0].lease, review.lease);
+  poll(); await waiting;
+  await releaseSlot(review.lease, f.options, review.pid);
+});
+
+test("reservation state is internal and status marks an idle reservation", async (t) => {
+  const f = fixture(t); let clock = 1000; f.options.now = () => clock;
+  const seq = releaseSequence({ class: "release" }, f.options);
+  const first = { ...f.owner("release"), ...seq.next(), reservedUntil: Number.MAX_SAFE_INTEGER, reservedAt: 0 };
+  await acquireSlot(first, f.options);
+  assert.equal((await slotStatus(f.options)).active[0].reservedUntil, undefined);
+  await releaseSlot(first.lease, { ...f.options, retainSequence: true }, first.pid);
+  assert.match(formatSlots(await slotStatus(f.options)), /reserved=idle/);
+  clock = 0;
+  assert.equal((await slotStatus(f.options)).usage, 0, "a restarted monotonic clock cannot retain a previous boot reservation");
+});

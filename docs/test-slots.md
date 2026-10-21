@@ -68,8 +68,8 @@ flags when running manually; runners supply them through their environment.
 Release-class `atelier check` and `atelier wrap` sequences retain an idle slot
 for up to five seconds after a successful command whose descendants have
 exited. The next command with that sequence identity converts the reservation
-atomically. A reservation counts toward usage and capacity; conversion waits
-if capacity has been reduced below current usage. Three continuations may
+atomically. A reservation counts toward usage and capacity; if capacity has been reduced below current usage, the reservation is dropped
+and the continuation queues at ordinary priority. Three continuations may
 retain admission. The fourth continuation starts a new window and queues at
 ordinary priority, behind existing ordinary and review waiters. Any continuation
 whose reservation expired also queues at ordinary priority. This bounds the
@@ -78,7 +78,8 @@ starve lower classes. Ordinary checks keep their existing behaviour.
 
 Failure or cancellation retains no idle reservation. Normal caller cleanup
 removes only its idle reservations; abrupt caller exit leaves them to expire
-within five seconds. A sequence identity is cooperative metadata visible in
+within five seconds of host uptime, unaffected by wall-clock corrections.
+A sequence identity is cooperative metadata visible in
 wrapper arguments, not a secret or a security boundary. All participating
 CLIs must use this version to retain reservations across gaps; older callers
 may prune an idle reservation under their former live-process-only rule.
