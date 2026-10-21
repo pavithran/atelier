@@ -16,8 +16,14 @@ const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 const warnedPools = new Set();
 export const coreCount = () => cpus().length || 1;
 
+// One slot unless told otherwise (t161): on 2026-10-21 three clean-clone suites
+// ran at once on one Mac under the old default of a quarter of the cores, and
+// two landings failed both attempts on timing and Artifacts 503 noise. Only an
+// explicit ATELIER_TEST_SLOTS at first creation, or `--set`, raises it.
+export const DEFAULT_SLOTS = 1;
+
 export function slotCapacity(env = process.env, cores = coreCount()) {
-  if (env.ATELIER_TEST_SLOTS === undefined) return Math.max(1, Math.floor(cores / 4));
+  if (env.ATELIER_TEST_SLOTS === undefined) return DEFAULT_SLOTS;
   const text = env.ATELIER_TEST_SLOTS;
   if (!/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text))) {
     throw new Error("ATELIER_TEST_SLOTS must be a positive integer");
@@ -30,10 +36,14 @@ export function slotCapacity(env = process.env, cores = coreCount()) {
 // slot covers one npm test, and that runs two pools (node --test and
 // vitest), each of which took a core-sized count of its own by default: on
 // 36 cores nine slots made load 68. An unset or invalid ATELIER_TEST_SLOTS
-// gives the default capacity's share, never an error in the middle of a test.
+// gives a quarter of the cores, the share the default capacity had before t161:
+// a pool created earlier keeps its stored capacity (often several slots), and
+// a suite sized for one slot would then load the machine several times over.
+// Failing safe here costs a lone suite some speed, never a loaded machine.
 export function poolSize(env = process.env, cores = coreCount()) {
   let slots;
-  try { slots = slotCapacity(env, cores); } catch { slots = slotCapacity({}, cores); }
+  try { slots = env.ATELIER_TEST_SLOTS === undefined ? Math.max(1, Math.floor(cores / 4)) : slotCapacity(env, cores); }
+  catch { slots = Math.max(1, Math.floor(cores / 4)); }
   return Math.max(1, Math.floor(cores / slots));
 }
 
@@ -201,7 +211,8 @@ One slot covers one command and its descendants; nested wrappers reuse it.
 Local Atelier checks use this same pool. Direct shell commands are outside
 its enforcement. Containers have independent /tmp and process namespaces.
 On first creation, valid ATELIER_TEST_SLOTS sets capacity, otherwise it defaults
-to max(1, floor(coreCount()/4)). Stored capacity then wins; invalid or differing
+to one, so a wave's checks run one at a time. Stored capacity then wins (a pool
+made under an older default keeps it: run --set 1); invalid or differing
 environment values warn. --set N atomically changes capacity (positive safe
 integer). Lowering drains running work without preemption or a restart.
 The database is /tmp/atelier-test-slots-v1.sqlite.

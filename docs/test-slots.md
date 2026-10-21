@@ -20,7 +20,10 @@ wrappers reuse their outer slot. Commands run directly in a shell are outside
 enforcement. This is cooperative scheduling, not isolation of untrusted code.
 
 On first pool creation a valid `ATELIER_TEST_SLOTS` sets capacity; otherwise
-capacity is `max(1, floor(coreCount()/4))`. Capacity is recorded atomically in
+capacity is one, so the checks of a landing wave (`atelier land t1 t2 t3`)
+run one at a time on a machine while the other landing steps overlap. A pool
+created under the older default (a quarter of the cores) keeps its stored
+capacity: run `atelier slots set 1` once on such a machine. Capacity is recorded atomically in
 `/tmp/atelier-test-slots-v1.sqlite`; it does not depend on the project,
 `ATELIER_CACHE`, `ATELIER_CONFIG_DIR`, HOME, or the runner name. After creation,
 stored capacity wins. An invalid or disagreeing environment value warns once
@@ -29,8 +32,9 @@ capacity.
 
 Inside a slot, `npm test` (test/run.mjs) gives its Node pool
 (`--test-concurrency`) and its Vitest pool (`--maxWorkers`) each the cores
-divided by the slot capacity, at least one, read from `ATELIER_TEST_SLOTS` or
-the default capacity. Slots busy together then keep the machine's load near its
+divided by the slot capacity, at least one, read from `ATELIER_TEST_SLOTS`;
+without it a quarter of the cores, so a pool still holding several slots from
+before the default became one is not loaded several times over. Slots busy together then keep the machine's load near its
 core count. A required check that fails is run once more at the same head by
 `atelier check`; failing then passing is recorded as a flake (the failure,
 then the pass, whose output starts with FLAKE), and a check that fails twice
