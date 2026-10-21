@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { runReview, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { REVIEW_RENEW_MS } from "../src/rules.ts";
 
 // Pin the load under the runner's limit so these tests are not held back by
 // this machine's real load; the gate is tested with an injected load.
@@ -698,7 +699,7 @@ async function serveReview(t, dir, claim, answers = {}, { renew = false } = {}) 
   const executeChild = async (argv, options) => {
     if (argv[0] === "git") return execute(argv, options);
     if (argv[0] === "reviewer") {
-      if (renew) { t.mock.timers.tick(30_000); await tick(); }
+      if (renew) { t.mock.timers.tick(REVIEW_RENEW_MS); await tick(); }
       seen.brief = readFileSync(argv[1], "utf8");
       seen.diff = readFileSync(argv[2], "utf8");
       seen.diffPath = argv[2];
@@ -726,6 +727,7 @@ async function serveReview(t, dir, claim, answers = {}, { renew = false } = {}) 
     executeChild,
   });
   assert.ok(posted.includes("review"), `the verdict is posted: ${posted.join(", ")}`);
+  assert.doesNotMatch(seen.brief, /## Clean-clone run/, "the Git-diff fixture must not collect runner evidence");
   return seen;
 }
 
