@@ -20,8 +20,10 @@ function fixture(t, capacity = 1) {
   return { options, processes, owner };
 }
 
-test("capacity defaults to a quarter of cores, at least one; only positive integers are accepted", () => {
-  for (const [cores, expected] of [[0, 1], [1, 1], [7, 1], [8, 2], [18, 4]]) assert.equal(slotCapacity({}, cores), expected);
+// t161: with three suites on one 18-core Mac and a default of four slots, two
+// landings failed both attempts on timing and Artifacts 503 noise.
+test("capacity defaults to one whatever the cores; only positive integers are accepted", () => {
+  for (const cores of [0, 1, 7, 8, 18, 36]) assert.equal(slotCapacity({}, cores), 1);
   assert.equal(slotCapacity({ ATELIER_TEST_SLOTS: "3" }), 3);
   for (const value of ["", "0", "-1", "1.5", "Infinity", "3x", " 2", "1e2", "9007199254740992"]) {
     assert.throws(() => slotCapacity({ ATELIER_TEST_SLOTS: value }), /positive integer/);
@@ -196,7 +198,7 @@ test("SIGKILL of a SQLite writer rolls back without stranding the pool lock", { 
 });
 
 
-test("environment is advisory after creation and invalid initial values use the core default", async (t) => {
+test("environment is advisory after creation and invalid initial values use the default of one", async (t) => {
   const f = fixture(t), warnings = [];
   const options = { ...f.options, warn: (message) => warnings.push(message) };
   assert.equal((await slotStatus({ ...options, env: { ATELIER_TEST_SLOTS: "bad" } })).capacity, slotCapacity({}));

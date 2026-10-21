@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { slotStatus } from "../cli/load.mjs";
@@ -20,22 +20,21 @@ async function until(read, message) {
   throw new Error(message);
 }
 
-function fixture(t) {
+function fixture(t, env = { ATELIER_TEST_SLOTS: "1" }) {
   const root = mkdtempSync(join(tmpdir(), "atelier-slot-process-"));
-  const path = join(root, "pool.sqlite"), env = { ATELIER_TEST_SLOTS: "1" };
+  const path = join(root, "pool.sqlite");
   const children = [];
   t.after(async () => {
     for (const child of children) { try { process.kill(-child.pid, "SIGKILL"); } catch { /* exited */ } }
     await Promise.all(children.map((child) => child.finished));
     rmSync(root, { force: true, recursive: true });
   });
-  const run = (command, cls = "ordinary", lease = randomUUID(), sequence = {}) => {
-    const script = `import { runSlotCommand } from ${JSON.stringify(moduleURL)};
-      try { await runSlotCommand(${JSON.stringify(command)}, { class: ${JSON.stringify(cls)}, project: 'project-' + process.pid, actor: 'codex/test', task: 't1', ...${JSON.stringify(sequence)} }, { path: ${JSON.stringify(path)} }); }
-      catch (error) { console.error(error); process.exitCode = 1; }`;
-    const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
-      detached: true, env: { ...process.env, ...env, ATELIER_TEST_LEASE: lease }, stdio: ["ignore", "pipe", "pipe"],
-    });
+  // A node script run in a process group of its own with a lease of its own;
+  // ATELIER_TEST_SLOTS is whatever `env` gives, never the caller's.
+  const spawnScript = (script, lease = randomUUID()) => {
+    const base = { ...process.env, ...env, ATELIER_TEST_LEASE: lease };
+    if (env.ATELIER_TEST_SLOTS === undefined) delete base.ATELIER_TEST_SLOTS;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { detached: true, env: base, stdio: ["ignore", "pipe", "pipe"] });
     child.lease = lease;
     child.output = "";
     child.stdout.on("data", (s) => child.output += s);
@@ -44,7 +43,13 @@ function fixture(t) {
     children.push(child);
     return child;
   };
-  return { root, path, run, status: () => slotStatus({ path, env }) };
+  const run = (command, cls = "ordinary", lease = randomUUID(), sequence = {}) => {
+    const script = `import { runSlotCommand } from ${JSON.stringify(moduleURL)};
+      try { await runSlotCommand(${JSON.stringify(command)}, { class: ${JSON.stringify(cls)}, project: 'project-' + process.pid, actor: 'codex/test', task: 't1', ...${JSON.stringify(sequence)} }, { path: ${JSON.stringify(path)} }); }
+      catch (error) { console.error(error); process.exitCode = 1; }`;
+    return spawnScript(script, lease);
+  };
+  return { root, path, run, spawn: spawnScript, status: () => slotStatus({ path, env }) };
 }
 
 test("real wrappers: queued cancellation, SIGKILL, surviving children and reclamation", { timeout: 30000 }, async (t) => {
@@ -130,6 +135,41 @@ test("real wrapper CLI sets capacity, preserves launch tokens, drains and report
   assert.equal((await f.status()).active.length, 0);
 });
 
+// t161: atelier land t142 t140 t139 ran three clean-clone suites at once on one
+// 18-core Mac (default capacity four), and two landings failed both attempts.
+// Three landing processes run a step of their own that must overlap (each
+// waits until all three are in it, so serialising the steps would hang), then
+// a check through the real wrapper under the default capacity (no
+// ATELIER_TEST_SLOTS anywhere): the checks must never run two at once. Each
+// landing reports 36 cores to cli/load.mjs, so the old default (a quarter of
+// them, nine slots) would let all three checks run together on any host, a
+// small one included.
+test("real landings under the default capacity run their checks one at a time while their other steps overlap", { timeout: 60000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t, {});
+  const log = join(f.root, "checks.log"), steps = join(f.root, "steps");
+  mkdirSync(steps);
+  const check = join(f.root, "check.mjs");
+  writeFileSync(check, `import { appendFileSync } from "node:fs";
+    appendFileSync(process.argv[2], "start\\n");
+    setTimeout(() => appendFileSync(process.argv[2], "end\\n"), 400);`);
+  const script = `import os from "node:os";
+    import { syncBuiltinESMExports } from "node:module";
+    import { readdirSync, writeFileSync } from "node:fs";
+    os.cpus = () => Array.from({ length: 36 }, () => ({}));
+    syncBuiltinESMExports();
+    const { runSlotCommand } = await import(${JSON.stringify(moduleURL)});
+    const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+    // The step beside the others: in it until all three landings are.
+    writeFileSync(${JSON.stringify(steps)} + "/" + process.pid, "");
+    while (readdirSync(${JSON.stringify(steps)}).length < 3) await sleep(20);
+    await runSlotCommand([process.execPath, ${JSON.stringify(check)}, ${JSON.stringify(log)}], { class: "release", project: "project", actor: "codex/test", task: "t" + process.pid }, { path: ${JSON.stringify(f.path)} });`;
+  const landings = [1, 2, 3].map(() => f.spawn(script));
+  const ends = await Promise.all(landings.map((l) => l.finished));
+  for (const [i, end] of ends.entries()) assert.equal(end.code, 0, landings[i].output);
+  assert.equal((await f.status()).capacity, 1);
+  assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["start", "end", "start", "end", "start", "end"]);
+});
 
 test("release sequence real processes retain gaps, then yield before the fourth continuation", { timeout: 30000 }, async (t) => {
   if (!canInspectSlots(t)) return;

@@ -1460,7 +1460,7 @@ async function runRegenerateIn(dir, regenerate, io) {
 // check-log line however long the first check's output ran. (Its own key:
 // a merge stop's data carries a `reason` of its own, the note the ledger's
 // merge step records, which is not what the Workflow is told.)
-async function checkStep(io, itemPath, id, step, dir) {
+export async function checkStep(io, itemPath, id, step, dir) {
   try { await step("check", ["check"], dir); }
   catch (error) {
     if (!(error instanceof StepError)) throw error;
@@ -1483,7 +1483,7 @@ async function checkStep(io, itemPath, id, step, dir) {
 // the merge below): the command's output is its own, its duration and what
 // it settled are recorded, and a failure throws the StepError that ends
 // the landing it belongs to.
-async function landStep(io, record, kind, argv, cwd, data = {}) {
+export async function landStep(io, record, kind, argv, cwd, data = {}) {
   const t = Date.now();
   const quiet = kind === "accept" ? { write() {} } : undefined;
   const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env, out: quiet, err: quiet });

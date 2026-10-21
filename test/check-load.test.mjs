@@ -71,6 +71,20 @@ test("retired load settings do not hold local checks", async (t) => {
   assert.doesNotMatch(r.stderr, /waiting for it to fall/);
 });
 
+// t161: the checks of a landing wave must queue for the host's test slots.
+// Both landings run `atelier check` as a step (test/land-check-step.test.mjs),
+// and this is the command's own half: each check's shell is a child of the
+// slot wrapper, started with the task's metadata. A check run outside the
+// wrapper would let a wave's suites overlap again whatever the default capacity.
+test("a check runs as a child of the test-slot wrapper, with the task's metadata", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await fixture(t, ["ps -o command= -p $PPID"], true);
+  const r = await f.run();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const tail = f.evidence[0].outputTail;
+  assert.ok(tail.includes(`${join(f.root, "cli/load.mjs")} --metadata `), tail);
+  assert.match(tail, /"project":"proj","task":"t1","actor":"codex\/test"/);
+});
 
 test("release check keeps its slot across evidence posting and clears the final reservation", { timeout: 30000 }, async (t) => {
   if (!canInspectSlots(t)) return;
