@@ -183,6 +183,29 @@ test("without the override, a failing check stops wrap before any remote is push
   assert.equal(f.git("--git-dir", path, "for-each-ref", "refs/heads"), "", "origin took no push");
 });
 
+for (const status of [0, 7]) {
+  test(`wrap preserves exit ${status} for a registered check with 2 MiB of output`, (t) => {
+    const f = fixture(t), path = remote(f, "origin");
+    const command = `node -e 'require("node:fs").writeFileSync(1, Buffer.alloc(2 * 1024 * 1024, 120)); process.exitCode = ${status}'`;
+    const r = f.runWith({ FAKE_CHECKS: JSON.stringify([command]) }, "wrap", "Large check output", "--push");
+    assert.equal(r.status, status === 0 ? 0 : 1, r.stdout + r.stderr);
+    assert.doesNotMatch(r.stderr, /SIGKILL/);
+    if (status === 0) {
+      assert.match(r.stdout, /Reported: .*: passed/);
+      const session = f.requests().find((q) => q.method === "POST" && q.path.endsWith("/sessions"));
+      assert.ok(session, "the passing check permits a session record");
+      assert.equal(JSON.parse(session.body).checks[0].passed, true);
+      assert.equal(f.git("--git-dir", path, "rev-parse", "HEAD"), f.git("rev-parse", "HEAD"));
+    } else {
+      assert.match(r.stderr, /wrap refuses to commit with a failing check:.*exited 7/);
+      assert.equal(f.git("rev-parse", "HEAD"), f.head);
+      assert.equal(f.git("diff", "--cached", "--name-only"), "");
+      assert.deepEqual(f.requests().filter((q) => q.method !== "GET"), []);
+      assert.equal(f.git("--git-dir", path, "for-each-ref", "refs/heads"), "", "origin took no push");
+    }
+  });
+}
+
 test("wrap gives the owner's remotes a normal push with LFS uploads, and Atelier's baseline still skips them", (t) => {
   const f = fixture(t);
   remote(f, "origin");
