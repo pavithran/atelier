@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -10,6 +10,7 @@ import { postMergeArgs } from "../cli/post-merge-policy.mjs";
 import { runLand } from "../cli/land.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { publishPinned, executePostMerge } from "../cli/post-merge.mjs";
+import { runGroup } from "../cli/group.mjs";
 import { privateConfig } from "./fixtures/private-config.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
@@ -172,6 +173,7 @@ test("executor persists the attempt before clone, uses pinned checkout, installs
   };
   const group = async (argv, opts) => {
     assert.equal(r.state, "running"); commands.push(argv);
+    assert.equal(opts.maxBytes, argv[0] === "git" ? 16 * 1024 * 1024 : undefined);
     if (argv.includes("checkout")) {
       assert.equal(argv.at(-1), b);
       writeFileSync(join(opts.cwd, "package.json"), "{}"); writeFileSync(join(opts.cwd, "package-lock.json"), "{}");
@@ -185,6 +187,71 @@ test("executor persists the attempt before clone, uses pinned checkout, installs
   const count = commands.length;
   await executePostMerge({ request, name: "p", id: "t1", group, print() {} });
   assert.equal(commands.length, count);
+});
+
+for (const status of [0, 7]) {
+  test(`post-merge check preserves exit ${status} with 2 MiB of output`, async t => {
+    const source = repo(t);
+    writeFileSync(join(source.dir, "output.cjs"), `require("node:fs").writeFileSync(1, Buffer.alloc(2 * 1024 * 1024, 120)); process.exitCode = ${status};`);
+    writeFileSync(join(source.dir, "later.cjs"), "process.stdout.write('later step');");
+    const head = source.commit("check fixture");
+    const r = run([step("large", { command: "node output.cjs", timeoutMs: 30000 }), step("later", { command: "node later.cjs", timeoutMs: 30000 })]);
+    r.after = head; preparePostMerge(r, []);
+    const posts = [], executions = [], directories = new Set();
+    const request = async (method, path, body) => {
+      if (path.endsWith("baseline-token")) return { remote: source.dir, token: "fixture" };
+      if (body) posts.push(body);
+      if (body?.action === "start") startAttempt(r, `attempt-${posts.length}`, at);
+      if (body?.action === "finish") finishAttempt(r, body.attempt, body.passed, body.output, at);
+      return { run: structuredClone(r) };
+    };
+    const group = async (argv, opts) => {
+      const result = await runGroup(argv, opts);
+      if (opts.cwd) directories.add(opts.cwd);
+      if (argv.includes("rev-parse")) assert.equal(result.stdout.trim(), head);
+      if (argv[0] === "/bin/sh") executions.push({ command: argv.at(-1), result });
+      return result;
+    };
+    const executing = executePostMerge({ request, name: "fixture", id: "t1", group, print() {} });
+    if (status === 0) await executing;
+    else await assert.rejects(executing, /post-merge large failed/);
+    const first = executions[0].result;
+    assert.equal(first.status, status);
+    assert.equal(first.signal, null);
+    assert.equal(first.error, undefined);
+    assert.equal(Buffer.byteLength(first.stdout), 2 * 1024 * 1024);
+    const finish = posts.find(p => p.action === "finish");
+    assert.equal(finish.passed, status === 0);
+    assert.equal(finish.commandOutcome, status === 0 ? "passed" : "failed");
+    assert.equal(r.state, status === 0 ? "complete" : "failed");
+    assert.deepEqual(executions.map(e => e.command), status === 0 ? ["node output.cjs", "node later.cjs"] : ["node output.cjs"]);
+    assert.ok(directories.size > 0);
+    for (const dir of directories) assert.equal(existsSync(dir), false, "temporary clones are removed");
+  });
+}
+
+test("post-merge deploy and its npm setup retain the smaller capture limit", async () => {
+  const r = run([step("deploy", { class: "deploy", command: "npm run deploy", versionUrl: "https://example.test/api/version" })]);
+  preparePostMerge(r, []);
+  const commands = [];
+  const request = async (method, path, body) => {
+    if (path.endsWith("baseline-token")) return { remote: "https://baseline.test/git", token: "fixture" };
+    if (body?.action === "start") startAttempt(r, "1", at);
+    if (body?.action === "finish") finishAttempt(r, body.attempt, body.passed, body.output, at, { commit: b, routeLevel: 21 }, body.commandOutcome);
+    return { run: structuredClone(r) };
+  };
+  const group = async (argv, opts) => {
+    assert.equal(opts.maxBytes, argv[0] === "git" ? 16 * 1024 * 1024 : 1024 * 1024);
+    if (argv.includes("checkout")) {
+      writeFileSync(join(opts.cwd, "package.json"), "{}");
+      writeFileSync(join(opts.cwd, "package-lock.json"), "{}");
+    }
+    commands.push(argv);
+    return { status: 0, stdout: argv.includes("rev-parse") ? b : "", stderr: "" };
+  };
+  await executePostMerge({ request, name: "fixture", id: "t1", group, print() {} });
+  assert.deepEqual(commands.filter(argv => argv[0] === "npm"), [["npm", "ci", "--no-audit", "--no-fund"], ["npm", "run", "deploy"]]);
+  assert.equal(r.state, "complete");
 });
 
 
