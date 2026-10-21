@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -84,8 +84,17 @@ else process.stdout.write(answer);
 function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-adapters-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const ws = join(dir, "ws"), record = join(dir, "record.json"), fake = join(dir, "fake-harness");
+  // The mock clone lives outside every implicit temp root (/tmp, TMPDIR, the
+  // system temp folder), as the real one does under ~/Library/Caches, since a
+  // Codex review refuses a clone inside one (t140), whatever TMPDIR is.
+  const clones = mkdtempSync(join(homedir(), "atelier-adapters-clone-"));
+  t.after(() => rmSync(clones, { recursive: true, force: true }));
+  const ws = join(clones, "ws"), record = join(dir, "record.json"), fake = join(dir, "fake-harness");
   mkdirSync(ws);
+  // A system temp folder of the run's own, apart from the clone (t140: a
+  // Codex review refuses a clone inside the system temp folder).
+  const tmp = mkdtempSync(join(tmpdir(), "atelier-adapters-tmp-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
   standIn(fake, record);
   // Over the 1 MB an argument could carry.
   const brief = join(dir, "brief.md");
@@ -100,7 +109,7 @@ function setup(t) {
   const store = join(dir, "store");
   mkdirSync(store);
   writeFileSync(join(store, "secrets.json"), JSON.stringify({ "deepseek.API_KEY": "DUMMY-deepseek", CF_AIG_TOKEN: "DUMMY-gateway" }), { mode: 0o600 });
-  return { dir, ws, record, fake, brief, diff, providers, store };
+  return { dir, clones, ws, tmp, record, fake, brief, diff, providers, store };
 }
 
 function run(harness, s, { model, review = false, plan = false, env: extraEnv = {}, timeout = 10_000, secretStore = "file" }) {
@@ -109,7 +118,7 @@ function run(harness, s, { model, review = false, plan = false, env: extraEnv = 
   // The store is named as the runner's default command names it: the runner
   // gives a harness no ATELIER_ variable.
   const extra = harness === "opencode" ? ["--providers", s.providers, "--secret-store", secretStore, "--secrets-dir", s.store] : [];
-  const env = { PATH: process.env.PATH, HOME: s.dir, [OVERRIDE[harness]]: s.fake,
+  const env = { PATH: process.env.PATH, HOME: s.dir, TMPDIR: s.tmp, [OVERRIDE[harness]]: s.fake,
     CF_AIG_METADATA: gatewayMetadata("t9", review ? "review" : "build", "home:mbp"), ...extraEnv };
   const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS[harness]), ...extra, ...args], {
     encoding: "utf8", env, timeout, killSignal: "SIGKILL",
@@ -257,7 +266,8 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.deepEqual(codex.slice(codex.indexOf("exec"), codex.indexOf("exec") + 3), ["exec", "--model", "gpt-6-astra"]);
   assert.equal(codex.at(-1), "-", "codex reads the prompt from standard input");
   assert.equal(codex[codex.indexOf("--sandbox") + 1], "workspace-write");
-  assert.equal(run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv[codex.indexOf("--sandbox") + 1], "read-only");
+  const codexReview = run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv;
+  assert.equal(codexReview[codexReview.indexOf("--sandbox") + 1], "workspace-write", "t140: read-only refused mkdtemp, so astra could not run a test that makes a scratch folder");
   const agy = run("antigravity", s, { model: "gemini-3.1-pro" }).seen.argv;
   assert.equal(agy[agy.indexOf("--model") + 1], "gemini-3.1-pro-high");
   const argon = run("antigravity", s, { model: "gemini-4-argon" }).seen.argv;
@@ -334,7 +344,12 @@ test("codex runs with its MCP features off and its config.toml servers switched 
     assert.equal(calls.length, 2);
     assert.deepEqual(calls[0].argv, [...CODEX_FEATURES_OFF, "mcp", "list", "--json"]);
     assert.deepEqual(calls[1].argv, [...flags, "mcp", "list", "--json"], "the job's flags are the ones checked");
-    for (const call of calls) assert.equal(realpathSync(call.cwd), realpathSync(s.ws), "listed from the workspace, so a project's own servers are found too");
+    // A review starts in its scratch folder and lists from there (Astra on
+    // 9a9228b5); a build starts in the clone and lists from it.
+    for (const call of calls) {
+      if (review) { assert.equal(dirname(call.cwd), realpathSync(s.tmp)); assert.match(call.cwd, /atelier-codex-review-/); }
+      else assert.equal(call.cwd, realpathSync(s.ws), "listed from the workspace, so a project's own servers are found too");
+    }
   }
 });
 
@@ -680,4 +695,163 @@ test("a verification brief with a base is given a final demand offering CONFIRME
     const plain = run(harness, s, { model, review: true, env: { FAKE_ANSWER: answer } }).seen.input.trimEnd();
     assert.ok(plain.endsWith(VERIFY_DEMAND) && !plain.includes("PRE-EXISTING"), `${harness}: no base, no PRE-EXISTING`);
   }
+});
+
+// t140: gpt-6-astra reviewed t68, t58 and t136 by inspection only, because
+// `codex exec -s read-only` refuses mkdtemp under os.tmpdir() (EPERM) and so
+// every test that makes a scratch folder. A review now runs workspace-write
+// in a fresh empty folder outside the clone.
+function codexReviewIn(t, spawnResult) {
+  const s = setup(t);
+  const seen = [];
+  const spawn = (exe, argv, options) => {
+    if (argv.includes("mcp")) return { status: 0, stdout: "[]" };
+    const cwd = options.cwd;
+    seen.push({ argv, cwd, existed: existsSync(cwd), entries: readdirSync(cwd), input: options.input });
+    return spawnResult;
+  };
+  const err = [];
+  const status = runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp: s.tmp, spawn, stderr: (x) => err.push(x) });
+  return { s, seen, status, err: err.join("") };
+}
+
+test("a codex review runs workspace-write in a fresh empty folder outside the clone, named in the prompt, and the folder is removed", (t) => {
+  const { s, seen, status } = codexReviewIn(t, { status: 0 });
+  assert.equal(status, 0);
+  assert.equal(seen.length, 1);
+  const { argv, cwd, existed, entries, input } = seen[0];
+  assert.ok(existed && entries.length === 0, "an existing, empty folder");
+  assert.equal(argv[argv.indexOf("--cd") + 1], cwd, "codex is rooted in the scratch folder");
+  assert.equal(argv[argv.indexOf("--sandbox") + 1], "workspace-write");
+  const overrides = argv.filter((a, i) => argv[i - 1] === "-c");
+  assert.deepEqual(overrides.filter((a) => a.startsWith("sandbox_workspace_write")), ["sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false"], "a config.toml cannot reopen the clone, its .git or the network (Astra on 3db03d0d)");
+  assert.ok(!argv.includes(s.ws), "the clone is not a root of the run");
+  assert.equal(dirname(cwd), realpathSync(s.tmp), "made under the system temp folder");
+  assert.ok(!cwd.startsWith(s.ws) && !s.ws.startsWith(cwd), "outside the clone");
+  assert.ok(input.includes(`The clone under review is ${s.ws}`), "the prompt names the clone");
+  assert.ok(input.endsWith(VERDICT_DEMAND));
+  assert.equal(existsSync(cwd), false, "removed after success");
+});
+
+test("a codex review's scratch folder is removed after a nonzero exit and after a spawn failure", (t) => {
+  const failed = codexReviewIn(t, { status: 3 });
+  assert.equal(failed.status, 3);
+  assert.equal(existsSync(failed.seen[0].cwd), false);
+  const broken = codexReviewIn(t, { error: Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" }) });
+  assert.equal(broken.status, 1);
+  assert.match(broken.err, /could not run codex/);
+  assert.equal(existsSync(broken.seen[0].cwd), false);
+});
+
+test("a codex review that cannot start leaves no scratch folder, and a build gets none and runs in the clone", (t) => {
+  const s = setup(t);
+  const status = runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp: s.tmp, spawn: () => ({ status: 1, stdout: "" }), stderr: () => {} });
+  assert.equal(status, 1, "codex's MCP list failed, so the job did not run");
+  assert.deepEqual(readdirSync(s.tmp), [], "no scratch folder left behind");
+  const calls = [];
+  runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", "undefined", "undefined"], { env: { PATH: process.env.PATH, HOME: s.dir }, spawn: (exe, argv, o) => { if (!argv.includes("mcp")) calls.push({ argv, cwd: o.cwd }); return argv.includes("mcp") ? { status: 0, stdout: "[]" } : { status: 0 }; }, stderr: () => {} });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cwd, s.ws);
+  assert.equal(calls[0].argv[calls[0].argv.indexOf("--cd") + 1], s.ws);
+  assert.ok(calls[0].argv.some((a) => a.startsWith("sandbox_workspace_write.writable_roots=")), "a build's argv is unchanged");
+});
+
+// Astra on 9a9228b5, finding 1: the MCP servers were discovered from the clone
+// but codex starts in the scratch folder, so a project-only server got a
+// switch-off override into a configuration without it, which fails startup.
+test("a codex review discovers its MCP servers from the scratch folder it starts in, not the clone", (t) => {
+  const s = setup(t);
+  const lists = [];
+  const spawn = (exe, argv, options) => {
+    if (!argv.includes("mcp")) return { status: 0 };
+    const here = realpathSync(options.cwd);
+    lists.push(here);
+    const projectOnly = here === realpathSync(s.ws);
+    const flagged = argv.some((a) => a === "mcp_servers.project-only.enabled=false");
+    return { status: 0, stdout: JSON.stringify(projectOnly ? [{ name: "project-only", enabled: !flagged }] : []) };
+  };
+  const status = runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp: s.tmp, spawn, stderr: () => {} });
+  assert.equal(status, 0);
+  assert.equal(lists.length, 2);
+  for (const cwd of lists) assert.notEqual(cwd, realpathSync(s.ws), "not listed from the clone");
+  const calls = [];
+  const spawn2 = (exe, argv, options) => { if (argv.includes("mcp")) return spawn(exe, argv, options); calls.push(argv); return { status: 0 }; };
+  runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp: s.tmp, spawn: spawn2, stderr: () => {} });
+  assert.ok(!calls[0].some((a) => a.includes("project-only")), "no override for a server the run never sees");
+  // A build starts in the clone, so it still lists from there.
+  lists.length = 0;
+  runAdapter("codex", ["gpt-6-astra", s.brief, s.ws, "undefined", "undefined", "undefined"], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp: s.tmp, spawn, stderr: () => {} });
+  assert.ok(lists.every((cwd) => cwd === realpathSync(s.ws)));
+});
+
+// Astra on 9a9228b5, finding 2: workspace-write also writes the system temp
+// folder, so a clone inside it (or TMPDIR naming the clone) would be writable.
+test("a codex review refuses a clone inside the system temp folder, the temp folder itself as clone, and a temp folder inside the clone", (t) => {
+  const s = setup(t);
+  const never = () => assert.fail("codex was started");
+  const review = (ws, tmp) => {
+    const err = [];
+    const status = runAdapter("codex", ["gpt-6-astra", s.brief, ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp, spawn: never, stderr: (x) => err.push(x) });
+    return { status, err: err.join("") };
+  };
+  const inside = join(s.tmp, "clone");
+  mkdirSync(inside);
+  const a = review(inside, s.tmp);
+  assert.equal(a.status, 1);
+  assert.match(a.err, /is inside the temp folder/);
+  const b = review(s.tmp, s.tmp);
+  assert.equal(b.status, 1, "the temp folder is the clone");
+  assert.match(b.err, /is inside the temp folder/);
+  const clone = join(s.clones, "clone2");
+  mkdirSync(join(clone, "tmp"), { recursive: true });
+  const c = review(clone, join(clone, "tmp"));
+  assert.equal(c.status, 1, "TMPDIR names a folder in the clone");
+  assert.match(c.err, /inside the clone/);
+  assert.deepEqual(readdirSync(join(clone, "tmp")), [], "no scratch folder left in the clone");
+  // Through a symlink the real paths still overlap.
+  const link = join(s.dir, "link");
+  symlinkSync(s.tmp, link);
+  assert.equal(review(join(link, "clone"), s.tmp).status, 1);
+  // A build is not a review: it needs no scratch folder and is not refused.
+  let started = 0;
+  const build = runAdapter("codex", ["gpt-6-astra", s.brief, inside, "undefined", "undefined", "undefined"], { env: { PATH: process.env.PATH, HOME: s.dir }, tmp: s.tmp, spawn: (e, argv) => { if (!argv.includes("mcp")) started++; return argv.includes("mcp") ? { status: 0, stdout: "[]" } : { status: 0 }; }, stderr: () => {} });
+  assert.equal(build, 0);
+  assert.equal(started, 1);
+});
+
+// Astra on f0fa13da: Codex's workspace-write also permits /tmp, which is not
+// TMPDIR on macOS (/var/folders/.../T), so a clone at /tmp/review-clone passed.
+test("a codex review refuses a clone inside /tmp, $TMPDIR or another implicit temp folder when they differ from the system temp folder, and accepts a clone elsewhere", (t) => {
+  const s = setup(t);
+  const never = () => assert.fail("codex was started");
+  const fakeTmp = mkdtempSync(join(tmpdir(), "atelier-fake-tmp-"));
+  const envTmp = mkdtempSync(join(tmpdir(), "atelier-env-tmp-"));
+  t.after(() => { rmSync(fakeTmp, { recursive: true, force: true }); rmSync(envTmp, { recursive: true, force: true }); });
+  const review = (ws, extra = {}) => {
+    const err = [];
+    const status = runAdapter("codex", ["gpt-6-astra", s.brief, ws, "undefined", s.diff, join(s.dir, "verdict.md")], { env: { PATH: process.env.PATH, HOME: s.dir, ...extra.env }, tmp: s.tmp, tempRoots: extra.tempRoots, spawn: extra.spawn ?? never, stderr: (x) => err.push(x) });
+    return { status, err: err.join("") };
+  };
+  // A stand-in /tmp that is not the system temp folder.
+  mkdirSync(join(fakeTmp, "review-clone"));
+  const a = review(join(fakeTmp, "review-clone"), { tempRoots: [fakeTmp] });
+  assert.equal(a.status, 1);
+  assert.match(a.err, /inside the temp folder \//, "names the root it is inside (the stand-in, or /tmp when TMPDIR is /tmp)");
+  assert.equal(review(fakeTmp, { tempRoots: [fakeTmp] }).status, 1, "the temp folder itself");
+  // $TMPDIR of the environment, apart from the system temp folder.
+  mkdirSync(join(envTmp, "clone"));
+  assert.equal(review(join(envTmp, "clone"), { env: { TMPDIR: envTmp } }).status, 1);
+  // The real /tmp.
+  if (existsSync("/tmp")) {
+    const real = mkdtempSync("/tmp/atelier-t140-");
+    t.after(() => rmSync(real, { recursive: true, force: true }));
+    const r = review(real);
+    assert.equal(r.status, 1);
+    assert.match(r.err, /inside the temp folder (\/private)?\/tmp/);
+  }
+  // A clone in none of those folders (as ~/Library/Caches/ai-projects/... is) still runs.
+  let started = 0;
+  const spawn = (e, argv) => { if (!argv.includes("mcp")) started++; return argv.includes("mcp") ? { status: 0, stdout: "[]" } : { status: 0 }; };
+  assert.equal(review(s.ws, { tempRoots: [fakeTmp], spawn }).status, 0);
+  assert.equal(started, 1);
 });

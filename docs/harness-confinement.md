@@ -32,8 +32,14 @@ workspace, a clone under `~/Library/Caches/ai-projects/cloudflare-git/work/`:
   A process that leaves the group (`setsid`) is beyond this, and the comment
   in `cli/runner.mjs` says so.
 - **A harness's own sandbox, where the job allows one.** The shipped Codex
-  adapter runs a review in Codex's `read-only` sandbox and a plan in
-  `workspace-write`. A Codex build gets none: the runner refuses a Codex
+  adapter runs a review in Codex's `workspace-write` sandbox, rooted in a
+  fresh empty folder made under the system temp folder and removed after the
+  run, so a review can write that folder and the system temp folder (tests
+  make scratch folders there) but not the clone, its `.git` or the network
+  (t140; `read-only` refused `mkdtemp`). A review whose clone is at or inside the system temp folder, or whose temp folder is inside the clone, is refused, since the temp folder is writable to it. A plan runs in `workspace-write`
+  in the clone. The hand wrapper `~/.local/bin/atelier-codex` is outside the
+  repository and still runs a review `-s read-only`; it needs the same change
+  by the developer. A Codex build gets none: the runner refuses a Codex
   build unless its command is `codex exec --sandbox danger-full-access` (or
   the sandbox bypass), since the checks need localhost listening, the npm
   cache and the network (`codexBuildRefusal` in `cli/runner.mjs`).

@@ -14,9 +14,9 @@
 // and gives them to opencode alone; the others use their harness's own login.
 
 import { execFile, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 import { NO_VERDICT, VERIFY_BASE_LINE, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
@@ -70,7 +70,15 @@ function fenceFor(text) {
   return "`".repeat(longest + 1);
 }
 
-export function reviewPrompt(brief, diff) {
+// Where the reviewer may look: the current folder, or for a Codex review,
+// whose current folder is an empty scratch one (t140), the clone it reads.
+function lookFor(clone) {
+  return clone
+    ? `The clone under review is ${clone}: read it there and run the project's tests against it, but your current folder is an empty scratch folder, where you may write, as you may the system temp folder; the clone is read-only to you.`
+    : "In the current folder you may read files and run the project's tests.";
+}
+
+export function reviewPrompt(brief, diff, clone) {
   const fence = fenceFor(diff);
   return [
     brief.replace(/\n+$/, ""),
@@ -80,7 +88,7 @@ export function reviewPrompt(brief, diff) {
     diff.replace(/\n+$/, ""),
     fence,
     "",
-    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it.",
+    `${lookFor(clone)} Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it.`,
     VERDICT_DEMAND,
   ].join("\n");
 }
@@ -106,7 +114,7 @@ export function demandFor(brief) {
   return brief.includes(VERIFY_BASE_LINE) ? VERIFY_DEMAND_BASE : VERIFY_DEMAND;
 }
 
-export function verificationPrompt(brief, diff) {
+export function verificationPrompt(brief, diff, clone) {
   const fence = fenceFor(diff);
   return [
     brief.replace(/\n+$/, ""),
@@ -116,7 +124,7 @@ export function verificationPrompt(brief, diff) {
     diff.replace(/\n+$/, ""),
     fence,
     "",
-    "In the current folder you may read files and run the project's tests. Edit nothing, do not push and run no atelier command; confirm a finding only when you have shown it yourself.",
+    `${lookFor(clone)} Edit nothing, do not push and run no atelier command; confirm a finding only when you have shown it yourself.`,
     demandFor(brief),
   ].join("\n");
 }
@@ -159,7 +167,9 @@ export function promptFor(harness, args, read = (f) => readFileSync(f, "utf8")) 
   const brief = read(args.brief);
   if (jobKind(args) === "review") {
     const diff = args.diff ? read(args.diff) : "";
-    return isVerification(brief) ? verificationPrompt(brief, diff) : reviewPrompt(brief, diff);
+    // A Codex review runs in a scratch folder, so its prompt names the clone.
+    const clone = harness === "codex" ? args.workspace : undefined;
+    return isVerification(brief) ? verificationPrompt(brief, diff, clone) : reviewPrompt(brief, diff, clone);
   }
   return `${agentRules(harness, args.model, args.workspace, args.plan)}\n\n${brief}`;
 }
@@ -203,8 +213,14 @@ export const HARNESSES = {
   codex: {
     executable: "codex",
     command(args, kind, setup) {
+      // A review starts in setup.scratch, a fresh empty folder made outside
+      // the clone (t140): read-only refuses mkdtemp under the system temp
+      // folder, so gpt-6-astra could not run a test that makes a scratch
+      // folder. Under workspace-write it can write that folder and the system
+      // temp folder; the clone, its .git and the network stay closed to it, and
+      // the two overrides keep a config.toml from opening them again.
+      if (kind === "review") return { argv: [...setup.noMcp, "exec", "--model", args.model, "--skip-git-repo-check", "--cd", setup.scratch, "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.writable_roots=[]", "-c", "sandbox_workspace_write.network_access=false", "--output-last-message", args.verdict, "-"], verdictFrom: "file" };
       const common = [...setup.noMcp, "exec", "--model", args.model, "--skip-git-repo-check", "--cd", args.workspace];
-      if (kind === "review") return { argv: [...common, "--sandbox", "read-only", "--output-last-message", args.verdict, "-"], verdictFrom: "file" };
       // Its workspace-write sandbox keeps .git read-only unless it is named
       // a writable root, and a build has to commit.
       return { argv: [...common, "--sandbox", "workspace-write", "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify([join(args.workspace, ".git")])}`, "-"], verdictFrom: "stdout" };
@@ -336,7 +352,7 @@ export const CODEX_FEATURES_OFF = ["plugins", "apps", "browser_use", "browser_us
   .flatMap((feature) => ["--disable", feature]);
 
 // The servers `codex mcp list --json` prints with `flags` before the
-// subcommand, from `workspace` so a project's own servers are found too: a
+// subcommand, from the folder the job starts in: a
 // list of { name, enabled, ... } or, in older releases, an object keyed by name.
 function codexMcpList(exe, flags, workspace, env, spawn) {
   const shown = `codex ${[...flags, "mcp", "list", "--json"].join(" ")}`;
@@ -459,6 +475,39 @@ export function runHome(env, dir) {
 
 // Runs one job; returns the exit status. `io` replaces the process's own
 // spawn, environment, output and secret reads in tests.
+// The fresh empty folder a Codex review starts in, made under the system temp
+// folder `tmp`. Codex's workspace-write sandbox also writes the system temp
+// folder, so a clone at or inside it, or a scratch folder inside the clone
+// (TMPDIR naming the clone), would be writable to the review: both refuse the
+// review (t140, Astra on 9a9228b5). Real paths are compared.
+function within(path, root) {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+// Every folder the sandbox may write without being told: the system temp
+// folder, $TMPDIR, and the fixed ones macOS and Linux share (Astra on
+// f0fa13da: /tmp is writable though TMPDIR is /var/folders/.../T). Real paths;
+// a folder that does not exist is skipped. `extra` adds roots (tests).
+export const IMPLICIT_TEMP_ROOTS = ["/tmp", "/private/tmp", "/var/tmp"];
+function tempRoots(tmp, env, extra) {
+  const roots = new Set();
+  for (const dir of [tmp, env.TMPDIR, ...IMPLICIT_TEMP_ROOTS, ...extra]) {
+    if (!dir) continue;
+    try { roots.add(realpathSync(dir)); } catch { /* not there: nothing to write */ }
+  }
+  return [...roots];
+}
+export function codexScratch(workspace, tmp, { env = process.env, extra = [] } = {}) {
+  const clone = realpathSync(workspace), root = realpathSync(tmp);
+  const hit = tempRoots(tmp, env, extra).find((r) => within(clone, r));
+  if (hit) throw new Error(`the clone ${clone} is inside the temp folder ${hit}, which a Codex review may write, so the review does not run`);
+  const scratch = mkdtempSync(join(root, "atelier-codex-review-"));
+  if (within(realpathSync(scratch), clone)) {
+    rmSync(scratch, { recursive: true, force: true });
+    throw new Error(`the system temp folder ${root} is inside the clone ${clone}, so the review's scratch folder would be inside the clone, which it must not write; the review does not run`);
+  }
+  return scratch;
+}
+
 export function runAdapter(harness, argv, io = {}) {
   const env = io.env ?? process.env;
   const err = io.stderr ?? ((text) => process.stderr.write(text));
@@ -466,7 +515,7 @@ export function runAdapter(harness, argv, io = {}) {
   let args;
   try { args = parseArgs(argv); } catch (error) { return fail(error.message); }
   const kind = jobKind(args);
-  let childEnv = env, setup, runDir;
+  let childEnv = env, setup, runDir, scratchDir;
   try {
     if (harness === "opencode") {
       setup = opencodeSetup(args.model, args.options.providers ?? defaultProvidersDir(env));
@@ -484,15 +533,24 @@ export function runAdapter(harness, argv, io = {}) {
       // opencode 2 gets the deny at every run, over whatever config was stored.
       if (major >= 2) childEnv.OPENCODE_CONFIG_CONTENT = OPENCODE2_CONFIG_CONTENT;
     }
-    if (harness === "codex") setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
+    if (harness === "codex") {
+      // A review starts in its scratch folder, so the MCP servers are
+      // discovered and checked from there: from the clone, a project-only
+      // server would get a switch-off override into a run that never sees it.
+      if (kind === "review") scratchDir = codexScratch(args.workspace, io.tmp ?? tmpdir(), { env, extra: io.tempRoots });
+      setup = { noMcp: codexNoMcpFlags(executableFor(harness, env), scratchDir ?? args.workspace, childEnv, io.spawn) };
+      if (scratchDir) setup.scratch = scratchDir;
+    }
   } catch (error) {
     if (runDir) rmSync(runDir, { recursive: true, force: true });
+    if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
     return fail(error.message);
   }
   try {
     return runHarness(harness, args, kind, setup, childEnv, io, fail);
   } finally {
     if (runDir) rmSync(runDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    if (scratchDir) rmSync(scratchDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   }
 }
 
@@ -508,7 +566,7 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
   const options = {
-    cwd: args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    cwd: setup?.scratch ?? args.workspace, env: childEnv, input: prompt, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     stdio: ["pipe", capture ? "pipe" : "inherit", "inherit"],
   };
   const limit = harness === "opencode" && kind === "build" ? RUN_LIMITS[setup.providerModel] : null;
