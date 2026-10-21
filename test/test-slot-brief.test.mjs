@@ -118,12 +118,13 @@ test("the generated command runs from another workspace: slot held, nested reuse
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const cwd = join(work, "other workspace");
   mkdirSync(cwd);
-  // A copy of the wrapper with a pool of its own (as test/load-process.test.mjs
-  // does). With the host's pool this command asked for a second slot of the
-  // suite's own host (the check holds the only one since t161, the default
-  // capacity of one) and waited for it until the test's timeout.
+  // The enclosing suite can hold the host's only slot. This fixture needs
+  // its own pool because its fresh environment intentionally drops that lease.
   const wrapper = join(work, "load.mjs");
-  writeFileSync(wrapper, readFileSync(SLOT_WRAPPER, "utf8").replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(join(work, "pool.sqlite"))));
+  const source = readFileSync(SLOT_WRAPPER, "utf8");
+  const isolated = source.replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(join(work, "pool.sqlite")));
+  assert.notEqual(isolated, source, "the fixture must replace the host pool path");
+  writeFileSync(wrapper, isolated);
   const task = `t479-${randomUUID()}`;
   const inner = `
     const { spawnSync } = require("node:child_process");
@@ -135,7 +136,7 @@ test("the generated command runs from another workspace: slot held, nested reuse
     console.log(JSON.stringify({ cwd: process.cwd(), held: mine.length, cls: mine[0]?.class, nested: nested.status, still: after.active.filter((e) => e.task === ${JSON.stringify(task)}).length, args: process.argv.slice(1) }));
     process.exit(5);`;
   const line = `${commandOf(slotNote(wrapper))} -- ${quoteShell(process.execPath)} -e ${quoteShell(inner)} 'a b' "it's"`;
-  const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ATELIER_TEST_TASK: task, ATELIER_TEST_PROJECT: "atelier", ATELIER_TEST_ACTOR: "claude-code/test", ATELIER_TEST_PRIORITY: "review" };
+  const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ATELIER_TEST_TASK: task, ATELIER_TEST_PROJECT: "atelier", ATELIER_TEST_ACTOR: "claude-code/test", ATELIER_TEST_PRIORITY: "review", ATELIER_TEST_SLOTS: "1" };
   const r = spawnSync("sh", ["-c", line], { cwd, env, encoding: "utf8", timeout: 50000 });
   assert.equal(r.status, 5, r.stderr + r.stdout);
   const out = JSON.parse(r.stdout.trim().split("\n").at(-1));

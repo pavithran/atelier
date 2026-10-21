@@ -1,3 +1,4 @@
+import { releaseSequence } from "../load.mjs";
 // atelier wrap. Its forms, flags and help are declared in src/usage/commands/wrap.ts.
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -34,13 +35,16 @@ export default async function wrapCommand() {
   const refused = data.checksSkipped ? [] : record.policy.checks.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
   if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
   const failing = [];
-  if (!data.checksSkipped) for (const command of record.policy.checks) {
-    const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: { project: name, actor: as, class: "release" }, maxBytes: 1024 * 1024 });
-    const passed = result.status === 0 && !result.error;
-    data.checks.push({ command, passed, grade: "reported" });
-    console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
-    if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut });
-  }
+  const sequence = releaseSequence({ project: name, actor: as, class: "release" });
+  try {
+    if (!data.checksSkipped) for (const command of record.policy.checks) {
+      const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: sequence.next(), maxBytes: 1024 * 1024 });
+      const passed = result.status === 0 && !result.error;
+      data.checks.push({ command, passed, grade: "reported" });
+      console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
+      if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut });
+    }
+  } finally { await sequence.close(); }
   // A failing registered check stops wrap here, with every result printed
   // and nothing staged, recorded or pushed: the checks ran in the checkout
   // as the owner left it, and the refusal touches nothing after them.

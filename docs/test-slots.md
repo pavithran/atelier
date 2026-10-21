@@ -15,7 +15,7 @@ node /path/to/atelier/cli/load.mjs --status --json
 The words after `--` are an executable and its arguments, with no implicit
 shell. Use `sh -c` explicitly for shell syntax. Each invocation holds one slot
 for its command and descendants. Prefer separate invocations for separate
-check commands so higher priority waiters can enter between them. Nested
+check commands so higher priority waiters can enter between ordinary commands. Nested
 wrappers reuse their outer slot. Commands run directly in a shell are outside
 enforcement. This is cooperative scheduling, not isolation of untrusted code.
 
@@ -68,6 +68,25 @@ harnesses select review; build and plan harnesses select ordinary. Runner
 briefs give the installed wrapper path, so the project's checkout need not
 contain Atelier's source. Supply project, task and actor through the wrapper
 flags when running manually; runners supply them through their environment.
+
+Release-class `atelier check` and `atelier wrap` sequences retain an idle slot
+for up to five seconds after a successful command whose descendants have
+exited. The next command with that sequence identity converts the reservation
+atomically. A reservation counts toward usage and capacity; if capacity has been reduced below current usage, the reservation is dropped
+and the continuation queues at ordinary priority. Three continuations may
+retain admission. The fourth continuation starts a new window and queues at
+ordinary priority, behind existing ordinary and review waiters. Any continuation
+whose reservation expired also queues at ordinary priority. This bounds the
+extra preference within a sequence; separate release invocations can still
+starve lower classes. Ordinary checks keep their existing behaviour.
+
+Failure or cancellation retains no idle reservation. Normal caller cleanup
+removes only its idle reservations; abrupt caller exit leaves them to expire
+within five seconds on the host high-resolution clock, unaffected by wall-clock corrections.
+A sequence identity is cooperative metadata visible in
+wrapper arguments, not a secret or a security boundary. All participating
+CLIs must use this version to retain reservations across gaps; older callers
+may prune an idle reservation under their former live-process-only rule.
 
 `atelier slots status [--json]` (or the wrapper's `--status [--json]`)
 works locally without server credentials. It reports capacity,

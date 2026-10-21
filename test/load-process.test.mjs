@@ -43,9 +43,9 @@ function fixture(t, env = { ATELIER_TEST_SLOTS: "1" }) {
     children.push(child);
     return child;
   };
-  const run = (command, cls = "ordinary", lease = randomUUID()) => {
+  const run = (command, cls = "ordinary", lease = randomUUID(), sequence = {}) => {
     const script = `import { runSlotCommand } from ${JSON.stringify(moduleURL)};
-      try { await runSlotCommand(${JSON.stringify(command)}, { class: ${JSON.stringify(cls)}, project: 'project-' + process.pid, actor: 'codex/test', task: 't1' }, { path: ${JSON.stringify(path)} }); }
+      try { await runSlotCommand(${JSON.stringify(command)}, { class: ${JSON.stringify(cls)}, project: 'project-' + process.pid, actor: 'codex/test', task: 't1', ...${JSON.stringify(sequence)} }, { path: ${JSON.stringify(path)} }); }
       catch (error) { console.error(error); process.exitCode = 1; }`;
     return spawnScript(script, lease);
   };
@@ -169,4 +169,57 @@ test("real landings under the default capacity run their checks one at a time wh
   for (const [i, end] of ends.entries()) assert.equal(end.code, 0, landings[i].output);
   assert.equal((await f.status()).capacity, 1);
   assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["start", "end", "start", "end", "start", "end"]);
+});
+
+test("release sequence real processes retain gaps, then yield before the fourth continuation", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), sequenceId = randomUUID(), order = join(f.root, "order");
+  const command = (label) => [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(order)}, ${JSON.stringify(label)});`];
+  const first = f.run(command("0"), "release", randomUUID(), { sequenceId, sequenceStep: 0 });
+  assert.equal((await first.finished).code, 0, first.output);
+  const ordinary = f.run(command("O"));
+  await until(async () => (await f.status()).waiters.length === 1, "ordinary did not queue behind reservation");
+  for (let step = 1; step <= 4; step++) {
+    const child = f.run(command(String(step)), "release", randomUUID(), { sequenceId, sequenceStep: step });
+    assert.equal((await child.finished).code, 0, child.output);
+  }
+  assert.equal((await ordinary.finished).code, 0, ordinary.output);
+  assert.equal(readFileSync(order, "utf8"), "0123O4");
+});
+
+test("release sequence failure frees immediately and an abandoned idle reservation expires", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), sequenceId = randomUUID();
+  const failure = f.run([process.execPath, "-e", "process.exit(9)"], "release", randomUUID(), { sequenceId, sequenceStep: 0 });
+  assert.equal((await failure.finished).code, 9, failure.output);
+  assert.equal((await f.status()).usage, 0);
+  const success = f.run([process.execPath, "-e", "process.exit(0)"], "release", randomUUID(), { sequenceId, sequenceStep: 0 });
+  assert.equal((await success.finished).code, 0, success.output);
+  assert.equal((await f.status()).usage, 1, "exited caller retains only bounded idle reservation");
+  const ordinary = f.run([process.execPath, "-e", "process.exit(0)"]);
+  assert.equal((await ordinary.finished).code, 0, ordinary.output);
+  assert.equal((await f.status()).usage, 0);
+});
+
+
+test("cancelling a running release sequence leaves no reservation", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), marker = join(f.root, "started");
+  const child = f.run([process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000);`], "release", randomUUID(), { sequenceId: randomUUID(), sequenceStep: 0 });
+  await until(() => existsSync(marker), "release never started");
+  child.kill("SIGTERM");
+  assert.equal((await child.finished).code, 143, child.output);
+  assert.equal((await f.status()).usage, 0);
+});
+
+
+test("reservation clocks share a high-resolution origin across processes", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t), before = Number(process.hrtime.bigint()) / 1e6;
+  const child = f.run([process.execPath, "-e", "process.exit(0)"], "release", randomUUID(), { sequenceId: randomUUID(), sequenceStep: 0 });
+  assert.equal((await child.finished).code, 0, child.output);
+  const after = Number(process.hrtime.bigint()) / 1e6;
+  const reservation = (await f.status()).active[0];
+  assert.ok(reservation.reservedAt >= before && reservation.reservedAt <= after, "child timestamps share the parent's clock origin");
+  assert.equal(reservation.reservedUntil - reservation.reservedAt, 5000);
 });
