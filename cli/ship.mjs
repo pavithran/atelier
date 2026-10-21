@@ -246,9 +246,10 @@ export function shipSecrets(env, given = []) {
 
 // A step's command runs with the owner's environment, which a deploy needs for
 // its own credentials, less Atelier's own variables: no step needs the owner's
-// Atelier token.
-export function stepEnv(env) {
-  return Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("ATELIER_")));
+// Atelier token. Only the validated source HEAD is added back for delivery.
+export function stepEnv(env, head) {
+  const filtered = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("ATELIER_")));
+  return head ? { ...filtered, ATELIER_SHIP_HEAD: head } : filtered;
 }
 
 // Runs argv with no shell, in `cwd`, showing its output as it comes and
@@ -371,7 +372,7 @@ export async function ship(ctx) {
     } else {
       for (const run of s.runs) {
         print(`${s.step}: ${run.argv ? `running ${run.argv.map(quote).join(" ")}` : run.label}`);
-        const r = run.argv ? await runCommand(run.argv, { cwd, env: stepEnv(ctx.env), timeoutMs: run.timeoutMs }) : await runRequest(run);
+        const r = run.argv ? await runCommand(run.argv, { cwd, env: stepEnv(ctx.env, head), timeoutMs: run.timeoutMs }) : await runRequest(run);
         const result = { ...r, command: run.argv ? run.argv.map(quote).join(" ") : run.label, kind: run.kind, approval: run.kind ? used[run.kind] : null, note: s.verifies ? `verifies the ${s.verifies}` : "" };
         results.push(result);
         if (!run.argv) print(`${s.step}: ${r.output}`);

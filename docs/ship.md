@@ -116,9 +116,9 @@ Atelier's own:
   "schema_version": 1,
   "kind": "atelier.ship",
   "class": "web",
-  "description": "Atelier's own delivery: the Worker deployed to atelier.zone, the live site checked, then main pushed to the github remote.",
-  "deploy": { "run": ["npx", "wrangler", "deploy"], "timeout_seconds": 1200 },
-  "verify-deploy": { "request": "https://atelier.zone", "status": 200 },
+  "description": "Atelier's own delivery: deploy the captured source commit, verify its live binding, then push main to the github remote.",
+  "deploy": { "run": ["node", "scripts/ship-worker.mjs", "deploy"], "timeout_seconds": 1200 },
+  "verify-deploy": { "run": ["node", "scripts/ship-worker.mjs", "verify"], "timeout_seconds": 45 },
   "push": { "remote": "github", "branch": "main" }
 }
 ```
@@ -152,6 +152,16 @@ names another; a verify run needs none unless it names one. A field the
 schema does not list, a run field for a step the class has no place for, or
 a class outside the four is refused before anything runs.
 
+Atelier's own helper checks that the checkout is still clean at
+`ATELIER_SHIP_HEAD` before and after deployment. It passes
+`--keep-vars --var DEPLOYED_MAIN:HEAD` to Wrangler, preserving existing
+variables while updating that source binding. Verification refuses redirects
+and requires HTTP 200 from `https://atelier.zone/api/version` with `commit`
+equal to the captured HEAD. The endpoint's `main` field describes the ledger,
+so it cannot establish which source was deployed. Failure stops the ship
+before wrap or push. Tests use local process and response fixtures; live
+variable preservation and source readback are checked at an authorised release.
+
 ## What a ship does, in order
 
 Before anything runs, `atelier ship` refuses, saying what to do next, unless:
@@ -176,7 +186,10 @@ It then prints the steps and runs them:
 - **install, deploy and verify-delivery** take their approvals, then run each
   command or request in turn. A command runs with the developer's environment,
   which a deploy needs for its own credentials, less every variable whose
-  name starts with `ATELIER_`. Its output is shown as it comes.
+  name starts with `ATELIER_`. The runner then sets the non-secret
+  `ATELIER_SHIP_HEAD` to the local source HEAD it validated, replacing any
+  caller-supplied value. It is the source commit, not a rebuilt baseline
+  commit. Its output is shown as it comes.
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
   and updates the baseline; a failing check stops the ship there.

@@ -1427,6 +1427,75 @@ test("runner remembers unsupported project names and claims the task behind them
 });
 
 
+// t172: a runner kept for one project's reviews took the oldest queued request
+// of any project (the 2026-10-21 evidence of t167). A config's projects list
+// cuts the queue to the projects it names before any job is chosen.
+test("parseConfig reads projects as a nonempty list of names, and omitted keeps every project", () => {
+  assert.ok(!("projects" in parseConfig(config)), "omitted: no filter at all");
+  assert.deepEqual(parseConfig({ ...config, projects: ["atelier", "other", "atelier"] }).projects, ["atelier", "other"]);
+  assert.deepEqual(parseConfig({ ...config, projects: ["atelier"] }).errors, []);
+  for (const projects of [[], "atelier", {}, null, [""], [" "], ["atelier", 3], [null], ["a/b"], [" atelier"], ["atelier "]]) {
+    const result = parseConfig({ ...config, projects });
+    assert.match(result.errors.join(" "), /projects must be a nonempty list of project names/, JSON.stringify(projects));
+    assert.ok(!("projects" in result), JSON.stringify(projects));
+  }
+  assert.equal(offerFrom({ ...config, projects: ["atelier"] }, "home:studio").projects, undefined, "the server is never told: the runner filters the queue itself");
+});
+
+
+test("a runner with projects claims nothing of another project, and takes the included job behind it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-projects-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, projects: ["atelier"] }));
+  const excluded = { ...assignment, project: "other" };
+  const included = { ...assignment, item: { ...assignment.item, id: "t14" } };
+  const { io, logs } = fixture();
+  const claimed = [], reported = [];
+  io.cli = async (argv) => { if (argv[0] === "claim") claimed.push(argv.join(" ")); };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async reportRun(body) { reported.push(body); },
+    async queue() {
+      if (++polls > 1) { process.emit("SIGTERM"); return []; }
+      return [excluded, included];
+    },
+  });
+  assert.equal(claimed.length, 1, claimed.join("\n"));
+  assert.match(claimed[0], /t14/);
+  assert.ok(!claimed.some((c) => c.includes("other")), claimed.join("\n"));
+  assert.ok(reported.every((r) => r.project === "atelier"), JSON.stringify(reported));
+  assert.ok(!logs.some((l) => l.includes("other/")), logs.join("\n"));
+});
+
+
+test("a runner with projects says nothing of the waiting dispatches of another project, and an omitted list says all", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-projects-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const waitingOn = (project) => ({ project, item: { id: "t5", why: [{ kind: "unoffered", line: `No live runner can take ${project}'s.` }] } });
+  const say = async (extra) => {
+    const path = join(dir, `runner-${Object.keys(extra).length}.json`);
+    writeFileSync(path, JSON.stringify({ ...config, jobs: ["build"], ...extra }));
+    const logs = [];
+    t.mock.method(console, "log", (s) => logs.push(s));
+    let polls = 0;
+    await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+      workspacePath: () => { throw new Error("no task should be claimed"); }, wait: async () => {},
+      async queue() { if (++polls > 1) process.emit("SIGTERM"); return []; },
+      async idleWhy() { return [waitingOn("atelier"), waitingOn("other")]; },
+    });
+    t.mock.restoreAll();
+    return logs;
+  };
+  const all = await say({});
+  assert.ok(all.some((l) => l.includes("other/t5")) && all.some((l) => l.includes("atelier/t5")), all.join("\n"));
+  const only = await say({ projects: ["atelier"] });
+  assert.ok(only.some((l) => l.includes("atelier/t5")) && !only.some((l) => l.includes("other/t5")), only.join("\n"));
+  assert.ok(only.some((l) => l.includes("1 dispatch waits")), only.join("\n"));
+});
+
+
 test("runner stops retrying after two failures even when the task revision changes", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-retry-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
