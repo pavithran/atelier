@@ -39,6 +39,8 @@ const TOKEN_FILE = /^(~\/\.config\/atelier\/)?(?:[A-Za-z0-9][A-Za-z0-9._-]{0,99}
 // A provider whose balance the usage report asks for (cli/usage.mjs).
 const PROVIDER = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
 // The name of an environment variable a harness entry passes on (runner.mjs harnessEnv).
+// A project's name as the queue gives it: text, no slash, no space at either end.
+const PROJECT_NAME = /^[^\s/](?:[^/]*[^\s/])?$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
 // The harness adapters Atelier ships (bin/harness/, cli/harness/adapter.mjs),
@@ -168,6 +170,18 @@ export function parseConfig(json, { configPath, env } = {}) {
       }
     }
   }
+  // Optional: the projects this runner serves, named exactly (t172). Omitted,
+  // it serves every project, as every runner did before. Given, the list is
+  // the whole truth: the poll's queue is cut to these projects before any job
+  // is chosen or any skip reported, so a runner kept for one project's reviews
+  // never claims, or reports on, another's. An empty list or an entry that is
+  // not a bare project name is refused, not read as "all": a typo or an empty
+  // list would otherwise quietly widen what the runner takes.
+  let projects;
+  if (value.projects !== undefined) {
+    if (!Array.isArray(value.projects) || !value.projects.length || value.projects.some((p) => typeof p !== "string" || !PROJECT_NAME.test(p))) errors.push("projects must be a nonempty list of project names, each without a slash or surrounding space");
+    else projects = [...new Set(value.projects)];
+  }
   for (let [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
     const start = errors.length;
@@ -208,7 +222,7 @@ export function parseConfig(json, { configPath, env } = {}) {
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
   return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}),
-    ...(jobs !== undefined ? { jobs } : {}) };
+    ...(jobs !== undefined ? { jobs } : {}), ...(projects ? { projects } : {}) };
 }
 
 export function readConfig(path = defaultConfigPath()) {
