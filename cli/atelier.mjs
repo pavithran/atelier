@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { saveFailedOutput } from "./check-output.mjs";
 // atelier — the command agents and the project owner run. No dependencies: Node and git.
 //
 // Agents work in a workspace clone under ~/Library/Caches, never in the iCloud
@@ -10,6 +9,7 @@ import { saveFailedOutput } from "./check-output.mjs";
 // remote pushes are opt-in.
 
 
+import { saveFailedOutput } from "./check-output.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";

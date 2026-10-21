@@ -239,8 +239,7 @@ test("t176 both failed attempts retain evidence and private logs before retry", 
   assert.ok(result.stderr.indexOf(paths[0]) < result.stderr.indexOf("once more"));
   for (const [i, path] of paths.entries()) {
     assert.equal(readFileSync(path, "utf8"), "[redacted] pre-test error");
-    assert.match(f.evidence()[i].outputTail, /Full redacted local log:/);
-    assert.ok(f.evidence()[i].outputTail.includes(path));
+    assert.ok(!f.evidence()[i].outputTail.includes(path), "absolute local path stays off server evidence");
   }
 });
 

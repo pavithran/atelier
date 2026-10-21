@@ -104,10 +104,10 @@ const VITEST_SUMMARY_ONLY = "\n Test Files  1 failed (1)\n      Tests  2 failed 
 test("a log kept as a tail says the names may have been cut with the rest, instead of concluding the check failed for another reason", async () => {
   // A summary without final diagnostics cannot establish failing names.
   const whole = failingTests(VITEST_SUMMARY_ONLY)!;
-  assert.deepEqual([whole.reporters, whole.names, whole.note], [["vitest"], [], "outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable"]);
-  assert.equal(failingTestsLine(whole), "failing tests: none named (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)");
+  assert.deepEqual([whole.reporters, whole.names, whole.note], [["vitest"], [], "outer reporter diagnostics are incomplete, inconsistent or cut; failing-test names unavailable"]);
+  assert.equal(failingTestsLine(whole), "failing tests: none named (outer reporter diagnostics are incomplete, inconsistent or cut; failing-test names unavailable)");
   // The same lines at the end of a tail: the FAIL lines may be in the part cut.
-  assert.equal(failingTestsLine(whole, false), "failing tests: none named in the tail of the output that was kept (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)");
+  assert.equal(failingTestsLine(whole, false), "failing tests: none named in the tail of the output that was kept (outer reporter diagnostics are incomplete, inconsistent or cut; failing-test names unavailable)");
   assert.equal(failingTestsLine(null, false), "failing tests: names unavailable (no test reporter format this summary reads was recognised in the tail of the output that was kept; the lines naming them may have been cut with the rest)");
   // A stray FAIL line after the summary does not complete its diagnostics.
   const some = failingTests(`${VITEST_SUMMARY_ONLY} FAIL  test/sample.spec.ts > a suite > names are read\n`)!;
@@ -122,8 +122,8 @@ test("a log kept as a tail says the names may have been cut with the rest, inste
     ev({ claim: "npm run typecheck", passed: false, outputTail: VITEST_SUMMARY_ONLY }),
   ], H1), none);
   assert.equal(cut.logRead.whole, false);
-  assert.ok(failureSummary("t1", H1, [cut]).includes("    failing tests: none named in the tail of the output that was kept (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)\n    log: inline tail only"));
-  assert.ok(failureSummary("t1", H1, [wholeRun]).includes("    failing tests: none named (outer reporter diagnostics are incomplete or inconsistent; failing-test names unavailable)\n    log: whole output, inline"));
+  assert.ok(failureSummary("t1", H1, [cut]).includes("    failing tests: none named in the tail of the output that was kept (outer reporter diagnostics are incomplete, inconsistent or cut; failing-test names unavailable)\n    log: inline tail only"));
+  assert.ok(failureSummary("t1", H1, [wholeRun]).includes("    failing tests: none named (outer reporter diagnostics are incomplete, inconsistent or cut; failing-test names unavailable)\n    log: whole output, inline"));
   // A stored log that was itself cut is a tail too.
   const capped = `${"x".repeat(LARGE_MAX - VITEST_SUMMARY_ONLY.length - 1)}\n${VITEST_SUMMARY_ONLY}`;
   const [stored] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, where: "sandbox", log: ref({ bytes: LARGE_MAX }), outputTail: "t" })], H1), async () => capped);
@@ -605,13 +605,67 @@ test("t176 final reports exclude fixture errors but retain real nested failures"
 });
 
 test("t176 missing, conflicting and cancelled diagnostics never guess fixture names", () => {
-  for (const output of [fixture("node-spec-cut.txt"), fixture("vitest-tree-only.txt"), fixture("node-spec.txt").replace("ℹ fail 2", "ℹ fail 3"), fixture("node-spec.txt").replace("ℹ cancelled 0", "ℹ cancelled 1"), fixture("vitest.txt").replace("Tests  2 failed", "Tests  3 failed")]) {
+  for (const output of [fixture("node-spec-cut.txt"), fixture("vitest-tree-only.txt"), ]) {
     assert.deepEqual(failingTests(output)?.names, []);
     assert.match(failingTests(output)?.note ?? "", /unavailable/);
-    assert.equal(collectFailureLines(output), "");
+    assert.ok(!collectFailureLines(output).includes("fails: the cap"));
   }
   const passing = `${fixture("vitest.txt")}\n${fixture("node-spec.txt")}\n✔ fixture pass (1ms)\nℹ tests 1\nℹ fail 0\nℹ cancelled 0`;
   assert.deepEqual(failingTests(passing)?.names, []);
   assert.equal(collectFailureLines(passing), "");
   assert.deepEqual(failingTests(fixture("tap.txt"))?.names, ["fails: the cap is enforced", "fails inside: names are read", "a suite"]);
+});
+
+
+test("t176 Vitest import errors survive Tests passed and mixed suite/test failures", () => {
+  const suite = [" RUN  v4.1.11 /repo", "⎯⎯ Failed Suites 1 ⎯⎯", " FAIL  test/import.spec.ts [ test/import.spec.ts ]", "Error: cannot import dependency", " Test Files  1 failed | 1 passed (2)", "      Tests  3 passed (3)"].join("\n");
+  const kept = collectFailureLines(suite);
+  assert.match(kept, /FAIL  test\/import/);
+  assert.match(kept, /Error: cannot import dependency/);
+  assert.match(kept, /Test Files  1 failed/);
+  assert.deepEqual(failingTests(suite)?.names, []);
+  const mixed = suite.replace(" Test Files  1 failed | 1 passed (2)", "⎯⎯ Failed Tests 1 ⎯⎯\n FAIL  test/leaf.spec.ts > real leaf\nError: leaf failed\n Test Files  2 failed (2)").replace("Tests  3 passed (3)", "Tests  1 failed | 3 passed (4)");
+  assert.deepEqual(failingTests(mixed)?.names, ["test/leaf.spec.ts > real leaf"]);
+  const both = collectFailureLines(mixed);
+  assert.match(both, /import.spec.ts/); assert.match(both, /real leaf/);
+});
+
+test("t176 contradictory and cancelled reports retain outer evidence with uncertainty", () => {
+  for (const output of [fixture("node-spec.txt").replace("ℹ fail 2", "ℹ fail 1"), fixture("node-spec.txt").replace("ℹ cancelled 0", "ℹ cancelled 1"), fixture("vitest.txt").replace("Tests  2 failed", "Tests  3 failed")]) {
+    const read = failingTests(output);
+    assert.ok(read?.names.length);
+    assert.match(failingTestsLine(read), /partial/);
+    assert.match(collectFailureLines(output), /fail(?:ed)? [123]|[123] failed/);
+  }
+  const missing = "ℹ tests 1\nℹ fail 1\n✖ failing tests:\n";
+  assert.deepEqual(failingTests(missing)?.names, []);
+  assert.match(failingTestsLine(failingTests(missing)), /unavailable/);
+  assert.match(collectFailureLines(missing), /ℹ fail 1/);
+});
+
+test("t176 bounded and duplicate final diagnostics keep useful names and disclose cuts", () => {
+  const names = Array.from({ length: 60 }, (_, i) => `✖ leaf ${i} (1ms)\nError: diagnostic ${i}`).join("\n");
+  const output = `ℹ fail 60\n✖ failing tests:\n${names}`;
+  const kept = collectFailureLines(output);
+  assert.ok(kept.length <= FAILURE_LINES_CHARS && kept.split("\n").length <= FAILURE_LINES_MAX);
+  assert.match(kept, /more failure lines not kept/);
+  const read = failingTests(kept);
+  assert.ok(read?.names.length);
+  assert.match(failingTestsLine(read), /partial/);
+  const duplicates = "ℹ fail 2\n✖ failing tests:\ntest at a.mjs:1\n✖ same (1ms)\nError: a\ntest at b.mjs:1\n✖ same (1ms)\nError: b";
+  assert.deepEqual(failingTests(collectFailureLines(duplicates))?.names, ["same"]);
+  const vite = ["⎯⎯ Failed Tests 60 ⎯⎯", ...Array.from({length: 60}, (_, i) => ` FAIL  test/a.spec.ts > leaf ${i}\nError: failure ${i}`), " Test Files  1 failed (1)", "      Tests  60 failed (60)"].join("\n");
+  const viteKept = collectFailureLines(vite);
+  assert.match(viteKept, /Tests  60 failed/);
+  assert.ok(failingTests(viteKept)?.names.length);
+  assert.match(failingTestsLine(failingTests(viteKept)), /partial/);
+});
+
+
+test("t176 an incomplete second reporter does not erase known outer failures", () => {
+  const output = `${fixture("node-spec.txt")}\n RUN  v4.1.11 /repo\n Test Files  1 failed (1)\n      Tests  1 failed (1)`;
+  const read = failingTests(output);
+  assert.deepEqual(read?.names, ["fails: the cap is enforced", "fails inside: names are read"]);
+  assert.match(failingTestsLine(read), /partial/);
+  assert.match(collectFailureLines(output), /Test Files  1 failed/);
 });

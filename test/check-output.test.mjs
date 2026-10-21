@@ -45,7 +45,7 @@ test("ordered capture preserves stdout/stderr arrival and existing output limits
 test("t176 actual Node nested failure is named instead of a passing test's reporter fixture", async (t) => {
   const root = fixture(t), file = join(root, "outer.mjs");
   const noise = readFileSync("test/fixtures/check-logs/vitest.txt", "utf8");
-  writeFileSync(file, `import { test, describe } from 'node:test';\ntest('fixture passes',()=>console.log(${JSON.stringify(noise)}));\ndescribe('real suite',()=>{test('real nested failure',()=>{throw new Error('actual failure')})});\n`);
+  writeFileSync(file, `import { test, describe } from 'node:test';\ntest('fixture passes',()=>console.log(${JSON.stringify(noise)}));\ntest('real parent',async(t)=>{await t.test('real nested failure',()=>{throw new Error('actual failure')})});\n`);
   const result = await runGroup([process.execPath, "--test", "--test-reporter=spec", file], { captureOrder: true, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
   assert.equal(result.status, 1);
   assert.deepEqual(failingTests(result.output)?.names, ["real nested failure"]);

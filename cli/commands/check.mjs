@@ -40,7 +40,7 @@ export default async function checkCommand() {
   const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
   let failed = 0, recorded, mainHead, provenance = "";
   const evidenceBody = (cmd, r, note) => {
-    const lead = [r.logPath ? `Full redacted local log: ${r.logPath}` : "", note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
+    const lead = [note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
     const tailSize = lead ? Math.max(500, LOCAL_OUTPUT_TAIL - lead.length) : LOCAL_OUTPUT_TAIL;
     const failureLines = !r.passed && r.output.length > tailSize ? collectFailureLines(r.output) : "";
     return {
