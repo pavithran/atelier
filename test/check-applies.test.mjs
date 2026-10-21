@@ -132,29 +132,30 @@ globalThis.fetch = async (url, options = {}) => {
 
 const CHECK = "npm ci --prefer-offline --no-audit --no-fund && npm run check && npm test";
 
-test("init imports a ControlPlane adapter's change_rules as the paths each check applies to, and names what no check runs", (t) => {
+// ControlPlane is retired (t149). Before it, init took the adapter's
+// change_rules as the paths each check applies to, and on 2026-10-06 a re-init
+// was warned that those rules would narrow coverage; init now reads none of it.
+test("init imports nothing from a ControlPlane adapter's change_rules", (t) => {
   const f = initFixture(t);
   const r = f.run("init", "--check", CHECK, "--check", "swift test", "--approval", "Pavi, today");
   assert.equal(r.status, 0, r.stderr);
   const put = f.requests().find((q) => q.method === "PUT");
-  assert.deepEqual(put.body.checkPaths, [{ command: CHECK, paths: ["src/**", "astro.config.**"] }]);
-  assert.ok(r.stdout.includes(`  ${CHECK}: read-only, a known build or test command; applies only when the change touches src/**, astro.config.**\n`), r.stdout);
+  assert.equal(put.body.checkPaths, undefined);
   assert.ok(r.stdout.includes("  swift test: read-only, a known build or test command\n"), r.stdout);
-  assert.ok(r.stdout.includes("ControlPlane change rules also require diff-check (`git diff --check`), which no registered check runs; add one with --check to require it."), r.stdout);
+  assert.doesNotMatch(r.stdout + r.stderr, /ControlPlane|applies only/);
 });
 
-test("decision 2026-10-06: a re-init that names no check does not narrow the paths its checks apply to", (t) => {
+test("a re-init that names no check sends no paths and prints no ControlPlane warning", (t) => {
   const f = initFixture(t, { checks: [CHECK], checkPaths: [{ command: CHECK, paths: ["old/**"] }] });
   const r = f.run("init", "--approval", "Pavi, today");
   assert.equal(r.status, 0, r.stderr);
   const put = f.requests().find((q) => q.method === "PUT");
   assert.equal(put.body.checks, undefined);
   assert.equal(put.body.checkPaths, undefined, "the recorded paths stand; the re-init sends none");
-  assert.ok(r.stdout.includes(`Warning: ControlPlane's change rules would set \`${CHECK}\` to apply only when the change touches src/**, astro.config.**; as registered it applies to old/** only, and a re-init does not narrow a check's coverage. Take the rules with atelier init --reset.\n`), r.stdout);
-  // An init that names the checks still takes the rules as the adapter holds them.
-  const named = f.run("init", "--check", CHECK, "--approval", "Pavi, today");
-  assert.equal(named.status, 0, named.stderr);
-  assert.deepEqual(f.requests().filter((q) => q.method === "PUT").at(-1).body.checkPaths, [{ command: CHECK, paths: ["src/**", "astro.config.**"] }]);
+  assert.doesNotMatch(r.stdout + r.stderr, /ControlPlane/);
+  const reset = f.run("init", "--reset", "--check", CHECK, "--approval", "Pavi, today");
+  assert.equal(reset.status, 0, reset.stderr);
+  assert.equal(f.requests().filter((q) => q.method === "PUT").at(-1).body.checkPaths, undefined);
 });
 
 test("N/A checks never enter or validate the slot pool", async (t) => {

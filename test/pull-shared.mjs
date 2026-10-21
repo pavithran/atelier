@@ -86,7 +86,7 @@ export async function cloneOn(t, f, m) {
   assert.equal(r.code, 0, r.output);
   return dir;
 }
-export const refusal = (sha, command) => new RegExp(`main does not hold the baseline's main \\(${sha.slice(0, 8)}\\): another checkout has carried commits to the baseline since this one last matched it\\. Nothing was (?:pushed|merged|sent: neither the ControlPlane policy nor any commit)\\. Run atelier pull --project demo to bring them into this checkout, then ${command} again\\.`);
+export const refusal = (sha, command) => new RegExp(`main does not hold the baseline's main \\(${sha.slice(0, 8)}\\): another checkout has carried commits to the baseline since this one last matched it\\. Nothing was (?:pushed|merged|sent: no commit)\\. Run atelier pull --project demo to bring them into this checkout, then ${command} again\\.`);
 export const cli = resolve("cli/atelier.mjs");
 export async function serve(t, f) {
   const server = createServer((req, res) => {

@@ -102,9 +102,10 @@ test("a conflicting pull of a fresh baseline says how to merge by hand so that s
 
 
 // Review of t644, finding 2: a full-history project's sync returned before it
-// read the baseline, so a checkout another Mac had moved past put its older
-// ControlPlane policy back on the server.
-test("sync of a full-history project is refused before its policy is sent while main is behind the baseline", async (t) => {
+// read the baseline, so a checkout another Mac had moved past could act on its
+// older state. Since t149 sync sends no policy at all, but it still refuses a
+// stale checkout first, and a current one is told to use atelier init.
+test("sync of a full-history project is refused while main is behind the baseline, and sends no policy afterwards", async (t) => {
   const f = setup(t);
   const a = mac(f, "a");
   const dir = await cloneOn(t, f, a);
@@ -117,9 +118,10 @@ test("sync of a full-history project is refused before its policy is sent while 
   assert.match(refused.output, refusal(theirs, "atelier sync --project demo"));
   assert.deepEqual(refused.seen.map((s) => s.route), ["POST /api/projects/demo/baseline-token"], "nothing but the read token is asked for");
   assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
-  const ok = await run(t, f, a, ["sync", "--project", "demo"]);
-  assert.equal(ok.code, 0, ok.output);
-  assert.ok(ok.seen.some((s) => s.route === "PUT /api/projects/demo"), "the policy is sent once main holds the baseline");
+  const current = await run(t, f, a, ["sync", "--project", "demo"]);
+  assert.notEqual(current.code, 0);
+  assert.match(current.output, /baseline holds its whole history; atelier init pushes new commits to it/);
+  assert.ok(!current.seen.some((s) => s.route.startsWith("PUT ")), "no policy is sent once main holds the baseline");
 });
 
 

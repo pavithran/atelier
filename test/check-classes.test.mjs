@@ -8,8 +8,8 @@ import { join, resolve } from "node:path";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // The CLI's side of check classes (src/checks.ts): init refuses a check that
-// is never read-only before any request, sends the declarations the
-// ControlPlane adapter and --declare-read-only make, and prints each check's
+// is never read-only before any request, sends the declarations
+// --declare-read-only makes, and prints each check's
 // class; `atelier check` runs nothing when a check is never read-only. The
 // commands run against fake servers that log each request.
 
@@ -121,31 +121,32 @@ const ADAPTER = {
   protected_surfaces: [],
 };
 
-test("a ControlPlane adapter declares the checks it lists as read-only and refuses one it lists as a device action", (t) => {
+// ControlPlane is retired (t149). Before it, the adapter below declared
+// bin/verify.sh and bin/build.sh read-only (by "adapter") and refused
+// bin/delivery.sh install as a device action; init now reads none of it.
+test("init takes no check declaration or refusal from a ControlPlane adapter", (t) => {
   const f = initFixture(t, { adapter: ADAPTER });
-  const refused = f.run("init", "--check", "bin/verify.sh", "--check", "bin/delivery.sh install", "--approval", "Pavi, today");
-  assert.equal(refused.status, 1, refused.stdout);
-  assert.match(refused.stderr, /`bin\/delivery\.sh install` is not a check: it is ControlPlane capability install, of class device/);
-  assert.deepEqual(f.requests().filter((q) => q.method !== "GET"), []);
-  f.clear();
-  const r = f.run("init", "--check", "bin/verify.sh", "--check", "bin/build.sh --release", "--approval", "Pavi, today");
+  const r = f.run("init", "--check", "bin/verify.sh", "--check", "bin/delivery.sh install", "--check", "bin/build.sh --release", "--approval", "Pavi, today");
   assert.equal(r.status, 0, r.stderr);
   const put = f.requests().find((q) => q.method === "PUT");
-  assert.deepEqual(put.body.checkClasses, [
-    { command: "bin/verify.sh", by: "adapter", note: "capability verify is local-read-only" },
-    { command: "bin/build.sh --release", by: "adapter", note: "capability build is local-write" },
-  ]);
-  assert.match(r.stdout, /^ {2}bin\/verify\.sh: read-only, from ControlPlane: capability verify is local-read-only$/m);
+  assert.deepEqual(put.body.checks, ["bin/verify.sh", "bin/delivery.sh install", "bin/build.sh --release"]);
+  assert.equal(put.body.checkClasses, undefined, "no adapter declaration is sent");
+  assert.doesNotMatch(r.stdout + r.stderr, /ControlPlane|adapter/);
+  // The developer's own declaration still works.
+  f.clear();
+  const own = f.run("init", "--check", "bin/verify.sh", "--declare-read-only", "Pavi: verify changes nothing outside the clone", "--approval", "Pavi, today");
+  assert.equal(own.status, 0, own.stderr);
+  assert.deepEqual(f.requests().find((q) => q.method === "PUT").body.checkClasses, [{ command: "bin/verify.sh", by: "owner", note: "Pavi: verify changes nothing outside the clone" }]);
 });
 
-test("an init of a ControlPlane project that names no checks declares the registered ones the adapter lists", (t) => {
+test("a re-init that names no checks takes no adapter declaration for the registered ones", (t) => {
   const f = initFixture(t, { adapter: ADAPTER, registered: { checks: ["bin/verify.sh", "bin/delivery.sh install"] } });
   const r = f.run("init", "--approval", "Pavi, today");
   assert.equal(r.status, 0, r.stderr);
   const put = f.requests().find((q) => q.method === "PUT");
   assert.equal(put.body.checks, undefined);
-  assert.deepEqual(put.body.checkClasses, [{ command: "bin/verify.sh", by: "adapter", note: "capability verify is local-read-only" }]);
-  assert.match(r.stdout, /^Warning: `bin\/delivery\.sh install` is not a check: it is ControlPlane capability install, of class device\. .*It is registered, and Atelier still runs it, since its words do not show this; replace it with atelier init --check\.$/m);
+  assert.equal(put.body.checkClasses, undefined);
+  assert.doesNotMatch(r.stdout + r.stderr, /ControlPlane|adapter/);
 });
 
 // `atelier check` against a stand-in server: the registered check is given.
@@ -214,18 +215,20 @@ test("init sends preparation alongside commit identity, omits it on re-init and 
   assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare, null);
 });
 
-test("init applies owner and adapter declarations to preparation and refuses unsafe commands and paths", (t) => {
+test("init applies the owner's declaration to preparation, takes none from an adapter, and refuses unsafe commands and paths", (t) => {
   const f = initFixture(t, { adapter: ADAPTER });
   const paths = ["--prepare-input", "package.json", "--prepare-output", "node_modules", "--approval", "Pavi, today"];
-  for (const [command, extra, by] of [["bin/build.sh --release", [], "adapter"], ["./setup.sh", ["--declare-read-only", "writes only in the clone"], "owner"]]) {
-    f.clear();
-    const r = f.run("init", "--prepare", command, ...paths, ...extra);
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare.declaration.by, by);
-  }
+  // The adapter used to declare bin/build.sh --release (by "adapter"); it no longer does (t149).
+  f.clear();
+  const adapted = f.run("init", "--prepare", "bin/build.sh --release", ...paths);
+  assert.equal(adapted.status, 0, adapted.stderr);
+  assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare.declaration, undefined);
+  f.clear();
+  const owned = f.run("init", "--prepare", "./setup.sh", ...paths, "--declare-read-only", "writes only in the clone");
+  assert.equal(owned.status, 0, owned.stderr);
+  assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare.declaration.by, "owner");
   for (const args of [
     ["--prepare", "npm ci && git push", ...paths],
-    ["--prepare", "bin/delivery.sh install", ...paths, "--declare-read-only", "trust me"],
     ["--prepare", PREPARE],
     ["--prepare", PREPARE, ...paths, "--prepare-input", "../escape"],
     ["--prepare-input", "package.json"],

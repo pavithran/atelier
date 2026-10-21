@@ -14,7 +14,7 @@ import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mer
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
-import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseAgents, parseExecution, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
+import { agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
@@ -1619,8 +1619,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try { return parseResolvers(body.resolvers); } catch (error) { throw new RuleError("bad_resolver", `${(error as Error).message}; --resolver takes frontier harness/model actors, such as claude-code/opus-5.5,codex/gpt-6-astra, or "" to clear them`, 400); }
       })() } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
-      ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
-      ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
+      // ControlPlane's roles and change classes are retired (t149): a request
+      // that still carries agents or execution is answered like any other, and
+      // the recorded values stay as they are (the Ledger keeps them).
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),

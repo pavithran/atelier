@@ -1707,3 +1707,56 @@ it("the removed area routes and the area field answer 410, and the board keeps i
   expect(board.areas).toEqual([]);
   expect(board.items.map((i) => i.id)).toEqual([plain.id]);
 });
+
+// ControlPlane retirement, slice 1 (t149). A ledger written while ControlPlane
+// governed the project holds roles, change classes and an eligible list in its
+// stored policy, and a project.set event carrying them. Before t149 an init
+// that still sent agents or execution (an older CLI importing the checkout's
+// files) replaced them; now the record is kept, and everything else in the
+// same request still applies.
+it("a legacy ledger loads, renders and takes an unrelated update that keeps its historical policy and events", async () => {
+  const name = "legacy-governed";
+  const agents = { "claude-code": { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: false, eligible_roles: ["assessor"] } };
+  const execution = { allowed_classes: ["coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };
+  const policy = { checks: ["npm test"], protected: ["AGENTS.md", "security/**"], eligible: ["claude-code"], refuseOverlap: true, agents, execution, approval: "PAVI, 2026-10-01: approved the copy" };
+  const record = { name, repo: name, policy, createdAt: "2026-10-01T00:00:00.000Z" } as never;
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  await L.newItem("Edit a doc", ["docs/**"], "owner");
+
+  const put = (fields: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify(fields),
+  }), artifactsEnv);
+  const read = async (path: string) => { const res = await call("GET", path, "owner"); expect(res.status, path).toBe(200); return res.json() as Promise<Record<string, any>>; };
+
+  // Loads and renders.
+  expect((await read(`/projects/${name}`)).project.policy).toMatchObject({ agents, execution, eligible: ["claude-code"], refuseOverlap: true });
+  expect((await read(`/projects/${name}/standing`)).project.name).toBe(name);
+  expect((await read(`/projects/${name}/items/t1`)).item.id).toBe("t1");
+
+  // An unrelated update keeps the historical policy and its events.
+  const events = async () => (await read(`/projects/${name}`)).events as { kind: string; data: { policy?: { agents?: unknown } } }[];
+  const before = (await events()).filter((e) => e.kind === "project.set").length;
+  const updated = await put({ title: "Governed once", reviewBar: "Block only for data loss." });
+  expect(updated.status).toBe(200);
+  const stored = ((await updated.json()) as { project: { title: string; policy: Record<string, unknown> } }).project;
+  expect(stored.title).toBe("Governed once");
+  expect(stored.policy).toMatchObject({ agents, execution, eligible: ["claude-code"], refuseOverlap: true, reviewBar: "Block only for data loss.", approval: policy.approval });
+  const sets = (await events()).filter((e) => e.kind === "project.set");
+  expect(sets.length).toBe(before + 1);
+  expect(sets[0]!.data.policy?.agents).toEqual(agents);
+
+  // A request that still carries agents or execution cannot replace them, and its shared settings still apply.
+  const legacy = await put({ agents: { codex: { available: true, eligible_roles: ["executor"] } }, execution: { allowed_classes: ["direct"], direct: { enabled: true, allowed_path_patterns: ["**"] }, protected_path_patterns: [] }, protected: ["AGENTS.md", "security/**", "src/**"], refuseOverlap: false });
+  expect(legacy.status).toBe(200);
+  const after = ((await legacy.json()) as { project: { policy: Record<string, unknown> } }).project.policy;
+  expect(after.agents).toEqual(agents);
+  expect(after.execution).toEqual(execution);
+  expect(after.protected).toEqual(["AGENTS.md", "security/**", "src/**"]);
+  expect(after.refuseOverlap).toBe(false);
+  // Every field an older CLI reads is still answered.
+  for (const key of ["checks", "protected", "eligible", "refuseOverlap", "agents", "execution", "approval"]) expect(after, key).toHaveProperty(key);
+});

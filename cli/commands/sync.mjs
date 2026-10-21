@@ -4,7 +4,7 @@ import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
 import { behindRefusal, realHistory } from "../pull.mjs";
 import { guardedPush } from "../private-guard.mjs";
-import { OWNER, P, call, cfg, die, landingGit, landingHome, needCheckout, project, refreshControlPlane, short } from "../atelier.mjs";
+import { OWNER, P, call, cfg, die, landingGit, landingHome, needCheckout, project, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
 // follow the checkout by itself: commits made in the checkout outside
@@ -14,27 +14,19 @@ export default async function syncCommand() {
   const name = project();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`), cwd = needCheckout(name, p);
   const fresh = p.fresh === true;
-  // Before anything is sent, the policy included, main must hold the
-  // baseline's main (t644): a checkout another Mac has moved past would
-  // put its older ControlPlane policy back on the server, and its push
-  // would be refused as a non-fast-forward. sync refuses first and names
-  // atelier pull, for a baseline with the whole history or part of it.
+  // Before anything is sent, main must hold the baseline's main (t644): a
+  // checkout another Mac has moved past would have its push refused as a
+  // non-fast-forward. sync refuses first and names atelier pull, for a
+  // baseline with the whole history or part of it.
   const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
   const base = await call("POST", `${P(name)}/baseline-token`, { scope: fresh ? "write" : "read" }, OWNER);
   git(["fetch", "--quiet", "--no-tags", base.remote, p.branch], { cwd, token: base.token });
   const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
-  const behind = behindRefusal(git, cwd, { gitDir, name, fresh, branch: p.branch, baselineHead, nothing: "Nothing was sent: neither the ControlPlane policy nor any commit.", command: `atelier sync --project ${name}` });
+  const behind = behindRefusal(git, cwd, { gitDir, name, fresh, branch: p.branch, baselineHead, nothing: "Nothing was sent: no commit.", command: `atelier sync --project ${name}` });
   if (behind) die(behind);
-  const refreshed = await refreshControlPlane(cwd, name);
-  // A policy that cannot be read is not stepped over with a warning: the
-  // stored policy would stay stale with nothing else saying so, so sync
-  // stops as merge and init do, until the file is fixed.
-  if (refreshed?.skipped) die(`ControlPlane policy could not be read: ${refreshed.error}. Fix the file, then run atelier sync again.`);
-  if (!fresh) {
-    if (!refreshed) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
-    if (!refreshed.changes.length) console.log(`${name}: ControlPlane policy is current.`);
-    return;
-  }
+  // A baseline with the whole history takes new commits from atelier init;
+  // sync reads no policy from the checkout (t149).
+  if (!fresh) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
   if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first");
   if (git(["symbolic-ref", "-q", "HEAD"], { cwd, allowFail: true }).stdout?.trim() !== `refs/heads/${p.branch}`) die(`check out ${p.branch} in ${cwd} first`);
   const landing = landingHome(gitDir);

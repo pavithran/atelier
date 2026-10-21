@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Setup", line: 1, slot: 40,
       form: "sync",
-      about: "Refreshes the stored policy from the project's ControlPlane files. For a baseline built with `--history-since`, it also carries commits made in the checkout outside Atelier to the baseline. Refused before anything is sent, the policy included, while main does not hold the baseline's main (`pull` brings it in).",
+      about: "For a baseline built with `--history-since`, carries commits made in the checkout outside Atelier to the baseline. It reads no policy from the checkout; a baseline that holds the whole history takes new commits from `init`. Refused before anything is sent while main does not hold the baseline's main (`pull` brings it in).",
     },
   ],
   flags: {},

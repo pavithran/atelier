@@ -257,60 +257,77 @@ test("CLI removal of a project with no local entry names no dropped settings", (
   assert.doesNotMatch(removed.stdout, /Local settings dropped/);
 }));
 
-test("CLI init sends ControlPlane role and class policy", () => fixture(({ command, initial, calls }) => {
-  const dir = join(initial.projects.weblog.path, "docs/control-plane");
+// ControlPlane is retired (t149). A checkout that still has its policy files
+// must not have them imported: before this change init sent their roles,
+// classes, protected paths and overlap rule, and refused a malformed file.
+const retiredFiles = {
+  valid: {
+    "agent-policy.v1.json": JSON.stringify({ agents: { codex: { available: true, eligible_roles: ["executor"], preferred_roles: ["planner"] } }, authority: { overlapping_claims: "refuse" } }),
+    "execution-policy.v1.json": JSON.stringify({ allowed_classes: ["coordinated", "protected"], protected_path_patterns: ["security/**"] }),
+    "project-adapter.v1.json": JSON.stringify({ protected_surfaces: [{ pattern: "adapter/**" }], capabilities: { verify: { class: "local-read-only", command: "bin/verify.sh" } }, change_rules: [{ name: "r", paths: ["src/**"], checks: ["bin/verify.sh"] }] }),
+  },
+  empty: { "agent-policy.v1.json": "{}", "execution-policy.v1.json": "{}", "project-adapter.v1.json": "{}" },
+  malformed: { "agent-policy.v1.json": "{", "execution-policy.v1.json": "[1]", "project-adapter.v1.json": "not json" },
+  absent: {},
+};
+const IMPORTED = ["agents", "execution", "eligible", "refuseOverlap", "protected", "checkClasses", "checkPaths", "approval"];
+
+test("CLI init imports nothing from valid, empty, malformed or absent ControlPlane files", () => {
+  for (const [kind, files] of Object.entries(retiredFiles)) fixture(({ command, initial, calls }) => {
+    const dir = join(initial.projects.weblog.path, "docs/control-plane");
+    mkdirSync(dir, { recursive: true });
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    const result = command(["init", "--title", "Weblog"]);
+    assert.equal(result.status, 0, `${kind}: ${result.stderr}`);
+    assert.doesNotMatch(result.stdout + result.stderr, /ControlPlane/, kind);
+    const body = JSON.parse(calls().find((c) => c.method === "PUT").body);
+    for (const key of IMPORTED) assert.equal(body[key], undefined, `${kind}: ${key} was sent`);
+    assert.deepEqual(calls().map((c) => c.method), ["PUT"], `${kind}: init made only its own write`);
+  });
+});
+
+test("CLI init with ControlPlane files still sends Atelier's own checks, protections, overlap and ship metadata", () => fixture(({ command, initial, calls }) => {
+  const top = initial.projects.weblog.path, dir = join(top, "docs/control-plane");
   mkdirSync(dir, { recursive: true });
-  const agents = { codex: { available: true, eligible_roles: ["executor"], preferred_roles: ["planner"] } };
-  const execution = { allowed_classes: ["coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };
-  writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents }));
-  writeFileSync(join(dir, "execution-policy.v1.json"), JSON.stringify(execution));
-  const result = command(["init", "--approval", "Owner approved this fixture"]);
+  for (const [name, text] of Object.entries(retiredFiles.valid)) writeFileSync(join(dir, name), text);
+  mkdirSync(join(top, "docs/atelier"), { recursive: true });
+  writeFileSync(join(top, "docs/atelier/ship.json"), JSON.stringify({ steps: [{ name: "deploy", run: "bin/deploy.sh" }] }));
+  const result = command(["init", "--check", "npm test", "--protect", "src/**", "--refuse-overlap"]);
   assert.equal(result.status, 0, result.stderr);
-  const body = JSON.parse(calls()[0].body);
-  assert.deepEqual(body.agents, agents);
-  assert.deepEqual(body.execution, execution);
+  const body = JSON.parse(calls().find((c) => c.method === "PUT").body);
+  assert.deepEqual(body.checks, ["npm test"]);
+  assert.ok(body.protected.includes("src/**"));
+  assert.ok(!body.protected.includes("security/**") && !body.protected.includes("adapter/**"));
+  assert.equal(body.refuseOverlap, true);
+  assert.ok(Array.isArray(body.shipRuns) && Array.isArray(body.shipKinds));
+  assert.equal(body.agents, undefined);
 }));
 
-test("CLI init keeps the approval recorded on a ControlPlane project unless the baseline is replaced", () => fixture(({ command, initial, calls }) => {
+test("CLI init asks for no approval on a checkout with ControlPlane files", () => fixture(({ command, initial, calls }) => {
   const dir = join(initial.projects.weblog.path, "docs/control-plane");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents: { codex: { available: true, eligible_roles: ["executor"] } } }));
-  const approval = "PAVI, 2026-10-01: approved the copy";
-  // Nothing recorded yet: the approval is asked for, after one read and no write.
-  const asked = command(["init", "--title", "Weblog"]);
-  assert.equal(asked.status, 1, asked.stdout);
-  assert.match(asked.stderr, /Record the developer's approval/);
-  assert.deepEqual(calls().map((c) => c.method), ["GET"]);
-  // Recorded: a change to the title or the checks keeps it and sends none.
-  const kept = command(["init", "--title", "Weblog", "--check", "npm test"], { TEST_APPROVED: approval });
-  assert.equal(kept.status, 0, kept.stderr);
-  const put = calls().filter((c) => c.method === "PUT").at(-1);
-  assert.equal(JSON.parse(put.body).approval, undefined);
-  assert.deepEqual(JSON.parse(put.body).checks, ["npm test"]);
-  assert.ok(kept.stdout.includes(`Approval:   ${approval}`), kept.stdout);
-  // Given, it is sent as before, with no read first.
-  const given = command(["init", "--approval", "PAVI, 2026-10-02: approved again"], { TEST_APPROVED: approval });
-  assert.equal(given.status, 0, given.stderr);
-  assert.deepEqual(calls().slice(-1).map((c) => [c.method, JSON.parse(c.body).approval]), [["PUT", "PAVI, 2026-10-02: approved again"]]);
-  // --reset drops the recorded policy and --history-since replaces the baseline: asked again, and told why.
-  for (const [flag, why] of [[["--reset"], /--reset starts the policy over/], [["--history-since", "2026-01-01"], /--history-since replaces the baseline/]]) {
-    const again = command(["init", ...flag], { TEST_APPROVED: approval });
-    assert.equal(again.status, 1, again.stdout);
-    assert.match(again.stderr, why);
-    assert.match(again.stderr, /Record the developer's approval/);
+  writeFileSync(join(dir, "agent-policy.v1.json"), retiredFiles.valid["agent-policy.v1.json"]);
+  // Before t149 this stopped with "Record the developer's approval" after one read and no write.
+  for (const flags of [["--title", "Weblog"], ["--reset"], ["--history-since", "2026-01-01"]]) {
+    const done = command(["init", ...flags]);
+    assert.doesNotMatch(done.stderr, /Record the developer's approval/, flags.join(" "));
   }
-  assert.equal(calls().filter((c) => c.method === "PUT").length, 2);
+  const first = calls().find((c) => c.method === "PUT");
+  assert.equal(JSON.parse(first.body).approval, undefined);
+  // An approval the developer gives is still sent.
+  const given = command(["init", "--approval", "PAVI, 2026-10-02: approved"]);
+  assert.equal(given.status, 0, given.stderr);
+  assert.equal(JSON.parse(calls().filter((c) => c.method === "PUT").at(-1).body).approval, "PAVI, 2026-10-02: approved");
 }));
 
-test("CLI sync refreshes ControlPlane policy even when the baseline already matches", () => fixture(({ command, initial, calls }) => {
+function syncCheckout({ command, initial }, { fresh, files }) {
   const top = initial.projects.weblog.path;
-  initial.projects.weblog.fresh = true;
-  // Paths the owner added with init --protect are kept from the local registration.
-  initial.projects.weblog.protect = ["manual/**"];
+  if (fresh) initial.projects.weblog.fresh = true;
   writeFileSync(join(top, "config.json"), JSON.stringify(initial));
   const gitDir = join(top, "fake-git"), dir = join(top, "docs/control-plane");
   mkdirSync(gitDir);
   mkdirSync(dir, { recursive: true });
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
   const head = "a".repeat(40);
   writeFileSync(join(gitDir, "atelier-baseline-map.json"), JSON.stringify({ weblog: { [head]: head } }));
   writeFileSync(join(top, "git"), `#!/bin/sh
@@ -320,24 +337,33 @@ elif has --absolute-git-dir "$@"; then echo "$(pwd)/fake-git"
 elif has --abbrev-ref "$@"; then echo main
 elif has symbolic-ref "$@"; then echo refs/heads/main
 elif has --is-shallow-repository "$@"; then echo false
-elif has rev-parse "$@"; then echo ${"a".repeat(40)}
+elif has rev-parse "$@"; then echo ${head}
 elif has config "$@"; then exit 1
 elif ! has status "$@" && ! has fetch "$@"; then exit 2
 fi
 `, { mode: 0o755 });
-  const agents = { codex: { available: true, eligible_roles: ["executor"] } };
-  const execution = { allowed_classes: ["protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["security/**"] };
-  writeFileSync(join(dir, "agent-policy.v1.json"), JSON.stringify({ agents }));
-  writeFileSync(join(dir, "execution-policy.v1.json"), JSON.stringify(execution));
-  const result = command(["sync"]);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /baseline already matches/);
-  const body = JSON.parse(calls().find((c) => c.method === "PUT").body);
-  assert.deepEqual(body.agents, agents);
-  assert.deepEqual(body.execution, execution);
-  assert.ok(body.protected.includes("manual/**"));
-  assert.ok(body.protected.includes("security/**"));
-}));
+  return command(["sync"]);
+}
+
+test("CLI sync with a partial-history baseline sends no ControlPlane policy, whatever the files hold", () => {
+  for (const [kind, files] of Object.entries(retiredFiles)) fixture((f) => {
+    const result = syncCheckout(f, { fresh: true, files });
+    // Malformed files used to stop sync; the baseline still matches here, so it still carries nothing and says so.
+    assert.equal(result.status, 0, `${kind}: ${result.stderr}`);
+    assert.match(result.stdout, /baseline already matches/);
+    assert.deepEqual(f.calls().map((c) => c.method), ["POST"], `${kind}: only the baseline token was asked for, no policy PUT`);
+  });
+});
+
+test("CLI sync with a whole-history baseline names atelier init and sends no policy", () => {
+  for (const [kind, files] of Object.entries(retiredFiles)) fixture((f) => {
+    const result = syncCheckout(f, { fresh: false, files });
+    assert.equal(result.status, 1, kind);
+    assert.match(result.stderr, /weblog's baseline holds its whole history; atelier init pushes new commits to it/);
+    assert.doesNotMatch(result.stdout + result.stderr, /ControlPlane/, kind);
+    assert.ok(!f.calls().some((c) => c.method === "PUT" || c.method === "GET"), `${kind}: no policy read or write`);
+  });
+});
 
 // Astra's seventh review of t645: init --rename-local moved the entry
 // without its old name, and projects rename into an existing entry dropped
