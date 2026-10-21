@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanLines, expiredBlocksLine, formatStatus } from "../cli/status.mjs";
@@ -117,7 +117,7 @@ async function run(t, { argv, items = [], setup = () => {}, itemsFail = false, p
   });
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const code = await new Promise((done) => child.on("close", done));
-  return { code, output, seen };
+  return { code, output, seen, made };
 }
 
 // A merged task's workspace at its ledger head, and a check clone with an old record: both removable.
@@ -133,19 +133,27 @@ function leaveRemovable({ work, checks }) {
   const clone = join(checks, "run-abc123");
   mkdirSync(clone, { recursive: true });
   writeFileSync(`${clone}.atelier.json`, JSON.stringify({ version: 1, project: "demo", startedAt: 946684800000, pid: spawnSync(process.execPath, ["-e", ""]).pid }));
-  return git(ws, "rev-parse", "HEAD");
+  return { head: git(ws, "rev-parse", "HEAD"), ws, clone, sidecar: `${clone}.atelier.json` };
 }
 
 test("status ends with the count atelier clean would remove, check clones included, and removes nothing", async (t) => {
-  const done = (head) => [{ id: "t6", state: "merged", head, title: "Done" }];
+  // What status must leave alone: the merged task's workspace, the check clone and its sidecar.
+  const leaves = (r) => {
+    assert.ok(!r.seen.some((s) => s.startsWith("POST")), "read-only");
+    for (const [what, p] of [["workspace", r.made.ws], ["check clone", r.made.clone], ["sidecar", r.made.sidecar]])
+      assert.ok(existsSync(p), `${what} ${p} still exists`);
+  };
+  const done = ({ head }) => [{ id: "t6", state: "merged", head, title: "Done" }];
   const full = await run(t, { argv: ["status"], setup: leaveRemovable, items: done });
   assert.equal(full.code, 0, full.output);
   assert.equal(full.output.trimEnd().split("\n").at(-1), "Clean-up: atelier clean --project demo would remove 2 local directories.", full.output);
-  assert.ok(!full.seen.some((s) => s.startsWith("POST")), "read-only");
+  leaves(full);
   const project = await run(t, { argv: ["status", "--project", "demo"], setup: leaveRemovable, items: done });
+  assert.equal(project.code, 0, project.output);
   assert.equal(project.output.trimEnd().split("\n").at(-1), "Clean-up: atelier clean --project demo would remove 2 local directories.", project.output);
+  leaves(project);
   // The same workspace for a task the ledger has not merged is kept, so only the check clone counts.
-  const live = await run(t, { argv: ["status"], setup: leaveRemovable, items: (head) => [{ id: "t6", state: "claimed", head, title: "Live" }] });
+  const live = await run(t, { argv: ["status"], setup: leaveRemovable, items: ({ head }) => [{ id: "t6", state: "claimed", head, title: "Live" }] });
   assert.equal(live.output.trimEnd().split("\n").at(-1), "Clean-up: atelier clean --project demo would remove 1 local directory.", live.output);
 });
 
