@@ -133,21 +133,11 @@ export function standingRoute(route: PartRoute, pool: readonly ModelEntry[]): Pa
 // A size M part needs this much context, or a window the registry does not know.
 export const SIZE_M_CONTEXT = 64 * 1024;
 
-// A harness model at home that names no Keychain entry and no endpoint is a
-// harness sign-in whatever vendor its provider field names: Atelier holds no
-// key for it, so no call can be billed per token. Entries registered before
-// the subscription provider existed name the vendor (codex/gpt-6-astra as
-// "openai") and are read this way. A cloud entry, an OpenCode entry, or one
-// with a key or an endpoint is judged by its provider alone.
-export function harnessSignIn(entry: Pick<ModelEntry, "where"> & Partial<Pick<ModelEntry, "harness" | "keychain" | "endpoint">>): boolean {
-  return entry.where === "home" && entry.harness !== undefined && entry.harness !== "opencode" && !entry.keychain && !entry.endpoint;
-}
-
 // Billed per token: an API reached with a key. The Studio and a harness
 // sign-in (a subscription) cost nothing per call. An OpenAI-compatible
 // server is paid in the cloud; at home it is the owner's own server.
-export function paidPerToken(entry: Pick<ModelEntry, "provider" | "where"> & Partial<Pick<ModelEntry, "harness" | "keychain" | "endpoint">>): boolean {
-  if (entry.provider === "ai-studio" || entry.provider === "subscription" || harnessSignIn(entry)) return false;
+export function paidPerToken(entry: Pick<ModelEntry, "provider" | "where">): boolean {
+  if (entry.provider === "ai-studio" || entry.provider === "subscription") return false;
   return entry.provider !== "openai-compatible" || entry.where === "cloud";
 }
 

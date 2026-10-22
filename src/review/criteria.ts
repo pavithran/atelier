@@ -36,7 +36,7 @@
 // src/review/verdict.ts), and nobody rejects the task for it.
 
 import { standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
-import { harnessSignIn, type Choice } from "../plans/route.ts";
+import type { Choice } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
 import { actorFamily, assertEligible, companyRefusal, DEFAULT_OWNER, familyRefusal, modelKey, parseRuleError, sameActor, singleFamily, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
@@ -241,7 +241,7 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
     const status = entry.status;
     if (status?.state === "refused") failed.push(`status refused, reported by ${status.by} at ${status.at}${status.detail ? `: ${status.detail}` : ""}`);
     else passed.push(status ? `Status ${status.state}, reported by ${status.by} at ${status.at}` : "Status not checked yet");
-    if (PAID.has(entry.provider) && !harnessSignIn(entry) && !input.allowPaid) failed.push(`paid per token (${entry.provider}); paid models are not allowed for this review`);
+    if (PAID.has(entry.provider) && !input.allowPaid) failed.push(`paid per token (${entry.provider}); paid models are not allowed for this review`);
     if (failed.length) {
       passedOver.push({ actor, reasons: failed });
       continue;

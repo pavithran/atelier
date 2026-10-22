@@ -8,10 +8,10 @@ import type { ProjectPolicy } from "../src/rules.ts";
 // no reviewer, and the server suggests one (the landing prints the reviewer
 // the answer names). On 2026-10-21 that stopped with no_reviewer, "paid per
 // token", for Claude- and GLM-built tasks, because the live registry held
-// codex/gpt-6-astra as {where: home, provider: openai, tier: frontier}: a
-// harness sign-in labelled with its vendor, classed as an API. These tests go
-// through the real route and the real selection, with that entry shaped
-// exactly so and the owner's admission of astra active.
+// codex/gpt-6-astra with provider openai. PAVI registered it again with
+// provider subscription (2026-10-22); paid stays decided by provider. These
+// tests go through the real route and the real selection, with the owner's
+// admission of astra active.
 
 const TOKEN = "land-reviewer-suggestion-test";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
@@ -23,9 +23,8 @@ const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:$
 const entry = (harness: ModelEntry["harness"], id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
   id, harness, where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: AT, tier: "frontier", ...change,
 });
-// The live registry's entry for astra, as PAVI saw it: no payment marking,
-// no key, no endpoint.
-const liveAstra = () => entry("codex", "gpt-6-astra", { provider: "openai" });
+// The live registry's entry for astra since 2026-10-22: a home harness sign-in.
+const liveAstra = () => entry("codex", "gpt-6-astra");
 const CLAUDE = [entry("claude-code", "opus-5.5"), entry("claude-code", "sonnet-5.5")];
 const GLM = entry("zcode", "glm-5.3");
 const policy: ProjectPolicy = { checks: ["npm test"], protected: ["src/**"] };
@@ -68,19 +67,20 @@ async function landable(name: string, builder: string, astra: ModelEntry) {
 const land = (name: string, id: string) => call("POST", `/projects/${name}/items/${id}/review-request`, {});
 
 for (const [label, builder] of [["Claude", "claude-code/opus-5.5"], ["GLM", "zcode/glm-5.3"]] as const) {
-  it(`landing a ${label}-built task with no --reviewer asks gpt-6-astra when the live registry holds it as {home, openai, no key}`, async () => {
+  it(`landing a ${label}-built task with no --reviewer asks gpt-6-astra when the live registry holds it as {home, subscription}`, async () => {
     const name = `land-live-${label.toLowerCase()}`;
     const id = await landable(name, builder, liveAstra());
     const res = await land(name, id);
     expect(res.status, await res.clone().text()).toBe(200);
     const asked = await res.json() as { reviewer: string; requested: boolean; reason: string };
     expect(asked, asked.reason).toMatchObject({ reviewer: ASTRA, requested: true });
-    expect(asked.reason).toMatch(/No per-token cost \(openai\)|Another family/);
+    expect(asked.reason).toMatch(/No per-token cost \(subscription\)|Another family/);
   });
 }
 
-it("the same astra reached with a key, or in the cloud is still paid per token, and admission does not authorize it", async () => {
+it("astra registered with provider openai (the old live shape), or reached with a key, an endpoint or in the cloud, is paid per token, and admission does not authorize it", async () => {
   const cases: [string, ModelEntry][] = [
+    ["old-live", entry("codex", "gpt-6-astra", { provider: "openai" })],
     ["keyed", entry("codex", "gpt-6-astra", { provider: "openai", keychain: "openai.API_KEY" })],
     ["endpoint", entry("codex", "gpt-6-astra", { provider: "openai", endpoint: "https://api.openai.example/v1" })],
     ["cloud", entry("codex", "gpt-6-astra", { provider: "openai", where: "cloud" })],

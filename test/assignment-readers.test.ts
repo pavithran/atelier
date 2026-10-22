@@ -408,8 +408,7 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
     ["reserved", { ...luna, state: "reserved", stateAt: AT }],
     ["role-restricted", { ...luna, roles: [role === "review" ? "build" : "review"] }],
     ["refused", { ...luna, status: { state: "refused", at: AT, by: "cloud:x" } }],
-    // Paid per token means reached with a key; a vendor provider alone on a home harness is a sign-in (t162).
-    ["paid", { ...luna, provider: "openai", keychain: "openai.API_KEY" }],
+    ["paid", { ...luna, provider: "openai" }],
   ];
   const lunaAssigned = (role: AssignmentRole) => ({ ...assigned(role, [LUNA]), choices: [{ actor: LUNA, model: "gpt-6-luna" }] });
   const item = { id: "t1", title: "Rename a helper", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] as string[] };
@@ -890,18 +889,25 @@ test("suggestReviewer: with astra recorded as subscription and assigned, Claude-
   }
 });
 
-test("suggestReviewer: a per-token astra is not picked even when assigned, and each candidate's rejection reason is shown", () => {
+test("suggestReviewer: a per-token astra (the old openai registration, a key, an endpoint, the cloud) is not picked even when assigned, and each candidate's rejection reason is shown", () => {
   const a = assigned("review", ["codex/gpt-6-astra"]);
-  const paid = { ...astra, provider: "openai" as const };
   const item = { id: "t162", title: "Land", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] as string[] };
   const input = { item, project: "atelier", policy, sources: [], runs: [], owner: "owner", assigned: rolesOf(item, [a]) };
-  assert.throws(() => suggestReviewer({ ...input, pool: [paid, opus, sonnet] }), (e: unknown) => {
-    const err = e as { code?: string; message: string };
-    assert.match(err.message, /codex\/gpt-6-astra \(paid per token \(openai\); paid models are not allowed for this review/);
-    assert.match(err.message, /claude-code\/opus-5.5 \(contributed to this item/);
-    assert.match(err.message, /claude-code\/sonnet-5.5 \(same family/);
-    return true;
-  });
+  const paidAstras: [string, ModelEntry][] = [
+    ["openai", { ...astra, where: "home", provider: "openai" }],
+    ["key", { ...astra, where: "home", provider: "openai", keychain: "openai.API_KEY" }],
+    ["endpoint", { ...astra, where: "home", provider: "openai", endpoint: "https://api.openai.example/v1" }],
+    ["cloud", { ...astra, where: "cloud", provider: "openai" }],
+  ];
+  for (const [label, paid] of paidAstras) {
+    assert.throws(() => suggestReviewer({ ...input, pool: [paid, opus, sonnet] }), (e: unknown) => {
+      const err = e as { code?: string; message: string };
+      assert.match(err.message, /codex\/gpt-6-astra \(paid per token \(openai\); paid models are not allowed for this review/, label);
+      assert.match(err.message, /claude-code\/opus-5.5 \(contributed to this item/, label);
+      assert.match(err.message, /claude-code\/sonnet-5.5 \(same family/, label);
+      return true;
+    });
+  }
   const pool = [{ ...astra, state: "paused" as const, stateAt: AT }, { ...glm, roles: ["build" as const] }, opus];
   assert.throws(() => suggestReviewer({ ...input, pool }), (e: unknown) => {
     const m = (e as Error).message;

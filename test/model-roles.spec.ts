@@ -245,7 +245,7 @@ it("an assignment never promotes a tier model that is refused, paid or no longer
   const H = "a".repeat(40);
   for (const [name, change] of [
     ["roles-tier-refused", (e: ModelEntry): ModelEntry => ({ ...e, status: { state: "refused", at: AT, by: "cloud:x", detail: "quota" } })],
-    ["roles-tier-paid", (e: ModelEntry): ModelEntry => ({ ...e, provider: "anthropic", keychain: "anthropic.API_KEY" })],  // per token means reached with a key (t162)
+    ["roles-tier-paid", (e: ModelEntry): ModelEntry => ({ ...e, provider: "anthropic" })],
     ["roles-tier-gone", null],
   ] as const) {
     const fable = entry("claude-code", "fable-5.1");
