@@ -3415,7 +3415,9 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
 
 // Every 10 minutes: each project's stuck rules are evaluated and the
 // transitions of its episodes recorded. A project that cannot be read at all
-// records nothing, so it clears nothing.
+// records nothing, so it clears nothing. Episodes are kept under the project's
+// storage key, which a rename keeps and a released name does not reach, never
+// under its name (t196).
 // The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
 // and the origin the recorded evidence links name.
 const STUCK_CRON = "*/10 * * * *", STUCK_ORIGIN = "https://atelier.zone";
@@ -3426,7 +3428,7 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
       const ref = await resolveProject(env, p.name);
       if (!ref.registered) continue;
       const report = await readStuckReport(env, ref, STUCK_ORIGIN, reportLimits(), now);
-      await I.recordStuckTick(report.project, report.entries, report.complete, report.observedAt);
+      await I.recordStuckTick(ref.key, report.entries, report.complete, report.observedAt);
     } catch (err) {
       console.error(errorLine(`stuck episodes: ${p.name}`, err));
     }

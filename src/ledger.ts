@@ -1818,9 +1818,11 @@ export class Ledger extends DurableObject<Env> {
 
   // ── stuck episodes (src/stuck/episodes.ts, t196) ───────────────────────
   // The opened and cleared transitions of each project's stuck findings, on
-  // the index instance. A tick's transitions are decided and written in one
-  // synchronous transaction, so a repeated or concurrent tick adds nothing
-  // for an episode already open.
+  // the index instance. `project` is the project's storage key, never its
+  // name: a rename keeps the key, and a released name can be taken by another
+  // project. A tick's transitions are decided and written in one synchronous
+  // transaction, so a repeated or concurrent tick adds nothing for an episode
+  // already open.
 
   private episodeTables(): void {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS stuck_episodes (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, item TEXT NOT NULL, cause TEXT NOT NULL, episode INTEGER NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL)`);
