@@ -2318,8 +2318,10 @@ export const MISSING_RECHECK_MS = 5 * 60_000;
 
 // The capability a server takes the infrastructure_miss run report under
 // (src/capability-declarations.ts).
-const RUNNER_ME = "runners.me.v1";
 export const INFRASTRUCTURE_MISS = "runs.infrastructure-miss.v1";
+
+// The capability a server takes GET /runners/me under (t212).
+const RUNNER_ME = "runners.me.v1";
 
 // How many times a runner sends an infrastructure_miss report the server
 // did not take before it gives the report up (t591): with the skip reports'
