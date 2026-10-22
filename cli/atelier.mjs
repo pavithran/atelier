@@ -34,7 +34,7 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile } from 
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { absolute, expiredBlocksLine, overrideTail, taskLink, waitingCommand } from "./status.mjs";
+import { absolute, expiredBlocksLine, overrideTail, preparingLine, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
@@ -1493,6 +1493,8 @@ export function formatStanding(s, ownerName = "the developer", origin = "", expi
   if (s.pipeline?.length) lines.push("", `In the pipeline: ${s.pipeline.reduce((n, x) => n + x.count, 0)} tasks: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(", ")}; none waits on ${flat(ownerName)}.`);
   if (s.overlaps?.length) lines.push("", `Overlapping scopes: ${s.overlaps.length} ${s.overlaps.length === 1 ? "pair" : "pairs"}; nothing waits on ${flat(ownerName)}. The JSON lists them.`);
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${notePreview(q.note) ? `  note: ${flat(notePreview(q.note))}` : ""}`));
+  // Task forks Artifacts is still preparing, with their age and what happens next (t18).
+  group("Waiting for a fork", (s.preparing ?? []).map((p) => `${flat(p.id)}  ${preparingLine(p)}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).
