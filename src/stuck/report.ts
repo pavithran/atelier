@@ -8,6 +8,7 @@ import { inScope } from "../tokens.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
 export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
+const IDLE_RUNNER_MAX_MS = 48 * 3_600_000;
 export type ReportLimits = typeof REPORT_DEFAULTS;
 export function reportLimits(values: Record<string, unknown> = {}): ReportLimits {
   const limits = { ...REPORT_DEFAULTS };
@@ -149,7 +150,8 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       if (run.project !== project || !run.item || run.runner === "owner") continue;
       if (run.role === "review" && !snapshot.openReviewItems?.includes(run.item) && !reviews.some((r) => r.item === run.item && items.some((i) => i.id === r.item && i.head === r.head))) continue;
       const item = live.find((i) => i.id === run.item && !["merged", "abandoned", "accepted"].includes(i.state));
-      if (!item || events.some((e) => e.itemId === run.item && Date.parse(e.at) >= Date.parse(run.at) && ["item.claimed", "item.handoff", "push.observed", "item.submitted", "item.dispatched", "review.claimed", "review.approved", "review.rejected"].includes(e.kind))) continue;
+      // A report from before the task was created belongs to an earlier task of that id.
+      if (!item || Date.parse(run.at) < Date.parse(item.createdAt) || events.some((e) => e.itemId === run.item && Date.parse(e.at) >= Date.parse(run.at) && ["item.claimed", "item.handoff", "push.observed", "item.submitted", "item.dispatched", "review.claimed", "review.approved", "review.rejected"].includes(e.kind))) continue;
       if ((activeRunners ?? []).includes(run.runner)) continue;
       add("runner-give-up", item.id, `${run.runner}: ${run.role} run ${run.outcome}`, run.at, requeue(item.id), `${origin}/api/runs`);
     }
@@ -160,6 +162,8 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     // An offer lists a project by the name it had when the runner last polled.
     if (!inScope({ projects: offer.projects }, names)) continue;
     if (activeRunners.includes(offer.runner)) continue;
+    // A runner not polled for IDLE_RUNNER_MAX_MS is gone, not idle: nothing to restart.
+    if (age(offer.at) > IDLE_RUNNER_MAX_MS) continue;
     if (age(offer.at) - OFFER_REFRESH_MS > limits.runnerPollMinutes * 60_000)
       add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);
   }
