@@ -67,7 +67,7 @@ const SPARE_READS = [
 // or a runner, as method and path; "(write)" marks a token request for a
 // write token. runnerRoute is judged over all of them.
 const API_ROUTES = [
-  ...["GET /config", "GET /tokens", "POST /tokens", "DELETE /tokens/x", "GET /inbox", "GET /projects", "GET /queue", "POST /queue", "GET /runs", "POST /runs", "GET /runners",
+  ...["GET /config", "GET /tokens", "POST /tokens", "DELETE /tokens/x", "GET /inbox", "GET /projects", "GET /queue", "POST /queue", "GET /runs", "POST /runs", "GET /runners", "GET /runners/me",
     "GET /reliability", "GET /models", "PUT /models/m", "DELETE /models/m", "POST /models/m/notes", "POST /models/m/status", "GET /usage", "POST /usage/codex", "GET /version"],
   ...["PUT /projects/p", "DELETE /projects/p", "GET /projects/p", "POST /projects/p/rename", "GET /projects/p/sessions", "POST /projects/p/sessions", "GET /projects/p/baseline-head",
     "GET /projects/p/owners", "GET /projects/p/standing", "GET /projects/p/landing-lease", "POST /projects/p/baseline-token", "POST /projects/p/baseline-token (write)", "POST /projects/p/served",
@@ -99,7 +99,7 @@ test("each declared call is allowed for the credential it declares, and refused 
     if (call.method === "GET") assert.deepEqual(call.body, [], `${call.name}: a GET sends no body`);
     // The config read alone names no actor: an agent token is refused when
     // the header names anyone but itself, and the read asks who it is.
-    assert.equal(call.actor === "none", call.name === "config", `${call.name}: only the config read names no actor`);
+    assert.equal(call.actor === "none", ["config", "runner-me"].includes(call.name), `${call.name}: only the config and runner-me reads name no actor`);
   }
   // A write token is never a runner's to ask for, whatever route asks.
   for (const name of ["read-token", "base-token", "baseline-token"]) assert.equal(runnerRoute("POST", callParts(declaredCall(name)), { scope: "write" }), false, name);
@@ -717,7 +717,10 @@ test("idle polling: an empty queue answers [], records the offer, and GET /queue
   // runner's name in the offer is refused as it is for the poll.
   assert.deepEqual(await expect(api("POST", "/queue", { body: { ...OFFER, heartbeat: true } }), 200, "heartbeat"), []);
   await denied(api("POST", "/queue", { body: { ...OFFER, runner: "home:other", heartbeat: true } }), token, "heartbeat as another runner");
-  cover("queue", "queue-why", "queue-heartbeat", "config", "version", "capabilities");
+  // The token's own record (t212): its runner, its projects and its expiry.
+  const me = await expect(api("GET", "/runners/me", { actor: null }), 200, "runners/me");
+  assert.deepEqual([me.runner, me.projects, typeof me.expiresAt], [RUNNER, [p.name], "string"]);
+  cover("queue", "queue-why", "queue-heartbeat", "config", "version", "capabilities", "runner-me");
 });
 
 test("a build job: claim, reads, tokens, push, evidence, submit and release, each under the runner's own claim", async () => {

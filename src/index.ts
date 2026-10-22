@@ -1563,6 +1563,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // waits for a verdict, plan show for a routed review, status for the queue
   // and its Runners section. Plan routing reads the same offers on the index
   // (t246), picking builders and reviewers only from what live runners offer.
+  // The runner token's own record (runners.me.v1, t212): the runner's name,
+  // the projects the token serves and its expiry. The owner's token and an
+  // agent's are refused, saying so.
+  if (parts[0] === "runners" && parts.length === 2 && parts[1] === "me" && m === "GET") {
+    if (!c.token?.runner) throw new RuleError("runner_token_required", "GET /runners/me answers a runner token; this token is not one", 403);
+    return json({ runner: c.token.runner, projects: c.token.projects ?? [], expiresAt: c.token.expiresAt });
+  }
   if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
     requireOwner(env, actor);
     return json(await index(env).runnerOffers());

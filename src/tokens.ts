@@ -110,6 +110,7 @@ const RUNNER_ITEM = "projects/:project/items/:id";
 // adding a route here also requires an answer in the shared runner test server.
 export const RUNNER_ROUTES: readonly { method: string; pattern: string }[] = [
   { method: "GET", pattern: "config" },
+  { method: "GET", pattern: "runners/me" },
   { method: "POST", pattern: "queue" },
   { method: "POST", pattern: "runs" },
   { method: "GET", pattern: "projects/:project" },
@@ -218,6 +219,12 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // token's runner, an agent token's actor, neither for the owner's. It
   // names no actor, as the CLI's own resolveTokenActor names none.
   { name: "config", method: "GET", path: "/config", credential: "runner", actor: "none", body: [], via: "runner", jobs: [] },
+  // The runner's own token (t212): its runner name, the projects it serves
+  // and when it expires, read once at start so the runner offers and polls
+  // only the projects its config and the token both name. Only a runner
+  // token is answered; the runner skips the read on a server that lacks
+  // runners.me.v1, so an older server keeps working.
+  { name: "runner-me", method: "GET", path: "/runners/me", credential: "runner", actor: "none", body: [], via: "runner", jobs: [] },
   // The poll: what the runner can run and when it started (t420), answered
   // with the tasks it may claim. GET /queue is the owner's listing, which
   // runnerRoute refuses a runner token (test/runner-routes.test.mjs).
