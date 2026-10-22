@@ -17,6 +17,11 @@ import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { RUNNER_COMMANDS, declaredHelperCall, terminalTaskExit } from "../src/tokens.ts";
 import { entry, config, assignment, untilExits, UNTIL_TEST_EXITS, fixture, heldItem, gitWorkspace, KILL_GRACE_MS } from "./runner-shared.mjs";
 
+// harnessRunEnv forwards the pool size of the run these tests are part of
+// (ATELIER_TEST_SLOTS); it is no input of theirs, and whoever sets it for
+// `npm test` would fail the exact environments they compare.
+delete process.env.ATELIER_TEST_SLOTS;
+
 test("SIGINT stops claim, finish and release children and exits the loop", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-cli-signal-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

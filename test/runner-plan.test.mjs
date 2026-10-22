@@ -9,6 +9,11 @@ import { parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, offerFrom, planFilePath, runPlanTask, runTask, runRunner, runOutcome, execute } from "../cli/runner.mjs";
 import { ROLE_PROMPTS } from "../src/usage.ts";
 
+// harnessRunEnv forwards the pool size of the run these tests are part of
+// (ATELIER_TEST_SLOTS); it is no input of theirs, and whoever sets it for
+// `npm test` would fail the exact environments they compare.
+delete process.env.ATELIER_TEST_SLOTS;
+
 // The runner's plan job and a part's brief (docs/orchestrator.md, sections 2
 // and 3, build step 7b): the runner offers plan jobs, claims the plan item as
 // the planner, fetches the brief the server wrote, runs the harness with a

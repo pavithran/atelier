@@ -687,7 +687,7 @@ function reviewRepos(t) {
 
 // Serves one review through the runner with the real git helpers, answering
 // the claim with `claim`, and returns the diff the reviewer read and its brief.
-async function serveReview(t, dir, claim, answers = {}, { renew = false } = {}) {
+async function serveReview(t, dir, claim, answers = {}, { renew = false, fails = false } = {}) {
   const reviewer = { agent: "codex", models: ["gpt-6-astra"], command: ["reviewer", "{brief_file}", "{diff_file}", "{verdict_file}", "{model}"] };
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify({ agents: [reviewer], jobs: ["review"], tokens: { "gpt-6-astra": "agent.gpt-6-astra" } }));
@@ -695,7 +695,8 @@ async function serveReview(t, dir, claim, answers = {}, { renew = false } = {}) 
   const task = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra" };
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
-  const seen = {}, posted = [];
+  const seen = { logs: [] }, posted = [];
+  t.mock.method(console, "log", (...parts) => { seen.logs.push(parts.join(" ")); });
   const executeChild = async (argv, options) => {
     if (argv[0] === "git") return execute(argv, options);
     if (argv[0] === "reviewer") {
@@ -726,8 +727,11 @@ async function serveReview(t, dir, claim, answers = {}, { renew = false } = {}) 
     },
     executeChild,
   });
-  assert.ok(posted.includes("review"), `the verdict is posted: ${posted.join(", ")}`);
-  assert.doesNotMatch(seen.brief, /## Clean-clone run/, "the Git-diff fixture must not collect runner evidence");
+  console.log.mock.restore();
+  if (fails) assert.ok(!posted.includes("review"), `no verdict is posted: ${posted.join(", ")}`);
+  else assert.ok(posted.includes("review"), `the verdict is posted: ${posted.join(", ")}\n${seen.logs.join("\n")}`);
+  seen.posted = posted;
+  if (!fails) assert.doesNotMatch(seen.brief, /## Clean-clone run/, "the Git-diff fixture must not collect runner evidence");
   return seen;
 }
 
@@ -805,6 +809,93 @@ test("a part's review diffs against its plan's branch, not main", async (t) => {
   assert.deepEqual(changed(seen.diff), ["part.txt"], "neither the plan's earlier work nor the other part is shown as this part's");
   // From the project's main, the diff would also hold both other parts' work.
   assert.deepEqual(git(work, "diff", "--name-only", git(work, "merge-base", main, head), head).split("\n"), ["earlier-part.txt", "other-part.txt", "part.txt"]);
+});
+
+// t173: on 2026-10-21 the home review runner took a queued job and logged only
+// "review diff from the fork point: the merge base with main could not be
+// found: git exited 1", then ended; neither the job nor the operation that
+// failed was named, and the notice could not be told from the terminal error.
+// A merge-base that exits 1 means the head and the target branch share no
+// commit. Real Git, a target branch that is a plan's branch, not main.
+function unrelatedBranch(t, dir, git, commit) {
+  const unrelated = join(dir, "unrelated.git"), other = join(dir, "other");
+  git(dir, "init", "--quiet", "--bare", "-b", "plan-branch", unrelated);
+  git(dir, "init", "--quiet", "-b", "plan-branch", other);
+  commit(other, "elsewhere.txt", "a history of its own\n");
+  git(other, "push", "--quiet", unrelated, "HEAD:plan-branch");
+  return unrelated;
+}
+
+test("a review whose target branch shares no history with the head names the job and goes on from the fork point", async (t) => {
+  const { dir, git, commit, fork, work } = reviewRepos(t);
+  const forkPoint = commit(work, "base.txt", "base\n");
+  git(work, "checkout", "--quiet", "-b", "task");
+  const head = commit(work, "task.txt", "the task's change\n");
+  git(work, "push", "--quiet", fork, "HEAD:main");
+  const unrelated = unrelatedBranch(t, dir, git, commit);
+
+  const seen = await serveReview(t, dir, claimFor({ base: forkPoint, fork }, head, { remote: unrelated, token: "base-token", branch: "plan-branch" }));
+  assert.deepEqual(changed(seen.diff), ["task.txt"], "the diff runs from the fork point");
+  const notice = seen.logs.find((l) => l.includes("review diff from the fork point"));
+  assert.ok(notice, seen.logs.join("\n"));
+  for (const part of ["atelier/t21", head.slice(0, 12), "plan-branch", "the merge-base lookup", "share no commit"]) assert.ok(notice.includes(part), `${part} in: ${notice}`);
+  assert.ok(!notice.includes("git exited 1"), "the notice says what git's silent exit meant");
+  assert.ok(seen.brief.includes(`Base: ${forkPoint}, the fork point.`));
+  assert.ok(!seen.logs.some((l) => l.startsWith("runner: failed:")), "the notice is no failure");
+});
+
+test("a review whose target branch cannot be fetched goes on from the fork point and names the fetch", async (t) => {
+  const { dir, git, commit, fork, work } = reviewRepos(t);
+  const forkPoint = commit(work, "base.txt", "base\n");
+  git(work, "checkout", "--quiet", "-b", "task");
+  const head = commit(work, "task.txt", "the task's change\n");
+  git(work, "push", "--quiet", fork, "HEAD:main");
+
+  const seen = await serveReview(t, dir, claimFor({ base: forkPoint, fork }, head, { remote: join(dir, "gone.git"), token: "base-token", branch: "plan-branch" }));
+  assert.deepEqual(changed(seen.diff), ["task.txt"]);
+  const notice = seen.logs.find((l) => l.includes("review diff from the fork point"));
+  for (const part of ["atelier/t21", head.slice(0, 12), "plan-branch", "the fetch of the target branch"]) assert.ok(notice?.includes(part), `${part} in: ${notice}`);
+});
+
+test("a review whose target branch fails and whose fork point is unreadable stops before the harness and names the job", async (t) => {
+  const { dir, git, commit, fork, work } = reviewRepos(t);
+  git(work, "checkout", "--quiet", "-b", "task");
+  commit(work, "base.txt", "base\n");
+  const head = commit(work, "task.txt", "the task's change\n");
+  git(work, "push", "--quiet", fork, "HEAD:main");
+  const unrelated = unrelatedBranch(t, dir, git, commit);
+  // The recorded fork point is a commit neither repository holds.
+  const missing = "1".repeat(40);
+
+  const seen = await serveReview(t, dir, claimFor({ base: missing, fork }, head, { remote: unrelated, token: "base-token", branch: "plan-branch" }), {}, { fails: true });
+  assert.equal(seen.brief, undefined, "the harness never started");
+  assert.ok(seen.posted.includes("review-release"), "the request is released");
+  const failure = seen.logs.find((l) => l.startsWith("runner: failed:"));
+  for (const part of ["atelier/t21", head.slice(0, 12), "plan-branch", "the merge-base lookup", "share no commit", `fork point ${missing.slice(0, 12)}`]) assert.ok(failure?.includes(part), `${part} in: ${failure}`);
+  assert.ok(!seen.logs.some((l) => l.includes("review diff from the fork point")), "no fork-point notice for a diff that cannot run");
+});
+
+// The same fallback through reviewBase alone, for the operations real Git
+// above does not fail in: the read of the fetched head, an empty merge base,
+// an io with no commit check, no recorded fork point, and a stopped runner.
+test("reviewBase names the operation that failed and checks the fork point before using it", async () => {
+  const { reviewBase } = await import("../cli/runner.mjs");
+  const claim = (item = { id: "t21", base: H0 }) => ({ head: H1, item, target: { remote: "r", token: "t", branch: "plan/x" } });
+  const io = (over = {}) => ({ fetch: async () => "", revParse: async () => `${H1}\n`, mergeBase: async () => `${H0}\n`, hasCommit: async () => true, stopped: () => false, ...over });
+  const refused = (over, item) => reviewBase(io(over), "/clone", claim(item), { project: "atelier" });
+
+  assert.deepEqual(await refused({}), { from: H0, branch: "plan/x", target: H1 }, "no failure, no fallback");
+  const read = await refused({ revParse: async () => { throw new Error("fatal: bad revision"); } });
+  assert.deepEqual(read, { from: H0, fallback: "the read of the fetched target branch on plan/x failed (fatal: bad revision)" });
+  const empty = await refused({ mergeBase: async () => "\n" });
+  assert.match(empty.fallback, /the merge-base lookup on plan\/x failed \(the head shares no history with the branch\)/);
+  assert.equal((await refused({ hasCommit: undefined, mergeBase: async () => { throw Object.assign(new Error("git exited 1"), { code: 1 }); } })).from, H0, "an io with no commit check reads the fork point as before");
+
+  const stop = /^review of atelier\/t21 at a{12} cannot start, with target branch plan\/x: /;
+  await assert.rejects(refused({ fetch: async () => { throw new Error("fatal: no remote"); }, hasCommit: async () => false }), (e) => stop.test(e.message) && /the fetch of the target branch failed \(fatal: no remote\) and the fork point 000000000000 cannot be read in the clone$/.test(e.message));
+  await assert.rejects(refused({ mergeBase: async () => "", hasCommit: async () => { throw new Error("cat-file timed out"); } }), (e) => stop.test(e.message) && /fork point 000000000000 cannot be read/.test(e.message), "a failing check reads as unreadable");
+  await assert.rejects(refused({ mergeBase: async () => "" }, { id: "t21" }), (e) => /fork point \(none recorded\) cannot be read/.test(e.message));
+  await assert.rejects(refused({ fetch: async () => { throw new Error("interrupted"); }, stopped: () => true }), /^Error: interrupted$/, "a stopped runner's own interrupt is not turned into a fallback");
 });
 
 // The review role's instructions come from the accepted base, not the head
