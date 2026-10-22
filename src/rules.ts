@@ -2204,6 +2204,44 @@ export function assertBaselineName(repo: string): void {
 // made for any other purpose is refused (the reviews of t641).
 export const baselineMark = (project: string) => `Atelier baseline for ${project}`;
 export const taskForkMark = (fork: string) => `Atelier: the task fork ${fork}`;
+
+// A task fork that Artifacts is still preparing (t18). Each claim waits a
+// few seconds for the fork and then answers not_ready, and a failed claim
+// gives the item back, so nothing in the claim remembers how long the fork
+// has been stuck. The Ledger keeps the record below per item, outside the
+// claim, from the first not_ready answer until the fork is recorded.
+// Atelier only reports a stuck fork: it deletes no repository.
+//   since:      the first not_ready answer for the repository;
+//   reportedAt: the stuck fork was recorded as an event.
+export const FORK_STUCK_MS = 10 * 60_000;
+
+export type ForkPreparation = { fork: string; since: string | null; reportedAt: string | null };
+export type ForkPreparationView = { fork: string; since: string; ageMs: number; action: "wait" | "stuck"; next: string };
+
+export function forkAgeText(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  return minutes < 1 ? "less than a minute" : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+
+// How long a fork has been preparing, and what the developer or the next
+// claim should do. Before the limit the next claim tries again. After it the
+// fork is stuck, and the remedy is by hand: Atelier does not delete it. The
+// remedy says to delete the repository only when the Ledger records no fork
+// and no head for the task, so nothing shows commits in it; when it does
+// record one, the fork may hold the task's commits and must not be deleted.
+export function forkPreparationView(prep: ForkPreparation & { since: string }, item: { id: string; fork?: string | null; head?: string | null }, now: number): ForkPreparationView {
+  const ageMs = Math.max(0, now - Date.parse(prep.since));
+  const base = { fork: prep.fork, since: prep.since, ageMs };
+  const minutes = FORK_STUCK_MS / 60_000;
+  if (ageMs < FORK_STUCK_MS) {
+    return { ...base, action: "wait", next: `Atelier tries the fork again on each claim: claim ${item.id} again in a few minutes. After ${minutes} minutes without a ready fork, it is reported as stuck.` };
+  }
+  const stuck = `${prep.fork} has not become ready in ${forkAgeText(ageMs)}. Atelier deletes no fork.`;
+  if (item.fork || item.head) {
+    return { ...base, action: "stuck", next: `${stuck} The Ledger records ${item.fork ? "a fork" : "a head"} for ${item.id}, so the repository may hold the task's commits: do not delete it; check it in Artifacts.` };
+  }
+  return { ...base, action: "stuck", next: `${stuck} The Ledger records no commit for ${item.id}. The developer can check the repository and, if it holds none, delete the Artifacts repository ${prep.fork} by hand and claim ${item.id} again; Atelier then makes a new fork.` };
+}
 export const branchesMark = (key: string) => `Atelier: the developer's branches of the project stored under ${key}`;
 const BRANCH_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 export function developerBranch(name: unknown, defaultBranch = "main"): string {

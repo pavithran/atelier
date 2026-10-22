@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { familyModeText, formatRunners, formatStatus, isLive, runnerLine, singleFamilyLine, statusJson } from "../cli/status.mjs";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
+import { forkAgeText } from "../src/rules.ts";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
 const entry = (itemId, kind, over = {}) => ({ project: "demo", itemId, title: `Task ${itemId}`, kind, reason: `because ${kind}`, weight: 1, ...over });
@@ -238,7 +239,7 @@ async function runLocal(t, setup, argv) {
     if (req.url === "/api/projects") body = [STANDING.project];
     else if (req.url === "/api/inbox") body = [];
     else if (req.url === "/api/projects/demo/baseline-head") body = { head: git(state.checkout, "rev-parse", "HEAD") };
-    else if (req.url === "/api/projects/demo/standing") body = STANDING;
+    else if (req.url === "/api/projects/demo/standing") body = state.standing ?? STANDING;
     else if (req.url === "/api/projects/demo") body = { project: { ...STANDING.project, policy: state.policy }, items: state.items ?? [], events: [] };
     else if (req.url === "/api/projects/demo/landing-lease") {
       if (state.noLeaseRoute) { status = 404; body = { error: "not_found", detail: "no such route" }; }
@@ -557,4 +558,47 @@ test("a held task names every blocker and when each stops holding, claimed or la
   assert.equal(line([landing("t5")]), `      Held: waits on t5 (accepted by claude-code/opus-5.5): ${reach}; offered once the landing of t5 ends${override}`);
   assert.equal(line([claimed("t1"), claimed("t3")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released and t3 submits or is released${override}`);
   assert.equal(line([claimed("t1"), claimed("t3"), landing("t5")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; t5 (accepted by claude-code/opus-5.5): ${reach}; offered once t1 submits or is released, t3 submits or is released and the landing of t5 ends${override}`);
+});
+
+// t18 (the finding of 2026-10-11, t496: a fork stuck in preparing, and nothing
+// told the developer): status lists a task whose fork is not ready with how
+// long it has waited and what happens next; the JSON carries it; a task with
+// no such fork has neither.
+const preparing = { fork: "demo--t4", since: "2026-10-20T12:00:00.000Z", ageMs: 12 * 60_000, action: "stuck", next: "demo--t4 has not become ready in 12 minutes. Atelier deletes no fork. The developer can delete the Artifacts repository demo--t4 by hand and claim t4 again." };
+
+test("status names a fork still being prepared, its age and the next action", () => {
+  const view = { name: "demo", title: "Demo", items: [item("t4", "open", { preparing }), item("t5", "open")], inbox: [] };
+  const lines = formatStatus([view]).split("\n");
+  assert.ok(lines.includes("  Waiting for a fork"), lines.join("\n"));
+  assert.ok(lines.includes(`    t4  demo--t4 has been preparing for ${forkAgeText(preparing.ageMs)}. ${preparing.next}`), lines.join("\n"));
+  assert.ok(!lines.some((l) => l.startsWith("    t5  ") && l.includes("preparing")));
+  assert.ok(!formatStatus([{ ...view, items: [item("t5", "open")] }]).includes("Waiting for a fork"));
+});
+
+test("status --json carries the preparation only on the task that has one", () => {
+  const [project] = statusJson([{ name: "demo", items: [item("t4", "open", { preparing }), item("t5", "open")], inbox: [] }]);
+  assert.deepEqual(project.items.find((i) => i.id === "t4").preparing, preparing);
+  assert.ok(!("preparing" in project.items.find((i) => i.id === "t5")));
+});
+
+// The same through the commands, against a stand-in server that answers the
+// routes as the Worker does (test/fork-preparation.spec.ts reads the real
+// routes): `atelier status` reads the project's record, and `atelier status
+// --project` its standing. Neither command is given the field directly.
+test("atelier status --project prints the forks being prepared from the standing", async (t) => {
+  const r = await runLocal(t, () => ({ standing: { ...STANDING, preparing: [{ id: "t4", ...preparing }] } }));
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("\nWaiting for a fork:\n"), r.output);
+  assert.ok(r.output.includes(`\n  t4  demo--t4 has been preparing for 12 minutes. ${preparing.next}\n`), r.output);
+  const plain = await runLocal(t, () => ({}));
+  assert.ok(!plain.output.includes("Waiting for a fork"), plain.output);
+});
+
+test("atelier status prints the forks being prepared from each project's record", async (t) => {
+  const r = await runLocal(t, () => ({ items: [item("t4", "open", { preparing })] }), ["status"]);
+  assert.equal(r.code, 0, r.output);
+  assert.ok(r.output.includes("\n  Waiting for a fork\n"), r.output);
+  assert.ok(r.output.includes(`\n    t4  demo--t4 has been preparing for 12 minutes. ${preparing.next}\n`), r.output);
+  const json = await runLocal(t, () => ({ items: [item("t4", "open", { preparing })] }), ["status", "--json"]);
+  assert.deepEqual(JSON.parse(json.output)[0].items[0].preparing, preparing);
 });

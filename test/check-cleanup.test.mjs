@@ -63,7 +63,7 @@ for (const exit of [0, 1]) test(`a clone that cannot be removed is a warning, an
   const r = await f.run();
   assert.equal(r.status, exit ? 2 : 0, r.stdout + r.stderr);
   assert.match(r.stdout, exit ? /^FAIL {2}/m : /^PASS {2}/m);
-  assert.equal(f.evidence.length, 1);
+  assert.equal(f.evidence.length, exit ? 2 : 1);
   assert.equal(f.evidence[0].passed, !exit);
   const [left] = f.clones();
   assert.ok(left, "the clone is still there");
@@ -126,6 +126,6 @@ test("a check that fails twice at the same head stays failed", async (t) => {
   const r = await f.run();
   assert.equal(r.status, 2, r.stdout + r.stderr);
   assert.equal(readFileSync(join(f.root, "runs"), "utf8").trim().split("\n").length, 2);
-  assert.deepEqual(f.evidence.map((e) => e.passed), [false]);
+  assert.deepEqual(f.evidence.map((e) => e.passed), [false, false]);
   assert.doesNotMatch(r.stdout, /flake/i);
 });

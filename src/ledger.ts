@@ -28,6 +28,7 @@ import {
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
+  forkPreparationView, type ForkPreparation, type ForkPreparationView,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -3098,10 +3099,72 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("claim_superseded", `${id} is ${item.state}${item.owner && item.owner !== actor ? `, held by ${item.owner}` : ""} and no longer held by this claim, so its fork is not recorded; claim it again`, 409);
     }
     this.update(id, { fork, base, head: base }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
     this.log(id, actor, "fork.created", { fork, base }, at, proved);
     // A plan forks from the baseline, so its base is main's head as it
     // stands now.
     if (base && this.item(id).kind === "plan") this.setMainHead(base, at);
+  }
+
+  // A task fork that Artifacts is slow to prepare (t18; src/rules.ts
+  // ForkPreparation). The record is per item and outlives a claim that is
+  // given up, so the first not_ready answer is remembered across retries and
+  // releases. Each call is made by the claim that is waiting on the fork, and
+  // changes nothing once that claim is released, superseded or closed: a late
+  // answer cannot start a clock or record an event.
+  private forkPrep(id: string): ForkPreparation | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, forkPrepKey(id)).toArray()[0];
+    return row ? JSON.parse(row.value as string) as ForkPreparation : null;
+  }
+
+  private saveForkPrep(id: string, prep: ForkPreparation): void {
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkPrepKey(id), JSON.stringify(prep));
+  }
+
+  private claimHeld(id: string, actor: string, generation: number): boolean {
+    const item = this.item(id);
+    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
+    return item.state === "claimed" && item.owner === actor && row.claim_gen === generation;
+  }
+
+  // The claim waited out the fork and it is not ready. Starts the clock at the
+  // first answer, and says how long the fork has been preparing and what to
+  // do next; a fork stuck past the limit is recorded once as an event naming
+  // the repository and the remedy. Null when the claim is no longer held, so a
+  // late answer starts no clock and records nothing.
+  forkNotReady(id: string, fork: string, actor: string, generation: number, proved = false): ForkPreparationView | null {
+    if (!this.claimHeld(id, actor, generation)) return null;
+    const at = new Date().toISOString();
+    const found = this.forkPrep(id);
+    const prep: ForkPreparation = found?.fork === fork ? found : { fork, since: null, reportedAt: null };
+    const since = prep.since ?? at;
+    const view = forkPreparationView({ ...prep, since }, this.item(id), Date.parse(at));
+    const reportedAt = view.action === "stuck" ? prep.reportedAt ?? at : prep.reportedAt;
+    this.saveForkPrep(id, { fork, since, reportedAt });
+    if (view.action === "stuck" && !prep.reportedAt) {
+      this.log(id, actor, "fork.stuck", { fork, since, minutes: Math.floor(view.ageMs / 60_000), next: view.next }, at, proved);
+    }
+    return view;
+  }
+
+  // A read of the task's recorded fork found it ready: it is no longer being
+  // prepared, whatever an earlier claim saw.
+  forkReady(id: string): void {
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
+  }
+
+  // The forks being prepared, by item, as the views say them: only those
+  // that have been waited on, of an item not yet merged or abandoned, whether
+  // the fork is a new one or a recorded one made again for a claim.
+  forkPreparations(): Record<string, ForkPreparationView> {
+    const now = Date.now(), out: Record<string, ForkPreparationView> = {};
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'fork-prep:%'`).toArray()) {
+      const id = (row.key as string).slice("fork-prep:".length);
+      const prep = JSON.parse(row.value as string) as ForkPreparation;
+      const item = this.sql.exec(`SELECT id FROM items WHERE id = ? AND state NOT IN ('merged', 'abandoned')`, id).toArray()[0];
+      if (prep.since && item) out[id] = forkPreparationView({ ...prep, since: prep.since }, this.item(id), now);
+    }
+    return out;
   }
 
   // A part's fork forked again from its plan's branch at `base`, or a
@@ -3117,6 +3180,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409);
     }
     this.update(id, { base, head: base }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
     this.log(id, actor, "fork.moved", { fork, from, base }, at, proved);
   }
 
@@ -5736,7 +5800,8 @@ export class Ledger extends DurableObject<Env> {
     // review of it names (src/criteria.ts).
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
-    return { item, postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
+    const preparing = this.forkPreparations()[id];
+    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -9140,6 +9205,8 @@ export class Ledger extends DurableObject<Env> {
 // Every Ledger call, RPC, alarm or internal, counts itself in flight, so a
 // restart after a deploy fires between requests (t586).
 gateMethods(Ledger.prototype, (self) => GATES.get(self));
+
+const forkPrepKey = (id: string) => `fork-prep:${id}`;
 
 function toEvent(r: Row): LedgerEvent {
   return {

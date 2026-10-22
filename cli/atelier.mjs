@@ -9,6 +9,7 @@
 // remote pushes are opt-in.
 
 
+import { saveFailedOutput } from "./check-output.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -33,7 +34,7 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile } from 
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { absolute, expiredBlocksLine, overrideTail, taskLink, waitingCommand } from "./status.mjs";
+import { absolute, expiredBlocksLine, overrideTail, preparingLine, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
@@ -1386,10 +1387,13 @@ export async function mergeWithMain(dir, id, name = "") {
 export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${redact(cmd, secrets)}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
-  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
+  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, captureOrder: true, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
-  const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
-  return { passed: r.status === 0 && !r.error, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
+  const output = redact(`${r.output ?? `${r.stdout}${r.stderr}`}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
+  const passed = r.status === 0 && !r.error;
+  const logPath = passed ? undefined : saveFailedOutput(CACHE, output);
+  if (logPath) process.stderr.write(`atelier: full redacted failed-check log: ${logPath}\n`);
+  return { passed, logPath, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
 // One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
@@ -1398,11 +1402,11 @@ export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
 // the check's group, so each ends this process, and runGroup ends the group
 // on the way out; a slot whose wrapper died that way is reclaimed at the
 // next admission or status read.
-export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes }) {
+export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes, captureOrder }) {
   const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
   process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
   const invocation = slotInvocation(["/bin/sh", "-c", cmd], metadata, env);
-  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
+  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn, captureOrder }); }
   finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
 }
 
@@ -1489,6 +1493,8 @@ export function formatStanding(s, ownerName = "the developer", origin = "", expi
   if (s.pipeline?.length) lines.push("", `In the pipeline: ${s.pipeline.reduce((n, x) => n + x.count, 0)} tasks: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(", ")}; none waits on ${flat(ownerName)}.`);
   if (s.overlaps?.length) lines.push("", `Overlapping scopes: ${s.overlaps.length} ${s.overlaps.length === 1 ? "pair" : "pairs"}; nothing waits on ${flat(ownerName)}. The JSON lists them.`);
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${notePreview(q.note) ? `  note: ${flat(notePreview(q.note))}` : ""}`));
+  // Task forks Artifacts is still preparing, with their age and what happens next (t18).
+  group("Waiting for a fork", (s.preparing ?? []).map((p) => `${flat(p.id)}  ${preparingLine(p)}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).

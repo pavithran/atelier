@@ -65,6 +65,20 @@ test("show lists why the queue holds a dispatched task", (t) => {
   assert.deepEqual(JSON.parse(run(["--json"]).stdout).why, why);
 });
 
+// t18: show says when the task's fork is still being prepared, how long, and
+// what happens next, and --json carries it; a task without one prints neither.
+test("show names a fork still being prepared, its age and the next action", (t) => {
+  const preparing = { fork: "proj--t1", since: "2026-10-20T12:00:00.000Z", ageMs: 12 * 60_000, action: "stuck", next: "proj--t1 has not become ready in 12 minutes. Atelier deletes no fork. The developer can delete the Artifacts repository proj--t1 by hand and claim t1 again." };
+  const run = fixture(t, 200, "", "", null, { item: { id: "t1" }, preparing });
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes(`\nFork: proj--t1 has been preparing for 12 minutes. ${preparing.next}`), r.stdout);
+  assert.deepEqual(JSON.parse(run(["--json"]).stdout).preparing, preparing);
+  const plain = fixture(t, 200, "", "", null, { item: { id: "t1" } })();
+  assert.ok(!plain.stdout.includes("Fork:"), plain.stdout);
+  assert.ok(!("preparing" in JSON.parse(fixture(t, 200, "", "", null, { item: { id: "t1" } })(["--json"]).stdout)));
+});
+
 for (const [status, error, detail, exitCode] of [
   [403, "forbidden", "not allowed", 1],
   [404, "not_found", "no such item", 1],

@@ -259,9 +259,9 @@ test("check records its running child, reports pass and failure, and cleans its 
   });
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   assert.equal(await new Promise((done) => child.on("close", done)), 2, output);
-  assert.deepEqual(evidence.map((e) => e.passed), [true, false]);
+  assert.deepEqual(evidence.map((e) => e.passed), [true, false, false]);
   assert.match(evidence[0].outputTail, /record verified/);
-  assert.match(evidence[1].outputTail, /deliberate-failure/);
+  for (const attempt of evidence.slice(1)) assert.match(attempt.outputTail, /deliberate-failure/);
   assert.ok(evidence.every((e) => e.head === head));
   const { readdirSync } = await import("node:fs");
   assert.deepEqual(readdirSync(join(f.cache, "checks")), []);

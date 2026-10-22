@@ -83,27 +83,29 @@ for (const exit of [0, 1]) test(`a ${exit ? "failing" : "passing"} local check s
   git(g.workspace, "config", "--local", "--add", "include.path", "more-headers");
   const r = await g.run(["check"], g.workspace);
   assert.equal(r.status, exit ? 2 : 0, r.stdout + r.stderr);
-  assert.equal(g.evidence.length, 1);
-  const tail = g.evidence[0].outputTail;
-  const names = tail.split("\n").map((line) => /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1]).filter(Boolean);
+  assert.equal(g.evidence.length, exit ? 2 : 1);
+  for (const attempt of g.evidence) {
+    const tail = attempt.outputTail;
+    const names = tail.split("\n").map((line) => /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1]).filter(Boolean);
 
-  // The environment: toolchains and slot coordination only, and none
-  // of the caller's other credentials.
-  for (const name of ["PATH", "HOME", "LANG", "npm_config_registry"]) assert.ok(names.includes(name), `${name} reaches the check`);
-  assert.ok(names.includes("ATELIER_TEST_LEASE"));
-  assert.deepEqual(names.filter((n) => n.startsWith("ATELIER_") && !["ATELIER_TEST_LEASE", "ATELIER_TEST_SLOTS", "ATELIER_TEST_PRIORITY"].includes(n)), []);
-  assert.deepEqual(names.filter((n) => /token|secret|key|auth|passw|credential/i.test(n)), []);
-  assert.ok(!names.includes("SSH_AUTH_SOCK"));
-  for (const value of Object.values(OTHER)) assert.ok(!tail.includes(value), `${value} is not in the evidence`);
+    // The environment: toolchains and slot coordination only, and none
+    // of the caller's other credentials.
+    for (const name of ["PATH", "HOME", "LANG", "npm_config_registry"]) assert.ok(names.includes(name), `${name} reaches the check`);
+    assert.ok(names.includes("ATELIER_TEST_LEASE"));
+    assert.deepEqual(names.filter((n) => n.startsWith("ATELIER_") && !["ATELIER_TEST_LEASE", "ATELIER_TEST_SLOTS", "ATELIER_TEST_PRIORITY"].includes(n)), []);
+    assert.deepEqual(names.filter((n) => /token|secret|key|auth|passw|credential/i.test(n)), []);
+    assert.ok(!names.includes("SSH_AUTH_SOCK"));
+    for (const value of Object.values(OTHER)) assert.ok(!tail.includes(value), `${value} is not in the evidence`);
 
-  // Atelier's own secrets, printed by the check, are redacted in what is
-  // uploaded and in what the terminal shows.
-  for (const secret of [API, WRITE, READ, BASE, INCLUDED]) {
-    assert.ok(!tail.includes(secret), `${secret} is not in the evidence`);
-    assert.ok(!r.stdout.includes(secret) && !r.stderr.includes(secret), `${secret} is not printed`);
+    // Atelier's own secrets, printed by the check, are redacted in what is
+    // uploaded and in what the terminal shows.
+    for (const secret of [API, WRITE, READ, BASE, INCLUDED]) {
+      assert.ok(!tail.includes(secret), `${secret} is not in the evidence`);
+      assert.ok(!r.stdout.includes(secret) && !r.stderr.includes(secret), `${secret} is not printed`);
+    }
+    assert.equal(tail.match(/extraheader Authorization: Bearer \[redacted\]/g)?.length, 2);
+    assert.match(tail, /\[redacted\]\n\[redacted\]\n\[redacted\]\n\[redacted\]\n/);
   }
-  assert.equal(tail.match(/extraheader Authorization: Bearer \[redacted\]/g)?.length, 2);
-  assert.match(tail, /\[redacted\]\n\[redacted\]\n\[redacted\]\n\[redacted\]\n/);
 });
 
 test("a check still runs its toolchain: node and git from PATH, a temporary folder, its own HOME", async (t) => {
