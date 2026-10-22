@@ -408,7 +408,8 @@ test("every reader of role assignments refuses the same ineligible entry, whatev
     ["reserved", { ...luna, state: "reserved", stateAt: AT }],
     ["role-restricted", { ...luna, roles: [role === "review" ? "build" : "review"] }],
     ["refused", { ...luna, status: { state: "refused", at: AT, by: "cloud:x" } }],
-    ["paid", { ...luna, provider: "openai" }],
+    // Paid per token means reached with a key; a vendor provider alone on a home harness is a sign-in (t162).
+    ["paid", { ...luna, provider: "openai", keychain: "openai.API_KEY" }],
   ];
   const lunaAssigned = (role: AssignmentRole) => ({ ...assigned(role, [LUNA]), choices: [{ actor: LUNA, model: "gpt-6-luna" }] });
   const item = { id: "t1", title: "Rename a helper", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] as string[] };

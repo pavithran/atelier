@@ -88,6 +88,21 @@ test("refused and paid-per-token models are excluded; allowPaid and the spend ca
   has(one([gpt, opus]).builder, /No per-token cost \(subscription\)/);
 });
 
+// t162: codex/gpt-6-astra registered before the subscription provider existed
+// is {where: home, provider: openai, tier: frontier}; Atelier holds no key for
+// a harness at home, so it is a sign-in, not an API. A key, an endpoint, the
+// cloud or OpenCode keep a vendor provider paid.
+test("paidPerToken: a legacy harness entry at home with no key or endpoint is a sign-in; any key, endpoint, cloud or OpenCode entry stays paid", () => {
+  const legacy = { harness: "codex", where: "home", provider: "openai" } as const;
+  assert.equal(paidPerToken(legacy), false);
+  for (const harness of ["claude-code", "zcode", "gemini-cli", "antigravity"] as const) assert.equal(paidPerToken({ ...legacy, harness, provider: "anthropic" }), false, harness);
+  assert.equal(paidPerToken({ ...legacy, keychain: "openai.API_KEY" }), true);
+  assert.equal(paidPerToken({ ...legacy, endpoint: "https://api.openai.example/v1" }), true);
+  assert.equal(paidPerToken({ ...legacy, where: "cloud" }), true);
+  assert.equal(paidPerToken({ ...legacy, harness: "opencode" }), true);
+  assert.equal(paidPerToken({ provider: "openai", where: "home" }), true, "no harness named: judged by its provider");
+});
+
 test("a profile suffix never makes a reviewer look like another family than the builder", () => {
   const r = one([coder, entry("Qwen3.8-27B-6bit:google-eval", { harness: "opencode", where: "home", provider: "ai-studio" })]);
   assert.equal(r.builder!.actor, "opencode/Qwen3-Coder-Next-4bit:studio-code");

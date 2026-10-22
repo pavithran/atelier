@@ -93,6 +93,16 @@ test("the pick asks the previous round's reviewer first, passes over refused, pa
   assert.match(empty.unpicked!, /written by owner, claude-code\/opus-5.5: no model is in the pool/);
 });
 
+// t162: codex/gpt-6-astra as the live registry holds it, {home, openai, no
+// key}, is a harness sign-in; the same model with a key is paid per token.
+test("the pick takes a legacy harness entry at home without allowPaid, and passes over the same entry with a key", () => {
+  const legacy = entry("gpt-6-astra", "codex", { where: "home", provider: "openai" });
+  assert.equal(pickCriteriaReviewer({ authors: ["owner", OPUS], pool: [legacy], policy }).reviewer?.actor, GPT);
+  const keyed = pickCriteriaReviewer({ authors: ["owner", OPUS], pool: [{ ...legacy, keychain: "openai.API_KEY" }], policy });
+  assert.equal(keyed.reviewer, null);
+  assert.match(keyed.unpicked!, /codex\/gpt-6-astra \(paid per token \(openai\)/);
+});
+
 // Found merging t394 into t438: criteria review asked a model of another
 // company than the authors even in single-family mode, where no other
 // company's model may touch the project, and a criteria review bound by its
