@@ -226,6 +226,18 @@ test("clone does not take over another checkout's registration unless --replace 
   assert.deepEqual(ok.config.projects.demo, { path: dir, branch: "main", protect: ["AGENTS.md", "src/rules.ts"], notesRemote: "github" });
 });
 
+test("clone is not blocked by a registered path that is not a usable string, or that is the destination", async (t) => {
+  for (const [label, path] of [["a number", 7], ["an empty string", ""], ["the destination", null]]) {
+    const f = setup(t);
+    const dir = join(f.root, "demo");
+    const projects = { demo: { path: path ?? dir, branch: "main", protect: [], notesRemote: "github" } };
+    const r = await run(t, f, ["clone", "demo", dir], { projects });
+    assert.equal(r.code, 0, `${label}: ${r.output}`);
+    assert.equal(r.config.projects.demo.path, dir);
+    assert.doesNotMatch(r.output, /replaces/);
+  }
+});
+
 // Astra's review of t643, finding 1: a header stored in the checkout outlived
 // the token it carried, and Git sends a stored URL-scoped header in place
 // of the one sync and merge pass for the token they mint, so once the
