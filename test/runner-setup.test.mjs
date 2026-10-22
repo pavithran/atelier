@@ -197,6 +197,43 @@ test("setup writes the files, refuses to overwrite a runner config, and a dry ru
   await assert.rejects(planSetup({ configPath: "/c/r.json", pool: POOL, env: {}, which: () => false, fetchJson }), /no harness found on the PATH/);
 });
 
+test("--claude-token-file puts the path in the written config, never token bytes, and an existing config keeps it", async () => {
+  // Criterion 1 of t53: runner setup accepts a Claude token-file reference.
+  const FAKE = "fake-claude-token-123";
+  const file = "/home/p/.config/api-keys/claude-code-auth.key";
+  const written = new Map(), printed = [];
+  const io = { pool: async () => POOL, which: everything, fetchJson, env: {}, print: (t) => printed.push(t), writeFile: (p, t) => written.set(p, t), exists: (p) => written.has(p), readFile: (p) => written.get(p) };
+  const args = (extra = {}) => ({ _: ["runner", "setup"], multi: Object.fromEntries(Object.entries(extra).map(([k, v]) => [k, [v]])), ...extra });
+  await runSetup(args({ config: "/cfg/runner.json", "claude-token-file": file }), io);
+  const config = JSON.parse(written.get("/cfg/runner.json"));
+  assert.equal(config.claudeTokenFile, file);
+  const parsed = parseConfig(config, { configPath: "/cfg/runner.json" });
+  assert.deepEqual(parsed.errors, []);
+  assert.equal(parsed.claudeTokenFile, file);
+  const command = parsed.agents.find((a) => a.agent === "claude-code").command;
+  assert.deepEqual(command.slice(2, 4), ["--claude-token-file", file]);
+  assert.match(printed.join("\n"), /token in \/home\/p\/\.config\/api-keys\/claude-code-auth\.key/);
+  assert.doesNotMatch([...written.values(), ...printed].join("\n"), new RegExp(FAKE));
+  // Without the flag the config has no claudeTokenFile.
+  const plain = await plan();
+  assert.ok(!("claudeTokenFile" in plain.config));
+  // An existing config keeps its path when the flag is absent (a dry run shows it).
+  printed.length = 0;
+  const kept = await runSetup(args({ config: "/cfg/runner.json", "dry-run": true }), io);
+  assert.equal(kept.config.claudeTokenFile, file);
+  assert.match(printed.join("\n"), /"claudeTokenFile": "\/home\/p\/\.config\/api-keys\/claude-code-auth\.key"/);
+  // The flag replaces it.
+  const replaced = await runSetup(args({ config: "/cfg/runner.json", "dry-run": true, "claude-token-file": "~/other.key" }), io);
+  assert.equal(replaced.config.claudeTokenFile, "~/other.key");
+  // The config parser's validation applies: a token, a relative path or a traversal is refused and not echoed.
+  for (const bad of ["sk-ant-oat01-abcdef", "relative/token.key", "/home/p/../x.key"]) {
+    await assert.rejects(runSetup(args({ config: "/cfg/new.json", "claude-token-file": bad }), io), (e) => /claudeTokenFile must be the path of a file/.test(e.message) && !e.message.includes(bad));
+  }
+  assert.ok(!written.has("/cfg/new.json"), "nothing written for a refused path");
+  // The flag needs a value.
+  await assert.rejects(runSetup(args({ config: "/cfg/new.json", "claude-token-file": true }), io), /usage: atelier runner setup .*--claude-token-file PATH/);
+});
+
 test("the gateway and the harnesses on the PATH are read from the environment", () => {
   assert.deepEqual(gatewayFrom({ ATELIER_GATEWAY: "a1/gw" }), { account: "a1", id: "gw" });
   assert.deepEqual(gatewayFrom({ CF_ACCOUNT_ID: "a2" }), { account: "a2", id: "atelier" });

@@ -9,6 +9,12 @@ const spec: CommandSpec = {
       about: "The home runner: polls the queue every 30 seconds, claims one eligible task and runs its configured harness in the claimed workspace. Each opencode run gets a data folder of its own beside the workspace, removed when the run ends, because opencode runs that share one deadlock on its database. When the harness commits, the runner runs `finish`. `--integrate` runs no harness: it offers only the integrate and refresh jobs and merges each part onto its plan's branch as atelier/integrator. `--once` handles at most one task. It refuses to start when a runner of the same name already runs on this Mac, naming its pid; `--replace` stops that process first.",
     },
     {
+      group: "Local", line: 1, slot: 30,
+      form: "runner setup [--config PATH] [--claude-token-file PATH] [--dry-run]",
+      aside: "write a runner config for this machine",
+      about: "Writes a runner config for the harnesses found on the PATH and the pool's home models, and for opencode a provider config per provider. `--claude-token-file PATH` names the file holding a `claude setup-token` token as claudeTokenFile: setup writes the path only and never opens the file, and refuses a value that looks like a token. It does not overwrite a runner config; `--dry-run` prints what it would write, and keeps the token file path an existing config names when the flag is absent.",
+    },
+    {
       group: "Local", line: 2, slot: 10,
       form: "runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]",
       aside: "what each home model's harness serves",
@@ -21,12 +27,13 @@ const spec: CommandSpec = {
       about: "Reports how much of each tool's allowance this machine has used: Codex's 5-hour and weekly windows, the requests and tokens zcode, opencode and Claude Code recorded by served model over the last 5 hours, 24 hours and 7 days (with cost, for opencode), and the DeepSeek balance when the runner config names its Keychain entry. After the tools' own figures it prints what the server read of the AI Gateway: each model's calls, tokens, cost and durations, and the calls per task the runners' cf-aig-metadata tags name; then each model's speed over the last 14 days (median build, review and claim-to-merge times with n, and the share of runs that stalled). Each tool's summary goes to the server under the runner's name, for the Usage page and its alerts; `--dry-run` reports nothing. It runs once, not as part of the runner loop. Claude Code's tokens by model per day are read from its session logs (counts only). Claude's plan percent, Antigravity and Gemini's spend are listed under Not reported with the reason and the best figure there is.",
     },
   ],
-  flags: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true, replace: true },
+  flags: { name: false, once: true, config: false, "claude-token-file": false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true, replace: true },
   help: {
     flags: {
       "--name home:NAME": "this runner's name; home: and this machine's host name unless given",
       "--once": "handles at most one task, then exits",
       "--config PATH": "the runner config file; runner.json in the config folder unless given",
+      "--claude-token-file PATH": "with `runner setup`, the file holding a `claude setup-token` token, which the config then names as claudeTokenFile; only the path is written, and an existing config's path is kept when the flag is absent",
       "--integrate": "runs no harness; offers only the integrate and refresh jobs and merges each part onto its plan's branch",
       "--replace": "stops a live runner of the same name on this Mac, then starts; without it the start is refused",
       "--discover": "reports which model each home harness served, as each model's status",

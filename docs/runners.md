@@ -261,7 +261,7 @@ own, so setting up the second runner leaves the first one's as they were.
 
 ### What setup writes
 
-`atelier runner setup [--config PATH] [--dry-run]` reads the pool from
+`atelier runner setup [--config PATH] [--claude-token-file PATH] [--dry-run]` reads the pool from
 Atelier and looks for `claude`, `codex`, `opencode` and `agy` on the PATH.
 It writes, beside the runner config (`runner.json` in the config folder
 unless `--config` names another file):
@@ -274,6 +274,13 @@ unless `--config` names another file):
   runner refuses its builds (Build validation blocked by the harness,
   below) until it names a `codex exec --sandbox danger-full-access`
   command. Setup refuses to overwrite a runner config that exists.
+- `--claude-token-file PATH` adds `claudeTokenFile` to the runner config: the
+  path of a file holding a `claude setup-token` token, absolute or under `~/`.
+  Setup writes the path only and never opens the file; the Claude adapter and
+  its readiness probe read it when a job starts, and a value that looks like a
+  token is refused. Setup does not overwrite a runner config, but a dry run
+  against an existing one shows the path it already names when the flag is
+  absent.
 - `opencode/NAME/PROVIDER.json`, NAME the runner config's whole file name
   (`opencode/runner.json/` for `runner.json`): one opencode provider
   config per provider the opencode models use (`zai-coding`, `deepseek-api`,
