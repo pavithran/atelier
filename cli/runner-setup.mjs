@@ -1,12 +1,14 @@
-// `atelier runner setup [--config PATH] [--dry-run]` writes a runner config
-// for the harnesses this machine has and the home models the pool gives them,
-// and, for opencode, a provider config per provider with each model's limits
-// checked against what its provider serves (cli/harness/providers.mjs). The
-// runner config names no command, so the runner runs the adapters Atelier
-// ships (bin/harness/); nothing written holds a key. docs/runners.md, "Setting
-// up a runner", is the walk-through.
+// `atelier runner setup [--config PATH] [--claude-token-file PATH] [--dry-run]`
+// writes a runner config for the harnesses this machine has and the home models
+// the pool gives them, and, for opencode, a provider config per provider with
+// each model's limits checked against what its provider serves
+// (cli/harness/providers.mjs). The runner config names no command, so the
+// runner runs the adapters Atelier ships (bin/harness/); nothing written holds
+// a key. --claude-token-file puts the path of a `claude setup-token` file in
+// the config as claudeTokenFile; setup never opens that file. docs/runners.md,
+// "Setting up a runner", is the walk-through.
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 import { DEFAULT_JOBS, defaultConfigPath, parseConfig, providersDir } from "./runner-config.mjs";
@@ -17,7 +19,7 @@ import {
 
 export const OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models";
 const KEYCHAIN_ENTRY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
-const USAGE = "usage: atelier runner setup [--config PATH] [--dry-run]";
+const USAGE = "usage: atelier runner setup [--config PATH] [--claude-token-file PATH] [--dry-run]";
 
 // The executable's path on the PATH, or null.
 export function onPath(name, env = process.env, exists = existsSync) {
@@ -86,7 +88,9 @@ export async function resolveOpencode(entries, fetchJson, catalogue = {}) {
 // Everything setup would write, as { files: [{path, text}], config, refused, found, lines }.
 // `major` is the major version of the opencode found (null: unknown); the V2
 // permissions key is written only for 2 or later, since opencode 1 throws on it.
-export async function planSetup({ configPath, pool, env, which, fetchJson, catalogue, major = null }) {
+// `claudeTokenFile` is the path of a Claude token file for the config to name,
+// or undefined; only the path is kept.
+export async function planSetup({ configPath, pool, env, which, fetchJson, catalogue, major = null, claudeTokenFile }) {
   const found = Object.keys(HARNESSES).filter((h) => which(HARNESSES[h].executable));
   // A home runner takes the pool's home models and the opencode models served
   // by OpenRouter's API, which the pool records as cloud (t698): an API model
@@ -128,7 +132,7 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
   // Each model this runner may review as names the Keychain entry of its own
   // agent token (docs/runners.md, Reviewers post under their own agent token).
   const tokens = Object.fromEntries(agents.flatMap((a) => a.models).filter((m) => KEYCHAIN_ENTRY.test(`agent.${m}`)).map((m) => [m, `agent.${m}`]));
-  const config = { jobs: [...DEFAULT_JOBS, "review"], agents, tokens };
+  const config = { jobs: [...DEFAULT_JOBS, "review"], agents, tokens, ...(claudeTokenFile !== undefined ? { claudeTokenFile } : {}) };
   const parsed = parseConfig(config, { configPath });
   if (parsed.errors.length) throw new Error(`the config setup would write is refused: ${parsed.errors.join("; ")}`);
   files.unshift({ path: configPath, text: JSON.stringify(config, null, 2) + "\n" });
@@ -141,23 +145,38 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
     lines.push(gateway ? `Pay-per-use providers go through the AI Gateway ${gateway.account}/${gateway.id}; store its token as CF_AIG_TOKEN.` : "No AI Gateway is named (ATELIER_GATEWAY or CF_ACCOUNT_ID), so providers are reached direct and the gateway counts nothing.");
     if (keys.size) lines.push(`Keys are read at run time from the credential store: ${[...keys].join(", ")}.`);
   }
+  if (claudeTokenFile !== undefined) lines.push(`Claude Code runs with the token in ${claudeTokenFile}, read when each job starts (setup does not open the file).`);
   lines.push(`Reviewer tokens are read from: ${Object.values(tokens).join(", ") || "none"} (atelier token issue --as HARNESS/MODEL, then store each).`);
   return { files, config, refused, found, lines };
 }
 
+// The claudeTokenFile an existing runner config names, or undefined.
+function existingTokenFile(configPath, io) {
+  if (!(io.exists ?? existsSync)(configPath)) return undefined;
+  try {
+    const value = JSON.parse((io.readFile ?? ((path) => readFileSync(path, "utf8")))(configPath));
+    return typeof value?.claudeTokenFile === "string" ? value.claudeTokenFile : undefined;
+  } catch { return undefined; }
+}
+
 // The command. `io` gives the pool, the PATH lookup, fetch and the writes.
 export async function runSetup(args, io) {
-  if (args._.length !== 2 || Object.keys(args.multi).some((k) => !["config", "dry-run"].includes(k) || args.multi[k].length !== 1) ||
-      (args.config !== undefined && typeof args.config !== "string") || (args["dry-run"] !== undefined && args["dry-run"] !== true)) throw new Error(USAGE);
+  if (args._.length !== 2 || Object.keys(args.multi).some((k) => !["config", "dry-run", "claude-token-file"].includes(k) || args.multi[k].length !== 1) ||
+      (args.config !== undefined && typeof args.config !== "string") || (args["dry-run"] !== undefined && args["dry-run"] !== true) ||
+      (args["claude-token-file"] !== undefined && (typeof args["claude-token-file"] !== "string" || !args["claude-token-file"]))) throw new Error(USAGE);
   const env = io.env ?? process.env;
   const configPath = resolve(args.config ?? defaultConfigPath());
   if (!args["dry-run"] && (io.exists ?? existsSync)(configPath)) throw new Error(`${configPath} exists; setup does not overwrite a runner config. Move it aside, or name another file with --config PATH`);
+  // The flag sets the path. Without it, the path an existing config names is
+  // kept (only a dry run gets this far with one: a real run refuses to
+  // overwrite), so the plan shows what the config already has.
+  const claudeTokenFile = args["claude-token-file"] ?? existingTokenFile(configPath, io);
   const which = io.which ?? ((name) => onPath(name, env));
   const exe = which(HARNESSES.opencode.executable);
   const plan = await planSetup({
     configPath, env, pool: await io.pool(), which,
     major: io.opencodeMajor ?? (typeof exe === "string" ? opencodeMajor(exe, env) : null),
-    fetchJson: io.fetchJson, catalogue: io.catalogue,
+    fetchJson: io.fetchJson, catalogue: io.catalogue, claudeTokenFile,
   });
   const print = io.print ?? ((text) => console.log(text));
   print(plan.lines.join("\n"));

@@ -3,7 +3,7 @@
 // runner runs when an entry gives no command (defaultCommand in
 // runner-config.mjs). Each takes the runner's six arguments,
 //
-//   ADAPTER [--providers DIR] [--secret-store NAME] [--secrets-dir DIR] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT
+//   ADAPTER [--providers DIR] [--secret-store NAME] [--secrets-dir DIR] [--claude-token-file PATH] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT
 //
 // (docs/runners.md, "The wrapper contract"), puts the agent rules in front of
 // the brief, and gives the prompt to the harness on standard input, never as
@@ -34,7 +34,7 @@ export function parseArgs(argv) {
     if (!rest.length) throw new Error(`--${name} needs a value`);
     options[name] = rest.shift();
   }
-  if (rest.length !== 6) throw new Error("usage: ADAPTER [--providers DIR] [--secret-store NAME] [--secrets-dir DIR] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT");
+  if (rest.length !== 6) throw new Error("usage: ADAPTER [--providers DIR] [--secret-store NAME] [--secrets-dir DIR] [--claude-token-file PATH] MODEL BRIEF WORKSPACE PLAN DIFF VERDICT");
   const [model, brief, workspace, plan, diff, verdict] = rest.map((v) => (v === UNSET || v === "" ? null : v));
   if (!model || !brief || !workspace) throw new Error("MODEL, BRIEF and WORKSPACE are required");
   return { options, model, brief, workspace: resolve(workspace), plan, diff, verdict };
@@ -293,6 +293,34 @@ export const SIGN_IN_FIX = {
   codex: "run `codex login` as this user",
 };
 
+// A Claude token from the file the runner config names (claudeTokenFile).
+// Throws an error that names the path and never any token bytes.
+export function loadClaudeToken(file, home = homedir()) {
+  const path = file.startsWith("~/") ? join(home, file.slice(2)) : file;
+  let text;
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) { throw new Error(`Claude token file is ${error?.code === "ENOENT" ? "missing" : "unreadable"}: ${path}`); }
+  const token = text.replace(/\s+/g, "");
+  if (!token) throw new Error(`Claude token file is empty: ${path}`);
+  return token;
+}
+
+// The environment a Claude child gets with a configured token: the token is
+// set, and the other credentials Claude Code would prefer or bill instead
+// are dropped, so the configured one wins over anything inherited.
+export function withClaudeToken(env, token) {
+  const out = { ...env, CLAUDE_CODE_OAUTH_TOKEN: token };
+  delete out.ANTHROPIC_API_KEY;
+  delete out.ANTHROPIC_AUTH_TOKEN;
+  return out;
+}
+
+// The token file a command names, if it does.
+function claudeTokenFileOf(command) {
+  const i = Array.isArray(command) ? command.indexOf("--claude-token-file") : -1;
+  return i >= 0 && typeof command[i + 1] === "string" ? command[i + 1] : null;
+}
+
 // The environment the job gives Claude Code, which `env` is (harnessEnv in
 // runner.mjs: no variable whose name says it holds a secret unless the entry
 // names it). The key file's token is added only when the job's own command
@@ -300,6 +328,8 @@ export const SIGN_IN_FIX = {
 // claude does. The shipped Node adapter does not, so a probe must not either.
 // The token goes to the probe's environment alone and is never printed.
 function claudeProbeEnv(env, command, home) {
+  const configured = claudeTokenFileOf(command);
+  if (configured) return withClaudeToken(env, loadClaudeToken(configured, home));
   const out = { ...env };
   try {
     const wrapper = command?.[0];
@@ -532,6 +562,9 @@ export function runAdapter(harness, argv, io = {}) {
       setup.major = major;
       // opencode 2 gets the deny at every run, over whatever config was stored.
       if (major >= 2) childEnv.OPENCODE_CONFIG_CONTENT = OPENCODE2_CONFIG_CONTENT;
+    }
+    if (harness === "claude-code" && args.options["claude-token-file"]) {
+      childEnv = withClaudeToken(env, loadClaudeToken(args.options["claude-token-file"], env.HOME || homedir()));
     }
     if (harness === "codex") {
       // A review starts in its scratch folder, so the MCP servers are

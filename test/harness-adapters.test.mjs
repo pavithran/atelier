@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -356,20 +356,27 @@ test("codex runs with its MCP features off and its config.toml servers switched 
 test("the stand-in fails as codex does on enabled=false for a plugin's server, which the old flags hit", (t) => {
   const s = setup(t);
   const r = spawnSync(s.fake, ["-c", "mcp_servers.code-review.enabled=false", "mcp", "list", "--json"],
-    { encoding: "utf8", env: { ...process.env, FAKE_MCP_LIST: JSON.stringify([{ name: "code-review", feature: "plugins", enabled: true }]) } });
+    { encoding: "utf8", env: { ...process.env, HOME: s.dir, FAKE_MCP_LIST: JSON.stringify([{ name: "code-review", feature: "plugins", enabled: true }]) } });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /invalid transport in mcp_servers\.code-review/);
 });
 
 // The owner's note on round 6: the generated flags are checked against the
 // codex installed on the machine, with its own configuration, when there is one.
-const realCodex = spawnSync("codex", ["--version"], { encoding: "utf8" }).status === 0;
+// It runs under a home of its own: codex writes .codex/ to its home even for
+// --version, and this file must leave nothing in the worktree or the owner's home.
+const codexHome = mkdtempSync(join(tmpdir(), "atelier-codex-home-"));
+mkdirSync(join(codexHome, ".codex"));
+const codexEnv = { ...process.env, HOME: codexHome, CODEX_HOME: join(codexHome, ".codex") };
+after(() => rmSync(codexHome, { recursive: true, force: true }));
+const realCodex = spawnSync("codex", ["--version"], { encoding: "utf8", env: codexEnv }).status === 0;
 test("the real codex loads its configuration with the generated flags and lists no MCP server enabled", { skip: !realCodex && "codex is not installed" }, () => {
   const ws = mkdtempSync(join(tmpdir(), "atelier-codex-"));
+  const env = codexEnv;
   try {
-    const flags = codexNoMcpFlags("codex", ws, process.env);
+    const flags = codexNoMcpFlags("codex", ws, env);
     assert.deepEqual(flags.slice(0, CODEX_FEATURES_OFF.length), CODEX_FEATURES_OFF);
-    const r = spawnSync("codex", [...flags, "mcp", "list", "--json"], { cwd: ws, encoding: "utf8" });
+    const r = spawnSync("codex", [...flags, "mcp", "list", "--json"], { cwd: ws, encoding: "utf8", env });
     assert.equal(r.status, 0, r.stderr);
     const listed = JSON.parse(r.stdout);
     const servers = Array.isArray(listed) ? listed : Object.entries(listed.servers ?? listed).map(([name, s]) => ({ name, ...s }));

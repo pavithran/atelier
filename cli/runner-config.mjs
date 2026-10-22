@@ -55,9 +55,15 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 // put in.
 const ADAPTERS = { "claude-code": "atelier-claude.mjs", codex: "atelier-codex.mjs", opencode: "atelier-opencode.mjs", antigravity: "atelier-agy.mjs" };
 const BIN = fileURLToPath(new URL("../bin/harness/", import.meta.url));
-export function defaultCommand(agent, configPath = defaultConfigPath(), env = process.env) {
+export function defaultCommand(agent, configPath = defaultConfigPath(), env = process.env, claudeTokenFile) {
   const adapter = ADAPTERS[agent];
   if (!adapter) return null;
+  // Claude Code's token file is named by path alone; the adapter and the
+  // readiness probe read the token from it (adapter.mjs loadClaudeToken).
+  if (agent === "claude-code" && claudeTokenFile) {
+    return [process.execPath, join(BIN, adapter), "--claude-token-file", claudeTokenFile,
+      "{model}", "{brief_file}", "{workspace}", "{plan_file}", "{diff_file}", "{verdict_file}"];
+  }
   const store = agent !== "opencode" ? [] : [
     "--providers", providersDir(configPath),
     ...(env.ATELIER_SECRET_STORE ? ["--secret-store", env.ATELIER_SECRET_STORE] : []),
@@ -83,6 +89,10 @@ export function providersDir(configPath) {
 // setup` keeps the opencode provider configs a default command names
 // (providersDir); `env` the runner's environment, which names its credential
 // store.
+// The file a Claude token is read from: an absolute path or ~/PATH, never the
+// token itself.
+const CLAUDE_TOKEN_PATH = /^(?:~|\/)\/?[A-Za-z0-9_.~\/ -]{1,300}$/;
+
 export function parseConfig(json, { configPath, env } = {}) {
   const agents = [], errors = [];
   let value;
@@ -153,6 +163,15 @@ export function parseConfig(json, { configPath, env } = {}) {
   // carries it is refused, so the owner learns the reviews it expected to be
   // recorded would not be, rather than finding the option silently ignored.
   if (value.ownerRecordsReviews !== undefined) errors.push("ownerRecordsReviews was removed: a review is recorded only by the reviewer's own agent token, so name one under tokens for each model this runner reviews as (docs/runners.md, Reviewers post under their own agent token) and take the option out");
+  // Optional: the file holding a long-lived Claude token (`claude setup-token`).
+  // The adapter and its readiness probe load it into the Claude child alone.
+  // The path is kept; a value that looks like a token is refused and not echoed.
+  let claudeTokenFile;
+  if (value.claudeTokenFile !== undefined) {
+    const f = value.claudeTokenFile;
+    if (typeof f !== "string" || !CLAUDE_TOKEN_PATH.test(f) || f.split("/").includes("..") || /sk-ant|oat\d/i.test(f)) errors.push("claudeTokenFile must be the path of a file (absolute or under ~/), never the token itself");
+    else claudeTokenFile = f;
+  }
   const seen = new Set();
   // Optional: the jobs this runner takes, named exactly (DEFAULT_JOBS): with
   // it the list is the whole truth, so a runner configured for reviews takes
@@ -194,7 +213,7 @@ export function parseConfig(json, { configPath, env } = {}) {
         new Set(entry.models).size !== entry.models.length) bad("models must be distinct claimable model ids");
     // No command: the adapter Atelier ships for the harness, where it ships one.
     if (entry.command === undefined && HARNESSES.includes(entry.agent)) {
-      const command = defaultCommand(entry.agent, configPath, env);
+      const command = defaultCommand(entry.agent, configPath, env, claudeTokenFile);
       if (command) entry = { ...entry, command };
       else bad(`Atelier ships no adapter for ${entry.agent}; give its command`);
     }
@@ -221,7 +240,7 @@ export function parseConfig(json, { configPath, env } = {}) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
-  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}),
+  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}), ...(claudeTokenFile ? { claudeTokenFile } : {}),
     ...(jobs !== undefined ? { jobs } : {}), ...(projects ? { projects } : {}) };
 }
 
