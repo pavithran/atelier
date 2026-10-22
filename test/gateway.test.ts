@@ -176,7 +176,7 @@ test("the log pull, its cron and the gateway token are gone", () => {
   const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   // The one schedule left is the model snapshots' (t623); the list replaces
   // whatever an earlier deploy left on the Worker.
-  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*"7 \*\/6 \* \* \*"\s*\]\s*\}/);
+  assert.match(wrangler, /"triggers"\s*:\s*\{\s*"crons"\s*:\s*\[\s*"\*\/10 \* \* \* \*",\s*"7 \*\/6 \* \* \*"\s*\]\s*\}/);
   assert.doesNotMatch(wrangler, /AI_GATEWAY_TOKEN/);
   // The README quotes t278's receipt, the ledger's own record of the task
   // that built the log pull and lost it; the identifiers it names are quoted

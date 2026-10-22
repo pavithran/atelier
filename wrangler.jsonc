@@ -16,7 +16,9 @@
   // every six hours, so a run that fails or finds a project unreadable is
   // tried again within the day; a run with nothing due writes nothing. The
   // list replaces whatever schedules an earlier deploy left on the Worker.
-  "triggers": { "crons": ["7 */6 * * *"] },
+  // Every 10 minutes the stuck rules are evaluated for each project and the
+  // opened and cleared episodes recorded (t196, recordStuckEpisodes).
+  "triggers": { "crons": ["*/10 * * * *", "7 */6 * * *"] },
   // Cloudflare Access in front of the owner's pages (src/access.ts): set all
   // three, as vars or secrets, and the Worker verifies the Access assertion
   // on every owner route — /login and its token form among them — against the
