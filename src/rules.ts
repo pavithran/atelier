@@ -2054,6 +2054,56 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   };
 }
 
+// The one stage a task is at, from the first of these that holds: shipped,
+// landed, landable (the gate is clear), reviewed (the approvals the change
+// needs stand at its head), checked (every required check passed at its head),
+// built (a push, or a standing fast-build report), building (claimed), queued
+// (dispatched), agreed (its acceptance criteria were reviewed), else filed.
+// Every command that names a stage reads this and derives none of its own.
+export const STAGES = ["filed", "agreed", "queued", "building", "built", "checked", "reviewed", "landable", "landed", "shipped"] as const;
+export type TaskStage = (typeof STAGES)[number];
+
+// What the caller knows beyond the item. Without the project's policy,
+// evidence and reviews the stages checked, reviewed and landable cannot be
+// told, and a built task stays built. `events` are the task's events (any
+// order); the standing fast report is read from them.
+export interface TaskStageFacts {
+  events?: readonly { seq: number; kind: string; data: Record<string, unknown>; at: string; actor: string }[];
+  ready?: (FastReady & { at?: string; by?: string }) | null;
+  shipped?: boolean;
+  agreed?: boolean;
+  policy?: ProjectPolicy;
+  evidence?: Evidence[];
+  reviews?: Review[];
+  owner?: string;
+}
+export interface StageDetail { head?: string; machine?: string | null; path?: string | null; source?: "push" | "fast_ready" }
+
+export function stageOf(item: Item, facts: TaskStageFacts = {}): { stage: TaskStage; detail: StageDetail } {
+  const at = (stage: TaskStage, detail: StageDetail = {}) => ({ stage, detail });
+  if (facts.shipped) return at("shipped");
+  if (item.state === "merged" || item.state === "integrated") return at("landed");
+  const ready = facts.ready ?? (facts.events ? standingFastReady(facts.events) : null);
+  const head = item.head ?? ready?.commit ?? null;
+  if (head && facts.policy && facts.evidence && facts.reviews && item.head) {
+    const owner = facts.owner ?? DEFAULT_OWNER;
+    if (gate(item, facts.policy, facts.evidence, facts.reviews, owner).ready) return at("landable", { head, source: "push" });
+    const view = evidenceAt(facts.policy, facts.evidence, head);
+    const checked = view.changedPaths !== null && view.checks.every((c) => c.grade !== "pending" && c.passed);
+    if (checked) {
+      const need = approvalsNeeded(facts.policy, changeClass(view.changedPaths!, facts.policy), view.changedPaths);
+      if (gateApprovals(item, facts.policy, facts.evidence, facts.reviews, owner).length >= need.count) return at("reviewed", { head, source: "push" });
+      return at("checked", { head, source: "push" });
+    }
+  }
+  if (item.head) return at("built", { head: item.head, source: "push" });
+  if (ready) return at("built", { head: ready.commit, machine: ready.runner, path: ready.workspace, source: "fast_ready" });
+  if (item.state === "claimed" || item.owner) return at("building");
+  if (item.dispatch) return at("queued");
+  if (facts.agreed ?? ((item.criteriaReviews ?? 0) > 0 && (item.accept?.length ?? 0) > 0)) return at("agreed");
+  return at("filed");
+}
+
 // "What needs the project owner now?" Only things a person must decide or
 // unblock rank high; failing checks are the item owner's problem and rank
 // below anything awaiting the project owner.

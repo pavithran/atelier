@@ -1,6 +1,8 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
 import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
 import { I, OWNER, RequestError, actor, args, call, die, flat, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
+import { stageText } from "../status.mjs";
+import { stageOf } from "../../src/rules.ts";
 import { preparingLine, queueReasons } from "../status.mjs";
 import { fenceText, PREREVIEW_JOB, prereviewLines } from "../../src/dispatch/prereview.ts";
 
@@ -54,8 +56,12 @@ export default async function showCommand() {
   // only `start` printed, and `start` claims the task. Absent when the task
   // has none or the server sends no detail (t710).
   const filed = typeof d.item?.brief === "string" && d.item.brief ? d.item.brief : null;
-  if (args.json) return console.log(JSON.stringify({ ...brief, ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
+  // The stage is stageOf's, from the task's own record; a server that sends
+  // no detail leaves none.
+  const stage = d.item ? stageOf(d.item, { events: d.events?.filter((e) => e.itemId === id), policy: d.policy, evidence: d.evidence, reviews: d.reviews }) : null;
+  if (args.json) return console.log(JSON.stringify({ ...brief, ...(stage ? { stage } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(d.preparing ? { preparing: d.preparing } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
+  if (stage) blocks.push(`Stage: ${stageText(stage)}`);
   if (filed) blocks.push(`Brief: ${flat(filed)}`);
   if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
   if (d.preparing) blocks.push(`Fork: ${preparingLine(d.preparing)}`);
