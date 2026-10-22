@@ -303,6 +303,27 @@ const SKIPPED = /^\s*not ok \d+.*# (?:SKIP|TODO)\b/i;
 // final Node report is treated as fixture output; reverse-order runs cannot
 // be distinguished from that fixture without external reporter framing.
 function outerReports(lines: string[]): { lines: string[]; reporters: string[]; uncertain: boolean } | null {
+  // node-pool's enclosing node:test process prints an empty summary after
+  // the pool's final diagnostics. It does not supersede the pool's failures.
+  const emptySummary = /^ℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms [\d.]+$/;
+  const withoutWrapper: string[] = [];
+  let positiveCount = false, finalMarker = false, finalName = false;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line === "ℹ tests 0" && positiveCount && finalMarker && finalName
+      && emptySummary.test(lines.slice(index, index + 8).join("\n"))) {
+      index += 7;
+      continue;
+    }
+    if (/^ℹ fail \d+\s*$/.test(line)) {
+      positiveCount = /^ℹ fail [1-9]/.test(line);
+      finalMarker = false;
+      finalName = false;
+    } else if (/^✖ failing tests:\s*$/.test(line)) finalMarker = true;
+    else if (finalMarker && /^✖ .+ \(\d[\d.]*m?s\)\s*$/.test(line)) finalName = true;
+    withoutWrapper.push(line);
+  }
+  lines = withoutWrapper;
   const last = (pattern: RegExp) => lines.findLastIndex((line) => pattern.test(line));
   const nodeCount = last(/^ℹ fail \d+\s*$/);
   const viteCount = last(/^\s{2,}Tests\s{2,}.*\d+ (?:failed|passed|skipped)/);

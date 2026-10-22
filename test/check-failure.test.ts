@@ -697,3 +697,20 @@ test("t176 documents the Node-before-Vitest boundary for unframed transcripts", 
   assert.deepEqual(failingTests(reverse)?.reporters, ["node:test"]);
   assert.ok(!collectFailureLines(reverse).includes("sample.spec.ts"));
 });
+
+test("t176 the empty node-pool wrapper cannot hide the pool's final failure", () => {
+  const pool = "ℹ tests 4072\nℹ suites 0\nℹ pass 4066\nℹ fail 1\nℹ cancelled 0\nℹ skipped 5\nℹ todo 0\nℹ duration_ms 471689.262542\n\n✖ failing tests:\n\ntest at test/gc.test.mjs:241:1\n✖ check records its running child (1359.912333ms)\n  AssertionError: expected two attempts\n";
+  const wrapper = "ℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 471692.677666";
+  const vite = ` RUN  v4.1.11 /repo\n${fixture("vitest.txt").replace(/^ RUN .*\n/m, "")}\n Test Files  10 passed (10)\n      Tests  100 passed (100)`;
+  const output = `${fixture("vitest.txt")}\n${pool}${wrapper}\n${vite}`;
+  const kept = collectFailureLines(output);
+  assert.match(kept, /ℹ fail 1/);
+  assert.match(kept, /check records its running child/);
+  assert.doesNotMatch(kept, /sample.spec.ts|ℹ fail 0/);
+  assert.deepEqual(failingTests(output)?.names, ["check records its running child"]);
+  assert.deepEqual(failingTests(kept)?.names, ["check records its running child"]);
+  // A real later test run, or a cancelled empty run, is not the empty wrapper.
+  for (const later of [wrapper.replace("ℹ tests 0", "ℹ tests 1").replace("ℹ pass 0", "ℹ pass 1"), wrapper.replace("ℹ cancelled 0", "ℹ cancelled 1")]) {
+    assert.deepEqual(failingTests(`${pool}${later}`)?.names ?? [], []);
+  }
+});
