@@ -875,3 +875,45 @@ test("suggestBuilder: a non-build job is suggested only to a model a runner offe
   assert.equal(merging.actor, "claude-code/opus-5.5");
   said(merging.reasons, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the merge-main job at home/);
 });
+
+// t162: land without --reviewer. The review assignment prefers astra; once its
+// provider is recorded as subscription it is picked for Claude-built and
+// GLM-built work, and a per-token provider is never authorized by the
+// assignment or by admission alone.
+test("suggestReviewer: with astra recorded as subscription and assigned, Claude-built and GLM-built tasks get astra", () => {
+  const a = assigned("review", ["codex/gpt-6-astra"]);
+  for (const owner of ["claude-code/opus-5.5", "zcode/glm-5.3"]) {
+    const item = { id: "t162", title: "Land", brief: "", scope: ["src/**"], owner, pushActors: [] as string[] };
+    const pick = suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assigned: rolesOf(item, [a]) });
+    assert.equal(pick.actor, "codex/gpt-6-astra", owner);
+  }
+});
+
+test("suggestReviewer: a per-token astra (the old openai registration, a key, an endpoint, the cloud) is not picked even when assigned, and each candidate's rejection reason is shown", () => {
+  const a = assigned("review", ["codex/gpt-6-astra"]);
+  const item = { id: "t162", title: "Land", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] as string[] };
+  const input = { item, project: "atelier", policy, sources: [], runs: [], owner: "owner", assigned: rolesOf(item, [a]) };
+  const paidAstras: [string, ModelEntry][] = [
+    ["openai", { ...astra, where: "home", provider: "openai" }],
+    ["key", { ...astra, where: "home", provider: "openai", keychain: "openai.API_KEY" }],
+    ["endpoint", { ...astra, where: "home", provider: "openai", endpoint: "https://api.openai.example/v1" }],
+    ["cloud", { ...astra, where: "cloud", provider: "openai" }],
+  ];
+  for (const [label, paid] of paidAstras) {
+    assert.throws(() => suggestReviewer({ ...input, pool: [paid, opus, sonnet] }), (e: unknown) => {
+      const err = e as { code?: string; message: string };
+      assert.match(err.message, /codex\/gpt-6-astra \(paid per token \(openai\); paid models are not allowed for this review/, label);
+      assert.match(err.message, /claude-code\/opus-5.5 \(contributed to this item/, label);
+      assert.match(err.message, /claude-code\/sonnet-5.5 \(same family/, label);
+      return true;
+    });
+  }
+  const pool = [{ ...astra, state: "paused" as const, stateAt: AT }, { ...glm, roles: ["build" as const] }, opus];
+  assert.throws(() => suggestReviewer({ ...input, pool }), (e: unknown) => {
+    const m = (e as Error).message;
+    assert.match(m, /codex\/gpt-6-astra \(paused/);
+    assert.match(m, /zcode\/glm-5.3 \(not a reviewer/);
+    assert.match(m, /claude-code\/opus-5.5 \(contributed to this item/);
+    return true;
+  });
+});
