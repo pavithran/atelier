@@ -1717,13 +1717,7 @@ export async function runTask(assignment, config, name, io) {
     }
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
-    try { await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]); }
-    catch (claimError) {
-      // The fork is still being prepared (not_ready): a wait, not a failure.
-      const detail = notReadyDetail(claimError.message);
-      if (detail !== null) throw Object.assign(claimError, { notReady: detail });
-      throw claimError;
-    }
+    await claimFork(io, ["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
     claimed = true;
     advance({ type: "claim" });
     before = await io.head(workspace, { cleanup: true });
@@ -1973,7 +1967,7 @@ export async function runTask(assignment, config, name, io) {
       const named = `files the harness left uncommitted after its commits and one follow-up turn: ${leftovers.map((f) => f.path).join(", ")}`;
       state = { ...state, leftovers: leftovers.map((f) => f.path), detail: `${state.reason}; ${named}`.slice(0, 2000), reason: `${state.reason}; ${named}` };
     }
-    state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
+    state = { ...state, claimedFork: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
     // The final record adds the head, the start and the reason as information.
     if (failedNow && claimed && !error.providerLimit) {
       await markFailure({ reason: state.reason });
@@ -3230,7 +3224,7 @@ export async function runIntegrate(assignment, config, name, io) {
         !partId || !/^t[0-9]+$/.test(partId) || !/^[a-f0-9]{40,64}$/.test(partHead ?? "")) {
       throw Object.assign(new Error("the queue returned an invalid integrate assignment"), { skipped: true });
     }
-    await io.cli(["claim", item.id, ...at, "--runner", name]);
+    await claimFork(io, ["claim", item.id, ...at, "--runner", name]);
     claimed = true;
     // The merge starts from the branch as the fork holds it, so a merge whose
     // push failed in an earlier run is not carried into this one.
@@ -3276,7 +3270,8 @@ export async function runIntegrate(assignment, config, name, io) {
     // A claim the server refuses (the owner's token where the integrator's
     // own is required, say) holds nothing to release and is not the job's
     // failure; the loop's refused set keeps this head, as for a build.
-    if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
+    else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
     else io.log(`failed: ${error.message}`);
     // A merge pushed but neither integrated nor reported goes back off the
     // branch, so the next run starts from the plan's integrated head.
@@ -3286,7 +3281,7 @@ export async function runIntegrate(assignment, config, name, io) {
     }
     // Any error after the claim gives the plan item back, so the job can run again.
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, claimedFork: claimed, ...(error.notReady != null ? { notReady: error.notReady } : {}), ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -3359,7 +3354,7 @@ export async function runRefresh(assignment, config, name, io) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id) || !/^[a-f0-9]{40,64}$/.test(mainHead ?? "")) {
       throw Object.assign(new Error("the queue returned an invalid refresh assignment"), { skipped: true });
     }
-    await io.cli(["claim", item.id, ...at, "--runner", name]);
+    await claimFork(io, ["claim", item.id, ...at, "--runner", name]);
     claimed = true;
     // As in runIntegrate: the merge starts from the branch as the fork holds it.
     await io.resetToRemote(workspace);
@@ -3400,7 +3395,8 @@ export async function runRefresh(assignment, config, name, io) {
     return { phase: "refreshed" };
   } catch (error) {
     // As in runIntegrate: a refused claim is the caller's, not the job's.
-    if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
+    else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
     else io.log(`failed: ${error.message}`);
     // A merge pushed but neither recorded nor reported goes back off the branch.
     if (pushed && !released) {
@@ -3408,7 +3404,7 @@ export async function runRefresh(assignment, config, name, io) {
       catch (rollbackError) { io.log(`rollback failed: ${rollbackError.message}`); }
     }
     if (claimed && !released) await release(error.message);
-    return { phase: "failed", reason: error.message, ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
+    return { phase: "failed", reason: error.message, claimedFork: claimed, ...(error.notReady != null ? { notReady: error.notReady } : {}), ...(error.claimRefused ? { claimRefused: true } : {}), ...(error.skipped ? { skipped: true } : {}) };
   }
 }
 
@@ -3486,11 +3482,27 @@ export function backoffAfter(entry, state, poll) {
 // for any other message.
 export const NOT_READY_LIMIT_MS = 10 * 60_000;
 export const notReadyDetail = (message) => /^(?:atelier: )?not_ready: ?([\s\S]*)$/m.exec(String(message ?? ""))?.[1].trim() ?? null;
+// The claim of a task's fork, for every job that makes one (a build, a
+// merge-main part, a plan, an integration, a refresh): a not_ready answer is
+// tagged on the error, so the job reports a wait, not a failure, and
+// releases nothing, since nothing was claimed.
+export async function claimFork(io, argv) {
+  try { return await io.cli(argv); }
+  catch (claimError) {
+    const detail = notReadyDetail(claimError.message);
+    if (detail !== null) throw Object.assign(claimError, { notReady: detail });
+    throw claimError;
+  }
+}
 export const notReadyPolls = (tries) => Math.min(2 ** (tries - 1), 8);
 // The entry kept for a task after a run: the first answer's time, the tries,
-// the poll it is tried again at, and whether the limit has passed. Undefined
-// once a run is not a not_ready answer.
+// the poll it is tried again at, and whether the limit has passed. The first
+// answer's time is kept until a run claims the fork (or the task is
+// dispatched again, which is another key): a failure that is not a not_ready
+// answer and claimed nothing, such as a network timeout between two not_ready
+// answers, leaves the entry as it was, so the ten minutes are not restarted.
 export function notReadyAfter(entry, state, nowMs, poll) {
+  if (state.phase === "failed" && state.notReady == null && !state.claimedFork) return entry;
   if (state.phase !== "failed" || state.notReady == null) return undefined;
   const since = entry?.since ?? nowMs, tries = (entry?.tries ?? 0) + 1;
   return { since, tries, due: poll + notReadyPolls(tries), detail: state.notReady, expired: nowMs - since >= NOT_READY_LIMIT_MS };
@@ -3593,7 +3605,7 @@ export async function runPlanTask(assignment, config, name, io) {
     workspace = io.workspacePath(project, item.id);
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
-    await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
+    await claimFork(io, ["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
     claimed = true;
     io.log("claimed");
     if (io.stopped()) throw new Error("interrupted");
@@ -3650,10 +3662,13 @@ export async function runPlanTask(assignment, config, name, io) {
     state = { phase: "failed", reason: error.message };
     state.taskFailure = taskFailure && !error.infrastructure && !error.providerLimit && !io.stopped();
     if (error.providerLimit) state.providerLimit = error.providerLimit;
+    state.claimedFork = claimed;
+    if (!claimed && error.notReady != null) { state.notReady = error.notReady; state.taskFailure = false; }
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
     if (error.detail) state.detail = error.detail;
-    if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
+    if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
+    else if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
     else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
     else io.log(`failed: ${state.reason}`);
   } finally {
@@ -3661,7 +3676,7 @@ export async function runPlanTask(assignment, config, name, io) {
     // itself, and a refused or missing one counts an attempt only once the
     // claim is given back. A claim whose fate is unknown (the claim step
     // failed without a refusal) is released too, as runTask releases it.
-    if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped))) {
+    if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped && state.notReady == null))) {
       const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace, { providerLimit: !!state.providerLimit });
