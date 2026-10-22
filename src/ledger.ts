@@ -1822,16 +1822,23 @@ export class Ledger extends DurableObject<Env> {
   // name: a rename keeps the key, and a released name can be taken by another
   // project. A tick's transitions are decided and written in one synchronous
   // transaction, so a repeated or concurrent tick adds nothing for an episode
-  // already open.
+  // already open. A tick carries the time its evaluation observed the project,
+  // and one older than the latest tick recorded for that project is ignored:
+  // scheduled runs can overlap, so an older observation may finish after a
+  // newer one and must neither reopen nor clear from stale evidence.
 
   private episodeTables(): void {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS stuck_episodes (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, item TEXT NOT NULL, cause TEXT NOT NULL, episode INTEGER NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL)`);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS stuck_episodes_key ON stuck_episodes (project, item, cause, episode)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS stuck_ticks (project TEXT PRIMARY KEY, at TEXT NOT NULL)`);
   }
 
   recordStuckTick(project: string, entries: { kind: string; subject: string; reason: string }[], complete: boolean, at: string): Transition[] {
     this.episodeTables();
     return this.ctx.storage.transactionSync(() => {
+      const latest = this.sql.exec(`SELECT at FROM stuck_ticks WHERE project = ?`, project).toArray()[0];
+      if (latest && Date.parse(at) < Date.parse(latest.at as string)) return [];
+      this.sql.exec(`INSERT OR REPLACE INTO stuck_ticks (project, at) VALUES (?, ?)`, project, at);
       const rows = this.sql.exec(`SELECT item, cause, episode, kind FROM stuck_episodes WHERE project = ? ORDER BY id`, project).toArray();
       const last = new Map<string, { key: EpisodeKey; episode: number; open: boolean }>();
       for (const r of rows) {

@@ -101,3 +101,23 @@ it("a released name taken by a new project shares no history with the project th
   expect(await episodes("ep-d")).toEqual([[old, "task", 1, "opened"]]);
   expect(await episodes(key)).toEqual([[fresh, "task", 1, "opened"]]);
 });
+
+// Scheduled runs can overlap (a run may last 15 minutes, the interval is 10), so an
+// older observation can finish after a newer one. Without the guard, the first
+// half clears the episode the newer tick opened, and the second reopens one the
+// newer tick cleared.
+it("an older observation recorded after a newer one changes nothing", async () => {
+  const key = "ep-e", id = "t1";
+  const found = [{ kind: "task", subject: id, reason: "no push for 7h" }];
+  const at = (m: number) => new Date(Date.UTC(2026, 0, 1, 0, m)).toISOString();
+  // The newer tick (minute 10) finds it and opens it; the older one (minute 0) finishes later with an empty report.
+  expect((await I().recordStuckTick(key, found, true, at(10))).length).toBe(1);
+  expect(await I().recordStuckTick(key, [], true, at(0))).toEqual([]);
+  expect(await episodes(key)).toEqual([[id, "task", 1, "opened"]]);
+  // The newer tick (minute 30) clears it; an older one (minute 20) that still showed it finishes later and cannot reopen it.
+  expect((await I().recordStuckTick(key, [], true, at(30))).length).toBe(1);
+  expect(await I().recordStuckTick(key, found, true, at(20))).toEqual([]);
+  expect(await episodes(key)).toEqual([[id, "task", 1, "opened"], [id, "task", 1, "cleared"]]);
+  // The same time again is not older: it is recorded as any tick.
+  expect((await I().recordStuckTick(key, found, true, at(30))).length).toBe(1);
+});
