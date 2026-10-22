@@ -1,4 +1,4 @@
-import { reportLimits, stuckReport, type Snapshot } from "./stuck/report.ts";
+import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { readRetention } from "./retention.ts";
@@ -1583,34 +1583,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     let limits;
     try { limits = reportLimits(Object.fromEntries(c.url.searchParams)); }
     catch (error) { throw new RuleError("bad_limit", String((error as Error).message), 400); }
-    const now = new Date(), unavailable: string[] = [];
-    async function read<T>(source: string, action: () => Promise<T>): Promise<T | null> {
-      try { return await action(); }
-      catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
-    }
-    // The runner offers are read first and recorded in the project's ledger
-    // as its snapshot is taken, so the report judges orphaned claims with the
-    // polls the queue and the claim check read at that moment (t540).
-    const [offers, runs, projects] = await Promise.all([
-      read("runner offers", () => index(env).runnerOffers()),
-      read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
-      read("project index", () => index(env).projects()),
-    ]);
-    const snapshot = await read<Snapshot>("project ledger", () => L.stuckSnapshot(offers?.map(({ runner, at }) => ({ runner, at }))));
-    if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
-      const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
-      w.status = status ?? "unknown";
-      if (status === "unknown") unavailable.push(`Workflow ${w.record.instance}: indeterminate status`);
-    }));
-    const active: string[] = [];
-    let jobsAvailable = projects !== null;
-    if (projects) await Promise.all(projects.map(async (p) => {
-      const other = p.key === ref.key ? snapshot : await read<Snapshot>(`active jobs ${p.name}`, () => ledgerOf(env, p).stuckSnapshot());
-      if (!other) { jobsAvailable = false; return; }
-      for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
-      for (const r of other.reviews) if (r.runner) active.push(r.runner);
-    }));
-    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names));
+    return json(await readStuckReport(env, ref, c.url.origin, limits));
   }
 
   if (parts[2] === "reviewers") {
@@ -3405,6 +3378,61 @@ async function readRunsThrough(I: ReturnType<typeof index>, through: number | nu
   }
 }
 
+// The stuck report for one project, read from the ledger, the index and the
+// Workflows now: what GET /api/projects/NAME/stuck answers and what the
+// scheduled tick records episodes from.
+async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits: ReportLimits, at = new Date()) {
+  const project = ref.name, L = ledger(env, ref.key);
+    const now = at, unavailable: string[] = [];
+    async function read<T>(source: string, action: () => Promise<T>): Promise<T | null> {
+      try { return await action(); }
+      catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
+    }
+    // The runner offers are read first and recorded in the project's ledger
+    // as its snapshot is taken, so the report judges orphaned claims with the
+    // polls the queue and the claim check read at that moment (t540).
+    const [offers, runs, projects] = await Promise.all([
+      read("runner offers", () => index(env).runnerOffers()),
+      read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
+      read("project index", () => index(env).projects()),
+    ]);
+    const snapshot = await read<Snapshot>("project ledger", () => L.stuckSnapshot(offers?.map(({ runner, at }) => ({ runner, at }))));
+    if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
+      const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
+      w.status = status ?? "unknown";
+      if (status === "unknown") unavailable.push(`Workflow ${w.record.instance}: indeterminate status`);
+    }));
+    const active: string[] = [];
+    let jobsAvailable = projects !== null;
+    if (projects) await Promise.all(projects.map(async (p) => {
+      const other = p.key === ref.key ? snapshot : await read<Snapshot>(`active jobs ${p.name}`, () => ledgerOf(env, p).stuckSnapshot());
+      if (!other) { jobsAvailable = false; return; }
+      for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
+      for (const r of other.reviews) if (r.runner) active.push(r.runner);
+    }));
+  return stuckReport(project, origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable, ref.names);
+}
+
+// Every 10 minutes: each project's stuck rules are evaluated and the
+// transitions of its episodes recorded. A project that cannot be read at all
+// records nothing, so it clears nothing.
+// The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
+// and the origin the recorded evidence links name.
+const STUCK_CRON = "*/10 * * * *", STUCK_ORIGIN = "https://atelier.zone";
+export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<void> {
+  const I = index(env);
+  for (const p of await I.projects()) {
+    try {
+      const ref = await resolveProject(env, p.name);
+      if (!ref.registered) continue;
+      const report = await readStuckReport(env, ref, STUCK_ORIGIN, reportLimits(), now);
+      await I.recordStuckTick(report.project, report.entries, report.complete, report.observedAt);
+    } catch (err) {
+      console.error(errorLine(`stuck episodes: ${p.name}`, err));
+    }
+  }
+}
+
 export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ day: string; rev: number; stored: boolean; complete: boolean }[]> {
   const I = index(env);
   const last = addDays(utcDay(now), -1);
@@ -4238,6 +4266,7 @@ export default {
   // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
   // A run with nothing due reads nothing but the index's list of takes.
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (controller.cron === STUCK_CRON) { await recordStuckEpisodes(env, new Date(controller.scheduledTime)); return; }
     await takeModelSnapshots(env, controller.scheduledTime);
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {

@@ -1,4 +1,5 @@
 import { landingOf } from "./diff.ts";
+import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
 import { dayInZone } from "./time.ts";
 import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
@@ -1813,6 +1814,38 @@ export class Ledger extends DurableObject<Env> {
     this.snapshotTables();
     return this.sql.exec(`SELECT day, rev, json FROM model_snapshots WHERE model = ? AND day >= ? AND day <= ? AND schema = ? ORDER BY day, rev, role`, model, from, to, SNAPSHOT_SCHEMA).toArray()
       .map((r) => ({ ...(JSON.parse(r.json as string) as SnapshotRow), day: r.day as string, rev: r.rev as number }));
+  }
+
+  // ── stuck episodes (src/stuck/episodes.ts, t196) ───────────────────────
+  // The opened and cleared transitions of each project's stuck findings, on
+  // the index instance. A tick's transitions are decided and written in one
+  // synchronous transaction, so a repeated or concurrent tick adds nothing
+  // for an episode already open.
+
+  private episodeTables(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS stuck_episodes (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, item TEXT NOT NULL, cause TEXT NOT NULL, episode INTEGER NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL)`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS stuck_episodes_key ON stuck_episodes (project, item, cause, episode)`);
+  }
+
+  recordStuckTick(project: string, entries: { kind: string; subject: string; reason: string }[], complete: boolean, at: string): Transition[] {
+    this.episodeTables();
+    return this.ctx.storage.transactionSync(() => {
+      const rows = this.sql.exec(`SELECT item, cause, episode, kind FROM stuck_episodes WHERE project = ? ORDER BY id`, project).toArray();
+      const last = new Map<string, { key: EpisodeKey; episode: number; open: boolean }>();
+      for (const r of rows) {
+        const key = { project, item: r.item as string, cause: r.cause as string };
+        last.set(episodeKeyOf(key), { key, episode: r.episode as number, open: r.kind === "opened" });
+      }
+      const open = new Map([...last].filter(([, v]) => v.open).map(([k, v]) => [k, { key: v.key, episode: v.episode }]));
+      const moves = reconcileEpisodes(project, entries, complete, open, (k) => last.get(episodeKeyOf(k))?.episode ?? 0, at);
+      for (const t of moves) this.sql.exec(`INSERT INTO stuck_episodes (project, item, cause, episode, kind, at, reason) VALUES (?, ?, ?, ?, ?, ?, ?)`, t.project, t.item, t.cause, t.episode, t.kind, t.at, t.reason);
+      return moves;
+    });
+  }
+
+  stuckEpisodes(project: string): Transition[] {
+    this.episodeTables();
+    return this.sql.exec(`SELECT project, item, cause, episode, kind, at, reason FROM stuck_episodes WHERE project = ? ORDER BY id`, project).toArray() as unknown as Transition[];
   }
 
   // ── runner offers ─────────────────────────────────────────────────────────
