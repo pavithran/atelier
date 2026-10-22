@@ -6,7 +6,7 @@ import { FRESH_TRAILER, savePairs } from "../fresh.mjs";
 import { installMergeConfig } from "../merge-pipeline.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { privateGuardFor } from "../private-guard.mjs";
-import { OWNER, P, apiToken, args, call, cfg, die, landingGit, saveConfig, server, short } from "../atelier.mjs";
+import { OWNER, P, apiToken, args, call, cfg, die, entryPath, landingGit, saveConfig, server, short } from "../atelier.mjs";
 
 // The developer, on a Mac that has no checkout of the project yet (t643):
 // Git, not iCloud, carries code between Macs, and the project's baseline is
@@ -40,7 +40,8 @@ export default async function cloneCommand() {
   // This Mac registers one checkout per project. Another one is not
   // replaced without --replace, and its folder is never touched.
   const old = cfg.projects?.[name];
-  const elsewhere = old?.path && resolve(old.path) !== dir ? old.path : null;
+  const oldPath = entryPath(old);
+  const elsewhere = oldPath && resolve(oldPath) !== dir ? oldPath : null;
   if (elsewhere && args.replace !== true) {
     die(`${name} is already registered on this Mac at ${elsewhere}; nothing was cloned. To register ${dir} in its place, run atelier clone ${name} ${JSON.stringify(dir)} --replace (${elsewhere} is left as it is)`);
   }
