@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -19,7 +19,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
 
 // `mainChange` and `taskChange` write each side's commit; `onMain` builds the
 // task's commit on top of main's newer commit instead of the fork point.
-async function fixture(t, { mainChange, taskChange, onMain = false, check, prepare }) {
+async function fixture(t, { mainChange, taskChange, onMain = false, check, prepare, onEvidence }) {
   const root = mkdtempSync(join(tmpdir(), "atelier-merged-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const identity = (cwd) => { git(cwd, "config", "user.name", "Test"); git(cwd, "config", "user.email", "test@example.invalid"); };
@@ -57,7 +57,10 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check, prepa
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
-    if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
+    if (req.method === "POST") {
+      posts.push({ path, body: JSON.parse(raw) });
+      if (path.endsWith("/evidence")) onEvidence?.(JSON.parse(raw));
+    }
     let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: Array.isArray(check) ? check : [check], prepare, protected: [] }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
     if (path.endsWith("/read-token")) data = { remote: fork, token: "fake-fork-token", head, defaultBranch: "main" };
     if (path.endsWith("/baseline-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
@@ -69,11 +72,11 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check, prepa
   t.after(() => server.close());
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   writeFileSync(join(root, "config.json"), JSON.stringify({ projects: { proj: { path: source } } }));
-  async function run(argv, env = {}) {
+  async function run(argv, env = {}, observe) {
     const child = spawn(process.execPath, [cli, ...argv], { cwd: source, env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, GIT_CONFIG_NOSYSTEM: "1", ...env } });
     let stdout = "", stderr = "";
     child.stdout.on("data", (s) => stdout += s);
-    child.stderr.on("data", (s) => stderr += s);
+    child.stderr.on("data", (s) => { stderr += s; observe?.(stderr, child); });
     const status = await new Promise((done) => child.on("close", done));
     return { status, stdout, stderr };
   }
@@ -180,6 +183,10 @@ test("preparation failure reports its command, status and bounded redacted outpu
   assert.ok(!report.includes("fake-fork-token"));
   assert.match(report, /\[redacted\]/);
   assert.deepEqual(f.evidence(), []);
+  const log = /full redacted failed-check log: (.+)/.exec(r.stderr)?.[1];
+  assert.ok(log?.startsWith(join(f.root, "cache", "check-logs")));
+  assert.equal(readFileSync(log, "utf8"), "[redacted]");
+  assert.equal(statSync(log).mode & 0o777, 0o600);
 });
 
 test("preparation timeout stops checks and names the signal", async (t) => {
@@ -212,4 +219,43 @@ test("failed speculative generation keeps and names its log after check deletes 
   assert.ok(log.startsWith(join(f.root, "cache", "merge-logs", "proj", "t1")));
   assert.match(readFileSync(log, "utf8"), /--- run 1: exit 3\ngeneration-diagnostic/);
   assert.equal(f.posts.filter((p) => p.path.endsWith("/evidence")).length, 0);
+});
+
+
+test("t176 both failed attempts retain evidence and private logs before retry", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const observed = mkdtempSync(join(tmpdir(), "atelier-retry-order-"));
+  t.after(() => rmSync(observed, { recursive: true, force: true }));
+  const marker = join(observed, "posted");
+  let posts = 0;
+  const command = `if test -f attempted; then test -f '${marker}' || { echo evidence-not-posted; exit 9; }; fi; touch attempted; printf 'fake-fork-token pre-test error'; exit 7`;
+  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), check: command, onEvidence: () => { posts++; writeFileSync(marker, "posted"); } });
+  const result = await f.run(["check", "t1", "--project", "proj"]);
+  assert.equal(result.status, 2);
+  assert.deepEqual(f.evidence().map(e => e.passed), [false, false]);
+  assert.equal(posts, 2);
+  const paths = [...result.stderr.matchAll(/full redacted failed-check log: (.+)/g)].map(m => m[1]);
+  assert.equal(paths.length, 2); assert.notEqual(paths[0], paths[1]);
+  assert.ok(result.stderr.indexOf(paths[0]) < result.stderr.indexOf("once more"));
+  for (const [i, path] of paths.entries()) {
+    assert.equal(readFileSync(path, "utf8"), "[redacted] pre-test error");
+    assert.ok(!f.evidence()[i].outputTail.includes(path), "absolute local path stays off server evidence");
+  }
+});
+
+
+test("t176 interrupting a retry leaves the first failed log and evidence intact", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), check: "if test -f attempted; then sleep 30; else touch attempted; echo first-failure; exit 1; fi" });
+  let stopped = false;
+  const r = await f.run(["check", "t1", "--project", "proj"], {}, (stderr, child) => {
+    if (!stopped && (stderr.match(/atelier: running `/g)?.length ?? 0) === 2) {
+      stopped = true; setTimeout(() => child.kill("SIGTERM"), 100);
+    }
+  });
+  assert.ok(stopped);
+  assert.notEqual(r.status, 0);
+  assert.deepEqual(f.evidence().map(e => e.passed), [false]);
+  const path = /full redacted failed-check log: (.+)/.exec(r.stderr)?.[1];
+  assert.equal(readFileSync(path, "utf8"), "first-failure\n");
 });
