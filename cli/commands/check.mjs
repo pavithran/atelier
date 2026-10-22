@@ -40,11 +40,12 @@ export default async function checkCommand() {
   const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
   let failed = 0, recorded, mainHead, provenance = "";
   const evidenceBody = (cmd, r, note) => {
-    const failureLines = !r.passed && r.output.length > LOCAL_OUTPUT_TAIL - provenance.length ? collectFailureLines(r.output) : "";
     const lead = [note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
+    const tailSize = lead ? Math.max(500, LOCAL_OUTPUT_TAIL - lead.length) : LOCAL_OUTPUT_TAIL;
+    const failureLines = !r.passed && r.output.length > tailSize ? collectFailureLines(r.output) : "";
     return {
       kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
-      outputTail: lead ? `${lead}\n\n${r.output.slice(-Math.max(500, LOCAL_OUTPUT_TAIL - lead.length))}\n[sha256 of full output: ${r.sha}]` : `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
+      outputTail: lead ? `${lead}\n\n${r.output.slice(-tailSize)}\n[sha256 of full output: ${r.sha}]` : `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
       ...(failureLines ? { failureLines } : {}),
       ...(mainHead ? { merged: true, mainHead } : {}),
     };
@@ -81,9 +82,9 @@ export default async function checkCommand() {
       if (!r.passed && !r.timedOut) {
         process.stderr.write(`atelier: \`${cmd}\` failed; running it once more at the same head\n`);
         const first = r;
+        await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, first, ""), as);
         r = await runCheck(cmd, dir, secrets, sequence.next());
         flake = r.passed;
-        if (flake) await postEvidence(`${I(name, id)}/evidence`, evidenceBody(cmd, first, ""), as);
       }
       // The Worker measures the changed paths from Artifacts and ignores this
       // list, which is sent only so a deployment without that measurement

@@ -539,6 +539,16 @@ verdict file, and runs `agy` sandboxed in the runner's review clone (the
 developer's decision of 2026-10-06). Name the adapter by its absolute path: the
 runner starts the command inside the review clone, which need not hold it.
 
+`projects` is optional: a nonempty list of project names this runner serves
+(t172), such as `"projects": ["atelier"]`. The runner cuts each poll's queue to
+those projects before it chooses a job or reports a skip, so a runner kept for
+one project's reviews never claims another's, and its idle report names only
+the dispatches of its own projects. Leave it out and the runner serves every
+project, as before. An empty list, or an entry with a slash or surrounding
+space, fails config validation instead of widening the runner. The server is
+not told: it still offers the runner other projects' jobs, which the runner
+passes by.
+
 Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
 arrays with `{model}` and `{brief_file}` placeholders. For a build job, `{workspace}` is the claimed workspace. For a plan job, `{plan_file}` is where the harness writes the plan document. For a review job, `{diff_file}` is the diff to review and `{verdict_file}` is where the harness writes its verdict; a criteria-review job uses the same two, with a `{diff_file}` that says there is no diff, so a config listing `criteria-review` names a command with `{verdict_file}`. The runner invokes them directly without a shell. The example requires that

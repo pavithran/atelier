@@ -97,7 +97,7 @@ export async function executePostMerge({ request, name, id, env = process.env, p
       await git(["-c", "core.hooksPath=/dev/null", "checkout", "--detach", run.after], { cwd: dir });
       if ((await git(["rev-parse", "HEAD"], { cwd: dir })).trim() !== run.after) throw new Error("clone does not hold the pinned merge");
       const command = async argv => {
-        const result = await group(argv, { cwd: dir, env: step.class === "check" ? checkEnv(env) : env, timeoutMs: Math.max(1, deadline - Date.now()), maxBytes: 1024 * 1024 });
+        const result = await group(argv, { cwd: dir, env: step.class === "check" ? checkEnv(env) : env, timeoutMs: Math.max(1, deadline - Date.now()), maxBytes: step.class === "check" ? undefined : 1024 * 1024 });
         output += result.stdout + result.stderr;
         if (result.status !== 0 || result.error) throw new Error("post-merge command failed or timed out");
       };

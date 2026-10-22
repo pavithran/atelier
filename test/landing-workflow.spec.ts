@@ -362,6 +362,7 @@ const VITEST = [
   "   ✓ adds numbers 1ms",
   "   × fails: the cap is enforced 4ms",
   "   × a suite > fails inside: names are read 1ms", "",
+  "⎯⎯⎯ Failed Tests 2 ⎯⎯⎯", "",
   " FAIL  test/sample.spec.ts > fails: the cap is enforced",
   "AssertionError: expected 1 to be 2",
   " FAIL  test/sample.spec.ts > a suite > fails inside: names are read",
@@ -390,7 +391,7 @@ it("local checks: the landing ends with the failure summary every landing prints
   expect(lines[1]).toBe("Failed checks at aaaaaaaa, as the gate reads them (the latest counting run of each required check at this head):");
   expect(lines[2]).toMatch(/^ {2}`npm test` failed in a Cloudflare container at \d{4}-\d\d-\d\d \d\d:\d\d UTC: evidence #\d+, run k:1, attempt 1 of 1 at this head$/);
   expect(lines[3]).toBe("    failing tests (vitest): test/sample.spec.ts > fails: the cap is enforced; test/sample.spec.ts > a suite > fails inside: names are read");
-  expect(lines[4]).toBe(`    log: whole log, stored (${stored!.bytes} bytes, ${stored!.sha256.slice(0, 12)}); 11 lines, whole:`);
+  expect(lines[4]).toBe(`    log: whole log, stored (${stored!.bytes} bytes, ${stored!.sha256.slice(0, 12)}); 12 lines, whole:`);
   expect(detail).toContain("\n      FAIL  test/sample.spec.ts > fails: the cap is enforced\n");
   expect(detail).not.toContain("[atelier] ran in");
   expect(detail).toMatch(/\n {2}`npm run types` failed on a runner, in a clean clone at .*: evidence #\d+, attempt 1 of 1 at this head\n {4}failing tests: none named \(the output holds 1 TypeScript error, which name no test\)\n {4}log: whole output, inline; 1 line, whole:\n {6}src\/a\.ts\(1,1\): error TS2322/);
