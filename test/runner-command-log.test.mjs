@@ -32,9 +32,9 @@ test("guardName's runner-stop message is stamped once, with one label", async ()
   assert.equal(lines[0], "2026-10-23T01:02:03.000Z runner: stopped pid 77.");
 });
 
-test("a refused run does not count toward the two-failure cap", async () => {
+test("a refused run counts toward the two-failure cap", async () => {
   const { failureCount } = await import("../cli/runner.mjs");
   const state = { phase: "failed", taskFailure: true, reason: "harness exited 1", harnessExit: { kind: "exited", code: 1, stderr: "" } };
-  assert.equal(failureCount(1, state), 1);
+  assert.equal(failureCount(1, state), 2);
   assert.equal(failureCount(1, { ...state, harnessExit: undefined }), 2);
 });
