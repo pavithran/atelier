@@ -17,6 +17,7 @@ const empty = () => ({});
 const HANDLERS = {
   "GET version": () => ({ commit: "0".repeat(40), routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES }),
   "GET config": () => ({ ownerActor: "owner", ownerName: "Owner", runner: "home:studio", tokenId: "runner-token-id" }),
+  "GET runners/me": () => ({ runner: "home:studio", projects: ["demo"], expiresAt: null }),
   "POST queue": () => ({ queue: [] }),
   "POST runs": empty,
   "GET projects/:project": ({ project }) => ({ project: { name: project, policy: {} } }),
