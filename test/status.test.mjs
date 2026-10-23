@@ -64,7 +64,7 @@ test("a project with nothing to do says so, and other projects' decisions are ig
   const out = formatStatus([{ name: "quiet", items: [item("t1", "merged")], inbox: [entry("t9", "accept", { project: "other" })] }]);
   // A project that has merged says how many merges went in by override (t371).
   assert.equal(out, "quiet\n  Nothing waiting.\n  Merged by override: 0 of 1 merge");
-  assert.equal(formatStatus([{ name: "quiet", items: [item("t1", "open")], inbox: [] }]), "quiet\n  Nothing waiting on you.\n  In the pipeline: 1 task: 1 not yet dispatched; none waits on you.");
+  assert.equal(formatStatus([{ name: "quiet", items: [item("t1", "open")], inbox: [] }]), "quiet\n  Nothing waiting on you.\n  In the pipeline: 1 task: 1 not yet dispatched; none waits on you.\n  Stages\n    filed: t1  Task t1");
 });
 
 test("only the owner's calls wait on the owner: a review, a merge and a stale claim stay in the pipeline", () => {
@@ -318,7 +318,7 @@ test("On this Mac gives each workspace one line, and a task with no workspace he
   assert.ok(r.output.includes("  t3  1 path with uncommitted changes; a merge is in progress, in conflict: a.txt\n"), r.output);
   assert.ok(r.output.includes("  t4  1 path with uncommitted changes; COMMIT_MSG.txt waiting to be committed\n"), r.output);
   assert.ok(r.output.includes("  t5  clean, pushed\n"), r.output);
-  assert.ok(!r.output.includes("t9"), "a task with no workspace here is left out");
+  assert.ok(!/\n  t9  /.test(r.output.split("\nOn this Mac:\n")[1] ?? ""), "a task with no workspace here is left out");
   assert.ok(!/  t[68]  /.test(r.output), "a merged or abandoned task's workspace is not listed");
   assert.ok(r.output.includes("  2 workspaces of merged or abandoned tasks left here; atelier clean --project demo removes those whose work is in main or the ledger\n"), r.output);
   assert.ok(r.output.includes("  Landing: no landing is running on this Mac; the server's landing lease is held by no one.\n"), r.output);

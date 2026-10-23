@@ -36,6 +36,8 @@ test("ls --json and status --json print each item with its times, for Observator
       unknown: [],
     },
     mergedByOverride: [],
+    // stageOf's stage for each task (t210): pushed at its head, nothing later.
+    stages: ["t1", "t2"].map((id) => ({ id, stage: "built", detail: { head: f.head, source: "push" } })),
   }]);
 
   // The JSON listing honours --all as the text one does (test/status.test.mjs

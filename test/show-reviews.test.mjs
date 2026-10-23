@@ -38,6 +38,9 @@ const BRIEF = {
   evidence: ["Reviews at this revision: zcode/glm-5.3 asked for changes."],
   recommendation: { verdict: "send back", reason: "zcode/glm-5.3 asked for changes at this revision." },
 };
+// The stage show prints is stageOf's: pushed at its head, nothing later (t210).
+const STAGE = { stage: "built", detail: { head: "2222222222222222222222222222222222222222", source: "push" } };
+const briefText = (origin) => `${formatBrief("proj", "t1", BRIEF, origin)}\n\nStage: built at 22222222`;
 // t407: replies no verdict could be read from, kept on the task with the
 // reviewer and the head. One carries a forged Atelier line, which must not
 // survive flattening.
@@ -86,12 +89,12 @@ test("show prints the brief alone, and with --reviews each review in full", asyn
   const f = await fixture(t);
   const plain = await f.run(["show", "t1", "--project", "proj"]);
   assert.equal(plain.status, 0, plain.output);
-  assert.equal(plain.output.trim(), formatBrief("proj", "t1", BRIEF, f.origin));
+  assert.equal(plain.output.trim(), briefText(f.origin));
   assert.ok(!plain.output.includes("Reviews:"));
 
   const full = await f.run(["show", "t1", "--reviews", "--project", "proj"]);
   assert.equal(full.status, 0, full.output);
-  assert.equal(full.output.trim(), `${formatBrief("proj", "t1", BRIEF, f.origin)}\n\n${formatReviews(REVIEWS, "owner")}`);
+  assert.equal(full.output.trim(), `${briefText(f.origin)}\n\n${formatReviews(REVIEWS, "owner")}`);
   assert.ok(full.output.includes(LONG_NOTE), "the whole note is printed");
   assert.ok(full.output.includes("blocking src/parser.ts:42"), "each finding is printed");
 });
@@ -101,7 +104,7 @@ test("show --json carries the reviews with their findings, newest first", async 
   for (const argv of [["show", "t1", "--json", "--project", "proj"], ["show", "t1", "--reviews", "--json", "--project", "proj"]]) {
     const r = await f.run(argv);
     assert.equal(r.status, 0, r.output);
-    assert.deepEqual(JSON.parse(r.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [] });
+    assert.deepEqual(JSON.parse(r.output), { ...BRIEF, stage: STAGE, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [] });
   }
 });
 
@@ -132,7 +135,7 @@ test("show --reviews prints each unparsable reply with the reviewer and the head
   assert.equal(full.status, 0, full.output);
   assert.ok(full.output.includes(lines[kept]), "the kept reply is printed with the reviews");
   const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
-  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]], failedChecks: [] });
+  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, stage: STAGE, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]], failedChecks: [] });
 });
 
 // t438: the reviews of the acceptance criteria themselves, apart from the
@@ -207,11 +210,11 @@ test("show --reviews prints the criteria reviews after the reviews when the serv
   const f = await fixture(t, false, CRITERIA_VIEW);
   const full = await f.run(["show", "t1", "--reviews", "--project", "proj"]);
   assert.equal(full.status, 0, full.output);
-  assert.equal(full.output.trim(), `${formatBrief("proj", "t1", BRIEF, f.origin)}\n\n${formatReviews(REVIEWS, "owner")}\n\n${formatCriteriaReviews(CRITERIA_VIEW)}`);
+  assert.equal(full.output.trim(), `${briefText(f.origin)}\n\n${formatReviews(REVIEWS, "owner")}\n\n${formatCriteriaReviews(CRITERIA_VIEW)}`);
   const plain = await f.run(["show", "t1", "--project", "proj"]);
   assert.ok(!plain.output.includes("Criteria reviews:"), "the brief alone prints none");
   const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
-  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [], criteriaReview: CRITERIA_VIEW });
+  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, stage: STAGE, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [], criteriaReview: CRITERIA_VIEW });
 });
 
 // A fake server answering the two routes show reads: the brief and the item's

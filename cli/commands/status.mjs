@@ -1,5 +1,5 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
+import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, readyOf, stageEntries, stageLines, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { CACHE, OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
@@ -62,8 +62,9 @@ export default async function statusCommand() {
     // The project's tasks, for expired blocks and the clean-up count: the read above when it was made, else one now.
     record ??= await request("GET", P(name), undefined, as).catch(() => null);
     const items = record?.items;
+    const stages = stageEntries(items, readyOf(await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null)));
     const expired = Array.isArray(items) ? expiredBlocks(items, new Date()) : [];
-    console.log(withUsage(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server(), expired) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
+    console.log(withUsage(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server(), expired) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
@@ -95,7 +96,7 @@ export default async function statusCommand() {
     const mismatches = read?.project?.policy && path ? reviewDisagreements(read.project.policy, readInstructions(path)) : [];
     // The policy comes along so the listing can say a project runs in
     // single-family mode (formatStatus).
-    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, branches };
+    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());

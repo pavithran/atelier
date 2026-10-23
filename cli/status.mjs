@@ -21,10 +21,31 @@
 import { DEFAULT_THRESHOLDS, isStale, lowBalances, windowShortages } from "../src/usage/report.ts";
 import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { stripVTControlCharacters } from "node:util";
-import { directionText, expiredBlocks, forkAgeText, mergedByOverride } from "../src/rules.ts";
+import { directionText, expiredBlocks, forkAgeText, mergedByOverride, stageOf } from "../src/rules.ts";
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
+
+// A task's stage is stageOf's (src/rules.ts) and nothing here decides one.
+// `ready` is the fast-build reports the project's mode route lists
+// (GET /p/NAME/mode, `ready`); a list read without them is told as none.
+export const readyOf = (mode) => (Array.isArray(mode?.ready) ? mode.ready : []);
+
+export function stageEntries(items, ready = [], facts = () => ({})) {
+  return (items ?? [])
+    .filter((i) => i.state !== "merged" && i.state !== "abandoned")
+    .map((i) => ({ id: i.id, title: i.title, ...stageOf(i, { ready: ready.find((r) => r.item === i.id) ?? null, ...facts(i) }) }));
+}
+
+// "built" or "built at a1b2c3d4 on mac-mini in /work/t1".
+export function stageText({ stage, detail }) {
+  const where = [detail?.head ? `at ${detail.head.slice(0, 8)}` : "", detail?.machine ? `on ${detail.machine}` : "", detail?.path ? `in ${detail.path}` : ""].filter(Boolean).join(" ");
+  return where ? `${stage} ${where}` : stage;
+}
+
+export function stageLines(entries, indent = "  ") {
+  return entries.length ? [`${indent}Stages`, ...entries.map((e) => `${indent}  ${stageText(e)}: ${e.id}  ${e.title}`)] : [];
+}
 
 export function formatPolicyDisagreements(mismatches = []) {
   if (!mismatches.length) return "";
@@ -89,6 +110,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       // empty list standing for nothing.
       inbox: v.inbox ? mine : null,
       items: v.items ? v.items.map(itemJson) : null,
+      stages: v.items ? stageEntries(v.items, v.ready).map(({ id, stage, detail }) => ({ id, stage, detail })) : null,
       ...(v.mismatches?.length ? { mismatches: v.mismatches } : {}),
       // The developer's branches (t641), when they were read.
       ...(Array.isArray(v.branches) ? { branches: v.branches } : {}),
@@ -333,6 +355,7 @@ export function formatStatus(views, waiting = {}) {
     if (a.unknown.length) lines.push("  Not read", ...a.unknown.map((x) => `    ${x}`));
     if (v.mismatches?.length) lines.push(formatPolicyDisagreements(v.mismatches));
     if (a.pipeline.length) lines.push(`  In the pipeline: ${pipelineLine(a)}; none waits on you.`);
+    lines.push(...stageLines(stageEntries(v.items, v.ready)));
     // Overlapping scopes are counted, not listed: --json names each pair.
     if (a.overlaps.length) lines.push(`  Overlapping scopes: ${a.overlaps.length} ${a.overlaps.length === 1 ? "pair" : "pairs"}; expect a merge conflict when the second lands; nothing waits on you. atelier status --json lists them.`);
     if (working.length) {
@@ -456,11 +479,15 @@ export function formatInbox(views, waiting = {}) {
   for (const v of views) {
     const a = attentionFor(v.name, v.items, v.inbox, waiting.offers ?? null, waiting.now ?? new Date());
     total += a.owner.length;
-    if (!a.owner.length && !a.unknown.length) continue;
+    const stages = stageEntries(v.items, v.ready);
+    // A project with nothing waiting is left out unless a fast build of it ended ready
+    // and waits to be merged.
+    if (!a.owner.length && !a.unknown.length && !stages.some((e) => e.detail.source === "fast_ready")) continue;
     lines.push(`${v.title ? `${v.title} (${v.name})` : v.name}: ${a.owner.length} waiting on you${a.unknown.length ? ", and more may be" : ""}`);
     lines.push(...ownerLines(a.owner, waiting.server));
     for (const x of a.unknown) lines.push(`    Not read: ${x}`);
     if (a.pipeline.length) lines.push(`    In the pipeline: ${pipelineLine(a)}; none waits on you.`);
+    lines.push(...stageLines(stages, "    "));
     if (a.overlaps.length) lines.push(`    Overlapping scopes: ${a.overlaps.length} ${a.overlaps.length === 1 ? "pair" : "pairs"}; atelier status --json lists them.`);
   }
   return total || lines.length ? lines.join("\n") : "Nothing needs you.";
