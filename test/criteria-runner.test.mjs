@@ -235,6 +235,8 @@ test("two failed criteria reviews skip that review alone: the task's build and t
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
     workspacePath: io.workspacePath, taskIO: io, wait: () => new Promise((resolve) => setImmediate(resolve)),
+    // A clock that moves an hour per read, so the wait after a refused run (t191) is over by the next poll.
+    now: (() => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); })(),
     async queue() {
       polls++;
       // The first criteria review fails twice; the build of the same task is
