@@ -79,8 +79,8 @@ test("a single 2000-character stderr line is logged whole", () => {
   assert.ok(refusedLog(task, failedRun(line)).includes(line));
 });
 
-test("stderr beyond 64 KB keeps its end", () => {
-  const tail = stderrTail("y".repeat(100_000) + "THE END");
-  assert.equal(tail.length, 65536);
-  assert.ok(tail.endsWith("THE END"));
+test("twenty 4000-character lines are all logged whole", () => {
+  const lines = Array.from({ length: 25 }, (_, i) => `L${i + 1} ${"z".repeat(3990)} end${i + 1}`);
+  const tail = stderrTail(lines.join("\n"));
+  assert.equal(tail, lines.slice(5).join("\n"));
 });
