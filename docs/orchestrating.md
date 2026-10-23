@@ -288,12 +288,15 @@ misread:
   (the 3x ratio, with only the Nx filter) wrong by design; reading the test
   before dispatch caught it, and nothing else would have. Write "t52's tests
   pass except the 3x ratio test, which the task rewrites" instead.
-- Tell a builder to iterate on the tests its change touches and the
-  typecheck, not the project's full gate. Atelier runs the required checks in
-  a clean clone of the pushed head afterward, so a builder's own full run
-  repeats them. A merge's resolution and a wave's checks are unchanged: they
-  run whole. A project that wants a quick test command names it in its own
-  instructions (`AGENTS.md`); Atelier has no setting for it. For a visual
+- A builder runs the project's full required test command (`npm test`)
+  inside a test slot and pushes only when it passes (t219). Failures found
+  only in the clean clone cost a rebuilt run each, about an hour; goal 1's six
+  tasks took about 300 builder runs. The suite's time budget counts from slot
+  acquisition, so queueing cannot time it out; on a timeout the builder commits
+  and reports `validation_blocked` with the slot wait and run time. A merge's
+  resolution and a wave's checks run whole as before. A project that names
+  another test command in its own instructions (`AGENTS.md`) has the builder
+  run that one. For a visual
   change the build brief says to use the project's documented screenshot
   workflow against the workspace's own revision, reusing the server that
   workflow manages and never starting a second, or to follow the project's

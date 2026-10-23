@@ -159,18 +159,21 @@ export const BUILD_RULES = [
   "- A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.",
 ].join("\n");
 
-// What a builder runs before it commits, and when it may report
-// validation_blocked (t552). Builders ran the full suite in their sandbox, ten
-// minutes and more; with several runners on one host the load reached 45 to
-// 87, tests timed out, and the builder ended validation_blocked with nothing
-// committed, so the work was lost and the task looped (t541, t546, t532,
-// t463). The clean-clone checks after the push run the full suite and judge
-// it; the builder runs only what its change touches. The runner's own brief
-// (briefFor in cli/runner.mjs) carries the same sentences.
+// What a builder runs before it pushes, and when it may report
+// validation_blocked (t219, after t552). Builders that ran only the tests of
+// their change pushed work that failed the full suite in the clean-clone
+// checks, and each repeat cost an hour: goal 1's six tasks took about 300
+// builder runs. So the builder runs the project's full required test command
+// in a test slot and pushes only when it passes. The budget counts from the
+// moment the slot is held; t552 ran the suite with a budget that counted queue
+// time, and a loaded host timed it out before it started, so the work was lost
+// and the task looped. The runner's own brief (briefFor in cli/runner.mjs) and
+// the build role prompt (src/usage.ts) carry the same sentences.
 export const BUILDER_TESTS = [
-  "Run the tests for the files you change, and the typecheck; both must pass. Do not run the full suite unless the task asks for it: after you finish, Atelier runs the project's required checks, the full suite among them, in a clean clone of your commit.",
+  "Run the project's full required test command (npm test unless the project names another) inside a test slot, and the typecheck. Push only when both pass; name any failing test you could not fix.",
+  "Give the suite a time budget that counts from the moment the slot is held, so it cannot time out while queued. If it times out, commit your work and report validation_blocked with the slot wait and the run time.",
   "When those pass, commit. Never end with finished work uncommitted.",
-  "Report validation_blocked only for a failure in the tests of your own change that you cannot fix, and commit your work before you report it.",
+  "Report validation_blocked only for a failure in the tests of your own change that you cannot fix, or a suite timeout, and commit your work before you report it.",
 ] as const;
 
 // A visual change is checked by looking at it. Builders opened a dev server of
