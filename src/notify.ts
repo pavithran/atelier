@@ -31,3 +31,12 @@ export function notificationRequest(topic: string, origin: string, project: stri
 export function usageAlertRequest(topic: string, origin: string, title: string, body: string): Request {
   return ntfyRequest(topic, title, new URL("/usage", new URL(origin).origin).href, "warning", body);
 }
+
+// Stuck episodes still open an hour after they were first seen (src/stuck/notices.ts),
+// one message for a project's whole batch, opening the Status page.
+export function stuckBatchRequest(topic: string, origin: string, project: string, episodes: readonly { item: string; reason: string }[]): Request {
+  const click = new URL(`/p/${encodeURIComponent(project)}`, new URL(origin).origin).href;
+  const n = episodes.length;
+  const body = episodes.map((e) => `${e.item}: ${e.reason}`).join("; ");
+  return ntfyRequest(topic, `${project}: ${n} stuck ${n === 1 ? "episode" : "episodes"}`, click, "warning", body);
+}
