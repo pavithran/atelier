@@ -335,10 +335,11 @@ test("a runner offers and works only the projects its config and its token both 
   console.log = (...args) => said.push(args.join(" "));
   t.after(() => { console.log = original; });
   let asked = 0;
+  const offers = [];
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config, once: true }, {
     credential: "token", workspacePath: () => workspace, load: () => 0, cores: () => 4,
     tokenProjects: async () => { asked++; return ["demo"]; },
-    queue: async () => [task("demo"), task("other")],
+    queue: async (offer) => { offers.push(offer.projects); return [task("demo"), task("other")]; },
     jobBrief: async () => ({ text: "Build" }),
     taskIO: { log: (line) => said.push(line), reset: async () => {}, head: async () => "same", dataHome: async () => null, identityRefusals: async () => [] },
     executeChild: async (argv) => {
@@ -352,6 +353,7 @@ test("a runner offers and works only the projects its config and its token both 
   console.log = original;
   process.exitCode = 0; // the stubbed job failed on purpose; --once sets 1 for that
   assert.equal(asked, 1);
+  assert.ok(offers.length > 0 && offers.every((p) => JSON.stringify(p) === '["demo"]'), `the submitted offer names demo alone: ${JSON.stringify(offers)}`);
   assert.ok(touched.length > 0, "the served project was worked");
   assert.deepEqual(forbidden, [], "the other project's server is never called");
   assert.ok(touched.every((call) => call.endsWith(" demo")), touched.join("; "));
@@ -361,7 +363,39 @@ test("a runner offers and works only the projects its config and its token both 
 
 test("servedProjects intersects the config with the token and leaves the config alone when the token names none", () => {
   assert.deepEqual(servedProjects(["a", "b"], ["a", "c"]), { projects: ["a"], lacking: ["b"] });
-  assert.deepEqual(servedProjects(undefined, ["a"]), { projects: ["a"], lacking: [] });
+  assert.deepEqual(servedProjects(undefined, ["a"]), { projects: undefined, lacking: [] });
+  // A project renamed since the token was issued: the token names "old", the
+  // config and the queue say "new".
+  const renamed = { projects: ["old"], names: [["new", "old"]] };
+  assert.deepEqual(servedProjects(["new", "x"], renamed), { projects: ["new", "old"], lacking: ["x"] });
+  assert.deepEqual(servedProjects(undefined, renamed), { projects: undefined, lacking: [] });
   assert.deepEqual(servedProjects(["a", "b"], null), { projects: ["a", "b"], lacking: [] });
   assert.deepEqual(servedProjects(undefined, null), { projects: undefined, lacking: [] });
+});
+
+// With no projects in the config, a token naming a project's former name keeps
+// its work after a rename: nothing is filtered by the token's literal names.
+test("a runner whose config names no projects works a renamed project", async (t) => {
+  const dir = fixture(t), workspace = join(dir, "work"), config = join(dir, "runner.json");
+  mkdirSync(workspace);
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["gpt-6-astra"], command: ["stub-harness", "{model}", "{brief_file}"] }], jobs: ["build"] }));
+  const touched = [], offers = [];
+  const original = console.log;
+  console.log = () => {};
+  t.after(() => { console.log = original; });
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config, once: true }, {
+    credential: "token", workspacePath: () => workspace, load: () => 0, cores: () => 4,
+    tokenProjects: async () => ({ projects: ["old"], names: [["new", "old"]] }),
+    queue: async (offer) => { offers.push(offer.projects); return [{ project: "new", actor: "claude-code/gpt-6-astra", agent: "claude-code", model: "gpt-6-astra", item: { id: "t1", title: "Change", scope: ["src/**"], accept: ["works"] } }]; },
+    jobBrief: async () => ({ text: "Build" }),
+    taskIO: { log: () => {}, reset: async () => {}, head: async () => "same", dataHome: async () => null, identityRefusals: async () => [] },
+    executeChild: async (argv) => {
+      if (argv[1]?.endsWith("atelier.mjs")) touched.push(argv[argv.indexOf("--project") + 1]);
+      return { code: 1, output: "", stderr: "atelier: stub stops the job" };
+    },
+  }).catch(() => {});
+  console.log = original;
+  process.exitCode = 0;
+  assert.deepEqual(offers[0], undefined);
+  assert.ok(touched.includes("new"), touched.join("; "));
 });

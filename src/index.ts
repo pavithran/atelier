@@ -1477,7 +1477,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const parsedOffer = m === "POST" ? runnerOffer(body) : null;
-    const asked = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: c.token.projects } : parsedOffer;
+    // A runner may narrow its offer to some of its token's projects (t212):
+    // the projects it names, by any name they have had, within the token's.
+    // Without the field the offer is the token's projects as before.
+    const wanted = parsedOffer?.projects;
+    const narrowed = wanted && c.token?.projects
+      ? [...new Set((await index(env).projects()).filter((p) => inScope(c.token, namesOf(p)) && namesOf(p).some((n) => wanted.includes(n))).flatMap(namesOf))]
+      : wanted;
+    const asked = parsedOffer && c.token?.projects ? { ...parsedOffer, projects: narrowed ?? c.token.projects } : parsedOffer;
     if (c.token?.runner && (!asked || asked.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
@@ -1488,7 +1495,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // letting it wait as though merely unclaimed, and plan routing picks from
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
-    const projects = (await index(env).askQueue(asked, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    const projects = (await index(env).askQueue(asked, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)) && (!asked?.projects || namesOf(p).some((n) => asked.projects!.includes(n))));
     // The offer names each project its token serves by its current name too,
     // as askQueue records it, so a project renamed since the token was
     // issued reads the runner as serving it (servesProject, t652).
@@ -1568,7 +1575,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // agent's are refused, saying so.
   if (parts[0] === "runners" && parts.length === 2 && parts[1] === "me" && m === "GET") {
     if (!c.token?.runner) throw new RuleError("runner_token_required", "GET /runners/me answers a runner token; this token is not one", 403);
-    return json({ runner: c.token.runner, projects: c.token.projects ?? [], expiresAt: c.token.expiresAt });
+    // `names` lists, for each project the token serves, every name it answers
+    // to, current first, so a runner resolves a renamed project.
+    const names = (await index(env).projects()).filter((p) => inScope(c.token, namesOf(p))).map(namesOf);
+    return json({ runner: c.token.runner, projects: c.token.projects ?? [], names, expiresAt: c.token.expiresAt });
   }
   if (parts[0] === "runners" && parts.length === 1 && m === "GET") {
     requireOwner(env, actor);
@@ -3650,6 +3660,7 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const started = typeof body.started === "string" && Number.isFinite(Date.parse(body.started)) ? new Date(body.started).toISOString() : null;
   return {
     runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}),
+    ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };
       return typeof x.agent === "string" && Array.isArray(x.models)

@@ -2265,14 +2265,26 @@ export function onlyProjects(entries, projects) {
 }
 
 // The projects a runner serves (t212): those its config and its token both
-// name. A config without projects serves what the token names; a token that
-// names none (an owner's or agent's token, or a server that cannot say)
-// leaves the config alone. `lacking` holds each config project the token
-// does not serve, for the one line the runner logs about it.
-export function servedProjects(configProjects, tokenProjects) {
-  if (!Array.isArray(tokenProjects)) return { projects: configProjects, lacking: [] };
-  if (!configProjects) return { projects: [...tokenProjects], lacking: [] };
-  return { projects: configProjects.filter((p) => tokenProjects.includes(p)), lacking: configProjects.filter((p) => !tokenProjects.includes(p)) };
+// name. A config without projects restricts nothing, as before, and the
+// token alone bounds the offer on the server. A token that names none (an
+// owner's or agent's token, or a server that cannot say) leaves the config
+// alone. `mine` is the token's project names, or { projects, names } where
+// `names` lists every name each project answers to, current first, so a
+// project renamed since the token was issued is served under both. `lacking`
+// holds each config project the token does not serve, for the one line the
+// runner logs about it.
+export function servedProjects(configProjects, mine) {
+  const tokenProjects = Array.isArray(mine) ? mine : mine?.projects;
+  if (!Array.isArray(tokenProjects) || !configProjects) return { projects: configProjects, lacking: [] };
+  const groups = Array.isArray(mine?.names) ? mine.names.filter(Array.isArray) : [];
+  const served = new Set(), lacking = [];
+  for (const p of configProjects) {
+    const group = groups.find((names) => names.includes(p));
+    if (group) for (const n of group) served.add(n);
+    else if (tokenProjects.includes(p)) served.add(p);
+    else lacking.push(p);
+  }
+  return { projects: [...served], lacking };
 }
 
 // The order a poll's jobs are taken in: the gate's reviews first, in the
@@ -4308,11 +4320,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         if (tokenProjects) mine = await tokenProjects(controller.signal);
         else if (api?.server && credential && checkCapabilities(serverVersion, [RUNNER_ME]).ok) {
           const res = await runnerTransport({ server: api.server(), credential, runner: args.name.toLowerCase() }).send("runner-me", {}, { signal: controller.signal });
-          if (res.ok && Array.isArray(res.data?.projects)) mine = res.data.projects;
+          if (res.ok && Array.isArray(res.data?.projects)) mine = { projects: res.data.projects, names: res.data.names };
         }
       } catch (error) { if (!controller.signal.aborted) line(`the token's projects could not be read (${error.message}); serving the config's alone`); }
       const result = servedProjects(config.projects, mine);
       served = result.projects;
+      // The offer says the same projects, so routing never picks this runner
+      // for work in one it leaves out.
+      if (served) offer.projects = [...served];
       for (const p of result.lacking) line(`${p} is in the config but this runner's token does not serve it; it is left out`);
       if (served && !served.length) line("the config and the token name no project in common; nothing will be offered");
     }

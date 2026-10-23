@@ -315,7 +315,7 @@ it("GET /runners/me names the runner token's runner, projects and expiry, and re
   const t = await setup();
   const res = await t.api("GET", "/runners/me", undefined, undefined);
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ runner: "home:studio", projects: [t.name], expiresAt: t.token.expiresAt });
+  expect(await res.json()).toEqual({ runner: "home:studio", projects: [t.name], names: [[t.name]], expiresAt: t.token.expiresAt });
   const owner = await t.request("GET", "/runners/me");
   expect(owner.status).toBe(403);
   expect(await owner.json()).toMatchObject({ error: "runner_token_required" });
@@ -334,4 +334,12 @@ it("an existing runner route answers as before, with no call to /runners/me", as
   expect(Array.isArray(await queue.json())).toBe(true);
   const config = await t.api("GET", "/config", undefined, undefined);
   expect(await config.json()).toMatchObject({ runner: "home:studio" });
+});
+
+it("a poll naming some of the token's projects records an offer for those alone", async () => {
+  const t = await setup();
+  expect((await t.api("POST", "/queue", { ...t.offer, projects: ["not-mine"] })).status).toBe(200);
+  expect((await I().runnerOffers()).find((o) => o.runner === "home:studio").projects).toEqual([]);
+  expect((await t.api("POST", "/queue", { ...t.offer, projects: [t.name] })).status).toBe(200);
+  expect((await I().runnerOffers()).find((o) => o.runner === "home:studio").projects).toEqual([t.name]);
 });
