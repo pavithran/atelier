@@ -26,6 +26,12 @@ function run(t, extra, argv = ["queue"], stored = {}, jobs = ["build", "review",
     process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(argv)}];
     globalThis.fetch = async (_url, options = {}) => {
       if (_url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL}, capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
+      // The start-up GET /runners/me (t212) is counted apart, so AUTH= still
+      // counts the calls a runner makes for work.
+      if (_url.endsWith("/runners/me")) {
+        process.stderr.write("ME=" + options.headers.authorization + "\\n");
+        return Response.json({ error: "unauthorised" }, { status: 401 });
+      }
       process.stderr.write("AUTH=" + options.headers.authorization + "\\n");
       return Response.json({ error: "unauthorised" }, { status: 401 });
     };
@@ -111,6 +117,7 @@ for (const [argv, jobs] of [
       const result = run(t, { ATELIER_RUNNER_TOKEN: token }, argv, { API_TOKEN: "owner-secret" }, jobs);
       assert.notEqual(result.status, 0, result.stderr);
       assert.doesNotMatch(result.stderr, /owner-secret|running with the developer's credential/, result.stderr);
+      assert.doesNotMatch(result.stderr, /ME=Bearer owner-secret/, result.stderr);
       if (token) assert.equal(result.stderr.match(new RegExp(`AUTH=Bearer ${token}`, "g"))?.length, 1, result.stderr);
       else assert.doesNotMatch(result.stderr, /AUTH=/, result.stderr);
     });
