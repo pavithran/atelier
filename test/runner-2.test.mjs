@@ -114,6 +114,9 @@ test("claim child failures release possible claims and retire the task after thr
 });
 
 
+// A clock that moves an hour each time it is read, so the wait after a refused run (t191) is over by the next poll and these tests still see the immediate retry they count.
+const hourlyClock = () => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); };
+
 test("runner resets tracked edits and untracked files before every harness attempt", async (t) => {
   const { dir, workspace, git, args } = gitWorkspace(t);
   const outside = join(dir, "outside");
@@ -121,7 +124,7 @@ test("runner resets tracked edits and untracked files before every harness attem
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: () => tick(),
+    workspacePath: () => workspace, wait: () => tick(), now: hourlyClock(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [assignment];
@@ -170,7 +173,7 @@ test("the reset before a harness saves uncommitted work under refs/atelier/rescu
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: () => tick(),
+    workspacePath: () => workspace, wait: () => tick(), now: hourlyClock(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [assignment];

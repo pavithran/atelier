@@ -33,7 +33,8 @@ function setup(t) {
   const previous = Object.fromEntries(["ATELIER_CONFIG_DIR", "ATELIER_SECRET_STORE", RELOADED_FROM].map((key) => [key, process.env[key]]));
   Object.assign(process.env, { ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file" });
   const logs = [], log = console.log;
-  console.log = (text) => logs.push(String(text));
+  // Each runner line starts with an ISO UTC timestamp; the tests compare what follows it.
+  console.log = (text) => logs.push(String(text).replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, ""));
   t.after(() => {
     console.log = log;
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

@@ -1496,6 +1496,9 @@ test("a runner with projects says nothing of the waiting dispatches of another p
 });
 
 
+// A clock that moves an hour each time it is read, so the wait after a refused run (t191) is always over by the next poll and these tests still see the immediate retries they count.
+const hourlyClock = () => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); };
+
 test("runner stops retrying after two failures even when the task revision changes", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-retry-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -1507,7 +1510,7 @@ test("runner stops retrying after two failures even when the task revision chang
     let polls = 0;
     const skips = [];
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), now: hourlyClock(),
       async queue() {
         if (++polls === 4) { process.emit("SIGINT"); return []; }
         return [{ ...assignment, item: { ...assignment.item, updatedAt: String(polls) } },
@@ -1540,7 +1543,7 @@ test("a runner that gives a task up after two failed runs pushes its commit, rel
   const { io, calls, logs } = fixture({ head: "after", code: 1, marker: null });
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), now: hourlyClock(),
     async queue() {
       if (++polls === 4) { process.emit("SIGINT"); return []; }
       return [{ ...assignment, item: { ...assignment.item, updatedAt: String(polls) } }];
