@@ -409,7 +409,10 @@ export function requireNode(env, cwd = process.cwd()) {
 }
 
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
-const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
+// Every runner log line starts with an ISO UTC timestamp, so a log read
+// later says when each thing happened.
+export const logLine = (message, { print = console.log, clock = Date.now } = {}) => print(`${new Date(clock()).toISOString()} runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
+const line = (message) => logLine(message);
 
 // How much of a child's standard error execute() keeps.
 const STDERR_KEEP = 256 * 1024;
@@ -3467,6 +3470,27 @@ export function infrastructureFailureCount(count, state) {
 // fail on the runner's side does.
 export const backoffPolls = (failures) => (failures < 3 ? 0 : Math.min(2 ** (failures - 2), 60));
 export const backoffKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.job ?? null]);
+// A run the harness refused (it exited non-zero) is not claimed again at
+// once (t191): a review was taken and refused 320 times overnight, seconds
+// apart. After the nth refusal in a row the task waits 1 minute, then 2, 4
+// and on, at most an hour; a claim at exactly the interval is allowed.
+export const REFUSED_BASE_MS = 60_000, REFUSED_MAX_MS = 3_600_000;
+export const refusedWaitMs = (count) => Math.min(REFUSED_BASE_MS * 2 ** (count - 1), REFUSED_MAX_MS);
+export function refusedAfter(entry, state, nowMs) {
+  if (runOutcome(state) !== "refused") return entry && state.phase === "failed" ? entry : undefined;
+  const count = (entry?.count ?? 0) + 1;
+  return { count, until: nowMs + refusedWaitMs(count) };
+}
+
+// The text logged for a refused run: the job, the harness, the exit and the
+// last 20 lines of its stderr.
+export function refusedLog(task, state) {
+  const exit = state.harnessExit;
+  const how = exit.kind === "exited" ? `exit code ${exit.code}` : exit.kind === "signalled" ? "killed by a signal" : "timed out";
+  const tail = String(exit.stderr ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).join("\n");
+  return `${task.project}/${task.item.id} ${task.item.dispatch?.job ?? "build"} refused: harness ${task.agent}, ${how}; stderr (last 20 lines): ${tail || "(none)"}`;
+}
+
 export function backoffAfter(entry, state, poll) {
   if (state.phase !== "failed") return undefined;
   if (state.taskFailure || state.recorded || state.claimRefused || state.skipped || state.providerLimit || state.terminalState || state.notReady != null) return entry;
@@ -3528,12 +3552,14 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   const preparing = notReady.get(notReadyKey(task));
   if (preparing && (preparing.expired || nowMs - preparing.since >= NOT_READY_LIMIT_MS)) return `Skipped: ${notReadyGiveUp(task, preparing)}`;
   if (preparing && poll < preparing.due) return `Passed by: its fork is still being prepared (not_ready, ${preparing.tries} ${preparing.tries === 1 ? "try" : "tries"}); it is tried again in ${preparing.due - poll} poll${preparing.due - poll === 1 ? "" : "s"}.`;
+  const refusedRun = refusedRuns.get(failureKey(task));
+  if (refusedRun && nowMs < refusedRun.until) return `Passed by: the harness refused it ${refusedRun.count} time${refusedRun.count === 1 ? "" : "s"} in a row; it is claimed again in ${Math.ceil((refusedRun.until - nowMs) / 1000)} seconds.`;
   const waiting = backoff.get(backoffKey(task));
   if (waiting && poll < waiting.due) return `Passed by: it failed on this runner ${waiting.count} time${waiting.count === 1 ? "" : "s"} in a row; it is tried again in ${waiting.due - poll} poll${waiting.due - poll === 1 ? "" : "s"}.`;
   // A post-merge review whose merge commit no source held (t591) waits for
@@ -3820,7 +3846,7 @@ export function reloadSmokeCheck(env, { argv = process.argv, execArgv = process.
 // restarts it. A failed smoke check throws before anything is replaced.
 export async function reexecSelf(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, execve = process.execve } = {}) {
   if (runnerSupervised(env)) {
-    console.log(`runner: supervisor restart: was ${short(env[RELOADED_FROM])}, target ${short(env[RELOAD_TARGET])}`);
+    logLine(`supervisor restart: was ${short(env[RELOADED_FROM])}, target ${short(env[RELOAD_TARGET])}`);
     process.exit(0);
   }
   reloadSmokeCheck(env, { argv, execArgv, execPath });
@@ -3926,7 +3952,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4398,7 +4424,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4442,6 +4468,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
             continue;
           }
           const outcome = runOutcome(state);
+          if (outcome === "refused") io.log(refusedLog(task, state));
+          const refusedRun = refusedAfter(refusedRuns.get(failureKey(task)), state, now());
+          if (refusedRun) refusedRuns.set(failureKey(task), refusedRun); else refusedRuns.delete(failureKey(task));
           if (outcome && reportRun) {
             try {
               // The report names the job that ran: a plan, a review (a

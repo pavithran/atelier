@@ -27,7 +27,7 @@ export const MAX_HARNESS_RERUNS = 3;
 // How a harness run ended, as a structured fact set where the run ends: the
 // outcome reported to the server reads this, never the human-readable reason.
 export const harnessExitOf = (result) =>
-  result.timedOut ? { kind: "timed-out" } : result.code == null ? { kind: "signalled" } : { kind: "exited", code: result.code };
+  result.timedOut ? { kind: "timed-out" } : result.code == null ? { kind: "signalled" } : { kind: "exited", code: result.code, ...(result.stderr ? { stderr: String(result.stderr).split("\n").slice(-20).join("\n").slice(-8192) } : {}) };
 
 // The structured exit of a run that failed, or null for one that passed or
 // never ran: the one place every harness site (build, fast build, resolver,
