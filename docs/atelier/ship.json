@@ -2,14 +2,23 @@
   "schema_version": 1,
   "kind": "atelier.ship",
   "class": "web",
-  "description": "Atelier's own delivery: deploy the captured source commit, verify its live binding, then push main to the github remote.",
+  "description": "Atelier's own delivery: type-check; deploy the captured source commit when Worker code changed since the live one, then verify its live binding; scan for private data; push main to the github remote; update the baseline; fast-forward the Studio checkout.",
+  "typecheck": {
+    "run": ["npm", "run", "typecheck"],
+    "timeout_seconds": 600
+  },
   "deploy": {
     "run": [
       "node",
       "scripts/ship-worker.mjs",
       "deploy"
     ],
-    "timeout_seconds": 1200
+    "timeout_seconds": 1200,
+    "retries": 1,
+    "if_changed": {
+      "paths": ["src/**", "wrangler.jsonc", "package.json", "package-lock.json", "worker-configuration.d.ts", "tsconfig.json"],
+      "since": "https://atelier.zone/api/version"
+    }
   },
   "verify-deploy": {
     "run": [
@@ -19,8 +28,20 @@
     ],
     "timeout_seconds": 45
   },
+  "scan": {
+    "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"],
+    "timeout_seconds": 300
+  },
   "push": {
     "remote": "github",
     "branch": "main"
+  },
+  "baseline": {
+    "run": ["node", "cli/atelier.mjs", "sync", "--project", "atelier"],
+    "timeout_seconds": 300
+  },
+  "studio": {
+    "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main"],
+    "timeout_seconds": 120
   }
 }

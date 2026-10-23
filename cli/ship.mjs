@@ -14,6 +14,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
+import { matchesAny } from "../src/rules.ts";
 import { runGroup } from "./group.mjs";
 import { pushCheckoutRemote } from "./checkout-push.mjs";
 
@@ -26,7 +27,13 @@ export const ORDERS = {
   hybrid: ["install", "verify-delivery", "commit", "deploy", "verify-delivery", "wrap", "push"],
   other: ["commit", "wrap", "push"],
 };
-const STEPS = new Set(["install", "deploy", "verify-delivery", "commit", "wrap", "push"]);
+// Steps the ship file adds by naming their field: typecheck before the first
+// delivery step, scan just before the push, baseline and studio after it. The
+// scan and what follows the push are the push's own, so they run only with --push.
+const STEPS = new Set(["install", "deploy", "verify-delivery", "commit", "wrap", "push", "typecheck", "scan", "baseline", "studio"]);
+const ADDED = ["typecheck", "scan", "baseline", "studio"];
+const WITH_PUSH = new Set(["scan", "push", "baseline", "studio"]);
+const MAX_RETRIES = 3;
 const RUN_SECONDS = 20 * 60, REQUEST_SECONDS = 30, TAIL = 3500, KEEP = 1024 * 1024;
 
 const isObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
@@ -79,14 +86,18 @@ function buildSteps(order, runsFor, hint, push, problems) {
       steps.push({ step, verifies: delivered, runs });
     } else if (step === "push") {
       if (push) steps.push({ step, runs: [], push });
+    } else if (ADDED.includes(step)) {
+      const runs = runsFor(step).map((r) => ({ ...r, kind: r.kind ?? null }));
+      if (!runs.length) problems.push(`the ship order has ${step} and nothing to run for it: ${hint[step]}`);
+      steps.push({ step, runs });
     } else steps.push({ step, runs: [] });
   }
   return { steps };
 }
 
 // Atelier's own ship file. Its schema is in docs/ship.md.
-const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "install", "verify-install", "deploy", "verify-deploy", "push"]);
-const RUN_KEYS = new Set(["run", "request", "status", "timeout_seconds", "approval", "description"]);
+const SHIP_KEYS = new Set(["schema_version", "kind", "class", "description", "install", "verify-install", "deploy", "verify-deploy", "push", ...ADDED]);
+const RUN_KEYS = new Set(["run", "request", "status", "timeout_seconds", "approval", "description", "if_changed", "retries"]);
 const DELIVERY_FIELDS = { install: ["installable", "hybrid"], "verify-install": ["installable", "hybrid"], deploy: ["web", "hybrid"], "verify-deploy": ["web", "hybrid"] };
 
 function atelierShip(doc, problems, notes) {
@@ -106,8 +117,33 @@ function atelierShip(doc, problems, notes) {
     if (isObject(doc.push) && named(doc.push.remote) && named(doc.push.branch) && Object.keys(doc.push).every((k) => k === "remote" || k === "branch")) push = { remote: doc.push.remote, branch: doc.push.branch };
     else { problems.push(`${SHIP_FILE} "push" must be {"remote": NAME, "branch": NAME}, or left out to push to the branch's tracked upstream`); push = null; }
   }
-  const hint = Object.fromEntries(["install", "deploy", "verify-install", "verify-deploy"].map((f) => [f, `give "${f}" in ${SHIP_FILE}`]));
-  return { source: SHIP_FILE, class: doc.class, ...buildSteps(order ?? [], (field) => parseRuns(doc[field], field, problems), hint, push, problems), problems, notes };
+  const hint = Object.fromEntries(["install", "deploy", "verify-install", "verify-deploy", ...ADDED].map((f) => [f, `give "${f}" in ${SHIP_FILE}`]));
+  return { source: SHIP_FILE, class: doc.class, ...buildSteps(withAdded(order ?? [], doc), (field) => parseRuns(doc[field], field, problems), hint, push, problems), problems, notes };
+}
+
+// The class's order with the added steps the file names: typecheck before the
+// first delivery step (or before wrap when there is none), scan before the
+// push, baseline and studio after it.
+function withAdded(order, doc) {
+  const out = [...order];
+  const has = (step) => doc[step] !== undefined;
+  const put = (step, index) => out.splice(index < 0 ? out.length : index, 0, step);
+  if (has("typecheck")) put("typecheck", out.findIndex((s) => s === "install" || s === "deploy" || s === "wrap"));
+  if (has("scan")) put("scan", out.indexOf("push"));
+  const after = out.indexOf("push") + 1;
+  if (after > 0) for (const [i, step] of ["baseline", "studio"].filter(has).entries()) out.splice(after + i, 0, step);
+  return out;
+}
+
+// "if_changed": {"paths": [GLOB…], "since": URL}: the run happens only when a
+// path matching a glob changed between the commit the URL's JSON names in its
+// "commit" field (what is live) and the revision being shipped.
+function parseIfChanged(v, where, problems) {
+  const ok = isObject(v) && Object.keys(v).every((k) => k === "paths" || k === "since") && Array.isArray(v.paths) && v.paths.length && v.paths.every((g) => typeof g === "string" && g);
+  let url;
+  try { url = new URL(v?.since); } catch { /* refused below */ }
+  if (!ok || !url || !["https:", "http:"].includes(url.protocol)) { problems.push(`${where} "if_changed" must be {"paths": [GLOB, …], "since": URL}, the URL answering JSON with the "commit" last delivered`); return false; }
+  return { paths: [...v.paths], since: v.since };
 }
 
 // One run, or a list of them: {"run": [argv...]} or {"request": URL, "status": 200},
@@ -120,9 +156,19 @@ function parseRuns(value, field, problems) {
     for (const key of Object.keys(r)) if (!RUN_KEYS.has(key)) { problems.push(`${where} has a field atelier ship does not read: ${key}`); return null; }
     if (r.approval !== undefined && (typeof r.approval !== "string" || !KIND.test(r.approval))) { problems.push(`${where} "approval" must be a kind such as deploy or photos-writeback`); return null; }
     const kind = r.approval ?? null;
+    let extra = {};
+    if (r.retries !== undefined) {
+      if (!Number.isInteger(r.retries) || r.retries < 0 || r.retries > MAX_RETRIES) { problems.push(`${where} "retries" must be a whole number from 0 to ${MAX_RETRIES}`); return null; }
+      extra.retries = r.retries;
+    }
+    if (r.if_changed !== undefined) {
+      const ifChanged = parseIfChanged(r.if_changed, where, problems);
+      if (!ifChanged) return null;
+      extra.ifChanged = ifChanged;
+    }
     if (r.run !== undefined && r.request === undefined) {
       if (!Array.isArray(r.run) || !r.run.length || r.run.some((w) => typeof w !== "string" || !w)) { problems.push(`${where} "run" must be the command and its arguments, as a list of strings`); return null; }
-      return { label: r.run.map(quote).join(" "), argv: [...r.run], timeoutMs: seconds(r.timeout_seconds, RUN_SECONDS) * 1000, kind };
+      return { label: r.run.map(quote).join(" "), argv: [...r.run], timeoutMs: seconds(r.timeout_seconds, RUN_SECONDS) * 1000, kind, ...extra };
     }
     if (r.request !== undefined && r.run === undefined) {
       let url;
@@ -130,7 +176,7 @@ function parseRuns(value, field, problems) {
       if (!url || !["https:", "http:"].includes(url.protocol)) { problems.push(`${where} "request" must be an http or https URL`); return null; }
       const status = r.status ?? 200;
       if (!Number.isInteger(status) || status < 100 || status > 599) { problems.push(`${where} "status" must be an HTTP status, such as 200`); return null; }
-      return { label: `GET ${r.request}, expecting ${status}`, request: r.request, status, timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind };
+      return { label: `GET ${r.request}, expecting ${status}`, request: r.request, status, timeoutMs: seconds(r.timeout_seconds, REQUEST_SECONDS) * 1000, kind, ...extra };
     }
     problems.push(`${where} needs "run" or "request", not both`);
     return null;
@@ -173,7 +219,7 @@ export function neededKinds(steps) {
   const kinds = [];
   for (const s of steps) {
     if (s.step === "push") continue;
-    for (const k of s.runs.map((r) => r.kind).filter(Boolean)) if (!kinds.includes(k)) kinds.push(k);
+    for (const k of s.runs.filter((r) => !r.skip).map((r) => r.kind).filter(Boolean)) if (!kinds.includes(k)) kinds.push(k);
   }
   return kinds;
 }
@@ -212,13 +258,27 @@ export function formatPlan({ name, plan, branch, head, commit, approvals, push, 
       const what = target ? pushLabel(target, branch) : "git push to the branch's tracked upstream";
       lines.push(push ? `${n}${what}  (no approval: the developer's own act at this revision)` : `${n}not run without --push (${what})`);
     } else {
-      s.runs.forEach((r, j) => lines.push(`${j ? " ".repeat(n.length) : n}${r.argv ? r.argv.map(quote).join(" ") : r.label}${r.kind ? `  ${approvalText(approvals, r.kind, commit)}` : ""}`));
+      const held = WITH_PUSH.has(s.step) && !push ? "not run without --push: " : "";
+      s.runs.forEach((r, j) => lines.push(`${j ? " ".repeat(n.length) : n}${j ? "" : held}${r.argv ? r.argv.map(quote).join(" ") : r.label}${runNotes(r, approvals, commit)}`));
       if (!s.runs.length) lines.push(`${n}nothing to run`);
     }
   });
   for (const note of plan.notes) lines.push(`Note: ${note}`);
   for (const problem of [...plan.problems, ...refusals]) lines.push(`Refused: ${problem}`);
   return lines.join("\n");
+}
+
+// What a plan line says of a run beyond its command: why it is skipped or
+// when it runs, its retries, and the approval it needs.
+function runNotes(r, approvals, commit) {
+  const parts = [];
+  if (r.skip) parts.push(`[skipped: ${r.skip}]`);
+  else {
+    if (r.ifChanged) parts.push(`[${r.why ?? `runs only when ${r.ifChanged.paths.join(", ")} changed since the commit at ${r.ifChanged.since}`}]`);
+    if (r.kind) parts.push(approvalText(approvals, r.kind, commit));
+  }
+  if (r.retries) parts.push(`[retried up to ${r.retries} ${r.retries === 1 ? "time" : "times"} if it fails]`);
+  return parts.length ? `  ${parts.join(" ")}` : "";
 }
 
 function approvalText(approvals, kind, commit) {
@@ -283,6 +343,36 @@ export async function runRequest(run) {
   }
 }
 
+// Marks the runs that need not happen at this revision. A run with
+// "if_changed" is skipped when nothing under its paths changed between the
+// commit its URL reports as delivered and `head`; when that commit cannot be
+// read or is not in the checkout, the run happens, and says why. A verify
+// step whose delivery step was skipped throughout has nothing new to verify.
+export async function resolveSkips(plan, { git, cwd, head, fetchImpl = fetch }) {
+  for (const s of plan.steps) {
+    for (const run of s.runs) {
+      if (!run.ifChanged) continue;
+      const { paths, since } = run.ifChanged;
+      let live;
+      try {
+        const res = await fetchImpl(since, { redirect: "follow", cache: "no-store", signal: AbortSignal.timeout(REQUEST_SECONDS * 1000) });
+        if (res.status !== 200) throw new Error(`answered ${res.status}`);
+        live = (await res.json())?.commit;
+      } catch (error) { run.why = `runs: ${since} could not be read (${error.message})`; continue; }
+      if (typeof live !== "string" || !/^[a-f0-9]{40,64}$/.test(live) || git(["cat-file", "-e", `${live}^{commit}`], { cwd, allowFail: true }).status !== 0) { run.why = `runs: the commit ${since} reports is not one this checkout holds`; continue; }
+      const diff = git(["diff", "--name-only", "--no-renames", "-z", live, head], { cwd, allowFail: true });
+      if (diff.status !== 0) { run.why = "runs: the changes since the live commit could not be read"; continue; }
+      const changed = diff.stdout.split("\0").filter((p) => p && matchesAny(p, paths));
+      if (changed.length) run.why = `runs: ${changed.length} ${changed.length === 1 ? "file" : "files"} under ${paths.join(", ")} changed since ${short(live)}, the commit live`;
+      else run.skip = `nothing under ${paths.join(", ")} changed since ${short(live)}, the commit live`;
+    }
+  }
+  for (const s of plan.steps) {
+    const delivery = s.verifies && plan.steps.find((x) => x.step === s.verifies);
+    if (delivery?.runs.length && delivery.runs.every((r) => r.skip)) for (const r of s.runs) r.skip = `the ${s.verifies} was skipped, so nothing new is live to verify`;
+  }
+}
+
 // Ship itself. `ctx` holds what cli/atelier.mjs owns:
 //   name, cwd, branch          the project and its registered checkout and branch
 //   baselineHead               the baseline's head, read from the server
@@ -311,6 +401,7 @@ export async function ship(ctx) {
   if (!commit) refusals.push("the baseline has no commits yet; run atelier init in the checkout first");
   else if (ctx.paired(commit) !== head) refusals.push(`HEAD ${short(head)} is not the baseline's head ${short(commit)}; ship runs only the revision Atelier holds. Merge with atelier merge, publish with atelier wrap, or check out the baseline's head, then ship again`);
   const plan = composeShip(cwd);
+  if (!plan.problems.length) await resolveSkips(plan, { git, cwd, head, fetchImpl: ctx.fetch });
   let target = null;
   const pushStep = plan.steps.find((s) => s.step === "push");
   if (pushStep) {
@@ -337,15 +428,15 @@ export async function ship(ctx) {
     exitStatus: r.status ?? null, signal: r.signal ?? null, durationMs: r.durationMs ?? 0, passed: r.passed,
     outputTail: ctx.redact(r.output ?? "", ctx.secrets).slice(-TAIL), ship: id, note: extra ?? "",
   });
-  const rest = (from) => plan.steps.slice(from).map((s) => s.step).filter((s) => s !== "push" || ctx.push);
+  const rest = (from) => plan.steps.slice(from).map((s) => s.step).filter((s) => !WITH_PUSH.has(s) || ctx.push);
   for (const [i, s] of plan.steps.entries()) {
-    if (s.step === "push" && !ctx.push) continue;
+    if (WITH_PUSH.has(s.step) && !ctx.push) continue;
     ctx.stage(`ship at ${s.step}`);
     // Each kind this step needs takes its approval now, before anything of
     // the step runs: one approval, one run. The push needs none: it is the
     // owner's own act at the exact revision being shipped.
     const used = {};
-    for (const kind of [...new Set(s.runs.map((r) => r.kind).filter(Boolean))]) {
+    for (const kind of [...new Set(s.runs.filter((r) => !r.skip).map((r) => r.kind).filter(Boolean))]) {
       used[kind] = (await request("POST", `${P}/actions/consume`, { kind, commit })).id;
       print(`${s.step}: using approval ${used[kind]} for ${kind} at ${short(commit)}.`);
     }
@@ -371,12 +462,22 @@ export async function ship(ctx) {
       results.push({ command: label, status: r.status, signal: r.signal ?? null, durationMs: Date.now() - started, passed: r.status === 0 && holds, output, kind: null, approval: null, note: `pushed ${short(now)}` });
     } else {
       for (const run of s.runs) {
-        print(`${s.step}: ${run.argv ? `running ${run.argv.map(quote).join(" ")}` : run.label}`);
-        const r = run.argv ? await runCommand(run.argv, { cwd, env: stepEnv(ctx.env, head), timeoutMs: run.timeoutMs }) : await runRequest(run);
-        const result = { ...r, command: run.argv ? run.argv.map(quote).join(" ") : run.label, kind: run.kind, approval: run.kind ? used[run.kind] : null, note: s.verifies ? `verifies the ${s.verifies}` : "" };
-        results.push(result);
-        if (!run.argv) print(`${s.step}: ${r.output}`);
-        if (!r.passed) break;
+        const command = run.argv ? run.argv.map(quote).join(" ") : run.label;
+        if (run.skip) {
+          print(`${s.step}: skipping ${command}: ${run.skip}`);
+          results.push({ passed: true, durationMs: 0, command, kind: null, approval: null, output: run.skip, note: `skipped: ${run.skip}` });
+          continue;
+        }
+        // A retry is the same run: it uses the approval already taken.
+        for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
+          print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
+          const r = run.argv ? await runCommand(run.argv, { cwd, env: stepEnv(ctx.env, head), timeoutMs: run.timeoutMs }) : await runRequest(run);
+          const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
+          results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });
+          if (!run.argv) print(`${s.step}: ${r.output}`);
+          if (r.passed) break;
+        }
+        if (!results.at(-1).passed) break;
       }
     }
     for (const r of results) {
@@ -384,7 +485,8 @@ export async function ship(ctx) {
       print(`${s.step}: ${r.passed ? "passed" : "FAILED"}${r.command ? `: ${r.command}` : ""}${r.status !== null && r.status !== undefined ? `, exit ${r.status}` : ""}${r.durationMs ? ` in ${(r.durationMs / 1000).toFixed(1)}s` : ""}${r.note ? ` (${r.note})` : ""}. Recorded.`);
     }
     ctx.stage(null);
-    const failed = results.find((r) => !r.passed);
+    // A run that failed and then passed on a retry does not stop the ship.
+    const failed = results.at(-1)?.passed === false ? results.at(-1) : null;
     if (failed) {
       const usedText = Object.entries(used).map(([k, a]) => `${a} for ${k}`).join(", ");
       fail([
@@ -393,7 +495,7 @@ export async function ship(ctx) {
         usedText ? `The approval used here (${usedText}) is spent; after fixing the cause, the developer approves again: ${Object.keys(used).map((k) => `atelier approve ${k} --head ${commit} --project ${quote(name)}`).join(" and ")}` : "",
       ].filter(Boolean).join("\n"));
     }
-    ran.push(s.step);
+    ran.push(s.runs.length && s.runs.every((r) => r.skip) ? `${s.step} (skipped)` : s.step);
   }
   print(`Shipped ${name} at ${short(commit)}: ${ran.join(", ")} ran, each recorded on the ledger.`);
   if (pushStep && !ctx.push) {
