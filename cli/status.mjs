@@ -328,9 +328,6 @@ export async function readStuck(get, base, name, items) {
   const [report, transitions] = await Promise.all([get(`${base}/stuck`), get(`${base}/stuck/episodes`)]);
   return openStuck(name, report && Array.isArray(report.entries) ? report : null, Array.isArray(transitions) ? transitions : null, items);
 }
-// Open stuck episodes, listed before any ordinary item (t198). `stuck` is
-// openStuck's view (src/stuck/view.ts), or absent when it was not asked for.
-// Anything unread is said, never shown as nothing stuck.
 const stuckTime = (t) => (t === "unknown" ? "unknown" : branchTime(t));
 // Open stuck episodes, listed before any ordinary item. `stuck` is openStuck's
 // view (src/stuck/view.ts), or absent when it was not asked for. Anything
