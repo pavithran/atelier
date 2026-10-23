@@ -60,14 +60,17 @@ export default async function statusCommand() {
     const branches = mine ? await developerBranches(name, as) : null;
     // Open stuck episodes come first (t198); needs the tasks, so they are read here.
     record ??= await request("GET", P(name), undefined, as).catch(() => null);
-    const stuck = await readStuck((path) => request("GET", path, undefined, as).catch(() => null), P(name), name, Array.isArray(record?.items) ? record.items : null);
+    // The stuck routes are the developer's alone, like the branches: an agent is not shown them and the server is not asked.
+    const stuck = mine ? await readStuck((path) => request("GET", path, undefined, as).catch(() => null), P(name), name, Array.isArray(record?.items) ? record.items : null) : null;
     if (args.json) return console.log(JSON.stringify({ project: standing, stuck, checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
     // The project's tasks, for expired blocks and the clean-up count: the read above when it was made, else one now.
     const items = record?.items;
     const stages = stageEntries(items, readyOf(await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null)));
     const expired = Array.isArray(items) ? expiredBlocks(items, new Date()) : [];
+    // The standing's first line names the project; the stuck section follows it, before any ordinary item.
+    const withStuck = (text, section) => { if (!section) return text; const i = text.indexOf("\n"); return i < 0 ? text + "\n\n" + section : text.slice(0, i) + "\n\n" + section + text.slice(i); };
     const stuckText = stuckLines(stuck, "").join("\n");
-    console.log(withUsage(tokenExpiryWarningsText((stuckText ? stuckText + "\n\n" : "") + formatStanding(standing, OWNER_NAME, server(), expired) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
+    console.log(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
