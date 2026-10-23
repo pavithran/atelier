@@ -4485,10 +4485,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
             notReady.set(notReadyKey(task), waitingFork);
             if (waitingFork.expired) io.log(notReadyGiveUp(task, waitingFork));
           } else notReady.delete(notReadyKey(task));
-          // A refused review is retried on the backoff (refusedAfter), not
-          // dropped by the two-failure cap, so it does not count toward it.
-          const refusedReview = runOutcome(state) === "refused" && task.item.dispatch?.job === "review";
-          const key = failureKey(task), count = refusedReview ? (failures.get(key) ?? 0) : failureCount(failures.get(key) ?? 0, state);
+          const key = failureKey(task), count = failureCount(failures.get(key) ?? 0, state);
           failures.set(key, count);
           if (count === 2) io.log(`${task.project}/${task.item.id} needs the developer's attention after 2 failures; skipped for this process`);
           const waiting = backoffAfter(backoff.get(backoffKey(task)), state, polls);
