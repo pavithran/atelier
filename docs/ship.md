@@ -231,6 +231,9 @@ It then prints the steps and runs them:
   config, `package.json` and the lock file, the generated types and
   `tsconfig.json`), and is tried once more if it fails. This replaces the old
   `last-deployed` marker file: the live site says what was last deployed.
+  The skill's `postmerge.sh` and `last-deployed` live outside this repository;
+  the developer moves them aside (not deletes them), since every step they ran
+  is now a step of this file, and `atelier ship --dry-run` lists them all.
 - **scan** (`scripts/privacy-scan.mjs`), with `--push`, reads the commits the
   GitHub remote lacks and refuses on a hit: an author or committer that is
   not a GitHub no-reply address, an added line that looks like a key
