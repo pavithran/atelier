@@ -4471,7 +4471,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // (docs/orchestrator.md, sections 2, 4 and 5); anything else is building.
           // Polls stop while the job runs, so a heartbeat renews this
           // runner's last poll meanwhile (t537): without it a build longer
-          // than RUNNER_GONE_MS would orphan its own claim.
+          // than RUNNER_GONE_MS would orphan its own claim. The same tick
+          // runs the readiness check, which does its probes once per
+          // READY_RECHECK_MS, so a long job does not delay it (t195).
           state = await withHeartbeat(() => task.item.dispatch?.job === "plan"
             ? runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
@@ -4486,7 +4488,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), heartbeat && (() => heartbeat(offer, controller.signal)), { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat(offer, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
           if (state.providerLimit) {
             pauseHarness(task, state);

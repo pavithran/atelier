@@ -364,9 +364,9 @@ export async function harnessReady(harness, { env = process.env, command, home =
     try {
       const result = await run(executableFor(harness, process.env), ["models"], { env: { ...env }, timeout: timeoutMs });
       const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-      if (result.code === 0 && /\S/.test(result.stdout ?? "")) return { ready: true, state: "signed-in" };
+      if (result.code === 0 && !NETWORK_ERROR.test(text) && hasModelList(result.stdout ?? "")) return { ready: true, state: "signed-in" };
       if (result.code !== 0 && /sign(ed)?[ -]?in|log(ged)?[ -]?in|unauthenticated|unauthori[sz]ed|credential|authenticat/i.test(text) && !NETWORK_ERROR.test(text)) return { ready: false, state: "signed-out", why: `Antigravity is signed out; ${fixed}` };
-      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (agy models ${result.code === 0 ? "printed nothing" : `exited ${result.code}`}); ${fixed}` };
+      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (agy models ${result.code === 0 ? "printed no model list" : `exited ${result.code}`}); ${fixed}` };
     } catch (error) {
       return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fixed}` };
     }
@@ -382,6 +382,14 @@ export async function harnessReady(harness, { env = process.env, command, home =
   }
 }
 
+// Whether `agy models` output is a model list: no line is usage or an error
+// message, and at least one line starts with a model id (as "gemini-3.1-pro"
+// or "- claude-opus-5-5  Claude Opus"). Help text and other output are not.
+function hasModelList(stdout) {
+  const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.some((l) => /^(usage|error|warning|fatal)\b/i.test(l))) return false;
+  return lines.some((l) => /^(?:[-*]\s+)?[a-z][a-z0-9]*(?:[-.][a-z0-9]+)+(?:\s|$)/i.test(l));
+}
 const NETWORK_ERROR = /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network|offline|dial tcp|no such host|timed? ?out|unreachable/i;
 
 function runProbe(exe, args, { env, timeout }) {
