@@ -19,6 +19,12 @@ export function taskPage(d: Detail) {
   const unknowns: string[] = [];
   if (!events.some(e => e.kind === "item.created")) unknowns.push("Earlier task history is unavailable.");
   if (d.item.head && !submissions.length) unknowns.push("Submission history is unavailable.");
+  // Under fast mode the criteria review is skipped, and a deadlock holds a
+  // build for good (t179); the page says either beside what else it cannot
+  // show. Both come from the server's view, so an older server says nothing.
+  const review = d.criteriaReview;
+  if (review?.skipped) unknowns.push(`Criteria review skipped: ${review.skippedReason ?? "the project is in fast mode"}.`);
+  if (review?.deadlock) unknowns.push(review.deadlock);
   const decision = decisionFor(d.item, d.policy, d.evidence, d.reviews, d.ownerActor);
   const stage = taskStage(d.item, { ready: d.gate.ready });
   let title = decision.title, detail = decision.detail;

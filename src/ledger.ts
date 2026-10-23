@@ -82,7 +82,7 @@ import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import {
-  attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, lapsedClaim,
+  attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, CRITERIA_SKIPPED_FAST, familyDeadlock, lapsedClaim,
   pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
 import { gateServesTier, reviewTarget, tierEligible, tierIds, tierReviewerPick } from "./review/tier.ts";
@@ -220,6 +220,13 @@ export interface CriteriaReviewClaim {
 // resolution, and whether the project requires the approval before a build.
 export interface CriteriaReviewView {
   required: boolean;
+  // Set, with the reason, while fast mode skips the hold (t179); the
+  // `required` setting itself is unchanged.
+  skipped?: boolean;
+  skippedReason?: string;
+  // Set when the review is wanted and no model is allowed to give it: the
+  // deadlock and the one decision that clears it (familyDeadlock).
+  deadlock?: string;
   status: CriteriaStatus;
   authors: string[];
   revisions: CriteriaRevision[];
@@ -2335,7 +2342,7 @@ export class Ledger extends DurableObject<Env> {
     // as the tick withdraws a queued part's, so the queue offers no build the
     // claim would refuse. The owner dispatches it again once approved.
     const queued = this.item(id);
-    if (queued.kind !== "part" && queued.state === "open" && !queued.owner && queued.dispatch && buildJob(queued.dispatch) && this.project().policy.requireCriteriaReview) {
+    if (queued.kind !== "part" && queued.state === "open" && !queued.owner && queued.dispatch && buildJob(queued.dispatch) && this.criteriaGate()) {
       this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
       this.log(id, ORCHESTRATOR, "item.undispatched", { reason: "the acceptance criteria wait for their review" }, at);
     }
@@ -2831,8 +2838,16 @@ export class Ledger extends DurableObject<Env> {
   // finding of that revision settled. The planner's, the reviews', the
   // integrator's and the merge jobs are not builds here (buildJob). The
   // refusal says where the review stands and what asks for one.
+  // Whether the criteria review holds a build now (t179): the project
+  // requires it and is not in fast mode. Fast mode skips the hold without
+  // touching the setting, so leaving it restores the hold for every task not
+  // yet claimed.
+  private criteriaGate(): boolean {
+    return !!this.project().policy.requireCriteriaReview && this.mode().mode !== "fast";
+  }
+
   private assertCriteriaReviewed(item: Item, dispatch: Dispatch | null, what: "dispatched" | "claimed"): void {
-    if (!this.project().policy.requireCriteriaReview) return;
+    if (!this.criteriaGate()) return;
     if (!buildJob(dispatch)) return;
     const status = this.criteriaReviewStatus(item.id, new Date());
     if (status.approved) return;
@@ -6079,7 +6094,7 @@ export class Ledger extends DurableObject<Env> {
       const sections = [this.prereviewFindings(id, item.head), rejection ? reviewFindings(rejection) : null].filter((f): f is ReviewFindings => f !== null);
       // What the criteria reviewers found and how the owner answered (t438),
       // so the builder reads the criteria as they were questioned.
-      const criteria = criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id));
+      const criteria = this.criteriaBriefSection(id);
       // The project's prose standard (t675), which the runner's own brief
       // cannot know: the server holds the policy.
       const prose = proseStandardLine(this.project().policy.proseStandard);
@@ -6143,7 +6158,7 @@ export class Ledger extends DurableObject<Env> {
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "", log: failed.log ?? null } : null,
         mergeMain: added ? { head: added.mainHead } : null,
         mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
-        criteriaReview: criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id)) || null,
+        criteriaReview: this.criteriaBriefSection(id) || null,
         proseStandard: project.policy.proseStandard ?? null,
       }),
       proseStandard: project.policy.proseStandard ?? null,
@@ -7916,7 +7931,40 @@ export class Ledger extends DurableObject<Env> {
     const status = this.criteriaReviewStatus(id);
     const revisions = this.criteriaRevisions(id);
     const reviews = this.criteriaReviewsFor(id);
-    return { required: !!this.project().policy.requireCriteriaReview, status, authors: authorsOf(revisions), revisions, reviews, resolutions: this.criteriaResolutionsFor(id), checks: postDeployChecks(reviews, status.rev) };
+    const required = !!this.project().policy.requireCriteriaReview;
+    const skipped = required && this.mode().mode === "fast";
+    const deadlock = required && !skipped ? this.criteriaDeadlock(id, status) : null;
+    return { required, ...(skipped ? { skipped: true, skippedReason: CRITERIA_SKIPPED_FAST } : {}), ...(deadlock ? { deadlock } : {}), status, authors: authorsOf(revisions), revisions, reviews, resolutions: this.criteriaResolutionsFor(id), checks: postDeployChecks(reviews, status.rev) };
+  }
+
+  // The deadlock that holds a build for good (t179): a review is wanted and
+  // no model in the pool is allowed to give it by the family rules, the
+  // project's single-family mode or the authors' own families. Null when the
+  // review is not wanted, or some model could give it.
+  criteriaDeadlock(id: string, status: CriteriaStatus = this.criteriaReviewStatus(id)): string | null {
+    if (!this.criteriaGate() || status.approved || status.need !== "review") return null;
+    return familyDeadlock(authorsOf(this.criteriaRevisions(id)), this.poolStanding(), this.project().policy, this.owner, id);
+  }
+
+  // Each open task a deadlock holds, for atelier status: the task and the
+  // sentence that names the deadlock and the decision that clears it.
+  criteriaDeadlocks(): { id: string; deadlock: string }[] {
+    if (!this.criteriaGate()) return [];
+    const out: { id: string; deadlock: string }[] = [];
+    for (const i of this.items()) {
+      if (i.kind === "plan" || i.state !== "open" || i.owner) continue;
+      const deadlock = this.criteriaDeadlock(i.id);
+      if (deadlock) out.push({ id: i.id, deadlock });
+    }
+    return out;
+  }
+
+  // The criteria section of a build brief: the reviews' findings, and while
+  // fast mode skips the hold, the line saying so (t179).
+  private criteriaBriefSection(id: string): string {
+    const found = criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id));
+    const skipped = this.project().policy.requireCriteriaReview && this.mode().mode === "fast" ? `## Review of the acceptance criteria\n\nThe project requires a criteria review, but ${CRITERIA_SKIPPED_FAST}.` : "";
+    return [skipped, skipped ? found.replace(/^## Review of the acceptance criteria\n\n/, "") : found].filter(Boolean).join("\n\n");
   }
 
   private lapseCriteriaReviews(id: string, now: Date): void {
@@ -8270,7 +8318,7 @@ export class Ledger extends DurableObject<Env> {
   // runner's merge-plan job), merges and keeps the gates it had: its
   // criteria were judged when it was first dispatched (buildJob).
   private criteriaReviewHolds(p: Item, planId: string, approval: PlanApproval, at: string, merges: boolean): boolean {
-    if (!this.project().policy.requireCriteriaReview || merges) return false;
+    if (!this.criteriaGate() || merges) return false;
     const status = this.criteriaReviewStatus(p.id, new Date(at));
     if (status.approved) return false;
     if (status.need === "review") {

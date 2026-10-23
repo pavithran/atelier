@@ -104,7 +104,7 @@ export default async function statusCommand() {
     // single-family mode (formatStatus).
     const items = Array.isArray(read?.items) ? read.items : null;
     const stuck = await readStuck((path) => request("GET", path, undefined, OWNER).catch(() => null), P(p.name), p.name, items);
-    return { stuck, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), branches };
+    return { stuck, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());

@@ -54,6 +54,25 @@ export function formatPolicyDisagreements(mismatches = []) {
     "    Settle which is right; agents are held to the recorded policy."].join("\n");
 }
 
+// The criteria review's state in a listing (t179): skipped while fast mode
+// stands over a project that requires it, and each task a deadlock holds,
+// with the one decision that clears it. A server that sends neither says
+// nothing.
+const CRITERIA_SKIPPED = "Criteria review skipped because of fast mode: builds go ahead with the criteria as written.";
+export function criteriaJson(v) {
+  const skipped = !!v.mode && v.policy?.requireCriteriaReview === true;
+  const deadlocks = Array.isArray(v.criteriaDeadlocks) ? v.criteriaDeadlocks : [];
+  return skipped || deadlocks.length ? { ...(skipped ? { skipped: true } : {}), ...(deadlocks.length ? { deadlocks } : {}) } : null;
+}
+export function criteriaLines(v) {
+  const j = criteriaJson(v);
+  if (!j) return [];
+  return [
+    ...(j.skipped ? [`  ${CRITERIA_SKIPPED}`] : []),
+    ...(j.deadlocks ?? []).map((d) => `  ${flatText(d.deadlock)}`),
+  ];
+}
+
 // A project's model policy in words (ProjectPolicy.familyMode, t394): the
 // default, cross-family review, or single-family mode naming the company,
 // with who switched and when where a switch is recorded. `atelier init`
@@ -107,6 +126,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
       // Fast mode's line while it stands (t629: with the developer's words and the acting model).
       ...(v.mode ? { mode: v.mode } : {}),
+      ...(criteriaJson(v) ? { criteriaReview: criteriaJson(v) } : {}),
       // Each null when not read, which attention.unknown words; never an
       // empty list standing for nothing.
       inbox: v.inbox ? mine : null,
@@ -374,6 +394,7 @@ export function formatStatus(views, waiting = {}) {
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     // Fast mode, as status --project prints it (t629).
     if (v.mode) lines.push(`  ${flatText(v.mode)}`);
+    lines.push(...criteriaLines(v));
     lines.push(...stuckLines(v.stuck));
     if (!owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
