@@ -34,6 +34,18 @@ test("unwrap uses only GET and leaves all checkout and Git files unchanged, the 
 });
 
 
+test("unwrap prints open stuck episodes before the standing lists, and names a partly unavailable report", (t) => {
+  const f = fixture(t);
+  const episodes = [{ project: "demo", item: "t9", cause: "orphaned-claim", episode: 1, kind: "opened", at: "2026-10-22T10:10:00.000Z", reason: "no runner" }];
+  const r = f.runWith({ FAKE_STUCK: JSON.stringify({ report: { complete: false, unavailable: ["run reports: boom"], entries: [] }, episodes }) }, "unwrap");
+  assert.equal(r.status, 0, r.stderr);
+  const stuck = r.stdout.indexOf("Stuck\n"), standing = r.stdout.indexOf("Demo");
+  assert.ok(stuck >= 0 && standing >= 0 && stuck < standing, r.stdout);
+  assert.match(r.stdout, /t9  orphaned-claim: no runner/);
+  assert.match(r.stdout, /First seen 2026-10-22/);
+  assert.match(r.stdout, /Stuck work: stuck diagnostics \(run reports: boom\) unknown/);
+});
+
 test("unwrap names where it looked when the project has no state file", (t) => {
   const f = fixture(t);
   rmSync(join(f.checkout, "STATE.md"));

@@ -1,16 +1,19 @@
 // atelier unwrap. Its forms, flags and help are declared in src/usage/commands/unwrap.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readyOf, stageEntries, stageLines } from "../status.mjs";
+import { readStuck, readyOf, stageEntries, stageLines, stuckLines } from "../status.mjs";
 import { UNWRAP_RELAY, fileExcerpt, handoffNotes, sessionNoteText } from "../../src/sessions.ts";
 import { OWNER, OWNER_NAME, P, actor, at, call, request, checkoutStatusLine, formatStanding, git, project, remoteStatusLines, server, sessionCheckout, sessionFiles, sessionTree } from "../atelier.mjs";
 
 export default async function unwrapCommand() {
   const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
-  const standing = await call("GET", `${P(name)}/standing`, undefined, as);
-  console.log(formatStanding(standing, OWNER_NAME, server()));
   // The stage of each live task is stageOf's, as status and inbox print it.
   const read = await request("GET", P(name), undefined, as).catch(() => null);
+  // Open stuck episodes come before the ordinary items (t198).
+  const stuck = stuckLines(await readStuck((path) => request("GET", path, undefined, as).catch(() => null), P(name), name, Array.isArray(read?.items) ? read.items : null), "");
+  if (stuck.length) console.log(stuck.join("\n"));
+  const standing = await call("GET", `${P(name)}/standing`, undefined, as);
+  console.log(formatStanding(standing, OWNER_NAME, server()));
   const mode = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
   const stages = stageLines(stageEntries(read?.items, readyOf(mode)), "");
   if (stages.length) console.log(stages.join("\n"));
