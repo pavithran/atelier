@@ -66,3 +66,10 @@ test("a refused run is logged once with its exit and stderr, and reported to the
   assert.match(lines[0], /exit code 7/);
   assert.match(lines[0], /no route to model\nbye/);
 });
+
+test("newline-terminated stderr of 30 lines logs the last 20 lines, long lines included", () => {
+  const stderr = Array.from({ length: 30 }, (_, i) => `err ${i + 1} ${"x".repeat(600)}`).join("\n") + "\n";
+  const text = refusedLog(task, failedRun(stderr));
+  const numbers = [...text.matchAll(/err (\d+) /g)].map((m) => Number(m[1]));
+  assert.deepEqual(numbers, Array.from({ length: 20 }, (_, i) => i + 11));
+});
