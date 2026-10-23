@@ -282,7 +282,7 @@ export function executableFor(harness, env = process.env) {
 // Whether a harness can run a job at all, asked before a runner offers it
 // (the finding on ourai/t63, 2026-10-14, and on every claude-code job of
 // 2026-10-16: the build was claimed, then the CLI exited "Not logged in").
-// Claude Code and Codex have a probe; the other harnesses are taken as ready.
+// Claude Code, Codex and Antigravity have a probe; the other harnesses are taken as ready.
 // A probe that cannot run, times out, or prints anything but a clear
 // "signed in" counts as not signed in, so the harness is dropped, never
 // offered on a guess.
@@ -291,6 +291,7 @@ const CLAUDE_TOKEN_FILE = ".config/api-keys/claude-code-auth.key";
 export const SIGN_IN_FIX = {
   "claude-code": `run \`claude auth login\` as this user, or put a \`claude setup-token\` token in ~/${CLAUDE_TOKEN_FILE}`,
   codex: "run `codex login` as this user",
+  antigravity: "run `agy` once interactively as this user and sign in",
 };
 
 // A Claude token from the file the runner config names (claudeTokenFile).
@@ -354,7 +355,23 @@ export async function harnessReady(harness, { env = process.env, command, home =
       return { ready: false, why: `could not check whether Codex is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fix}` };
     }
   }
-  if (harness !== "claude-code") return { ready: true };
+  // Antigravity (t195) has no status command; `agy models` asks the service for
+  // the model list. Exit 0 with a list is signed in; a refusal that names
+  // sign-in or credentials is signed out; a timeout, a network error or any
+  // other output is unknown. Only signed-in is offered.
+  if (harness === "antigravity") {
+    const fixed = SIGN_IN_FIX.antigravity;
+    try {
+      const result = await run(executableFor(harness, process.env), ["models"], { env: { ...env }, timeout: timeoutMs });
+      const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+      if (result.code === 0 && /\S/.test(result.stdout ?? "")) return { ready: true, state: "signed-in" };
+      if (result.code !== 0 && /sign(ed)?[ -]?in|log(ged)?[ -]?in|unauthenticated|unauthori[sz]ed|credential|authenticat/i.test(text) && !NETWORK_ERROR.test(text)) return { ready: false, state: "signed-out", why: `Antigravity is signed out; ${fixed}` };
+      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (agy models ${result.code === 0 ? "printed nothing" : `exited ${result.code}`}); ${fixed}` };
+    } catch (error) {
+      return { ready: false, state: "unknown", why: `could not tell whether Antigravity is signed in (${String(error?.message ?? error).split("\n")[0].slice(0, 120)}); ${fixed}` };
+    }
+  }
+  if (harness !== "claude-code") return { ready: true, state: "unknown" };
   try {
     const result = await run(executableFor(harness, process.env), ["auth", "status"], { env: claudeProbeEnv(env, command, home), timeout: timeoutMs });
     let signedIn = false;
@@ -365,11 +382,13 @@ export async function harnessReady(harness, { env = process.env, command, home =
   }
 }
 
+const NETWORK_ERROR = /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network|offline|dial tcp|no such host|timed? ?out|unreachable/i;
+
 function runProbe(exe, args, { env, timeout }) {
   return new Promise((resolve, reject) => {
-    execFile(exe, args, { env, timeout, encoding: "utf8", maxBuffer: 1 << 20 }, (error, stdout) => {
+    execFile(exe, args, { env, timeout, encoding: "utf8", maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
       if (error && typeof error.code !== "number") reject(error);
-      else resolve({ code: error ? error.code : 0, stdout });
+      else resolve({ code: error ? error.code : 0, stdout, stderr });
     });
   });
 }

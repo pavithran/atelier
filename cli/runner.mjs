@@ -1508,7 +1508,7 @@ export function unpausedOffer(offer, pauses) {
 }
 
 // How often a harness's readiness is asked again (t665).
-export const READY_RECHECK_MS = 60_000;
+export const READY_RECHECK_MS = 600_000;
 
 // Whether an agent runs an atelier-NAME adapter (Atelier's shipped one, or the
 // wrapper script of that name); a command of the developer's own is theirs to keep working, and is not probed.
@@ -4398,6 +4398,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
     legacyHandoffReady();
+    // A runner none of whose harnesses can run a job has nothing to offer.
+    await checkReady();
+    if (!controller.signal.aborted && (config.agents ?? []).length && config.agents.every((a) => unready.has(a.agent))) {
+      throw new Error(`no harness is ready, so this runner does not start: ${[...unready].map(([name, why]) => `${name}: ${why}`).join("; ")}`);
+    }
     while (!controller.signal.aborted) {
       let state;
       try {
