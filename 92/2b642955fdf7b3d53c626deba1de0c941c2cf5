@@ -1,0 +1,100 @@
+atelier atelier/t211 "Stuck report drops stale run reports and idle runners older than 48 hours"
+accepted head 580f8e8e46f99e4ccd60987a85309323d4fefdf9
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T21:00:52.613Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T21:11:58.467Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-22T21:12:17.131Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T22:04:28.639Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-22T22:04:47.857Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T22:17:04.528Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T22:28:16.004Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-22T22:38:15.799Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T23:01:03.760Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-22T23:09:56.189Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T23:21:56.187Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T23:32:43.465Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-22T23:33:27.658Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T23:45:50.947Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-22T23:56:02.096Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-22T23:56:07.655Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T00:07:58.859Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T00:18:37.362Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-23T00:19:46.927Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T00:31:58.593Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T00:42:54.365Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-23T00:43:40.842Z
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T00:56:18.390Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T01:06:48.842Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-23T01:06:52.664Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T01:26:24.389Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-23T01:26:28.972Z
+REVIEW approve by codex/gpt-6-astra at 580f8e8e46f99e4ccd60987a85309323d4fefdf9, recorded by codex/gpt-6-astra
+CHECKED TREE b83f4ea2cd8b8577536dfe1a368696cf5c43530b: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-22T20:16:21.225Z pavi item.created
+2026-10-22T20:16:21.225Z pavi criteria.revised
+2026-10-22T20:16:57.729Z pavi criteria_review.requested
+2026-10-22T20:22:08.386Z codex/gpt-6-astra criteria_review.claimed
+2026-10-22T20:22:09.239Z codex/gpt-6-astra criteria_review.failed
+2026-10-22T20:40:32.250Z pavi criteria_review.requested
+2026-10-22T20:41:30.509Z codex/gpt-6-astra criteria_review.claimed
+2026-10-22T20:41:31.246Z codex/gpt-6-astra criteria_review.failed
+2026-10-22T20:43:07.120Z pavi criteria_review.requested
+2026-10-22T20:44:01.319Z codex/gpt-6-astra criteria_review.claimed
+2026-10-22T20:44:11.580Z codex/gpt-6-astra criteria_review.approved
+2026-10-22T20:45:56.478Z pavi item.dispatched
+2026-10-22T20:46:07.167Z claude-code/sonnet-5.5 item.claimed
+2026-10-22T20:46:54.378Z claude-code/sonnet-5.5 fork.created
+2026-10-22T20:49:26.270Z claude-code/sonnet-5.5 push.observed
+2026-10-22T21:00:53.351Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T21:11:59.304Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T21:12:17.541Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T22:04:39.789Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T22:04:48.160Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T22:04:52.236Z claude-code/sonnet-5.5 item.released
+2026-10-22T22:05:16.813Z claude-code/sonnet-5.5 item.claimed
+2026-10-22T22:17:05.291Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T22:28:17.220Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T22:38:20.836Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:01:04.294Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:09:59.822Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:10:04.068Z claude-code/sonnet-5.5 item.released
+2026-10-22T23:10:19.453Z claude-code/sonnet-5.5 item.claimed
+2026-10-22T23:21:57.710Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:32:44.108Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:33:29.439Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:45:56.191Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:56:04.578Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:56:07.985Z claude-code/sonnet-5.5 evidence.observed
+2026-10-22T23:56:11.546Z claude-code/sonnet-5.5 item.released
+2026-10-22T23:56:23.034Z claude-code/sonnet-5.5 item.claimed
+2026-10-23T00:07:59.426Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T00:18:38.964Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T00:19:47.663Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T00:31:59.464Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T00:42:55.071Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T00:43:41.240Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T00:43:46.921Z claude-code/sonnet-5.5 item.released
+2026-10-23T00:44:08.476Z claude-code/sonnet-5.5 item.claimed
+2026-10-23T00:56:20.032Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T01:06:50.122Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T01:06:52.596Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T01:06:53.866Z claude-code/sonnet-5.5 item.submitted
+2026-10-23T01:17:19.675Z pavi land.merge
+2026-10-23T01:17:20.489Z pavi land.regenerate
+2026-10-23T01:17:22.370Z pavi land.push
+2026-10-23T01:26:25.934Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T01:26:29.244Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T01:26:30.326Z pavi land.check
+2026-10-23T01:26:30.839Z claude-code/sonnet-5.5 item.submitted
+2026-10-23T01:26:31.374Z pavi land.submit
+2026-10-23T01:26:32.063Z pavi review.requested
+2026-10-23T02:13:46.604Z pavi land.merge
+2026-10-23T02:13:47.516Z pavi land.regenerate
+2026-10-23T02:13:57.652Z pavi land.push
+2026-10-23T02:14:14.087Z codex/gpt-6-astra review.claimed
+2026-10-23T02:20:08.551Z codex/gpt-6-astra review.approved
+2026-10-23T02:20:10.387Z pavi land.review
+2026-10-23T02:20:10.851Z pavi land.lease
+2026-10-23T02:20:13.125Z pavi item.accepted
+2026-10-23T02:20:13.271Z pavi land.accept
