@@ -51,7 +51,18 @@ The developer approves one kind at one revision:
 atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --expires 24h
 ```
 
-run in the registered checkout at the revision to ship, or with the form
+When the developer approves in chat, the model records their words with
+`--quote` and names itself with `--as`:
+
+```bash
+atelier approve deploy --head "$(git rev-parse HEAD)" --quote "yes, deploy it" --as claude-code/opus-5.5
+```
+
+The approval's note then reads `developer said: "yes, deploy it" (recorded by
+claude-code/opus-5.5)`, kept beside the revision. `--quote` without `--as` is
+refused.
+
+Run in the registered checkout at the revision to ship, or with the form
 under "Protected actions" on the project's page, which binds the approval to
 the main line's head as the page read it. For a project set up with
 `--history-since`, the revision is the baseline's commit, which `atelier ship
