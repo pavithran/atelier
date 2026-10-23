@@ -839,9 +839,10 @@ test("a blocked marker holds back only its own actor's unverified head", async (
 
 test("the build brief asks for a validation_blocked line, and that line is read as blocked", () => {
   assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
-  // t552: the guide keeps validation_blocked for the builder's own failing tests, and leaves the full suite to the clean clone.
+  // t219: the guide keeps validation_blocked for the builder's own failing tests; a suite timeout is named separately.
   assert.match(ROLE_PROMPTS.build, /Only a failure in the tests of your own change that you cannot\nfix is `validation_blocked`/);
-  assert.match(ROLE_PROMPTS.build, /do not\nrun the full suite unless the task asks for it/);
+  assert.match(ROLE_PROMPTS.build, /on a timeout, commit and report\nvalidation_blocked with the slot wait and run time/);
+  assert.match(ROLE_PROMPTS.build, /Run the project's full required test command/);
   assert.match(ROLE_PROMPTS.build, /Never end with finished work uncommitted/);
   assert.match(validationBlockedReport("Implemented the change and committed it.\nvalidation_blocked: vitest could not listen on 127.0.0.1 (EPERM)"), /could not listen/);
   assert.match(validationBlockedReport("Done.\n**validation_blocked:** the sandbox has no network"), /no network/);

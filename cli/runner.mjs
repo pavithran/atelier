@@ -256,14 +256,19 @@ export function versionRefusal(version, jobs = [...DEFAULT_JOBS, "review"]) {
   return check.ok ? null : `${check.message}, then start the runner again`;
 }
 
+// The suite's time budget in seconds, counted from slot acquisition (t219).
+export const SUITE_BUDGET_SECONDS = 2400;
+
 export function briefFor(item, project) {
   return [
     "Rules:",
     "Stay in scope. Work only in this workspace.",
     "Write tests for new behaviour.",
-    // t552: the tests the change touches and npm run typecheck, not the full
-    // npm test, which the finish's clean-clone checks run (BUILDER_TESTS).
-    ...BUILDER_TESTS.map((line) => line.replace("and the typecheck", "and npm run typecheck").replace("the full suite unless", "the full npm test suite unless")),
+    // t219: the full required test command in a slot, pushed only when it
+    // passes (BUILDER_TESTS). The budget is a `timeout` run inside the slot
+    // wrapper, so it starts once the slot is held and cannot spend queue time.
+    ...BUILDER_TESTS,
+    `For example: node ${quoteShell(SLOT_WRAPPER)} -- timeout ${SUITE_BUDGET_SECONDS} npm test (gtimeout where timeout is missing). Note the time before you start it and the time its first output appears: the difference is the slot wait, and the rest is the run time.`,
     BUILDER_SCREENSHOTS,
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc

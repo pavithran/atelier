@@ -224,8 +224,11 @@ checkout. Every task has acceptance criteria, written before the build, and a
 review judges the change against them. If the task you claim has none, do not
 build it: run \`atelier block ID "no acceptance criteria"\`, since only the developer
 writes them. Write tests for
-new behaviour. Run the tests for the files you change and the typecheck; do not
-run the full suite unless the task asks for it. For a visual change, take
+new behaviour. Run the project's full required test command
+(npm test unless it names another) inside a test slot, and the typecheck; push
+only when both pass, and name any failing test you could not fix. Give the suite
+a time budget that counts from slot acquisition; on a timeout, commit and report
+validation_blocked with the slot wait and run time. For a visual change, take
 screenshots with the project's documented screenshot workflow, against this
 workspace's revision: reuse the server it manages, never start a second one, and
 with no documented workflow follow the project's setup. When those pass, commit in the
