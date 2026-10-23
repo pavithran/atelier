@@ -72,7 +72,7 @@ test("offerFrom includes only the server capability shape", () => {
 test("briefFor includes task identity, scope, rules, and commit attribution", () => {
   const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
   for (const text of ["atelier", "t13", "Home runner", ...assignment.item.scope,
-    "Stay in scope", "Write tests", "Run the tests for the files you change, and npm run typecheck; both must pass",
+    "Stay in scope", "Write tests", "Run the project's full required test command", "Push only when both pass",
     `git commit -m "subject" -m "Agent: ${assignment.actor}"`, "Do not push", "Run no atelier command"]) assert.ok(brief.includes(text), text);
   assert.ok(briefFor(assignment.item, "atelier").includes("Agent: <harness>/<model>"));
 });
@@ -84,10 +84,11 @@ test("briefFor includes task identity, scope, rules, and commit attribution", ()
 // (t541, t546, t532, t463). The brief now asks for the changed files' tests and
 // the typecheck, leaves the full suite to the clean-clone checks, and keeps
 // validation_blocked for the builder's own failing tests.
-test("briefFor asks for the changed tests and the typecheck, not the full suite, and a commit when they pass", () => {
+test("briefFor asks for the full suite green in a slot before pushing, and a commit when it passes", () => {
   const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
-  assert.match(brief, /Do not run the full npm test suite unless the task asks for it/);
-  assert.match(brief, /required checks, the full suite among them, in a clean clone/);
+  assert.match(brief, /full required test command .*inside a test slot/);
+  assert.match(brief, /counts from the moment the slot is held/);
+  assert.doesNotMatch(brief, /Do not run the full/);
   assert.match(brief, /Never end with finished work uncommitted/);
   assert.match(brief, /validation_blocked only for a failure in the tests of your own change that you cannot fix/);
   assert.ok(!brief.includes("Run npm test and npm run typecheck"));

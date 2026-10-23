@@ -101,6 +101,19 @@ test("the screenshot lines are in build briefs and not in review or merge briefs
   assert.match(BUILDER_SCREENSHOTS, /documents no such workflow, follow its setup instructions/);
 });
 
+test("builders run the full suite green before pushing, in a slot, on a budget that starts at acquisition (t219)", () => {
+  const [full, budget] = BUILDER_TESTS;
+  assert.match(full, /full required test command \(npm test.*inside a test slot/);
+  assert.match(full, /Push only when both pass; name any failing test you could not fix/);
+  assert.match(budget, /counts from the moment the slot is held, so it cannot time out while queued/);
+  assert.match(budget, /commit your work and report validation_blocked with the slot wait and the run time/);
+  const runner = briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier");
+  for (const line of BUILDER_TESTS) assert.ok(runner.includes(line));
+  assert.match(runner, /load\.mjs'? -- sh -c 'date \+%s; exec timeout 2400 npm test'/);
+  assert.match(runner, /printed inside the slot, before the suite starts/);
+  assert.match(runner, /slot wait, and the printed one to the end is the run time/);
+});
+
 test("the builder's test lines still stand beside the screenshot line in every build brief that ran them", async () => {
   const { text } = await jobBrief(job());
   for (const line of BUILDER_TESTS) assert.ok(text.includes(`- ${line}`));
@@ -108,8 +121,9 @@ test("the builder's test lines still stand beside the screenshot line in every b
   // The runner's own brief and the guide carry the same two statements.
   const runner = briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier");
   assert.ok(runner.includes(BUILDER_SCREENSHOTS));
-  assert.ok(runner.includes("Run the tests for the files you change, and npm run typecheck"));
-  assert.match(ROLE_PROMPTS.build, /do not\nrun the full suite unless the task asks for it\. For a visual change, take\nscreenshots with the project's documented screenshot workflow, against this\nworkspace's revision: reuse the server it manages, never start a second one, and\nwith no documented workflow follow the project's setup\./);
+  assert.ok(runner.includes("Run the project's full required test command"));
+  assert.ok(!runner.includes("Do not run the full suite"));
+  assert.match(ROLE_PROMPTS.build, /Run the project's full required test command\n\(npm test unless it names another\) inside a test slot, and the typecheck; push\nonly when both pass, and name any failing test you could not fix\. Give the suite\na time budget that counts from slot acquisition; on a timeout, commit and report\nvalidation_blocked with the slot wait and run time\. For a visual change, take\nscreenshots with the project's documented screenshot workflow, against this\nworkspace's revision: reuse the server it manages, never start a second one, and\nwith no documented workflow follow the project's setup\./);
   assert.doesNotMatch(ROLE_PROMPTS.review, /screenshot/i);
 });
 
@@ -175,7 +189,7 @@ test("a runner with the README's generic wrapper hands its agents both rule text
 const BYTES = (text) => Buffer.byteLength(text, "utf8");
 const BLOCK_LIMITS = {
   "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "9c9a3037", measured: 887, margin: 150 },
-  "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "9c9a3037", measured: 459, margin: 100 },
+  "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "ece4f377", measured: 634, margin: 100 },
   "builder screenshot instruction (BUILDER_SCREENSHOTS)": { text: BUILDER_SCREENSHOTS, at: "93b3198d", measured: 277, margin: 100 },
   "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "9c9a3037", measured: 803, margin: 150 },
 };
