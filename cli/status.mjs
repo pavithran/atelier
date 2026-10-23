@@ -116,11 +116,12 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       // The developer's branches (t641), when they were read.
       ...(Array.isArray(v.branches) ? { branches: v.branches } : {}),
       overlaps: a.overlaps,
-      ...(v.stuck ? { stuck: v.stuck } : {}),
       attention: { owner: a.owner.map((t) => ({ ...t, url: absolute(server, t.href) })), pipeline: a.pipeline, unknown: a.unknown },
       // The merges that went in on the owner's override, each with the link
       // to its page (t371).
       mergedByOverride: mergedByOverride(v.items ?? []).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
+      // Added last so the older keys keep their places (t198).
+      ...(v.stuck ? { stuck: v.stuck } : {}),
     };
   });
 }
