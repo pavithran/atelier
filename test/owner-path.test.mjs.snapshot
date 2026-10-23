@@ -79,6 +79,23 @@ exports[`status JSON forms preserve their records 1`] = `
         "owner": "builder/model"
       }
     ],
+    "stages": [
+      {
+        "id": "t1",
+        "stage": "building",
+        "detail": {}
+      },
+      {
+        "id": "t2",
+        "stage": "building",
+        "detail": {}
+      },
+      {
+        "id": "t3",
+        "stage": "building",
+        "detail": {}
+      }
+    ],
     "overlaps": [],
     "attention": {
       "owner": [
@@ -197,5 +214,5 @@ exports[`status JSON forms preserve their records 3`] = `
 `;
 
 exports[`status snapshot: submitted tasks land, accepted tasks merge 1`] = `
-"Demo (demo)\\n  Waiting for you\\n    t1  Accept  Ready for owner\\n      Accept the revision, whose required checks all passed at its head.\\n      why: Recorded gate result\\n      next: atelier land t1 --reviewer H/M --project demo\\n      /p/demo/t1\\n  In the pipeline: 2 tasks: 1 in review, 1 accepted; none waits on you.\\n  In progress\\n    t2  submitted  held by builder/model  Needs assessment"
+"Demo (demo)\\n  Waiting for you\\n    t1  Accept  Ready for owner\\n      Accept the revision, whose required checks all passed at its head.\\n      why: Recorded gate result\\n      next: atelier land t1 --reviewer H/M --project demo\\n      /p/demo/t1\\n  In the pipeline: 2 tasks: 1 in review, 1 accepted; none waits on you.\\n  Stages\\n    building: t1  Ready for owner\\n    building: t2  Needs assessment\\n    building: t3  Already accepted\\n  In progress\\n    t2  submitted  held by builder/model  Needs assessment"
 `;
