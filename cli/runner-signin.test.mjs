@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harnessReady } from "./harness/adapter.mjs";
-import { READY_RECHECK_MS, runRunner } from "./runner.mjs";
+import { READY_RECHECK_MS, planFilePath, runRunner } from "./runner.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "atelier-signin-tests-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -35,7 +35,7 @@ test("a signed-out Claude CLI, a probe that cannot run and a timeout are not rea
     assert.equal(answer.ready, false);
     assert.match(answer.why, /codex login/);
   }
-  assert.deepEqual(await harnessReady("opencode", { run: async () => { throw new Error("never asked"); } }), { ready: true });
+  assert.deepEqual(await harnessReady("opencode", { run: async () => { throw new Error("never asked"); } }), { ready: true, state: "unknown" });
 });
 
 test("the key file counts only when the job's own wrapper loads it, and the job's environment decides the rest (the finding on 082d52b4)", async () => {
@@ -99,7 +99,7 @@ test("a runner leaves a signed-out harness out of its offer, says why once, and 
 test("a runner takes no review for a harness it found not ready, even when the queue lists one", async () => {
   const dir = mkdtempSync(join(root, "run-"));
   const config = join(dir, "runner.json");
-  writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["sonnet-5.5"], command: ["/x/atelier-claude", "{model}", "{brief_file}", "{verdict_file}"] }], jobs: ["review"] }));
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["sonnet-5.5"], command: ["/x/atelier-claude", "{model}", "{brief_file}", "{verdict_file}"] }, { agent: "opencode", models: ["glm-5.3"], command: ["stub", "{model}", "{brief_file}", "{verdict_file}"] }], jobs: ["review"] }));
   const logs = [], skips = [];
   let polls = 0;
   const review = { project: "atelier", agent: "claude-code", model: "sonnet-5.5", actor: "claude-code/sonnet-5.5", item: { id: "t9", title: "x", head: "a".repeat(40), request: 7, dispatch: { to: "home", agent: "claude-code", model: "sonnet-5.5", job: "review", by: "owner", at: "2026-10-12T19:00:00.000Z", note: "" } } };
@@ -119,7 +119,7 @@ test("a runner takes no review for a harness it found not ready, even when the q
 test("a runner takes no codex review while codex login status fails", async () => {
   const dir = mkdtempSync(join(root, "run-"));
   const config = join(dir, "runner.json");
-  writeFileSync(config, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["/x/atelier-codex", "{model}", "{brief_file}", "{verdict_file}"] }], jobs: ["review"] }));
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["/x/atelier-codex", "{model}", "{brief_file}", "{verdict_file}"] }, { agent: "opencode", models: ["glm-5.3"], command: ["stub", "{model}", "{brief_file}", "{verdict_file}"] }], jobs: ["review"] }));
   const logs = [], skips = [], offers = [];
   let polls = 0;
   const review = { project: "atelier", agent: "codex", model: "gpt-6-astra", actor: "codex/gpt-6-astra", item: { id: "t9", title: "x", head: "a".repeat(40), request: 7, dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", job: "review", by: "owner", at: "2026-10-12T19:00:00.000Z", note: "" } } };
@@ -131,8 +131,91 @@ test("a runner takes no codex review while codex login status fails", async () =
     wait: () => Promise.resolve(),
     async queue(offer) { offers.push(offer.agents.length); if (++polls > 1) process.emit("SIGTERM"); return [review]; },
   });
-  assert.equal(offers[0], 0, "codex is left out of the offer");
+  assert.equal(offers[0], 1, "codex is left out of the offer");
   assert.ok(logs.some((l) => /codex is not offered: Codex is not signed in/.test(l)));
   assert.equal(logs.some((l) => /^cli review-claim/.test(l)), false);
   assert.deepEqual(skips, []);
+});
+
+// t195: Antigravity is probed too, and its answer is signed-in, signed-out or unknown.
+test("Antigravity reports signed-in, signed-out or unknown; a network error or timeout is unknown", async () => {
+  const ask = (run) => harnessReady("antigravity", { env: {}, run });
+  assert.deepEqual(await ask(async (_exe, args) => { assert.deepEqual(args, ["models"]); return { code: 0, stdout: "gemini-4-argon-medium\tGemini 4\n", stderr: "" }; }), { ready: true, state: "signed-in" });
+  const out = await ask(async () => ({ code: 1, stdout: "", stderr: "Error: not signed in, run agy to log in" }));
+  assert.equal(out.state, "signed-out");
+  assert.equal(out.ready, false);
+  for (const run of [
+    async () => ({ code: 1, stdout: "", stderr: "dial tcp: lookup example: no such host (could not authenticate)" }),
+    async () => ({ code: 0, stdout: "", stderr: "" }),
+    async () => { throw Object.assign(new Error("timed out"), { killed: true }); },
+  ]) {
+    const answer = await ask(run);
+    assert.equal(answer.state, "unknown");
+    assert.equal(answer.ready, false);
+  }
+  // The findings on 11c38ef7: output that is not a model list, and a network
+  // error that exits 0, are unknown, never signed-in.
+  for (const stdout of ["Usage: agy models [options]\n", "Network error: offline\n", "Error: could not reach the service\n", "Loading...\n"]) {
+    const answer = await ask(async () => ({ code: 0, stdout, stderr: "" }));
+    assert.equal(answer.state, "unknown", stdout);
+    assert.equal(answer.ready, false, stdout);
+  }
+  const offline = await ask(async () => ({ code: 0, stdout: "gemini-4-argon-medium\n", stderr: "dial tcp: no such host" }));
+  assert.deepEqual([offline.ready, offline.state], [false, "unknown"]);
+  assert.equal((await ask(async () => ({ code: 0, stdout: "- claude-opus-5-5-high  Claude Opus\n- gemini-3.1-pro-high\n", stderr: "" }))).state, "signed-in");
+  // A custom wrapper has no probe: unknown, and still offered.
+  assert.deepEqual(await harnessReady("opencode", {}), { ready: true, state: "unknown" });
+});
+
+test("a runner whose every harness is not ready refuses to start", async () => {
+  const dir = mkdtempSync(join(root, "run-"));
+  const config = join(dir, "runner.json");
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "antigravity", models: ["gemini-4-argon-medium"], command: ["/x/atelier-agy", "{model}", "{brief_file}"] }] }));
+  await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config }, {
+    limitFile: join(dir, "limits.json"), taskIO: { log() {} }, wait: () => Promise.resolve(),
+    harnessReady: async () => ({ ready: false, state: "unknown", why: "no network" }),
+    async queue() { assert.fail("polled"); },
+  }), /no harness is ready.*antigravity: no network/);
+});
+
+test("the readiness check runs on the heartbeat during a long job, so a harness that fails mid-job is withdrawn", async (t) => {
+  const dir = mkdtempSync(join(root, "run-")), workspace = join(dir, "work");
+  mkdirSync(workspace);
+  const config = join(dir, "runner.json");
+  writeFileSync(config, JSON.stringify({ agents: [
+    { agent: "claude-code", models: ["m1"], command: ["/x/atelier-claude", "{model}", "{brief_file}", "{workspace}", "{plan_file}"] },
+    { agent: "codex", models: ["c1"], command: ["/x/atelier-codex", "{model}", "{brief_file}"] },
+  ], jobs: ["build", "plan"] }));
+  const previous = Object.fromEntries(["ATELIER_CONFIG_DIR", "ATELIER_SECRET_STORE"].map((key) => [key, process.env[key]]));
+  Object.assign(process.env, { ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file" });
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  const assignment = { project: "demo", actor: "claude-code/m1", agent: "claude-code", model: "m1", item: { id: "t1", title: "Change", scope: ["src/**"], accept: ["works"], kind: "plan", dispatch: { job: "plan" } } };
+  const logs = [];
+  let clock = 1_000_000, probes = 0, headReads = 0;
+  let sawProbe, fallback; const probed = new Promise((resolve) => { sawProbe = resolve; });
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config, once: true }, {
+    now: () => clock, limitFile: join(dir, "limits.json"), credential: "runner-secret", workspacePath: () => workspace, heartbeatMs: 10,
+    queue: async () => [assignment],
+    harnessReady: async (harness) => {
+      if (harness !== "codex") return { ready: true };
+      if (++probes === 1) return { ready: true };
+      sawProbe();
+      return { ready: false, why: "Codex is not signed in" };
+    },
+    jobBrief: async () => ({ text: "Plan the change" }),
+    postPlan: async () => ({ valid: true, hash: "plan-hash" }),
+    taskIO: { log: (line) => logs.push(line), reset: async () => {}, head: async () => ++headReads === 1 ? "before" : "after", dataHome: async () => null, identityRefusals: async () => [] },
+    executeChild: async (argv) => {
+      if (/atelier-claude/.test(argv[0])) {
+        clock += READY_RECHECK_MS;                     // ten minutes pass inside the job
+        const giveUp = new Promise((resolve) => { fallback = setTimeout(resolve, 30_000); });
+        await Promise.race([probed, giveUp]);
+        clearTimeout(fallback);
+        writeFileSync(planFilePath(workspace), JSON.stringify({ goal: "Change" }));
+      }
+      return { code: 0, output: "", stderr: "" };
+    },
+  });
+  assert.equal(probes, 2, "codex was probed again while the job ran");
+  assert.equal(logs.filter((l) => /codex is not offered: Codex is not signed in/.test(l)).length, 1);
 });
