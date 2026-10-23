@@ -57,3 +57,19 @@ test("readStuck reads the report and episodes, and a failed read is unknown", as
   assert.deepEqual(v.notRead, ["stuck episodes"]);
   assert.match(stuckLines(v).join("\n"), /First seen unknown; the cause dates from 2026-10-22 10:00 UTC/);
 });
+
+test("an incomplete report keeps open episodes it has no entry for and names what was unavailable", () => {
+  const report = { complete: false, unavailable: ["run reports: boom"], entries: [] };
+  const v = openStuck("p", report, [opened("t1", "orphaned-claim", "2026-10-22T10:10:00.000Z")], items);
+  assert.deepEqual(v.rows.map((r) => [r.item, r.firstSeen, r.evidence, r.next]), [["t1", "2026-10-22T10:10:00.000Z", "unknown", "unknown"]]);
+  assert.deepEqual(v.notRead, ["stuck diagnostics (run reports: boom)"]);
+  assert.match(stuckLines(v).join("\n"), /Stuck work: stuck diagnostics \(run reports: boom\) unknown/);
+  const complete = openStuck("p", { complete: true, unavailable: [], entries: [] }, [opened("t1", "orphaned-claim", "2026-10-22T10:10:00.000Z")], items);
+  assert.deepEqual(complete.rows, []);
+});
+
+test("unwrap prints the stuck section before the standing lists", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../cli/commands/unwrap.mjs", import.meta.url), "utf8");
+  assert.ok(src.indexOf("console.log(stuck.join") < src.indexOf("formatStanding(standing"));
+});

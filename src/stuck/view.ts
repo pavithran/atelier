@@ -13,8 +13,10 @@ export interface StuckView { rows: OpenStuck[]; notRead: string[] }
 // recorded episode transitions of the project (null when not read); `items`
 // the project's tasks (null when not read). A row needs the report: without
 // it the open episodes are still listed, with evidence and next step unknown.
-// A task that is merged or abandoned has no row.
-export function openStuck(project: string, report: { entries: readonly Entry[] } | null, transitions: readonly Transition[] | null, items: readonly { id: string; state: string }[] | null): StuckView {
+// A report that says it is incomplete keeps the recorded open episodes it has
+// no entry for, with evidence and next step unknown, and names each
+// unavailable source in notRead. A task that is merged or abandoned has no row.
+export function openStuck(project: string, report: { entries: readonly Entry[]; complete?: boolean; unavailable?: readonly string[] } | null, transitions: readonly Transition[] | null, items: readonly { id: string; state: string }[] | null): StuckView {
   const notRead: string[] = [];
   if (!report) notRead.push("stuck report");
   if (!transitions) notRead.push("stuck episodes");
@@ -32,8 +34,11 @@ export function openStuck(project: string, report: { entries: readonly Entry[] }
     const episode = opened.get(keyOf(key));
     rows.set(keyOf(key), { item: e.subject, cause: key.cause, reason: e.reason, firstSeen: episode && open.has(keyOf(key)) ? episode.at : UNKNOWN, since: e.since, evidence: e.evidence || UNKNOWN, next: e.recovery || UNKNOWN });
   }
-  // With no report, the recorded open episodes stand alone.
-  if (!report) for (const [k, t] of open) rows.set(k, { item: t.item, cause: t.cause, reason: t.reason, firstSeen: t.at, since: UNKNOWN, evidence: UNKNOWN, next: UNKNOWN });
+  // With no report, or an incomplete one, the recorded open episodes stand in.
+  const partial = !report || report.complete === false || (report.unavailable?.length ?? 0) > 0;
+  for (const u of report?.unavailable ?? []) notRead.push(`stuck diagnostics (${u})`);
+  if (report && partial && !report.unavailable?.length) notRead.push("stuck diagnostics (incomplete report)");
+  if (partial) for (const [k, t] of open) if (!rows.has(k)) rows.set(k, { item: t.item, cause: t.cause, reason: t.reason, firstSeen: t.at, since: UNKNOWN, evidence: UNKNOWN, next: UNKNOWN });
   const sorted = [...rows.values()].filter((r) => !closed.has(r.item)).sort((a, b) => (a.firstSeen === UNKNOWN ? a.since : a.firstSeen).localeCompare(b.firstSeen === UNKNOWN ? b.since : b.firstSeen) || a.item.localeCompare(b.item) || a.cause.localeCompare(b.cause));
   return { rows: sorted, notRead };
 }
