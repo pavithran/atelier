@@ -38,6 +38,8 @@ test("ls --json and status --json print each item with its times, for Observator
     mergedByOverride: [],
     // stageOf's stage for each task (t210): pushed at its head, nothing later.
     stages: ["t1", "t2"].map((id) => ({ id, stage: "built", detail: { head: f.head, source: "push" } })),
+    // Added last (t198); the fixture serves no stuck data, so both reads are unknown.
+    stuck: { rows: [], notRead: ["stuck report", "stuck episodes"] },
   }]);
 
   // The JSON listing honours --all as the text one does (test/status.test.mjs
