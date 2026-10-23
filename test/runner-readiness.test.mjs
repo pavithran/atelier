@@ -76,6 +76,19 @@ test("the credential check reports each reviewer token and the Claude token file
   assert.deepEqual(missing.map((c) => c.state), ["unreadable"]);
 });
 
+test("a relative reviewer token path finds its expiry metadata beside the file in the config directory", () => {
+  const dir = mkdtempSync(join(root, "cfg-"));
+  const now = Date.parse("2026-10-23T00:00:00Z");
+  mkdirSync(join(dir, "tokens"));
+  writeFileSync(join(dir, "tokens", "agent"), "atl_opaque");
+  chmodSync(join(dir, "tokens", "agent"), 0o600);
+  writeFileSync(join(dir, "tokens", "agent.expires"), new Date(now + 2 * DAY).toISOString());
+  assert.notEqual(process.cwd(), dir);
+  const [entry] = credentialReadiness({ tokens: { m: "tokens/agent" } }, { env: { ATELIER_CONFIG_DIR: dir }, home: root, now, ownerTokens: () => [] });
+  assert.equal(entry.state, "expiring");
+  assert.equal(entry.expiresAt, new Date(now + 2 * DAY).toISOString());
+});
+
 test("the report is bounded on the server and stale past 25 minutes", () => {
   const now = Date.parse("2026-10-23T12:00:00Z");
   const fresh = new Date(now - 5 * 60_000).toISOString(), old = new Date(now - READINESS_STALE_MS - 60_000).toISOString();

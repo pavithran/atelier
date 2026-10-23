@@ -743,7 +743,7 @@ export function credentialReadiness(config, deps = {}) {
     catch (error) { out.push({ ...entry, state: "unreadable", recovery: `the token for ${model} could not be read: ${String(error.message).split("\n")[0].slice(0, 160)}` }); continue; }
     if (!token) { out.push({ ...entry, state: "unreadable", recovery: `the token for ${model} is missing; issue one (atelier token issue --as AGENT/${model}) and store it under tokens["${model}"]` }); continue; }
     if (owners.some((owner) => owner && owner === token)) { out.push({ ...entry, state: "developers", recovery: `the token for ${model} is the developer's; issue the reviewer its own (atelier token issue --as AGENT/${model})` }); continue; }
-    out.push(report("reviewer", model, token, where, (state) => `the token for ${model} ${state === "expired" ? "has expired" : "expires soon"}; issue a new one (atelier token issue --as AGENT/${model}) and replace it`));
+    out.push(report("reviewer", model, token, where.includes("/") ? tokenFile(where, env, home) : where, (state) => `the token for ${model} ${state === "expired" ? "has expired" : "expires soon"}; issue a new one (atelier token issue --as AGENT/${model}) and replace it`));
   }
   if (config.claudeTokenFile) {
     const entry = { kind: "claude", name: "claude", expiresAt: null, daysLeft: null };
