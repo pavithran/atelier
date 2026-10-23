@@ -11,7 +11,7 @@ import { excludeScratch } from "./scratch.mjs";
 import { runCommand } from "./ship.mjs";
 import { COMMAND_CAPABILITIES, checkCapabilities } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
-import { unoffered } from "../src/dispatch/rules.ts";
+import { assign, liveOffers, unoffered } from "../src/dispatch/rules.ts";
 import { fenceText, prereviewClause } from "../src/dispatch/prereview.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { approvalsMissing, landingVerdict, allSkipped, recordedApproval, rejectionText, reviewStall } from "../src/landing-verdict.ts";
@@ -990,9 +990,13 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
     let offers = null;
     try { offers = await request("GET", "/runners"); } catch { /* without the offers the wait is explained as before */ }
     const slash = (ask.reviewer ?? "").indexOf("/");
-    const dead = offers && slash > 0
-      ? unoffered({ to: "home", agent: ask.reviewer.slice(0, slash), model: ask.reviewer.slice(slash + 1), by: "atelier/orchestrator", at: since, note: "", job: "review" }, Array.isArray(offers) ? offers : [])
-      : null;
+    const asked = slash > 0 ? { to: "home", agent: ask.reviewer.slice(0, slash), model: ask.reviewer.slice(slash + 1), by: "atelier/orchestrator", at: since, note: "", job: "review" } : null;
+    const dead = offers && asked ? unoffered(asked, Array.isArray(offers) ? offers : []) : null;
+    // Only the jobs the runners that offer this reviewer could also take are
+    // ahead of it (t220): a job for a model or project they do not serve
+    // never delays it. Without the offers every older job is counted.
+    const servers = asked && Array.isArray(offers) ? liveOffers(offers).filter((o) => assign(asked, o, name) !== null) : [];
+    const servable = (q) => !servers.length || servers.some((o) => q.item?.dispatch && assign(q.item.dispatch, o, q.project) !== null);
     let line;
     if (dead) {
       line = `The review request is not claimed yet, and ${dead}. It will not be claimed until a runner that offers ${ask.reviewer} for the review job asks the server for work. Review it by hand (atelier review ${id} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again with --reviewer H/M to ask a model a live runner offers.`;
@@ -1000,7 +1004,7 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
       const [items, queued] = await Promise.all([request("GET", `/projects/${encodeURIComponent(name)}/items`), request("GET", "/queue")]);
       const busy = (Array.isArray(items) ? items : []).filter((i) => i.runner && i.state === "claimed" && i.id !== id)
         .map((i) => `${i.runner} is busy with ${i.id} (${i.dispatch?.job ?? "build"}, ${i.owner}) since ${String(i.updatedAt).slice(0, 16).replace("T", " ")} UTC`);
-      const ahead = (Array.isArray(queued) ? queued : []).filter((q) => !(q.project === name && q.item?.id === id) && (q.item?.dispatch?.at ?? "") < since)
+      const ahead = (Array.isArray(queued) ? queued : []).filter((q) => !(q.project === name && q.item?.id === id) && (q.item?.dispatch?.at ?? "") < since && servable(q))
         .map((q) => `${q.project}/${q.item.id} (${q.item.dispatch?.job ?? "build"})`);
       line = `The review request is not claimed yet. ${busy.length ? busy.join("; ") : "No runner is busy with a job of this project"}; ${ahead.length ? `${ahead.length} job${ahead.length === 1 ? "" : "s"} queued ahead of it: ${ahead.join(", ")}` : "nothing is queued ahead of it"}.`;
     } catch (error) { line = `The review request is not claimed yet (the queue could not be read: ${error.message}).`; }
