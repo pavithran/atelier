@@ -3,7 +3,7 @@
 // (src/attention.ts) from the same inputs Home, the Overview and `atelier
 // status` read: each project's items, the server's notices and the runner
 // offers. A part not read is said, never counted as nothing.
-import { formatInbox, inboxJson, inboxNotRead, projectInbox } from "../status.mjs";
+import { formatInbox, inboxJson, inboxNotRead, projectInbox, readyOf } from "../status.mjs";
 import { OWNER, P, args, call, request, server } from "../atelier.mjs";
 
 export default async function inboxCommand() {
@@ -17,7 +17,8 @@ export default async function inboxCommand() {
   const offers = await request("GET", "/runners", undefined, OWNER).catch(() => null);
   const views = await Promise.all(known.map(async (p) => {
     const read = await request("GET", P(p.name), undefined, OWNER).catch(() => null);
-    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name) };
+    const mode = await request("GET", `${P(p.name)}/mode`, undefined, OWNER).catch(() => null);
+    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, ready: readyOf(mode), inbox: projectInbox(notices, p.name) };
   }));
   const waiting = { offers: Array.isArray(offers) ? offers : null, server: server(), now: new Date() };
   if (args.json) {

@@ -18,7 +18,7 @@ import {
   riskClass, riskNeed, parseRiskReviews, retainableApprovals, retentionVerdict,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   applyVerification, unquoteGitPath, dropSettled, isPreExisting, labelPreExisting, PRE_EXISTING_MARGIN, preExistingTask, reReviewDiff, rejectedRounds, REVIEW_ROUND_CAP, reviewedSince, roundCapHold, touchedLines,
-  type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride, type RetentionFacts,
+  stageOf, type Evidence, type Finding, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride, type RetentionFacts,
 } from "../src/rules.ts";
 
 const H1 = "a".repeat(40);
@@ -2192,3 +2192,39 @@ test("the merge context names the item's contributors, the checks observed passi
     assert.equal(forkAgeText(-5), "less than a minute");
   });
 }
+
+// stageOf: one stage per task, the first that holds.
+const stageEv = (seq: number, kind: string, data: Record<string, unknown> = {}) => ({ seq, kind, data, at: T, actor: "claude-code/sonnet-5.5" });
+const READY = { commit: H1, base: H2, builder: "claude-code/sonnet-5.5", runner: "mac-mini", workspace: "/work/t1" };
+
+test("stageOf takes the first stage that holds, from filed up to shipped", () => {
+  const bare = item({ state: "open", owner: null, head: null, fork: null });
+  assert.equal(stageOf(bare).stage, "filed");
+  assert.equal(stageOf({ ...bare, accept: ["c1"], criteriaReviews: 1 }).stage, "agreed");
+  assert.equal(stageOf({ ...bare, dispatch: { agent: "claude-code", model: "sonnet-5.5" } as Item["dispatch"] }).stage, "queued");
+  assert.equal(stageOf({ ...bare, state: "claimed", owner: "claude-code/sonnet-5.5" }).stage, "building");
+  assert.deepEqual(stageOf(item({ state: "claimed" })), { stage: "built", detail: { head: H1, source: "push" } });
+  const ctx = { policy, evidence: [pass()], reviews: [] as Review[] };
+  assert.equal(stageOf(item({ state: "claimed" }), { ...ctx, evidence: [] }).stage, "built");
+  assert.equal(stageOf(item({ state: "claimed" }), { ...ctx, evidence: [pass({ passed: false })] }).stage, "built");
+  assert.equal(stageOf(item({ state: "claimed" }), ctx).stage, "reviewed");
+  const protectedPass = pass({ changedPaths: ["AGENTS.md"] });
+  assert.equal(stageOf(item(), { ...ctx, evidence: [protectedPass] }).stage, "checked");
+  assert.equal(stageOf(item(), { ...ctx, evidence: [protectedPass], reviews: [review("codex/gpt-5.5")] }).stage, "landable");
+  const approved = [review("codex/gpt-5.5")];
+  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["AGENTS.md"], passed: false })], reviews: approved }).stage, "reviewed", "approvals at head with a failed check");
+  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["AGENTS.md"], claim: "changed paths" })], reviews: approved }).stage, "reviewed", "approvals at head with a pending check");
+  assert.equal(stageOf(item({ state: "merged" }), ctx).stage, "landed");
+  assert.equal(stageOf(item({ state: "merged" }), { shipped: true }).stage, "shipped");
+});
+
+test("stageOf puts a standing fast_ready at built, with its head, machine and path", () => {
+  const claimed = item({ state: "claimed", head: null, owner: "claude-code/sonnet-5.5" });
+  const events = [stageEv(1, "item.claimed"), stageEv(2, "item.fast_ready", READY)];
+  assert.deepEqual(stageOf(claimed, { events }), { stage: "built", detail: { head: H1, machine: "mac-mini", path: "/work/t1", source: "fast_ready" } });
+  assert.deepEqual(stageOf(claimed, { ready: { ...READY } }).detail.head, H1);
+  // A later claim makes the report stale, so the task is building again.
+  assert.equal(stageOf(claimed, { events: [...events, stageEv(3, "item.claimed")] }).stage, "building");
+  // A later merge ends it.
+  assert.equal(stageOf({ ...claimed, state: "merged" }, { events: [...events, stageEv(3, "item.merged")] }).stage, "landed");
+});

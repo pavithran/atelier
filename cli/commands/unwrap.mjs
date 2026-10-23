@@ -1,13 +1,19 @@
 // atelier unwrap. Its forms, flags and help are declared in src/usage/commands/unwrap.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readyOf, stageEntries, stageLines } from "../status.mjs";
 import { UNWRAP_RELAY, fileExcerpt, handoffNotes, sessionNoteText } from "../../src/sessions.ts";
-import { OWNER, OWNER_NAME, P, actor, at, call, checkoutStatusLine, formatStanding, git, project, remoteStatusLines, server, sessionCheckout, sessionFiles, sessionTree } from "../atelier.mjs";
+import { OWNER, OWNER_NAME, P, actor, at, call, request, checkoutStatusLine, formatStanding, git, project, remoteStatusLines, server, sessionCheckout, sessionFiles, sessionTree } from "../atelier.mjs";
 
 export default async function unwrapCommand() {
   const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
   const standing = await call("GET", `${P(name)}/standing`, undefined, as);
   console.log(formatStanding(standing, OWNER_NAME, server()));
+  // The stage of each live task is stageOf's, as status and inbox print it.
+  const read = await request("GET", P(name), undefined, as).catch(() => null);
+  const mode = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
+  const stages = stageLines(stageEntries(read?.items, readyOf(mode)), "");
+  if (stages.length) console.log(stages.join("\n"));
   console.log(await checkoutStatusLine(name, as));
   if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
   if (cwd) {
