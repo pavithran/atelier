@@ -81,6 +81,8 @@ globalThis.fetch = async (url, options) => {
     else if (path !== "/api/projects/demo/sessions") throw Error("unexpected write");
     else result = { actor: "owner", at: "2026-10-05T12:00:00Z", data: JSON.parse(options.body) };
   } else if (path.endsWith("/standing")) result = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-05T12:00:00Z", live: [], waiting: [], queued: [], merged: [], handoffs: [], partial: [], controlPlane: null };
+  else if (process.env.FAKE_STUCK && path.endsWith("/stuck")) result = JSON.parse(process.env.FAKE_STUCK).report;
+  else if (process.env.FAKE_STUCK && path.endsWith("/stuck/episodes")) result = JSON.parse(process.env.FAKE_STUCK).episodes;
   else if (path.endsWith("/baseline-head")) result = { head: ${JSON.stringify(head)} };
   else if (path.endsWith("/sessions")) result = [previous];
   else if (path === "/api/projects/demo") result = { project: { policy: { checks: JSON.parse(process.env.FAKE_CHECKS ?? '["exit 7"]'), ...(process.env.FAKE_IDENTITY ? { commitIdentity: JSON.parse(process.env.FAKE_IDENTITY) } : {}) } } };

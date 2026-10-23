@@ -1603,6 +1603,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(await readStuckReport(env, ref, c.url.origin, limits));
   }
 
+  // The recorded transitions of the project's stuck episodes (t198).
+  if (parts[2] === "stuck" && parts[3] === "episodes" && parts.length === 4 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await index(env).stuckEpisodes(ref.key));
+  }
+
   if (parts[2] === "reviewers") {
     requireOwner(env, actor);
     if (parts.length === 3 && m === "GET") return json(await L.reviewerListing());

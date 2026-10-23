@@ -280,6 +280,9 @@ test("inbox prints each task waiting on the owner with what to do and its link, 
   assert.equal(r.status, 0, r.output);
   assert.deepEqual(r.stdout.trim().split("\n"), [
     "Proj (proj): 1 waiting on you",
+    // The fixture serves no stuck data, which is said first (t198).
+    "    Stuck work: stuck report unknown (not read)",
+    "    Stuck work: stuck episodes unknown (not read)",
     `    t1  Accept  ${brief.title}`,
     "      Accept the revision, whose required checks all passed at its head.",
     "      why: all checks observed passing at this head",

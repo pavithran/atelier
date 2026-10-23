@@ -175,7 +175,9 @@ test("atelier status shows the projects it read and labels one whose tasks could
     const beta = lines.indexOf("Beta (beta)");
     assert.ok(lines.indexOf("Alpha (alpha)") >= 0 && beta > 0, text.output);
     assert.ok(listedUnder(lines, 0, "  Waiting for you").includes("a10"), text.output);
-    assert.equal(lines[beta + 1], "  Nothing known to wait on you.", text.output);
+    // Stuck work comes first and is labelled unknown here, the fixture serving none (t198).
+    assert.deepEqual(lines.slice(beta + 1, beta + 4), ["  Stuck work: stuck report unknown (not read)", "  Stuck work: stuck episodes unknown (not read)", "  Stuck work: tasks unknown (not read)"], text.output);
+    assert.equal(lines[beta + 4], "  Nothing known to wait on you.", text.output);
     assert.ok(lines.slice(beta).some((l) => /^ {4}The project's tasks could not be read/.test(l)), text.output);
 
     const json = await runCli(["status", "--json"]);
