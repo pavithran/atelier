@@ -1508,7 +1508,7 @@ export function unpausedOffer(offer, pauses) {
 }
 
 // How often a harness's readiness is asked again (t665).
-export const READY_RECHECK_MS = 60_000;
+export const READY_RECHECK_MS = 600_000;
 
 // Whether an agent runs an atelier-NAME adapter (Atelier's shipped one, or the
 // wrapper script of that name); a command of the developer's own is theirs to keep working, and is not probed.
@@ -4398,6 +4398,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
     legacyHandoffReady();
+    // A runner none of whose harnesses can run a job has nothing to offer.
+    await checkReady();
+    if (!controller.signal.aborted && (config.agents ?? []).length && config.agents.every((a) => unready.has(a.agent))) {
+      throw new Error(`no harness is ready, so this runner does not start: ${[...unready].map(([name, why]) => `${name}: ${why}`).join("; ")}`);
+    }
     while (!controller.signal.aborted) {
       let state;
       try {
@@ -4466,7 +4471,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // (docs/orchestrator.md, sections 2, 4 and 5); anything else is building.
           // Polls stop while the job runs, so a heartbeat renews this
           // runner's last poll meanwhile (t537): without it a build longer
-          // than RUNNER_GONE_MS would orphan its own claim.
+          // than RUNNER_GONE_MS would orphan its own claim. The same tick
+          // runs the readiness check, which does its probes once per
+          // READY_RECHECK_MS, so a long job does not delay it (t195).
           state = await withHeartbeat(() => task.item.dispatch?.job === "plan"
             ? runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
@@ -4481,7 +4488,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), heartbeat && (() => heartbeat(offer, controller.signal)), { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat(offer, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
           if (state.providerLimit) {
             pauseHarness(task, state);
