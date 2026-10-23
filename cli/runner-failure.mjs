@@ -24,10 +24,13 @@ export function failureReason({ code, timedOut, before, head }) {
 // that cannot be cleared does not loop forever.
 export const MAX_HARNESS_RERUNS = 3;
 
-// The last 20 non-empty lines of stderr (a trailing newline is no line). Each
-// line is cut to 400 characters, so the 20 lines stay under 8192 and none is lost.
-export const stderrTail = (stderr) =>
-  String(stderr).replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).map((l) => l.slice(0, 400)).join("\n");
+// The last 20 non-empty lines of stderr (a trailing newline is no line). No
+// line is cut; only the whole is bounded, to the last 64 KB.
+export const STDERR_TAIL_LIMIT = 65536;
+export const stderrTail = (stderr) => {
+  const text = String(stderr).replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).join("\n");
+  return text.length > STDERR_TAIL_LIMIT ? text.slice(-STDERR_TAIL_LIMIT) : text;
+};
 
 // How a harness run ended, as a structured fact set where the run ends: the
 // outcome reported to the server reads this, never the human-readable reason.

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { logLine, refusedLog, refusedAfter, refusedWaitMs, passedBy, runOutcome } from "../cli/runner.mjs";
-import { failedExitOf } from "../cli/runner-failure.mjs";
+import { failedExitOf, stderrTail } from "../cli/runner-failure.mjs";
 
 const task = { project: "atelier", agent: "codex", actor: "codex/astra", item: { id: "t173", head: "h", request: 4, dispatch: { job: "review" } } };
 const failedRun = (stderr) => ({ phase: "failed", reason: "harness exited 1", taskFailure: true, harnessExit: failedExitOf({ code: 1, stderr }) });
@@ -67,9 +67,20 @@ test("a refused run is logged once with its exit and stderr, and reported to the
   assert.match(lines[0], /no route to model\nbye/);
 });
 
-test("newline-terminated stderr of 30 lines logs the last 20 lines, long lines included", () => {
-  const stderr = Array.from({ length: 30 }, (_, i) => `err ${i + 1} ${"x".repeat(600)}`).join("\n") + "\n";
-  const text = refusedLog(task, failedRun(stderr));
-  const numbers = [...text.matchAll(/err (\d+) /g)].map((m) => Number(m[1]));
-  assert.deepEqual(numbers, Array.from({ length: 20 }, (_, i) => i + 11));
+test("newline-terminated stderr of 30 lines logs the last 20 lines by content", () => {
+  const lines = Array.from({ length: 30 }, (_, i) => `err ${i + 1} ${"x".repeat(600)} end${i + 1}`);
+  const text = refusedLog(task, failedRun(lines.join("\n") + "\n"));
+  for (const l of lines.slice(10)) assert.ok(text.includes(l), l.slice(0, 12));
+  for (const l of lines.slice(0, 10)) assert.ok(!text.includes(l.slice(0, 12)));
+});
+
+test("a single 2000-character stderr line is logged whole", () => {
+  const line = `${"a".repeat(1990)}DIAGNOSTIC`;
+  assert.ok(refusedLog(task, failedRun(line)).includes(line));
+});
+
+test("stderr beyond 64 KB keeps its end", () => {
+  const tail = stderrTail("y".repeat(100_000) + "THE END");
+  assert.equal(tail.length, 65536);
+  assert.ok(tail.endsWith("THE END"));
 });
