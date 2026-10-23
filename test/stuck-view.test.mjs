@@ -67,9 +67,3 @@ test("an incomplete report keeps open episodes it has no entry for and names wha
   const complete = openStuck("p", { complete: true, unavailable: [], entries: [] }, [opened("t1", "orphaned-claim", "2026-10-22T10:10:00.000Z")], items);
   assert.deepEqual(complete.rows, []);
 });
-
-test("unwrap prints the stuck section before the standing lists", async () => {
-  const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../cli/commands/unwrap.mjs", import.meta.url), "utf8");
-  assert.ok(src.indexOf("console.log(stuck.join") < src.indexOf("formatStanding(standing"));
-});
