@@ -991,12 +991,14 @@ async function reviewOnce(io, { id, name, itemPath, reviewer, head: pushed, reco
     try { offers = await request("GET", "/runners"); } catch { /* without the offers the wait is explained as before */ }
     const slash = (ask.reviewer ?? "").indexOf("/");
     const asked = slash > 0 ? { to: "home", agent: ask.reviewer.slice(0, slash), model: ask.reviewer.slice(slash + 1), by: "atelier/orchestrator", at: since, note: "", job: "review" } : null;
-    const dead = offers && asked ? unoffered(asked, Array.isArray(offers) ? offers : []) : null;
+    const dead = offers && asked ? unoffered(asked, Array.isArray(offers) ? offers : [], new Date(), name) : null;
     // Only the jobs the runners that offer this reviewer could also take are
     // ahead of it (t220): a job for a model or project they do not serve
-    // never delays it. Without the offers every older job is counted.
-    const servers = asked && Array.isArray(offers) ? liveOffers(offers).filter((o) => assign(asked, o, name) !== null) : [];
-    const servable = (q) => !servers.length || servers.some((o) => q.item?.dispatch && assign(q.item.dispatch, o, q.project) !== null);
+    // never delays it. Without the offers every older job is counted; offers
+    // that are known but leave no runner for this project were said as dead.
+    const known = asked && Array.isArray(offers);
+    const servers = known ? liveOffers(offers).filter((o) => assign(asked, o, name) !== null) : [];
+    const servable = (q) => !known || servers.some((o) => q.item?.dispatch && assign(q.item.dispatch, o, q.project) !== null);
     let line;
     if (dead) {
       line = `The review request is not claimed yet, and ${dead}. It will not be claimed until a runner that offers ${ask.reviewer} for the review job asks the server for work. Review it by hand (atelier review ${id} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again with --reviewer H/M to ask a model a live runner offers.`;
