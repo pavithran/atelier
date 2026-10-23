@@ -330,11 +330,14 @@ export async function runCommand(argv, { cwd, env, timeoutMs, out = process.stdo
   return { status, signal: r.signal ?? null, output: why ? `${output}\n[atelier] ${why}` : output, durationMs, passed: !r.error && r.status === 0 };
 }
 
+// The one GET this module makes, for runRequest and the if_changed read.
+const get = (url, options) => fetch(url, options);
+
 // A GET of the URL, following redirects, that must end with the status.
 export async function runRequest(run) {
   const started = Date.now();
   try {
-    const res = await fetch(run.request, { redirect: "follow", signal: AbortSignal.timeout(run.timeoutMs) });
+    const res = await get(run.request, { redirect: "follow", signal: AbortSignal.timeout(run.timeoutMs) });
     await res.body?.cancel();
     const moved = res.url && res.url !== run.request ? ` at ${res.url}` : "";
     return { status: null, signal: null, durationMs: Date.now() - started, passed: res.status === run.status, output: `${run.request} answered ${res.status}${moved}; expected ${run.status}` };
@@ -348,7 +351,7 @@ export async function runRequest(run) {
 // commit its URL reports as delivered and `head`; when that commit cannot be
 // read or is not in the checkout, the run happens, and says why. A verify
 // step whose delivery step was skipped throughout has nothing new to verify.
-export async function resolveSkips(plan, { git, cwd, head, fetchImpl = fetch }) {
+export async function resolveSkips(plan, { git, cwd, head, fetchImpl = get }) {
   for (const s of plan.steps) {
     for (const run of s.runs) {
       if (!run.ifChanged) continue;
@@ -401,7 +404,7 @@ export async function ship(ctx) {
   if (!commit) refusals.push("the baseline has no commits yet; run atelier init in the checkout first");
   else if (ctx.paired(commit) !== head) refusals.push(`HEAD ${short(head)} is not the baseline's head ${short(commit)}; ship runs only the revision Atelier holds. Merge with atelier merge, publish with atelier wrap, or check out the baseline's head, then ship again`);
   const plan = composeShip(cwd);
-  if (!plan.problems.length) await resolveSkips(plan, { git, cwd, head, fetchImpl: ctx.fetch });
+  if (!plan.problems.length) await resolveSkips(plan, { git, cwd, head });
   let target = null;
   const pushStep = plan.steps.find((s) => s.step === "push");
   if (pushStep) {
