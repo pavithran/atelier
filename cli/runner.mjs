@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { harnessReady } from "./harness/adapter.mjs";
+import { harnessReady, loadClaudeToken } from "./harness/adapter.mjs";
+import { expiryFromToken, tokenExpiry } from "../src/runners/readiness.ts";
 import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, lstatSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
@@ -700,6 +701,58 @@ export function reviewToken(config, model, actor, deps = {}) {
     return { refused: `the agent token under tokens["${model}"] (${where}) is the developer's token: a review must not use the developer's token (atelier token issue --as ${actor}, then store that token there)` };
   }
   return { token };
+}
+
+// The expiry a credential's own metadata gives (t234), as an ISO instant, or
+// null when it gives none: the `exp` claim of a token that is a JWT, else the
+// first line of a `<file>.expires` beside a token file, which the developer
+// writes when issuing the token. An opaque token in the Keychain carries none.
+function credentialExpiry(token, file, home) {
+  const claimed = expiryFromToken(token);
+  if (claimed || !file) return claimed;
+  try {
+    const path = file.startsWith("~/") ? join(home, file.slice(2)) : file;
+    const first = readFileSync(`${path}.expires`, "utf8").split(/\r?\n/)[0].trim();
+    return Number.isFinite(Date.parse(first)) ? new Date(first).toISOString() : null;
+  } catch { return null; }
+}
+
+// What the self-check reports about the runner's credentials (t234): each
+// reviewer token `tokens` names (readable, not the developer's, when it
+// expires) and the Claude token file (readable, when it expires). An expiry
+// within TOKEN_WARN_DAYS is "expiring" and a warning only: nothing here
+// withdraws a credential that is still valid. No value or path leaves this
+// function, only a model id, a state, an expiry and the step to take.
+// deps: env, home, readSecret, ownerTokens, now.
+export function credentialReadiness(config, deps = {}) {
+  const home = deps.home ?? homedir(), now = deps.now ?? Date.now();
+  const env = deps.env ?? process.env;
+  let owners = [];
+  try { owners = (deps.ownerTokens ?? (() => ownerTokens(env)))(); } catch { /* An unreadable owner store leaves nothing to compare with. */ }
+  const report = (kind, name, token, where, recoveryFor) => {
+    const expiresAt = credentialExpiry(token, where?.includes("/") ? where : null, home);
+    const { state, daysLeft } = tokenExpiry(expiresAt, now);
+    return { kind, name, state, expiresAt, daysLeft, recovery: state === "expiring" || state === "expired" ? recoveryFor(state) : null };
+  };
+  const out = [];
+  for (const [model, where] of Object.entries(config.tokens ?? {})) {
+    const entry = { kind: "reviewer", name: model, expiresAt: null, daysLeft: null };
+    if (!where.includes("/") && isOwnerSecretName(where)) { out.push({ ...entry, state: "developers", recovery: `tokens["${model}"] names the developer's token; issue the reviewer its own (atelier token issue --as AGENT/${model})` }); continue; }
+    let token;
+    try { token = readAgentToken(where, { env, home, ...(deps.readSecret ? { readSecret: deps.readSecret } : {}) }); }
+    catch (error) { out.push({ ...entry, state: "unreadable", recovery: `the token for ${model} could not be read: ${String(error.message).split("\n")[0].slice(0, 160)}` }); continue; }
+    if (!token) { out.push({ ...entry, state: "unreadable", recovery: `the token for ${model} is missing; issue one (atelier token issue --as AGENT/${model}) and store it under tokens["${model}"]` }); continue; }
+    if (owners.some((owner) => owner && owner === token)) { out.push({ ...entry, state: "developers", recovery: `the token for ${model} is the developer's; issue the reviewer its own (atelier token issue --as AGENT/${model})` }); continue; }
+    out.push(report("reviewer", model, token, where, (state) => `the token for ${model} ${state === "expired" ? "has expired" : "expires soon"}; issue a new one (atelier token issue --as AGENT/${model}) and replace it`));
+  }
+  if (config.claudeTokenFile) {
+    const entry = { kind: "claude", name: "claude", expiresAt: null, daysLeft: null };
+    let token;
+    try { token = loadClaudeToken(config.claudeTokenFile, home); }
+    catch (error) { out.push({ ...entry, state: "unreadable", recovery: `${String(error.message).split("\n")[0].slice(0, 160)}; run: claude setup-token and save it there` }); return out; }
+    out.push(report("claude", "claude", token, config.claudeTokenFile, (state) => `the Claude token ${state === "expired" ? "has expired" : "expires soon"}; run: claude setup-token and replace the file`));
+  }
+  return out;
 }
 
 // Prepare Node dependencies on the host before entering the review sandbox.
@@ -1510,6 +1563,16 @@ export const pauseLine = (p) => `${p.harness} paused until ${p.resetAt}${p.fallb
 // The offer without the models of any paused harness.
 export function unpausedOffer(offer, pauses) {
   return { ...offer, agents: offer.agents.filter(({ agent }) => !pauses[agent]) };
+}
+
+// The state a readiness answer reports (t234): ready, signed-out, or unknown
+// when the probe could not tell (a timeout, a missing binary, a failed
+// check). An answer that carries a state names it; Claude Code's and Codex's
+// say only why, and a "could not" in it means the probe did not settle it.
+export function harnessState(answer) {
+  if (answer?.ready) return "ready";
+  if (answer?.state === "signed-out" || answer?.state === "unknown") return answer.state;
+  return /\bcould not\b|readiness check failed/i.test(answer?.why ?? "") ? "unknown" : "signed-out";
 }
 
 // How often a harness's readiness is asked again (t665).
@@ -4009,7 +4072,26 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // dropped from the offer with one log line naming the fix, and offered again
   // with one line when it is ready.
   const unready = new Map(), readyChecked = new Map();
+  // What the self-check last found (t234), sent with every poll and
+  // heartbeat: per probed harness its state, the probe's time and the step
+  // to take, and the state of each credential.
+  const probed = new Map(), credentialStates = new Map();
+  let credentials = [], credentialsChecked = -Infinity;
+  const readinessReport = () => (probed.size || credentials.length) ? { readiness: { harnesses: [...probed.values()], tokens: credentials } } : {};
+  const checkCredentials = () => {
+    if (integrating || now() - credentialsChecked < READY_RECHECK_MS) return;
+    credentialsChecked = now();
+    try { credentials = credentialReadiness(config, { env: taskIO.env ?? process.env, ...(taskIO.ownerTokens ? { ownerTokens: taskIO.ownerTokens } : {}), ...(taskIO.readSecret ? { readSecret: taskIO.readSecret } : {}), now: now() }); }
+    catch (error) { io.log(`could not check the runner's credentials: ${error.message}`); return; }
+    for (const c of credentials) {
+      const key = `${c.kind}/${c.name}`, bad = c.state !== "ok" && c.state !== "unknown";
+      if (credentialStates.get(key) === c.state) continue;
+      credentialStates.set(key, c.state);
+      if (bad) io.log(`${c.kind === "claude" ? "Claude token file" : `reviewer token ${c.name}`}: ${c.state}${c.expiresAt ? ` (${c.state === "expired" ? "expired" : "expires"} ${c.expiresAt.slice(0, 10)})` : ""}. ${c.recovery}`);
+    }
+  };
   const checkReady = async () => {
+    checkCredentials();
     for (const agent of config.agents ?? []) {
       if (!runsShippedAdapter(agent) || now() - (readyChecked.get(agent.agent) ?? -Infinity) < READY_RECHECK_MS) continue;
       readyChecked.set(agent.agent, now());
@@ -4020,6 +4102,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         answer = await readyCheck(agent.agent, { env, command: agent.command });
       } catch (error) { answer = { ready: false, why: `its readiness check failed (${error.message})` }; }
       if (controller.signal.aborted) return;
+      probed.set(agent.agent, { harness: agent.agent, state: harnessState(answer), probedAt: new Date(now()).toISOString(), recovery: answer?.ready ? null : (answer?.why ?? null) });
       if (!answer?.ready && !unready.has(agent.agent)) io.log(`${agent.agent} is not offered: ${answer?.why ?? "it is not ready"}. Its models are offered again once it is.`);
       if (answer?.ready && unready.has(agent.agent)) io.log(`${agent.agent} is ready again; its models are offered.`);
       if (answer?.ready) unready.delete(agent.agent); else unready.set(agent.agent, answer?.why || "not ready");
@@ -4415,7 +4498,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         let tasks;
         await checkReady();
         if (controller.signal.aborted) break;
-        pollOffer = unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) });
+        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport() };
         try { tasks = await queue(pollOffer, controller.signal); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
@@ -4493,7 +4576,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat(offer, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
           if (state.providerLimit) {
             pauseHarness(task, state);

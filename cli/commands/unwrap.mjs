@@ -1,7 +1,7 @@
 // atelier unwrap. Its forms, flags and help are declared in src/usage/commands/unwrap.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readStuck, readyOf, stageEntries, stageLines, stuckLines } from "../status.mjs";
+import { formatRunners, readStuck, readyOf, stageEntries, stageLines, stuckLines } from "../status.mjs";
 import { UNWRAP_RELAY, fileExcerpt, handoffNotes, sessionNoteText } from "../../src/sessions.ts";
 import { OWNER, OWNER_NAME, P, actor, at, call, request, checkoutStatusLine, formatStanding, git, project, remoteStatusLines, server, sessionCheckout, sessionFiles, sessionTree } from "../atelier.mjs";
 
@@ -17,6 +17,9 @@ export default async function unwrapCommand() {
   const mode = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
   const stages = stageLines(stageEntries(read?.items, readyOf(mode)), "");
   if (stages.length) console.log(stages.join("\n"));
+  // The runners and what each reported about itself (t234), as status shows them.
+  const offers = await request("GET", "/runners", undefined, as).catch(() => null);
+  if (Array.isArray(offers) && offers.length) console.log(formatRunners(offers).join("\n"));
   console.log(await checkoutStatusLine(name, as));
   if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
   if (cwd) {
