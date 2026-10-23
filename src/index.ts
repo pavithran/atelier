@@ -1495,7 +1495,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // letting it wait as though merely unclaimed, and plan routing picks from
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
-    const projects = (await index(env).askQueue(asked, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)) && (!asked?.projects || namesOf(p).some((n) => asked.projects!.includes(n))));
+    const projects = (await index(env).askQueue(asked, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)) && (!asked?.projects || !c.token?.projects || namesOf(p).some((n) => asked.projects!.includes(n))));
     // The offer names each project its token serves by its current name too,
     // as askQueue records it, so a project renamed since the token was
     // issued reads the runner as serving it (servesProject, t652).
