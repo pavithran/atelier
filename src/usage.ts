@@ -173,6 +173,7 @@ task with exactly one holder. Never edit the project checkout directly.
    of the selected company from every contributor counts; a contributor
    never reviews its own work.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
+9. Every 5 minutes the server records a task stuck at a stage past its limit.
 
 ${OWNER_LANDING}
 

@@ -2106,6 +2106,66 @@ export function stageOf(item: Item, facts: TaskStageFacts = {}): { stage: TaskSt
   return at("filed");
 }
 
+// How long a task may stay at a stage before the five-minute tick records it
+// as stuck (t223). Stages not listed (building, landed, shipped) have no
+// limit: a builder's silence is the stuck report's, and a finished task is not
+// waiting for anything.
+const MINUTE_MS = 60_000, HOUR_MS = 3_600_000;
+export const STAGE_LIMITS_MS: Readonly<Partial<Record<TaskStage, number>>> = {
+  filed: 24 * HOUR_MS, agreed: 48 * HOUR_MS, queued: 10 * MINUTE_MS, built: 20 * MINUTE_MS,
+  checked: 10 * MINUTE_MS, reviewed: 2 * HOUR_MS, landable: 5 * MINUTE_MS,
+};
+export const STAGE_TICK_MS = 5 * MINUTE_MS;
+// A tick older than this is the first line of `status`.
+export const STAGE_TICK_STALE_MS = 15 * MINUTE_MS;
+
+// The times a stage is entered from, which stageOf does not carry. Each is
+// the time of the record that put the task at the stage; null when it is not
+// known, and a stage with no known entry time is never stuck.
+export interface StageClock {
+  agreedAt?: string | null;       // the latest approved criteria review
+  evidence?: readonly { head: string; at: string }[];
+  reviews?: readonly { head: string; at: string; approve: boolean }[];
+  readyAt?: string | null;        // a standing fast-build report
+  reviewClaimed?: boolean;        // a review of the head is claimed
+}
+
+const latest = (times: readonly (string | null | undefined)[]): string | null =>
+  times.reduce<string | null>((m, t) => (t && (!m || Date.parse(t) > Date.parse(m)) ? t : m), null);
+
+// When the task entered `stage` at `head`.
+export function stageEnteredAt(stage: TaskStage, item: Item, head: string | null, clock: StageClock = {}): string | null {
+  const evidence = (clock.evidence ?? []).filter((e) => e.head === head).map((e) => e.at);
+  const reviews = (clock.reviews ?? []).filter((r) => r.head === head && r.approve).map((r) => r.at);
+  switch (stage) {
+    case "filed": return item.createdAt;
+    case "agreed": return clock.agreedAt ?? null;
+    case "queued": return item.dispatch?.at ?? null;
+    case "built": return item.lastPushAt ?? clock.readyAt ?? null;
+    case "checked": return latest(evidence);
+    case "reviewed": return latest(reviews);
+    case "landable": return latest([...evidence, ...reviews]);
+    default: return null;
+  }
+}
+
+// Whether the task has stayed past the stage's limit at `now`. A checked
+// stage whose review is claimed is being acted on, so it is not stuck.
+export function stageOverrun(stage: TaskStage, enteredAt: string | null, now: Date, clock: StageClock = {}): { limitMs: number; overMs: number } | null {
+  const limit = STAGE_LIMITS_MS[stage];
+  if (limit === undefined || !enteredAt) return null;
+  if (stage === "checked" && clock.reviewClaimed) return null;
+  const t = Date.parse(enteredAt);
+  if (Number.isNaN(t)) return null;
+  const over = now.getTime() - t - limit;
+  return over > 0 ? { limitMs: limit, overMs: over } : null;
+}
+
+// Whether the tick can act on a stuck stage. It can act on none yet: rerouting,
+// asking again and queueing a landing are later tasks'. A stage the tick cannot
+// act on is told to the developer in the same tick it is found stuck.
+export const tickCanAct = (_stage: TaskStage): boolean => false;
+
 // "What needs the project owner now?" Only things a person must decide or
 // unblock rank high; failing checks are the item owner's problem and rank
 // below anything awaiting the project owner.

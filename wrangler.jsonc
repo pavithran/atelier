@@ -18,7 +18,9 @@
   // list replaces whatever schedules an earlier deploy left on the Worker.
   // Every 10 minutes the stuck rules are evaluated for each project and the
   // opened and cleared episodes recorded (t196, recordStuckEpisodes).
-  "triggers": { "crons": ["*/10 * * * *", "7 */6 * * *"] },
+  // Every 5 minutes each live task's stage is read against its limit and the
+  // stage events recorded (t223, recordStageTicks).
+  "triggers": { "crons": ["*/5 * * * *", "*/10 * * * *", "7 */6 * * *"] },
   // Cloudflare Access in front of the owner's pages (src/access.ts): set all
   // three, as vars or secrets, and the Worker verifies the Access assertion
   // on every owner route — /login and its token form among them — against the
