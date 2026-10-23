@@ -2211,6 +2211,9 @@ test("stageOf takes the first stage that holds, from filed up to shipped", () =>
   const protectedPass = pass({ changedPaths: ["AGENTS.md"] });
   assert.equal(stageOf(item(), { ...ctx, evidence: [protectedPass] }).stage, "checked");
   assert.equal(stageOf(item(), { ...ctx, evidence: [protectedPass], reviews: [review("codex/gpt-5.5")] }).stage, "landable");
+  const approved = [review("codex/gpt-5.5")];
+  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["AGENTS.md"], passed: false })], reviews: approved }).stage, "reviewed", "approvals at head with a failed check");
+  assert.equal(stageOf(item(), { ...ctx, evidence: [pass({ changedPaths: ["AGENTS.md"], claim: "changed paths" })], reviews: approved }).stage, "reviewed", "approvals at head with a pending check");
   assert.equal(stageOf(item({ state: "merged" }), ctx).stage, "landed");
   assert.equal(stageOf(item({ state: "merged" }), { shipped: true }).stage, "shipped");
 });

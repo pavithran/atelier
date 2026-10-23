@@ -2090,11 +2090,13 @@ export function stageOf(item: Item, facts: TaskStageFacts = {}): { stage: TaskSt
     if (gate(item, facts.policy, facts.evidence, facts.reviews, owner).ready) return at("landable", { head, source: "push" });
     const view = evidenceAt(facts.policy, facts.evidence, head);
     const checked = view.changedPaths !== null && view.checks.every((c) => c.grade !== "pending" && c.passed);
-    if (checked) {
-      const need = approvalsNeeded(facts.policy, changeClass(view.changedPaths!, facts.policy), view.changedPaths);
-      if (gateApprovals(item, facts.policy, facts.evidence, facts.reviews, owner).length >= need.count) return at("reviewed", { head, source: "push" });
-      return at("checked", { head, source: "push" });
+    if (view.changedPaths !== null) {
+      // Approvals do not wait on checks; a change that needs none is reviewed
+      // only once its checks passed, or every task would be.
+      const need = approvalsNeeded(facts.policy, changeClass(view.changedPaths, facts.policy), view.changedPaths);
+      if (gateApprovals(item, facts.policy, facts.evidence, facts.reviews, owner).length >= need.count && (checked || need.count > 0)) return at("reviewed", { head, source: "push" });
     }
+    if (checked) return at("checked", { head, source: "push" });
   }
   if (item.head) return at("built", { head: item.head, source: "push" });
   if (ready) return at("built", { head: ready.commit, machine: ready.runner, path: ready.workspace, source: "fast_ready" });
