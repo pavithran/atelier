@@ -322,16 +322,16 @@ export function cleanLines(counts) {
     : `Clean-up: atelier clean --project ${c.project} would remove ${c.count} local ${c.count === 1 ? "directory" : "directories"}.`);
 }
 
-// Open stuck episodes, listed before any ordinary item (t198). `stuck` is
-// openStuck's view (src/stuck/view.ts), or absent when it was not asked for.
-// Anything unread is said, never shown as nothing stuck.
-// Reads one project's open stuck episodes for the surfaces above: `get` is a
-// function path -> answer or null (a read that failed).
+// Reads one project's open stuck episodes (t198): `get` is a function from a
+// path to the answer, or null when the read failed.
 export async function readStuck(get, base, name, items) {
   const [report, transitions] = await Promise.all([get(`${base}/stuck`), get(`${base}/stuck/episodes`)]);
   return openStuck(name, report && Array.isArray(report.entries) ? report : null, Array.isArray(transitions) ? transitions : null, items);
 }
 const stuckTime = (t) => (t === "unknown" ? "unknown" : branchTime(t));
+// Open stuck episodes, listed before any ordinary item. `stuck` is openStuck's
+// view (src/stuck/view.ts), or absent when it was not asked for. Anything
+// unread is said, never shown as nothing stuck.
 export function stuckLines(stuck, indent = "  ") {
   if (!stuck) return [];
   const out = [];
