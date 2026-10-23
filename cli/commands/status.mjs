@@ -1,5 +1,5 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, readyOf, stageEntries, stageLines, statusJson } from "../status.mjs";
+import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, readStuck, readyOf, stageEntries, stageLines, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { CACHE, OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
@@ -96,7 +96,9 @@ export default async function statusCommand() {
     const mismatches = read?.project?.policy && path ? reviewDisagreements(read.project.policy, readInstructions(path)) : [];
     // The policy comes along so the listing can say a project runs in
     // single-family mode (formatStatus).
-    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), branches };
+    const items = Array.isArray(read?.items) ? read.items : null;
+    const stuck = await readStuck((path) => request("GET", path, undefined, OWNER).catch(() => null), P(p.name), p.name, items);
+    return { stuck, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());

@@ -20,6 +20,7 @@
 // jobs it does not.
 import { DEFAULT_THRESHOLDS, isStale, lowBalances, windowShortages } from "../src/usage/report.ts";
 import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
+import { openStuck } from "../src/stuck/view.ts";
 import { stripVTControlCharacters } from "node:util";
 import { directionText, expiredBlocks, forkAgeText, mergedByOverride, stageOf } from "../src/rules.ts";
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
@@ -115,6 +116,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       // The developer's branches (t641), when they were read.
       ...(Array.isArray(v.branches) ? { branches: v.branches } : {}),
       overlaps: a.overlaps,
+      ...(v.stuck ? { stuck: v.stuck } : {}),
       attention: { owner: a.owner.map((t) => ({ ...t, url: absolute(server, t.href) })), pipeline: a.pipeline, unknown: a.unknown },
       // The merges that went in on the owner's override, each with the link
       // to its page (t371).
@@ -320,6 +322,32 @@ export function cleanLines(counts) {
     : `Clean-up: atelier clean --project ${c.project} would remove ${c.count} local ${c.count === 1 ? "directory" : "directories"}.`);
 }
 
+// Open stuck episodes, listed before any ordinary item (t198). `stuck` is
+// openStuck's view (src/stuck/view.ts), or absent when it was not asked for.
+// Anything unread is said, never shown as nothing stuck.
+// Reads one project's open stuck episodes for the surfaces above: `get` is a
+// function path -> answer or null (a read that failed).
+export async function readStuck(get, base, name, items) {
+  const [report, transitions] = await Promise.all([get(`${base}/stuck`), get(`${base}/stuck/episodes`)]);
+  return openStuck(name, report && Array.isArray(report.entries) ? report : null, Array.isArray(transitions) ? transitions : null, items);
+}
+const stuckTime = (t) => (t === "unknown" ? "unknown" : branchTime(t));
+export function stuckLines(stuck, indent = "  ") {
+  if (!stuck) return [];
+  const out = [];
+  if (stuck.rows.length) {
+    out.push(`${indent}Stuck`);
+    for (const r of stuck.rows) {
+      out.push(`${indent}  ${flatText(r.item)}  ${flatText(r.cause)}: ${flatText(r.reason)}`);
+      out.push(`${indent}    First seen ${stuckTime(r.firstSeen)}${r.firstSeen === "unknown" && r.since !== "unknown" ? `; the cause dates from ${stuckTime(r.since)}` : ""}`);
+      out.push(`${indent}    Evidence: ${flatText(r.evidence)}`);
+      out.push(`${indent}    Next: ${flatText(r.next)}`);
+    }
+  }
+  for (const x of stuck.notRead) out.push(`${indent}Stuck work: ${x} unknown (not read)`);
+  return out;
+}
+
 export function formatStatus(views, waiting = {}) {
   if (!views.length) return "No projects.";
   const offers = Array.isArray(waiting.offers) ? waiting.offers : null;
@@ -345,6 +373,7 @@ export function formatStatus(views, waiting = {}) {
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     // Fast mode, as status --project prints it (t629).
     if (v.mode) lines.push(`  ${flatText(v.mode)}`);
+    lines.push(...stuckLines(v.stuck));
     if (!owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.
@@ -482,8 +511,10 @@ export function formatInbox(views, waiting = {}) {
     const stages = stageEntries(v.items, v.ready);
     // A project with nothing waiting is left out unless a fast build of it ended ready
     // and waits to be merged.
-    if (!a.owner.length && !a.unknown.length && !stages.some((e) => e.detail.source === "fast_ready")) continue;
+    const stuck = stuckLines(v.stuck, "    ");
+    if (!a.owner.length && !a.unknown.length && !stuck.length && !stages.some((e) => e.detail.source === "fast_ready")) continue;
     lines.push(`${v.title ? `${v.title} (${v.name})` : v.name}: ${a.owner.length} waiting on you${a.unknown.length ? ", and more may be" : ""}`);
+    lines.push(...stuck);
     lines.push(...ownerLines(a.owner, waiting.server));
     for (const x of a.unknown) lines.push(`    Not read: ${x}`);
     if (a.pipeline.length) lines.push(`    In the pipeline: ${pipelineLine(a)}; none waits on you.`);
