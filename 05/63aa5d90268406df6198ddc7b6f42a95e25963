@@ -1,0 +1,64 @@
+atelier atelier/t219 "Builders run the full suite green before pushing"
+accepted head 4927849457f1e1abb3304933c8a2b98067f9ef01
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T19:27:21.771Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-23T19:27:25.016Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-23T19:38:30.083Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-23T19:38:34.005Z
+REVIEW approve by codex/gpt-6-astra at 4927849457f1e1abb3304933c8a2b98067f9ef01, recorded by codex/gpt-6-astra
+CHECKED TREE d650f7ce17f132218c777992258af3eaf954ae43: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-23T13:48:57.937Z pavi item.created
+2026-10-23T13:48:58.518Z pavi item.edited
+2026-10-23T13:48:58.518Z pavi criteria.revised
+2026-10-23T13:48:58.518Z pavi item.criteria_changed
+2026-10-23T13:49:56.499Z pavi criteria_review.requested
+2026-10-23T13:50:27.474Z codex/gpt-6-astra criteria_review.claimed
+2026-10-23T13:50:42.126Z codex/gpt-6-astra criteria_review.approved
+2026-10-23T13:51:19.050Z pavi item.dispatched
+2026-10-23T13:59:20.565Z claude-code/sonnet-5.5 item.claimed
+2026-10-23T13:59:47.186Z claude-code/sonnet-5.5 fork.created
+2026-10-23T14:00:09.060Z claude-code/sonnet-5.5 item.released
+2026-10-23T14:00:24.465Z claude-code/sonnet-5.5 item.claimed
+2026-10-23T14:06:48.133Z claude-code/sonnet-5.5 push.observed
+2026-10-23T14:16:07.885Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T14:16:10.937Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T14:16:11.789Z claude-code/sonnet-5.5 item.submitted
+2026-10-23T15:50:12.605Z atelier/orchestrator refresh.queued
+2026-10-23T15:55:43.722Z pavi land.merge
+2026-10-23T15:55:44.682Z pavi land.regenerate
+2026-10-23T15:55:48.545Z claude-code/sonnet-5.5 push.observed
+2026-10-23T15:55:50.361Z pavi land.push
+2026-10-23T16:06:30.368Z atelier/orchestrator refresh.queued
+2026-10-23T16:10:43.819Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T16:20:45.378Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T16:20:49.246Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T16:20:50.057Z pavi land.check
+2026-10-23T16:20:50.717Z claude-code/sonnet-5.5 item.submitted
+2026-10-23T16:20:51.109Z pavi land.submit
+2026-10-23T16:20:51.424Z pavi review.requested
+2026-10-23T16:21:00.004Z codex/gpt-6-astra review.claimed
+2026-10-23T16:27:00.771Z codex/gpt-6-astra review.rejected
+2026-10-23T16:27:06.220Z pavi land.review
+2026-10-23T17:26:51.653Z pavi item.released
+2026-10-23T17:26:51.653Z pavi item.dispatched
+2026-10-23T19:04:23.056Z claude-code/sonnet-5.5 item.claimed
+2026-10-23T19:18:41.447Z claude-code/sonnet-5.5 push.observed
+2026-10-23T19:27:22.352Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T19:27:25.368Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T19:27:26.204Z claude-code/sonnet-5.5 item.submitted
+2026-10-23T19:29:20.321Z pavi land.merge
+2026-10-23T19:29:21.448Z pavi land.regenerate
+2026-10-23T19:29:23.490Z pavi land.push
+2026-10-23T19:38:30.932Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T19:38:34.350Z claude-code/sonnet-5.5 evidence.observed
+2026-10-23T19:38:35.210Z pavi land.check
+2026-10-23T19:38:35.667Z claude-code/sonnet-5.5 item.submitted
+2026-10-23T19:38:36.028Z pavi land.submit
+2026-10-23T19:38:36.331Z pavi review.requested
+2026-10-23T19:38:38.991Z codex/gpt-6-astra review.claimed
+2026-10-23T19:40:43.524Z codex/gpt-6-astra review.approved
+2026-10-23T19:40:44.027Z pavi land.review
+2026-10-23T19:40:44.501Z pavi land.lease
+2026-10-23T19:40:46.924Z pavi item.accepted
+2026-10-23T19:40:47.130Z pavi land.accept
