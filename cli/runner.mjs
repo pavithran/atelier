@@ -3474,7 +3474,9 @@ export function skipRetryPolls(misses) {
 // (t273): it is no task failure and no infrastructure failure, so the loop
 // keeps serving the item's jobs.
 export function failureCount(count, state) {
-  if (state.providerLimit || state.notReady != null) return count;
+  // A run the harness refused is held back by refusedAfter's growing wait, up
+  // to an hour (t191), not by this cap, which would stop its retries after two.
+  if (state.providerLimit || state.notReady != null || runOutcome(state) === "refused") return count;
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? 1 : 0);
 }
 
