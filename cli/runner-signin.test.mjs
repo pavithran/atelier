@@ -192,7 +192,7 @@ test("the readiness check runs on the heartbeat during a long job, so a harness 
   const assignment = { project: "demo", actor: "claude-code/m1", agent: "claude-code", model: "m1", item: { id: "t1", title: "Change", scope: ["src/**"], accept: ["works"], kind: "plan", dispatch: { job: "plan" } } };
   const logs = [];
   let clock = 1_000_000, probes = 0, headReads = 0;
-  let sawProbe; const probed = new Promise((resolve) => { sawProbe = resolve; });
+  let sawProbe, fallback; const probed = new Promise((resolve) => { sawProbe = resolve; });
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config, once: true }, {
     now: () => clock, limitFile: join(dir, "limits.json"), credential: "runner-secret", workspacePath: () => workspace, heartbeatMs: 10,
     queue: async () => [assignment],
@@ -208,7 +208,9 @@ test("the readiness check runs on the heartbeat during a long job, so a harness 
     executeChild: async (argv) => {
       if (/atelier-claude/.test(argv[0])) {
         clock += READY_RECHECK_MS;                     // ten minutes pass inside the job
-        await Promise.race([probed, new Promise((resolve) => setTimeout(resolve, 30_000))]);
+        const giveUp = new Promise((resolve) => { fallback = setTimeout(resolve, 30_000); });
+        await Promise.race([probed, giveUp]);
+        clearTimeout(fallback);
         writeFileSync(planFilePath(workspace), JSON.stringify({ goal: "Change" }));
       }
       return { code: 0, output: "", stderr: "" };
