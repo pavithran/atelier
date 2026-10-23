@@ -160,7 +160,7 @@ test('existing consecutive-failure and unanswered-rejection rules survive, with 
 });
 test('withdrawn and superseded review give-ups disappear; active jobs suppress stale run failures', () => {
   const run = { actor: 'reviewer/model', role: 'review', outcome: 'stalled', project: 'demo', item: 't1', detail: '', runner: 'home:review', at: at(1000) };
-  const s = snapshot({ items: [item({ state: 'submitted' })], openReviewItems: ['t1'] });
+  const s = snapshot({ items: [item({ state: 'submitted', createdAt: at(5000) })], openReviewItems: ['t1'] });
   assert.deepEqual(kinds(report(s, [], [run])), ['runner-give-up']);
   assert.deepEqual(kinds(report(s, [], [run], ['home:review'])), []);
   s.events.push(event(1, 'review.claimed', 500));
@@ -317,4 +317,16 @@ test('a give-up recorded after an ordinary release keeps the runner\'s reason in
   const r = report(s);
   assert.deepEqual(kinds(r), ['runner-give-up']);
   assert.match(r.entries[0].reason, /^runner home:studio gave it up: harness made no new commit/);
+});
+
+test('a run report from before the task was created is ignored', () => {
+  const run = { actor: 'reviewer/model', role: 'review', outcome: 'stalled', project: 'demo', item: 't1', detail: '', runner: 'home:review', at: at(10000) };
+  const make = createdAt => snapshot({ items: [item({ state: 'submitted', createdAt })], openReviewItems: ['t1'] });
+  assert.deepEqual(kinds(report(make(at(20000)), [], [run])), ['runner-give-up']);
+  assert.deepEqual(kinds(report(make(at(5000)), [], [run])), []);
+});
+test('an idle runner last polled over 48 hours ago is dropped; 47 hours still lists', () => {
+  const offer = ms => [{ runner: 'home:studio', kind: 'home', agents: [], at: at(ms) }];
+  assert.deepEqual(kinds(report(snapshot(), offer(47 * 3600000))), ['idle-runner']);
+  assert.deepEqual(kinds(report(snapshot(), offer(48 * 3600000 + 1))), []);
 });
