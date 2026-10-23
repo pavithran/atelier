@@ -109,8 +109,9 @@ test("builders run the full suite green before pushing, in a slot, on a budget t
   assert.match(budget, /commit your work and report validation_blocked with the slot wait and the run time/);
   const runner = briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier");
   for (const line of BUILDER_TESTS) assert.ok(runner.includes(line));
-  assert.match(runner, /load\.mjs'? -- timeout 2400 npm test/);
-  assert.match(runner, /the difference is the slot wait, and the rest is the run time/);
+  assert.match(runner, /load\.mjs'? -- sh -c 'date \+%s; exec timeout 2400 npm test'/);
+  assert.match(runner, /printed inside the slot, before the suite starts/);
+  assert.match(runner, /slot wait, and the printed one to the end is the run time/);
 });
 
 test("the builder's test lines still stand beside the screenshot line in every build brief that ran them", async () => {

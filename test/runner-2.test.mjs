@@ -839,8 +839,8 @@ test("a blocked marker holds back only its own actor's unverified head", async (
 
 test("the build brief asks for a validation_blocked line, and that line is read as blocked", () => {
   assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
-  // t219: the guide keeps validation_blocked for the builder's own failing tests; a suite timeout is named separately.
-  assert.match(ROLE_PROMPTS.build, /Only a failure in the tests of your own change that you cannot\nfix is `validation_blocked`/);
+  // t219: validation_blocked covers the builder's own unfixable failing tests and a suite timeout.
+  assert.match(ROLE_PROMPTS.build, /Only a failure in the tests of your own change that you cannot\nfix, or a suite timeout, is `validation_blocked`/);
   assert.match(ROLE_PROMPTS.build, /on a timeout, commit and report\nvalidation_blocked with the slot wait and run time/);
   assert.match(ROLE_PROMPTS.build, /Run the project's full required test command/);
   assert.match(ROLE_PROMPTS.build, /Never end with finished work uncommitted/);

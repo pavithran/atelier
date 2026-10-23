@@ -268,7 +268,7 @@ export function briefFor(item, project) {
     // passes (BUILDER_TESTS). The budget is a `timeout` run inside the slot
     // wrapper, so it starts once the slot is held and cannot spend queue time.
     ...BUILDER_TESTS,
-    `For example: node ${quoteShell(SLOT_WRAPPER)} -- timeout ${SUITE_BUDGET_SECONDS} npm test (gtimeout where timeout is missing). Note the time before you start it and the time its first output appears: the difference is the slot wait, and the rest is the run time.`,
+    `For example: node ${quoteShell(SLOT_WRAPPER)} -- sh -c 'date +%s; exec timeout ${SUITE_BUDGET_SECONDS} npm test' (gtimeout where timeout is missing). The date line is printed inside the slot, before the suite starts, so it marks slot acquisition even if the suite is silent: note the time before you run it; that time to the printed one is the slot wait, and the printed one to the end is the run time.`,
     BUILDER_SCREENSHOTS,
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
