@@ -27,6 +27,7 @@ test("a review runner's lease call keeps the CLI process alive and reaches the s
   let offered = false;
   const server = await serveRunner({ project: "atelier", id: "t21", answers: {
     "GET config": { ownerActor: "owner", ownerName: "The owner", actor },
+    "GET runners/me": { runner: "home:t505", projects: ["atelier"], expiresAt: null },
     "POST queue": () => {
       const answer = offered ? [] : [{ project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "opencode", model, actor }];
       offered = true;
