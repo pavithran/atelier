@@ -2264,6 +2264,29 @@ export function onlyProjects(entries, projects) {
   return projects ? entries.filter((entry) => projects.includes(entry?.project)) : entries;
 }
 
+// The projects a runner serves (t212): those its config and its token both
+// name. A config without projects restricts nothing, as before, and the
+// token alone bounds the offer on the server. A token that names none (an
+// owner's or agent's token, or a server that cannot say) leaves the config
+// alone. `mine` is the token's project names, or { projects, names } where
+// `names` lists every name each project answers to, current first, so a
+// project renamed since the token was issued is served under both. `lacking`
+// holds each config project the token does not serve, for the one line the
+// runner logs about it.
+export function servedProjects(configProjects, mine) {
+  const tokenProjects = Array.isArray(mine) ? mine : mine?.projects;
+  if (!Array.isArray(tokenProjects) || !configProjects) return { projects: configProjects, lacking: [] };
+  const groups = Array.isArray(mine?.names) ? mine.names.filter(Array.isArray) : [];
+  const served = new Set(), lacking = [];
+  for (const p of configProjects) {
+    const group = groups.find((names) => names.includes(p));
+    if (group) for (const n of group) served.add(n);
+    else if (tokenProjects.includes(p)) served.add(p);
+    else lacking.push(p);
+  }
+  return { projects: [...served], lacking };
+}
+
 // The order a poll's jobs are taken in: the gate's reviews first, in the
 // queue's order (t213), alongside criteria reviews (t438), then
 // pre-reviews (t524), then everything else.
@@ -2308,6 +2331,9 @@ export const MISSING_RECHECK_MS = 5 * 60_000;
 // The capability a server takes the infrastructure_miss run report under
 // (src/capability-declarations.ts).
 export const INFRASTRUCTURE_MISS = "runs.infrastructure-miss.v1";
+
+// The capability a server takes GET /runners/me under (t212).
+const RUNNER_ME = "runners.me.v1";
 
 // How many times a runner sends an infrastructure_miss report the server
 // did not take before it gives the report up (t591): with the skip reports'
@@ -3897,7 +3923,7 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -3909,6 +3935,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // The offer says when this process started (t420): what it passes by
   // after failures or a refused claim it forgets on a restart, so the
   // server's reasons naming this runner count only from then.
+  let served = config.projects;
   const offer = {
     ...(integrating ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] } : offerFrom(config, args.name)),
     started: new Date().toISOString(),
@@ -4284,6 +4311,26 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // exact jobs is read where the runner runs, not inferred from the
     // queue's silence.
     io.log(jobsLine(offer.jobs));
+    // The projects the token names against the config's (t212), asked once:
+    // a server without runners.me.v1, or a token that is not a runner's,
+    // leaves the config's list as it was.
+    if (!integrating) {
+      let mine = null;
+      try {
+        if (tokenProjects) mine = await tokenProjects(controller.signal);
+        else if (api?.server && credential && checkCapabilities(serverVersion, [RUNNER_ME]).ok) {
+          const res = await runnerTransport({ server: api.server(), credential, runner: args.name.toLowerCase() }).send("runner-me", {}, { signal: controller.signal });
+          if (res.ok && Array.isArray(res.data?.projects)) mine = { projects: res.data.projects, names: res.data.names };
+        }
+      } catch (error) { if (!controller.signal.aborted) line(`the token's projects could not be read (${error.message}); serving the config's alone`); }
+      const result = servedProjects(config.projects, mine);
+      served = result.projects;
+      // The offer says the same projects, so routing never picks this runner
+      // for work in one it leaves out.
+      if (served) offer.projects = [...served];
+      for (const p of result.lacking) line(`${p} is in the config but this runner's token does not serve it; it is left out`);
+      if (served && !served.length) line("the config and the token name no project in common; nothing will be offered");
+    }
     // The commit this process started from (t265), against which an idle
     // runner compares main's head and the deployed one. A --once run never
     // reloads.
@@ -4337,7 +4384,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     const sayIdleWhy = async (passed) => {
       let waiting = [], unread = null;
       if (idleWhy) { try { waiting = await idleWhy(pollOffer, controller.signal); } catch (error) { if (controller.signal.aborted) return; unread = error.message; } }
-      waiting = onlyProjects(Array.isArray(waiting) ? waiting : [], config.projects);
+      waiting = onlyProjects(Array.isArray(waiting) ? waiting : [], served);
       const own = new Set(passed.map((p) => p.task));
       const reasons = [...passed, ...waiting.filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
         .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
@@ -4373,7 +4420,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         // A config that names projects serves those alone (t172): the rest of
         // the queue is dropped here, before any job is chosen or skip reported.
-        tasks = onlyProjects(tasks, config.projects);
+        tasks = onlyProjects(tasks, served);
         if (controller.signal.aborted) break;
         polls++;
         // Skip reports the server did not take are tried again first, once
