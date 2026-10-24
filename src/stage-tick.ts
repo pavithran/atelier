@@ -13,16 +13,27 @@
 // by a fork under a new name (stage.rerouted, stage "preparing"); a second
 // stall is told. Each is keyed by task, head and stage, and read back from the
 // events, so a repeated tick or a lost reply changes nothing.
+//
+// It acts on two review stages too (t225). A review request claimed and left
+// unanswered past reviewAnswerHours is released and asked again once
+// (stage.retried), keyed by task and head and never by request number; the
+// second stale claim at that head is told. A checked task whose review
+// request stays unclaimed past the checked limit is re-pointed once to
+// another reviewer a live runner offers, of another family than every
+// contributor (stage.rerouted, stage "checked"); with none, or on a second
+// miss, it is stuck and told.
 
 import { assign, liveOffers, offering, offersFor, unoffered, type Dispatch, type SeenOffer } from "./dispatch/rules.ts";
 import { stageEnteredAt, stageOverrun, tickCanAct, type Item, type StageClock, type TaskStage } from "./rules.ts";
 
-export const STAGE_EVENT_KINDS = ["stage.stuck", "stage.told", "stage.cleared", "stage.rerouted"] as const;
+export const STAGE_EVENT_KINDS = ["stage.stuck", "stage.told", "stage.cleared", "stage.rerouted", "stage.retried"] as const;
 // How long a task fork may stay unready, with no commit recorded, before the
 // tick replaces it (t181).
 export const FORK_REPLACE_MS = 30 * 60_000;
 // The stage name a stalled fork is keyed by; it is not a TaskStage.
 export const PREPARING = "preparing";
+// The stage name a stale review claim is keyed by; it is not a TaskStage.
+export const REVIEW_CLAIM = "review";
 export interface StageKey { item: string; stage: TaskStage; head: string }
 export interface StageFinding extends StageKey { enteredAt: string; limitMs: number; overMs: number }
 export interface StageMove extends StageKey { kind: (typeof STAGE_EVENT_KINDS)[number]; data: Record<string, unknown> }
@@ -177,4 +188,28 @@ export function forkStalled(prep: { since: string | null }, item: { fork?: strin
 export function replacementFork(fork: string): string {
   const m = /^(.*)-r(\d+)$/.exec(fork);
   return m ? `${m[1]}-r${Number(m[2]) + 1}` : `${fork}-r2`;
+}
+
+// Whether `since` is more than `limitMs` before `now`: a review claim that
+// began, or a review request that was asked, so long ago. An unknown time is
+// never past the limit.
+export function olderThan(since: string | null | undefined, now: Date, limitMs: number): boolean {
+  const t = since ? Date.parse(since) : NaN;
+  return Number.isFinite(t) && now.getTime() - t > limitMs;
+}
+
+export interface ReviewRerouteInput {
+  from: string;                // the reviewer asked, as agent/model
+  pick: string | null;         // the reviewer a live runner offers, of another family than every contributor, or null
+  unpicked: string | null;     // why none qualifies
+  rerouted: boolean;           // this task and head were re-pointed before
+}
+export interface ReviewRerouteVerdict extends ActVerdict { from: string; to?: string }
+
+// What the tick does with a review request unclaimed past the limit: the
+// reviewer picked, once; with none, or after one re-pointing, it is told.
+export function decideReviewReroute(i: ReviewRerouteInput): ReviewRerouteVerdict {
+  if (i.rerouted) return { acts: false, from: i.from, note: `the review request was already re-pointed once at this head, and is not re-pointed again; ${i.from} has not claimed it` };
+  if (!i.pick) return { acts: false, from: i.from, note: `no other reviewer a live runner offers qualifies: ${i.unpicked ?? "none is in the pool"}` };
+  return { acts: true, from: i.from, to: i.pick, note: `${i.from} left the review request unclaimed past the limit` };
 }

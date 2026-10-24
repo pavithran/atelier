@@ -177,7 +177,7 @@ test("an overdue tick is ahead of usage and token-expiry warnings, in status and
 });
 
 // t245: rerouting a queued dispatch, and replacing a stalled fork.
-import { decideReroute, forkStalled, recordedKeys, replacementFork, FORK_REPLACE_MS } from "../src/stage-tick.ts";
+import { decideReroute, decideReviewReroute, forkStalled, olderThan, recordedKeys, replacementFork, FORK_REPLACE_MS } from "../src/stage-tick.ts";
 import type { Dispatch, SeenOffer } from "../src/dispatch/rules.ts";
 
 const disp = (over: Partial<Dispatch> = {}): Dispatch => ({ to: "any", agent: "codex", model: "gpt-6-astra", by: "owner", at: T0, note: "", ...over });
@@ -276,4 +276,26 @@ test("a replacement fork has a new name each time, and keeps the old one's prefi
 test("records which keys an event kind was written for", () => {
   const keys = recordedKeys([{ item: "t1", kind: "stage.rerouted", data: { stage: "queued", head: "" } }, { item: "t2", kind: "stage.told", data: { stage: "queued" } }], "stage.rerouted");
   assert.deepEqual([...keys], [JSON.stringify(["t1", "queued", ""])]);
+});
+
+// t225: a claim or request is late only when its start is known and more than the limit ago.
+test("olderThan is false for an unknown or unreadable time and for exactly the limit", () => {
+  assert.equal(olderThan(null, at(HOUR), HOUR), false);
+  assert.equal(olderThan("not a time", at(HOUR), HOUR), false);
+  assert.equal(olderThan(T0, at(HOUR), HOUR), false);
+  assert.equal(olderThan(T0, at(HOUR + 1), HOUR), true);
+});
+
+test("an unclaimed review request is re-pointed to the reviewer picked, once", () => {
+  const picked = decideReviewReroute({ from: "claude-code/opus-5.5", pick: "claude-code/sonnet-5.5", unpicked: null, rerouted: false });
+  assert.deepEqual({ acts: picked.acts, to: picked.to }, { acts: true, to: "claude-code/sonnet-5.5" });
+  const again = decideReviewReroute({ from: "claude-code/sonnet-5.5", pick: "codex/gpt-6-astra", unpicked: null, rerouted: true });
+  assert.equal(again.acts, false);
+  assert.match(again.note, /already re-pointed once/);
+});
+
+test("with no reviewer picked the verdict is told with the reason", () => {
+  const none = decideReviewReroute({ from: "claude-code/opus-5.5", pick: null, unpicked: "no live runner offers it", rerouted: false });
+  assert.equal(none.acts, false);
+  assert.match(none.note, /no other reviewer a live runner offers qualifies: no live runner offers it/);
 });

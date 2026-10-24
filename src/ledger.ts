@@ -1,5 +1,6 @@
 import { landingOf } from "./diff.ts";
-import { decideReroute, findStageOverrun, forkStalled, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type RerouteVerdict, type StageFinding } from "./stage-tick.ts";
+import { costTier, decideReroute, decideReviewReroute, findStageOverrun, forkStalled, olderThan, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, REVIEW_CLAIM, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type RerouteVerdict, type ReviewRerouteVerdict, type StageFinding } from "./stage-tick.ts";
+import { REPORT_DEFAULTS } from "./stuck/report.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
@@ -1009,6 +1010,10 @@ export class Ledger extends DurableObject<Env> {
     // the head, the reason and how many releases without a verdict, carried
     // to each successor a release makes at the same head.
     if (!requestColumns.includes("stopped")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN stopped TEXT`);
+    // When a request last became open: a successor made when a claim is
+    // released keeps its dispatch's time, so the tick (t225) counts how long
+    // it has gone unclaimed from this, and from the dispatch's when null.
+    if (!requestColumns.includes("openedAt")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN openedAt TEXT`);
     // Criteria review (t438, src/review/criteria.ts). Every change of an
     // item's acceptance criteria is a revision with its author; a criteria
     // review binds to one revision; the owner's resolutions answer one
@@ -1904,6 +1909,13 @@ export class Ledger extends DurableObject<Env> {
   // past FORK_REPLACE_MS with no commit recorded is replaced once by a fork
   // under a new name (forkNameFor). The offers are read from the index first;
   // when they cannot be read, no queued dispatch is judged.
+  //
+  // Two review stages are acted on too (t225): a review request claimed and
+  // unanswered past reviewAnswerHours is released and asked again once
+  // (stage.retried, keyed by task and head, then told); a checked task whose
+  // review request stays unclaimed past the checked limit is re-pointed once
+  // to another reviewer a live runner offers, of another family than every
+  // contributor (stage.rerouted), else stuck and told.
 
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     let offers: SeenOffer[] | null = null;
@@ -1917,6 +1929,7 @@ export class Ledger extends DurableObject<Env> {
       const findings: StageFinding[] = [];
       const verdicts = new Map<string, ActVerdict>();
       const reroutes: { id: string; head: string; dispatch: Dispatch; verdict: RerouteVerdict }[] = [];
+      const repoints: { item: Item; request: number; verdict: ReviewRerouteVerdict; need: ReviewRequired; reasons: string[] }[] = [];
       let tasks = 0;
       const rows = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE kind IN (${STAGE_EVENT_KINDS.map(() => "?").join(", ")}) ORDER BY seq`, ...STAGE_EVENT_KINDS).toArray();
       const recorded = rows.map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
@@ -1962,6 +1975,23 @@ export class Ledger extends DurableObject<Env> {
               if (stage === "queued") found = wait;
               else if (wait) findings.push(wait);
             }
+            // A checked task waits on its review request: once one is open,
+            // the stage's clock is the request's, so a request asked or
+            // re-pointed a moment ago is not late for the evidence's age.
+            const ask = stage === "checked" && detail.head ? this.openGateRequest(item.id, detail.head) : null;
+            if (ask) {
+              const key = { item: item.id, stage: "checked" as TaskStage, head: detail.head! };
+              const limitMs = STAGE_LIMITS_MS.checked ?? 0;
+              found = olderThan(ask.openedAt, now, limitMs) ? { ...key, enteredAt: ask.openedAt, limitMs, overMs: now.getTime() - Date.parse(ask.openedAt) - limitMs } : null;
+              if (found && offers) {
+                const pick = this.repointPick(item, ask, offers, now);
+                if (pick) {
+                  const verdict = decideReviewReroute({ from: ask.reviewer, pick: pick.to, unpicked: pick.unpicked, rerouted: rerouted.has(stageKeyOf(key)) });
+                  if (verdict.acts) { found = null; repoints.push({ item, request: ask.id, verdict, need: pick.need, reasons: pick.reasons }); }
+                  else verdicts.set(stageKeyOf(key), verdict);
+                }
+              }
+            }
             if (found) findings.push(found);
           } catch { complete = false; }
         }
@@ -1974,10 +2004,102 @@ export class Ledger extends DurableObject<Env> {
         for (const r of reroutes) {
           try { this.rerouteQueued(r.id, r.head, r.dispatch, r.verdict, at); acted++; } catch { /* the dispatch was not moved; the next tick tries again */ }
         }
+        for (const r of repoints) {
+          try { this.repointReview(r.item, r.request, r.verdict, r.need, r.reasons, at, offers!); acted++; } catch { /* the request was not moved; the next tick tries again */ }
+        }
         acted += this.replaceStalledForks(now, recorded);
+        acted += this.retryStaleReviewClaims(now, recorded);
       }
       return { complete, recorded: moves.length + acted, tasks };
     });
+  }
+
+  // The gate's open review request at a head, with how long ago it became open
+  // and the reviewer it asks, or null when none is open.
+  private openGateRequest(id: string, head: string): { id: number; reviewer: string; dispatch: Dispatch; openedAt: string; wanted: boolean } | null {
+    const row = this.sql.exec(`SELECT id, dispatch, openedAt, wanted FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL AND superseded IS NULL ORDER BY id DESC LIMIT 1`, id, head).toArray()[0];
+    if (!row) return null;
+    const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
+    return { id: row.id as number, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : "its choice of reviewer", dispatch, openedAt: (row.openedAt as string | null) ?? dispatch.at, wanted: row.wanted === 1 };
+  }
+
+  // The reviewer an unclaimed review request moves to, or null when the
+  // request needs none now (the gate no longer needs the review). It is picked
+  // as the gate picks a reviewer, from the pool and among the reviewers a live
+  // runner offers for the review job, passing over the one asked, every lapsed
+  // reviewer and any that costs more than the one asked or is of the Opus
+  // tier, as decideReroute does for a dispatch. With no live runner nothing is
+  // offered, so none is picked.
+  private repointPick(item: Item, gate: { reviewer: string; dispatch: Dispatch; wanted: boolean }, offers: readonly SeenOffer[], now: Date): { to: string | null; unpicked: string | null; need: ReviewRequired; reasons: string[] } | null {
+    const policy = this.project().policy, pool = this.poolStanding(), at = now.toISOString();
+    const need = reviewNeeded({
+      item, part: item.kind === "part", policy, evidence: this.evidenceFor(item.id), reviews: this.reviewsFor(item.id),
+      requests: this.reviewRequests(item.id).filter((r) => !(r.state === "open" && r.head === item.head && !r.tier)),
+      verdicts: this.findingVerdicts(item.id), wanted: gate.wanted, now, owner: this.owner,
+    });
+    if (!need.needed) return null;
+    if (!liveOffers(offers, now).length) return { to: null, unpicked: "no runner is live", need, reasons: [] };
+    const ceiling = costTier(gate.dispatch.model ?? "");
+    const costly = pool.flatMap((m) => {
+      const tier = costTier(m.id);
+      return tier === 3 ? [{ actor: `${m.harness}/${m.id}`, reason: "Opus tier, and the request does not name it" }]
+        : tier > ceiling ? [{ actor: `${m.harness}/${m.id}`, reason: `costs more than ${gate.reviewer}` }] : [];
+    });
+    const pick = pickReviewer({
+      item, pool, policy, allowPaid: false, previous: need.previousReviewer, counted: need.counted,
+      tier: need.changeClass === "protected" ? tierIds(policy, pool) : undefined,
+      avoid: [{ actor: gate.reviewer, reason: "it left the review request unclaimed" }, ...need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), ...costly],
+      owner: this.owner, precision: this.reviewPrecision(at), assigned: this.reviewAssigned(item, null, need.changedPaths),
+      offers, destination: () => "home",
+    });
+    return { to: pick.reviewer?.actor ?? null, unpicked: pick.unpicked, need, reasons: pick.reviewer?.reasons ?? [] };
+  }
+
+  // Moves an unclaimed gate request to the reviewer picked: the request is
+  // withdrawn and one asked of the new reviewer, with the same `wanted`,
+  // brief and criteria, and the tier's request beside it as askTierReview asks.
+  private repointReview(item: Item, request: number, verdict: ReviewRerouteVerdict, need: ReviewRequired, reasons: string[], at: string, offers: readonly SeenOffer[]): void {
+    const row = this.sql.exec(`SELECT head, briefHash, wanted, criteria, carried FROM review_requests WHERE id = ? AND state = 'open' AND tier IS NULL`, request).toArray()[0];
+    const to = verdict.to!;
+    if (!row) return;
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, request);
+    this.log(item.id, ORCHESTRATOR, "review.withdrawn", { head: row.head as string, reviewer: verdict.from, request, reason: `no runner claimed it; the stage tick asks ${to} instead` }, at);
+    const slash = to.indexOf("/");
+    const dispatch = { ...this.standingDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
+    const topTier = this.gateIsTier(item, need, to);
+    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria, openedAt) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
+      item.id, row.head, JSON.stringify(dispatch), row.briefHash, row.wanted, topTier ? 1 : null, row.carried, row.criteria, at);
+    this.log(item.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer: to, round: need.round, role: this.reviewRoleOf(item, null, need.changedPaths), via: "stage-tick", ...(reasons.length ? { reason: reasons.join(" ") } : {}), ...(row.wanted === 1 ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at);
+    this.askTierReview(item, need, to, ORCHESTRATOR, at, false, undefined, offers);
+    this.log(item.id, "atelier", "stage.rerouted", { stage: "checked", head: row.head as string, from: verdict.from, to, request, note: verdict.note }, at);
+  }
+
+  // A review claimed and unanswered past reviewAnswerHours is released and
+  // asked again once per task and head (stage.retried); the next stale claim
+  // at that head is told once (stage.told). The claim began at its
+  // review.claimed event, since a renewal rewrites claimedAt. Returns how many
+  // events it recorded.
+  private retryStaleReviewClaims(now: Date, recorded: readonly { item: string; kind: string; data: Record<string, unknown> }[]): number {
+    const at = now.toISOString(), limitMs = REPORT_DEFAULTS.reviewAnswerHours * 3_600_000;
+    const retried = recordedKeys(recorded, "stage.retried"), told = recordedKeys(recorded, "stage.told");
+    let n = 0;
+    const claims = this.sql.exec(`SELECT r.id, r.item, r.head, r.claimedBy, r.claimedAt FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'claimed' AND r.tier IS NULL AND r.superseded IS NULL AND r.head = i.head AND i.state NOT IN ('merged', 'abandoned', 'blocked')`).toArray();
+    for (const r of claims) {
+      const began = this.sql.exec(`SELECT at FROM events WHERE item_id = ? AND kind = 'review.claimed' AND json_extract(data, '$.request') = ? ORDER BY seq LIMIT 1`, r.item as string, r.id as number).toArray()[0];
+      const since = (began?.at as string | undefined) ?? (r.claimedAt as string | null);
+      if (!olderThan(since, now, limitMs)) continue;
+      const key = stageKeyOf({ item: r.item as string, stage: REVIEW_CLAIM as never, head: r.head as string });
+      const held = `${r.claimedBy} has held review request ${r.id} since ${since} with no verdict`;
+      if (!retried.has(key)) {
+        this.replaceReviewClaim(r.id as number);
+        this.log(r.item as string, "atelier", "stage.retried", { stage: REVIEW_CLAIM, head: r.head as string, request: r.id as number, reviewer: r.claimedBy as string, since, note: `${held}; the claim is released and the review asked again, once.` }, at);
+        n++;
+      } else if (!told.has(key)) {
+        this.log(r.item as string, "atelier", "stage.told", { stage: REVIEW_CLAIM, head: r.head as string, request: r.id as number, reviewer: r.claimedBy as string, since, note: `${held}; the review was asked again once at this head, and the tick does not release it again.` }, at);
+        n++;
+      }
+    }
+    return n;
   }
 
   // Why a model may not be given a queued dispatch, or null when it may: the
@@ -4304,7 +4426,10 @@ export class Ledger extends DurableObject<Env> {
   // `atelier land ID --reviewer H/M` (t395). It picks as the gate's real
   // selection does, so a protected change's review goes to the review tier
   // first, one review serving the gate and the tier (src/review/tier.ts).
-  availableReviewer(id: string, pool: readonly ModelEntry[]): string | null {
+  // The reviewer is among those a live runner offers for the review job (the
+  // offers given, else the ones this ledger holds), as the gate's own pick is,
+  // so no one is named whom no runner would claim (t225).
+  availableReviewer(id: string, pool: readonly ModelEntry[], offers: readonly SeenOffer[] | undefined = this.heldOffers()): string | null {
     const item = this.item(id);
     const policy = this.project().policy;
     const changedPaths = evidenceAt(policy, this.evidenceFor(id), item.head).changedPaths;
@@ -4314,6 +4439,7 @@ export class Ledger extends DurableObject<Env> {
       precision: this.reviewPrecision(new Date().toISOString()),
       tier: kind === "protected" ? tierIds(policy, pool) : undefined,
       assigned: this.reviewAssigned(item, null, changedPaths ?? []),
+      offers: offers && this.ownOffers(offers),
     });
     return pick.reviewer?.actor ?? null;
   }
@@ -7996,8 +8122,8 @@ export class Ledger extends DurableObject<Env> {
       const dispatch = { ...this.standingDispatch({ to: d.to, agent: d.agent, model: d.model, note: d.note }, "review", d.by, d.at), job: "review" as const };
       const prev = parseStop(row.stopped);
       const stop = release && row.tier == null ? stopAfter(prev, row.head as string, stopReasonOf(release.note), release.note, release.at) : prev;
-      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, tier, topTier, criteria, carried, stopped) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
-        row.item, row.head, JSON.stringify(dispatch), row.briefHash, row.wanted, row.tier, row.topTier, row.criteria, row.carried, stop ? JSON.stringify(stop) : null);
+      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, tier, topTier, criteria, carried, stopped, openedAt) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+        row.item, row.head, JSON.stringify(dispatch), row.briefHash, row.wanted, row.tier, row.topTier, row.criteria, row.carried, stop ? JSON.stringify(stop) : null, new Date().toISOString());
     });
   }
 

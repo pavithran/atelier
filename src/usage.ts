@@ -175,6 +175,7 @@ task with exactly one holder. Never edit the project checkout directly.
    never reviews its own work.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
 9. Every 5 minutes the server records a task stuck at a stage past its limit.
+   A review claimed and unanswered for 2 hours is released and asked again once; a request unclaimed for 10 minutes moves once to another reviewer a live runner offers.
 
 ${OWNER_LANDING}
 \`atelier land ID --queue\` queues the landing for a runner that lists the land job and holds the registered checkout.
