@@ -180,6 +180,35 @@ export function criteriaIndependenceRefusal(reviewer: string, authors: readonly 
   return family ? `${reviewer} is not ${single ? `a different ${single} model from` : "of another family than"} every author of the criteria: ${family}` : null;
 }
 
+// What status, the task page and the build brief say while fast mode skips
+// the criteria review (t179).
+export const CRITERIA_SKIPPED_FAST = "the criteria review was skipped because the project is in fast mode; builds go ahead with the criteria as written";
+
+// The deadlock where a review is wanted and the family rules leave no model
+// to give it (t179): every model in the pool is refused by single-family
+// mode or by sharing a family, or the model itself, with an author. Standing,
+// paid models and status are not counted, since those clear without a
+// decision about the project's direction. Null when some model passes the
+// family rules, when the pool is empty (nothing was learnt of it yet) or when
+// the authors' attribution is the refusal. The sentence names the one
+// decision that clears it.
+export function familyDeadlock(authors: readonly string[], pool: readonly ModelEntry[], policy: ProjectPolicy, owner = DEFAULT_OWNER, id = "the task"): string | null {
+  if (!pool.length || attributionRefusal(authors, owner)) return null;
+  const single = singleFamily(policy);
+  if (pool.some((e) => criteriaIndependenceRefusal(actorOf(e), authors, owner, single) === null)) return null;
+  const models = authors.filter((a) => isModelAuthor(a, owner));
+  const wrote = models.length ? `written by ${models.join(", ")}` : "written";
+  if (single) {
+    // Leaving single-family mode helps only when the pool already holds a
+    // model that passes the cross-family rules; otherwise one has to be added.
+    const crossClears = pool.some((e) => criteriaIndependenceRefusal(actorOf(e), authors, owner, null) === null);
+    return crossClears
+      ? `deadlock: ${id}'s acceptance criteria need a review, and no ${single} model other than the ones that wrote them is in the pool, while single-family mode (${single}) allows no model of another company; clear it with one decision: atelier init --cross-family, which lets the pool's model of another family review`
+      : `deadlock: ${id}'s acceptance criteria need a review, and no ${single} model other than the ones that wrote them is in the pool, and no model of another family is in it either; clear it with one decision: register a different ${single} model with atelier models add, since switching to cross-family mode would still leave no independent reviewer`;
+  }
+  return `deadlock: ${id}'s acceptance criteria, ${wrote}, need a review by a model of another family, and no such model is in the pool; clear it with one decision: add a model of another family with atelier models add`;
+}
+
 export interface CriteriaPickInput {
   authors: readonly string[];
   pool: readonly ModelEntry[];

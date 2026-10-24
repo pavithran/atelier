@@ -856,3 +856,68 @@ export function appliesText(policy: Pick<ProjectPolicy, "checkPaths">, command: 
   const paths = policy.checkPaths?.find((c) => c.command === command)?.paths;
   return paths?.length ? `applies only when the change touches ${paths.join(", ")}` : "applies to every change";
 }
+
+// Reuse of a passing check (t232). An observed check's receipt carries the
+// bindings its result depends on; `atelier check` runs a command again only
+// when no receipt of its latest matching result passed. The Worker fills the
+// bindings it knows itself (project, task, head, main's head for a merged run,
+// the mode and the command) and takes the two only the CLI can read, the
+// comparison base and the preparation policy. A receipt missing any binding,
+// as every receipt recorded before this was, is never reused.
+export interface ReuseBinding {
+  project: string;
+  task: string;
+  head: string;
+  base: string;             // the merge base of the head with main, which changed paths are measured from
+  mainHead: string | null;  // main's head a merged run merged with; null for an ordinary run
+  mode: "ordinary" | "merged";
+  where: "runner";
+  command: string;
+  preparation: string;      // the preparation policy as recorded, or "none"
+}
+
+const REUSE_TEXT = ["project", "task", "head", "base", "command", "preparation"] as const;
+export const REUSE_PREPARATION_MAX = 8192;
+
+export function preparationBinding(prepare: ProjectPolicy["prepare"]): string {
+  return prepare ? JSON.stringify({ command: prepare.command, inputs: prepare.inputs, outputs: prepare.outputs }) : "none";
+}
+
+export function completeBinding(value: unknown): value is ReuseBinding {
+  if (!value || typeof value !== "object") return false;
+  const b = value as Record<string, unknown>;
+  if (!REUSE_TEXT.every((k) => typeof b[k] === "string" && b[k] !== "")) return false;
+  if (b.where !== "runner") return false;
+  if (b.mode === "merged") return typeof b.mainHead === "string" && b.mainHead !== "";
+  return b.mode === "ordinary" && b.mainHead === null;
+}
+
+export function sameBinding(a: ReuseBinding, b: ReuseBinding): boolean {
+  return REUSE_TEXT.every((k) => a[k] === b[k]) && a.mainHead === b.mainHead && a.mode === b.mode && a.where === b.where;
+}
+
+// What the Worker stores for a check it records: its own readings joined to
+// the base and the preparation the caller sent. Null when either is missing
+// or unusable, so the receipt is then never reused.
+export function receiptBinding(sent: unknown, known: { project: string; task: string; head: string; mainHead: string | null; merged: boolean; command: string }): ReuseBinding | null {
+  const s = sent && typeof sent === "object" ? sent as Record<string, unknown> : {};
+  const base = s.base, preparation = s.preparation;
+  if (typeof base !== "string" || !/^[a-f0-9]{40,64}$/.test(base)) return null;
+  if (typeof preparation !== "string" || !preparation || preparation.length > REUSE_PREPARATION_MAX) return null;
+  const binding: ReuseBinding = { project: known.project, task: known.task, head: known.head, base, mainHead: known.merged ? known.mainHead : null, mode: known.merged ? "merged" : "ordinary", where: "runner", command: known.command, preparation };
+  return completeBinding(binding) ? binding : null;
+}
+
+// The result a check may reuse: of the observed results whose receipt is
+// complete and equals `expected`, the latest by evidence ID, when it passed.
+// A later matching failure is the latest, so it forces a run; reports, results
+// without a complete receipt and results under other bindings are not read.
+export function reusableResult<E extends { id?: number; grade: string; passed: boolean | null; notApplicable?: boolean; reuse?: unknown }>(evidence: E[], expected: ReuseBinding): E | null {
+  if (!completeBinding(expected)) return null;
+  let latest: E | null = null;
+  for (const e of evidence ?? []) {
+    if (e.grade !== "observed" || e.notApplicable || typeof e.id !== "number" || !completeBinding(e.reuse) || !sameBinding(e.reuse, expected)) continue;
+    if (!latest || e.id > latest.id!) latest = e;
+  }
+  return latest && latest.passed === true ? latest : null;
+}

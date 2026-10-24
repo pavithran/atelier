@@ -1,5 +1,5 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, projectInbox, readStuck, readyOf, stageEntries, stageLines, statusJson, stuckLines, tickLines } from "../status.mjs";
+import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, criteriaJson, criteriaLines, formatStatusBrief, projectInbox, readStuck, readyOf, stageEntries, stageLines, statusJson, stuckLines, tickLines } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { CACHE, OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
@@ -62,15 +62,19 @@ export default async function statusCommand() {
     record ??= await request("GET", P(name), undefined, as).catch(() => null);
     // The stuck routes are the developer's alone, like the branches: an agent is not shown them and the server is not asked.
     const stuck = mine ? await readStuck((path) => request("GET", path, undefined, as).catch(() => null), P(name), name, Array.isArray(record?.items) ? record.items : null) : null;
-    if (args.json) return console.log(JSON.stringify({ project: standing, stuck, checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+    // The criteria review's state (t179), read with the mode: skipped under fast mode, or held by a deadlock.
+    const modeRead = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
+    const criteria = { mode: modeRead?.mode === "fast" ? modeRead.line : null, policy: record?.project?.policy ?? null, criteriaDeadlocks: Array.isArray(modeRead?.criteriaDeadlocks) ? modeRead.criteriaDeadlocks : [] };
+    const criteriaText = criteriaLines(criteria).join("\n");
+    if (args.json) return console.log(JSON.stringify({ project: standing, stuck, ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
     // The project's tasks, for expired blocks and the clean-up count: the read above when it was made, else one now.
     const items = record?.items;
-    const stages = stageEntries(items, readyOf(await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null)));
+    const stages = stageEntries(items, readyOf(modeRead));
     const expired = Array.isArray(items) ? expiredBlocks(items, new Date()) : [];
     // The standing's first line names the project; the stuck section follows it, before any ordinary item.
     const withStuck = (text, section) => { if (!section) return text; const i = text.indexOf("\n"); return i < 0 ? text + "\n\n" + section : text.slice(0, i) + "\n\n" + section + text.slice(i); };
     const stuckText = [...stuckLines(stuck, ""), ...tickLines(stuck)].join("\n");
-    console.log(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
+    console.log(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (criteriaText ? "\n\n" + criteriaText : "") + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
@@ -104,7 +108,7 @@ export default async function statusCommand() {
     // single-family mode (formatStatus).
     const items = Array.isArray(read?.items) ? read.items : null;
     const stuck = await readStuck((path) => request("GET", path, undefined, OWNER).catch(() => null), P(p.name), p.name, items);
-    return { stuck, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), branches };
+    return { stuck, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());
