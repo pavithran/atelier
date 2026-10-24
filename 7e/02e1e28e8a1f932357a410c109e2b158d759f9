@@ -1,0 +1,69 @@
+atelier atelier/t245 "The tick reroutes a dispatch no live runner offers"
+accepted head c07500d2889a482bc2b57c5ec73e35b7bea164a0
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-24T16:28:53.190Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-24T16:28:57.295Z
+REVIEW approve by codex/gpt-6-astra at c07500d2889a482bc2b57c5ec73e35b7bea164a0, recorded by codex/gpt-6-astra
+REVIEW approve by antigravity/gemini-4-argon at c07500d2889a482bc2b57c5ec73e35b7bea164a0, recorded by antigravity/gemini-4-argon
+CHECKED TREE 201269e8eb53a2cfbd1efcae6499d548230a3f1a: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-24T14:18:24.458Z pavi item.created
+2026-10-24T14:18:24.458Z pavi criteria.revised
+2026-10-24T14:18:31.054Z pavi criteria_review.requested
+2026-10-24T14:18:32.369Z codex/gpt-6-astra criteria_review.claimed
+2026-10-24T14:18:55.227Z codex/gpt-6-astra criteria_review.approved
+2026-10-24T14:19:03.030Z pavi item.dispatched
+2026-10-24T14:30:36.300Z atelier stage.stuck
+2026-10-24T14:30:36.300Z atelier stage.told
+2026-10-24T14:53:54.050Z claude-code/sonnet-5.5 item.claimed
+2026-10-24T14:54:52.527Z claude-code/sonnet-5.5 fork.created
+2026-10-24T14:55:36.300Z atelier stage.cleared
+2026-10-24T15:14:58.966Z claude-code/sonnet-5.5 push.observed
+2026-10-24T15:23:39.648Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T15:23:42.514Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T15:23:43.194Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T15:25:10.377Z pavi land.merge
+2026-10-24T15:25:11.371Z pavi land.regenerate
+2026-10-24T15:25:13.081Z pavi land.push
+2026-10-24T15:26:11.829Z pavi land.check
+2026-10-24T15:26:12.258Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T15:26:12.459Z pavi land.submit
+2026-10-24T15:26:12.666Z pavi review.requested
+2026-10-24T15:26:22.155Z codex/gpt-6-astra review.claimed
+2026-10-24T15:35:35.033Z codex/gpt-6-astra review.rejected
+2026-10-24T15:35:37.001Z pavi land.review
+2026-10-24T15:35:36.300Z atelier stage.stuck
+2026-10-24T15:35:36.300Z atelier stage.told
+2026-10-24T15:35:53.016Z pavi item.context
+2026-10-24T15:35:54.340Z pavi item.released
+2026-10-24T15:35:54.340Z pavi item.dispatched
+2026-10-24T15:59:57.911Z atelier/orchestrator refresh.queued
+2026-10-24T16:10:52.177Z claude-code/sonnet-5.5 item.claimed
+2026-10-24T16:20:42.094Z claude-code/sonnet-5.5 push.observed
+2026-10-24T16:25:36.300Z atelier stage.cleared
+2026-10-24T16:28:54.668Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T16:28:57.462Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T16:28:58.106Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T16:30:28.169Z pavi land.merge
+2026-10-24T16:30:29.165Z pavi land.regenerate
+2026-10-24T16:30:30.829Z pavi land.push
+2026-10-24T16:31:25.927Z pavi land.check
+2026-10-24T16:31:26.316Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T16:31:26.517Z pavi land.submit
+2026-10-24T16:31:26.733Z pavi review.requested
+2026-10-24T16:31:31.751Z codex/gpt-6-astra review.claimed
+2026-10-24T16:33:16.791Z codex/gpt-6-astra review.approved
+2026-10-24T16:33:21.485Z pavi land.review
+2026-10-24T16:33:22.064Z pavi review.requested
+2026-10-24T16:33:47.352Z antigravity/gemini-4-argon review.claimed
+2026-10-24T16:37:57.698Z antigravity/gemini-4-argon review.approved
+2026-10-24T16:38:30.292Z pavi land.merge
+2026-10-24T16:38:31.083Z pavi land.regenerate
+2026-10-24T16:38:33.789Z pavi land.push
+2026-10-24T16:39:31.758Z pavi land.check
+2026-10-24T16:39:32.137Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T16:39:32.487Z pavi land.submit
+2026-10-24T16:39:32.660Z pavi land.review
+2026-10-24T16:39:32.969Z pavi land.lease
+2026-10-24T16:39:35.065Z pavi item.accepted
+2026-10-24T16:39:35.224Z pavi land.accept
