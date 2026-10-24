@@ -32,7 +32,7 @@ test("claims back off 1 min, 2, 4, up to 1 h after each refusal; exactly the int
     entry = refusedAfter(entry, failedRun("boom"), nowMs);
     assert.equal(entry.count, n);
     assert.equal(refusedWaitMs(n), Math.min(expected, 3_600_000));
-    const wait = refusedWaitMs(n), runs = new Map([[JSON.stringify(["atelier", "t173", "h", 4]), entry]]);
+    const wait = refusedWaitMs(n), runs = new Map([[JSON.stringify(["atelier", "t173", "h"]), entry]]);
     const at = (t) => passedBy(task, ["review"], { ...none, refusedRuns: runs, nowMs: t });
     assert.notEqual(at(nowMs), null);
     assert.notEqual(at(nowMs + wait - 1), null, "never before the interval");
@@ -83,4 +83,51 @@ test("twenty 4000-character lines are all logged whole", () => {
   const lines = Array.from({ length: 25 }, (_, i) => `L${i + 1} ${"z".repeat(3990)} end${i + 1}`);
   const tail = stderrTail(lines.join("\n"));
   assert.equal(tail, lines.slice(5).join("\n"));
+});
+
+// ── a review stopped at a head (t238) ────────────────────────────────────────
+
+import { failureKey } from "../cli/runner.mjs";
+import { stopAfter, stopReasonOf, stopText, STOP_LIMIT } from "../src/review/stopped.ts";
+
+const stop = (count, reason = "timeout", head = "h") => ({ head, reason, count, last: "harness timed out", at: "2026-10-24T00:00:00.000Z" });
+const review = (extra = {}) => ({ ...task, item: { ...task.item, dispatch: { job: "review" }, ...extra } });
+
+test("a review the server carries a stop on is passed by with the reason and the decision, after a restart too", () => {
+  // A fresh process holds no memory of the releases: the stop is on the request.
+  assert.equal(passedBy(review({ request: 8, stopped: stop(STOP_LIMIT - 1) }), ["review"], none), null, "one release is tried again");
+  const why = passedBy(review({ request: 9, stopped: stop(STOP_LIMIT) }), ["review"], none);
+  assert.match(why, /stopped after 2 releases/);
+  assert.match(why, /the harness timed out/);
+  assert.match(why, /narrow the criteria, move the findings to a task, or override with the developer's word/);
+  assert.equal(passedBy({ ...review({ request: 9, stopped: stop(STOP_LIMIT) }), agent: "x" }, ["review"], none) === null, false);
+});
+
+test("the stop counts per task and head, for the reasons that are the review's own", () => {
+  let carried = null;
+  carried = stopAfter(carried, "h", stopReasonOf("harness timed out"), "harness timed out", "t1");
+  carried = stopAfter(carried, "h", stopReasonOf("harness timed out"), "harness timed out", "t2");
+  assert.equal(carried.count, 2);
+  assert.equal(stopAfter(carried, "h", stopReasonOf("codex usage limit until 2026-10-24T09:00:00.000Z: x"), "limit", "t3").count, 2, "a provider limit adds nothing");
+  assert.equal(stopAfter(carried, "h", stopReasonOf("harness exited 1"), "harness exited 1", "t3").count, 3, "another reason goes on with the count");
+  assert.equal(stopAfter(carried, "h2", stopReasonOf("harness timed out"), "harness timed out", "t3").count, 1, "a new head starts clean");
+  assert.match(stopText("t173", carried), /t173 at h stopped after 2 releases/);
+});
+
+test("alternating the two reasons at one head stops at the second release", () => {
+  const first = stopAfter(null, "h", stopReasonOf("harness timed out"), "harness timed out", "t1");
+  const second = stopAfter(first, "h", stopReasonOf("reply had no VERDICT line"), "reply had no VERDICT line", "t2");
+  assert.equal(first.count, 1);
+  assert.equal(second.count, STOP_LIMIT);
+  assert.equal(second.reason, "no-verdict", "the last reason is kept");
+  assert.match(stopText("t1", second), /ended without a verdict/);
+  const third = stopAfter(second, "h", stopReasonOf("harness timed out"), "harness timed out", "t3");
+  assert.equal(third.count, 3);
+});
+
+test("a review's failures count by task and head whatever the request number, post-merge or not", () => {
+  const at = (request, state) => review({ request, state, head: "e".repeat(40) });
+  assert.equal(failureKey(at(50, "merged")), failureKey(at(51, "merged")));
+  assert.equal(failureKey(at(50, "open")), failureKey(at(51, "open")));
+  assert.notEqual(failureKey(at(50, "open")), failureKey({ ...at(50, "open"), item: { ...at(50, "open").item, head: "f".repeat(40) } }));
 });
