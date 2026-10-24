@@ -2413,6 +2413,17 @@ export function unansweredReason(task, count, last) {
   return `the review of ${task.item.id} at ${String(task.item.head ?? "").slice(0, 8)} was released ${count} times without a verdict (last: ${String(last ?? "no reason").replace(/\s+/g, " ").trim().slice(0, 300)}); it needs the developer to decide: narrow the criteria, move the findings to a task, or override with the developer's word (atelier review ${task.item.id} --approve or --reject, as the developer)`;
 }
 
+// The skip report for a stopped review, once the queue names the live
+// request: a release withdraws the request it served and opens a successor
+// with a new number, and the landing reads skips of the live request only.
+// Null until the queue offers the head under a number other than the served
+// one, and once the report is made.
+export function unansweredSkipBody(task, entry) {
+  if (!entry || entry.reported || entry.count < UNANSWERED_LIMIT) return null;
+  if (task.item.dispatch?.job !== "review" || task.item.request === entry.request) return null;
+  return { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, note: unansweredReason(task, entry.count, entry.last) };
+}
+
 // How often a runner reads the baseline's head for the reviews it keeps
 // waiting on a missing merge commit (t591): a review is claimed again once
 // the head has moved, and read no more often than this.
@@ -4606,6 +4617,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
+        if (reportReviewSkip) {
+          for (const task of ordered) {
+            const body = unansweredSkipBody(task, unanswered.get(missingKey(task)));
+            if (!body) continue;
+            unanswered.get(missingKey(task)).reported = true;
+            await reportSkip(`unanswered:${missingKey(task)}`, { ...body, actor: task.actor });
+          }
+        }
         const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, unanswered, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
@@ -4724,14 +4743,16 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // waiting on the review shows the developer.
           if (task.item.dispatch?.job === "review") {
             const ukey = missingKey(task), before = unanswered.get(ukey)?.count ?? 0, after = unansweredAfter(before, state);
-            if (after) unanswered.set(ukey, { count: after, last: state.released ? state.reason : unanswered.get(ukey)?.last }); else unanswered.delete(ukey);
+            // The request this run served is withdrawn by the release, which
+            // makes a successor: the stop is reported against the successor,
+            // which a later poll's queue names (reportUnanswered), since the
+            // landing reads skips of the live request alone.
+            if (after) unanswered.set(ukey, { count: after, last: state.released ? state.reason : unanswered.get(ukey)?.last, request: task.item.request, reported: false }); else unanswered.delete(ukey);
             if (after >= UNANSWERED_LIMIT && before < UNANSWERED_LIMIT) {
-              const note = unansweredReason(task, after, state.reason);
-              io.log(`${task.project}/${task.item.id}: ${note}`);
+              io.log(`${task.project}/${task.item.id}: ${unansweredReason(task, after, state.reason)}`);
               // The run's own cap reports the skip when it reaches it in this
               // same run; a second report would count the request twice.
-              const reported = state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3;
-              if (reportReviewSkip && !reported) await reportSkip(`unanswered:${ukey}`, { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
+              if (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) unanswered.get(ukey).reported = true;
             }
           }
           if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {

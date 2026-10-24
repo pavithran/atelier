@@ -87,7 +87,7 @@ test("twenty 4000-character lines are all logged whole", () => {
 
 // ── a review released without a verdict twice at one head (t238) ─────────────
 
-import { unansweredAfter, unansweredReason, UNANSWERED_LIMIT } from "../cli/runner.mjs";
+import { unansweredAfter, unansweredReason, unansweredSkipBody, UNANSWERED_LIMIT } from "../cli/runner.mjs";
 
 test("the second release without a verdict at one head stops the offer, naming the reason and the decision", () => {
   const released = { phase: "failed", reason: "no blocking finding stood", taskFailure: true, released: true };
@@ -109,4 +109,16 @@ test("a verdict clears the count and a provider limit adds nothing", () => {
   assert.equal(unansweredAfter(1, { phase: "failed", released: true, providerLimit: { harness: "codex" } }), 1);
   assert.equal(unansweredAfter(1, { phase: "failed", released: false }), 1);
   assert.match(unansweredReason(task, 2, "boom"), /t173 at h was released 2 times/);
+});
+
+test("the stop is reported against the live successor request, once the queue names it", () => {
+  const review = (request) => ({ ...task, item: { ...task.item, request, dispatch: { job: "review" } } });
+  const entry = { count: UNANSWERED_LIMIT, last: "no blocking finding stood", request: 7, reported: false };
+  assert.equal(unansweredSkipBody(review(7), entry), null, "the withdrawn request is never the one reported");
+  const body = unansweredSkipBody(review(8), entry);
+  assert.equal(body.request, 8);
+  assert.match(body.note, /narrow the criteria, move the findings to a task, or override with the developer's word/);
+  assert.equal(unansweredSkipBody(review(8), { ...entry, reported: true }), null, "reported once");
+  assert.equal(unansweredSkipBody(review(8), { ...entry, count: 1 }), null, "below the limit nothing is reported");
+  assert.equal(unansweredSkipBody(review(8), undefined), null);
 });
