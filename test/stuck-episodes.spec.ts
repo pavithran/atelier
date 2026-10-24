@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 
 // t196 through the Worker and the index Ledger: the scheduled handler's
@@ -120,4 +120,93 @@ it("an older observation recorded after a newer one changes nothing", async () =
   expect(await episodes(key)).toEqual([[id, "task", 1, "opened"], [id, "task", 1, "cleared"]]);
   // The same time again is not older: it is recorded as any tick.
   expect((await I().recordStuckTick(key, found, true, at(30))).length).toBe(1);
+});
+
+// t199: an episode still open 60 minutes after it opened is sent to the
+// notify topic, in one message per project.
+const notifyEnv = { ...testEnv, NTFY_TOPIC: "stuck-topic" } as typeof env;
+// The requests sent for one project; other tests' projects share the index and may be due too.
+const sentFor = (send: { mock: { calls: unknown[][] } }, name: string) => send.mock.calls.map(([r]) => r as Request).filter((r) => r.headers.get("Click")?.endsWith(`/p/${name}`));
+afterEach(() => vi.restoreAllMocks());
+
+it("a batch: episodes open for an hour go out together once, and later ticks send nothing more", async () => {
+  await project("nt-a");
+  const one = await claimed("nt-a", "First");
+  const two = await claimed("nt-a", "Second");
+  const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+  await tick(7, notifyEnv);
+  await tick(7.5, notifyEnv);
+  expect(sentFor(send, "nt-a")).toHaveLength(0);
+  await tick(8.1, notifyEnv);
+  expect(sentFor(send, "nt-a")).toHaveLength(1);
+  const body = await sentFor(send, "nt-a")[0].text();
+  expect(body).toContain(one);
+  expect(body).toContain(two);
+  await tick(9, notifyEnv);
+  expect(sentFor(send, "nt-a")).toHaveLength(1);
+});
+
+it("a failed send is retried on the next tick and recorded once it succeeds", async () => {
+  await project("nt-b");
+  await claimed("nt-b", "Work");
+  // The first answer for this project fails; every other request succeeds.
+  let failed = false;
+  const send = vi.spyOn(globalThis, "fetch").mockImplementation(async (r) => {
+    if (!failed && (r as Request).headers.get("Click")?.endsWith("/p/nt-b")) { failed = true; return new Response("no", { status: 503 }); }
+    return new Response(null);
+  });
+  await tick(7, notifyEnv);
+  await tick(8.1, notifyEnv);
+  expect(sentFor(send, "nt-b")).toHaveLength(1);
+  await tick(8.3, notifyEnv);
+  expect(sentFor(send, "nt-b")).toHaveLength(2);
+  await tick(8.5, notifyEnv);
+  expect(sentFor(send, "nt-b")).toHaveLength(2);
+});
+
+it("an ambiguous failure is sent again: ntfy may have received the first, so a duplicate can arrive", async () => {
+  await project("nt-c");
+  await claimed("nt-c", "Work");
+  // The request is lost after ntfy may have taken it, as a timeout awaiting the answer is.
+  let lost = false;
+  const send = vi.spyOn(globalThis, "fetch").mockImplementation(async (r) => {
+    if (!lost && (r as Request).headers.get("Click")?.endsWith("/p/nt-c")) { lost = true; throw new DOMException("timed out", "TimeoutError"); }
+    return new Response(null);
+  });
+  await tick(7, notifyEnv);
+  await tick(8.1, notifyEnv);
+  await tick(8.3, notifyEnv);
+  const sent = sentFor(send, "nt-c");
+  expect(sent).toHaveLength(2);
+  expect(await sent[1].text()).toBe(await sent[0].text());
+  await tick(8.5, notifyEnv);
+  expect(sentFor(send, "nt-c")).toHaveLength(2);
+});
+
+it("an episode that cleared before the hour is not sent", async () => {
+  await project("nt-d");
+  const id = await claimed("nt-d", "Work");
+  const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+  await tick(7, notifyEnv);
+  await L("nt-d").release(id, AGENT, "stop");
+  await tick(7.5, notifyEnv);
+  await tick(9, notifyEnv);
+  expect(sentFor(send, "nt-d")).toHaveLength(0);
+});
+
+it("a recurrence is a new episode and notifies again after its own hour", async () => {
+  await project("nt-e");
+  const id = await claimed("nt-e", "Work");
+  const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+  await tick(7, notifyEnv);
+  await tick(8.1, notifyEnv);
+  expect(sentFor(send, "nt-e")).toHaveLength(1);
+  await L("nt-e").release(id, AGENT, "stop");
+  await tick(9, notifyEnv);
+  await L("nt-e").claim(id, AGENT);
+  await tick(16, notifyEnv);
+  await tick(16.5, notifyEnv);
+  expect(sentFor(send, "nt-e")).toHaveLength(1);
+  await tick(17.1, notifyEnv);
+  expect(sentFor(send, "nt-e")).toHaveLength(2);
 });
