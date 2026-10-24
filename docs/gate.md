@@ -348,8 +348,9 @@ stop on the request instead (`src/review/stopped.ts`): "review stopped at head
 H, for reason R, after N releases", carried from each request to its successor
 at the same head. A release for a harness that timed out, or that ended
 without a verdict, adds to it; a provider's usage limit, an interrupt and a
-merge commit that could not be read add nothing, and a different reason or a
-new head starts the count again. At two releases the request is stopped: the
+merge commit that could not be read add nothing, and a new head starts the count
+again. The count is kept per task and head, whatever the reason of each
+release: a timeout followed by an end without a verdict counts two. At two releases the request is stopped: the
 queue lists it with its `stopped` state, no runner is passed it and the server
 refuses a claim of it (`review_stopped`), the stuck report names it as a
 `review-skipped` episode, and a landing waiting on it ends with the reason and
