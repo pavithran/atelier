@@ -635,7 +635,6 @@ it("entering fast mode unblocks a part blocked for want of a criteria reviewer a
 
 it("a part blocked for want of a criteria reviewer stays blocked outside fast mode", async () => {
   const { L, part } = await blockedPlan("criteria-no-fast-unblock");
-  await L.afterChange?.();
   expect((await L.item(part)).state).toBe("blocked");
   expect(await waiting(L)).toEqual([]);
 });
