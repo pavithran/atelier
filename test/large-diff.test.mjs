@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promptFor, reviewPrompt, verificationPrompt } from "../cli/harness/adapter.mjs";
-import { DIFF_PROMPT_MAX, diffPromptMax, diffSections, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/review/large-diff.ts";
+import { DIFF_PROMPT_MAX, diffPromptMax, diffSections, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/large-diff.ts";
 
 // t230: a diff over the prompt limit is named by its file and changed paths,
 // never put in the prompt; binary and declared generated paths are listed, not
@@ -86,4 +86,20 @@ test("sizeRefusalReason states the limit, the size and the fix", () => {
   assert.match(reason, /limit 1048576; actual 7052528/);
   assert.match(reason, /Fix: /);
   assert.match(sizeRefusalReason("a/b", { limit: null, actual: null }, 321), /a limit it did not state; about 321 characters sent/);
+});
+
+test("a size refusal is a stuck entry naming the fix, until the review is asked for again", async () => {
+  const { stuckReport, reportLimits } = await import("../src/stuck/report.ts");
+  const at = "2026-10-23T10:00:00.000Z";
+  const item = { id: "t14", title: "t14", scope: ["src/**"], state: "submitted", owner: null, fork: null, base: null, head: "abc", acceptedHead: null, createdAt: at, updatedAt: at, lastPushAt: null, dispatch: null };
+  const note = sizeRefusalReason("codex/gpt-6-astra", { limit: 1048576, actual: 7052528 }, 10);
+  const event = (seq, kind, data = {}) => ({ seq, itemId: "t14", actor: "codex/gpt-6-astra", kind, data, at, proved: false });
+  const report = (events) => stuckReport("llm-basics", "https://a.test", new Date("2026-10-23T11:00:00.000Z"), reportLimits(), { items: [item], events, lease: null, workflows: [], reviews: [] }, [], [], []).entries.filter((e) => e.kind === "review-input-size");
+  const [entry] = report([event(1, "review.claimed"), event(2, "review.released", { note })]);
+  assert.equal(entry.subject, "t14");
+  assert.match(entry.reason, /limit 1048576; actual 7052528/);
+  assert.match(entry.recovery, /split the change/);
+  assert.match(entry.recovery, /review-request t14 --reviewer H\/M/);
+  assert.equal(report([event(1, "review.released", { note }), event(2, "review.requested")]).length, 0);
+  assert.equal(report([event(1, "review.released", { note: "harness exited 1" })]).length, 0);
 });

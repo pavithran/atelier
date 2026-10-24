@@ -5,6 +5,7 @@ import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
 import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
+import { SIZE_FIX, SIZE_REFUSED } from "../large-diff.ts";
 import { inScope } from "../tokens.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
@@ -161,6 +162,14 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       const said = typeof release.data.note !== "string" ? null : release.kind === "item.gave_up" ? release.data.note : release.data.note.startsWith(GAVE_UP) ? release.data.note.slice(GAVE_UP.length) : null;
       if (said === null && mine.some((e) => e.seq > claim.seq && e.seq < release.seq && e.kind === "push.observed")) continue;
       add("runner-give-up", item.id, said === null ? `runner ${claim.data.runner} released without a push` : `runner ${claim.data.runner} gave it up: ${said}`, release.at, requeue(item.id), `${base}/${item.id}`);
+    }
+    // A harness that refused a review's input for its size is not retried as
+    // it is (t230); the release stays until the review is asked for again.
+    for (const item of live.filter((i) => !["merged", "abandoned", "accepted"].includes(i.state))) {
+      const mine = ordered.filter((e) => e.itemId === item.id && e.kind.startsWith("review."));
+      const refused = mine.filter((e) => e.kind === "review.released" && typeof e.data.note === "string" && e.data.note.includes(SIZE_REFUSED)).pop();
+      if (!refused || mine.some((e) => e.seq > refused.seq && ["review.requested", "review.withdrawn", "review.claimed"].includes(e.kind))) continue;
+      add("review-input-size", item.id, String(refused.data.note), refused.at, `${SIZE_FIX}; then ${command(`review-request ${item.id} --reviewer H/M`)}`);
     }
     for (const run of runs ?? []) {
       if (run.project !== project || !run.item || run.runner === "owner") continue;

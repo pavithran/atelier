@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { AGY_MODELS, demandFor, diffBlock, generatedPaths } from "./harness/adapter.mjs";
-import { diffPromptMax } from "../src/review/large-diff.ts";
+import { diffPromptMax } from "../src/large-diff.ts";
 
 // An adapter a runner's config names as the review command for the antigravity
 // harness (docs/orchestrator.md, section 4). The review job hands it the brief

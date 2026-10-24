@@ -8,6 +8,9 @@
 export const DIFF_PROMPT_MAX = 200_000;
 // The most paths the prompt lists; the rest are counted.
 export const PATHS_LISTED = 200;
+// What a size refusal's reason says of it; the stuck report finds the release by it.
+export const SIZE_REFUSED = "refused the review input for its size";
+export const SIZE_FIX = "run the review on a runner whose CLI sends only the diff file and the changed paths (update and restart the runner), or split the change into smaller tasks";
 
 export interface DiffPath { path: string; chars: number; binary: boolean; generated: boolean }
 
@@ -98,5 +101,5 @@ export function sizeRefusal(text: string): { limit: number | null; actual: numbe
 export function sizeRefusalReason(who: string, refusal: { limit: number | null; actual: number | null }, sent: number): string {
   const limit = refusal.limit === null ? "a limit it did not state" : `limit ${refusal.limit}`;
   const actual = refusal.actual === null ? `about ${sent} characters sent` : `actual ${refusal.actual}`;
-  return `${who}'s harness refused the review input for its size (${limit}; ${actual}), not as a verdict. Fix: run the review on a runner whose CLI sends only the diff file and the changed paths (update and restart the runner), or split the change into smaller tasks, then ask again with atelier review-request ID --reviewer H/M. It is not tried again as it is.`;
+  return `${who}'s harness ${SIZE_REFUSED} (${limit}; ${actual}), not as a verdict. Fix: ${SIZE_FIX}, then ask again with atelier review-request ID --reviewer H/M. It is not tried again as it is.`;
 }

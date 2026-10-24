@@ -19,7 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
 import { NO_VERDICT, VERIFY_BASE_LINE, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
-import { DIFF_PROMPT_MAX, diffPromptMax, largeDiffNote, withoutBulk } from "../../src/review/large-diff.ts";
+import { DIFF_PROMPT_MAX, diffPromptMax, largeDiffNote, withoutBulk } from "../../src/large-diff.ts";
 import { MANIFEST_PATH, parseManifest } from "../../src/merge-declarations.ts";
 import { readSecret } from "../credentials.mjs";
 import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, RUN_LIMITS, TRANSPORT_ERROR, metadataEscaped, openRouterRefusal } from "./providers.mjs";
