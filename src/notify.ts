@@ -31,3 +31,30 @@ export function notificationRequest(topic: string, origin: string, project: stri
 export function usageAlertRequest(topic: string, origin: string, title: string, body: string): Request {
   return ntfyRequest(topic, title, new URL("/usage", new URL(origin).origin).href, "warning", body);
 }
+
+// Stuck episodes still open an hour after they were first seen (src/stuck/notices.ts),
+// as messages opening the Status page. A message body holds at most BODY_LIMIT
+// characters, so a long batch is split into several messages, each carrying
+// whole episodes; the caller records an episode only once the message that
+// carries it was accepted. One episode whose own line is longer than the limit
+// is cut to fit, its item still first.
+const BODY_LIMIT = 500, SEPARATOR = "; ";
+const chars = (s: string) => Array.from(s.replace(/[\r\n\u2028\u2029]/g, " "));
+
+export function stuckBatchRequests<T extends { item: string; reason: string }>(topic: string, origin: string, project: string, episodes: readonly T[]): { request: Request; episodes: T[] }[] {
+  const click = new URL(`/p/${encodeURIComponent(project)}`, new URL(origin).origin).href;
+  const groups: { lines: string[]; episodes: T[]; size: number }[] = [];
+  for (const e of episodes) {
+    const line = chars(`${e.item}: ${e.reason}`).slice(0, BODY_LIMIT).join("");
+    const length = chars(line).length;
+    let group = groups[groups.length - 1];
+    if (!group || group.size + SEPARATOR.length + length > BODY_LIMIT) groups.push(group = { lines: [], episodes: [], size: -SEPARATOR.length });
+    group.lines.push(line);
+    group.episodes.push(e);
+    group.size += SEPARATOR.length + length;
+  }
+  return groups.map((g) => {
+    const n = g.episodes.length;
+    return { request: ntfyRequest(topic, `${project}: ${n} stuck ${n === 1 ? "episode" : "episodes"}`, click, "warning", g.lines.join(SEPARATOR)), episodes: g.episodes };
+  });
+}
