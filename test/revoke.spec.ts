@@ -3,11 +3,25 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
 import { setRetryBaseMs } from "../src/transient.ts";
+import { fakeArtifacts } from "./support/artifacts-fake.ts";
 
 // These tests inject transient Artifacts failures; the retry backoff would
 // otherwise spend seconds waiting (and time out under load). Milliseconds do.
-beforeAll(() => setRetryBaseMs(1));
-afterAll(() => setRetryBaseMs());
+// No test here may reach the network: global fetch is replaced by one that
+// records the call and fails, and the suite checks that none was made.
+const outbound: string[] = [];
+const realFetch = globalThis.fetch;
+beforeAll(() => {
+  setRetryBaseMs(1);
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    outbound.push(String(input instanceof Request ? input.url : input));
+    throw new Error("network is not available in revoke.spec");
+  }) as typeof fetch;
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+  setRetryBaseMs();
+});
 
 // A handoff, release or abandon must not leave the old holder a working
 // write token it is no longer meant to have. These tests drive the Worker's
@@ -19,37 +33,6 @@ afterAll(() => setRetryBaseMs());
 const TOKEN = "revoke-owner";
 const H0 = "0".repeat(40);
 const A = "claude-code/opus-5.5", B = "codex/gpt-6";
-
-type Tok = { id: string; repo: string; scope: string; revoked: boolean };
-type Revoking = "ok" | "fails" | "missing" | "gone";
-
-function fakeArtifacts() {
-  const tokens = new Map<string, Tok>();
-  let n = 0;
-  const state = { revoking: "ok" as Revoking };
-  const artifacts = {
-    get: async (repo: string) => ({
-      info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
-      createToken: async (scope: string) => {
-        const id = `tok${++n}`;
-        tokens.set(id, { id, repo, scope, revoked: false });
-        return { id, plaintext: `art_secret_${id}`, scope, expiresAt: new Date(Date.now() + 8 * 3600e3).toISOString() };
-      },
-      revokeToken: async (id: string) => {
-        if (state.revoking === "fails") throw new Error("Artifacts: 503 service unavailable");
-        if (state.revoking === "missing") return false;
-        if (state.revoking === "gone") throw Object.assign(new Error("token not found"), { code: "NOT_FOUND" });
-        const t = tokens.get(id);
-        if (t) t.revoked = true;
-        return !!t;
-      },
-      [Symbol.dispose]() {},
-    }),
-  } as unknown as Artifacts;
-  const live = (id: string) => !tokens.get(id)!.revoked;
-  const writes = (repo: string) => [...tokens.values()].filter((t) => t.repo === repo && t.scope === "write").map((t) => t.id);
-  return { artifacts, state, live, writes };
-}
 
 function caller(bearer: string, artifacts: Artifacts, actor?: string) {
   const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env;
@@ -261,3 +244,7 @@ for (const verb of ["release", "handoff", "abandon"] as const) {
     expect({ form: res.status, recorded: await L.tokenId("t1"), live: fa.live(token) }).toEqual({ form: 303, recorded: null, live: false });
   });
 }
+
+it("made no network call", () => {
+  expect(outbound).toEqual([]);
+});
