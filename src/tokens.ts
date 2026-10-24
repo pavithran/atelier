@@ -278,7 +278,7 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "baseline-token", method: "POST", path: "/projects/{project}/baseline-token", credential: "runner", body: ["scope"], via: "cli", command: "baseline-token", jobs: ["build"] },
   // The same command reads the project's regenerate command from its record.
   { name: "baseline-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "baseline-token", jobs: ["build"] },
-  { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "merged", "mainHead", "notApplicable", "load"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "merged", "mainHead", "notApplicable", "load", "reuse"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
   // Fast mode (t589): a build taken without a fork, and the report of the
   // commit it built. atelier fast take also reads the baseline it clones.
   { name: "fast-take", method: "POST", path: `${ITEM}/fast-take`, credential: "runner", body: [], via: "cli", command: "fast", jobs: ["build"] },

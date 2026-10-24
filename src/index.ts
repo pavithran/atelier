@@ -14,7 +14,7 @@ import { setTimeZone, timeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
-import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
+import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
 import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
@@ -2400,6 +2400,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         if (why) throw new RuleError("check_applies", why, 409);
         e.passed = null;
         e.notApplicable = true;
+      }
+      // The bindings a later `atelier check` reads to reuse a passing result (t232).
+      if (check && item.fork && !e.notApplicable) {
+        const reuse = receiptBinding(body.reuse, { project: (await L.project()).name, task: id, head: e.head, mainHead: e.mainHead ?? null, merged, command: e.claim });
+        if (reuse) (e as Evidence & { reuse?: unknown }).reuse = reuse;
       }
       await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
