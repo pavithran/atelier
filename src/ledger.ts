@@ -5484,6 +5484,7 @@ export class Ledger extends DurableObject<Env> {
       next.decision = d.id;
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?)`, JSON.stringify(next));
       this.log(null, actor, "mode.fast", { reason: next.reason, decision: d.id, ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : { confirmed: "page" }) }, at);
+      this.clearCriteriaBlocksForFast(at);
       return { ...next, line: modeLine(next) };
     }
     const was = current as Extract<ProjectMode, { mode: "fast" }>;
@@ -8391,6 +8392,25 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "blocked" || !item.blocked || item.blocked.by !== ORCHESTRATOR || !item.blocked.reason.startsWith(Ledger.CRITERIA_BLOCK)) return;
     this.update(id, { state: item.blocked.from, blocked: null }, at);
     this.log(id, ORCHESTRATOR, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, at);
+  }
+
+  // Fast mode skips the criteria hold (t179), so a part the tick already
+  // blocked because no reviewer could review its criteria is unblocked when
+  // the project enters it, and dispatches with the criteria as written. A
+  // part blocked for the developer's answer to a rejection stays blocked.
+  // Leaving fast mode does not block a dispatched part again.
+  private clearCriteriaBlocksForFast(at: string): void {
+    if (!this.project().policy.requireCriteriaReview) return;
+    const plans = new Set<string>();
+    for (const row of this.sql.exec(`SELECT id FROM items WHERE kind = 'part' AND state = 'blocked'`).toArray()) {
+      const item = this.item(row.id as string);
+      const block = item.blocked;
+      if (!block || block.by !== ORCHESTRATOR || !block.reason.startsWith(Ledger.CRITERIA_BLOCK) || !block.reason.includes(" cannot be reviewed:")) continue;
+      this.update(item.id, { state: block.from, blocked: null }, at);
+      this.log(item.id, ORCHESTRATOR, "item.unblocked", { reason: block.reason, to: block.from, why: `the project entered fast mode, which skips the criteria review (${CRITERIA_SKIPPED_FAST})` }, at);
+      if (item.plan) plans.add(item.plan);
+    }
+    for (const plan of plans) this.afterPlanChange(plan);
   }
 
   // Whether the tick holds a part's dispatch for its criteria review (t438):
