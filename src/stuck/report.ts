@@ -1,5 +1,6 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
+import { unansweredNote } from "../review/unanswered.ts";
 import type { Dispatch } from "../dispatch/rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
 import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
@@ -132,7 +133,8 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       for (const e of events) {
         if (e.kind !== "review.skipped" || e.itemId !== r.item || e.data.request !== r.id) continue;
         const note = typeof e.data.note === "string" && e.data.note ? `: ${e.data.note}` : "";
-        add("review-skipped", r.item, `review request ${r.id} was skipped by ${String(e.data.runner ?? "a runner")} after the harness released it twice at this head without a verdict${note}`, e.at,
+        const why = unansweredNote(e.data.note) ? "after the harness released it twice at this head without a verdict" : "for a reason of its own";
+        add("review-skipped", r.item, `review request ${r.id} was skipped by ${String(e.data.runner ?? "a runner")} ${why}${note}`, e.at,
           `re-ask another reviewer of another family than the task's contributors: ${command(`review-request ${r.item} --reviewer H/M`)}; or withdraw it: ${command(`review-withdraw ${r.item} --request ${r.id} --reason "Reviewer stopped without a verdict"`)}`);
       }
     }

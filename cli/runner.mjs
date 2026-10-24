@@ -22,6 +22,7 @@ import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
+import { UNANSWERED_MARK } from "../src/review/unanswered.ts";
 import { historySection } from "../src/review/history.ts";
 import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
@@ -2410,7 +2411,7 @@ export function unansweredAfter(count, state) {
 }
 // The reason a stalled review is reported under, and the decision it needs.
 export function unansweredReason(task, count, last) {
-  return `the review of ${task.item.id} at ${String(task.item.head ?? "").slice(0, 8)} was released ${count} times without a verdict (last: ${String(last ?? "no reason").replace(/\s+/g, " ").trim().slice(0, 300)}); it needs the developer to decide: narrow the criteria, move the findings to a task, or override with the developer's word (atelier review ${task.item.id} --approve or --reject, as the developer)`;
+  return `the review of ${task.item.id} at ${String(task.item.head ?? "").slice(0, 8)} was released ${count} ${UNANSWERED_MARK} (last: ${String(last ?? "no reason").replace(/\s+/g, " ").trim().slice(0, 300)}); it needs the developer to decide: narrow the criteria, move the findings to a task, or override with the developer's word (atelier review ${task.item.id} --approve or --reject, as the developer)`;
 }
 
 // The skip report for a stopped review, once the queue names the live
@@ -4750,9 +4751,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
             if (after) unanswered.set(ukey, { count: after, last: state.released ? state.reason : unanswered.get(ukey)?.last, request: task.item.request, reported: false }); else unanswered.delete(ukey);
             if (after >= UNANSWERED_LIMIT && before < UNANSWERED_LIMIT) {
               io.log(`${task.project}/${task.item.id}: ${unansweredReason(task, after, state.reason)}`);
-              // The run's own cap reports the skip when it reaches it in this
-              // same run; a second report would count the request twice.
-              if (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) unanswered.get(ukey).reported = true;
+              // The run's own cap may report the served request too; that one
+              // is withdrawn by the release, so the successor is still reported.
             }
           }
           if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
