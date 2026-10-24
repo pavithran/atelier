@@ -130,12 +130,12 @@ globalThis.fetch = async (url, options) => {
 
 // A full-history project's sync checks first that main holds the baseline's
 // main (t644), with a read token and Git commands that only read. Since t149
-// it then reads no ControlPlane file and sends no policy: it names atelier
-// init, which pushes new commits to a whole-history baseline.
-test("sync checks the baseline, then names atelier init for a full-history project and sends no policy", () => commandFixture(({ command, calls, gitCalls }) => {
+// it then reads no ControlPlane file and sends no policy: a baseline already
+// at main is left as it is (t242).
+test("sync checks the baseline, then finds a full-history project already current and sends no policy", () => commandFixture(({ command, calls, gitCalls }) => {
   const result = command(["sync"]);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /example's baseline holds its whole history; atelier init pushes new commits to it/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /example: the baseline already holds main/);
   assert.deepEqual(calls().map((c) => [c.method, new URL(c.url).pathname]), [["POST", "/api/projects/example/baseline-token"]]);
   assert.deepEqual(JSON.parse(calls()[0].body), { scope: "read" });
   assert.deepEqual([...new Set(gitCalls().map((args) => args.find((a) => !a.startsWith("-"))))].sort(), ["config", "fetch", "rev-parse"]);
