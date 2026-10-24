@@ -1492,7 +1492,23 @@ export async function checkStep(io, itemPath, id, step, dir) {
 export async function landStep(io, record, kind, argv, cwd, data = {}) {
   const t = Date.now();
   const quiet = kind === "accept" ? { write() {} } : undefined;
-  const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env, out: quiet, err: quiet });
+  const run = () => (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env, out: quiet, err: quiet });
+  let r = await run();
+  // The merge step's fetch can fail on the server's side (an Artifacts 5xx)
+  // or answer a revision other than the approved one. The accept is already
+  // held and the merge resumes from its journal, so the landing runs the
+  // merge again rather than hand it back: a 5xx up to three more times, a
+  // revision mismatch once.
+  if (kind === "merged") {
+    let server = 0, mismatch = 0;
+    while (!r.passed) {
+      const text = r.output ?? "";
+      if (/fetched revision differs from the approval/.test(text) && mismatch < 1) mismatch++;
+      else if (/\b(HTTP |status |error: )?5\d\d\b/.test(text) && /fetch|Artifacts|HTTP/i.test(text) && server < 3) { server++; await (io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))))(1000 * server); }
+      else break;
+      r = await run();
+    }
+  }
   if (!r.passed) {
     await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500) });
     throw new StepError(`atelier ${argv[0]} failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
