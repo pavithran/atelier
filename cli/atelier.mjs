@@ -941,12 +941,9 @@ export class RequestError extends Error {
 // `call` without ending the command: a failure throws a RequestError, so a
 // caller can retry it or name the step that failed.
 // Whether this process is a command the runner spawns: one held to the
-// declared helper calls (RUNNER_CALLS, src/tokens.ts). `atelier fast` is also
-// the owner's (status, land, record, close), on routes no runner declares;
-// only fast take and fast ready are the runner's.
+// declared helper calls (RUNNER_CALLS, src/tokens.ts).
 function runnerHelper() {
-  const command = commandFor(args._[0]);
-  return RUNNER_COMMANDS.has(command) && (command !== "fast" || ["take", "ready"].includes(args._[1]));
+  return RUNNER_COMMANDS.has(commandFor(args._[0]));
 }
 
 // The owner's raw fetching helpers (requestText, recordedApproval,
@@ -984,10 +981,9 @@ export async function request(method, path, body, as, extra = {}, signal) {
     // answer, which a runner's task merged or abandoned under it gets
     // (assertRunnerJob in src/ledger.ts), ends with the state's own exit
     // (TERMINAL_TASK_EXITS), a claim's included: the runner reads the state
-    // from it and stops the job, where a refusal would be retried. A fast
-    // take (t589) is a claim without a fork and exits as one.
+    // from it and stops the job, where a refusal would be retried.
     const code = terminalTaskExit(data) ?? (res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && (path.endsWith("/claim") || path.endsWith("/fast-take")) && res.status >= 400 && res.status < 500 ? 3 : 1);
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
@@ -1141,65 +1137,6 @@ export async function claimWorkspace(name, id, as, runner) {
     if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
   }
   return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
-}
-
-// Moves a fast clone aside to a name no later take uses, and answers it.
-function parkFastWorkspace(dir) {
-  for (let n = 0; ; n++) {
-    const parked = `${dir}.parked-${Date.now()}${n ? `-${n}` : ""}`;
-    if (existsSync(parked)) continue;
-    renameSync(dir, parked);
-    return parked;
-  }
-}
-
-// Where a fast build is made (t589): apart from the task's fork clone, which
-// a claim in full mode may have left with work in it.
-export function fastWorkspacePath(name, id) {
-  return join(CACHE, "fast", name, id);
-}
-
-// In fast mode, take a dispatched build without a fork (POST fast-take) and
-// make a clean clone of main for it: the baseline the take's read token
-// reads, at the project's branch. No write token exists, and the clone keeps
-// no remote, so nothing is pushed from it: a fast build's commits live in
-// this clone alone until the developer lands them (t616). A clone an earlier
-// run of the same holder left with commits past the main it was made at, for
-// this same dispatch, is kept instead, so a commit made and never reported
-// is reported, not lost. `dispatch` is the dispatch the runner was assigned
-// (its `at`); a clone made for another dispatch is never resumed, since its
-// commit answers instructions that were replaced. Any other existing clone
-// is moved aside, never removed, and the move is said.
-export async function fastTakeWorkspace(name, id, as, runner, dispatch = null) {
-  const r = await call("POST", `${I(name, id)}/fast-take`, {}, as, runner ? { "x-atelier-runner": runner } : {});
-  const dir = fastWorkspacePath(name, id);
-  if (existsSync(join(dir, ".git"))) {
-    const base = wsConfig("base", dir), head = git(["rev-parse", "--verify", "-q", "HEAD"], { cwd: dir, allowFail: true });
-    const at = head.status === 0 ? head.stdout.trim() : null;
-    const same = dispatch === null || wsConfig("dispatch", dir) === dispatch;
-    if (base && at && at !== base && same && wsConfig("item", dir) === id && wsConfig("actor", dir) === as && holds(base, at, dir)) {
-      return { item: r.item, dir, base, head: at, resumed: true };
-    }
-    const parked = parkFastWorkspace(dir);
-    console.log(`The fast clone ${dir} of ${id} is kept, not removed: it was moved to ${parked}. Any commit it holds that was never landed is still there.`);
-  }
-  mkdirSync(join(CACHE, "fast", name), { recursive: true });
-  const branch = r.baseline.defaultBranch;
-  git(["clone", "--quiet", "--branch", branch, r.baseline.remote, dir], { token: r.baseline.token });
-  git(["remote", "remove", "origin"], { cwd: dir });
-  installMergeConfig(dir, { git });
-  const base = git(["rev-parse", "HEAD"], { cwd: dir }).trim();
-  for (const [k, v] of Object.entries({ project: name, item: id, actor: as, branch, base, fast: "true", ...(dispatch === null ? {} : { dispatch }) })) {
-    git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
-  }
-  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
-  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
-  const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
-  if (!runner && r.commitIdentity) {
-    const refused = identityRefusals(dir, process.env, name);
-    if (refused.length) die(`${id} is taken, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier fast take ${id} again.`);
-  }
-  return { item: r.item, dir, base, head: base, resumed: false, identity };
 }
 
 // The environment that makes a commit's author and committer the project's

@@ -2,15 +2,11 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
-import { renderItem } from "../src/ui.ts";
 
-// t589. Evidence: 2026-10-13 10:35 EDT, in fast mode (decision d14), every
-// runner build still began with a claim that forks main, and forks of
-// cloudflare-git failed (Artifacts INTERNAL_ERROR), so builds were run by
-// hand in local clones. In fast mode the queue marks a plain build fast, the
-// runner's fast take records the holder with no fork and no write token, and
-// its fast-ready report names the commit the owner's batch lands. In full
-// mode the claim forks as before, and a fast take is refused.
+// t228. The fork-less fast build (t589) was removed: in fast mode a build
+// claims with a fork like any build, the queue marks nothing fast, and a
+// runner older than this that calls fast-take or fast-ready is refused with
+// not_fast_build, which sends it to claim with a fork.
 
 const OWNER = "fast-build-owner", ACTOR = "codex/gpt-6-astra", MAIN = "a".repeat(40), BUILT = "b".repeat(40);
 const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
@@ -54,77 +50,45 @@ async function setup() {
   return { name, L, api, request, poll, forks, tokens, base: `/projects/${name}/items/t1` };
 }
 
-it("in full mode the queue marks nothing fast, a fast take is refused, and the claim forks as before", async () => {
-  const t = await setup();
-  const [job] = await t.poll();
-  expect(job).toMatchObject({ project: t.name, actor: ACTOR });
-  expect(job.fast).toBeUndefined();
-  const refused = await t.api("POST", `${t.base}/fast-take`, {});
-  expect(refused.status).toBe(409);
-  expect(await refused.json()).toMatchObject({ error: "not_fast_mode" });
-  // The refusal is no claim refusal noted on the task: the runner claims instead.
-  expect((await t.L.item("t1")).state).toBe("open");
-  const claimed = await t.api("POST", `${t.base}/claim`, {});
-  expect(claimed.status).toBe(200);
-  expect(t.forks).toEqual([`${t.name}--t1`]);
-  expect(await claimed.json()).toMatchObject({ workspace: { remote: expect.stringContaining(`/git/runner/`) } });
-});
+const FAST_CALLS: [string, Json][] = [
+  ["fast-take", {}],
+  ["fast-ready", { commit: BUILT, base: MAIN, builder: ACTOR, workspace: "/Users/runner/cache/fast/p/t1" }],
+];
 
-it("in fast mode the runner takes the build with no fork and no write token, reports its commit, and the owner lands it", async () => {
+for (const mode of ["full", "fast"] as const) {
+  it(`in ${mode} mode an old runner's fast-take and fast-ready are refused as not_fast_build, and nothing is recorded`, async () => {
+    const t = await setup();
+    if (mode === "fast") {
+      await t.L.confirmFastMode("owner", "access");
+      await t.L.setMode("owner", "fast", "Artifacts fails every new fork");
+    }
+    const [job] = await t.poll();
+    expect(job).toMatchObject({ project: t.name, actor: ACTOR });
+    expect(job.fast).toBeUndefined();
+    const before = ((await t.L.events("t1")) as unknown as LedgerEvent[]).length;
+    for (const [verb, body] of FAST_CALLS) {
+      const refused = await t.api("POST", `${t.base}/${verb}`, body);
+      expect(refused.status, verb).toBe(409);
+      expect(await refused.json(), verb).toMatchObject({ error: "not_fast_build" });
+    }
+    // No claim, no fork, no token and no event: the runner claims instead.
+    expect(await t.L.item("t1")).toMatchObject({ state: "open", owner: null });
+    expect(t.forks).toEqual([]);
+    expect(t.tokens).toEqual([]);
+    const kinds = ((await t.L.events("t1")) as unknown as LedgerEvent[]).map((e) => e.kind);
+    expect(kinds.length).toBe(before);
+    expect(kinds).not.toContain("item.fast_taken");
+    expect(kinds).not.toContain("item.fast_ready");
+  });
+}
+
+it("in fast mode the claim forks like any build", async () => {
   const t = await setup();
   await t.L.confirmFastMode("owner", "access");
   await t.L.setMode("owner", "fast", "Artifacts fails every new fork");
-  const [job] = await t.poll();
-  expect(job).toMatchObject({ project: t.name, actor: ACTOR, fast: true });
-
-  const taken = await t.api("POST", `${t.base}/fast-take`, {});
-  expect(taken.status).toBe(200);
-  const answer = await taken.json() as Json;
-  expect(answer).toMatchObject({ fast: true, baseline: { remote: `https://git.test/${t.name}.git`, token: "upstream-secret", defaultBranch: "main" } });
-  expect(answer.workspace).toBeUndefined();
-  // No fork, and the only token made is the baseline's read token.
-  expect(t.forks).toEqual([]);
-  expect(t.tokens).toEqual([`read:${t.name}`]);
-  const item = await t.L.item("t1");
-  expect(item).toMatchObject({ state: "claimed", owner: ACTOR, runner: "home:studio", fork: null });
-  expect(await t.L.tokenId("t1")).toBeNull();
-  const kinds = ((await t.L.events("t1")) as unknown as LedgerEvent[]).map((e) => e.kind);
-  expect(kinds).toEqual(expect.arrayContaining(["item.claimed", "item.fast_taken"]));
-
-  // A report from anyone but the holder, or naming another builder, is refused.
-  const report = { commit: BUILT, base: MAIN, builder: ACTOR, workspace: "/Users/runner/cache/fast/p/t1" };
-  expect((await t.api("POST", `${t.base}/fast-ready`, { ...report, builder: "codex/other" })).status).toBe(400);
-  const ready = await t.api("POST", `${t.base}/fast-ready`, report);
-  expect(ready.status).toBe(200);
-  expect(await ready.json()).toMatchObject({ ready: { ...report, runner: "home:studio" }, item: { state: "claimed", owner: ACTOR } });
-  expect((await t.L.item("t1")).dispatch ?? null).toBeNull();
-  // The build is not offered again.
-  expect((await t.poll()).filter((q) => (q.item as Json).id === "t1")).toEqual([]);
-
-  // atelier fast status reads it from the mode route, and the task page says so.
-  const mode = await (await t.request("GET", `/projects/${t.name}/mode`)).json() as { ready: Json[] };
-  expect(mode.ready).toEqual([expect.objectContaining({ item: "t1", title: "Build it", commit: BUILT, base: MAIN, builder: ACTOR, runner: "home:studio" })]);
-  const html = renderItem(await t.L.project(), await t.L.detail("t1"));
-  expect(html).toContain(`Ready to merge at <code>${BUILT.slice(0, 12)}</code>`);
-  expect(html).toContain(`atelier record-merge t1 --merge SHA --head ${BUILT} --review H/M=approve@${BUILT}`);
-
-  // The owner's batch lands it; it is no longer listed as ready.
-  await t.L.landedFast("t1", "owner", { commit: BUILT, mergeCommit: "d".repeat(40), testedHead: "d".repeat(40), batch: `${"0".repeat(40)}..${"d".repeat(40)}`, builder: ACTOR, tests: { command: "npm test", sha256: "e".repeat(64) } });
-  expect(await t.L.fastReadyList()).toEqual([]);
-  expect(renderItem(await t.L.project(), await t.L.detail("t1"))).not.toContain("Ready to merge");
-});
-
-it("back in full mode a ready report is refused and the queue claims with a fork again", async () => {
-  const t = await setup();
-  await t.L.confirmFastMode("owner", "access");
-  await t.L.setMode("owner", "fast", "forks fail");
   await t.poll();
-  expect((await t.api("POST", `${t.base}/fast-take`, {})).status).toBe(200);
-  await t.L.setMode("owner", "full", undefined);
-  const refused = await t.api("POST", `${t.base}/fast-ready`, { commit: BUILT, base: MAIN, builder: ACTOR });
-  expect(refused.status).toBe(409);
-  expect(await refused.json()).toMatchObject({ error: "not_fast_mode" });
-  const [held] = await t.poll();
-  expect(held).toMatchObject({ actor: ACTOR });
-  expect(held.fast).toBeUndefined();
+  const claimed = await t.api("POST", `${t.base}/claim`, {});
+  expect(claimed.status).toBe(200);
+  expect(t.forks).toEqual([`${t.name}--t1`]);
+  expect(await claimed.json()).toMatchObject({ workspace: { remote: expect.stringContaining("/git/runner/") } });
 });

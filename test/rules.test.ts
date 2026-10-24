@@ -1191,47 +1191,9 @@ test("a same-family post-merge review is accepted only for a task landed in fast
 // ── fast builds (t589) ───────────────────────────────────────────────────────
 // 2026-10-13 10:35 EDT: in fast mode every runner build still began with a
 // claim that forks main, and the forks failed, so builds ran by hand in
-// local clones. In fast mode a dispatched plain build is taken without a
-// fork and its commit reported ready; in full mode nothing changes.
-import { fastJobRefusal, fastBuildRefusal, assertFastBuild, fastReady, standingFastReady, fastReadyLines } from "../src/rules.ts";
-
-const FAST = projectMode({ mode: "fast", since: "2026-10-13T14:00:00.000Z", reason: "forks fail", by: "owner" });
-const BUILD = { id: "t9", kind: undefined, plan: undefined, dispatch: { at: T, agent: "claude-code", model: "opus-5.5" } } as unknown as Item;
-
-test("in fast mode a dispatched plain build is taken without a fork; in full mode every build claims with one", () => {
-  assert.equal(fastBuildRefusal(FAST, BUILD), null);
-  assert.match(fastBuildRefusal({ mode: "full" }, BUILD) ?? "", /full mode, so a build claims with a fork/);
-  assert.throws(() => assertFastBuild({ mode: "full" }, BUILD), (e: RuleError) => e.code === "not_fast_mode" && e.status === 409);
-  assert.doesNotThrow(() => assertFastBuild(FAST, BUILD));
-  // A job named build is the same as none named.
-  assert.equal(fastJobRefusal({ ...BUILD, dispatch: { ...BUILD.dispatch!, job: "build" } }), null);
-  // Plans, parts and merge-main jobs keep the claim in either mode.
-  for (const other of [{ ...BUILD, kind: "plan" as const }, { ...BUILD, kind: "part" as const, plan: "t1" }, { ...BUILD, dispatch: { ...BUILD.dispatch!, job: "merge-main" } }, { ...BUILD, dispatch: { ...BUILD.dispatch!, job: "plan" } }]) {
-    assert.ok(fastJobRefusal(other as Item), JSON.stringify(other));
-    assert.throws(() => assertFastBuild(FAST, other as Item), (e: RuleError) => e.code === "not_fast_build");
-  }
-  // A fork that holds work from an earlier claim is built there; an empty one is not.
-  assert.match(fastJobRefusal({ ...BUILD, fork: "p--t9", base: H1, head: H2 }) ?? "", /fork holds work/);
-  assert.equal(fastJobRefusal({ ...BUILD, fork: "p--t9", base: H1, head: H1 }), null);
-  // A fast take is for a dispatched build.
-  assert.throws(() => assertFastBuild(FAST, { ...BUILD, dispatch: null }), (e: RuleError) => e.code === "not_dispatched");
-});
-
-test("a fast build's report names the commit, its main and the builder its Agent line names, from the holder, in fast mode", () => {
-  const held = { id: "t9", state: "claimed" as const, owner: "claude-code/opus-5.5", runner: "home:studio" };
-  const body = { commit: H2, base: H1, builder: "claude-code/opus-5.5", workspace: "/Users/x/cache/fast/p/t9" };
-  assert.deepEqual(fastReady(body, FAST, held, "claude-code/opus-5.5"), { ...body, runner: "home:studio" });
-  // The runner is the server's record, not the report's.
-  assert.equal(fastReady({ ...body, runner: "home:other" }, FAST, held, "claude-code/opus-5.5").runner, "home:studio");
-  assert.equal(fastReady({ ...body, workspace: undefined }, FAST, held, "claude-code/opus-5.5").workspace, null);
-  assert.throws(() => fastReady(body, { mode: "full" }, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "not_fast_mode");
-  assert.throws(() => fastReady(body, FAST, held, "codex/gpt-6"), (e: RuleError) => e.code === "not_holder");
-  assert.throws(() => fastReady(body, FAST, { ...held, state: "open" as const }, "claude-code/opus-5.5"), (e: RuleError) => e.code === "not_holder");
-  assert.throws(() => fastReady({ ...body, commit: H1 }, FAST, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "nothing_built");
-  for (const bad of [{ commit: "abc" }, { base: null }, { builder: "nobody" }, { builder: "codex/gpt-6" }, { workspace: "relative/path" }, { workspace: `/${"x".repeat(1001)}` }, { workspace: "/a\nb" }]) {
-    assert.throws(() => fastReady({ ...body, ...bad }, FAST, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "bad_ready", JSON.stringify(bad));
-  }
-});
+// local clones. The fork-less build was removed in t228; reports it recorded
+// still replay.
+import { standingFastReady, fastReadyLines } from "../src/rules.ts";
 
 test("the standing report is the last one with no claim, release, handoff, dispatch or close after it", () => {
   const ev = (seq: number, kind: string, data: Record<string, unknown> = {}) => ({ seq, kind, data, at: `2026-10-13T14:0${seq}:00.000Z`, actor: "claude-code/opus-5.5" });

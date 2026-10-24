@@ -341,26 +341,6 @@ it("refuses the record while the holder's re-claim is in flight, and records it 
   expect((await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews })).status).toBe(200);
 });
 
-it("records a fast take, and refuses a claim in flight after it", async () => {
-  const { L, call } = await setup("record-merge-fast");
-  const item = await L.newItem("Taken fast", [], "owner");
-  await L.dispatch(item.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
-  await L.confirmFastMode("owner", "access");
-  await L.setMode("owner", "fast", "Artifacts fails every new fork");
-  const runner = { runner: "home:studio", kind: "home" } as const;
-  await L.takeFast(item.id, ASTRA, runner);
-  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: ASTRA, fork: null });
-  // The holder's claim after the take reserves a generation with no item.claimed event.
-  await L.claim(item.id, ASTRA, runner);
-  await refusal(await call(item.id, { mergeCommit: MERGE, head: HEAD, reviews }), 409, "claim_in_flight");
-  // A fast take alone is complete: no claim is in flight.
-  const other = await L.newItem("Taken fast, merged by hand", [], "owner");
-  await L.dispatch(other.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
-  await L.takeFast(other.id, ASTRA, runner);
-  const r = await call(other.id, { mergeCommit: MERGE, head: HEAD, reviews });
-  expect(r.status, await r.clone().text()).toBe(200);
-});
-
 // t726: on a baseline built with --history-since the merge commit is rebuilt
 // with one parent, so record-merge refused every merge made outside Atelier
 // (not_a_merge, or merge_not_on_main for the project's own hash). The CLI

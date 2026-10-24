@@ -160,8 +160,8 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
   // branch mints the developer's branches token and records each push (t641).
   assert.deepEqual(COMMAND_CAPABILITIES.branch, ["projects.developer-branches.v1"]);
-  // mode switches the project's mode (t585); fast take,
-  // ready and status call the fast build's routes (t589).
+  // mode switches the project's mode (t585); fast status reads the
+  // ready reports of the removed fast build (t589, t228).
   // mode fast, accept and merge send the developer's direction with --quote (t629).
   assert.deepEqual(COMMAND_CAPABILITIES.mode, ["projects.mode.v1", "projects.developer-direction.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.accept, ["projects.developer-direction.v1"]);
@@ -314,10 +314,10 @@ test("atelier stuck requires the stuck report by name, which no legacy level gua
   assert.deepEqual(legacy.missing, ["projects.stuck.v1"]);
 });
 
-test("fast take, fast ready and fast status require the fast build by name, which no legacy level guarantees; close does not (t589)", () => {
+test("fast status requires the fast build by name, which no legacy level guarantees; close does not (t589)", () => {
   assert.equal(CAPABILITIES.find((c) => c.name === "runners.fast-build.v1")?.level, undefined);
   assert.ok(SERVER_CAPABILITIES.includes("runners.fast-build.v1"));
-  for (const word of ["take", "ready", "status"]) {
+  for (const word of ["status"]) {
     const required = requiredForCommand("fast", word);
     assert.deepEqual(required, ["projects.mode.v1", "runners.fast-build.v1"], word);
     assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, required).ok, true, word);
@@ -325,10 +325,9 @@ test("fast take, fast ready and fast status require the fast build by name, whic
     assert.equal(checkCapabilities({ routeLevel: ROUTE_LEVEL + 3 }, required).kind, "unmapped", word);
   }
   assert.deepEqual(requiredForCommand("fast", "close"), ["projects.mode.v1"]);
-  // The build job itself asks nothing new: the queue marks a build fast only
-  // on a server that has the routes, and fast take checks for itself.
+  // The build job asks nothing of it: the fork-less build is gone (t228).
   assert.ok(!JOB_CAPABILITIES.build.includes("runners.fast-build.v1"));
-  assert.equal(ROUTE_LEVEL, 28);
+  assert.equal(ROUTE_LEVEL, 29);
 });
 
 // t591: the infrastructure_miss run report is published by name, and no job
