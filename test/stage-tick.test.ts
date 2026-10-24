@@ -277,3 +277,46 @@ test("records which keys an event kind was written for", () => {
   const keys = recordedKeys([{ item: "t1", kind: "stage.rerouted", data: { stage: "queued", head: "" } }, { item: "t2", kind: "stage.told", data: { stage: "queued" } }], "stage.rerouted");
   assert.deepEqual([...keys], [JSON.stringify(["t1", "queued", ""])]);
 });
+
+// t253: what the tick does with a task left landable past its limit.
+import { decideLandQueue, type LandQueueInput } from "../src/stage-tick.ts";
+
+const land = (over: Partial<LandQueueInput> = {}): LandQueueInput => ({ item: "t1", accepted: true, fast: false, lease: null, lander: true, queued: [], main: "m1", now: at(HOUR), ...over });
+const q = (ms: number, main = "m1", reason: "first" | "lease-lapsed" | "main-moved" = "first") => ({ at: at(ms).toISOString(), main, reason });
+
+test("queues one land job for an accepted task, and not again on a later tick", () => {
+  assert.equal(decideLandQueue(land()).queue, "first");
+  const again = decideLandQueue(land({ queued: [q(HOUR)], now: at(HOUR + 5 * MIN) }));
+  assert.deepEqual([again.queue, again.acts], [undefined, true]);
+});
+
+test("a task not accepted and not in fast mode is told to accept; fast mode queues it", () => {
+  const v = decideLandQueue(land({ accepted: false }));
+  assert.equal(v.acts, false);
+  assert.match(v.note, /atelier accept t1/);
+  assert.equal(decideLandQueue(land({ accepted: false, fast: true })).queue, "first");
+});
+
+test("a live lease queues nothing; a lapsed one queues the job again, once", () => {
+  const lease = { item: "t1", holder: "h", at: at(HOUR).toISOString() };
+  assert.equal(decideLandQueue(land({ lease, queued: [q(HOUR - MIN)], now: at(HOUR + 14 * MIN) })).queue, undefined);
+  assert.equal(decideLandQueue(land({ lease, queued: [q(HOUR - MIN)], now: at(HOUR + 15 * MIN) })).queue, "lease-lapsed");
+  assert.equal(decideLandQueue(land({ lease, queued: [q(HOUR - MIN), q(HOUR + 16 * MIN, "m1", "lease-lapsed")], now: at(HOUR + 20 * MIN) })).queue, undefined);
+});
+
+test("main moving queues the job again at most twice, then tells", () => {
+  const one = [q(0)];
+  assert.equal(decideLandQueue(land({ queued: one, main: "m2" })).queue, "main-moved");
+  const two = [...one, q(MIN, "m2", "main-moved")];
+  assert.equal(decideLandQueue(land({ queued: two, main: "m3" })).queue, "main-moved");
+  const three = [...two, q(2 * MIN, "m3", "main-moved")];
+  const v = decideLandQueue(land({ queued: three, main: "m4" }));
+  assert.deepEqual([v.queue, v.acts], [undefined, false]);
+  assert.match(v.note, /main moved/);
+});
+
+test("with no lander runner live the task is told and nothing is queued", () => {
+  const v = decideLandQueue(land({ lander: false }));
+  assert.deepEqual([v.queue, v.acts], [undefined, false]);
+  assert.match(v.note, /no live runner offers the land job/);
+});
