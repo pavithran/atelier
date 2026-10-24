@@ -2933,7 +2933,7 @@ export class Ledger extends DurableObject<Env> {
 
   private assertCriteriaReviewed(item: Item, dispatch: Dispatch | null, what: "dispatched" | "claimed"): void {
     if (!this.criteriaGate()) return;
-    if (!buildJob(dispatch)) return;
+    if (!buildJob(dispatch) || dispatch?.criteriaSkipped) return;
     const status = this.criteriaReviewStatus(item.id, new Date());
     if (status.approved) return;
     const ask = item.kind === "part"
@@ -5489,6 +5489,7 @@ export class Ledger extends DurableObject<Env> {
       next.decision = d.id;
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?)`, JSON.stringify(next));
       this.log(null, actor, "mode.fast", { reason: next.reason, decision: d.id, ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : { confirmed: "page" }) }, at);
+      this.clearCriteriaBlocksForFast(at);
       return { ...next, line: modeLine(next) };
     }
     const was = current as Extract<ProjectMode, { mode: "fast" }>;
@@ -6760,7 +6761,8 @@ export class Ledger extends DurableObject<Env> {
   private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null, planHead: string | null = null): void {
     const slash = to.indexOf("/");
     const d = this.standingDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, "build", ORCHESTRATOR, at);
-    const merging = mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d;
+    const skipped = this.item(id).dispatch?.criteriaSkipped || (this.project().policy.requireCriteriaReview && this.mode().mode === "fast");
+    const merging = { ...(mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d), ...(skipped ? { criteriaSkipped: true as const } : {}) };
     this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
 
@@ -6907,7 +6909,7 @@ export class Ledger extends DurableObject<Env> {
       // A merge-main part, or one sent back after an integration conflict
       // (its dispatch names the plan's head: the runner's merge-plan job),
       // merges and keeps the gates it had; neither waits for the review.
-      const merges = mainHead !== null || conflicted.has(p.partKey!) || !!p.dispatch?.planHead;
+      const merges = mainHead !== null || conflicted.has(p.partKey!) || !!p.dispatch?.planHead || !!p.dispatch?.criteriaSkipped;
       if ((want || queued) && this.criteriaReviewHolds(p, id, approval, at, merges)) {
         if (p.dispatch) {
           this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
@@ -8409,6 +8411,25 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "blocked" || !item.blocked || item.blocked.by !== ORCHESTRATOR || !item.blocked.reason.startsWith(Ledger.CRITERIA_BLOCK)) return;
     this.update(id, { state: item.blocked.from, blocked: null }, at);
     this.log(id, ORCHESTRATOR, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, at);
+  }
+
+  // Fast mode skips the criteria hold (t179), so a part the tick already
+  // blocked because no reviewer could review its criteria is unblocked when
+  // the project enters it, and dispatches with the criteria as written. A
+  // part blocked for the developer's answer to a rejection stays blocked.
+  // Leaving fast mode does not block a dispatched part again.
+  private clearCriteriaBlocksForFast(at: string): void {
+    if (!this.project().policy.requireCriteriaReview) return;
+    const plans = new Set<string>();
+    for (const row of this.sql.exec(`SELECT id FROM items WHERE kind = 'part' AND state = 'blocked'`).toArray()) {
+      const item = this.item(row.id as string);
+      const block = item.blocked;
+      if (!block || block.by !== ORCHESTRATOR || !block.reason.startsWith(Ledger.CRITERIA_BLOCK) || !block.reason.includes(" cannot be reviewed:")) continue;
+      this.update(item.id, { state: block.from, blocked: null }, at);
+      this.log(item.id, ORCHESTRATOR, "item.unblocked", { reason: block.reason, to: block.from, why: `the project entered fast mode, which skips the criteria review (${CRITERIA_SKIPPED_FAST})` }, at);
+      if (item.plan) plans.add(item.plan);
+    }
+    for (const plan of plans) this.afterPlanChange(plan);
   }
 
   // Whether the tick holds a part's dispatch for its criteria review (t438):
