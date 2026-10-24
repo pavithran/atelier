@@ -32,6 +32,35 @@ test("while the review request is unclaimed, the landing names the runner's job 
 });
 
 
+test("the landing counts as queued ahead only the jobs the runners that offer its reviewer could also take (t220)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.review.approveAfter = 4;
+  f.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], projects: ["proj"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  const job = (project, id, agent, model, at) => ({ project, item: { id, title: id, dispatch: { job: "review", to: "home", agent, model, at } } });
+  f.box.queue = [
+    job("proj", "t7", "zcode", "glm-5.3", "2026-10-06T08:00:00.000Z"),
+    job("other", "t8", "codex", "gpt-6-astra", "2026-10-06T08:05:00.000Z"),
+    job("proj", "t9", "codex", "gpt-6-astra", "2026-10-06T08:10:00.000Z"),
+  ];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /1 job queued ahead of it: proj\/t9 \(review\)\./);
+  assert.doesNotMatch(r.output, /t7|t8/);
+});
+
+test("a reviewer offered only by runners of another project reads as unclaimable, not as every older job queued ahead (t220)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.review.approveAfter = 4;
+  f.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], projects: ["other"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  f.box.queue = [{ project: "other", item: { id: "t8", title: "t8", dispatch: { job: "review", to: "home", agent: "codex", model: "gpt-6-astra", at: "2026-10-06T08:05:00.000Z" } } }];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /not claimed yet, and no live runner can take it/);
+  assert.doesNotMatch(r.output, /queued ahead/);
+});
+
 test("while the review request is unclaimed and no live runner offers the reviewer, the landing says it can never be claimed", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
