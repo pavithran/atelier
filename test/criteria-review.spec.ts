@@ -606,6 +606,45 @@ it("a part blocked for want of a criteria reviewer is unblocked and dispatched o
   expect((await L.item(c)).dispatch).toBeNull();
 });
 
+async function blockedPlan(project: string) {
+  const L = await setup(project);
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", GPT, []);
+  await L.claim(item.id, GPT, RUNNER);
+  const spec: PlanPart = { key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S", prefer: { actor: GLM, reason: "builds alone" } };
+  const post = await L.postPlan(item.id, GPT, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [spec] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, GPT, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [entry("gpt-6-astra", "codex"), { ...entry("glm-5.3", "zcode"), roles: ["build"] }], []);
+  expect((await L.item(parts[0].id)).state).toBe("blocked");
+  return { L, part: parts[0].id };
+}
+
+it("entering fast mode unblocks a part blocked for want of a criteria reviewer and dispatches it, recording why", async () => {
+  const { L, part } = await blockedPlan("criteria-fast-unblock");
+  await L.confirmFastMode("owner", "access");
+  await L.setMode("owner", "fast", "forks fail");
+  const after = await L.item(part);
+  expect(after.state).toBe("open");
+  expect(after.blocked ?? null).toBeNull();
+  expect(after.dispatch).toMatchObject({ by: "atelier/orchestrator" });
+  expect((await events(L, part)).find((e) => e.kind === "item.unblocked")).toMatchObject({ data: { to: "open", why: expect.stringMatching(/entered fast mode/) } });
+  // Leaving fast mode does not block the dispatched part again.
+  await L.setMode("owner", "full", undefined);
+  expect((await L.item(part)).state).toBe("open");
+  // A later tick in full mode keeps the dispatch: the exemption lasts.
+  expect((await L.item(part)).dispatch).toMatchObject({ criteriaSkipped: true });
+  await L.retickDeployed("fast-then-full");
+  const later = await L.item(part);
+  expect(later.state).toBe("open");
+  expect(later.dispatch).toMatchObject({ by: "atelier/orchestrator", criteriaSkipped: true });
+});
+
+it("a part blocked for want of a criteria reviewer stays blocked outside fast mode", async () => {
+  const { L, part } = await blockedPlan("criteria-no-fast-unblock");
+  expect((await L.item(part)).state).toBe("blocked");
+  expect(await waiting(L)).toEqual([]);
+});
+
 // The owner's standing reaches a criteria review after it is asked, as it
 // reaches a code review (poolChanged, claimReview): a pool change withdraws
 // an unclaimed request to a model now paused, reserved or kept from
