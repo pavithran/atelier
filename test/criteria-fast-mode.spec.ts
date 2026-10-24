@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import { criteriaReviewLine } from "../src/brief.ts";
 import type { CriteriaReviewClaim, CriteriaReviewView } from "../src/ledger.ts";
+import { familyDeadlock } from "../src/review/criteria.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
 import { taskPage } from "../src/task-page.ts";
@@ -83,10 +84,12 @@ it("leaving fast mode holds again every task not yet claimed, and the setting ne
 it("a criteria review no allowed model can give is named as a deadlock with the one decision that clears it", async () => {
   const cross = await setup("cfm-dead-cross");
   const single = await setup("cfm-dead-single", { ...gated, familyMode: { single: "anthropic", by: "owner", at: AT } });
+  const singleCross = await setup("cfm-dead-single-cross", { ...gated, familyMode: { single: "anthropic", by: "owner", at: AT } });
   const open = await setup("cfm-dead-open");
   const cases = [
     { L: cross, pool: [POOL[0]], deadlock: /^deadlock: t1's acceptance criteria, written by claude-code\/opus-5.5, need a review by a model of another family.*add a model of another family with atelier models add/ },
-    { L: single, pool: [POOL[0]], deadlock: /^deadlock: t1's acceptance criteria need a review.*single-family mode \(anthropic\).*atelier init --cross-family/ },
+    { L: single, pool: [POOL[0]], deadlock: /^deadlock: t1's acceptance criteria need a review.*no model of another family is in it either.*register a different anthropic model with atelier models add/ },
+    { L: singleCross, pool: POOL, deadlock: /^deadlock: t1's acceptance criteria need a review.*single-family mode \(anthropic\).*atelier init --cross-family/ },
     { L: open, pool: POOL, deadlock: null },
   ];
   for (const { L, pool, deadlock } of cases) {
@@ -110,6 +113,19 @@ it("a criteria review no allowed model can give is named as a deadlock with the 
     expect(await L.criteriaDeadlocks()).toEqual([]);
     expect((await view(L, id)).deadlock).toBeUndefined();
   }
+});
+
+it("the decision a deadlock names clears it for the pool it was named for", () => {
+  const policy: ProjectPolicy = { ...gated, familyMode: { single: "anthropic", by: "owner", at: AT } };
+  const cross: ProjectPolicy = { ...gated };
+  const other = entry("sonnet-5.5", "claude-code");
+  // Only the author in the pool: leaving single-family mode alone clears nothing, a second anthropic model does.
+  expect(familyDeadlock([OPUS], [POOL[0]], policy)).toMatch(/register a different anthropic model/);
+  expect(familyDeadlock([OPUS], [POOL[0]], cross)).not.toBeNull();
+  expect(familyDeadlock([OPUS], [POOL[0], other], policy)).toBeNull();
+  // Another company's model in the pool: cross-family mode clears it.
+  expect(familyDeadlock([OPUS], POOL, policy)).toMatch(/atelier init --cross-family/);
+  expect(familyDeadlock([OPUS], POOL, cross)).toBeNull();
 });
 
 it("a verdict on criteria is never recordable by a model that wrote them, in fast mode or out of it", async () => {

@@ -198,9 +198,15 @@ export function familyDeadlock(authors: readonly string[], pool: readonly ModelE
   if (pool.some((e) => criteriaIndependenceRefusal(actorOf(e), authors, owner, single) === null)) return null;
   const models = authors.filter((a) => isModelAuthor(a, owner));
   const wrote = models.length ? `written by ${models.join(", ")}` : "written";
-  return single
-    ? `deadlock: ${id}'s acceptance criteria need a review, and no ${single} model other than the ones that wrote them is in the pool, while single-family mode (${single}) allows no model of another company; clear it with one decision: atelier init --cross-family`
-    : `deadlock: ${id}'s acceptance criteria, ${wrote}, need a review by a model of another family, and no such model is in the pool; clear it with one decision: add a model of another family with atelier models add`;
+  if (single) {
+    // Leaving single-family mode helps only when the pool already holds a
+    // model that passes the cross-family rules; otherwise one has to be added.
+    const crossClears = pool.some((e) => criteriaIndependenceRefusal(actorOf(e), authors, owner, null) === null);
+    return crossClears
+      ? `deadlock: ${id}'s acceptance criteria need a review, and no ${single} model other than the ones that wrote them is in the pool, while single-family mode (${single}) allows no model of another company; clear it with one decision: atelier init --cross-family, which lets the pool's model of another family review`
+      : `deadlock: ${id}'s acceptance criteria need a review, and no ${single} model other than the ones that wrote them is in the pool, and no model of another family is in it either; clear it with one decision: register a different ${single} model with atelier models add, since switching to cross-family mode would still leave no independent reviewer`;
+  }
+  return `deadlock: ${id}'s acceptance criteria, ${wrote}, need a review by a model of another family, and no such model is in the pool; clear it with one decision: add a model of another family with atelier models add`;
 }
 
 export interface CriteriaPickInput {
