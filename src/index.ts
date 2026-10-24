@@ -1,4 +1,4 @@
-import { stuckBatchRequest } from "./notify.ts";
+import { stuckBatchRequests } from "./notify.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
@@ -3445,26 +3445,29 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
 // The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
 // and the origin the recorded evidence links name.
 const STUCK_CRON = "*/10 * * * *", STUCK_ORIGIN = "https://atelier.zone";
-// Sends the project's due episodes (src/stuck/notices.ts) as one message and
-// records them only when the channel answers with success. A non-success
-// answer or a failed request records nothing, so the next tick sends the
-// batch again. A request that fails after the channel received it, such as a
-// timeout awaiting the answer, cannot be told from one it never got: the
-// batch is then sent again and the developer may see it twice.
+// Sends the project's due episodes (src/stuck/notices.ts) in as many messages
+// as the channel's body limit needs, and records each message's episodes only
+// when the channel answers it with success. A non-success answer or a failed
+// request records nothing for that message and stops the batch, so the next
+// tick sends the rest again; messages already accepted stay recorded. A
+// request that fails after the channel received it, such as a timeout awaiting
+// the answer, cannot be told from one it never got: that message is then sent
+// again and the developer may see it twice.
 async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, name: string, at: string): Promise<void> {
   const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
   if (!topic) return;
   const due = await I.stuckDue(key, at);
-  if (!due.length) return;
-  try {
-    const response = await fetch(stuckBatchRequest(topic, STUCK_ORIGIN, name, due), { redirect: "error", signal: AbortSignal.timeout(10_000) });
-    await response.body?.cancel();
-    if (!response.ok) { console.error("Atelier stuck notification failed", response.status); return; }
-  } catch {
-    console.error("Atelier stuck notification failed");
-    return;
+  for (const { request, episodes } of stuckBatchRequests(topic, STUCK_ORIGIN, name, due)) {
+    try {
+      const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+      await response.body?.cancel();
+      if (!response.ok) { console.error("Atelier stuck notification failed", response.status); return; }
+    } catch {
+      console.error("Atelier stuck notification failed");
+      return;
+    }
+    await I.stuckNotified(key, episodes, at);
   }
-  await I.stuckNotified(key, due, at);
 }
 
 export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<void> {
