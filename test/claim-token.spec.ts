@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { parseRuleError } from "../src/rules.ts";
+import { bindingsWith, expectNoStrayArtifactsAccess, fakeLog } from "./support/artifacts-fake.ts";
 
 // A claim mints its workspace write token in Artifacts after the Ledger has
 // allowed it, and Artifacts can be slow to answer. These tests hold that
@@ -12,6 +13,8 @@ import { parseRuleError } from "../src/rules.ts";
 // was revoked. Every credential here is a dummy.
 
 const TOKEN = "claim-token-owner";
+afterEach(expectNoStrayArtifactsAccess);
+
 const H0 = "0".repeat(40);
 const A = "claude-code/opus-5.5", B = "codex/gpt-6";
 
@@ -37,6 +40,7 @@ function fakeArtifacts() {
         if (t) t.revoked = true;
         return !!t;
       },
+      log: fakeLog,
       [Symbol.dispose]() {},
     }),
   } as unknown as Artifacts;
@@ -53,7 +57,7 @@ function fakeArtifacts() {
 }
 
 function caller(bearer: string, artifacts: Artifacts, actor?: string) {
-  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env;
+  const bindings = bindingsWith(env, artifacts, { ATELIER_TOKEN: TOKEN });
   return (method: string, path: string, body: unknown = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
     headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", ...(actor ? { "x-atelier-actor": actor } : {}) },
