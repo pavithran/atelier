@@ -13,7 +13,7 @@ export interface Transition extends EpisodeKey { kind: "opened" | "cleared"; epi
 // case (a task's rule, a review request) the reason with elapsed hours
 // removed, so a finding that ages stays one episode.
 export function causeOf(entry: Pick<Entry, "kind" | "reason">): string {
-  return ["task", "review"].includes(entry.kind) ? `${entry.kind}:${entry.reason.replace(/\b\d+h\b/g, "Nh")}` : entry.kind;
+  return ["task", "review", "review-unoffered"].includes(entry.kind) ? `${entry.kind}:${entry.reason.replace(/\b\d+h\b/g, "Nh")}` : entry.kind;
 }
 
 export const keyOf = (k: EpisodeKey) => JSON.stringify([k.project, k.item, k.cause]);
