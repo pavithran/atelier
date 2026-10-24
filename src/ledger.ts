@@ -1924,18 +1924,24 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
-  // The tick's last run, on the index instance: one row, replaced by each run.
-  // `read` and `unread` count the projects the run did and did not read
-  // completely.
+  // Each run of the tick is a tick.ran row on the index instance: its time and
+  // how many projects it did and did not read completely. Rows older than a
+  // week are dropped. The latest-run lookup reads the newest row.
   recordTickRan(at: string, read: number, unread: number): void {
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_ran (tick TEXT PRIMARY KEY, at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
-    this.sql.exec(`INSERT INTO tick_ran (tick, at, read, unread) VALUES ('stage', ?, ?, ?) ON CONFLICT (tick) DO UPDATE SET at = excluded.at, read = excluded.read, unread = excluded.unread WHERE excluded.at >= tick_ran.at`, at, read, unread);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL DEFAULT 'tick.ran', at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
+    this.sql.exec(`INSERT INTO tick_runs (kind, at, read, unread) VALUES ('tick.ran', ?, ?, ?)`, at, read, unread);
+    this.sql.exec(`DELETE FROM tick_runs WHERE at < ?`, new Date(Date.parse(at) - 7 * 24 * 3_600_000).toISOString());
   }
 
   tickRan(): { at: string; read: number; unread: number } | null {
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_ran (tick TEXT PRIMARY KEY, at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
-    const r = this.sql.exec(`SELECT at, read, unread FROM tick_ran WHERE tick = 'stage'`).toArray()[0];
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL DEFAULT 'tick.ran', at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
+    const r = this.sql.exec(`SELECT at, read, unread FROM tick_runs ORDER BY at DESC, seq DESC LIMIT 1`).toArray()[0];
     return r ? { at: r.at as string, read: r.read as number, unread: r.unread as number } : null;
+  }
+
+  tickRuns(limit = 100): { at: string; read: number; unread: number }[] {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL DEFAULT 'tick.ran', at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
+    return this.sql.exec(`SELECT at, read, unread FROM tick_runs ORDER BY at DESC, seq DESC LIMIT ?`, limit).toArray().map((r) => ({ at: r.at as string, read: r.read as number, unread: r.unread as number }));
   }
 
   // ── runner offers ─────────────────────────────────────────────────────────

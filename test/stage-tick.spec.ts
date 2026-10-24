@@ -78,6 +78,14 @@ it("each run records tick.ran on the index and the route says when", async () =>
   // An older run finishing late does not move it back.
   await tick(0.5);
   expect((await I().tickRan())!.at).toBe(ran!.at);
+  // Every run is recorded, not only the latest.
+  const runs = await I().tickRuns();
+  expect(runs.length).toBeGreaterThanOrEqual(2);
+  expect(runs.map((r) => r.at)).toContain(ran!.at);
+  const n = runs.length;
+  await tick(2);
+  await tick(3);
+  expect((await I().tickRuns()).length).toBe(n + 2);
 });
 
 it("a project that cannot be read records nothing, and the run is still recorded", async () => {

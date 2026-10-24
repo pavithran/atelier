@@ -361,11 +361,11 @@ const stuckTime = (t) => (t === "unknown" ? "unknown" : branchTime(t));
 // Open stuck episodes, listed before any ordinary item. `stuck` is openStuck's
 // view (src/stuck/view.ts), or absent when it was not asked for. Anything
 // unread is said, never shown as nothing stuck.
-export function stuckLines(stuck, indent = "  ") {
+export function stuckLines(stuck, indent = "  ", withTick = true) {
   if (!stuck) return [];
   const out = [];
   // A tick older than 15 minutes is the first line: nothing below it is current.
-  if (stuck.tick?.stale) out.push(`${indent}${stuck.tick.line}`);
+  if (withTick && stuck.tick?.stale) out.push(`${indent}${stuck.tick.line}`);
   if (stuck.rows.length) {
     out.push(`${indent}Stuck`);
     for (const r of stuck.rows) {
@@ -379,9 +379,11 @@ export function stuckLines(stuck, indent = "  ") {
   return out;
 }
 
-// When the stage tick last ran, said by `status --project` beside the stuck
-// section; a stale tick is already stuckLines' first line.
+// When the stage tick last ran: a tick older than 15 minutes is the first line
+// of the whole output (overdueTick), a fresh one is said under the project's
+// heading (tickLines).
 export const tickLines = (stuck, indent = "") => (stuck?.tick && !stuck.tick.stale ? [`${indent}${stuck.tick.line}`] : []);
+export const overdueTick = (stuck) => (stuck?.tick?.stale ? [stuck.tick.line] : []);
 
 export function formatStatus(views, waiting = {}) {
   if (!views.length) return "No projects.";
@@ -404,12 +406,14 @@ export function formatStatus(views, waiting = {}) {
     const queued = items.filter((i) => i.state === "open" && !i.owner && i.dispatch && !theirs.has(i.id));
     const reviews = reviewQueue(waiting, v.name, offers);
     const why = whyIn(waiting, v.name, offers);
+    lines.push(...overdueTick(v.stuck));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
+    lines.push(...tickLines(v.stuck, "  "));
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     // Fast mode, as status --project prints it (t629).
     if (v.mode) lines.push(`  ${flatText(v.mode)}`);
     lines.push(...criteriaLines(v));
-    lines.push(...stuckLines(v.stuck));
+    lines.push(...stuckLines(v.stuck, "  ", false));
     if (!owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.

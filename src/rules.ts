@@ -2143,7 +2143,9 @@ export function stageEnteredAt(stage: TaskStage, item: Item, head: string | null
     case "queued": return item.dispatch?.at ?? null;
     case "built": return item.lastPushAt ?? clock.readyAt ?? null;
     case "checked": return latest(evidence);
-    case "reviewed": return latest(reviews);
+    // A change that needs no approval is reviewed once its checks pass, so
+    // with no approval at the head the stage was entered with the checks.
+    case "reviewed": return latest(reviews) ?? latest(evidence);
     case "landable": return latest([...evidence, ...reviews]);
     default: return null;
   }

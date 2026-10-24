@@ -111,13 +111,15 @@ test("says when the tick last ran, and that one older than 15 minutes is stale",
 });
 
 test("status puts a tick older than 15 minutes first, and says a fresh one beside the stuck section", async () => {
-  const { readStuck, stuckLines, tickLines } = await import("../cli/status.mjs");
+  const { overdueTick, readStuck, stuckLines, tickLines } = await import("../cli/status.mjs");
   const base = Date.now();
   const now = new Date(base).toISOString();
   const old = new Date(base - 16 * MIN).toISOString();
   const get = (ranAt: string | null) => async (path: string) => path.endsWith("/stuck/tick") ? { ranAt, read: 1, unread: 0, now } : path.endsWith("/stuck") ? { entries: [], complete: true } : [];
   const stale = await readStuck(get(old), "/p/x", "x", []);
   assert.match(stuckLines(stale)[0], /^  Stage tick last ran 16 minutes ago .*older than 15 minutes/);
+  assert.deepEqual(stuckLines(stale, "  ", false), []);
+  assert.match(overdueTick(stale)[0], /^Stage tick last ran 16 minutes ago/);
   assert.deepEqual(tickLines(stale), []);
   const fresh = await readStuck(get(new Date(base - 2 * MIN).toISOString()), "/p/x", "x", []);
   assert.deepEqual(stuckLines(fresh), []);
@@ -127,4 +129,29 @@ test("status puts a tick older than 15 minutes first, and says a fresh one besid
   // A server from before the tick answers none: nothing is said of it.
   const older = await readStuck(async (path: string) => (path.endsWith("/stuck") ? { entries: [], complete: true } : path.endsWith("/episodes") ? [] : null), "/p/x", "x", []);
   assert.deepEqual([...stuckLines(older), ...tickLines(older)], []);
+});
+
+test("default status says when the tick ran, and an overdue tick is the first line, before the heading", async () => {
+  const { readStuck, formatStatus } = await import("../cli/status.mjs");
+  const base = Date.now();
+  const now = new Date(base).toISOString();
+  const get = (ranAt: string | null) => async (path: string) => path.endsWith("/stuck/tick") ? { ranAt, read: 1, unread: 0, now } : path.endsWith("/stuck") ? { entries: [], complete: true } : [];
+  const view = async (ranAt: string | null) => ({ name: "x", items: [], inbox: [], stuck: await readStuck(get(ranAt), "/p/x", "x", []) });
+  const fresh = formatStatus([await view(new Date(base - 2 * MIN).toISOString())]).split("\n");
+  assert.equal(fresh[0], "x");
+  assert.match(fresh[1], /^  Stage tick last ran 2 minutes ago/);
+  const stale = formatStatus([await view(new Date(base - 16 * MIN).toISOString())]).split("\n");
+  assert.match(stale[0], /^Stage tick last ran 16 minutes ago .*older than 15 minutes/);
+  assert.equal(stale[1], "x");
+  assert.equal(stale.filter((l) => l.includes("Stage tick")).length, 1);
+  assert.equal(formatStatus([await view(null)]).split("\n")[0], "Stage tick has not run");
+});
+
+test("a reviewed task that needs no approval is stuck two hours after its checks passed", () => {
+  const clock = { evidence: [{ head: "a", at: T0 }], reviews: [] };
+  assert.equal(stageEnteredAt("reviewed", item(), "a", clock), T0);
+  assert.equal(stageOverrun("reviewed", stageEnteredAt("reviewed", item(), "a", clock), at(2 * HOUR)), null);
+  assert.notEqual(stageOverrun("reviewed", stageEnteredAt("reviewed", item(), "a", clock), at(2 * HOUR + 1)), null);
+  const withReview = { evidence: [{ head: "a", at: T0 }], reviews: [{ head: "a", at: new Date(Date.parse(T0) + HOUR).toISOString(), approve: true }] };
+  assert.equal(stageEnteredAt("reviewed", item(), "a", withReview), withReview.reviews[0].at);
 });
