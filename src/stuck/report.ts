@@ -1,6 +1,6 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
-import { unansweredNote } from "../review/unanswered.ts";
+import { stopText, type ReviewStop } from "../review/stopped.ts";
 import type { Dispatch } from "../dispatch/rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
 import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
@@ -23,7 +23,7 @@ export function reportLimits(values: Record<string, unknown> = {}): ReportLimits
   return limits;
 }
 export interface ReviewObservation { id: number; item: string; head: string; claimedBy: string; claimedAt: string; runner: string | null }
-export interface RequestObservation { id: number; item: string; head: string; dispatch: Dispatch }
+export interface RequestObservation { id: number; item: string; head: string; dispatch: Dispatch; stopped?: ReviewStop }
 // How long an open review request may name a reviewer no live runner offers
 // before it is reported (t220).
 export const REVIEW_OFFER_MINUTES = 15;
@@ -124,17 +124,23 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       add("review-unoffered", r.item, `review request ${r.id} asks ${reviewer}, which no live runner offers for the review job`, r.dispatch.at,
         `reroute to a reviewer a live runner offers, of another family than the task's contributors: ${command(`review-request ${r.item} --reviewer H/M`)}; or withdraw it: ${command(`review-withdraw ${r.item} --request ${r.id} --reason "No live runner offers ${reviewer}"`)}`, `${origin}/api/runners`);
     }
-    // A runner that stopped serving an open request after two releases without
-    // a verdict recorded a review.skipped event (t238) naming why. Nothing
-    // else offers that runner's review again at this head, so the request
-    // waits on a decision the developer must make.
+    // An open request that carries a stop (t238) was released without a
+    // verdict twice at this head: no runner serves it, so it waits on a
+    // decision the developer must make. The stop is read from the live
+    // request, which every release carries it to.
+    for (const r of snapshot.openRequests ?? []) {
+      if (!r.stopped || !live.some((i) => i.id === r.item)) continue;
+      add("review-skipped", r.item, `review request ${r.id}: ${stopText(r.item, r.stopped)}`, r.stopped.at || r.dispatch.at,
+        `decide, then act: ${command(`review-request ${r.item} --reviewer H/M`)} asks another reviewer; ${command(`review-withdraw ${r.item} --request ${r.id} --reason "Reviewer stopped without a verdict"`)} withdraws it`);
+    }
+    // A runner that skipped an open request for its own reason recorded a
+    // review.skipped event naming it; the report says that reason as it is.
     for (const r of snapshot.openRequests ?? []) {
       if (!live.some((i) => i.id === r.item)) continue;
       for (const e of events) {
         if (e.kind !== "review.skipped" || e.itemId !== r.item || e.data.request !== r.id) continue;
         const note = typeof e.data.note === "string" && e.data.note ? `: ${e.data.note}` : "";
-        const why = unansweredNote(e.data.note) ? "after the harness released it twice at this head without a verdict" : "for a reason of its own";
-        add("review-skipped", r.item, `review request ${r.id} was skipped by ${String(e.data.runner ?? "a runner")} ${why}${note}`, e.at,
+        add("review-skipped", r.item, `review request ${r.id} was skipped by ${String(e.data.runner ?? "a runner")}${note}`, e.at,
           `re-ask another reviewer of another family than the task's contributors: ${command(`review-request ${r.item} --reviewer H/M`)}; or withdraw it: ${command(`review-withdraw ${r.item} --request ${r.id} --reason "Reviewer stopped without a verdict"`)}`);
       }
     }

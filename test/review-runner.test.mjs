@@ -1488,13 +1488,13 @@ test("a post-merge review whose clone fails is served with backoff, given up aft
 // throwing (the reviewer's harness exits, times out or replies without a
 // verdict) are counted by task and head too, so the two-failure cap holds
 // across the new number each release gives the request; a review of a task
-// not yet merged keeps its count by request (t353).
+// not yet merged counts by task and head too (t238).
 test("a post-merge review's failures count by task and head, not by request", async () => {
   const { failureKey } = await import("../cli/runner.mjs");
   const merged = (request) => ({ project: "atelier", item: { id: "t21", state: "merged", head: "e".repeat(40), request, dispatch: { job: "review" } } });
   const open = (request) => ({ project: "atelier", item: { id: "t21", state: "open", head: "e".repeat(40), request, dispatch: { job: "review" } } });
   assert.equal(failureKey(merged(50)), failureKey(merged(51)));
-  assert.notEqual(failureKey(open(50)), failureKey(open(51)));
+  assert.equal(failureKey(open(50)), failureKey(open(51)), "an unmerged task's review counts by head too (t238)");
 });
 
 // t591 (fifth review): the baseline is read and lacks the merge, but the
@@ -2301,15 +2301,6 @@ test("a rejection with an unmet criterion and only pre-existing findings is reco
   assert.deepEqual(findingsOf(argv).map((f) => [f.line, f.severity, f.label]), [[88, "follow-up", "pre-existing"], [300, "follow-up", "pre-existing"]]);
 });
 
-test("a run that releases the request without a verdict says so in its state", async () => {
-  const { io } = fixture({ verdict: "nothing readable" });
-  const state = await runReview(assignment, config, "home:studio", io);
-  assert.equal(state.phase, "failed");
-  assert.equal(state.released, true);
-  const ok = await runReview(assignment, config, "home:studio", fixture().io);
-  assert.ok(!ok.released);
-});
-
 test("a review released without a verdict under two request numbers at one head is not claimed a third time", async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io, calls, logs } = fixture({ verdict: "no verdict here" });
@@ -2328,5 +2319,5 @@ test("a review released without a verdict under two request numbers at one head 
     },
   });
   assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
-  assert.ok(logs.some((l) => /released 2 times without a verdict/.test(l) && /narrow the criteria/.test(l)), logs.join("\n"));
+  assert.ok(logs.some((l) => /needs the developer's attention after 2 failures/.test(l)), logs.join("\n"));
 });

@@ -22,7 +22,7 @@ import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
-import { UNANSWERED_MARK } from "../src/review/unanswered.ts";
+import { stopped as reviewStopped, stopText } from "../src/review/stopped.ts";
 import { historySection } from "../src/review/history.ts";
 import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
@@ -2368,20 +2368,18 @@ export function orderJobs(tasks) {
 }
 
 // The key a runner's per-process failure cap uses. A build's failures count
-// against the task itself; a review's against the review it answered — its
-// head and its request number — so a new review request or a new head (a
-// later landing) starts the count fresh instead of an earlier landing's
-// failures stranding it (t353). A criteria review's count against that
+// against the task itself; a review's, post-merge or not, against its task and
+// head, never its request number (t238): every release withdraws the request
+// and makes a successor under another number, which would start the count
+// fresh on each release. A new head (a later landing) starts it fresh. A
+// pre-review counts by its request. A criteria review's count against that
 // review alone, by its request number (t438): two failed reviews of a
 // task's criteria never skip the task's build, nor the next review the
 // owner asks for after editing them, as counting them under the task did.
 export function failureKey(task) {
   const job = task.item.dispatch?.job;
-  // A merged task's post-merge review (t591, fourth review) counts by its
-  // task and head alone: each release of it makes the request anew under
-  // another number, which would start the count fresh on every poll.
-  if (job === "review" && task.item.state === "merged") return JSON.stringify([task.project, task.item.id, task.item.head]);
-  if (job === "review" || job === PREREVIEW_JOB) return JSON.stringify([task.project, task.item.id, task.item.head, task.item.request]);
+  if (job === "review") return JSON.stringify([task.project, task.item.id, task.item.head]);
+  if (job === PREREVIEW_JOB) return JSON.stringify([task.project, task.item.id, task.item.head, task.item.request]);
   if (job === "criteria-review") return JSON.stringify([task.project, task.item.id, "criteria-review", task.item.request]);
   return taskKey(task);
 }
@@ -2393,36 +2391,6 @@ export function failureKey(task) {
 // every poll for hours (13 requests, 2026-10-13).
 export function missingKey(task) {
   return JSON.stringify([task.project, task.item.id, task.item.head]);
-}
-
-// A review released without a verdict twice at one head is not offered to
-// this runner again (t238). t191's review at 99df3c67 was claimed, answered,
-// released and claimed again at least four times, about 47k tokens each:
-// the failure count is keyed by request number, and every release makes the
-// request anew. Counted by task and head, as a missing merge is. A provider
-// limit is the harness's, not the review's, and a merge commit or baseline
-// that could not be read has its own count (fetchFailures), so neither
-// counts here.
-export const UNANSWERED_LIMIT = 2;
-export function unansweredAfter(count, state) {
-  if (state.phase === "reviewed") return 0;
-  if (state.phase === "failed" && state.released && !state.providerLimit && !state.missingCommit && !state.fetchFailed) return count + 1;
-  return count;
-}
-// The reason a stalled review is reported under, and the decision it needs.
-export function unansweredReason(task, count, last) {
-  return `the review of ${task.item.id} at ${String(task.item.head ?? "").slice(0, 8)} was released ${count} ${UNANSWERED_MARK} (last: ${String(last ?? "no reason").replace(/\s+/g, " ").trim().slice(0, 300)}); it needs the developer to decide: narrow the criteria, move the findings to a task, or override with the developer's word (atelier review ${task.item.id} --approve or --reject, as the developer)`;
-}
-
-// The skip report for a stopped review, once the queue names the live
-// request: a release withdraws the request it served and opens a successor
-// with a new number, and the landing reads skips of the live request only.
-// Null until the queue offers the head under a number other than the served
-// one, and once the report is made.
-export function unansweredSkipBody(task, entry) {
-  if (!entry || entry.reported || entry.count < UNANSWERED_LIMIT) return null;
-  if (task.item.dispatch?.job !== "review" || task.item.request === entry.request) return null;
-  return { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, note: unansweredReason(task, entry.count, entry.last) };
 }
 
 // How often a runner reads the baseline's head for the reviews it keeps
@@ -2472,16 +2440,7 @@ export function jobOf(task) {
 // that writes no valid verdict keeps the reply on the task and releases the
 // request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO, preclaimed = null) {
-  // A failed run that released the request, or kept its unreadable reply and
-  // released it, ended without a verdict (t238): the state says so, for the
-  // loop to count the releases at one head.
-  let released = false;
-  const state = await runReviewJob(assignment, config, name, { ...runnerIO, cli: async (argv, ...rest) => {
-    const out = await runnerIO.cli(argv, ...rest);
-    if (argv[0] === "review-release" || argv[0] === "review-unparsable") released = true;
-    return out;
-  } }, preclaimed);
-  return released && state.phase === "failed" ? { ...state, released: true } : state;
+  return runReviewJob(assignment, config, name, runnerIO, preclaimed);
 }
 
 async function runReviewJob(assignment, config, name, runnerIO, preclaimed = null) {
@@ -3698,7 +3657,7 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), unanswered = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   const preparing = notReady.get(notReadyKey(task));
@@ -3717,8 +3676,9 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   if (absent) return `Passed by: its merge commit ${absent.commit.slice(0, 8)} is not in the baseline${absent.baseline ? ` (at ${absent.baseline.slice(0, 8)})` : ""}; it is tried again once the baseline moves (publish main with atelier wrap or atelier sync) or this runner restarts.`;
   // A task the server answered task_terminal for while this runner held it
   // (t476) is not taken again by this process, whatever later polls say.
-  const stalled = unanswered.get(missingKey(task));
-  if (stalled && stalled.count >= UNANSWERED_LIMIT) return `Passed by: ${unansweredReason(task, stalled.count, stalled.last)}.`;
+  // A review the server carries a stop on (t238) is served by no runner,
+  // this one after a restart or another: the stop is on the live request.
+  if (task.item.dispatch?.job === "review" && reviewStopped(task.item.stopped)) return `Passed by: ${stopText(task.item.id, task.item.stopped)}.`;
   const terminal = terminalTasks.get(taskKey(task));
   if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
   // A task this runner gave up (t584) is released, which changes its head and
@@ -4101,7 +4061,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), unanswered = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4618,15 +4578,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
-        if (reportReviewSkip) {
-          for (const task of ordered) {
-            const body = unansweredSkipBody(task, unanswered.get(missingKey(task)));
-            if (!body) continue;
-            unanswered.get(missingKey(task)).reported = true;
-            await reportSkip(`unanswered:${missingKey(task)}`, { ...body, actor: task.actor });
-          }
-        }
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, unanswered, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4738,23 +4690,6 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
             }
           } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
-          // The releases without a verdict at this head (t238): the second
-          // stops the offer here and is reported once, as a review skip that
-          // names the reason and the decision it needs, which the landing
-          // waiting on the review shows the developer.
-          if (task.item.dispatch?.job === "review") {
-            const ukey = missingKey(task), before = unanswered.get(ukey)?.count ?? 0, after = unansweredAfter(before, state);
-            // The request this run served is withdrawn by the release, which
-            // makes a successor: the stop is reported against the successor,
-            // which a later poll's queue names (reportUnanswered), since the
-            // landing reads skips of the live request alone.
-            if (after) unanswered.set(ukey, { count: after, last: state.released ? state.reason : unanswered.get(ukey)?.last, request: task.item.request, reported: false }); else unanswered.delete(ukey);
-            if (after >= UNANSWERED_LIMIT && before < UNANSWERED_LIMIT) {
-              io.log(`${task.project}/${task.item.id}: ${unansweredReason(task, after, state.reason)}`);
-              // The run's own cap may report the served request too; that one
-              // is withdrawn by the release, so the successor is still reported.
-            }
-          }
           if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }

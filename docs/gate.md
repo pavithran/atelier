@@ -335,12 +335,34 @@ labelled follow-ups, and only when the reply proves every acceptance
 criterion as an approval must; otherwise the request is released with the
 reason. A rejection that declares a criterion unmet but has no blocking
 finding left is recorded as a rejection, naming the unmet criteria and the
-findings that did not block, never released. A review released without a
-verdict twice at one head is not offered to that runner again: it logs the
-reason and the decision it needs (narrow the criteria, move the findings to a
-task, or override with the developer's word). The review's note says how many
-findings were answered, pre-existing and unverified. A review recorded by hand (`atelier review`) is not settled:
-its blocking findings block as before.
+findings that did not block, never released. The review's note says how many
+findings were answered, pre-existing and unverified. A review recorded by hand
+(`atelier review`) is not settled: its blocking findings block as before.
+
+### A review stopped at a head
+
+A release withdraws the review request and opens a successor under a new
+number, so a count kept by request number, or in a runner's memory, is lost at
+every release, at a restart and to every other runner. The server keeps the
+stop on the request instead (`src/review/stopped.ts`): "review stopped at head
+H, for reason R, after N releases", carried from each request to its successor
+at the same head. A release for a harness that timed out, or that ended
+without a verdict, adds to it; a provider's usage limit, an interrupt and a
+merge commit that could not be read add nothing, and a different reason or a
+new head starts the count again. At two releases the request is stopped: the
+queue lists it with its `stopped` state, no runner is passed it and the server
+refuses a claim of it (`review_stopped`), the stuck report names it as a
+`review-skipped` episode, and a landing waiting on it ends with the reason and
+the decision it needs: narrow the criteria, move the findings to a task, or
+override with the developer's word (`atelier review ID --approve` or
+`--reject`, as the developer). A new request, asked by the developer, carries
+no stop. A runner passes a review by `failureKey` (task and head, never the
+request number), post-merge reviews included. A skip for any other reason
+keeps its own reason in the stuck report.
+
+The helper is reusable: a feature that stops a review at a head for a reason
+of its own (t230's size refusals) calls `stopAfter` with its reason on the
+successor and reads `stopped` and `stopText`, rather than keeping a count.
 
 ## Check classes
 

@@ -74,6 +74,7 @@ import { listDecisions, recordDecision, standingDecisions, withdrawDecision, typ
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
+import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
 import { rejectionRequest, reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -999,6 +1000,10 @@ export class Ledger extends DurableObject<Env> {
     // again counts as already asked, even if the criteria return to the ones
     // it recorded, or it recorded none (made before requests did).
     if (!requestColumns.includes("superseded")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN superseded INTEGER`);
+    // The stop a request carries (src/review/stopped.ts, t238): JSON naming
+    // the head, the reason and how many releases without a verdict, carried
+    // to each successor a release makes at the same head.
+    if (!requestColumns.includes("stopped")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN stopped TEXT`);
     // Criteria review (t438, src/review/criteria.ts). Every change of an
     // item's acceptance criteria is a revision with its author; a criteria
     // review binds to one revision; the owner's resolutions answer one
@@ -5733,8 +5738,9 @@ export class Ledger extends DurableObject<Env> {
       openReviewItems: this.sql.exec(`SELECT DISTINCT r.item FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND r.head = i.head`).toArray().map((r) => String(r.item)),
       // The open requests with the reviewer each asks and when it was made,
       // for the report's check that some live runner offers the reviewer (t220).
-      openRequests: this.sql.exec(`SELECT r.id, r.item, r.head, r.dispatch FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND i.state != 'abandoned' AND (i.state = 'merged' OR r.head = i.head) ORDER BY r.id`).toArray().map((r) => ({
+      openRequests: this.sql.exec(`SELECT r.id, r.item, r.head, r.dispatch, r.stopped FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND i.state != 'abandoned' AND (i.state = 'merged' OR r.head = i.head) ORDER BY r.id`).toArray().map((r) => ({
         id: Number(r.id), item: String(r.item), head: String(r.head), dispatch: JSON.parse(r.dispatch as string) as Dispatch,
+        ...(reviewStopped(parseStop(r.stopped)) ? { stopped: parseStop(r.stopped)! } : {}),
       })),
       reviews: this.sql.exec(`SELECT id, item, head, state, claimedBy, claimedAt, runner FROM review_requests WHERE state = 'claimed' AND superseded IS NULL`).toArray().map((r) => ({
         id: Number(r.id), item: String(r.item), head: String(r.head),
@@ -7041,9 +7047,9 @@ export class Ledger extends DurableObject<Env> {
   // request from the next at the same head and end its skip of the earlier
   // one when a new request is made (t353). Each part is read once, however
   // many requests name it.
-  reviewWaiting(): (Item & { request: number })[] {
+  reviewWaiting(): (Item & { request: number; stopped?: ReviewStop })[] {
     this.expireReviewClaims();
-    const requests = this.sql.exec(`SELECT id, item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
+    const requests = this.sql.exec(`SELECT id, item, head, dispatch, stopped FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
     if (!requests.length) return [];
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
@@ -7051,7 +7057,8 @@ export class Ledger extends DurableObject<Env> {
     return requests.filter((r) => items.get(r.item as string)?.state !== "abandoned").map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
-      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+      const stop = parseStop(r.stopped);
+      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch, ...(stop ? { stopped: stop } : {}) };
     });
   }
 
@@ -7073,12 +7080,13 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The Workflow follows the live gate request across lease generations.
-  liveReviewRequest(item: string, head: string): { request: number; reviewer: string } | null {
+  liveReviewRequest(item: string, head: string): { request: number; reviewer: string; stopped?: string } | null {
     this.expireReviewClaims();
-    const row = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, item, head).toArray()[0];
+    const row = this.sql.exec(`SELECT id, dispatch, stopped FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, item, head).toArray()[0];
     if (!row) return null;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
-    return { request: row.id as number, reviewer: `${dispatch.agent}/${dispatch.model}` };
+    const stop = parseStop(row.stopped);
+    return { request: row.id as number, reviewer: `${dispatch.agent}/${dispatch.model}`, ...(reviewStopped(stop) ? { stopped: stopText(item, stop) } : {}) };
   }
 
   // The review claims held on the task now, each with the runner the claim
@@ -7218,7 +7226,7 @@ export class Ledger extends DurableObject<Env> {
     if (foreign) throw new RuleError("single_family", `${foreign}: it cannot claim ${itemId}'s review`, 403);
     // The gate's request and a tier request may both be open: the one asked
     // of this actor is bound, or else the oldest, which refuses below.
-    const rows = this.sql.exec(`SELECT id, head, dispatch, wanted, tier FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id`, itemId).toArray();
+    const rows = this.sql.exec(`SELECT id, head, dispatch, wanted, tier, stopped FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id`, itemId).toArray();
     const askedOf = (r: Row) => {
       const d = JSON.parse(r.dispatch as string) as Dispatch;
       const [h, m] = actor.split("/");
@@ -7242,6 +7250,10 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("stale_head", `the review request is for ${head.slice(0, 8)} but ${itemId} is at ${item.head?.slice(0, 8) ?? "nothing"}; the builder must push first`, 409);
     }
     if (!runner) throw new RuleError("dispatched", `${itemId}'s review waits for a runner to claim it`, 409);
+    // A request stopped at this head (t238) is claimed by no runner, however
+    // it asks; the developer's decision, or a new request, lifts it.
+    const stop = tier ? null : parseStop(row.stopped);
+    if (reviewStopped(stop)) throw new RuleError("review_stopped", stopText(itemId, stop), 409);
     if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
     const [harness, model] = actor.split("/");
     if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403);
@@ -7760,9 +7772,12 @@ export class Ledger extends DurableObject<Env> {
   // check: one the owner has since paused, reserved or kept from reviewing is
   // not asked again, and the request is withdrawn with the reason, as
   // poolChanged withdraws an open one, so the gate asks another.
-  private replaceReviewClaim(request: number): void {
+  //
+  // A release by the runner, with its note, adds to the stop the successor
+  // carries (t238); a lapsed lease only carries the stop the request had.
+  private replaceReviewClaim(request: number, release?: { note: string; at: string }): void {
     this.ctx.storage.transactionSync(() => {
-      const row = this.sql.exec(`SELECT item, head, dispatch, briefHash, wanted, tier, topTier, criteria, carried FROM review_requests WHERE id = ? AND state = 'claimed'`, request).toArray()[0];
+      const row = this.sql.exec(`SELECT item, head, dispatch, briefHash, wanted, tier, topTier, criteria, carried, stopped FROM review_requests WHERE id = ? AND state = 'claimed'`, request).toArray()[0];
       if (!row) return;
       this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'claimed'`, request);
       const d = JSON.parse(row.dispatch as string) as Dispatch;
@@ -7773,8 +7788,10 @@ export class Ledger extends DurableObject<Env> {
         return;
       }
       const dispatch = { ...this.standingDispatch({ to: d.to, agent: d.agent, model: d.model, note: d.note }, "review", d.by, d.at), job: "review" as const };
-      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, tier, topTier, criteria, carried) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
-        row.item, row.head, JSON.stringify(dispatch), row.briefHash, row.wanted, row.tier, row.topTier, row.criteria, row.carried);
+      const prev = parseStop(row.stopped);
+      const stop = release && row.tier == null ? stopAfter(prev, row.head as string, stopReasonOf(release.note), release.note, release.at) : prev;
+      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, tier, topTier, criteria, carried, stopped) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
+        row.item, row.head, JSON.stringify(dispatch), row.briefHash, row.wanted, row.tier, row.topTier, row.criteria, row.carried, stop ? JSON.stringify(stop) : null);
     });
   }
 
@@ -7819,8 +7836,9 @@ export class Ledger extends DurableObject<Env> {
       request = row?.id as number | undefined;
     }
     const row = this.currentReviewClaim(itemId, actor, request);
-    this.replaceReviewClaim(row.id as number);
-    this.log(itemId, actor, "review.released", { note, request }, new Date().toISOString(), proved);
+    const at = new Date().toISOString();
+    this.replaceReviewClaim(row.id as number, { note, at });
+    this.log(itemId, actor, "review.released", { note, request }, at, proved);
   }
 
   // The developer withdraws an open, unclaimed review request of the item's
@@ -7893,7 +7911,7 @@ export class Ledger extends DurableObject<Env> {
     // The reply released the request it answered (t613): only such a reply
     // stalls a landing, and the record says so.
     this.sql.exec(`UPDATE unparsable SET json = json_set(json, '$.released', json('true')) WHERE id = (SELECT MAX(id) FROM unparsable WHERE item_id = ?)`, itemId);
-    this.replaceReviewClaim(row.id as number);
+    this.replaceReviewClaim(row.id as number, { note, at });
     this.log(itemId, actor, "review.released", { note, request }, at, proved);
     return { released: true };
   }
