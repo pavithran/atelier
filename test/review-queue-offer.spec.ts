@@ -93,3 +93,19 @@ it("a review request whose reviewer no live runner offers for 15 minutes is a st
   // Without the offers nothing is known, so nothing is reported.
   expect(report(60, null)).toEqual([]);
 });
+
+it("an open review request a runner skipped after two releases is a stuck episode naming the reason and the decision (t238)", async () => {
+  const name = "review-skipped-stuck";
+  const { L, ids } = await asked(name, [GPT]);
+  const [request] = await L.reviewWaiting();
+  const note = "the review of t1 at 11111111 was released 2 times without a verdict (last: harness timed out)";
+  await L.recordReviewSkip(ids[0], request.request!, request.head!, "home:astra", GPT, note);
+  const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
+  const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ subject: ids[0], reason: expect.stringContaining("harness timed out") });
+  expect(entries[0].reason).toContain("home:astra");
+  expect(entries[0].recovery).toContain(`review-request ${ids[0]} --reviewer H/M`);
+  expect(entries[0].recovery).toContain(`review-withdraw ${ids[0]} --request ${request.request}`);
+  expect(causeOf(entries[0])).toContain("harness timed out");
+});

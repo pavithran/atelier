@@ -123,6 +123,19 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       add("review-unoffered", r.item, `review request ${r.id} asks ${reviewer}, which no live runner offers for the review job`, r.dispatch.at,
         `reroute to a reviewer a live runner offers, of another family than the task's contributors: ${command(`review-request ${r.item} --reviewer H/M`)}; or withdraw it: ${command(`review-withdraw ${r.item} --request ${r.id} --reason "No live runner offers ${reviewer}"`)}`, `${origin}/api/runners`);
     }
+    // A runner that stopped serving an open request after two releases without
+    // a verdict recorded a review.skipped event (t238) naming why. Nothing
+    // else offers that runner's review again at this head, so the request
+    // waits on a decision the developer must make.
+    for (const r of snapshot.openRequests ?? []) {
+      if (!live.some((i) => i.id === r.item)) continue;
+      for (const e of events) {
+        if (e.kind !== "review.skipped" || e.itemId !== r.item || e.data.request !== r.id) continue;
+        const note = typeof e.data.note === "string" && e.data.note ? `: ${e.data.note}` : "";
+        add("review-skipped", r.item, `review request ${r.id} was skipped by ${String(e.data.runner ?? "a runner")} after the harness released it twice at this head without a verdict${note}`, e.at,
+          `re-ask another reviewer of another family than the task's contributors: ${command(`review-request ${r.item} --reviewer H/M`)}; or withdraw it: ${command(`review-withdraw ${r.item} --request ${r.id} --reason "Reviewer stopped without a verdict"`)}`);
+      }
+    }
     for (const item of live.filter((i) => i.state === "open" && i.dispatch)) {
       // Since t473 a submitted blocker holds only while the landing lease names it.
       const held = coreHold(item, live, snapshot.coreFiles, lease, time, runners);
@@ -184,6 +197,6 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);
   }
   const dedup = new Map<string, Entry>();
-  for (const entry of entries.sort((a, b) => a.since.localeCompare(b.since) || a.reason.localeCompare(b.reason))) dedup.set(`${entry.kind}:${entry.subject}:${["task", "review", "review-unoffered"].includes(entry.kind) ? entry.reason : ""}`, entry);
+  for (const entry of entries.sort((a, b) => a.since.localeCompare(b.since) || a.reason.localeCompare(b.reason))) dedup.set(`${entry.kind}:${entry.subject}:${["task", "review", "review-unoffered", "review-skipped"].includes(entry.kind) ? entry.reason : ""}`, entry);
   return { project, observedAt: now.toISOString(), limits, complete: snapshot !== null && offers !== null && runs !== null && activeRunners !== null && unavailable.length === 0, unavailable: [...new Set(unavailable)].sort(), entries: [...dedup.values()].sort((a, b) => a.since.localeCompare(b.since) || a.kind.localeCompare(b.kind) || a.subject.localeCompare(b.subject)), failedChecksLastDay: snapshot ? checks : null };
 }
