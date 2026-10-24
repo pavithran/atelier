@@ -1611,6 +1611,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json(await index(env).stuckEpisodes(ref.key));
   }
 
+  // When the five-minute stage tick last ran (t223).
+  if (parts[2] === "stuck" && parts[3] === "tick" && parts.length === 4 && m === "GET") {
+    requireOwner(env, actor);
+    const ran = await index(env).tickRan();
+    return json({ ranAt: ran?.at ?? null, read: ran?.read ?? 0, unread: ran?.unread ?? 0, now: new Date().toISOString() });
+  }
+
   if (parts[2] === "reviewers") {
     requireOwner(env, actor);
     if (parts.length === 3 && m === "GET") return json(await L.reviewerListing());
@@ -3491,6 +3498,29 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
   }
 }
 
+// Every 5 minutes (t223): each registered project's live tasks are read
+// against their stage limits and the stage events recorded (Ledger.stageTick).
+// A project that cannot be read records nothing. The run itself is recorded on
+// the index, which `status` reads for when the tick last ran.
+const STAGE_CRON = "*/5 * * * *";
+export async function recordStageTicks(env: Env, now = new Date()): Promise<{ read: number; unread: number }> {
+  const I = index(env);
+  let read = 0, unread = 0;
+  for (const p of await I.projects()) {
+    try {
+      const ref = await resolveProject(env, p.name);
+      if (!ref.registered) continue;
+      const result = await ledger(env, ref.key).stageTick(now);
+      if (result.complete) read++; else unread++;
+    } catch (err) {
+      unread++;
+      console.error(errorLine(`stage tick: ${p.name}`, err));
+    }
+  }
+  await I.recordTickRan(now.toISOString(), read, unread);
+  return { read, unread };
+}
+
 export async function takeModelSnapshots(env: Env, now = Date.now()): Promise<{ day: string; rev: number; stored: boolean; complete: boolean }[]> {
   const I = index(env);
   const last = addDays(utcDay(now), -1);
@@ -4327,6 +4357,7 @@ export default {
   // The cron triggers in wrangler.jsonc: the daily model snapshots (t623).
   // A run with nothing due reads nothing but the index's list of takes.
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (controller.cron === STAGE_CRON) { await recordStageTicks(env, new Date(controller.scheduledTime)); return; }
     if (controller.cron === STUCK_CRON) { await recordStuckEpisodes(env, new Date(controller.scheduledTime)); return; }
     await takeModelSnapshots(env, controller.scheduledTime);
   },

@@ -203,7 +203,8 @@ export default async function mergeCommand() {
     const baselineHead=git(['rev-parse','FETCH_HEAD'],{cwd});
     const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
     git(['fetch','--quiet',ws.remote,item.acceptedHead],{cwd,token:ws.token});
-    if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
+    const fetched=git(['rev-parse','FETCH_HEAD'],{cwd});
+    if (fetched!==item.acceptedHead) die(`fetched revision differs from the approval: fetched ${fetched}, approved ${item.acceptedHead}`);
     // The commits the task adds to the baseline carry the project's
     // address or an agent address its policy allows (t451); what the
     // baseline already holds is not read.

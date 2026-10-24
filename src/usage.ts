@@ -174,6 +174,7 @@ task with exactly one holder. Never edit the project checkout directly.
    of the selected company from every contributor counts; a contributor
    never reviews its own work.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
+9. Every 5 minutes the server records a task stuck at a stage past its limit.
 
 ${OWNER_LANDING}
 A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in \`atelier stuck\`, to reroute with \`atelier review-request ID --reviewer H/M\` or withdraw with \`atelier review-withdraw ID --reason TEXT\`.
@@ -327,7 +328,9 @@ Standing rules:
   company from every contributor. Land a wave with \`atelier land ID ID…\`:
   it runs several landings side by side (\`--parallel N\` bounds them),
   asks only the approvals the project's risk reviews still lack, and takes
-  the landing lease for one merge at a time. An override while accepting is
+  the landing lease for one merge at a time. Land retries a transient
+  failure of the merge step's fetch (a 5xx, or a revision other than the
+  approved one, once), and merges a task it finds already accepted. An override while accepting is
   the developer's last resort when no reviewer qualifies, never the way to land another
   agent's work.
 - In a wave, tasks start in the order named, and a landing that fails

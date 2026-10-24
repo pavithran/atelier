@@ -1,4 +1,5 @@
 import { landingOf } from "./diff.ts";
+import { findStageOverrun, openStages, reconcileStages, STAGE_EVENT_KINDS, type StageFinding } from "./stage-tick.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
@@ -28,7 +29,7 @@ import {
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
-  assertFastBuild, fastReady, standingFastReady, FAST_READY_STALE, type FastReady,
+  assertFastBuild, fastReady, standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
   forkPreparationView, type ForkPreparation, type ForkPreparationView,
 } from "./rules";
@@ -1883,6 +1884,69 @@ export class Ledger extends DurableObject<Env> {
   stuckEpisodes(project: string): Transition[] {
     this.episodeTables();
     return this.sql.exec(`SELECT project, item, cause, episode, kind, at, reason FROM stuck_episodes WHERE project = ? ORDER BY id`, project).toArray() as unknown as Transition[];
+  }
+
+  // ── stage tick (src/stage-tick.ts, t223) ───────────────────────────────
+  // Each live task's stage against its limit, recorded as the project's stage
+  // events. The open stage records are read from the events themselves, and the
+  // reads and writes happen in one synchronous transaction, so a repeated or
+  // concurrent tick adds nothing for a stage already recorded. A task whose
+  // facts cannot be read makes the read incomplete, and an incomplete read
+  // records nothing.
+
+  stageTick(now: Date): { complete: boolean; recorded: number; tasks: number } {
+    const at = now.toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      let complete = true;
+      const findings: StageFinding[] = [];
+      let tasks = 0;
+      try {
+        const policy = this.project().policy;
+        for (const item of this.items()) {
+          if (["merged", "abandoned", "integrated", "blocked"].includes(item.state) || item.blocked || item.kind === "plan") continue;
+          tasks++;
+          try {
+            const evidence = this.evidenceFor(item.id), reviews = this.reviewsFor(item.id);
+            const events = this.events(item.id, Number.MAX_SAFE_INTEGER);
+            const ready = standingFastReady(events);
+            const criteria = this.sql.exec(`SELECT COUNT(*) AS n, MAX(decidedAt) AS at FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, item.id).one();
+            const agreed = (criteria.n as number) > 0 && (item.accept?.length ?? 0) > 0;
+            const { stage, detail } = stageOf(item, { events, ready, agreed, policy, evidence, reviews, owner: this.owner });
+            const clock = {
+              agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
+              reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
+            };
+            const found = findStageOverrun(item, stage, detail.head, now, clock);
+            if (found) findings.push(found);
+          } catch { complete = false; }
+        }
+      } catch { complete = false; }
+      const rows = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE kind IN (${STAGE_EVENT_KINDS.map(() => "?").join(", ")}) ORDER BY seq`, ...STAGE_EVENT_KINDS).toArray();
+      const open = openStages(rows.map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) })));
+      const moves = reconcileStages(findings, open, complete);
+      for (const m of moves) this.log(m.item, "atelier", m.kind, m.data, at);
+      return { complete, recorded: moves.length, tasks };
+    });
+  }
+
+  // Each run of the tick is a tick.ran row on the index instance: its time and
+  // how many projects it did and did not read completely. Rows older than a
+  // week are dropped. The latest-run lookup reads the newest row.
+  recordTickRan(at: string, read: number, unread: number): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL DEFAULT 'tick.ran', at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
+    this.sql.exec(`INSERT INTO tick_runs (kind, at, read, unread) VALUES ('tick.ran', ?, ?, ?)`, at, read, unread);
+    this.sql.exec(`DELETE FROM tick_runs WHERE at < ?`, new Date(Date.parse(at) - 7 * 24 * 3_600_000).toISOString());
+  }
+
+  tickRan(): { at: string; read: number; unread: number } | null {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL DEFAULT 'tick.ran', at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
+    const r = this.sql.exec(`SELECT at, read, unread FROM tick_runs ORDER BY at DESC, seq DESC LIMIT 1`).toArray()[0];
+    return r ? { at: r.at as string, read: r.read as number, unread: r.unread as number } : null;
+  }
+
+  tickRuns(limit = 100): { at: string; read: number; unread: number }[] {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS tick_runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL DEFAULT 'tick.ran', at TEXT NOT NULL, read INTEGER NOT NULL, unread INTEGER NOT NULL)`);
+    return this.sql.exec(`SELECT at, read, unread FROM tick_runs ORDER BY at DESC, seq DESC LIMIT ?`, limit).toArray().map((r) => ({ at: r.at as string, read: r.read as number, unread: r.unread as number }));
   }
 
   // ── runner offers ─────────────────────────────────────────────────────────
