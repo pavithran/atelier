@@ -92,6 +92,9 @@ function fixture(options = {}) {
   return { io, calls, logs };
 }
 
+// A clock that moves an hour per read, so the wait after a refused run (t191) is over by the next poll.
+const hourlyClock = () => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); };
+
 test("commandFor substitutes the review placeholders once", () => {
   const result = commandFor(config.agents[0], { model, briefFile: "/b", diffFile: "/d", verdictFile: "/v", workspace: "/w" });
   assert.deepEqual(result, ["opencode", "run", "--model", model, "--file", "/b", "--diff", "/d", "--verdict", "/v"]);
@@ -444,7 +447,7 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
   ];
   const offers = [];
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async (offer) => { offers.push(offer.jobs); return [...builds, assignment]; },
   });
   // A runner that takes reviews also advertises pre-review (t524).
@@ -462,7 +465,7 @@ test("a reviews-only runner claims nothing when the queue offers only builds", {
   const { io, calls } = fixture();
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async () => {
       if (++polls === 2) process.emit("SIGINT");
       return [{ ...assignment, item: { id: "t20", title: "Build" } }];
@@ -480,7 +483,7 @@ test("a review run that timed out is reported with the review role", async (t) =
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
     async reportRun(body) { reports.push(body); },
   });
   assert.deepEqual(reports.map((r) => [r.role, r.outcome]), [["review", "timed-out"]]);
@@ -500,7 +503,7 @@ test("a review that fails twice is reported as skipped, and a new head is served
   const second = { ...assignment, item: { ...assignment.item, head: "b".repeat(40), request: 2, dispatch: { job: "review" } } };
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) { reports.push(body); },
     async queue() {
       polls++;
@@ -534,7 +537,7 @@ test("a review skip report that fails is tried again each poll until the server 
   const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) {
       attempts.push(body);
       // The first report meets a transient server failure; the next lands.
@@ -573,7 +576,7 @@ for (const status of ["408", "429 slow down"]) {
     const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
     let polls = 0;
     await runRunner(args, {
-      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
       async reportReviewSkip(body) {
         attempts.push(body);
         if (attempts.length === 1) throw new Error(status);
@@ -608,7 +611,7 @@ test("a review skip report that keeps failing backs off in polls, and lands when
   const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) {
       attemptPolls.push(polls);
       // 429, 503, 408, a dropped connection, then the server answers.
@@ -642,7 +645,7 @@ test("a review skip report the server refuses is dropped after the refusal, not 
   const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) { attempts.push(body); throw new Error("404 no review request 1 of t21"); },
     async queue() {
       polls++;
@@ -679,7 +682,7 @@ test("SIGTERM stops the review child before bounded, generation-fenced cleanup",
   });
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGTERM"); return [assignment]; },
+    now: hourlyClock(), workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGTERM"); return [assignment]; },
     taskIO: { ...taskIO, async harness() { process.emit("SIGTERM"); order.push("child stopped"); return { code: 0 }; } },
     async executeChild(argv) {
       if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
@@ -737,7 +740,7 @@ async function serveReview(t, dir, claim, answers = {}, { renew = false, fails =
     return { code: 0, output: argv[2] === "review-claim" ? JSON.stringify(claim) : "{}" };
   };
   await runRunner(args, {
-    workspacePath: () => join(dir, "t21"), wait: () => tick(), queue: async () => [task],
+    now: hourlyClock(), workspacePath: () => join(dir, "t21"), wait: () => tick(), queue: async () => [task],
     taskIO: {
       readSecret: () => FAKE_TOKEN,
       // This fixture tests real Git and briefs. Evidence collection has its
@@ -862,7 +865,7 @@ test("a review whose target branch shares no history with the head names the job
   for (const part of ["atelier/t21", head.slice(0, 12), "plan-branch", "the merge-base lookup", "share no commit"]) assert.ok(notice.includes(part), `${part} in: ${notice}`);
   assert.ok(!notice.includes("git exited 1"), "the notice says what git's silent exit meant");
   assert.ok(seen.brief.includes(`Base: ${forkPoint}, the fork point.`));
-  assert.ok(!seen.logs.some((l) => l.startsWith("runner: failed:")), "the notice is no failure");
+  assert.ok(!seen.logs.some((l) => l.replace(/^\S+ /, "").startsWith("runner: failed:")), "the notice is no failure");
 });
 
 test("a review whose target branch cannot be fetched goes on from the fork point and names the fetch", async (t) => {
@@ -891,7 +894,7 @@ test("a review whose target branch fails and whose fork point is unreadable stop
   const seen = await serveReview(t, dir, claimFor({ base: missing, fork }, head, { remote: unrelated, token: "base-token", branch: "plan-branch" }), {}, { fails: true });
   assert.equal(seen.brief, undefined, "the harness never started");
   assert.ok(seen.posted.includes("review-release"), "the request is released");
-  const failure = seen.logs.find((l) => l.startsWith("runner: failed:"));
+  const failure = seen.logs.find((l) => l.replace(/^\S+ /, "").startsWith("runner: failed:"));
   for (const part of ["atelier/t21", head.slice(0, 12), "plan-branch", "the merge-base lookup", "share no commit", `fork point ${missing.slice(0, 12)}`]) assert.ok(failure?.includes(part), `${part} in: ${failure}`);
   assert.ok(!seen.logs.some((l) => l.includes("review diff from the fork point")), "no fork-point notice for a diff that cannot run");
 });
@@ -1246,7 +1249,7 @@ test("a baseline fetch that fails transiently is retried, not kept as a missing 
   const skips = [], runs = [], heads = [];
   let polls = 0, reviewed = false;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) { skips.push(body); },
     async reportRun(body) { runs.push(body); },
     async baselineHead() { heads.push(polls); return "1".repeat(40); },
@@ -1279,7 +1282,7 @@ test("a missing merge is reported as an infrastructure_miss run where the server
     let polls = 0;
     const capabilities = SERVER_CAPABILITIES.filter((name) => capable || name !== "runs.infrastructure-miss.v1");
     await runRunner(args, {
-      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
       version: async () => ({ capabilities }),
       async reportRun(body) { runs.push(body); },
       async reportReviewSkip(body) { skips.push(body); },
@@ -1548,7 +1551,7 @@ test("a target branch that fails transiently is retried, not taken as a missing 
   t.after(() => { process.exitCode = previous; });
   const skips = [], runs = [];
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) { skips.push(body); },
     async reportRun(body) { runs.push(body); },
     async baselineHead() { return B1; },
@@ -1609,7 +1612,7 @@ test("a post-merge review whose baseline is unknown reads the merge from the tar
   const skips = [], runs = [];
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) { skips.push(body); },
     async reportRun(body) { runs.push(body); },
     async baselineHead() { return "1".repeat(40); },
@@ -1750,7 +1753,7 @@ test("an infrastructure_miss report that fails on every attempt is given up afte
   const attempts = [], skips = [];
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     version: async () => ({ capabilities: SERVER_CAPABILITIES }),
     async reportRun(body) {
       attempts.push(polls);
@@ -1784,7 +1787,7 @@ test("several requests for one missing merge in one poll are claimed and reporte
   const skips = [];
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     async reportReviewSkip(body) { skips.push(body); },
     async baselineHead() { return "1".repeat(40); },
     async queue() {
@@ -1808,7 +1811,7 @@ test("an infrastructure_miss report that meets a transient failure is sent again
   const attempts = [], landed = [], skips = [];
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
     version: async () => ({ capabilities: SERVER_CAPABILITIES }),
     async reportRun(body) {
       attempts.push(polls);
@@ -1889,7 +1892,7 @@ for (const status of [200, 409]) test(`runner HTTP renewal authenticates and fen
     return new Response("{}", { status });
   });
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => [assignment],
+    now: hourlyClock(), workspacePath: io.workspacePath, wait: () => tick(), queue: async () => [assignment],
     taskIO: { ...taskIO, async harness() {
       t.mock.timers.tick(30_000);
       await tick();
