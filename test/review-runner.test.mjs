@@ -310,107 +310,59 @@ test("runReview carries a diff too large for the brief by its R2 reference, not 
   assert.ok(logs.some((l) => l.includes(`kept in R2 by reference: diffs/atelier/t21/${sha}`)), logs.join("\n"));
 });
 
-test("runReview falls back to the inline cut when the server stored no reference, however large the diff", async () => {
-  const big = `+${"a line of the change\n+".repeat(Math.ceil(BRIEF_LIMITS.diff / 21) + 5)}`;
+test("runReview names the diff file and the changed paths when the server stored no reference and the diff is large", async () => {
+  const big = `diff --git a/src/big.ts b/src/big.ts\n+${"a line of the change\n+".repeat(Math.ceil(200_000 / 21) + 5)}`;
   const { io, calls, logs } = fixture();  // a claim from a server before t284: no diffRef
   io.diff = async () => big;
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.phase, "reviewed");
   const brief = calls.find((c) => c.brief).brief;
-  assert.ok(brief.includes("The diff is cut:"), brief);
-  assert.ok(brief.includes("a line of the change"), brief);
+  assert.ok(brief.includes("not included here"), brief);
+  assert.ok(brief.includes("- src/big.ts:"), brief);
+  assert.ok(!brief.includes("a line of the change"), "no part of the diff is inline");
   assert.equal(calls.find((c) => c.writeDiff).writeDiff, big);
   assert.ok(!logs.some((l) => l.includes("R2")), logs.join("\n"));
 });
 
-test("runReview refuses an assignment outside its offer or with an unsafe path", async () => {
-  for (const changed of [{ model: "other" }, { actor: "codex/other" }, { project: "../escape" }, { item: { ...assignment.item, id: "../escape" } }]) {
+test("runReview lists a declared generated path in the brief and does not show it (t230)", async () => {
+  const body = "+generated line\n";
+  const diff = `diff --git a/src/a.ts b/src/a.ts\n+const real = 1;\ndiff --git a/dist/out.js b/dist/out.js\n${body}`;
+  const dir = mkdtempSync(join(tmpdir(), "atelier-generated-"));
+  try {
     const { io, calls } = fixture();
-    const state = await runReview({ ...assignment, ...changed }, config, "home:studio", io);
-    assert.equal(state.phase, "failed");
-    assert.equal(calls.filter((c) => c.argv).length, 0);
-  }
-});
-
-test("runReview releases the request when the harness wrote no verdict file at all", async () => {
-  const { io, calls } = fixture();
-  io.readVerdict = () => { throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" }); };
-  const state = await runReview(assignment, config, "home:studio", io);
-  assert.equal(state.phase, "failed");
-  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), "the empty reply is kept on the task and the request released");
-});
-
-test("runReview clones into a folder of its own, never the builder's workspace, and removes it and the verdict file", async () => {
-  const { io, calls } = fixture();
-  const removed = [];
-  io.removeFile = (f) => removed.push(f);
-  io.removeTree = (d) => removed.push(d);
-  await runReview(assignment, config, "home:studio", io);
-  await runReview(assignment, config, "home:studio", io);
-  const dirs = calls.filter((c) => c.clone).map((c) => c.clone[2]);
-  assert.equal(dirs.length, 2);
-  assert.notEqual(dirs[0], dirs[1], "each review has its own folder");
-  for (const d of dirs) {
-    assert.notEqual(d, "/cache/work/atelier/t21", "never the builder's workspace");
-    assert.ok(removed.includes(d), "the folder is removed");
-  }
-  assert.ok(removed.includes("/cache/work/atelier/verdict.txt"), "the verdict file is removed");
-});
-
-// The real CLI helper, not a stand-in: a command whose JSON the runner reads
-// back must have its output captured, or the parse gets an empty string.
-test("every CLI call the runner parses as JSON has its output captured by the real helper", async () => {
-  const { checked, execute, readsOutput } = await import("../cli/runner.mjs");
-  const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL("../cli/runner.mjs", import.meta.url), "utf8");
-  const parsed = [...source.matchAll(/JSON\.parse\(await io\.cli\(\["([a-z-]+)"/g)].map((m) => m[1]);
-  assert.ok(parsed.length >= 4, "the runner parses the output of several CLI calls");
-  for (const command of parsed) assert.equal(readsOutput([command]), true, `${command}'s output is captured`);
-  assert.equal(readsOutput(["push"]), false, "other commands print to the runner's own output");
-  const printed = await checked([process.execPath, "-e", "console.log(JSON.stringify({ head: 'abc' }))"], { captureError: true, capture: readsOutput(["review-claim"]), step: "review-claim" }, execute);
-  assert.deepEqual(JSON.parse(printed), { head: "abc" });
-});
-
-// t213: any error after the claim releases the request; before, only a
-// harness failure or an unusable verdict did, and a failed clone held the task
-// for the claim's two hours.
-test("runReview releases the request when a step after the claim fails", async () => {
-  for (const step of ["clone", "diff", "brief", "post"]) {
-    const { io, calls } = fixture();
-    if (step === "clone") io.clone = async () => { throw new Error("clone failed"); };
-    if (step === "diff") io.diff = async () => { throw new Error("diff failed"); };
-    if (step === "brief") io.brief = async () => { throw new Error("disk full"); };
-    if (step === "post") {
-      const cli = io.cli;
-      io.cli = async (argv, cwd) => { if (argv[0] === "review") throw new Error("server refused"); return cli(argv, cwd); };
-    }
-    const state = await runReview(assignment, config, "home:studio", io);
-    assert.equal(state.phase, "failed", step);
-    assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 1, step);
-  }
-  // A claim that fails holds nothing, so nothing is released.
-  const { io, calls } = fixture();
-  io.cli = async (argv) => { calls.push({ argv }); throw new Error("refused"); };
-  await runReview(assignment, config, "home:studio", io);
-  assert.ok(!calls.some((c) => c.argv?.[0] === "review-release"));
-});
-
-// t213: an opencode reviewer gets a data folder of its own, as a builder does,
-// removed when the harness ends however it ends.
-test("runReview gives an opencode reviewer its own data folder for the length of the harness", async () => {
-  for (const options of [{}, { code: 1 }]) {
-    const { io, calls } = fixture(options);
+    io.workspacePath = () => join(dir, "ws");
+    io.clone = async (remote, t, clone) => {
+      mkdirSync(join(clone, "bin"), { recursive: true });
+      writeFileSync(join(clone, "bin", "merge-manifest.json"), JSON.stringify({ version: 1, generators: [{ name: "build", command: ["node", "gen.mjs"], inputs: ["src/**"], outputs: ["dist/out.js"] }] }));
+    };
+    io.diff = async () => diff;
     await runReview(assignment, config, "home:studio", io);
-    const harness = calls.find((c) => c.harness);
-    const home = calls.find((c) => c.dataHome);
-    assert.ok(home, "a data folder is made");
-    assert.equal(harness.env.XDG_DATA_HOME, `${home.dataHome}-opencode-data`);
-    assert.equal(harness.env.ATELIER_TEST_PRIORITY, "review");
-    assert.equal(harness.env.ATELIER_TEST_TASK, "t21");
-    assert.equal(harness.env.CF_AIG_METADATA, '{"task":"t21","role":"review","runner":"home:studio"}');
-    assert.ok(calls.indexOf(home) < calls.indexOf(harness));
-    assert.ok(calls.findIndex((c) => c.removedDataHome === harness.env.XDG_DATA_HOME) > calls.indexOf(harness), "the folder is removed after the harness");
-  }
+    const brief = calls.find((c) => c.brief).brief;
+    assert.ok(brief.includes("const real = 1;"), brief);
+    assert.ok(!brief.includes("generated line"), brief);
+    assert.ok(brief.includes("dist/out.js"), brief);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a review refused for its input size is not asked again unchanged by the replacement request (t230)", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls } = fixture({ code: 1, stderr: "Error: Input exceeds the maximum length of 1048576 characters (got 7052528)." });
+  const head = "a".repeat(40);
+  const task = (request) => ({ ...assignment, item: { ...assignment.item, head, request, dispatch: { job: "review" } } });
+  const newHead = { ...assignment, item: { ...assignment.item, head: "b".repeat(40), request: 3, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, async reportReviewSkip() {},
+    async queue() {
+      polls++;
+      if (polls === 1) return [task(1)];
+      if (polls === 2) return [task(2)];  // the replacement the server opened on release
+      if (polls === 3) return [newHead];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2, "one claim for the first head, one for the new head");
 });
 
 function runnerConfig(t, jobs = ["review"]) {

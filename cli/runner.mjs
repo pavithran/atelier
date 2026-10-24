@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { harnessReady, loadClaudeToken } from "./harness/adapter.mjs";
+import { generatedPaths, harnessReady, loadClaudeToken } from "./harness/adapter.mjs";
 import { expiryFromToken, tokenExpiry } from "../src/runners/readiness.ts";
 import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
@@ -28,7 +28,7 @@ import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
-import { sizeRefusal, sizeRefusalReason } from "../src/large-diff.ts";
+import { diffPromptMax, largeDiffNote, sizeRefusal, sizeRefusalReason, withoutBulk } from "../src/large-diff.ts";
 import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
@@ -575,6 +575,11 @@ export function redactGitArgs(args) {
 // again once a review of its criteria reaches a verdict, which changes
 // neither its head nor its updatedAt: the queue counts those verdicts on the
 // item (criteriaReviews), and an approval is always a new one.
+// A review a harness refused for its input's size (t230) is kept apart from
+// refusedKey, which holds the request number: releasing the request makes the
+// server open another for the same input, and that one must not run unchanged.
+export const sizeBlockKey = (task) => JSON.stringify([task.project, task.item.id, task.item.head]);
+
 export function refusedKey(task) {
   return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt, task.item.request, task.item.criteriaReviews ?? null]);
 }
@@ -2555,12 +2560,20 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
     // The project's REVIEW.md (t718), as the base of the change has it; a
     // missing, unreadable or empty one leaves the brief as it was.
     const reviewGuide = !compare.from || !io.reviewGuide ? null : await io.reviewGuide(workspace, compare.from).catch(() => null);
+    // The brief carries no diff over the prompt limit and shows no binary or
+    // declared generated path (t230): those are named, with sizes, and the
+    // reviewer reads the file.
+    const generated = generatedPaths(workspace, (f) => readFileSync(f, "utf8"));
+    const promptMax = diffPromptMax(io.env ?? process.env);
+    const inBrief = (d) => d.length > promptMax ? { note: largeDiffNote(d, REVIEW_DIFF, generated, promptMax) } : { diff: withoutBulk(d, generated).text };
+    const briefDiff = byRef ? null : inBrief(shown);
+    const briefOwn = ownDiff === null ? null : inBrief(ownDiff);
     const text = reviewBrief({
       runnerEvidence, reviewGuide,
       need: claimed.need, item: claimed.item, events: claimed.events, plan: claimed.plan,
-      diff: byRef ? null : shown, diffRef: byRef ? claimed.diffRef : null,
+      diff: briefDiff?.diff ?? null, diffNote: briefDiff?.note ?? null, diffRef: byRef ? claimed.diffRef : null,
       since: since?.incremental ? { from: since.from } : null,
-      ownDiff, owner: claimed.owner,
+      ownDiff: briefOwn?.diff ?? null, ownDiffNote: briefOwn?.note ?? null, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
       // The project's prose standard (t675), as the claim carries it; an
       // older server sends none, and the brief names none.
@@ -2622,10 +2635,11 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       // the model.
       const tooLarge = sizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
       if (tooLarge) {
-        const why = sizeRefusalReason(actor, tooLarge, text.length + (ownDiff === null ? shown : `${shown}${ownDiff}`).length);
+        const diffText = ownDiff === null ? shown : `${shown}${ownDiff}`;
+        const why = sizeRefusalReason(actor, tooLarge, text.length + diffText.length);
         await release(why);
         io.log(`review released: ${why}`);
-        return { phase: "failed", reason: why, skipped: true, inputTooLarge: true };
+        return { phase: "failed", reason: why, skipped: true, inputTooLarge: true, briefHash: createHash("sha256").update(text).update(diffText).digest("hex") };
       }
       await release(`harness exited ${result.code}`);
       return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
@@ -3658,7 +3672,7 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), sizeBlocked = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   const preparing = notReady.get(notReadyKey(task));
@@ -3683,6 +3697,8 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   // its time, so refusedKey no longer matches: it is kept by dispatch instead,
   // and the developer's new dispatch of it is what lets it through.
   if (gaveUpTasks.has(taskKey(task))) return "Passed by: this runner gave it up and released it; it is tried again once the developer dispatches it again or this runner restarts.";
+  const tooLarge = sizeBlocked.get(sizeBlockKey(task));
+  if (tooLarge) return `Passed by: its review input (brief ${tooLarge.slice(0, 12)}) was refused for its size; it is tried again at a new head or once this runner is updated and restarted.`;
   if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
   const failed = failures.get(failureKey(task)) ?? 0;
   if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
@@ -4059,7 +4075,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), sizeBlocked = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4576,7 +4592,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4717,6 +4733,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // later, which may already hold a merge published in between
           // (second review of t591, finding 1).
           else if (state.missingCommit) missing.set(missingKey(task), { ...state.missingCommit, checked: now() });
+          else if (state.inputTooLarge) sizeBlocked.set(sizeBlockKey(task), state.briefHash);
           else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
