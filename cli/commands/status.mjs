@@ -69,7 +69,7 @@ export default async function statusCommand() {
     if (args.json) return console.log(JSON.stringify({ project: standing, stuck, ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
     // The project's tasks, for expired blocks and the clean-up count: the read above when it was made, else one now.
     const items = record?.items;
-    const stages = stageEntries(items, readyOf(await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null)));
+    const stages = stageEntries(items, readyOf(modeRead));
     const expired = Array.isArray(items) ? expiredBlocks(items, new Date()) : [];
     // The standing's first line names the project; the stuck section follows it, before any ordinary item.
     const withStuck = (text, section) => { if (!section) return text; const i = text.indexOf("\n"); return i < 0 ? text + "\n\n" + section : text.slice(0, i) + "\n\n" + section + text.slice(i); };
