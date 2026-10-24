@@ -2157,8 +2157,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const p = await L.project();
         let fork = item.fork, moved = false;
         if (needsFork) {
-          // Forks are named after the key, like the baseline, whatever the project is called now.
-          const name = fork = repoName(ref.key, id);
+          // Forks are named after the key, like the baseline, whatever the project is called now,
+          // unless the stage tick replaced a stalled one under a new name (t245).
+          const name = fork = (await L.forkNameFor(id)) ?? repoName(ref.key, id);
           try {
             // A part forks from its plan's fork at its current head, not from the
             // baseline (docs/orchestrator.md, section 5).
