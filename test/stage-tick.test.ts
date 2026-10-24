@@ -111,9 +111,9 @@ test("says when the tick last ran, and that one older than 15 minutes is stale",
 });
 
 test("status puts a tick older than 15 minutes first, and says a fresh one beside the stuck section", async () => {
+  const { readStuck, stuckLines, tickLines } = await import("../cli/status.mjs");
   const base = Date.now();
   const now = new Date(base).toISOString();
-  const now = new Date().toISOString();
   const old = new Date(base - 16 * MIN).toISOString();
   const get = (ranAt: string | null) => async (path: string) => path.endsWith("/stuck/tick") ? { ranAt, read: 1, unread: 0, now } : path.endsWith("/stuck") ? { entries: [], complete: true } : [];
   const stale = await readStuck(get(old), "/p/x", "x", []);
