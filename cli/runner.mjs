@@ -28,6 +28,7 @@ import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
+import { sizeRefusal, sizeRefusalReason } from "../src/review/large-diff.ts";
 import { BUILDER_SCREENSHOTS, BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
@@ -2612,6 +2613,17 @@ export async function runReview(assignment, config, name, runnerIO, preclaimed =
       return { phase: "failed", reason: "harness timed out", taskFailure: true, harnessExit: failedExitOf(result) };
     }
     if (result.code !== 0) {
+      // A refusal for the input's size is the harness's limit, not the
+      // model's verdict (t230): reported once with the limit and the size, and
+      // skipped, so it is neither tried again as it is nor counted against
+      // the model.
+      const tooLarge = sizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      if (tooLarge) {
+        const why = sizeRefusalReason(actor, tooLarge, text.length + (ownDiff === null ? shown : `${shown}${ownDiff}`).length);
+        await release(why);
+        io.log(`review released: ${why}`);
+        return { phase: "failed", reason: why, skipped: true, inputTooLarge: true };
+      }
       await release(`harness exited ${result.code}`);
       return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true, harnessExit: failedExitOf(result) };
     }

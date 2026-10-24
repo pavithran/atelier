@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReview, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
+import { runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { REVIEW_RENEW_MS } from "../src/rules.ts";
@@ -83,7 +83,7 @@ function fixture(options = {}) {
       const n = (last.match(/^Finding \d+, at /gm) ?? []).length;
       return options.verification ?? Array.from({ length: n }, (_, i) => `FINDING ${i + 1}: CONFIRMED because the lines read show it.`).join("\n");
     },
-    async harness(argv, cwd, env) { calls.push({ harness: argv, cwd, env }); return { code: options.code ?? 0, timedOut: options.timedOut ?? false }; },
+    async harness(argv, cwd, env) { calls.push({ harness: argv, cwd, env }); return { code: options.code ?? 0, timedOut: options.timedOut ?? false, stderr: options.stderr ?? "", output: options.output ?? "" }; },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
     removeDiff: (diff) => { calls.push({ removedDiff: diff.file }); },
     async dataHome(workspace) { calls.push({ dataHome: workspace }); return { dir: `${workspace}-opencode-data` }; },
@@ -175,6 +175,27 @@ test("runReview releases the request when the harness fails or times out", async
     assert.equal(releases[0].argv[releases[0].argv.indexOf("--request") + 1], String(claimed.request));
     assert.equal(releases[0].token, FAKE_TOKEN);
   }
+});
+
+// t230: a harness refusing the input for its size is the harness's limit, not
+// the model's verdict: released once with the limit and the size, skipped, and
+// reported as no run against the model.
+test("runReview skips a review the harness refused for its input size, naming the limit, the size and the fix", async () => {
+  const { io, calls, logs } = fixture({ code: 1, stderr: "Error: Input exceeds the maximum length of 1048576 characters (got 7052528)." });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(state.skipped, true);
+  assert.equal(state.taskFailure, undefined, "the model is not blamed");
+  assert.equal(runOutcome(state), null, "no refused run is reported against the model");
+  assert.match(state.reason, /limit 1048576; actual 7052528/);
+  assert.match(state.reason, /Fix: .*split the change/);
+  const releases = calls.filter((c) => c.argv?.[0] === "review-release");
+  assert.equal(releases.length, 1, "released once");
+  assert.equal(calls.filter((c) => c.harness).length, 1, "the harness is run once, not again as it is");
+  assert.equal(logs.filter((l) => l.startsWith("review released:")).length, 1);
+  // An ordinary failure is still the model's.
+  const plain = await runReview(assignment, config, "home:studio", fixture({ code: 1, stderr: "boom" }).io);
+  assert.equal(plain.taskFailure, true);
 });
 
 // t407: a reply with no verdict is kept on the task, its last 100 KB with the

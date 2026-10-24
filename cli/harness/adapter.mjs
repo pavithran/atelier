@@ -19,6 +19,8 @@ import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
 import { NO_VERDICT, VERIFY_BASE_LINE, VERIFY_HEADING, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
+import { DIFF_PROMPT_MAX, diffPromptMax, largeDiffNote, withoutBulk } from "../../src/review/large-diff.ts";
+import { MANIFEST_PATH, parseManifest } from "../../src/merge-declarations.ts";
 import { readSecret } from "../credentials.mjs";
 import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, OPENCODE2_CONFIG_CONTENT, RUN_LIMITS, TRANSPORT_ERROR, metadataEscaped, openRouterRefusal } from "./providers.mjs";
 
@@ -78,15 +80,27 @@ function lookFor(clone) {
     : "In the current folder you may read files and run the project's tests.";
 }
 
-export function reviewPrompt(brief, diff, clone) {
-  const fence = fenceFor(diff);
+// The diff as the prompt carries it (t230): in a fence when it is within
+// `max` characters, binary and declared generated paths listed and not shown;
+// over it, only the file's name and the changed paths with their sizes.
+export function diffBlock(diff, { file = null, generated = new Set(), max = DIFF_PROMPT_MAX } = {}) {
+  if (diff.length > max) return [largeDiffNote(diff, file, generated, max)];
+  const shown = withoutBulk(diff, generated);
+  const fence = fenceFor(shown.text);
+  return [
+    ...(shown.hidden.length ? [`Not shown here, listed only: ${shown.hidden.map((p) => `${p.path} (${p.binary ? "binary" : "generated"}, ${p.chars} characters)`).join(", ")}.`] : []),
+    `${fence}diff`,
+    shown.text.replace(/\n+$/, ""),
+    fence,
+  ];
+}
+
+export function reviewPrompt(brief, diff, clone, options) {
   return [
     brief.replace(/\n+$/, ""),
     "",
     "The change under review:",
-    `${fence}diff`,
-    diff.replace(/\n+$/, ""),
-    fence,
+    ...diffBlock(diff, options),
     "",
     `${lookFor(clone)} Edit nothing, do not push and run no atelier command; verify a blocking finding before you state it.`,
     VERDICT_DEMAND,
@@ -114,15 +128,12 @@ export function demandFor(brief) {
   return brief.includes(VERIFY_BASE_LINE) ? VERIFY_DEMAND_BASE : VERIFY_DEMAND;
 }
 
-export function verificationPrompt(brief, diff, clone) {
-  const fence = fenceFor(diff);
+export function verificationPrompt(brief, diff, clone, options) {
   return [
     brief.replace(/\n+$/, ""),
     "",
     "The whole change under review:",
-    `${fence}diff`,
-    diff.replace(/\n+$/, ""),
-    fence,
+    ...diffBlock(diff, options),
     "",
     `${lookFor(clone)} Edit nothing, do not push and run no atelier command; confirm a finding only when you have shown it yourself.`,
     demandFor(brief),
@@ -162,6 +173,14 @@ export const VERDICT_FOLLOW_UP = [
   "Reply with only these lines: a SUMMARY: line on what you checked, a BLOCKING: N line with the number of blocking findings (0 for none), one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.",
 ].join("\n");
 
+// The paths the project declares generated (its merge manifest, read from the
+// clone); none when there is no manifest or it cannot be read.
+export function generatedPaths(workspace, read) {
+  if (!workspace) return new Set();
+  try { return new Set(parseManifest(read(join(workspace, MANIFEST_PATH))).generators.flatMap((g) => g.outputs)); }
+  catch { return new Set(); }
+}
+
 // The prompt for the job, which goes to the harness on standard input.
 export function promptFor(harness, args, read = (f) => readFileSync(f, "utf8")) {
   const brief = read(args.brief);
@@ -169,7 +188,8 @@ export function promptFor(harness, args, read = (f) => readFileSync(f, "utf8")) 
     const diff = args.diff ? read(args.diff) : "";
     // A Codex review runs in a scratch folder, so its prompt names the clone.
     const clone = harness === "codex" ? args.workspace : undefined;
-    return isVerification(brief) ? verificationPrompt(brief, diff, clone) : reviewPrompt(brief, diff, clone);
+    const options = { file: args.diff, generated: generatedPaths(args.workspace, read), max: diffPromptMax(process.env) };
+    return isVerification(brief) ? verificationPrompt(brief, diff, clone, options) : reviewPrompt(brief, diff, clone, options);
   }
   return `${agentRules(harness, args.model, args.workspace, args.plan)}\n\n${brief}`;
 }

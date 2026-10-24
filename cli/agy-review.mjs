@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { AGY_MODELS, demandFor } from "./harness/adapter.mjs";
+import { AGY_MODELS, demandFor, diffBlock, generatedPaths } from "./harness/adapter.mjs";
+import { diffPromptMax } from "../src/review/large-diff.ts";
 
 // An adapter a runner's config names as the review command for the antigravity
 // harness (docs/orchestrator.md, section 4). The review job hands it the brief
@@ -33,18 +34,14 @@ const workspace = value("workspace");
 
 // The prompt is the brief, then the diff in a fence longer than any run of
 // backticks inside it (at least four), so nothing in the diff can close the
-// fence, then a sentence the reviewer follows in the workspace.
+// fence, then a sentence the reviewer follows in the workspace. A diff over
+// the prompt limit is named by its file and changed paths instead (t230).
 const diff = readFileSync(diffFile, "utf8").replace(/\n+$/, "");
-let longest = 3;
-for (const m of diff.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
-const fence = "`".repeat(longest + 1);
 const brief = readFileSync(briefFile, "utf8").replace(/\n+$/, "");
 const prompt = [
   brief,
   "",
-  `${fence}diff`,
-  diff,
-  fence,
+  ...diffBlock(diff, { file: diffFile, generated: generatedPaths(workspace, (f) => readFileSync(f, "utf8")), max: diffPromptMax(process.env) }),
   "",
   "In the current folder you may read files and run the project's tests; do not push, do not run any atelier command, and verify a blocking finding before you state it.",
   demandFor(brief),
