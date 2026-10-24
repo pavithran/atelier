@@ -68,7 +68,7 @@ for (const mode of ["full", "fast"] as const) {
     expect(t.forks).toEqual([]);
     expect(t.tokens).toEqual([]);
     expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
-    const events = () => t.L.events("t1").then((list) => (list as unknown as LedgerEvent[]).map((e) => e.kind));
+    const events = async () => ((await t.L.events("t1")) as unknown as LedgerEvent[]).map((e) => e.kind);
     const before = (await events()).length;
     const ready = await t.api("POST", `${t.base}/fast-ready`, { commit: BUILT, base: MAIN, builder: ACTOR, workspace: "/Users/runner/cache/fast/p/t1" });
     expect(ready.status).toBe(409);
