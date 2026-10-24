@@ -388,7 +388,7 @@ the topic. A push that withdraws acceptance does not send a notification.
 
 The same topic carries stuck episodes (t199). On each 10 minute tick, a
 project's episodes that have been open for 60 minutes since they were first
-seen go out in one message, and each is recorded as told only when ntfy
+seen go out together, split into several messages when the batch is large, and each is recorded as told only when ntfy
 answers with success; a failed send is repeated on the next tick. A request
 that fails after ntfy received it, such as a timeout, is repeated too, so
 the message may arrive twice. An episode that cleared before the hour is not

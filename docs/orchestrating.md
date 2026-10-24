@@ -544,7 +544,7 @@ tail -n0 -F RUNNER-OUTPUTS... LAND-OUTPUT... | grep -E --line-buffered \
 is not being taken.
 
 A stuck episode still open an hour after it was first seen reaches the
-developer in one `NTFY_TOPIC` message per project, once per episode; a
+developer in `NTFY_TOPIC` messages per project (a large batch is split into several), once per episode; a
 recurrence after it cleared is told again.
 
 Before starting an agent in a fresh workspace on another machine, run
