@@ -53,14 +53,24 @@ test("the adapter writes agy's response to the verdict file and maps the model i
   assert.ok(prompt.endsWith(VERDICT_DEMAND), "the prompt ends by demanding a final VERDICT line (t576)");
 });
 
-test("a diff larger than an argument can hold passes on standard input, fenced past its own backticks", (t) => {
-  const big = "+" + "x".repeat(2 * 1024 * 1024) + "\n+`````five\n";
+test("a diff within the prompt limit passes on standard input, fenced past its own backticks", (t) => {
+  const big = "+" + "x".repeat(150_000) + "\n+`````five\n";
   const { verdict, log, result } = review(t, { diffText: big });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(verdict, "utf8"), "...VERDICT: APPROVE...");
   const { stdin } = JSON.parse(readFileSync(log, "utf8"));
   assert.ok(stdin.includes("``````diff\n+x"), "the fence is longer than the diff's own run of five backticks");
-  assert.ok(stdin.length > 2 * 1024 * 1024);
+});
+
+// t230: a diff over the limit is named by its file, never sent.
+test("a diff over the prompt limit is not sent: the prompt names the file and the changed paths", (t) => {
+  const big = "diff --git a/data/blob.json b/data/blob.json\n+" + "x".repeat(2 * 1024 * 1024) + "\n";
+  const { verdict, log, result } = review(t, { diffText: big });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(verdict, "utf8"), "...VERDICT: APPROVE...");
+  const { stdin } = JSON.parse(readFileSync(log, "utf8"));
+  assert.ok(stdin.length < 5000, `${stdin.length} characters`);
+  assert.match(stdin, /- data\/blob\.json: \d+ characters/);
 });
 
 test("a diff with very many runs of backticks still gets its fence", (t) => {

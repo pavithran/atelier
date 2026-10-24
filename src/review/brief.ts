@@ -94,6 +94,10 @@ export interface BriefInput {
   // diff (REVIEW_DIFF in cli/runner.mjs), when the caller wrote one.
   diffFile?: string | null;
   diffLimit?: number;
+  // What the brief says in place of the diff, or of the task's own change,
+  // when it is too large to carry (t230): the file and the changed paths.
+  diffNote?: string | null;
+  ownDiffNote?: string | null;
   owner?: string;
   bar?: string | null;                     // the project's review bar; absent or null, DEFAULT_REVIEW_BAR
   // The project's prose standard (src/prose-standard.ts, t675), which the
@@ -406,6 +410,8 @@ export function reviewBrief(input: BriefInput): string {
       ? [...kind, "The resolution is empty: the builder committed the merge git makes on its own, with no file changed from it."]
       : input.diffRef
         ? [...kind, ...byReference(input.diffRef, compare)]
+        : input.diffNote
+          ? [...kind, input.diffNote]
         : diff
           ? [...kind, ...(diff.cut ? [`${diff.cut} Read the rest in your clone${compare ? ` with ${compare}` : ""}.`] : []), block(diff.text, "diff")]
           : [compare ? `The diff is not included here. Read it in your clone: ${compare}` : "The diff is not included here. Read it in your clone."]),
@@ -418,7 +424,9 @@ export function reviewBrief(input: BriefInput): string {
       "## The task's own change",
       "",
       `This is the task's whole change, the output of ${command}: from the merge base of the head and ${code(merge.own.branch)}, so main's work is left out, and the resolution above is part of it. An approval covers this change too.`,
-      ...(own
+      ...(input.ownDiffNote
+        ? [input.ownDiffNote]
+        : own
         ? [...(own.cut ? [`${own.cut} Read the rest in your clone with ${command}.`] : []), block(own.text, "diff")]
         : [input.ownDiff === "" ? "It is empty: the head changes nothing from the merge base." : `It is not included here. Read it in your clone: ${command}`]),
     );

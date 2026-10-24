@@ -99,6 +99,7 @@ import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, lea
 import { parseReport } from "./refresh/mechanical.ts";
 import { pickResolver, resolverRefusal } from "./refresh/resolver.ts";
 import { refreshReview } from "./refresh/review.ts";
+import { SIZE_REFUSED } from "./large-diff.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -7981,7 +7982,11 @@ export class Ledger extends DurableObject<Env> {
       this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'claimed'`, request);
       const d = JSON.parse(row.dispatch as string) as Dispatch;
       const reviewer = d.agent && d.model ? `${d.agent}/${d.model}` : null;
-      const held = reviewer ? actorStanding(this.poolStanding(), reviewer, "review") : null;
+      // A refusal for the input's size is kept in the ledger, so no runner
+      // takes the same input again (t230): the request is withdrawn with the
+      // reason, and a new one is asked for at a new head or by the developer.
+      const sizeRefusal = release && release.note.includes(SIZE_REFUSED) ? release.note : undefined;
+      const held = sizeRefusal ?? (reviewer ? actorStanding(this.poolStanding(), reviewer, "review") : null);
       if (held) {
         this.log(row.item as string, ORCHESTRATOR, "review.withdrawn", { head: row.head, reviewer, reason: held, request, ...(row.tier === 1 ? { tier: true } : {}) }, new Date(Date.now()).toISOString());
         return;

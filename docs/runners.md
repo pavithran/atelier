@@ -357,6 +357,15 @@ below), so a Codex entry that builds names its own `codex exec` command. An entr
 command, since no adapter ships for them; a `command` given for any harness
 replaces the default.
 
+A review's prompt carries the diff only up to 200,000 characters
+(`ATELIER_REVIEW_DIFF_MAX` changes the limit). A larger diff is not put in the
+prompt: the prompt names the diff file and lists the changed paths with their
+sizes, largest first, and the reviewer reads the file in parts. Binary paths
+and the outputs the project's merge manifest declares generated are listed,
+not shown. A harness that still refuses the input for its size is reported
+once, with its limit and the size, and the review is skipped, not counted
+against the model.
+
 Each adapter puts the agent rules in front of the brief (only the workspace
 may be read or written; commit with plain `git add` and `git commit -m`
 commands ending `Agent: HARNESS/MODEL`; never push or run `atelier`; for a
