@@ -4,8 +4,8 @@ import { prepareChecks } from "../../src/check-preparation.ts";
 import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
 import { collectFailureLines, LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
-import { appliesText, refusalOf, refusalText } from "../../src/checks.ts";
-import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { appliesText, preparationBinding, refusalOf, refusalText, reusableResult } from "../../src/checks.ts";
+import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, cleanClone, cliState, die, doneChecks, git, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
 export const SANDBOX_GONE = "atelier: this project's policy names the container check mode (sandboxOnly), which Atelier no longer has; running the checks here, in a clean clone on this machine. The next atelier init writes the policy without it.\n";
 const FLAKE_NOTE = "failed once, then passed on a rerun at the same head";
@@ -32,6 +32,13 @@ export default async function checkCommand() {
   // The clone goes however this command ends: below once the checks are
   // recorded, or on the way out when a step ends the command first.
   const cleanup = () => removeClone(dir);
+  // The merge base of the head with main, which the changed paths are measured
+  // from: one of the bindings a result is reused under (t232).
+  const mergeBase = againstMain ? git(["merge-base", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }) : null;
+  const forkBase = mergeBase?.status === 0 ? mergeBase.stdout.trim() : "";
+  // The evidence as it stood when this command began; the loop below reads
+  // its own replies under the same name.
+  const evidenceBefore = d.evidence ?? [];
   process.once("exit", cleanup);
   const policy = d.policy;
   // What a check could print and this command would then upload: the API
@@ -39,6 +46,10 @@ export default async function checkCommand() {
   // token in the workspace's Git settings.
   const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
   let failed = 0, recorded, mainHead, provenance = "";
+  // What a command's earlier result must be bound to for this run to reuse it.
+  // --fresh reuses nothing.
+  const bindingOf = (cmd) => ({ project: name, task: id, head: ws.head, base: forkBase, mainHead: mainHead ?? null, mode: mainHead ? "merged" : "ordinary", where: "runner", command: cmd, preparation: preparationBinding(policy.prepare) });
+  const reusable = (cmd) => args.fresh ? null : reusableResult(evidenceBefore, bindingOf(cmd));
   const evidenceBody = (cmd, r, note) => {
     const lead = [note ? `FLAKE: ${note}` : "", provenance].filter(Boolean).join("\n\n");
     const tailSize = lead ? Math.max(500, LOCAL_OUTPUT_TAIL - lead.length) : LOCAL_OUTPUT_TAIL;
@@ -48,6 +59,7 @@ export default async function checkCommand() {
       outputTail: lead ? `${lead}\n\n${r.output.slice(-tailSize)}\n[sha256 of full output: ${r.sha}]` : `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
       ...(failureLines ? { failureLines } : {}),
       ...(mainHead ? { merged: true, mainHead } : {}),
+      reuse: { base: forkBase, preparation: preparationBinding(policy.prepare) },
     };
   };
   const sequence = releaseSequence({ project: name, task: id, actor: as });
@@ -58,7 +70,9 @@ export default async function checkCommand() {
     // regenerated or united, and where its generator logs are kept, goes at
     // the head of each check's output, which outlives the clone.
     if (args.merged) ({ main: mainHead, provenance } = await mergeWithMain(dir, id, name));
-    await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next()), secrets).catch((error) => die(error.message, 2));
+    // Preparation is skipped when every command is answered by a reused result.
+    const toRun = cmds.filter((cmd) => !reusable(cmd) && !(!args.rest?.length && againstMain && checkApplies(policy, cmd, againstMain) === false));
+    if (toRun.length) await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, sequence.next()), secrets).catch((error) => die(error.message, 2));
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
     for (const cmd of cmds) {
       // A registered check whose paths this change does not touch is not
@@ -70,6 +84,15 @@ export default async function checkCommand() {
         if (row) recorded = row.changedPaths;
         doneChecks.push({ claim: cmd, result: "not applicable", where: CLEAN_CLONE });
         console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
+        continue;
+      }
+      // A passing result of this command under the same bindings stands: it
+      // is named, not run again, and no replacement is recorded (t232).
+      const reused = reusable(cmd);
+      if (reused) {
+        if (!mainHead && Array.isArray(reused.changedPaths)) recorded = reused.changedPaths;
+        doneChecks.push({ claim: cmd, result: "passed", where: CLEAN_CLONE });
+        console.log(`PASS  ${cmd}  @ ${short(ws.head)}${on}  (reused evidence #${reused.id}; atelier check --fresh runs it again)`);
         continue;
       }
       let r = await runCheck(cmd, dir, secrets, sequence.next());
