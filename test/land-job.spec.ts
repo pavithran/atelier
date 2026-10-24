@@ -5,7 +5,7 @@ import type { RunnerOffer } from "../src/dispatch/rules.ts";
 import { parseRuleError } from "../src/rules.ts";
 import worker from "../src/index.ts";
 import type { Ledger } from "../src/ledger.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // The land job's queue side (t226): a queued landing is offered to a runner
 // whose offer lists the job and names the project among its checkouts, and to
@@ -99,6 +99,7 @@ it("a merged task with no post-merge run drops its landing at once", async () =>
   expect(await L.landJobs(offer({ checkouts: ["land-job-nopost"] }), ["land-job-nopost"])).toEqual([]);
 });
 
-it("the route level is raised for the land-job route", () => {
-  expect(ROUTE_LEVEL).toBeGreaterThanOrEqual(29);
+it("the land-job route is published as a named capability, since the route level is frozen", () => {
+  expect(ROUTE_LEVEL).toBe(28);
+  expect(SERVER_CAPABILITIES).toContain("land.runner-job.v1");
 });
