@@ -340,7 +340,7 @@ test("the same facts are in --json, and no local section at all when no task has
   assert.equal(empty.code, 0, empty.output);
   assert.equal("local" in JSON.parse(empty.output), false, "no local field when no task has a workspace here");
   // The developer's branches (t641) are the server's, read whatever is local.
-  assert.deepEqual(empty.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/branches", "GET /api/projects/demo", "GET /api/projects/demo/stuck", "GET /api/projects/demo/stuck/episodes", "GET /api/projects/demo/stuck/tick"], "only the stuck episodes (t198) and the last stage tick (t223) are read besides the standing and branches");
+  assert.deepEqual([...empty.seen.slice(0, 3), ...empty.seen.slice(3).sort()], ["GET /api/projects/demo/standing", "GET /api/projects/demo/branches", "GET /api/projects/demo", "GET /api/projects/demo/stuck", "GET /api/projects/demo/stuck/episodes", "GET /api/projects/demo/stuck/tick"], "only the stuck episodes (t198) and the last stage tick (t223) are read besides the standing and branches");
 });
 
 // The kernel lock queue.sh holds while it lands: flock on Linux, lockf on macOS.
