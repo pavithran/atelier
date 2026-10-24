@@ -155,3 +155,23 @@ test("a reviewed task that needs no approval is stuck two hours after its checks
   const withReview = { evidence: [{ head: "a", at: T0 }], reviews: [{ head: "a", at: new Date(Date.parse(T0) + HOUR).toISOString(), approve: true }] };
   assert.equal(stageEnteredAt("reviewed", item(), "a", withReview), withReview.reviews[0].at);
 });
+
+test("an overdue tick is ahead of usage and token-expiry warnings, in status and status --project", async () => {
+  const { readStuck, formatStatus, withOverdueTick, formatUsageWarnings } = await import("../cli/status.mjs");
+  const { overdueTick } = await import("../cli/status.mjs");
+  const base = Date.now();
+  const now = new Date(base).toISOString();
+  const get = async (path: string) => path.endsWith("/stuck/tick") ? { ranAt: new Date(base - 16 * MIN).toISOString(), read: 1, unread: 0, now } : path.endsWith("/stuck") ? { entries: [], complete: true } : [];
+  const views = [{ name: "x", items: [], inbox: [], stuck: await readStuck(get, "/p/x", "x", []) }];
+  // The warning wrappers prepend their text, as withUsage and tokenExpiryWarningsText do.
+  const warned = (text: string) => `Usage: 95% of the quota\n\n${`Token expires in 3 days\n\n${text}`}`;
+  void formatUsageWarnings;
+  const lines = views.flatMap((v) => overdueTick(v.stuck));
+  const out = withOverdueTick(warned(formatStatus(views, { overdueApart: true })), lines).split("\n");
+  assert.match(out[0], /^Stage tick last ran 16 minutes ago .*older than 15 minutes/);
+  assert.equal(out[2], "Usage: 95% of the quota");
+  assert.equal(out.filter((l) => l.includes("Stage tick")).length, 1);
+  const project = withOverdueTick(warned("x\n\nNothing waiting."), lines).split("\n");
+  assert.match(project[0], /^Stage tick last ran 16 minutes ago/);
+  assert.equal(withOverdueTick("text", []), "text");
+});

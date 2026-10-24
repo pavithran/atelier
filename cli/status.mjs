@@ -384,6 +384,9 @@ export function stuckLines(stuck, indent = "  ", withTick = true) {
 // heading (tickLines).
 export const tickLines = (stuck, indent = "") => (stuck?.tick && !stuck.tick.stale ? [`${indent}${stuck.tick.line}`] : []);
 export const overdueTick = (stuck) => (stuck?.tick?.stale ? [stuck.tick.line] : []);
+// The overdue tick lines ahead of the fully composed text, the usage and
+// token-expiry warnings included, so they are the first lines printed.
+export const withOverdueTick = (text, lines) => (lines.length ? `${lines.join("\n")}\n\n${text}` : text);
 
 export function formatStatus(views, waiting = {}) {
   if (!views.length) return "No projects.";
@@ -406,7 +409,7 @@ export function formatStatus(views, waiting = {}) {
     const queued = items.filter((i) => i.state === "open" && !i.owner && i.dispatch && !theirs.has(i.id));
     const reviews = reviewQueue(waiting, v.name, offers);
     const why = whyIn(waiting, v.name, offers);
-    lines.push(...overdueTick(v.stuck));
+    if (!waiting.overdueApart) lines.push(...overdueTick(v.stuck));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     lines.push(...tickLines(v.stuck, "  "));
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);

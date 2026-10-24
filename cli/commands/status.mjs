@@ -1,5 +1,5 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, criteriaJson, criteriaLines, formatStatusBrief, projectInbox, readStuck, readyOf, stageEntries, overdueTick, stageLines, statusJson, stuckLines, tickLines } from "../status.mjs";
+import { cleanLines, formatUsageWarnings, formatAllDeveloperBranches, formatDeveloperBranches, formatLocal, formatPolicyDisagreements, formatStatus, criteriaJson, criteriaLines, formatStatusBrief, projectInbox, readStuck, readyOf, stageEntries, overdueTick, withOverdueTick, stageLines, statusJson, stuckLines, tickLines } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { CACHE, OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
@@ -74,8 +74,7 @@ export default async function statusCommand() {
     // The standing's first line names the project; the stuck section follows it, before any ordinary item.
     const withStuck = (text, section) => { if (!section) return text; const i = text.indexOf("\n"); return i < 0 ? text + "\n\n" + section : text.slice(0, i) + "\n\n" + section + text.slice(i); };
     const stuckText = [...stuckLines(stuck, "", false), ...tickLines(stuck)].join("\n");
-    const overdue = overdueTick(stuck).map((l) => l + "\n\n").join("");
-    console.log(withUsage(tokenExpiryWarningsText(overdue + withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (criteriaText ? "\n\n" + criteriaText : "") + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)));
+    console.log(withOverdueTick(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (criteriaText ? "\n\n" + criteriaText : "") + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), overdueTick(stuck)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
@@ -114,7 +113,7 @@ export default async function statusCommand() {
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());
   const branches = formatAllDeveloperBranches(views);
-  console.log(withUsage(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")), await usageWarnings(OWNER)));
+  console.log(withOverdueTick(withUsage(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server(), overdueApart: true }) + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")), await usageWarnings(OWNER)), views.flatMap((v) => overdueTick(v.stuck))));
   console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));
   pointToGuide(chosen.map((p) => p.name));
