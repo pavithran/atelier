@@ -41,7 +41,7 @@
     "timeout_seconds": 300
   },
   "studio": {
-    "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main", "--checkout", "/Users/pavi/ai-projects/atelier", "--host", "studio"],
+    "run": ["node", "scripts/studio-ff.mjs", "--remote", "origin", "--branch", "main", "--checkout", "/Users/pavi/ai-projects/atelier", "--host", "studio"],
     "timeout_seconds": 120
   }
 }

@@ -53,7 +53,7 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
     ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-worker.mjs deploy [deploy]"],
     ["verify-delivery", "node scripts/ship-worker.mjs verify"], ["wrap"],
     ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
-    ["baseline", "node cli/atelier.mjs sync --project atelier"], ["studio", "node scripts/studio-ff.mjs --remote github --branch main --checkout /Users/pavi/ai-projects/atelier --host studio"],
+    ["baseline", "node cli/atelier.mjs sync --project atelier"], ["studio", "node scripts/studio-ff.mjs --remote origin --branch main --checkout /Users/pavi/ai-projects/atelier --host studio"],
   ]);
   const by = Object.fromEntries(p.steps.map((s) => [s.step, s]));
   assert.equal(by["verify-delivery"].runs[0].timeoutMs, 45_000);
