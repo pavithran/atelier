@@ -631,6 +631,12 @@ it("entering fast mode unblocks a part blocked for want of a criteria reviewer a
   // Leaving fast mode does not block the dispatched part again.
   await L.setMode("owner", "full", undefined);
   expect((await L.item(part)).state).toBe("open");
+  // A later tick in full mode keeps the dispatch: the exemption lasts.
+  expect((await L.item(part)).dispatch).toMatchObject({ criteriaSkipped: true });
+  await L.retickDeployed("fast-then-full");
+  const later = await L.item(part);
+  expect(later.state).toBe("open");
+  expect(later.dispatch).toMatchObject({ by: "atelier/orchestrator", criteriaSkipped: true });
 });
 
 it("a part blocked for want of a criteria reviewer stays blocked outside fast mode", async () => {

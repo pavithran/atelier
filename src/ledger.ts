@@ -2928,7 +2928,7 @@ export class Ledger extends DurableObject<Env> {
 
   private assertCriteriaReviewed(item: Item, dispatch: Dispatch | null, what: "dispatched" | "claimed"): void {
     if (!this.criteriaGate()) return;
-    if (!buildJob(dispatch)) return;
+    if (!buildJob(dispatch) || dispatch?.criteriaSkipped) return;
     const status = this.criteriaReviewStatus(item.id, new Date());
     if (status.approved) return;
     const ask = item.kind === "part"
@@ -6755,7 +6755,8 @@ export class Ledger extends DurableObject<Env> {
   private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null, planHead: string | null = null): void {
     const slash = to.indexOf("/");
     const d = this.standingDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, "build", ORCHESTRATOR, at);
-    const merging = mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d;
+    const skipped = this.item(id).dispatch?.criteriaSkipped || (this.project().policy.requireCriteriaReview && this.mode().mode === "fast");
+    const merging = { ...(mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d), ...(skipped ? { criteriaSkipped: true as const } : {}) };
     this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
 
@@ -6902,7 +6903,7 @@ export class Ledger extends DurableObject<Env> {
       // A merge-main part, or one sent back after an integration conflict
       // (its dispatch names the plan's head: the runner's merge-plan job),
       // merges and keeps the gates it had; neither waits for the review.
-      const merges = mainHead !== null || conflicted.has(p.partKey!) || !!p.dispatch?.planHead;
+      const merges = mainHead !== null || conflicted.has(p.partKey!) || !!p.dispatch?.planHead || !!p.dispatch?.criteriaSkipped;
       if ((want || queued) && this.criteriaReviewHolds(p, id, approval, at, merges)) {
         if (p.dispatch) {
           this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
