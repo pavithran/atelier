@@ -418,10 +418,11 @@ test("a fork workspace keeps its push retry: a push refused for an expired token
   assertOnFork(moved);
 });
 
-test("an accepted task on the runner route refreshes nothing: it is merged, not landed (t488)", async (t) => {
+test("an accepted task on the runner route refreshes nothing: it is merged, not landed (t488, t188)", async (t) => {
   const plain = landing(t, { state: "accepted" });
-  await assert.rejects(runLand(plain.io), /t1 is accepted at [0-9a-f]{8}; merge it with: atelier merge t1/);
+  await runLand(plain.io);
   assert.equal(plain.claims().length, 0);
+  assert.ok(!plain.commands.includes("push"));
   assertUntouched(plain);
   // Through the Workflow an accepted task resumes at its merge: nothing is
   // pushed, so nothing is claimed or moved.
