@@ -44,6 +44,7 @@ import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } from "./graph";
 import { projectShowcase, PULSE_DAYS } from "./pulse";
+import { parseReadiness } from "./runners/readiness";
 import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaimed, waitingDispatch, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
@@ -3694,8 +3695,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
   // When the runner's process started, which an older runner does not say.
   const started = typeof body.started === "string" && Number.isFinite(Date.parse(body.started)) ? new Date(body.started).toISOString() : null;
+  // What the runner's self-check found (t234), kept with the offer.
+  const readiness = parseReadiness(body.readiness);
   return {
-    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}),
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };

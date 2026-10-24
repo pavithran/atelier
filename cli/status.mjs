@@ -27,6 +27,7 @@ import { directionText, expiredBlocks, forkAgeText, mergedByOverride, STAGE_TICK
 import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
+import { readinessLines } from "../src/runners/readiness.ts";
 
 // A task's stage is stageOf's (src/rules.ts) and nothing here decides one.
 // `ready` is the fast-build reports the project's mode route lists
@@ -249,7 +250,10 @@ export function runnerLine(offer, now = Date.now()) {
 // offers it) or what a runner went away from.
 export function formatRunners(offers, now = Date.now()) {
   const lines = [...offers].sort((a, b) => Number(isLive(b, now)) - Number(isLive(a, now)) || a.runner.localeCompare(b.runner));
-  return ["Runners:", ...lines.map((o) => `  ${runnerLine(o, now)}`)];
+  // Each runner's self-check report follows its line (t234): the machine,
+  // each harness's state and probe time (stale past 25 minutes), and the
+  // credentials with their expiry.
+  return ["Runners:", ...lines.flatMap((o) => [`  ${runnerLine(o, now)}`, ...readinessLines(o.runner, o.readiness, now).map((l) => `    ${l}`)])];
 }
 
 // The queue's review requests for one project, as lines: each is a submitted
