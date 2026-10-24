@@ -109,7 +109,9 @@ test("each declared call is allowed for the credential it declares, and refused 
 test("runnerRoute allows exactly the declared runner-token calls and the spare reads, over the whole API", () => {
   const allowed = API_ROUTES.filter((key) => { const { method, parts, body } = parse(key); return runnerRoute(method, parts, body); }).sort();
   const declared = RUNNER_CALLS.filter((c) => c.credential === "runner").map((c) => routeKey(c.method, `/${callParts(c).join("/")}`));
-  const expected = [...new Set([...declared, ...SPARE_READS.map(([m, p]) => routeKey(m, p))])].sort();
+  // fast-take and fast-ready are no declared call: no runner makes them now, but the gateway lets a runner older than t228 reach the not_fast_build refusal.
+  const legacy = ["fast-take", "fast-ready"].map((verb) => routeKey("POST", `/projects/p/items/t1/${verb}`));
+  const expected = [...new Set([...declared, ...SPARE_READS.map(([m, p]) => routeKey(m, p)), ...legacy])].sort();
   assert.deepEqual(allowed, expected);
   for (const key of API_ROUTES) assert.ok(/^(GET|POST|PUT|DELETE) \/[^ ]+( \(write\))?$/.test(key), key);
 });
@@ -799,12 +801,15 @@ test("a release that reports a provider limit reaches the ledger under the runne
   await denied(f("POST", `${fast.base(fastId)}/fast-take`, { actor: "codex/other", body: {} }), fastToken, "fast take as another actor");
   await denied(f("POST", `${fast.base(fastId)}/fast-take`, { actor: "owner", body: {} }), fastToken, "fast take as the owner");
   assert.equal((await expect(f("POST", `${fast.base(fastId)}/fast-take`, { body: {} }), 409, "fast-take")).error, "not_fast_build");
-  assert.equal((await expect(f("POST", `${fast.base(fastId)}/fast-ready`, { body: ready }), 409, "fast-ready")).error, "not_fast_build");
   assert.equal((await fast.L.item(fastId)).state, "open");
+  // A fast-ready is judged as the holder's call: refused before any claim, and not_fast_build after.
+  await denied(f("POST", `${fast.base(fastId)}/fast-ready`, { body: ready }), fastToken, "fast ready before a claim");
+  await claimed(fast, fastToken, fastId);
+  assert.equal((await expect(f("POST", `${fast.base(fastId)}/fast-ready`, { body: ready }), 409, "fast-ready")).error, "not_fast_build");
   // Another project's token reaches neither.
   const stranger = await issue(p, "home:stranger");
   await denied(under(stranger)("POST", `${fast.base(fastId)}/fast-ready`, { runner: "home:stranger", body: ready }), stranger, "fast ready on another project");
-  cover("release-provider-limit", "fast-take", "fast-ready");
+  cover("release-provider-limit");
 });
 
 test("a plan job: claim, the brief, a valid document, a refused one, and the release", async () => {

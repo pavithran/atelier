@@ -98,8 +98,8 @@ test("the helper transport refuses undeclared operations at runtime regardless o
 
 // The reviewer's finding on the first round: the guard judged every form of
 // atelier fast, so the owner's fast status failed
-// before they sent anything. Only fast take and fast ready are the runner's.
-test("the owner's fast status still reaches the server; only the runner's fast take and ready are held to the declarations", async (t) => {
+// before they sent anything.
+test("the owner's fast status still reaches the server; the runner declares no fast command", async (t) => {
   const before = args._, login = cliState.loginToken, server = cliState.loginServer;
   t.after(() => { args._ = before; cliState.loginToken = login; cliState.loginServer = server; });
   cliState.loginToken = "fixture-owner";
@@ -114,11 +114,7 @@ test("the owner's fast status still reaches the server; only the runner's fast t
   await call("GET", "/projects/p/mode", undefined, "test/actor");
   assert.ok(sent.some((r) => r.url.endsWith("/projects/p/mode")), "fast status reached the server");
   const count = sent.length;
-  for (const sub of ["take", "ready"]) {
-    args._ = ["fast", sub];
-    await assert.rejects(call("GET", "/projects/p/mode", undefined, "test/actor"), /not a call the runner helpers declare/);
-  }
-  assert.equal(sent.length, count, "the runner's forms are still refused before sending");
+  assert.equal(sent.length, count, "no further request was sent");
 });
 
 test("the runtime helper boundary resolves the same declarations exercised at the gateway", () => {
@@ -236,14 +232,6 @@ function helperCalls(name, atelier = ATELIER) {
   return name === "resolveTokenActor" ? identityRead(sites, where) : sites;
 }
 
-// A command module that holds more than the runner's part: atelier fast also
-// reads the mode and closes it (the developer's, under the owner's token, on
-// routes no runner token may call), and the runner spawns only fast take and
-// fast ready. The calls judged are those of the named top-level functions and
-// whatever they reach, in this module and in the modules they import; every
-// module is still scanned whole for a bypass of the transport, and
-// helperCommand (cli/runner.mjs) refuses any other form of fast at run time.
-const RUNNER_PART = { fast: ["fastTake", "fastReadyReport"] };
 
 // What one module contributes to a command's calls: its call sites, the
 // names it takes from cli/atelier.mjs, and the modules it hands on. With
@@ -315,11 +303,7 @@ function commandFacts(command, files = fileSystem, file = `cli/commands/${comman
     assert.deepEqual(found, [], `${module}, imported by atelier ${command}, reaches the server outside the CLI's transport: ${found.join(", ")}`);
   }
   const state = { sites: [], names: [], seen: new Set() };
-  if (RUNNER_PART[command]) {
-    const declared = parseModule(files.read(file), file).declarations;
-    for (const name of RUNNER_PART[command]) assert.ok(declared.has(name), `${name} is gone from the command module; update RUNNER_PART`);
-    judge(file, new Set(RUNNER_PART[command]), files, state);
-  } else for (const f of [file, ...modules]) judge(f, null, files, state);
+  for (const f of [file, ...modules]) judge(f, null, files, state);
   return state;
 }
 
@@ -504,7 +488,7 @@ test("a re-export of a network module, in a command's module or in one it import
 
 // astra 2 for the runner's modules is in test/runner-routes.test.mjs. argon 2:
 // aliased imports from cli/atelier.mjs, both the transport and the helpers.
-test("aliased imports from cli/atelier.mjs, the transport or a helper, are followed in a command's module, in an imported one and in a fast helper", () => {
+test("aliased imports from cli/atelier.mjs, the transport or a helper, are followed in a command's module, and in an imported one", () => {
   const sitesOf = (extra, tree) => claimCalls(extra, tree).filter((s) => s.path === "/runs");
   // Transport aliases: the call is read under the name it is made by.
   assert.equal(sitesOf('import { call as send } from "../atelier.mjs";\nawait send("POST", "/runs", {}, as);').length, 1);
@@ -519,14 +503,6 @@ test("aliased imports from cli/atelier.mjs, the transport or a helper, are follo
   assert.throws(() => claimCalls('import { landingLease as lease } from "../atelier.mjs";\nawait lease("p");'), /landingLease\(\) reaches the server outside the CLI's transport: serverFetch\(/);
   assert.throws(() => claimCalls('import "../hop.mjs";', { "cli/hop.mjs": 'import { recordedApproval as approved } from "./atelier.mjs";\nexport const go = () => approved("p");' }), /recordedApproval\(\) reaches the server outside the CLI's transport/);
   assert.throws(() => claimCalls('import "../hop.mjs";', { "cli/hop.mjs": 'const { postAsRunner: report } = await import("./atelier.mjs");' }), /postAsRunner\(\) reaches the server outside the CLI's transport/);
-  // The runner's part of fast: a helper alias in cli/fast.mjs, reached through
-  // a function fastTake names, is the runner's; the owner's ownerOnly is not.
-  const fastTree = (body) => withFiles({ "cli/fast.mjs": `import { landingLease as lease, postAsRunner as report } from "./atelier.mjs";\n${body}\nexport function ownerOnly() {\n  return report("/x", {});\n}\n` });
-  assert.doesNotThrow(() => commandCalls("fast", fastTree("export function shellQuote(v) {\n  return `'${v}'`;\n}")), "the owner's ownerOnly, which the runner's part does not name, is not judged");
-  assert.throws(() => commandCalls("fast", fastTree("export function shellQuote(v) {\n  return lease(v);\n}")), /cli\/atelier\.mjs landingLease\(\) reaches the server outside the CLI's transport: serverFetch\(/, "an aliased helper named by a function the runner's part reaches, one module down");
-  assert.throws(() => commandCalls("fast", fastTree("export function shellQuote(v) {\n  return report(v);\n}")), /postAsRunner\(\)/);
-  const viaAlias = commandCalls("fast", withFiles({ "cli/fast.mjs": 'import { call as send } from "./atelier.mjs";\nexport function shellQuote(v) {\n  return send("POST", "/runs", {}, v);\n}\n' }));
-  assert.ok(viaAlias.some((s) => s.where === "cli/fast.mjs" && s.path === "/runs"), "an aliased transport call in a fast helper is a site to judge");
 });
 
 // A namespace, aliased or default import of the transport module (the second
@@ -593,7 +569,7 @@ const ATTEMPTS = {
   landingLease: () => ["p", "test/actor"],
   postAsRunner: () => ["/projects/p/items/t1/claim", {}, "home:r", new AbortController().signal],
 };
-const SPAWNED_ARGV = (command) => (command === "fast" ? ["fast", "take"] : [command]);
+const SPAWNED_ARGV = (command) => [command];
 
 test("every helper of cli/atelier.mjs that sends to the server itself refuses a spawned helper before it fetches, and no spawned command reaches one", async (t) => {
   const users = [...ATELIER.declarations].filter(([, d]) => references(ATELIER, d.node).some((r) => r.text === "serverFetch(")).map(([name]) => name).sort();
@@ -659,7 +635,7 @@ test("a spawned command that reaches an owner-only helper, aliased or through a 
 // The fourth-round reviewer's third finding (argon 2): call sites in the
 // modules a command imports were never extracted, and a RUNNER_PART command
 // dropped the atelier.mjs helpers its modules name.
-test("a call in an imported module is a site to judge, and a fast helper reached through a module is followed", () => {
+test("a call in an imported module is a site to judge, and a call in a module is followed", () => {
   // Two modules down, in a module the command imports only for its effect.
   const tree = { "cli/helper.mjs": 'import { go } from "./deeper.mjs";\nexport { go };', "cli/deeper.mjs": 'import { call } from "./atelier.mjs";\nexport const go = () => call("POST", "/runners", { title }, as);' };
   const sites = claimCalls('import { go } from "../helper.mjs";\nawait go();', tree).filter((s) => s.where === "cli/deeper.mjs");
@@ -671,19 +647,4 @@ test("a call in an imported module is a site to judge, and a fast helper reached
   const [field] = claimCalls('import "../deeper.mjs";', { "cli/deeper.mjs": 'import { call } from "./atelier.mjs";\nawait call("POST", `${I(name, id)}/claim`, { secret }, as);' }).filter((s) => s.where === "cli/deeper.mjs");
   assert.deepEqual(field.keys, ["secret"]);
   assert.equal(byRoute("POST", `${ITEM}/claim`)[0].body.includes("secret"), false);
-  // fast: only fast take and fast ready are the runner's, so a module it
-  // imports is judged by the functions the runner's part names. A helper of
-  // atelier.mjs such a function reaches through that module is followed ...
-  const fastTree = (body) => withFiles({ "cli/fast.mjs": `import { call, landingLease, postAsRunner } from "./atelier.mjs";\n${body}\nexport function ownerOnly() {\n  return postAsRunner("/x", {});\n}\n` });
-  const fast = (body) => commandCalls("fast", fastTree(body));
-  assert.doesNotThrow(() => fast("export function shellQuote(v) {\n  return `'${v}'`;\n}"), "the owner's ownerOnly, which the runner's part does not name, is not judged");
-  assert.throws(() => fast("export function shellQuote(v) {\n  return landingLease(v);\n}"), /cli\/atelier\.mjs landingLease\(\) reaches the server outside the CLI's transport: serverFetch\(/, "a helper named by a function the runner's part reaches, one module down");
-  // ... and so is a call through the transport there.
-  const viaCall = commandCalls("fast", fastTree('export function shellQuote(v) {\n  return call("POST", "/runners", {}, v);\n}'));
-  assert.ok(viaCall.some((s) => s.where === "cli/fast.mjs" && s.path === "/runners"));
-  // A function the runner's part never names is the owner's and is not judged.
-  assert.ok(!viaCall.some((s) => s.text.includes("/x")));
-  // A re-export hop and a namespace import between the runner's part and the helper.
-  const hop = (head) => withFiles({ "cli/fast.mjs": 'export * from "./fast-more.mjs";', "cli/fast-more.mjs": 'import { landingLease } from "./atelier.mjs";\nexport function shellQuote(v) {\n  return landingLease(v);\n}\n', ...head });
-  assert.throws(() => commandCalls("fast", hop({})), /landingLease\(\) reaches the server/);
 });

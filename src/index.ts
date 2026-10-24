@@ -4562,7 +4562,7 @@ export default {
               // them now, recorded first in the project's one record of them
               // (t540), as the queue, atelier queue and atelier stuck judge.
               const polls = claiming ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : undefined;
-              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, claiming, polls); }
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, claiming || parts[5] === "fast-take", polls); }
               catch (error) { throw await noteRefusal(error) ?? error; }
             }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.

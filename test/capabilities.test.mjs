@@ -253,7 +253,7 @@ test("the integration routes are guaranteed from legacy level 6, as the commits 
 });
 
 test("the legacy route level is frozen; additions need no numeric allocation", () => {
-  assert.equal(ROUTE_LEVEL, 28, "declare a named capability instead of raising ROUTE_LEVEL");
+  assert.equal(ROUTE_LEVEL, 29, "declare a named capability instead of raising ROUTE_LEVEL again");
   // main's raises while t458 was built: the review skip (t353, 21 and 22) and the function areas (t456, 23).
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 21).map((c) => c.name), ["reviews.skip.v1"]);
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 22).map((c) => c.name), ["reviews.skip-as-runner.v1"]);
@@ -650,7 +650,7 @@ test("help, --help and --version of a command that declares capabilities contact
 
 test("post-merge audits require a named capability without raising the frozen route level", () => {
   const capability = "reviews.post-merge.v1";
-  assert.equal(ROUTE_LEVEL, 28);
+  assert.equal(ROUTE_LEVEL, 29);
   assert.deepEqual(requiredForCommand("review-request"), [capability]);
   assert.ok(requiredForJobs(["review"]).includes(capability));
   assert.equal(CAPABILITIES.find((c) => c.name === capability).level, undefined);
@@ -695,7 +695,7 @@ test("--quote asks for the developer's direction by name, and a server without i
 test("models.compare.v1 is a named capability that models show reads without requiring (t621)", () => {
   assert.equal(CAPABILITIES.find((c) => c.name === "models.compare.v1")?.level, undefined);
   assert.ok(SERVER_CAPABILITIES.includes("models.compare.v1"));
-  assert.equal(ROUTE_LEVEL, 28);
+  assert.equal(ROUTE_LEVEL, 29);
   assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
 });
 
@@ -705,6 +705,6 @@ test("models.compare.v1 is a named capability that models show reads without req
 test("models.trend.v1 is a named capability that models show --trend reads without requiring (t623)", () => {
   assert.equal(CAPABILITIES.find((c) => c.name === "models.trend.v1")?.level, undefined);
   assert.ok(SERVER_CAPABILITIES.includes("models.trend.v1"));
-  assert.equal(ROUTE_LEVEL, 28);
+  assert.equal(ROUTE_LEVEL, 29);
   assert.deepEqual(requiredForCommand("models", "show", { trend: true }), ["models.note.v1"]);
 });

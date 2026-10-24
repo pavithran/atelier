@@ -100,6 +100,6 @@ it("a merged task with no post-merge run drops its landing at once", async () =>
 });
 
 it("the land-job route is published as a named capability, since the route level is frozen", () => {
-  expect(ROUTE_LEVEL).toBe(28);
+  expect(ROUTE_LEVEL).toBe(29);
   expect(SERVER_CAPABILITIES).toContain("land.runner-job.v1");
 });

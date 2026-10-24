@@ -50,13 +50,8 @@ async function setup() {
   return { name, L, api, request, poll, forks, tokens, base: `/projects/${name}/items/t1` };
 }
 
-const FAST_CALLS: [string, Json][] = [
-  ["fast-take", {}],
-  ["fast-ready", { commit: BUILT, base: MAIN, builder: ACTOR, workspace: "/Users/runner/cache/fast/p/t1" }],
-];
-
 for (const mode of ["full", "fast"] as const) {
-  it(`in ${mode} mode an old runner's fast-take and fast-ready are refused as not_fast_build, and nothing is recorded`, async () => {
+  it(`in ${mode} mode an old runner's fast-take is refused as not_fast_build, and so is its fast-ready once it holds the task`, async () => {
     const t = await setup();
     if (mode === "fast") {
       await t.L.confirmFastMode("owner", "access");
@@ -65,17 +60,20 @@ for (const mode of ["full", "fast"] as const) {
     const [job] = await t.poll();
     expect(job).toMatchObject({ project: t.name, actor: ACTOR });
     expect(job.fast).toBeUndefined();
-    const before = ((await t.L.events("t1")) as unknown as LedgerEvent[]).length;
-    for (const [verb, body] of FAST_CALLS) {
-      const refused = await t.api("POST", `${t.base}/${verb}`, body);
-      expect(refused.status, verb).toBe(409);
-      expect(await refused.json(), verb).toMatchObject({ error: "not_fast_build" });
-    }
-    // No claim, no fork, no token and no event: the runner claims instead.
+    const take = await t.api("POST", `${t.base}/fast-take`, {});
+    expect(take.status).toBe(409);
+    expect(await take.json()).toMatchObject({ error: "not_fast_build" });
+    // Nothing was claimed, forked or recorded: the runner claims instead.
     expect(await t.L.item("t1")).toMatchObject({ state: "open", owner: null });
     expect(t.forks).toEqual([]);
     expect(t.tokens).toEqual([]);
-    const kinds = ((await t.L.events("t1")) as unknown as LedgerEvent[]).map((e) => e.kind);
+    expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
+    const events = () => t.L.events("t1").then((list) => (list as unknown as LedgerEvent[]).map((e) => e.kind));
+    const before = (await events()).length;
+    const ready = await t.api("POST", `${t.base}/fast-ready`, { commit: BUILT, base: MAIN, builder: ACTOR, workspace: "/Users/runner/cache/fast/p/t1" });
+    expect(ready.status).toBe(409);
+    expect(await ready.json()).toMatchObject({ error: "not_fast_build" });
+    const kinds = await events();
     expect(kinds.length).toBe(before);
     expect(kinds).not.toContain("item.fast_taken");
     expect(kinds).not.toContain("item.fast_ready");
