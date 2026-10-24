@@ -1,7 +1,8 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
+import type { Dispatch } from "../dispatch/rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
-import { GAVE_UP, coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
+import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { inScope } from "../tokens.ts";
@@ -21,10 +22,14 @@ export function reportLimits(values: Record<string, unknown> = {}): ReportLimits
   return limits;
 }
 export interface ReviewObservation { id: number; item: string; head: string; claimedBy: string; claimedAt: string; runner: string | null }
+export interface RequestObservation { id: number; item: string; head: string; dispatch: Dispatch }
+// How long an open review request may name a reviewer no live runner offers
+// before it is reported (t220).
+export const REVIEW_OFFER_MINUTES = 15;
 export interface Snapshot {
   items: Item[]; events: LedgerEvent[]; coreFiles?: string[]; lease: LandingLease | null;
   workflows: { item: string; record: LandingWorkflowRecord; status?: string }[];
-  reviews: ReviewObservation[]; openReviewItems?: string[];
+  reviews: ReviewObservation[]; openReviewItems?: string[]; openRequests?: RequestObservation[];
 }
 export interface Entry { kind: string; subject: string; reason: string; since: string; ageMs: number; evidence: string; recovery: string }
 export function stuckReport(project: string, origin: string, now: Date, limits: ReportLimits, snapshot: Snapshot | null,
@@ -107,6 +112,17 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       if (item && age(since) > limits.reviewAnswerHours * 3_600_000)
         add("review", r.item, `review request ${r.id} claimed by ${r.claimedBy}`, since, `${command(`review-release ${r.item} --note "Release stalled review claim"`)} --as ${r.claimedBy}`);
     }
+    // An open request whose reviewer no live runner offers for the review job
+    // is claimed by no one, however long it waits, and holds the landing.
+    // Unknown offers prove nothing, so none are reported without them.
+    if (offers) for (const r of snapshot.openRequests ?? []) {
+      const item = live.find((i) => i.id === r.item);
+      const reviewer = r.dispatch.agent && r.dispatch.model ? `${r.dispatch.agent}/${r.dispatch.model}` : null;
+      if (!item || !reviewer || age(r.dispatch.at) <= REVIEW_OFFER_MINUTES * 60_000) continue;
+      if (liveOffers(offers, now).some((offer) => names.some((n) => assign(r.dispatch, offer, n) !== null))) continue;
+      add("review-unoffered", r.item, `review request ${r.id} asks ${reviewer}, which no live runner offers for the review job`, r.dispatch.at,
+        `reroute to a reviewer a live runner offers, of another family than the task's contributors: ${command(`review-request ${r.item} --reviewer H/M`)}; or withdraw it: ${command(`review-withdraw ${r.item} --request ${r.id} --reason "No live runner offers ${reviewer}"`)}`, `${origin}/api/runners`);
+    }
     for (const item of live.filter((i) => i.state === "open" && i.dispatch)) {
       // Since t473 a submitted blocker holds only while the landing lease names it.
       const held = coreHold(item, live, snapshot.coreFiles, lease, time, runners);
@@ -168,6 +184,6 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);
   }
   const dedup = new Map<string, Entry>();
-  for (const entry of entries.sort((a, b) => a.since.localeCompare(b.since) || a.reason.localeCompare(b.reason))) dedup.set(`${entry.kind}:${entry.subject}:${["task", "review"].includes(entry.kind) ? entry.reason : ""}`, entry);
+  for (const entry of entries.sort((a, b) => a.since.localeCompare(b.since) || a.reason.localeCompare(b.reason))) dedup.set(`${entry.kind}:${entry.subject}:${["task", "review", "review-unoffered"].includes(entry.kind) ? entry.reason : ""}`, entry);
   return { project, observedAt: now.toISOString(), limits, complete: snapshot !== null && offers !== null && runs !== null && activeRunners !== null && unavailable.length === 0, unavailable: [...new Set(unavailable)].sort(), entries: [...dedup.values()].sort((a, b) => a.since.localeCompare(b.since) || a.kind.localeCompare(b.kind) || a.subject.localeCompare(b.subject)), failedChecksLastDay: snapshot ? checks : null };
 }

@@ -415,6 +415,8 @@ review by hand.
 
 A request for an admitted reviewer is refused `no_runner` while no live runner offers the review job for it. When the developer will serve the review by hand, open the request with `atelier review-request ID --reviewer H/M --hand`: it skips that one check (every other check on the reviewer stands), needs no runner and no agent token for the reviewer, and the claim below then serves it (t694).
 
+A runner is offered the oldest review request it can serve, whatever older ones it cannot; a request whose reviewer no live runner offers for 15 minutes shows in `atelier stuck` as `review-unoffered`: reroute it with `atelier review-request ID --reviewer H/M` to a reviewer a live runner offers, or withdraw it with `atelier review-withdraw ID --reason TEXT` (t220).
+
 To serve a review by hand, claim it as the reviewer with `atelier
 review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
 request number, the head, the criteria binding and the exact command that
