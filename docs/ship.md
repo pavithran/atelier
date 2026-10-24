@@ -51,7 +51,18 @@ The developer approves one kind at one revision:
 atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --expires 24h
 ```
 
-run in the registered checkout at the revision to ship, or with the form
+When the developer approves in chat, the model records their words with
+`--quote` and names itself with `--as`:
+
+```bash
+atelier approve deploy --head "$(git rev-parse HEAD)" --quote "yes, deploy it" --as claude-code/opus-5.5
+```
+
+The approval's note then reads `developer said: "yes, deploy it" (recorded by
+claude-code/opus-5.5)`, kept beside the revision. `--quote` without `--as` is
+refused.
+
+Run in the registered checkout at the revision to ship, or with the form
 under "Protected actions" on the project's page, which binds the approval to
 the main line's head as the page read it. For a project set up with
 `--history-since`, the revision is the baseline's commit, which `atelier ship
@@ -103,6 +114,15 @@ The class gives the order:
 | hybrid | install, verify-delivery, commit, deploy, verify-delivery, wrap, push |
 | other | commit, wrap, push |
 
+The optional steps in the ship file are added to that order: `typecheck`
+goes just before the first of install, deploy or wrap, `scan` just before
+push, and `baseline` then `studio` just after it. Atelier's own web order is
+therefore commit, typecheck, deploy, verify-delivery, wrap, scan, push,
+baseline, studio. The `scan` and `baseline` steps are Atelier's own commands
+and run with the developer's whole environment, `ATELIER_TOKEN`,
+`ATELIER_CONFIG_DIR` and `ATELIER_SERVER` included, as wrap does; the other
+command steps run without the `ATELIER_` variables.
+
 A verify step with nothing to run refuses the ship before anything runs,
 naming what to declare: a web project needs a `verify-deploy` run, such as a
 request to the live site, before `atelier ship` runs for it.
@@ -116,10 +136,20 @@ Atelier's own:
   "schema_version": 1,
   "kind": "atelier.ship",
   "class": "web",
-  "description": "Atelier's own delivery: deploy the captured source commit, verify its live binding, then push main to the github remote.",
-  "deploy": { "run": ["node", "scripts/ship-worker.mjs", "deploy"], "timeout_seconds": 1200 },
+  "description": "Atelier's own delivery.",
+  "typecheck": { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 },
+  "deploy": {
+    "run": ["node", "scripts/ship-worker.mjs", "deploy"], "timeout_seconds": 1200, "retries": 1,
+    "if_changed": {
+      "paths": ["src/**", "wrangler.jsonc", "package.json", "package-lock.json", "worker-configuration.d.ts", "tsconfig.json"],
+      "since": "https://atelier.zone/api/version"
+    }
+  },
   "verify-deploy": { "run": ["node", "scripts/ship-worker.mjs", "verify"], "timeout_seconds": 45 },
-  "push": { "remote": "github", "branch": "main" }
+  "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"], "timeout_seconds": 300 },
+  "push": { "remote": "github", "branch": "main" },
+  "baseline": { "run": ["node", "cli/atelier.mjs", "sync", "--project", "atelier"], "timeout_seconds": 300 },
+  "studio": { "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main"], "timeout_seconds": 120 }
 }
 ```
 
@@ -134,9 +164,14 @@ Atelier's own:
 | `deploy` | what the deploy step runs: web and hybrid |
 | `verify-deploy` | what verify-delivery runs after deploy: web and hybrid |
 | `push` | `{"remote": NAME, "branch": NAME}`; left out, the push goes to the branch's tracked upstream |
+| `typecheck` | optional: runs before the first delivery step (or before wrap, with none) |
+| `scan` | optional: runs just before the push, with `--push`; a failure stops the ship before anything is pushed |
+| `baseline` | optional: runs just after the push, with `--push` |
+| `studio` | optional: runs after `baseline`, with `--push` |
 
-Each of `install`, `verify-install`, `deploy` and `verify-deploy` is one run
-or a list of runs. A run is either
+Each of `install`, `verify-install`, `deploy`, `verify-deploy`, `typecheck`,
+`scan`, `baseline` and `studio` is one run or a list of runs. Naming one of the
+last four adds its step to the class's order; leaving it out leaves the step out. A run is either
 
 - `{"run": ["word", …]}`: a command and its arguments, run with no shell in
   the checkout, or
@@ -145,7 +180,15 @@ or a list of runs. A run is either
   which sends a visitor who is not signed in on to `/home` and its sign-in,
   answers 200 there.
 
-and may add `"timeout_seconds"` (20 minutes for a command and 30 seconds for
+and may add `"retries"` (0 to 3: the run is tried again that many times if it
+fails, under the approval already taken, and every try is recorded),
+`"if_changed"` (`{"paths": [GLOB, …], "since": URL}`: the run happens only
+when a file matching a glob changed between the `commit` the URL's JSON gives,
+the revision last delivered, and the revision being shipped; when the URL or
+that commit cannot be read the run happens, and its record says why; a run
+skipped this way takes no approval, is recorded as passed with the reason, and
+a verify step whose delivery was skipped throughout is skipped with it),
+and `"timeout_seconds"` (20 minutes for a command and 30 seconds for
 a request unless given) and `"approval"`: the kind of approval the run needs.
 An install or deploy run needs the approval of its step's kind unless it
 names another; a verify run needs none unless it names one. A field the
@@ -193,12 +236,33 @@ It then prints the steps and runs them:
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
   and updates the baseline; a failing check stops the ship there.
+- **typecheck** runs Atelier's `npm run typecheck` before the deploy, so a
+  failing type-check stops the ship before an approval is spent.
+- **deploy** runs only when Worker code changed since the commit
+  `https://atelier.zone/api/version` reports as live (`src/**`, the Wrangler
+  config, `package.json` and the lock file, the generated types and
+  `tsconfig.json`), and is tried once more if it fails. This replaces the old
+  `last-deployed` marker file: the live site says what was last deployed.
+  The skill's `postmerge.sh` and `last-deployed` live outside this
+  repository, so this change cannot move them. The orchestrator moves them
+  aside (not deletes them) after this lands, since every step they ran is now
+  a step of this file, and `atelier ship --dry-run` lists them all.
+- **scan** (`scripts/privacy-scan.mjs`), with `--push`, reads the commits the
+  GitHub remote lacks and refuses on a hit: an author or committer that is
+  not a GitHub no-reply address, an added line that looks like a key
+  (`src/secret-scan.ts`), or a private file in a commit or tree
+  (`cli/private-guard.mjs`). It prints each hit without the value and stops
+  the ship before the push. A remote it cannot read also stops it.
 - **push** runs only with `--push`, taking no approval, since ship is
   developer-only and this is their own act at the exact revision being
   shipped: `git push
   --no-force --no-follow-tags REMOTE refs/heads/BRANCH:refs/heads/TARGET`,
   then reads the remote back and fails unless it holds the new HEAD. Without
   `--push` the ship ends after wrap and prints the command that pushes.
+- **baseline** (`atelier sync`) and **studio** (`scripts/studio-ff.mjs`) run
+  after the push, with `--push`. The Studio script fast-forwards the checkout
+  named by `STUDIO_CHECKOUT` (over ssh when `STUDIO_HOST` is set) to the pushed
+  branch, and leaves a checkout that is dirty, off the branch or diverged as it is.
 
 The first step that fails stops the ship. The message names the step, what
 ran before it and what did not run, and, when the step had spent an
@@ -264,7 +328,8 @@ path catches.
   shipped, and never reuses an approval.
 - It does not discover devices, deliver to optional targets, or waive a
   target that fails: a device that is not reachable fails the step.
-- It does not retry a failed step or roll back one that succeeded, such as
+- It does not retry a failed step, except a run whose `retries` says so
+  (Atelier's deploy, once), or roll back one that succeeded, such as
   a deploy before a failing verify.
 - It does not merge, accept or review: the revision is already on the main
   line.

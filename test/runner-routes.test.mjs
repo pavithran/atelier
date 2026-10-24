@@ -1231,7 +1231,7 @@ test("atelier runner polls the real server under its runner token and exits 0 wh
   writeFileSync(config, JSON.stringify({ jobs: ["build"], agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["true", "{model}", "{brief_file}", "{workspace}"] }] }));
   const idle = cli(["runner", "--name", RUNNER, "--once", "--config", config], runnerEnv(token, dir));
   assert.equal(idle.status, 0, idle.stdout + idle.stderr);
-  assert.match(idle.stdout, /^runner: jobs: build \(not plan, merge-main, merge-main-task, merge-plan, review\)\n/);
+  assert.match(idle.stdout, /^\d{4}-\d\d-\d\dT[\d:.]+Z runner: jobs: build \(not plan, merge-main, merge-main-task, merge-plan, review\)\n/);
   assert.doesNotMatch(idle.stdout + idle.stderr, /failed|runner_forbidden/);
   assert.match(idle.stdout, new RegExp(`found nothing to claim while 1 dispatch waits:\\n[^\\n]*  ${p.name}/${id}  `), "the why poll's listing did not reach the runner");
   assert.doesNotMatch(idle.stdout, /could not be read/, "the why poll was refused");
