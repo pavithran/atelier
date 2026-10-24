@@ -479,6 +479,14 @@ test("ship --push carries no commit holding a private file to the remote", async
   assert.equal(git(f.github, "rev-parse", "main"), before, "the remote got nothing");
 });
 
+test("ship gives the scan and baseline steps the parent's Atelier configuration, and the studio step none (t235)", async (t) => {
+  const dump = (name) => ["node", "-e", `require("fs").appendFileSync(process.env.SHIP_MARKER, ${JSON.stringify(name)} + ":" + [process.env.ATELIER_TOKEN, process.env.ATELIER_SERVER, process.env.ATELIER_CONFIG_DIR].join("|") + "\\n")`];
+  const f = await fixture(t, { ship: { schema_version: 1, kind: "atelier.ship", class: "other", push: { remote: "github", branch: "main" }, scan: { run: dump("scan") }, baseline: { run: dump("baseline") }, studio: { run: dump("studio") } } });
+  const r = await f.run(["ship", "--push"]);
+  const lines = existsSync(f.marker) ? readFileSync(f.marker, "utf8").trim().split("\n") : [];
+  assert.deepEqual(lines, [`scan:test-token|${f.url}|${f.dir}`, `baseline:test-token|${f.url}|${f.dir}`, "studio:||"], r.stdout + r.stderr);
+});
+
 test("ship source binding replaces caller input without exposing Atelier credentials (t182)", () => {
   const head = "a".repeat(40);
   assert.deepEqual(stepEnv({ PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_TOKEN: "owner-secret", ATELIER_SHIP_HEAD: "spoofed" }, head), { PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_SHIP_HEAD: head });

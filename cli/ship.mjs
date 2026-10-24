@@ -31,6 +31,7 @@ export const ORDERS = {
 // delivery step, scan just before the push, baseline and studio after it. The
 // scan and what follows the push are the push's own, so they run only with --push.
 const STEPS = new Set(["install", "deploy", "verify-delivery", "commit", "wrap", "push", "typecheck", "scan", "baseline", "studio"]);
+const INTERNAL = new Set(["scan", "baseline"]);
 const ADDED = ["typecheck", "scan", "baseline", "studio"];
 const WITH_PUSH = new Set(["scan", "push", "baseline", "studio"]);
 const MAX_RETRIES = 3;
@@ -307,8 +308,11 @@ export function shipSecrets(env, given = []) {
 // A step's command runs with the owner's environment, which a deploy needs for
 // its own credentials, less Atelier's own variables: no step needs the owner's
 // Atelier token. Only the validated source HEAD is added back for delivery.
-export function stepEnv(env, head) {
-  const filtered = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("ATELIER_")));
+// The scan and baseline steps are Atelier's own commands (the privacy scan and
+// atelier sync), which need the owner's ATELIER_TOKEN, ATELIER_CONFIG_DIR and
+// ATELIER_SERVER as wrap does, so they keep the whole environment.
+export function stepEnv(env, head, internal = false) {
+  const filtered = internal ? { ...env } : Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("ATELIER_")));
   return head ? { ...filtered, ATELIER_SHIP_HEAD: head } : filtered;
 }
 
@@ -474,7 +478,7 @@ export async function ship(ctx) {
         // A retry is the same run: it uses the approval already taken.
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
-          const r = run.argv ? await runCommand(run.argv, { cwd, env: stepEnv(ctx.env, head), timeoutMs: run.timeoutMs }) : await runRequest(run);
+          const r = run.argv ? await runCommand(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });
           if (!run.argv) print(`${s.step}: ${r.output}`);

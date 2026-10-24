@@ -114,6 +114,15 @@ The class gives the order:
 | hybrid | install, verify-delivery, commit, deploy, verify-delivery, wrap, push |
 | other | commit, wrap, push |
 
+The optional steps in the ship file are added to that order: `typecheck`
+goes just before the first of install, deploy or wrap, `scan` just before
+push, and `baseline` then `studio` just after it. Atelier's own web order is
+therefore commit, typecheck, deploy, verify-delivery, wrap, scan, push,
+baseline, studio. The `scan` and `baseline` steps are Atelier's own commands
+and run with the developer's whole environment, `ATELIER_TOKEN`,
+`ATELIER_CONFIG_DIR` and `ATELIER_SERVER` included, as wrap does; the other
+command steps run without the `ATELIER_` variables.
+
 A verify step with nothing to run refuses the ship before anything runs,
 naming what to declare: a web project needs a `verify-deploy` run, such as a
 request to the live site, before `atelier ship` runs for it.
@@ -131,13 +140,16 @@ Atelier's own:
   "typecheck": { "run": ["npm", "run", "typecheck"], "timeout_seconds": 600 },
   "deploy": {
     "run": ["node", "scripts/ship-worker.mjs", "deploy"], "timeout_seconds": 1200, "retries": 1,
-    "if_changed": { "paths": ["src/**", "wrangler.jsonc", "package.json"], "since": "https://atelier.zone/api/version" }
+    "if_changed": {
+      "paths": ["src/**", "wrangler.jsonc", "package.json", "package-lock.json", "worker-configuration.d.ts", "tsconfig.json"],
+      "since": "https://atelier.zone/api/version"
+    }
   },
   "verify-deploy": { "run": ["node", "scripts/ship-worker.mjs", "verify"], "timeout_seconds": 45 },
-  "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"] },
+  "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"], "timeout_seconds": 300 },
   "push": { "remote": "github", "branch": "main" },
-  "baseline": { "run": ["node", "cli/atelier.mjs", "sync", "--project", "atelier"] },
-  "studio": { "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main"] }
+  "baseline": { "run": ["node", "cli/atelier.mjs", "sync", "--project", "atelier"], "timeout_seconds": 300 },
+  "studio": { "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main"], "timeout_seconds": 120 }
 }
 ```
 
@@ -231,9 +243,10 @@ It then prints the steps and runs them:
   config, `package.json` and the lock file, the generated types and
   `tsconfig.json`), and is tried once more if it fails. This replaces the old
   `last-deployed` marker file: the live site says what was last deployed.
-  The skill's `postmerge.sh` and `last-deployed` live outside this repository;
-  the developer moves them aside (not deletes them), since every step they ran
-  is now a step of this file, and `atelier ship --dry-run` lists them all.
+  The skill's `postmerge.sh` and `last-deployed` live outside this
+  repository, so this change cannot move them. The orchestrator moves them
+  aside (not deletes them) after this lands, since every step they ran is now
+  a step of this file, and `atelier ship --dry-run` lists them all.
 - **scan** (`scripts/privacy-scan.mjs`), with `--push`, reads the commits the
   GitHub remote lacks and refuses on a hit: an author or committer that is
   not a GitHub no-reply address, an added line that looks like a key
