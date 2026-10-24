@@ -35,16 +35,16 @@ const dispatchOf = async (key: string, id: string) => { const d = (await L(key).
 it("reroutes a dispatch no live runner offers once, recording the old and new model, and a repeated tick changes nothing", async () => {
   await project("rr-a");
   const id = await queued("rr-a", { agent: "codex", model: "gpt-6-astra" });
-  await offers("rr-a", "home:rr-a", [{ agent: "claude-code", models: ["opus-5.5"] }], 2 * MIN);
+  await offers("rr-a", "home:rr-a", [{ agent: "claude-code", models: ["sonnet-5.5"] }], 2 * MIN);
   await tick(2 * MIN);
-  expect(await dispatchOf("rr-a", id)).toBe("claude-code/opus-5.5");
+  expect(await dispatchOf("rr-a", id)).toBe("claude-code/sonnet-5.5");
   expect(await kinds("rr-a")).toEqual([[id, "stage.rerouted", "queued"]]);
   const [moved] = await stage("rr-a");
-  expect(moved.data).toMatchObject({ head: "", from: "codex/gpt-6-astra", to: "claude-code/opus-5.5" });
+  expect(moved.data).toMatchObject({ head: "", from: "codex/gpt-6-astra", to: "claude-code/sonnet-5.5" });
   await tick(2 * MIN);
   await tick(3 * MIN);
   expect(await kinds("rr-a")).toEqual([[id, "stage.rerouted", "queued"]]);
-  expect(await dispatchOf("rr-a", id)).toBe("claude-code/opus-5.5");
+  expect(await dispatchOf("rr-a", id)).toBe("claude-code/sonnet-5.5");
 });
 
 it("with no offered model records stuck and told naming what the live runners offer, and changes nothing else", async () => {
@@ -62,7 +62,7 @@ it("with no offered model records stuck and told naming what the live runners of
 it("a second miss is told and never rerouted again", async () => {
   await project("rr-c");
   const id = await queued("rr-c", { agent: "codex", model: "gpt-6-astra" });
-  await offers("rr-c", "home:rr-c", [{ agent: "claude-code", models: ["opus-5.5"] }], 2 * MIN);
+  await offers("rr-c", "home:rr-c", [{ agent: "claude-code", models: ["sonnet-5.5"] }], 2 * MIN);
   await tick(2 * MIN);
   // The runner now offers something else: the new dispatch has no taker either.
   await offers("rr-c", "home:rr-c", [{ agent: "opencode", models: ["glm-5.3"] }], 4 * MIN);
@@ -70,18 +70,45 @@ it("a second miss is told and never rerouted again", async () => {
   await tick(4 * MIN);
   expect(await kinds("rr-c")).toEqual([[id, "stage.rerouted", "queued"], [id, "stage.stuck", "queued"], [id, "stage.told", "queued"]]);
   expect(String((await stage("rr-c"))[2].data.note)).toMatch(/already rerouted once/);
-  expect(await dispatchOf("rr-c", id)).toBe("claude-code/opus-5.5");
+  expect(await dispatchOf("rr-c", id)).toBe("claude-code/sonnet-5.5");
 });
 
-it("a dispatch left unclaimed 10 minutes goes to another model a live runner offers", async () => {
+it("a dispatch left unclaimed 10 minutes keeps a model a live runner offers, told as stuck", async () => {
   await project("rr-d");
   const id = await queued("rr-d", { agent: "codex", model: "gpt-6-astra" });
-  await offers("rr-d", "home:rr-d", [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["opus-5.5"] }], 11 * MIN);
+  await offers("rr-d", "home:rr-d", [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["sonnet-5.5"] }], 11 * MIN);
   await tick(5 * MIN);
   expect(await kinds("rr-d")).toEqual([]);
   await tick(11 * MIN);
-  expect(await dispatchOf("rr-d", id)).toBe("claude-code/opus-5.5");
-  expect(await kinds("rr-d")).toEqual([[id, "stage.rerouted", "queued"]]);
+  expect(await dispatchOf("rr-d", id)).toBe("codex/gpt-6-astra");
+  expect(await kinds("rr-d")).toEqual([[id, "stage.stuck", "queued"], [id, "stage.told", "queued"]]);
+});
+
+it("never escalates a dispatch to an Opus-tier model no dispatch names: it is told, and stays", async () => {
+  await project("rr-i");
+  const id = await queued("rr-i", { agent: "claude-code", model: "sonnet-5.5" });
+  await offers("rr-i", "home:rr-i", [{ agent: "claude-code", models: ["opus-5.5"] }], 2 * MIN);
+  await tick(2 * MIN);
+  await tick(3 * MIN);
+  expect(await dispatchOf("rr-i", id)).toBe("claude-code/sonnet-5.5");
+  expect(await kinds("rr-i")).toEqual([[id, "stage.stuck", "queued"], [id, "stage.told", "queued"]]);
+  expect(String((await stage("rr-i"))[1].data.note)).toMatch(/claude-code\/opus-5\.5: Opus tier/);
+});
+
+it("a dispatch held by a core-file hold stays on its model, however long it waits", async () => {
+  const key = "rr-j";
+  const record = { name: key, repo: key, policy: { checks: ["npm test"], protected: [], coreFiles: ["src/ledger.ts"] }, createdAt: new Date().toISOString() };
+  await L(key).setProject(record, "owner");
+  await I().registerProject(record);
+  const holder = (await L(key).newItem("Holder", ["src/ledger.ts"], "owner", { accept: ["It works"] })).id;
+  await L(key).claim(holder, AGENT);
+  const id = (await L(key).newItem("Held", ["src/ledger.ts"], "owner", { accept: ["It works"] })).id;
+  await L(key).dispatch(id, "owner", { to: "any", agent: "codex", model: "gpt-6-astra" });
+  await offers(key, `home:${key}`, [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["sonnet-5.5"] }], 30 * MIN);
+  await tick(30 * MIN);
+  await tick(31 * MIN);
+  expect(await dispatchOf(key, id)).toBe("codex/gpt-6-astra");
+  expect((await kinds(key)).filter((k) => k[0] === id && k[1] === "stage.rerouted")).toEqual([]);
 });
 
 const stalled = async (key: string) => {
@@ -137,10 +164,10 @@ const withHead = async (key: string, job?: "merge-main") => {
 it.each([["rr-g", undefined], ["rr-h", "merge-main" as const]])("reroutes a queued dispatch on a task with a head (%s)", async (key, job) => {
   await project(key);
   const id = await withHead(key, job);
-  await offers(key, `home:${key}`, [{ agent: "claude-code", models: ["opus-5.5"] }], 2 * MIN, "home", job ? ["build", "merge-main", "merge-main-task"] : undefined);
+  await offers(key, `home:${key}`, [{ agent: "claude-code", models: ["sonnet-5.5"] }], 2 * MIN, "home", job ? ["build", "merge-main", "merge-main-task"] : undefined);
   await tick(2 * MIN);
   await tick(3 * MIN);
-  expect(await dispatchOf(key, id)).toBe("claude-code/opus-5.5");
+  expect(await dispatchOf(key, id)).toBe("claude-code/sonnet-5.5");
   expect(await kinds(key)).toEqual([[id, "stage.rerouted", "queued"]]);
-  expect((await stage(key))[0].data).toMatchObject({ head: "c".repeat(40), from: "codex/gpt-6-astra", to: "claude-code/opus-5.5" });
+  expect((await stage(key))[0].data).toMatchObject({ head: "c".repeat(40), from: "codex/gpt-6-astra", to: "claude-code/sonnet-5.5" });
 });

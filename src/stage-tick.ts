@@ -104,30 +104,58 @@ export interface RerouteInput {
   project: string;
   late: boolean;                                 // unclaimed past the queued limit
   rerouted: boolean;                             // this key was rerouted before
+  held?: boolean;                                // a core-file hold or a live claim keeps it from running
   refuse?: (actor: string) => string | null;     // the family rule that applies to the dispatch, as a reason to pass a model over
 }
 export interface RerouteVerdict extends ActVerdict { from: string; to?: { agent: string; model: string } }
 
-// What the tick does with a queued dispatch, or null when nothing is wrong:
-// a live runner would take it and it is not late. A dispatch no live runner
-// offers is due at once, one an offering runner leaves unclaimed when late.
-// The new model is the first a live runner offers for the dispatch that the
-// family rule allows and that is not the one asked for; with none, or after
-// one reroute, the verdict is told, naming what the live runners offer.
+// How costly a model is to run: 3 for the Opus tier (Opus, Fable), 1 for the
+// small and local models, 2 for the rest, including a model not known by
+// name, so an unknown model is never a step up from Sonnet or a step down
+// from it. The tick never moves a dispatch to a higher tier, and never to
+// tier 3 (PAVI's rule: Opus only on request).
+export function costTier(model: string): 1 | 2 | 3 {
+  const m = model.toLowerCase();
+  if (/opus|fable/.test(m)) return 3;
+  if (/haiku|flash|mini|lite|qwen|glm|studio/.test(m)) return 1;
+  return 2;
+}
+
+// What the tick does with a queued dispatch, or null when nothing is wrong
+// or nothing is the tick's to do. A dispatch some live runner offers (busy
+// ones count) keeps its model: it is never rerouted, and past its limit it
+// is told as stuck, naming the model and the runners. A dispatch held by a
+// core-file hold or a live claim waits and is left alone. A dispatch no live
+// runner offers is due at once; its new model is the first a live runner
+// offers for the dispatch that the family rule allows, that is not the one
+// asked for, and that costs no more than it and is not of the Opus tier.
+// With none, or after one reroute, the verdict is told, naming what the live
+// runners offer.
 export function decideReroute(i: RerouteInput): RerouteVerdict | null {
   const offers = offersFor(i.offers, i.project);
   const dead = unoffered(i.dispatch, offers, i.now, i.project);
   if (!dead && !i.late) return null;
+  if (!dead && i.held) return null;
   const from = nameOf(i.dispatch);
   const live = liveOffers(offers, i.now);
   const offered = offering(i.dispatch, offers, i.now);
   const says = dead ?? `it stayed unclaimed past its limit; ${offered ? offered.instead.join("; ") : "no runner is live"}`;
+  if (!dead) return { acts: false, from, note: `kept on ${from}, which a live runner offers, for the orchestrator to decide: ${says}` };
   if (!movable(i.dispatch)) return { acts: false, from, note: `the tick does not move this dispatch: ${says}` };
   if (i.rerouted) return { acts: false, from, note: `already rerouted once, and not rerouted again: ${says}` };
   const asked = `${i.dispatch.agent ?? ""}/${i.dispatch.model ?? ""}`.toLowerCase();
+  const ceiling = costTier(i.dispatch.model ?? "");
   const skipped: string[] = [];
+  const candidates: { actor: string; tier: number }[] = [];
   for (const actor of offered?.actors.keys() ?? []) {
     if (actor === asked) continue;
+    const tier = costTier(actor.slice(actor.indexOf("/") + 1));
+    if (tier === 3) { skipped.push(`${actor}: Opus tier, and the dispatch does not name it`); continue; }
+    if (tier > ceiling) { skipped.push(`${actor}: costs more than ${from}`); continue; }
+    candidates.push({ actor, tier });
+  }
+  candidates.sort((a, b) => b.tier - a.tier);
+  for (const { actor } of candidates) {
     const refusal = i.refuse?.(actor);
     if (refusal) { skipped.push(`${actor}: ${refusal}`); continue; }
     const slash = actor.indexOf("/");
