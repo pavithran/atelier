@@ -189,42 +189,67 @@ test("a dispatch a live runner takes, and is not late, is left alone", () => {
 });
 
 test("a dispatch no live runner offers goes to a model one does, the same tick", () => {
-  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
-  assert.deepEqual([v?.acts, v?.from, v?.to], [true, "codex/gpt-6-astra", { agent: "claude-code", model: "opus-5.5" }]);
+  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
+  assert.deepEqual([v?.acts, v?.from, v?.to], [true, "codex/gpt-6-astra", { agent: "claude-code", model: "sonnet-5.5" }]);
 });
 
-test("a late dispatch goes to another model, never the one it already has", () => {
-  const offers = [offer("home:a", [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["opus-5.5"] }])];
-  assert.equal(decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: true, rerouted: false })?.to?.model, "opus-5.5");
-  const only = decideReroute({ dispatch: disp(), offers: [offers[0]].map((o) => ({ ...o, agents: [o.agents[0]] })), now: NOW, project: "p", late: true, rerouted: false });
-  assert.equal(only?.acts, false);
-  assert.match(only!.note, /no live runner offers another model/);
+test("a late dispatch whose model a live runner offers keeps it, told as stuck", () => {
+  const offers = [offer("home:a", [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["sonnet-5.5"] }])];
+  const v = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: true, rerouted: false });
+  assert.equal(v?.acts, false);
+  assert.match(v!.note, /kept on codex\/gpt-6-astra/);
+});
+
+test("a dispatch held by a hold or a claim is not rerouted, late or not", () => {
+  const offers = [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])];
+  assert.equal(decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers, now: NOW, project: "p", late: true, held: true, rerouted: false }), null);
+});
+
+test("a busy runner still offers its model: the dispatch keeps it", () => {
+  const offers = [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }, { agent: "claude-code", models: ["opus-5.5"] }])];
+  const d = disp({ agent: "claude-code", model: "sonnet-5.5" });
+  assert.equal(decideReroute({ dispatch: d, offers, now: NOW, project: "p", late: false, rerouted: false }), null);
+  assert.equal(decideReroute({ dispatch: d, offers, now: NOW, project: "p", late: true, rerouted: false })?.acts, false);
+});
+
+test("a dispatch no runner offers falls back to a cheaper model, never a costlier one", () => {
+  const offers = [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5", "haiku-4.5"] }])];
+  const v = decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers, now: NOW, project: "p", late: false, rerouted: false });
+  assert.deepEqual([v?.acts, v?.to?.model], [true, "haiku-4.5"]);
+});
+
+test("an escalation to Opus is refused and told, naming the model and the runners", () => {
+  const v = decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
+  assert.equal(v?.acts, false);
+  assert.equal(v?.from, "claude-code/sonnet-5.5");
+  assert.match(v!.note, /home:a offers build as claude-code\/opus-5\.5/);
+  assert.match(v!.note, /claude-code\/opus-5\.5: Opus tier/);
 });
 
 test("no offered model is told, naming what the live runners offer", () => {
-  const v = decideReroute({ dispatch: disp({ to: "cloud" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
+  const v = decideReroute({ dispatch: disp({ to: "cloud" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
   assert.equal(v?.acts, false);
   assert.match(v!.note, /home:a is a home runner, not a cloud one/);
   assert.match(decideReroute({ dispatch: disp(), offers: [], now: NOW, project: "p", late: false, rerouted: false })!.note, /no runner has asked/);
 });
 
 test("a second miss never reroutes again", () => {
-  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: true });
+  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: true });
   assert.equal(v?.acts, false);
   assert.match(v!.note, /already rerouted once/);
 });
 
 test("the family rule that applies passes a model over", () => {
-  const offers = [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }])];
-  const v = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: false, rerouted: false, refuse: (a) => a.endsWith("opus-5.5") ? "its family built it" : null });
-  assert.equal(v?.to?.model, "sonnet-5.5");
+  const offers = [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5", "haiku-4.5"] }])];
+  const v = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: false, rerouted: false, refuse: (a) => a.endsWith("sonnet-5.5") ? "its family built it" : null });
+  assert.equal(v?.to?.model, "haiku-4.5");
   const none = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: false, rerouted: false, refuse: () => "its family built it" });
   assert.equal(none?.acts, false);
-  assert.match(none!.note, /passed over: claude-code\/opus-5\.5: its family built it/);
+  assert.match(none!.note, /passed over: claude-code\/sonnet-5\.5: its family built it/);
 });
 
 test("a plan's or integrator's dispatch is told, not moved", () => {
-  const v = decideReroute({ dispatch: disp({ job: "integrate" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
+  const v = decideReroute({ dispatch: disp({ job: "integrate" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
   assert.equal(v?.acts, false);
 });
 

@@ -1923,7 +1923,8 @@ export class Ledger extends DurableObject<Env> {
       const rerouted = recordedKeys(recorded, "stage.rerouted");
       try {
         const policy = this.project().policy, project = this.project().name;
-        for (const item of this.items()) {
+        const items = this.items(), landing = this.projectLanding(), polls = this.runnerPolls();
+        for (const item of items) {
           if (["merged", "abandoned", "integrated", "blocked"].includes(item.state) || item.blocked || item.kind === "plan") continue;
           tasks++;
           try {
@@ -1947,6 +1948,7 @@ export class Ledger extends DurableObject<Env> {
               let wait = stage === "queued" ? found : findStageOverrun(item, "queued", head, now, clock);
               const verdict = decideReroute({
                 dispatch: d, offers, now, project, late: !!wait, rerouted: rerouted.has(stageKeyOf(key)),
+                held: !!coreHold(item, items, policy.coreFiles, landing, now.getTime(), polls),
                 refuse: (actor) => this.rerouteRefusal(item, d, actor),
               });
               if (verdict) {
