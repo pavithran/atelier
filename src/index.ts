@@ -1,3 +1,4 @@
+import { stuckBatchRequests } from "./notify.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
@@ -13,7 +14,7 @@ import { setTimeZone, timeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
-import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
+import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
 import { forkAgeText, type ForkPreparationView, agentLine, baselineMark, branchesMark, branchesRepoName, branchHost, taskForkMark, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, fastModeConfirmationHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX } from "./prose-standard.ts";
@@ -2009,7 +2010,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // GET also lists the builds runners made in fast mode and reported ready
   // (t589), which atelier fast status prints as tN=SHA.
   if (parts[2] === "mode" && parts.length === 3) {
-    if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList() });
+    if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
     requireOwner(env, actor);
     // The switch to fast mode takes the developer's direction, `quote` with
     // the acting model (t629, projects.developer-direction.v1), or their
@@ -2399,6 +2400,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         if (why) throw new RuleError("check_applies", why, 409);
         e.passed = null;
         e.notApplicable = true;
+      }
+      // The bindings a later `atelier check` reads to reuse a passing result (t232).
+      if (check && item.fork && !e.notApplicable) {
+        const reuse = receiptBinding(body.reuse, { project: (await L.project()).name, task: id, head: e.head, mainHead: e.mainHead ?? null, merged, command: e.claim });
+        if (reuse) (e as Evidence & { reuse?: unknown }).reuse = reuse;
       }
       await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
@@ -3445,6 +3451,31 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
 // The cron that evaluates the stuck rules (t196), as wrangler.jsonc lists it,
 // and the origin the recorded evidence links name.
 const STUCK_CRON = "*/10 * * * *", STUCK_ORIGIN = "https://atelier.zone";
+// Sends the project's due episodes (src/stuck/notices.ts) in as many messages
+// as the channel's body limit needs, and records each message's episodes only
+// when the channel answers it with success. A non-success answer or a failed
+// request records nothing for that message and stops the batch, so the next
+// tick sends the rest again; messages already accepted stay recorded. A
+// request that fails after the channel received it, such as a timeout awaiting
+// the answer, cannot be told from one it never got: that message is then sent
+// again and the developer may see it twice.
+async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, name: string, at: string): Promise<void> {
+  const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
+  if (!topic) return;
+  const due = await I.stuckDue(key, at);
+  for (const { request, episodes } of stuckBatchRequests(topic, STUCK_ORIGIN, name, due)) {
+    try {
+      const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+      await response.body?.cancel();
+      if (!response.ok) { console.error("Atelier stuck notification failed", response.status); return; }
+    } catch {
+      console.error("Atelier stuck notification failed");
+      return;
+    }
+    await I.stuckNotified(key, episodes, at);
+  }
+}
+
 export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<void> {
   const I = index(env);
   for (const p of await I.projects()) {
@@ -3453,6 +3484,7 @@ export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<v
       if (!ref.registered) continue;
       const report = await readStuckReport(env, ref, STUCK_ORIGIN, reportLimits(), now);
       await I.recordStuckTick(ref.key, report.entries, report.complete, report.observedAt);
+      await notifyStuck(env, I, ref.key, p.name, report.observedAt);
     } catch (err) {
       console.error(errorLine(`stuck episodes: ${p.name}`, err));
     }
