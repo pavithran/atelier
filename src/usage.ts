@@ -176,6 +176,7 @@ task with exactly one holder. Never edit the project checkout directly.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
 
 ${OWNER_LANDING}
+A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in \`atelier stuck\`, to reroute with \`atelier review-request ID --reviewer H/M\` or withdraw with \`atelier review-withdraw ID --reason TEXT\`.
 
 For each session the developer runs in the registered checkout:
 
