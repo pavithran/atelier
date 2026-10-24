@@ -1535,12 +1535,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // The task refresh's jobs (t462) are offered to a runner that names them.
         const refreshing = !!offer && (offer.jobs ?? []).some((j) => j === "task-refresh" || j === "task-resolve");
         const [held, { waiting, reviews, busy: projectBusy = [] }, refreshes] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls, idleRunner), refreshing ? L.refreshJobs(offer) : Promise.resolve([])]);
+        // A landing queued for a runner that holds this project's registered
+        // checkout (t226) goes to that runner alone.
+        const landings = offer && (offer.jobs ?? []).includes("land") ? await L.landJobs(offer, namesOf(p)) : [];
         for (const b of projectBusy) busy.set(b.runner.toLowerCase(), `${p.name}/${b.id}`);
         // While the project is in fast mode (t589) a plain build is marked
         // fast, and the runner takes it without a fork (fast-take); every
         // other job, and every build in full mode, is claimed as before.
         const fast = offer && body.why !== true ? await L.mode().then((mode) => mode.mode === "fast", () => false) : false;
-        return [...held, ...waiting, ...reviews, ...refreshes].map((item) => ({ project: p.name, item, ...(fast && fastJobRefusal(item) === null ? { fast: true } : {}) }));
+        return [...held, ...waiting, ...reviews, ...refreshes, ...landings].map((item) => ({ project: p.name, item, ...(fast && fastJobRefusal(item) === null ? { fast: true } : {}) }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
@@ -1552,11 +1555,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
           if ("held" in item && item.held) return [];
-          const a = item.dispatch ? assign(item.dispatch, offer) : null;
+          const a = item.dispatch?.job === "land" ? { agent: "atelier", model: "lander", actor: "atelier/lander" } : item.dispatch ? assign(item.dispatch, offer) : null;
+          // A queued landing is not the task's claim: a claimed task lands
+          // as ordinary land does, so its holder is not the lander's to match.
           // A held job is offered only as the claim it already is: the
           // assignment must name its holder, or the re-claim would be refused
           // as another's claim (claim guards the runner name; assign the actor).
-          return a && (!c.token?.runner || !["integrate", "refresh", "task-refresh", "task-resolve"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a, ...mark }] : [];
+          return a && (!c.token?.runner || !["integrate", "refresh", "task-refresh", "task-resolve"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.dispatch?.job === "land" || item.owner === a.actor) ? [{ project, item, ...a, ...mark }] : [];
         })
       : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null, busy);
     // A project that could not be read is named, so a missing task is never silent.
@@ -2858,6 +2863,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (main) await L.noteMainHead(main);
       return json(await L.integratePart(id, actor, partKey, mergeCommit, true, holdsMain));
     }
+    case "land-job": {
+      // Queues the task's landing for a runner that holds the registered
+      // checkout (t226, atelier land ID --queue). The developer's alone: a
+      // runner or agent token cannot name the verb.
+      requireOwner(env, actor);
+      return json(await L.requestLand(id, actor), 201);
+    }
     case "refresh-lease": {
       // A task refresh's lease (t462, src/refresh/): the integrator's for a
       // task-refresh job, a resolver's for a task-resolve job. The answer
@@ -3733,6 +3745,7 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   return {
     runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
+    ...(Array.isArray(body.checkouts) ? { checkouts: body.checkouts.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };
       return typeof x.agent === "string" && Array.isArray(x.models)
@@ -3752,7 +3765,7 @@ function isHeld(item: Item): boolean {
 // (t524), or a task refresh's job (t462), which the queue makes from the
 // refresh targets. None is a build, so none carries a build's reasons for
 // not being taken.
-const LISTED_APART = new Set<string>(["review", PREREVIEW_JOB, "task-refresh", "task-resolve"]);
+const LISTED_APART = new Set<string>(["review", PREREVIEW_JOB, "task-refresh", "task-resolve", "land"]);
 const listedApart = (item: Item): boolean => LISTED_APART.has(item.dispatch?.job ?? "");
 
 // Why each queued dispatch the owner's listing shows is not being taken,

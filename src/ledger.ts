@@ -884,6 +884,9 @@ export class Ledger extends DurableObject<Env> {
     // refresh under its key (src/refresh/queue.ts).
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_targets (item TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_results (key TEXT PRIMARY KEY, item TEXT NOT NULL, json TEXT NOT NULL)`);
+    // Landings queued for a runner that holds the registered checkout (t226),
+    // one row per task, until the task merges or is closed.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS land_jobs (item TEXT PRIMARY KEY, by TEXT NOT NULL, at TEXT NOT NULL)`);
     // The developer's branches (t641), one row each by name.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS developer_branches (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
@@ -9152,6 +9155,40 @@ export class Ledger extends DurableObject<Env> {
       if (!job || (offer && !(offer.jobs ?? []).includes(job))) continue;
       const [agent, model] = job === "task-resolve" && target.resolver ? [target.resolver.slice(0, target.resolver.indexOf("/")), target.resolver.slice(target.resolver.indexOf("/") + 1)] : ["atelier", "integrator"];
       jobs.push({ ...item, dispatch: { to: "home", agent, model, by: ORCHESTRATOR, at: target.updatedAt, note: `refresh from main at ${target.mainHead.slice(0, 8)}`, job, head: target.mainHead, expectedHead: item.head ?? undefined } });
+    }
+    return jobs;
+  }
+
+  // Queues a task's landing for a runner that holds the registered checkout
+  // (t226, atelier land ID --queue). A task already merged or closed has no
+  // landing to run; one already queued keeps its place.
+  requestLand(id: string, by: string): { item: string; by: string; at: string; queued: boolean } {
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409);
+    const at = new Date().toISOString();
+    const existing = this.sql.exec(`SELECT by, at FROM land_jobs WHERE item = ?`, id).toArray()[0];
+    if (existing) return { item: id, by: existing.by as string, at: existing.at as string, queued: false };
+    this.sql.exec(`INSERT INTO land_jobs (item, by, at) VALUES (?, ?, ?)`, id, by, at);
+    return { item: id, by, at, queued: true };
+  }
+
+  // The land jobs a runner is offered (t226): the queued landings, to a
+  // runner whose offer lists the job and names this project among the
+  // checkouts it holds, and to no other. A job whose task has been closed, or has merged
+  // with no post-merge work left, is dropped here.
+  // `names` is every name the project has had, current first.
+  landJobs(offer: RunnerOffer, names: string[]): Item[] {
+    if (!(offer.jobs ?? []).includes("land") || !names.some((n) => (offer.checkouts ?? []).includes(n))) return [];
+    const jobs: Item[] = [];
+    for (const r of this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at, item`).toArray()) {
+      const item = this.item(r.item as string);
+      // A merged task keeps its job while its post-merge run is open: the
+      // merge is recorded before the journal is cleared and the run executes,
+      // and a landing killed between them resumes from here. A failed run
+      // was reported by the landing that ran it, so it is not offered again.
+      const run = item.state === "merged" ? this.postMergeRun(item.id) : null;
+      if (item.state === "abandoned" || (item.state === "merged" && (!run || run.state === "complete" || run.state === "failed"))) { this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id); continue; }
+      jobs.push({ ...item, dispatch: { to: "home", agent: "atelier", model: "lander", by: r.by as string, at: r.at as string, note: `land ${item.id}`, job: "land" } });
     }
     return jobs;
   }

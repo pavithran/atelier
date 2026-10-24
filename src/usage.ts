@@ -177,6 +177,7 @@ task with exactly one holder. Never edit the project checkout directly.
 9. Every 5 minutes the server records a task stuck at a stage past its limit.
 
 ${OWNER_LANDING}
+\`atelier land ID --queue\` queues the landing for a runner that lists the land job and holds the registered checkout.
 A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in \`atelier stuck\`, to reroute with \`atelier review-request ID --reviewer H/M\` or withdraw with \`atelier review-withdraw ID --reason TEXT\`.
 
 For each session the developer runs in the registered checkout:

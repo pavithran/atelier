@@ -13,6 +13,11 @@ const spec: CommandSpec = {
   capabilityCheck: "handler",
   forms: [
     {
+      group: "Developer", line: 1, slot: 43,
+      form: "land ID --queue",
+      about: "Queue the landing for a runner that holds this project's registered checkout and lists the land job (t226), instead of running it here. The runner runs `atelier land ID` there, under the landing lease, and resumes from the landing journal after a kill. It refuses, saying why, when the checkout is dirty or its main is not the baseline's, and reports a failure once with the step and the log tail.",
+    },
+    {
       group: "Developer", line: 1, slot: 41,
       form: "land ID --post-merge status|resume|retry|skip|reconcile [--reason TEXT] [--resolution no-effect|completed]",
       about: "Inspect or resolve a durable post-merge run. Status shows the policy, SHAs, ordered steps and attempts. Resume runs pending work; retry resumes a failed step; skip records a developer waiver and continues. Retry, skip and reconcile require a reason. Running or uncertain attempts require the developer to stop the executor and reconcile its external effect before retry or skip. Completed steps never replay and unresolved work blocks later merges.",
@@ -41,6 +46,7 @@ const spec: CommandSpec = {
     wait: true,
     "release-lease": true,
     workflow: true,
+    queue: true,
     parallel: "--parallel needs a positive integer: atelier land t1 t2 --parallel 3",
     "moved-ok": true,
     checks: "--checks takes local, the only mode: atelier land ID --workflow --checks local",
@@ -60,6 +66,7 @@ const spec: CommandSpec = {
       "--release-lease": "frees the project's landing lease, held by a landing that was killed, and says which task held it since when; the developer alone may",
       "--parallel N": "with several tasks, how many landings run at once (a positive integer, 3 when omitted, per invocation, not across machines)",
       "--moved-ok": "goes on past the edits in code main moved to another file that this landing's comparison detects before merging main (which otherwise stop it, naming source and destination), once your approval of exactly those findings at those revisions is recorded on the ledger; findings at other revisions need a fresh approval, and Git's own conflicts still stop the landing",
+      "--queue": "queues the landing for a runner that holds this project's registered checkout and lists the land job (t226); the runner runs atelier land ID there, under the landing lease, and resumes from the landing journal after a kill. It refuses, saying why, when the checkout is dirty or its main is not the baseline's. Nothing runs on this machine. It is refused with --dry-run, which would otherwise queue a real landing",
       "--workflow": "lands through a Cloudflare Workflow: the submission and the review wait (without the lease), then the lease, the check that main has not moved and the acceptance, are durable steps on the server with retries, while this command shows the stage and merges main, pushes and merges when the Workflow asks; a conflict pauses it until you resolve, commit and push it with atelier push, then run the command again, and a rerun attaches to the live landing",
       "--checks local": "with --workflow, accepted for scripts that name it; it changes nothing, since a Workflow landing always runs the required checks on this machine in a clean clone of the pushed head before reporting it, and the Workflow goes on only once the server has recorded each passing, observed, at that head (t768 removed the container mode)",
     },
