@@ -3,6 +3,7 @@
 // standing route each read the Ledger's inbox with the model pool, so the
 // task is placed under the owner, not left in review; once the pool offers a
 // reviewer of another family, every view moves it back to review.
+import { holdLiveOffers } from "./helpers/live-offers.ts";
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
@@ -65,6 +66,7 @@ it("a protected change with no qualifying reviewer waits on the owner in every v
 
   // A reviewer of another family joins the pool: the reviewers handle it.
   await I().putModel(model("gpt-6-astra"));
+  await holdLiveOffers(L(NAME), [model("gpt-6-astra"), model("opus-5.5", { harness: "claude-code" })]);
   const some = await standing();
   expect(some.waiting).toEqual([]);
   expect(some.pipeline).toEqual([{ stage: "submitted", count: 1 }]);
