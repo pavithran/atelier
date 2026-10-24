@@ -1,6 +1,5 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
-import { stopText, type ReviewStop } from "../review/stopped.ts";
 import type { Dispatch } from "../dispatch/rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
 import { GAVE_UP, assign, coreHold, coreOrphans, liveOffers, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
@@ -23,7 +22,7 @@ export function reportLimits(values: Record<string, unknown> = {}): ReportLimits
   return limits;
 }
 export interface ReviewObservation { id: number; item: string; head: string; claimedBy: string; claimedAt: string; runner: string | null }
-export interface RequestObservation { id: number; item: string; head: string; dispatch: Dispatch; stopped?: ReviewStop }
+export interface RequestObservation { id: number; item: string; head: string; dispatch: Dispatch; stopped?: { at: string; text: string } }
 // How long an open review request may name a reviewer no live runner offers
 // before it is reported (t220).
 export const REVIEW_OFFER_MINUTES = 15;
@@ -130,7 +129,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     // request, which every release carries it to.
     for (const r of snapshot.openRequests ?? []) {
       if (!r.stopped || !live.some((i) => i.id === r.item)) continue;
-      add("review-skipped", r.item, `review request ${r.id}: ${stopText(r.item, r.stopped)}`, r.stopped.at || r.dispatch.at,
+      add("review-skipped", r.item, `review request ${r.id}: ${r.stopped.text}`, r.stopped.at || r.dispatch.at,
         `decide, then act: ${command(`review-request ${r.item} --reviewer H/M`)} asks another reviewer; ${command(`review-withdraw ${r.item} --request ${r.id} --reason "Reviewer stopped without a verdict"`)} withdraws it`);
     }
     // A runner that skipped an open request for its own reason recorded a

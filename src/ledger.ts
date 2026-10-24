@@ -5740,7 +5740,7 @@ export class Ledger extends DurableObject<Env> {
       // for the report's check that some live runner offers the reviewer (t220).
       openRequests: this.sql.exec(`SELECT r.id, r.item, r.head, r.dispatch, r.stopped FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND i.state != 'abandoned' AND (i.state = 'merged' OR r.head = i.head) ORDER BY r.id`).toArray().map((r) => ({
         id: Number(r.id), item: String(r.item), head: String(r.head), dispatch: JSON.parse(r.dispatch as string) as Dispatch,
-        ...(reviewStopped(parseStop(r.stopped)) ? { stopped: parseStop(r.stopped)! } : {}),
+        ...(reviewStopped(parseStop(r.stopped)) ? { stopped: { at: parseStop(r.stopped)!.at, text: stopText(String(r.item), parseStop(r.stopped)!) } } : {}),
       })),
       reviews: this.sql.exec(`SELECT id, item, head, state, claimedBy, claimedAt, runner FROM review_requests WHERE state = 'claimed' AND superseded IS NULL`).toArray().map((r) => ({
         id: Number(r.id), item: String(r.item), head: String(r.head),

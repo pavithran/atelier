@@ -143,7 +143,8 @@ it("two timeouts at one head stop the review on its successor, which no claim, q
   expect(live.request).not.toBe(first.request);
   expect(live.stopped).toMatchObject({ reason: "timeout", count: 2, head: live.head });
   // The stop is in the ledger, not in a runner: another claim is refused.
-  const refused = await L.claimReview(ids[0], GPT, RUNNER).then(() => null, (error: { code?: string }) => error);
+  let refused: { code?: string } | null = null;
+  try { await L.claimReview(ids[0], GPT, RUNNER); } catch (error) { refused = error as { code?: string }; }
   expect(refused).toMatchObject({ code: "review_stopped" });
   expect(await L.liveReviewRequest(ids[0], live.head!)).toMatchObject({ request: live.request, stopped: expect.stringContaining("narrow the criteria, move the findings to a task, or override") });
   const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
