@@ -20,22 +20,30 @@ export async function hasPreparation(project, actor) {
   }
 }
 
+// A helper's console line, stamped as every runner log line is (logLine
+// supplies the ISO UTC time and the "runner:" label, so a message's own
+// leading label is dropped).
+export const stampedSay = (logLine, print) => (message) => logLine(String(message).replace(/^runner: /, ""), print ? { print } : undefined);
+export const NO_PROCESS_TABLE = "the process table could not be read, so a second runner of this name is not ruled out.";
+export const incompleteLine = (incomplete) => `Could not read: ${incomplete}. Tasks waiting there are not listed.`;
+
 // `runner --discover` reports what each home model's harness serves (discover.mjs);
 // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
 export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { isReloaded, reexecSelf, runnerUsage, runRunner, runnerCheckout, runnerTransport } = await import("../runner.mjs");
+  const { isReloaded, reexecSelf, runnerUsage, runRunner, runnerCheckout, runnerTransport, logLine } = await import("../runner.mjs");
+  const say = stampedSay(logLine);
   // One name is one process (t581). A reload's replacement is the same
   // process, which would find itself, so it is let through; so is a start that
   // cannot read the process table, which says so.
   try { runnerUsage(args); } catch (error) { die(error.message); }
   if (!isReloaded(process.env)) {
     const live = liveHere();
-    if (!live) console.log("runner: the process table could not be read, so a second runner of this name is not ruled out.");
+    if (!live) say(NO_PROCESS_TABLE);
     const refusal = live && await guardName({
-      runners: live.runners, name: args.name, replace: args.replace === true, say: console.log,
+      runners: live.runners, name: args.name, replace: args.replace === true, say,
       kill: (pid) => process.kill(pid, "SIGTERM"),
       alive: (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } },
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -94,7 +102,7 @@ export default async function runnerCommand() {
           throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
         }
         if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
-        if (res.incomplete) console.log(`Could not read: ${res.incomplete}. Tasks waiting there are not listed.`);
+        if (res.incomplete) say(incompleteLine(res.incomplete));
         return res.data;
       },
       // A busy runner's heartbeat (t537): its offer, marked as a heartbeat,
