@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { parseRuleError } from "../src/rules.ts";
-import { bindingsWith, fakeLog } from "./support/artifacts-fake.ts";
+import { bindingsWith, expectNoStrayArtifactsAccess, fakeLog } from "./support/artifacts-fake.ts";
 
 // A claim mints its workspace write token in Artifacts after the Ledger has
 // allowed it, and Artifacts can be slow to answer. These tests hold that
@@ -13,6 +13,8 @@ import { bindingsWith, fakeLog } from "./support/artifacts-fake.ts";
 // was revoked. Every credential here is a dummy.
 
 const TOKEN = "claim-token-owner";
+afterEach(expectNoStrayArtifactsAccess);
+
 const H0 = "0".repeat(40);
 const A = "claude-code/opus-5.5", B = "codex/gpt-6";
 

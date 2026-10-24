@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { bindingsWith, fakeLog } from "./support/artifacts-fake.ts";
+import { bindingsWith, expectNoStrayArtifactsAccess, fakeLog } from "./support/artifacts-fake.ts";
 
 // t705, seen in ikon-weblog/t112: after a build of about ten hours the
 // workspace token had expired, and `atelier claim t112` by the same holder
@@ -11,6 +11,8 @@ import { bindingsWith, fakeLog } from "./support/artifacts-fake.ts";
 // plainly, with the command that recovers. Every credential here is a dummy.
 
 const TOKEN = "claim-expired-owner";
+afterEach(expectNoStrayArtifactsAccess);
+
 const H0 = "0".repeat(40);
 const A = "claude-code/opus-5.5";
 
