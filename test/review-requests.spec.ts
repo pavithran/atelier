@@ -1461,6 +1461,16 @@ it("t485: concurrent claims, same-name restart and same-actor takeover fence eve
   expect(await L.reviewWaiting()).toEqual([]);
 });
 
+it("a release for the input's size leaves no open request for another runner (t230)", async () => {
+  const L = await setup("review-size-refusal");
+  const { partId } = await approved(L);
+  await submitPart(L, partId, "a".repeat(40));
+  const claim = await L.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+  await L.releaseReview(partId, GPT, "codex's harness refused the review input for its size (limit 1048576; actual 7052528), not as a verdict.", true, claim.request);
+  expect(await L.reviewWaiting()).toEqual([]);
+  await refusal(L.claimReview(partId, GPT, { runner: "home:other", kind: "home" }, true), "no_review", /no open review request/);
+});
+
 it("a forty-minute review renews on server time; writes coalesce and connectivity loss expires it", async () => {
   const L = await setup("review-long-renewal");
   const { partId } = await approved(L);

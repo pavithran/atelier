@@ -97,6 +97,7 @@ import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, lea
 import { parseReport } from "./refresh/mechanical.ts";
 import { pickResolver, resolverRefusal } from "./refresh/resolver.ts";
 import { refreshReview } from "./refresh/review.ts";
+import { SIZE_REFUSED } from "./large-diff.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -7760,14 +7761,17 @@ export class Ledger extends DurableObject<Env> {
   // check: one the owner has since paused, reserved or kept from reviewing is
   // not asked again, and the request is withdrawn with the reason, as
   // poolChanged withdraws an open one, so the gate asks another.
-  private replaceReviewClaim(request: number): void {
+  private replaceReviewClaim(request: number, sizeRefusal?: string): void {
     this.ctx.storage.transactionSync(() => {
       const row = this.sql.exec(`SELECT item, head, dispatch, briefHash, wanted, tier, topTier, criteria, carried FROM review_requests WHERE id = ? AND state = 'claimed'`, request).toArray()[0];
       if (!row) return;
       this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'claimed'`, request);
       const d = JSON.parse(row.dispatch as string) as Dispatch;
       const reviewer = d.agent && d.model ? `${d.agent}/${d.model}` : null;
-      const held = reviewer ? actorStanding(this.poolStanding(), reviewer, "review") : null;
+      // A refusal for the input's size is kept in the ledger, so no runner
+      // takes the same input again (t230): the request is withdrawn with the
+      // reason, and a new one is asked for at a new head or by the developer.
+      const held = sizeRefusal ?? (reviewer ? actorStanding(this.poolStanding(), reviewer, "review") : null);
       if (held) {
         this.log(row.item as string, ORCHESTRATOR, "review.withdrawn", { head: row.head, reviewer, reason: held, request, ...(row.tier === 1 ? { tier: true } : {}) }, new Date(Date.now()).toISOString());
         return;
@@ -7819,7 +7823,7 @@ export class Ledger extends DurableObject<Env> {
       request = row?.id as number | undefined;
     }
     const row = this.currentReviewClaim(itemId, actor, request);
-    this.replaceReviewClaim(row.id as number);
+    this.replaceReviewClaim(row.id as number, String(note ?? "").includes(SIZE_REFUSED) ? String(note) : undefined);
     this.log(itemId, actor, "review.released", { note, request }, new Date().toISOString(), proved);
   }
 

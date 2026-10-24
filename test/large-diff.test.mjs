@@ -103,3 +103,19 @@ test("a size refusal is a stuck entry naming the fix, until the review is asked 
   assert.equal(report([event(1, "review.released", { note }), event(2, "review.requested")]).length, 0);
   assert.equal(report([event(1, "review.released", { note: "harness exited 1" })]).length, 0);
 });
+
+test("git-quoted filenames are decoded before generated paths are matched", () => {
+  const q = '"a/caf\\303\\251 \\"x\\".js" "b/caf\\303\\251 \\"x\\".js"';
+  const diff = `diff --git ${q}\n--- "a/caf\\303\\251"\n+++ "b/caf\\303\\251"\n+${"y".repeat(50)}\n` + small;
+  const sections = diffSections(diff, new Set(['café "x".js']));
+  assert.deepEqual(sections.map((s) => s.path), ['café "x".js', "src/a.ts"]);
+  assert.equal(sections[0].generated, true);
+  const { text, hidden } = withoutBulk(diff, new Set(['café "x".js']));
+  assert.equal(hidden.length, 1);
+  assert.ok(!text.includes("yyyy"));
+});
+
+test("a diff of only quoted filenames still reports its paths", () => {
+  const diff = 'diff --git "a/\\346\\227\\245.txt" "b/\\346\\227\\245.txt"\n+x\n';
+  assert.deepEqual(diffSections(diff).map((s) => s.path), ["日.txt"]);
+});

@@ -14,7 +14,34 @@ export const SIZE_FIX = "run the review on a runner whose CLI sends only the dif
 
 export interface DiffPath { path: string; chars: number; binary: boolean; generated: boolean }
 
-const HEADER = /^diff --git a\/(.+?) b\/(.+)$/;
+const HEADER = /^diff --git (.+)$/;
+
+// Git quotes a path with special characters ("a/caf\303\251.txt"): the
+// quoted text with its C escapes and octal bytes decoded as UTF-8.
+export function unquotePath(s: string): string {
+  if (!/^".*"$/.test(s)) return s;
+  const bytes: number[] = [];
+  const esc: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+  const body = s.slice(1, -1);
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== "\\") { bytes.push(...Buffer.from(c)); continue; }
+    const oct = /^[0-7]{1,3}/.exec(body.slice(i + 1));
+    if (oct) { bytes.push(parseInt(oct[0], 8) & 255); i += oct[0].length; }
+    else if (body[i + 1] in esc) { bytes.push(esc[body[i + 1]]); i++; }
+    else bytes.push(92);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+// The new path of a "diff --git" line's operands, quoted or not.
+export function headerPath(rest: string): string | null {
+  const quoted = /^("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*"|b\/.*)$/.exec(rest) ?? /^(a\/.*?) ("(?:[^"\\]|\\.)*")$/.exec(rest);
+  const second = quoted ? quoted[2] : /^a\/(.+?) b\/(.+)$/.exec(rest)?.[2];
+  if (!second) return null;
+  const path = unquotePath(second);
+  return path.startsWith("b/") ? path.slice(2) : path;
+}
 
 // The limit to use: ATELIER_REVIEW_DIFF_MAX when it is a positive whole
 // number, else the default.
@@ -37,10 +64,11 @@ export function diffSections(diff: string, generated: ReadonlySet<string> = new 
   };
   lines.forEach((line, i) => {
     const m = HEADER.exec(line);
-    if (!m) return;
+    const p = m && headerPath(m[1]);
+    if (p === null || p === undefined) return;
     close(i);
     start = i;
-    path = m[2];
+    path = p;
   });
   close(lines.length);
   return sections;
