@@ -149,7 +149,7 @@ Atelier's own:
   "scan": { "run": ["node", "scripts/privacy-scan.mjs", "--remote", "github", "--branch", "main", "--project", "atelier"], "timeout_seconds": 300 },
   "push": { "remote": "github", "branch": "main" },
   "baseline": { "run": ["node", "cli/atelier.mjs", "sync", "--project", "atelier"], "timeout_seconds": 300 },
-  "studio": { "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main"], "timeout_seconds": 120 }
+  "studio": { "run": ["node", "scripts/studio-ff.mjs", "--remote", "github", "--branch", "main", "--checkout", "/path/to/studio/checkout", "--host", "studio"], "timeout_seconds": 120 }
 }
 ```
 
@@ -260,9 +260,13 @@ It then prints the steps and runs them:
   then reads the remote back and fails unless it holds the new HEAD. Without
   `--push` the ship ends after wrap and prints the command that pushes.
 - **baseline** (`atelier sync`) and **studio** (`scripts/studio-ff.mjs`) run
-  after the push, with `--push`. The Studio script fast-forwards the checkout
-  named by `STUDIO_CHECKOUT` (over ssh when `STUDIO_HOST` is set) to the pushed
-  branch, and leaves a checkout that is dirty, off the branch or diverged as it is.
+  after the push, with `--push`. `atelier sync` pushes the branch to a
+  baseline that holds the whole history the way a flagless `atelier init`
+  does, and does nothing when the baseline already holds the branch's head.
+  The Studio script fast-forwards the checkout named by `--checkout` (over ssh
+  to `--host` when given) to the pushed branch, and leaves a checkout that is
+  dirty, off the branch or diverged as it is. Both come from the ship file, not
+  the caller's environment, and a host that names this Mac is refused.
 
 The first step that fails stops the ship. The message names the step, what
 ran before it and what did not run, and, when the step had spent an
