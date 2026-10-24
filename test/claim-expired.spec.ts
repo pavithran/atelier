@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { bindingsWith, expectNoStrayArtifactsAccess, fakeLog } from "./support/artifacts-fake.ts";
 
 // t705, seen in ikon-weblog/t112: after a build of about ten hours the
 // workspace token had expired, and `atelier claim t112` by the same holder
@@ -10,16 +11,19 @@ import worker from "../src/index.ts";
 // plainly, with the command that recovers. Every credential here is a dummy.
 
 const TOKEN = "claim-expired-owner";
+afterEach(expectNoStrayArtifactsAccess);
+
 const H0 = "0".repeat(40);
 const A = "claude-code/opus-5.5";
 
-function fakeArtifacts(revoke: () => unknown) {
+function fakeArtifacts(revoke: () => unknown, log: () => Promise<unknown> = fakeLog) {
   let n = 0;
   return {
     get: async (repo: string) => ({
       info: async () => ({ remote: `https://git.test/${repo}.git`, defaultBranch: "main" }),
       createToken: async (scope: string) => ({ id: `tok${++n}`, plaintext: `art_secret_${n}`, scope, expiresAt: new Date(Date.now() + 8 * 3600e3).toISOString() }),
       revokeToken: async () => revoke(),
+      log,
       [Symbol.dispose]() {},
     }),
   } as unknown as Artifacts;
@@ -44,7 +48,7 @@ function failingLedger() {
   return { namespace, state };
 }
 
-async function setup(name: string, revoke: () => unknown) {
+async function setup(name: string, revoke: () => unknown, log?: () => Promise<unknown>) {
   const record = { name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record as never, "owner");
@@ -53,7 +57,7 @@ async function setup(name: string, revoke: () => unknown) {
   await L.claim("t1", A);
   await L.setFork("t1", `${name}--t1`, H0, A);
   const ledger = failingLedger();
-  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: fakeArtifacts(revoke), LEDGER: ledger.namespace } as typeof env;
+  const bindings = bindingsWith(env, fakeArtifacts(revoke, log), { ATELIER_TOKEN: TOKEN, LEDGER: ledger.namespace });
   const send = (bearer: string, path: string, body: unknown = {}, headers: Record<string, string> = {}) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", ...headers }, body: JSON.stringify(body),
   }), bindings);
@@ -86,4 +90,27 @@ it("a holder's re-claim that fails inside the server is answered plainly, never 
   // The old token may already be revoked, so the message never promises that nothing changed.
   expect(body.detail).not.toContain("nothing was changed");
   expect(body.detail).toContain("may already be revoked");
+});
+
+it("a step that fails once is retried with a log line, and the claim goes on", async () => {
+  const { setRetryBaseMs } = await import("../src/transient.ts");
+  setRetryBaseMs(1);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    let reads = 0;
+    const log = async () => {
+      if (++reads === 2) throw Object.assign(new Error("service unavailable"), { code: "UNAVAILABLE" });
+      return fakeLog();
+    };
+    const { claim } = await setup("claim-expired-retry", () => true, log);
+    reads = 0;
+    const res = await claim();
+    expect(res.status).toBe(200);
+    expect(reads).toBeGreaterThan(1);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => /read the head of .*attempt 1, retrying.*UNAVAILABLE/s.test(l))).toBe(true);
+  } finally {
+    warn.mockRestore();
+    setRetryBaseMs();
+  }
 });

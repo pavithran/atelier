@@ -24,10 +24,19 @@ export function failureReason({ code, timedOut, before, head }) {
 // that cannot be cleared does not loop forever.
 export const MAX_HARNESS_RERUNS = 3;
 
+// The last 20 non-empty lines of stderr (a trailing newline is no line), each
+// whole: the line count is the only bound.
+export const stderrTail = (stderr) =>
+  String(stderr).replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-20).join("\n");
+
 // How a harness run ended, as a structured fact set where the run ends: the
 // outcome reported to the server reads this, never the human-readable reason.
-export const harnessExitOf = (result) =>
-  result.timedOut ? { kind: "timed-out" } : result.code == null ? { kind: "signalled" } : { kind: "exited", code: result.code };
+export const harnessExitOf = (result) => {
+  const tail = result.stderr ? { stderr: stderrTail(result.stderr) } : {};
+  if (result.timedOut) return { kind: "timed-out" };
+  // A signalled harness has no code but may have printed its diagnostics first.
+  return result.code == null ? { kind: "signalled", ...tail } : { kind: "exited", code: result.code, ...tail };
+};
 
 // The structured exit of a run that failed, or null for one that passed or
 // never ran: the one place every harness site (build, fast build, resolver,
