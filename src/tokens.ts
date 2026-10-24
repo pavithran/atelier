@@ -102,8 +102,9 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
 // offered (t353), and the gateway takes it only for such a job, as it takes
 // a run report (assertRunnerReport). run-skip is its word that it gives up a
 // build or plan job it was offered (t420), taken the same way. fast-take and
-// fast-ready (t589) are fast mode's claim without a fork and the report of
-// the commit it built, judged as a claim and the holder's calls are.
+// fast-ready (t589) are kept as routes only so a runner older than t228 gets
+// the server's not_fast_build refusal, which sends it to claim with a fork,
+// where a missing route would be a bare refusal it cannot read.
 const RUNNER_ITEM = "projects/:project/items/:id";
 
 // The authoritative method/path inventory. Body restrictions remain below;
@@ -279,10 +280,6 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The same command reads the project's regenerate command from its record.
   { name: "baseline-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "baseline-token", jobs: ["build"] },
   { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "failureLines", "merged", "mainHead", "notApplicable", "load", "reuse"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
-  // Fast mode (t589): a build taken without a fork, and the report of the
-  // commit it built. atelier fast take also reads the baseline it clones.
-  { name: "fast-take", method: "POST", path: `${ITEM}/fast-take`, credential: "runner", body: [], via: "cli", command: "fast", jobs: ["build"] },
-  { name: "fast-ready", method: "POST", path: `${ITEM}/fast-ready`, credential: "runner", body: ["commit", "base", "builder", "workspace"], via: "cli", command: "fast", jobs: ["build"] },
   { name: "submit", method: "POST", path: `${ITEM}/submit`, credential: "runner", body: ["summary"], via: "cli", command: "submit", jobs: ["build", "integrate", "refresh"], integrator: true },
   // The review job's helpers, under the reviewer's own agent token.
   { name: "review-claim", method: "POST", path: `${ITEM}/review-claim`, credential: "agent", body: [], via: "cli", command: "review-claim", jobs: REVIEW },

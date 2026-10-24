@@ -3079,42 +3079,10 @@ export function preExistingTask(itemId: string, title: string, review: { by: str
   };
 }
 
-// ── fast builds (t589) ───────────────────────────────────────────────────────
-// On 2026-10-13, in fast mode (decision d14), every runner build still began
-// with a claim that forks main, and the forks failed (Artifacts
-// INTERNAL_ERROR), so the builds were run by hand in local clones. While the
-// project is in fast mode a runner takes a dispatched build without a fork:
-// it builds in a clean clone of main on its machine, commits, and reports
-// the commit as ready to merge. Back in full
-// mode runners claim with forks as before.
-
-type FastBuildItem = Pick<Item, "kind" | "plan" | "dispatch"> & Partial<Pick<Item, "fork" | "base" | "head">>;
-
-// Why a dispatched job is not one a fast build takes, whatever the mode, or
-// null when it is: a plain task's build. A plan job writes a plan, a part
-// builds on its plan's fork, and a merge-main job resolves a fork's landing,
-// so each keeps the claim. So does a task whose fork already holds work from
-// an earlier claim: that claim needs no new fork, and the work is there.
-export function fastJobRefusal(item: FastBuildItem): string | null {
-  if (item.kind === "plan" || item.kind === "part" || item.plan) return "a plan or a part keeps its claim and its plan's fork in fast mode too";
-  const job = item.dispatch?.job ?? "build";
-  if (job !== "build") return `a ${job} job keeps its claim with a fork in fast mode too`;
-  if (item.fork && item.head && item.base && item.head !== item.base) return `its fork holds work from an earlier claim (head ${item.head.slice(0, 12)}), so it is built there; claiming it makes no new fork`;
-  return null;
-}
-
-// Why a dispatched job is not built fast now, or null when it is.
-export function fastBuildRefusal(mode: ProjectMode, item: FastBuildItem): string | null {
-  if (mode.mode !== "fast") return "the project is in full mode, so a build claims with a fork";
-  return fastJobRefusal(item);
-}
-
-export function assertFastBuild(mode: ProjectMode, item: FastBuildItem & Pick<Item, "id">): void {
-  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", `the project is in full mode; ${item.id} is claimed with a fork (atelier claim)`, 409);
-  if (!item.dispatch) throw new RuleError("not_dispatched", `${item.id} is not dispatched; a fast take is a runner's, for a dispatched build`, 409);
-  const why = fastJobRefusal(item);
-  if (why) throw new RuleError("not_fast_build", `${item.id} is not built fast: ${why}`, 409);
-}
+// ── fast-build reports ───────────────────────────────────────────────────────
+// The fork-less fast build (t589) was removed in t228: a build claims with a
+// fork in fast mode too. Reports recorded before then (item.fast_ready) still
+// replay and read as built until their task lands.
 
 // What a fast build reports: the commit, the main it was built on, the
 // builder its Agent line names, and where it is, so the owner's checkout can
@@ -3125,22 +3093,6 @@ export interface FastReady {
   builder: string;
   runner: string | null;
   workspace: string | null;
-}
-export const FAST_READY_PATH_MAX = 1000;
-
-export function fastReady(body: Record<string, unknown>, mode: ProjectMode, item: Pick<Item, "id" | "state" | "owner"> & { runner?: string | null }, actor: string): FastReady {
-  if (mode.mode !== "fast") throw new RuleError("not_fast_mode", `the project is in full mode; push ${item.id} and submit it instead`, 409);
-  if (item.state !== "claimed" || !item.owner || !sameActor(item.owner, actor)) throw new RuleError("not_holder", `${item.id} is not held by ${actor}; a fast take comes before its report`, 409);
-  if (typeof body.commit !== "string" || !SHA.test(body.commit)) throw new RuleError("bad_ready", "the report names the commit built, a full SHA", 400);
-  if (typeof body.base !== "string" || !SHA.test(body.base)) throw new RuleError("bad_ready", "the report names the main it was built on, a full SHA", 400);
-  if (body.commit === body.base) throw new RuleError("nothing_built", `${item.id}'s commit is the main it started from; the build committed nothing`, 409);
-  if (typeof body.builder !== "string" || !body.builder.includes("/") || !validActor(body.builder)) throw new RuleError("bad_ready", "the report names the builder as harness/model, from the commit's Agent line", 400);
-  if (!sameActor(body.builder, actor)) throw new RuleError("bad_ready", `the commit's Agent line names ${body.builder}, not ${actor}, who holds ${item.id}`, 400);
-  const workspace = body.workspace;
-  if (workspace !== undefined && workspace !== null && (typeof workspace !== "string" || !workspace.startsWith("/") || workspace.length > FAST_READY_PATH_MAX || /[\u0000-\u001f\u007f]/.test(workspace))) {
-    throw new RuleError("bad_ready", `the workspace is an absolute path of at most ${FAST_READY_PATH_MAX} characters`, 400);
-  }
-  return { commit: body.commit, base: body.base, builder: body.builder, runner: item.runner ?? null, workspace: typeof workspace === "string" ? workspace : null };
 }
 
 // A later claim, release, handoff, dispatch or close makes a report stale.

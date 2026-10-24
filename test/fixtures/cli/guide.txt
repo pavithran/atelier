@@ -9,7 +9,8 @@ task with exactly one holder. Never edit the project checkout directly.
    A change that depends on a platform limit or runtime behaviour local tests
    cannot reproduce names it in the task, and the project declares a remote
    smoke check run before and after deploy. In fast mode a required criteria
-   review is skipped: the build goes ahead with the criteria as written.
+   review is skipped: the build goes ahead with the criteria as written, and
+   claims with a fork like any build (the fork-less fast build was removed).
 2. Commit your changes, then run `atelier done "summary"` in that workspace.
    It pushes, runs required checks and submits only after they pass. Relay
    its final line to the developer.

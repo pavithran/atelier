@@ -3,7 +3,7 @@ import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./s
 import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { readRetention } from "./retention.ts";
-import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, fastJobRefusal } from "./rules.ts";
+import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
@@ -1539,11 +1539,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // checkout (t226) goes to that runner alone.
         const landings = offer && (offer.jobs ?? []).includes("land") ? await L.landJobs(offer, namesOf(p)) : [];
         for (const b of projectBusy) busy.set(b.runner.toLowerCase(), `${p.name}/${b.id}`);
-        // While the project is in fast mode (t589) a plain build is marked
-        // fast, and the runner takes it without a fork (fast-take); every
-        // other job, and every build in full mode, is claimed as before.
-        const fast = offer && body.why !== true ? await L.mode().then((mode) => mode.mode === "fast", () => false) : false;
-        return [...held, ...waiting, ...reviews, ...refreshes, ...landings].map((item) => ({ project: p.name, item, ...(fast && fastJobRefusal(item) === null ? { fast: true } : {}) }));
+        return [...held, ...waiting, ...reviews, ...refreshes, ...landings].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
@@ -2248,31 +2244,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         throw new RuleError("claim_failed", `${id} is still claimed by ${actor}, but the server could not finish renewing its workspace token and logged why. The old token may already be revoked and a new one may not have reached you, so the workspace's token may not work. Run atelier claim ${id} again, or atelier start ${id} --as ${actor}, which issues a new token`, 503);
       }
     }
-    // In fast mode (t589) a runner takes a dispatched build without a fork
-    // (L.takeFast, src/rules.ts fastBuildRefusal): the claim's holder and
-    // generation, no fork and no write token. The token the take replaces
-    // is revoked and none is recorded, so the runner's Git gateway grants
-    // nothing for it either. The answer carries a read token for the
-    // baseline, the main the runner clones, and the commit identity.
-    case "fast-take": {
-      const { item, generation, replaces } = await L.takeFast(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
-      await revoke(env, item.fork, replaces);
-      if (!await L.recordToken(id, actor, generation, replaces, null)) {
-        throw new RuleError("claim_superseded", `${id} changed holder or was claimed again while this fast take was made`, 409);
-      }
-      const p = await L.project();
-      const branch = await projectBranch(env, p);
-      const b = await mintFor(c, p.repo, "read", branch);
-      return json({
-        item: await L.item(id), fast: true,
-        baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
-        commitIdentity: p.policy.commitIdentity ?? null,
-      });
-    }
-    // The holder of a fast take reports the commit it built as ready for
-    // the developer to merge: { commit, base, builder, workspace }.
+    // The fork-less fast build was removed (t228): a build claims with a fork
+    // in fast mode too. A runner older than that still calls these two, and
+    // the refusal names the claim; the runner reads not_fast_build and
+    // claims with a fork. Nothing is recorded.
+    case "fast-take":
     case "fast-ready":
-      return json(await L.reportFastReady(id, actor, body, !!c.token));
+      throw new RuleError("not_fast_build", `${id} is not built fast: the fork-less fast build was removed; claim ${id} with a fork (atelier claim)`, 409);
     case "owner-port-token": {
       requireOwner(env, actor);
       const { item, generation, replaces } = await L.reserveOwnerPort(id, actor);
@@ -4540,11 +4518,8 @@ export default {
         // A claim refused a runner is kept on the task (noteClaimRefusal), so
         // status and show name it (t420): the runner passes the task by
         // until it changes, and said so only in its own log. Recording it
-        // never hides the refusal itself. A fast take (t589) is a claim
-        // without a fork and is judged the same way, but a take refused only
-        // because the mode or the job is not fast is no refusal: the runner
-        // claims with a fork instead.
-        const claiming = parts[5] === "claim" || parts[5] === "fast-take";
+        // never hides the refusal itself.
+        const claiming = parts[5] === "claim";
         const claimRunner = req.method === "POST" && ref && parts[3] === "items" && /^t[0-9]+$/.test(parts[4] ?? "") && claiming && parts.length === 6
           ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
         // A refusal a runner token would be answered runner_forbidden for,
@@ -4557,7 +4532,7 @@ export default {
           // A claim that lost the race to a hold (held, t540) is no
           // refusal: the queue stops offering the task while the hold
           // stands, and offers it again once it clears.
-          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held" || rule.code === "not_fast_mode" || rule.code === "not_fast_build") return;
+          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held") return;
           const forbidden = !!token?.runner && rule.status === 403;
           try {
             const held = await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined, forbidden);
@@ -4587,7 +4562,7 @@ export default {
               // them now, recorded first in the project's one record of them
               // (t540), as the queue, atelier queue and atelier stuck judge.
               const polls = claiming ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : undefined;
-              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, claiming, polls); }
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, claiming || parts[5] === "fast-take", polls); }
               catch (error) { throw await noteRefusal(error) ?? error; }
             }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.

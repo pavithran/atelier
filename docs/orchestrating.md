@@ -1080,47 +1080,24 @@ mode stands.
 
 ### Runner builds in fast mode
 
-A build that begins with a claim forks main, and in fast mode the forks are
-what fails. On 2026-10-13 at 10:35 EDT, in fast mode (decision d14), every
-runner build still began with such a claim, the forks of cloudflare-git
-failed (Artifacts INTERNAL_ERROR), and the builds were run by hand in local
-clones (PAVI: aren't we in fast mode? why are we creating forks?). So while
-the project is in fast mode a runner takes a dispatched build without a
-fork:
+A runner's build in fast mode claims with a fork, as every build does. The
+fork-less build (t589), which took a dispatched build with `atelier fast
+take` and reported its commit with `atelier fast ready`, was removed in
+t228: forks work since t772, and t18 and t181 handle a stuck one. Fast mode
+is a flag on the one path. Its gates are unchanged: the criteria review is
+skipped, the independent review is owed after the merge, and a merge on a
+clear gate lands.
 
-- The queue marks a plain build `fast` (src/rules.ts `fastBuildRefusal`).
-  A plan job, a part, a merge-main job and a task whose fork already holds
-  work keep the claim; the claim of the last needs no new fork.
-- The runner calls `atelier fast take tN` in place of `atelier claim`
-  (POST items/tN/fast-take). The server records the holder as a claim does,
-  with the same checks and an `item.claimed` event, then `item.fast_taken`.
-  It makes no fork and records no write token, and answers a read token
-  for the baseline. The CLI clones main with it into the runner's cache
-  (`fast/PROJECT/tN`), keeps no remote, and writes the project's commit
-  identity.
-- The harness builds and commits there with its Agent line, from the same
-  brief a build gets plus a "Fast mode" section.
-- The runner calls `atelier fast ready tN` in the clone (POST
-  items/tN/fast-ready): the commit, the main it was built on, the builder
-  its Agent line names and the clone's path. The task stays claimed by its
-  builder and its dispatch is cleared, so no runner takes it again. Nothing
-  is pushed, checked or submitted; the developer merges and records it.
-- A run that committed but could not report keeps its claim; the next take
-  of the same dispatch (the runner passes `--dispatch`, the assignment's
-  `at`) keeps the clone and reports the commit without the harness. A run
-  that committed nothing releases the task.
-- A fast build's commits exist only in its clone, so a take never removes
-  one. When the dispatch, the holder or the task differs, or the clone is
-  not a resumable one, the take moves it aside to
-  `fast/PROJECT/tN.parked-TIME`, says so, and builds in a fresh clone. The
-  developer removes parked clones by hand once their work is landed or
-  dropped.
-
-A fast take the server refuses because the project is back in full mode
-falls back to the claim. Back in full mode runners claim with forks, push
-and submit as before. The routes are the named capability
-`runners.fast-build.v1`; `atelier fast take`, `ready` and `status` ask for
-it.
+- The queue marks no build fast. The routes `POST items/tN/fast-take` and
+  `fast-ready` remain only for a runner older than t228: each answers 409
+  `not_fast_build` and records nothing, and that runner falls back to the
+  claim with a fork.
+- The server writes no `item.fast_taken` or `item.fast_ready`. Events
+  already recorded still replay: a standing `item.fast_ready` shows its task
+  as built, in `atelier fast status` as a `tN=SHA` line and on the task
+  page, until the task lands. Record its merge as before.
+- The route group is the named capability `runners.fast-build.v1`, kept so
+  `atelier fast status` can name what it reads.
 
 There is no command that lands a batch. The developer merges a reported
 build in their own checkout of main, runs the checks they trust, publishes

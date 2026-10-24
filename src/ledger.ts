@@ -30,7 +30,7 @@ import {
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, fastFixTask, preExistingTask, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
-  assertFastBuild, fastReady, standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
+  standingFastReady, stageOf, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, type RecordedMerge,
   forkPreparationView, type ForkPreparation, type ForkPreparationView,
 } from "./rules";
@@ -906,8 +906,7 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
     // The claim generation a claim reserved and has not completed (t653):
     // set where a claim reserves its generation (assignOwner), cleared when
-    // the claim records its token (recordToken, recordRunnerGit), when a fast
-    // take completes it with no workspace (takeFast), and by any change of
+    // the claim records its token (recordToken, recordRunnerGit), and by any change of
     // owner, which supersedes it (update: release, handoff, unclaim, abandon,
     // merge). A ledger from before holds none: no claim is taken as in flight.
     if (!columns.includes("claim_pending")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_pending INTEGER`);
@@ -6014,39 +6013,9 @@ export class Ledger extends DurableObject<Env> {
     return e ? e.data as unknown as FastReceipt : null;
   }
 
-  // ── fast builds (t589, src/rules.ts fastBuildRefusal) ──────────────────────
-  // While the project is in fast mode a runner takes a dispatched build
-  // without a fork. The take is a claim in all but the fork and the write
-  // token: the same checks (the dispatch, the role, the standing, the
-  // criteria review, the runner's job), the same holder and generation and
-  // the same item.claimed event, then item.fast_taken. The caller makes no
-  // fork, revokes the token the claim replaces and records none.
-  takeFast(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; generation: number; replaces: string | null } {
-    const item = this.item(id);
-    assertNotTerminal(item);
-    assertFastBuild(this.mode(), item);
-    const { item: taken, generation, replaces } = this.claim(id, actor, runner, proved, runnerToken);
-    // A fast take makes no fork and records no token: it is complete here.
-    this.sql.exec(`UPDATE items SET claim_pending = NULL WHERE id = ? AND claim_pending = ?`, id, generation);
-    this.log(id, actor, "item.fast_taken", { ...(runner ? { runner: runner.runner } : {}), mode: "fast" }, new Date().toISOString(), proved);
-    return { item: taken, generation, replaces };
-  }
-
-  // The holder reports the commit its fast build made. The task stays
-  // claimed by its builder until the owner's batch lands it (landedFast), and
-  // its dispatch is cleared, so no runner is offered the build again; the
-  // dispatch stays in the record as its item.dispatched event.
-  reportFastReady(id: string, actor: string, body: Record<string, unknown>, proved = false): { item: Item; ready: FastReady } {
-    const item = this.item(id);
-    assertNotTerminal(item);
-    const ready = fastReady(body, this.mode(), item, actor);
-    const at = new Date().toISOString();
-    this.ctx.storage.transactionSync(() => {
-      this.update(id, { dispatch: null }, at);
-      this.log(id, actor, "item.fast_ready", { ...ready }, at, proved);
-    });
-    return { item: this.item(id), ready };
-  }
+  // ── fast-build reports ────────────────────────────────────────────────────
+  // The fork-less fast build was removed (t228), and the server writes no
+  // item.fast_taken or item.fast_ready. Recorded ones still replay.
 
   // Every open task's standing fast-build report, oldest first: what atelier
   // fast status lists as tN=SHA.
