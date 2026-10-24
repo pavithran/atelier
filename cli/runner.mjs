@@ -2059,7 +2059,7 @@ export async function runTask(assignment, config, name, io) {
       io.log(`skipped: ${error.message}`);
     } else if (!claimed && error.claimRefused) {
       state = { ...state, claimRefused: true };
-      io.log(`claim refused: ${error.message}`);
+      io.log(claimRefusedLine(error.message));
     } else if (error.providerLimit && claimed) {
       // The commits stay in the workspace, which the next run resets only to
       // its own head; the claim goes back so the same work resumes after the reset.
@@ -2292,7 +2292,7 @@ export async function runFastBuild(assignment, config, name, io) {
       io.log(`skipped: ${error.message}`);
     } else if (!claimed && error.claimRefused) {
       state = { ...state, claimRefused: true };
-      io.log(`claim refused: ${error.message}`);
+      io.log(claimRefusedLine(error.message));
     } else if (claimed && state.head) {
       // The commit is in the clone; the next take keeps it and reports it.
       io.log(`claim preserved: ${String(state.head).slice(0, 8)} is committed in ${workspace} and not yet reported`);
@@ -3386,7 +3386,7 @@ export async function runIntegrate(assignment, config, name, io) {
     // own is required, say) holds nothing to release and is not the job's
     // failure; the loop's refused set keeps this head, as for a build.
     if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
-    else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
     else io.log(`failed: ${error.message}`);
     // A merge pushed but neither integrated nor reported goes back off the
     // branch, so the next run starts from the plan's integrated head.
@@ -3511,7 +3511,7 @@ export async function runRefresh(assignment, config, name, io) {
   } catch (error) {
     // As in runIntegrate: a refused claim is the caller's, not the job's.
     if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
-    else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
     else io.log(`failed: ${error.message}`);
     // A merge pushed but neither recorded nor reported goes back off the branch.
     if (pushed && !released) {
@@ -3656,7 +3656,15 @@ export function notReadyGiveUp(task, entry) {
 // claim. It is not refused for good, so the runner keeps no refusal of it:
 // the queue stops offering the task while the hold stands and offers it
 // again once it clears.
-export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m.test(state.reason ?? "");
+// It is a wait (t241): no failed run, no failure counted and no run
+// report, so it is logged as one, and a runner run with --once that ends on
+// it does not exit as failed. Any other refused claim, runner_forbidden
+// among them, is logged and kept as a refusal.
+const HELD_ANSWER = /^atelier: held: /m;
+export const lostToHold = (state) => !!state.claimRefused && HELD_ANSWER.test(state.reason ?? "");
+export const claimRefusedLine = (message) => HELD_ANSWER.test(String(message ?? ""))
+  ? `claim held, waiting: ${oneLine(String(message)).trim()}; it is claimed again at a later poll that offers it`
+  : `claim refused: ${message}`;
 
 // Why the runner's loop passes an offered task by, in words with what lets it
 // through, or null when it takes it: a job its offer does not name (jobOf), a
@@ -3810,7 +3818,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (error.detail) state.detail = error.detail;
     if (!claimed && error.notReady != null) io.log(`fork not ready: ${error.notReady}`);
     else if (!claimed && error.skipped) io.log(`skipped: ${error.message}`);
-    else if (!claimed && error.claimRefused) io.log(`claim refused: ${error.message}`);
+    else if (!claimed && error.claimRefused) io.log(claimRefusedLine(error.message));
     else io.log(`failed: ${state.reason}`);
   } finally {
     // The claim is released either way: a valid proposal clears the plan job
@@ -4781,7 +4789,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         if (!ranTask && reloading && !controller.signal.aborted) await reloadIfDeployed();
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
-      if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }
+      if (args.once) { if (state.phase === "failed" && !lostToHold(state) && !controller.signal.aborted) process.exitCode = 1; break; }
       await wait(30_000, undefined, { signal: controller.signal }).catch((error) => { if (error.name !== "AbortError") throw error; });
     }
   } finally {
