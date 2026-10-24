@@ -21,7 +21,10 @@ export const DEFAULT_JOBS = ["build", "plan", "merge-main", "merge-main-task", "
 // is taken only by a runner whose config names it, as review is.
 // The criteria-review job (t438) reviews a task's acceptance criteria before
 // its build, through the same {verdict_file} a review writes.
-const JOB_NAMES = new Set([...DEFAULT_JOBS, "review", "criteria-review", "task-resolve"]);
+// The land job (t226) runs atelier land for a queued task in the project's
+// registered checkout; a runner offers it only with a config that names it,
+// and the server sends it only for a project whose checkout the runner holds.
+const JOB_NAMES = new Set([...DEFAULT_JOBS, "review", "criteria-review", "task-resolve", "land"]);
 
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
@@ -185,7 +188,7 @@ export function parseConfig(json, { configPath, env } = {}) {
       jobs = [...new Set(value.jobs.map((j) => j.trim()))];
       for (const job of jobs) {
         if (job === "integrate" || job === "refresh" || job === "task-refresh") errors.push(`jobs cannot list "${job}": the integrate, refresh and task-refresh jobs are the integrator's alone (atelier runner --integrate, which takes no config)`);
-        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan, review, criteria-review and task-resolve`);
+        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan, review, criteria-review, task-resolve and land`);
       }
     }
   }

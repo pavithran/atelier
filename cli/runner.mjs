@@ -14,6 +14,7 @@ import { killTree, runGroup, treeGroups } from "./group.mjs";
 import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
 import { SLOT_WRAPPER } from "./load.mjs";
 import { pairedProjectCommit } from "./fresh.mjs";
+import { runLandJob } from "./land-queue.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
@@ -2402,6 +2403,12 @@ export function missingKey(task) {
 // How often a runner reads the baseline's head for the reviews it keeps
 // waiting on a missing merge commit (t591): a review is claimed again once
 // the head has moved, and read no more often than this.
+// A land job (t226) runs as long as a landing may: the review wait (an
+// hour) and the queue for the lease (three hours) are the command's own. A
+// landing that failed is tried again after this many polls.
+export const LAND_JOB_TIMEOUT_MS = 5 * 60 * 60_000;
+export const LAND_RETRY_POLLS = 20;
+
 export const MISSING_RECHECK_MS = 5 * 60_000;
 
 // The capability a server takes the infrastructure_miss run report under
@@ -4059,7 +4066,7 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload, harnessReady: readyCheck = harnessReady }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -4076,6 +4083,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     ...(integrating ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] } : offerFrom(config, args.name)),
     started: new Date().toISOString(),
   };
+  // The land job (t226) is offered for the projects whose registered
+  // checkout this machine holds, and for those the runner serves.
+  const landCheckouts = () => checkouts.filter((name) => !served || served.includes(name));
+  if (offer.jobs.includes("land")) offer.checkouts = landCheckouts();
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -4446,6 +4457,44 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     },
     ...taskIO,
   };
+  // A land job (t226): `atelier land ID` run in the project's registered
+  // checkout, as its own process, so the landing lease and the landing
+  // journal are the command's. The runner's own token is left out of its
+  // environment: the command lands as the developer. A runner that is
+  // stopped ends the landing, which releases its lease; the journal lets the
+  // next run of the job resume.
+  const runLandTask = async (task) => {
+    const { project, item } = task, dir = checkouts.includes(project) ? checkoutOf?.(project) : null;
+    if (!dir) return { phase: "failed", refused: true, reason: `this runner holds no registered checkout of ${project}` };
+    const git = async (argv) => {
+      const r = await executeChild(["git", ...argv], { cwd: dir, capture: true, captureError: true, timeoutMs: 30_000, signal: controller.signal }).catch(() => ({ code: null, output: "" }));
+      return { code: r.code, output: r.output ?? "" };
+    };
+    const env = { ...process.env }; delete env.ATELIER_RUNNER_NAME;
+    const result = await runLandJob(item.id, {
+      checkout: dir, git, hasJournal: () => landJournal(dir),
+      baselineHead: async () => (baselineHead ? baselineHead(project, task.actor, controller.signal).catch(() => null) : null),
+      samePaired: async (here, base) => {
+        const gitDir = await git(["rev-parse", "--absolute-git-dir"]);
+        return gitDir.code === 0 && pairedProjectCommit(gitDir.output.trim(), base) === here;
+      },
+      land: async () => {
+        const r = await executeChild([process.execPath, fileURLToPath(new URL("./atelier.mjs", import.meta.url)), "land", item.id, "--project", project], { cwd: dir, env, capture: true, captureError: true, signal: controller.signal, timeoutMs: LAND_JOB_TIMEOUT_MS });
+        return { code: r.code, output: [r.output, r.stderr].filter(Boolean).join("\n"), timedOut: r.timedOut };
+      },
+    }).catch((error) => ({ ok: false, refused: false, reason: `landing ${item.id} failed: ${error.message}` }));
+    if (result.ok) return { phase: "done" };
+    return { phase: "failed", refused: result.refused, reason: result.reason };
+  };
+  // The reasons already said for a land job, by task, so a failure that
+  // repeats is told once; and the poll each failed job is tried again on.
+  const landSaid = new Map(), landDue = new Map();
+  const landOutcome = (task, state) => {
+    const key = taskKey(task);
+    if (state.phase !== "failed") { landSaid.delete(key); landDue.delete(key); io.log(`landed ${task.project}/${task.item.id}`); return; }
+    if (landSaid.get(key) !== state.reason) { landSaid.set(key, state.reason); io.log(`${task.project}/${task.item.id}: ${state.refused ? "refused: " : ""}${state.reason}`); }
+    landDue.set(key, polls + (state.refused ? 1 : LAND_RETRY_POLLS));
+  };
   try {
     // The home runner refuses at start when the server's routes are older
     // than the ones it will call, as atelier land does: the server's
@@ -4484,6 +4533,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       // The offer says the same projects, so routing never picks this runner
       // for work in one it leaves out.
       if (served) offer.projects = [...served];
+      if (offer.jobs.includes("land")) offer.checkouts = landCheckouts();
       for (const p of result.lacking) line(`${p} is in the config but this runner's token does not serve it; it is left out`);
       if (served && !served.length) line("the config and the token name no project in common; nothing will be offered");
     }
@@ -4607,7 +4657,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         if (controller.signal.aborted) break;
         let ranTask = false;
         const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, sizeBlocked, poll: polls, nowMs: now() });
-        for (const task of ordered.filter((task) => passBy(task) === null)) {
+        for (const task of ordered.filter((task) => passBy(task) === null && polls >= (landDue.get(taskKey(task)) ?? 0))) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
           // A harness the readiness check dropped from the offer is not served
@@ -4630,7 +4680,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // than RUNNER_GONE_MS would orphan its own claim. The same tick
           // runs the readiness check, which does its probes once per
           // READY_RECHECK_MS, so a long job does not delay it (t195).
-          state = await withHeartbeat(() => task.item.dispatch?.job === "plan"
+          state = await withHeartbeat(() => task.item.dispatch?.job === "land"
+            ? runLandTask(task)
+            : task.item.dispatch?.job === "plan"
             ? runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
               ? runReview(task, config, offer.runner, io)
@@ -4646,6 +4698,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                       ? runTaskRefresh(task, config, offer.runner, io)
                     : runTask(task, config, offer.runner, io), async () => { await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
+          if (task.item.dispatch?.job === "land") { landOutcome(task, state); continue; }
           if (state.providerLimit) {
             pauseHarness(task, state);
             if (args.once) break;

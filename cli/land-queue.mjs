@@ -201,3 +201,57 @@ export function summarise({ results, stoppedBy, held }) {
   const status = stoppedBy ? 128 + osConstants.signals[stoppedBy] : bad || held ? 1 : 0;
   return { line: `${results.length} task${results.length === 1 ? "" : "s"}: ${parts.join(", ")}.`, status };
 }
+
+// ── the land job (t226) ────────────────────────────────────────────────────
+
+// How many lines of a landing's output a failure report keeps.
+const LOG_TAIL_LINES = 12;
+
+// The step a failed landing stopped at, from the message its step runner
+// ends with ("atelier merge failed (exit 1)"); "land" where it names none.
+export function failedStep(output) {
+  const found = [...String(output ?? "").matchAll(/atelier ([a-z][a-z-]*) failed/g)].at(-1);
+  return found ? found[1] : "land";
+}
+
+// The report of a landing that failed: the step and the tail of its log.
+export function failureReport(id, output) {
+  const tail = String(output ?? "").split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-LOG_TAIL_LINES).join("\n");
+  return `landing ${id} failed at ${failedStep(output)}${tail ? `:\n${tail}` : "."}`;
+}
+
+// One land job, run by a runner that holds the project's registered
+// checkout: the same flow as `atelier land ID`, run in that checkout as a
+// process of its own, so the landing lease and the landing journal
+// (docs/landing.md) are the ones the command keeps. A run that was killed
+// leaves its journal, and the next run of the job resumes from it.
+//
+// Before a new landing starts, the checkout must be clean and on the commit
+// the baseline names; either refuses the job with the reason, and nothing
+// runs. With a journal present the checkout holds the landing's own merge,
+// so it is the command that judges it. io:
+//   checkout     the registered checkout's folder
+//   git          async (args) => { code, output }, run in the checkout
+//   baselineHead async () => the baseline's head commit, or null
+//   hasJournal   () => whether a landing journal exists for the checkout
+//   land         async () => { code, output, timedOut } of `atelier land ID`
+// Resolves { ok: true } or { ok: false, refused, reason } where refused is
+// true when the job was not started.
+export async function runLandJob(id, io) {
+  const { checkout, git, baselineHead, hasJournal, land } = io;
+  if (!hasJournal()) {
+    const status = await git(["status", "--porcelain"]);
+    if (status.code !== 0) return { ok: false, refused: true, reason: `the checkout ${checkout} cannot be read: git status exited ${status.code}` };
+    const dirty = status.output.split("\n").filter(Boolean);
+    if (dirty.length) return { ok: false, refused: true, reason: `the checkout ${checkout} has uncommitted changes (${dirty.slice(0, 5).map((l) => l.slice(3)).join(", ")}${dirty.length > 5 ? `, and ${dirty.length - 5} more` : ""}); commit or set them aside, and the landing of ${id} runs on the next poll` };
+    const head = await git(["rev-parse", "HEAD"]);
+    const base = await baselineHead();
+    if (head.code !== 0 || !base) return { ok: false, refused: true, reason: `main in the checkout ${checkout} cannot be compared with the baseline (${head.code !== 0 ? "its HEAD cannot be read" : "the baseline's head cannot be read"})` };
+    const here = head.output.trim();
+    if (here !== base && !await io.samePaired?.(here, base)) return { ok: false, refused: true, reason: `main in the checkout ${checkout} is at ${here.slice(0, 8)}, not at the baseline's ${base.slice(0, 8)}; run atelier sync there, and the landing of ${id} runs on the next poll` };
+  }
+  const result = await land();
+  if (result.code === 0 && !result.timedOut) return { ok: true };
+  const output = result.timedOut ? `${result.output}\natelier land failed (timed out)` : result.output;
+  return { ok: false, refused: false, reason: failureReport(id, output) };
+}

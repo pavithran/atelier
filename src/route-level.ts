@@ -146,6 +146,7 @@ export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]
   refresh: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   "task-refresh": ["projects.commit-identity.v1", "refresh.tasks.v1", "runners.run-skip.v1"],
   "task-resolve": ["projects.commit-identity.v1", "refresh.tasks.v1", "runners.run-skip.v1"],
+  land: ["land.runner-job.v1", "runners.scoped-token.v1"],
 };
 
 export const requiredForJobs = (jobs: readonly string[]): string[] => [...new Set(jobs.flatMap((job) => JOB_CAPABILITIES[job] ?? []))];
