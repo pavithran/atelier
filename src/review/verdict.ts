@@ -24,7 +24,7 @@ export type Severity = Finding["severity"];
 // (t457): read only when the reply was asked for CHECK lines
 // (VerdictOptions.checks), empty otherwise.
 export type ParsedVerdict =
-  | { ok: true; verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[] }
+  | { ok: true; verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[]; unmet?: number[] }
   | { ok: false; error: string };
 
 // What a reply was asked for beyond the verdict, summary and findings.
@@ -41,7 +41,10 @@ export type ParsedVerdict =
 // check confirmed labelled unverified. A rejection left with no blocking
 // finding is then an approval, and read as one: it needs every CRITERION
 // line, met. The reply the reviewer wrote is not changed, and an approval
-// stays an approval.
+// stays an approval. The exception (t238) is a rejection whose reply declares
+// a criterion unmet: it stays a rejection, with the unmet criteria in `unmet`
+// and no blocking finding, since an approval cannot carry an unmet criterion
+// and releasing the request would only have it answered again.
 //
 // `counted` (t718) is set for a code review, whose brief asks for a count line
 // (replyFormat's `counted`): the reply must give exactly one BLOCKING: N line,
@@ -194,7 +197,7 @@ const SEVERITIES: Record<string, Severity> = {
 // must belong to a parsed object, or the reply is refused.
 const JSON_ATTEMPTS = 100;
 
-type Statement = { verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[] };
+type Statement = { verdict: "approve" | "reject"; summary: string; findings: Finding[]; checks: PostDeployCheck[]; unmet?: number[] };
 class Refusal extends Error {}
 function refuse(message: string): never {
   throw new Refusal(message);
@@ -234,6 +237,7 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   for (const match of reply.matchAll(/\b(APPROVED?|REJECT(?:ED)?)\b/g)) verdicts.add(match[1].startsWith("A") ? "approve" : "reject");
   if (verdicts.size > 1) refuse("the reply says both APPROVE and REJECT, so it is not a verdict");
   let verdict = [...verdicts][0];
+  let unmet: number[] | undefined;
 
   if (json.length && lines.findings.length) refuse("the reply gives findings both as JSON and as FINDING lines");
   if (json.length && lines.checks.length) refuse("the reply gives checks both as JSON and as CHECK lines");
@@ -261,10 +265,14 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   }
   if (verdict === "reject" && options.settled) {
     findings = [...options.settled];
-    if (!findings.some((f) => f.severity === "blocking")) verdict = "approve";
+    if (!findings.some((f) => f.severity === "blocking")) {
+      const declared = criteria ? [...lines.criteria].filter(([n, state]) => state === "unmet" && n <= criteria).map(([n]) => n).sort((a, b) => a - b) : [];
+      if (declared.length) unmet = declared;
+      else verdict = "approve";
+    }
   }
   const blocking = findings.filter((f) => f.severity === "blocking").length;
-  if (verdict === "reject" && !blocking) refuse("a rejection must name at least one blocking finding; every other finding is a follow-up");
+  if (verdict === "reject" && !blocking && !unmet) refuse("a rejection must name at least one blocking finding; every other finding is a follow-up");
   if (verdict === "approve" && blocking) refuse(`an approval cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`);
   // A criterion may be deferred only when the criteria review flagged it as
   // a check after deploy (options.deferred): on any other, deferred is a
@@ -288,7 +296,7 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
     if (missing.length) refuse(`an approval needs a CRITERION line for each of the ${criteria} acceptance criteria: ${missing.length === 1 ? "criterion" : "criteria"} ${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} none`);
     if (unmet.length) refuse(`an approval cannot declare ${unmet.length === 1 ? "criterion" : "criteria"} ${unmet.join(", ")} unmet; an unmet criterion is a correctness fault, so reject with a blocking finding`);
   }
-  return { verdict, summary, findings, checks };
+  return { verdict, summary, findings, checks, ...(unmet ? { unmet } : {}) };
 }
 
 // Line breaks become \n. C0 and C1 controls other than tabs become spaces,

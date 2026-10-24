@@ -93,3 +93,73 @@ it("a review request whose reviewer no live runner offers for 15 minutes is a st
   // Without the offers nothing is known, so nothing is reported.
   expect(report(60, null)).toEqual([]);
 });
+
+it("a skip for another reason is not described as two releases without a verdict (t238)", async () => {
+  const name = "review-skipped-other";
+  const { L, ids } = await asked(name, [GPT]);
+  const [request] = await L.reviewWaiting();
+  await L.recordReviewSkip(ids[0], request.request!, request.head!, "home:astra", GPT, "no reviewer credentials");
+  const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
+  const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");
+  expect(entries).toHaveLength(1);
+  expect(entries[0].reason).toContain("no reviewer credentials");
+  expect(entries[0].reason).not.toContain("released it twice");
+});
+
+it("an open review request a runner skipped after two releases is a stuck episode naming the reason and the decision (t238)", async () => {
+  const name = "review-skipped-stuck";
+  const { L, ids } = await asked(name, [GPT]);
+  const [request] = await L.reviewWaiting();
+  const note = "the review of t1 at 11111111 was released 2 times without a verdict (last: harness timed out)";
+  await L.recordReviewSkip(ids[0], request.request!, request.head!, "home:astra", GPT, note);
+  const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
+  const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ subject: ids[0], reason: expect.stringContaining("harness timed out") });
+  expect(entries[0].reason).toContain("home:astra");
+  expect(entries[0].recovery).toContain(`review-request ${ids[0]} --reviewer H/M`);
+  expect(entries[0].recovery).toContain(`review-withdraw ${ids[0]} --request ${request.request}`);
+  expect(causeOf(entries[0])).toContain("harness timed out");
+});
+
+// A review released without a verdict twice at one head (t238, t191's review at
+// 99df3c67 was claimed and released four times) is stopped on the request
+// itself, and each release's successor carries the stop.
+async function releaseOnce(L: ReturnType<typeof ledger>, id: string, note: string) {
+  const [request] = await L.reviewWaiting();
+  await L.claimReview(id, GPT, RUNNER);
+  await L.releaseReview(id, GPT, note, false, request.request!);
+  return (await L.reviewWaiting())[0];
+}
+
+it("two timeouts at one head stop the review on its successor, which no claim, queue or report overlooks (t238)", async () => {
+  const name = "review-stopped-timeouts";
+  const { L, ids } = await asked(name, [GPT]);
+  const first = await releaseOnce(L, ids[0], "harness timed out");
+  expect(first.stopped).toMatchObject({ reason: "timeout", count: 1 });
+  expect(await L.claimReview(ids[0], GPT, RUNNER)).toBeTruthy();
+  await L.releaseReview(ids[0], GPT, "harness timed out", false, first.request!);
+  const live = (await L.reviewWaiting())[0];
+  expect(live.request).not.toBe(first.request);
+  expect(live.stopped).toMatchObject({ reason: "timeout", count: 2, head: live.head });
+  // The stop is in the ledger, not in a runner: another claim is refused.
+  let refused: { code?: string } | null = null;
+  try { await L.claimReview(ids[0], GPT, RUNNER); } catch (error) { refused = error as { code?: string }; }
+  expect(refused).toMatchObject({ code: "review_stopped" });
+  expect(await L.liveReviewRequest(ids[0], live.head!)).toMatchObject({ request: live.request, stopped: expect.stringContaining("narrow the criteria, move the findings to a task, or override") });
+  const snapshot = await runInDurableObject(L, async (instance: Ledger) => instance.stuckSnapshot());
+  const entries = stuckReport(name, "https://atelier.test", new Date(Date.now() + 60_000), reportLimits(), snapshot, null, [], []).entries.filter((e) => e.kind === "review-skipped");
+  expect(entries).toHaveLength(1);
+  expect(entries[0].reason).toContain(`review request ${live.request}`);
+  expect(entries[0].reason).toContain("the harness timed out");
+  expect(entries[0].reason).toContain("override with the developer's word");
+});
+
+it("a provider limit and an interrupt build no stop, and the two reasons count together (t238)", async () => {
+  const name = "review-stopped-other";
+  const { L, ids } = await asked(name, [GPT]);
+  expect((await releaseOnce(L, ids[0], "codex usage limit until 2026-10-24T09:00:00.000Z: limit")).stopped).toBeUndefined();
+  expect((await releaseOnce(L, ids[0], "interrupted")).stopped).toBeUndefined();
+  expect((await releaseOnce(L, ids[0], "harness timed out")).stopped).toMatchObject({ reason: "timeout", count: 1 });
+  expect((await releaseOnce(L, ids[0], "no VERDICT line")).stopped).toMatchObject({ reason: "no-verdict", count: 2 });
+});
