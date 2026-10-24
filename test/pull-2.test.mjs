@@ -119,9 +119,15 @@ test("sync of a full-history project is refused while main is behind the baselin
   assert.deepEqual(refused.seen.map((s) => s.route), ["POST /api/projects/demo/baseline-token"], "nothing but the read token is asked for");
   assert.equal((await run(t, f, a, ["pull", "--project", "demo"])).code, 0);
   const current = await run(t, f, a, ["sync", "--project", "demo"]);
-  assert.notEqual(current.code, 0);
-  assert.match(current.output, /baseline holds its whole history; atelier init pushes new commits to it/);
+  assert.equal(current.code, 0, current.output);
   assert.ok(!current.seen.some((s) => s.route.startsWith("PUT ")), "no policy is sent once main holds the baseline");
+  // The commits go to the whole-history baseline the way atelier init sends them (t242).
+  assert.equal(f.git(f.bare, "rev-parse", "main"), f.git(dir, "rev-parse", "HEAD"));
+  assert.match(current.output, /baseline now holds main/);
+  const again = await run(t, f, a, ["sync", "--project", "demo"]);
+  assert.equal(again.code, 0, again.output);
+  assert.match(again.output, /baseline already holds main/);
+  assert.ok(!again.seen.some((s) => s.body?.scope === "write"), "an up-to-date baseline asks for no write token");
 });
 
 
