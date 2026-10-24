@@ -1989,7 +1989,8 @@ export class Ledger extends DurableObject<Env> {
   // head) stays; the old model is kept in the note and the events.
   private rerouteQueued(id: string, head: string, d: Dispatch, verdict: RerouteVerdict, at: string): void {
     const to = verdict.to!;
-    const next: Dispatch = { ...d, agent: to.agent, model: to.model, by: "atelier", at, note: `Rerouted from ${verdict.from} by the stage tick. ${d.note}`.slice(0, 500) };
+    const built = this.standingDispatch({ to: d.to, agent: to.agent, model: to.model, note: `Rerouted from ${verdict.from} by the stage tick. ${d.note}`.slice(0, 500), job: d.job, head: d.head, overlapOk: d.overlapOk }, "build", "atelier", at);
+    const next: Dispatch = { ...d, ...built };
     this.setDispatch(id, next, at);
     this.log(id, "atelier", "item.dispatched", { to: next.to, agent: next.agent, model: next.model, note: next.note, rerouted: true, ...(next.job ? { job: next.job, head: next.head } : {}) }, at);
     this.log(id, "atelier", "stage.rerouted", { stage: "queued", head, from: verdict.from, to: `${to.agent}/${to.model}`, note: verdict.note }, at);
