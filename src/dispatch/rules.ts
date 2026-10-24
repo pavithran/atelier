@@ -33,12 +33,15 @@ export interface Dispatch {
   // "prereview" is a pre-review's dispatch (t524,
   // src/dispatch/prereview.ts), stored with the pre-review like a review's
   // and offered only to a runner whose offer lists the job.
+  // "land" is a landing queued for a runner that holds the project's
+  // registered checkout (t226): the queue makes it from the ledger's land
+  // jobs, and the runner runs atelier land for the task there.
   // "task-refresh" and "task-resolve" are the task refresh's jobs (t462,
   // src/refresh/): the integrator merges main into a task's head in a
   // workspace of its own, and a resolver resolves the mechanical conflicts
   // that merge left. Neither is stored on the item: the queue makes them
   // from the refresh targets, and the lease they run under is the Ledger's.
-  job?: "plan" | "review" | "prereview" | "criteria-review" | "integrate" | "refresh" | "merge-main" | "task-refresh" | "task-resolve";
+  job?: "plan" | "review" | "prereview" | "criteria-review" | "integrate" | "refresh" | "merge-main" | "task-refresh" | "task-resolve" | "land";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
   // refresh job, `head` is the main head to merge. For merge-main it is
@@ -81,6 +84,9 @@ export interface RunnerOffer {
   // The projects a runner token lets it serve (t626), by current name; an
   // offer naming none serves every project.
   projects?: string[];
+  // The projects whose registered checkout the runner holds (t226): the land
+  // job is offered for these alone.
+  checkouts?: string[];
   // The project these offers were read for (offersFor), when a project's
   // routing reads them: an offer whose `projects` leave that project out
   // offers it nothing, though its runner still counts as live.

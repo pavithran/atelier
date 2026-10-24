@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { redactGitArgs } from "../runner.mjs";
 import { runLand } from "../land.mjs";
-import { OWNER, apiToken, args, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { OWNER, P, apiToken, args, call, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
 import { serverFetch } from "../server-fetch.mjs";
 import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../land-queue.mjs";
 
@@ -22,6 +22,14 @@ export default async function landCommand() {
     if (flag) die(`several tasks cannot be landed with --${flag}: it acts on one task; give one task, or leave --${flag} out`);
   }
   const name = project(), id = itemArg();
+  // Queued for a runner that holds the registered checkout (t226): nothing
+  // runs here.
+  if (args.queue !== undefined) {
+    if (ids.length > 1) die("--queue acts on one task: atelier land ID --queue");
+    const queued = await call("POST", `${P(name)}/items/${encodeURIComponent(id)}/land-job`, {}, OWNER);
+    console.log(queued.queued ? `${id} is queued to land on a runner that holds ${name}'s registered checkout and offers the land job.` : `${id} is already queued to land (since ${queued.at}).`);
+    return;
+  }
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac`);
   if (!p.path || !existsSync(p.path)) die(`land needs ${name}'s registered checkout; this machine records ${p.path ?? "no folder"}. Run atelier init in that checkout first`);
   const workspace = workspacePath(name, id);

@@ -1,6 +1,9 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { guardName } from "../procs.mjs";
-import { I, OWNER, apiToken, args, cfg, die, discoverModels, liveHere, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
+import { landingJournalFile } from "../landing.mjs";
+import { I, OWNER, apiToken, args, cfg, die, discoverModels, landingHome, liveHere, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // Queue polling has already resolved the runner's identity. A failed policy
 // read must reach the job's infrastructure handling, never the process.exit
@@ -66,6 +69,11 @@ export default async function runnerCommand() {
       // Where the developer's checkout of a project is on this Mac, which the
       // project's prose standard (a path from it) is copied from (t676).
       checkoutOf: (name) => cfg.projects?.[name]?.path ?? null,
+      // The projects whose registered checkout this machine holds, which the
+      // land job is offered for (t226), and whether a landing's journal
+      // is waiting to be resumed in one.
+      checkouts: Object.entries(cfg.projects ?? {}).filter(([, p]) => p?.path && existsSync(p.path)).map(([name]) => name),
+      landJournal: (dir) => { try { return existsSync(landingJournalFile(landingHome(execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: dir, encoding: "utf8" }).trim()))); } catch { return false; } },
       // An idle runner reloads itself from this checkout once it holds the
       // deployed commit (t265), replacing the process in place once the new code loads.
       reload: { checkout: runnerCheckout(), reexec: reexecSelf },
