@@ -329,7 +329,7 @@ Standing rules:
   asks only the approvals the project's risk reviews still lack, and takes
   the landing lease for one merge at a time. Land retries a transient
   failure of the merge step's fetch (a 5xx, or a revision other than the
-  approved one, once). An override while accepting is
+  approved one, once), and merges a task it finds already accepted. An override while accepting is
   the developer's last resort when no reviewer qualifies, never the way to land another
   agent's work.
 - In a wave, tasks start in the order named, and a landing that fails
