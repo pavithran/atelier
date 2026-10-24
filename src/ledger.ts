@@ -2703,7 +2703,7 @@ export class Ledger extends DurableObject<Env> {
         // the task while the hold stands and tries it again once it clears.
         const held = coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
         if (!held) return;
-        throw new RuleError("held", `${item.id} is held: the core files hold it: it ${holdText(held)}. The claim it waits on is live, its runner polling, so ${item.id} is not offered while it holds; the queue offers it again once the hold clears`, 409);
+        throw new RuleError("held", heldClaimText(item.id, held), 409);
       }
     }
     throw runnerDenied(token);
@@ -3240,16 +3240,27 @@ export class Ledger extends DurableObject<Env> {
   // is kept. A runner_forbidden refusal of a runner token says only that the
   // operation is not allowed, so the reason is worked out here as
   // assertRunnerJob decided it. Rows of an older dispatch of the task go.
-  noteClaimRefusal(id: string, runner: string, actor: string, error: string, detail: string, token?: AgentToken): void {
+  // A refusal that goes back to a runner token as runner_forbidden
+  // (`forbidden`) while a core-file hold blocks the claim is no refusal
+  // (t241): the claim lost a race for the hold, its check passing before the
+  // holder claimed and the refusal coming after. Nothing is kept, and the
+  // answer the router gives instead is returned, as assertRunnerJob words a
+  // held claim; otherwise null.
+  noteClaimRefusal(id: string, runner: string, actor: string, error: string, detail: string, token?: AgentToken, forbidden = error === "runner_forbidden"): string | null {
     let item: Item;
-    try { item = this.item(id); } catch { return; }
+    try { item = this.item(id); } catch { return null; }
     const d = item.dispatch;
-    if (item.state !== "open" || item.owner || !d) return;
+    if (item.state !== "open" || item.owner || !d) return null;
+    if (forbidden && token) {
+      const held = this.runnerClaimHold(token, item, actor);
+      if (held) return heldClaimText(item.id, held);
+    }
     const why = error === "runner_forbidden" && token ? this.runnerClaimWhy(token, item, actor) ?? detail : detail;
     // Kept with the task's head and last change, the runner's refusedKey, so
     // a change that lets the runner claim afresh ends it (sameRevision).
     const refusal: ClaimRefusal = { runner, actor, error, detail: why.slice(0, 300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
     this.putRunnerNote("claim-refused", id, runner, d.at, refusal);
+    return null;
   }
 
   // Why assertRunnerJob refused a runner token's claim of an open dispatched
@@ -3263,8 +3274,21 @@ export class Ledger extends DurableObject<Env> {
     if (!liveOffers([offer]).length) return `the offer token ${token.id} last polled with is no longer live`;
     const assigned = assign(d, offer)?.actor;
     if (assigned !== actor) return assigned ? `its offer assigns this dispatch to ${assigned}, not ${actor}` : `its offer does not cover this dispatch (${describe(d)})`;
-    const held = coreHold(item, this.items(), this.project().policy.coreFiles, null, Date.now(), this.runnerPolls());
+    const held = this.runnerClaimHold(token, item, actor);
     return held ? `the core files hold it: it ${holdText(held)}` : null;
+  }
+
+  // The core-file hold that blocks a runner token's claim of an open
+  // dispatched task its live offer assigns to this actor, judged as
+  // assertRunnerJob judges it (the landing lease and the runners' polls
+  // included), or null when the offer does not cover the claim or nothing
+  // holds it.
+  private runnerClaimHold(token: AgentToken, item: Item, actor: string): CoreHold | null {
+    const d = item.dispatch;
+    if (!d || ["review", "integrate", "refresh"].includes(d.job ?? "")) return null;
+    const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
+    if (!offer || !liveOffers([offer]).length || assign(d, offer)?.actor !== actor) return null;
+    return coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
   }
 
   // Items as item() reads them, from their rows, with each one's push actors
@@ -9645,6 +9669,13 @@ function briefFingerprint(text: string): string {
 // The job claiming an item takes, as the owner's standing names roles: a
 // plan item's plan job is planning, a task or part is building, and a plan's
 // integrate or refresh job is the integrator's, which no standing holds.
+// A runner's claim a core-file hold blocks, answered 409 held (t540, t241):
+// the holding task and the core file both scopes reach, and when the task is
+// offered again.
+function heldClaimText(id: string, held: CoreHold): string {
+  return `${id} is held: the core files hold it: it ${holdText(held)}. The claim it waits on is live, its runner polling, so ${id} is not offered while it holds; the queue offers it again once the hold clears`;
+}
+
 function claimRole(item: Item): ModelRole | null {
   if (item.kind !== "plan") return "build";
   return !item.dispatch || item.dispatch.job === "plan" ? "plan" : null;

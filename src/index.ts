@@ -4547,13 +4547,22 @@ export default {
         const claiming = parts[5] === "claim" || parts[5] === "fast-take";
         const claimRunner = req.method === "POST" && ref && parts[3] === "items" && /^t[0-9]+$/.test(parts[4] ?? "") && claiming && parts.length === 6
           ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
-        const noteRefusal = async (error: unknown) => {
+        // A refusal a runner token would be answered runner_forbidden for,
+        // while a core-file hold blocks the claim, is answered 409 held
+        // instead (t241), naming the holder and the core file: the claim
+        // lost a race for the hold, and the runner waits for it to clear.
+        // noteRefusal returns that answer, or nothing.
+        const noteRefusal = async (error: unknown): Promise<RuleError | undefined> => {
           const rule = parseRuleError(error);
           // A claim that lost the race to a hold (held, t540) is no
           // refusal: the queue stops offering the task while the hold
           // stands, and offers it again once it clears.
           if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held" || rule.code === "not_fast_mode" || rule.code === "not_fast_build") return;
-          try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
+          const forbidden = !!token?.runner && rule.status === 403;
+          try {
+            const held = await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined, forbidden);
+            if (held) return new RuleError("held", held, 409);
+          }
           catch (e) { console.error("claim refusal not recorded", String(e)); }
         };
         // The removed container check (t768): a CLI built before it still calls
@@ -4579,7 +4588,7 @@ export default {
               // (t540), as the queue, atelier queue and atelier stuck judge.
               const polls = claiming ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : undefined;
               try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, claiming, polls); }
-              catch (error) { await noteRefusal(error); throw error; }
+              catch (error) { throw await noteRefusal(error) ?? error; }
             }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
             req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
@@ -4608,7 +4617,8 @@ export default {
         try {
           res = await api({ env, req, url, actor, body, token, ref, acting, declaredActing, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
-          await noteRefusal(error);
+          const held = await noteRefusal(error);
+          if (held) throw held;
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
           throw error;
         }
