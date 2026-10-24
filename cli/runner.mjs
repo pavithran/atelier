@@ -18,7 +18,7 @@ import { runLandJob } from "./land-queue.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
-import { REVIEW_RENEW_MS, fastJobRefusal, applyVerification, contributorsOf, dropSettled, labelPreExisting, reReviewDiff, reviewedSince } from "../src/rules.ts";
+import { REVIEW_RENEW_MS, applyVerification, contributorsOf, dropSettled, labelPreExisting, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
@@ -109,9 +109,6 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
 export function helperCommand(argv) {
   const command = argv[0];
   if (!RUNNER_COMMANDS.has(command)) throw new Error(`atelier ${command} is not a command the runner declares (RUNNER_CALLS in src/tokens.ts)`);
-  // atelier fast also lands and records, which are the developer's: the
-  // runner spawns fast take and fast ready alone.
-  if (command === "fast" && !["take", "ready"].includes(argv[1])) throw new Error(`atelier fast ${argv[1]} is not a command the runner declares (RUNNER_CALLS in src/tokens.ts)`);
   return command;
 }
 
@@ -970,7 +967,7 @@ export function removeDataHome({ dir, onExit }) {
 // to say what failed, and log it either way.
 // The task refresh (cli/task-refresh.mjs) reads its lease and the answers
 // to its reports.
-const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "base-token", "baseline-token", "check", "fast"]);
+const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "base-token", "baseline-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 // The project's REVIEW.md at `base` in the clone `dir` (t718), or null. A
@@ -1608,14 +1605,6 @@ export const harnessFailureFiles = (cwd) => [
 ];
 
 export async function runTask(assignment, config, name, io) {
-  // A build the queue marked fast (t589, the project in fast mode) is taken
-  // without a fork; a take the server refuses because the mode or the job is
-  // no longer fast comes back here and claims with a fork, as every build in
-  // full mode does.
-  if (assignment?.fast === true && fastJobRefusal(assignment.item ?? {}) === null) {
-    const fast = await runFastBuild(assignment, config, name, io);
-    if (!fast.fallback) return fast;
-  }
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
   if (!assignment) { io.log("nothing claimed"); advance({ type: "claim", empty: true }); return state; }
@@ -2188,149 +2177,6 @@ export async function giveUpClaim({ io, project, item, actor, workspace, reason 
 
 // The note a release carries when a provider's limit stopped the job.
 const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limit.resetAt).toISOString()}: ${limit.reason}`;
-
-// A fast take the server refused because the project is back in full mode,
-// or the job is not a fast build after all: the build claims with a fork.
-const FAST_FALLBACK = /\b(not_fast_mode|not_fast_build)\b/;
-
-// Fast mode's build (t589). On 2026-10-13, in fast mode, every runner build
-// still began with a claim that forks main, and the forks failed (Artifacts
-// INTERNAL_ERROR), so builds were run by hand in local clones. While the
-// project is in fast mode the queue marks a plain build fast, and this takes
-// it without a fork: atelier fast take records the holder as a claim does,
-// with no fork and no write token, and makes a clean clone of main on this
-// machine; the harness builds and commits there; atelier fast ready reports
-// the commit as ready to merge. Nothing is pushed, checked or submitted
-// here: the developer merges and records it (atelier record-merge). The harness, its brief, its environment and its failures are a
-// build's, as runTask runs them. A clone an earlier run left with a commit
-// it never reported is kept by the take, and the commit is reported
-// without the harness. Answers the run's state, or { fallback: true } when
-// the server refused the take as no longer fast (FAST_FALLBACK).
-export async function runFastBuild(assignment, config, name, io) {
-  let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
-  const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
-  const { project, item, agent, model, actor } = assignment;
-  let workspace = null, base = null, claimed = false, claimAttempted = false, taskFailure = false, brief = null, fastExit = null;
-  try {
-    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
-    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
-    const refusal = codexBuildRefusal(entry);
-    if (refusal) throw Object.assign(new Error(refusal), { validationBlocked: true, skipped: true });
-    if (io.stopped()) throw new Error("interrupted");
-    claimAttempted = true;
-    let taken;
-    try {
-      const out = String(await io.cli(["fast", "take", item.id, "--project", project, "--as", actor, "--runner", name, ...(item.dispatch?.at ? ["--dispatch", item.dispatch.at] : []), "--json"]) ?? "");
-      taken = JSON.parse(out.trim().split("\n").filter(Boolean).at(-1) ?? "null");
-    } catch (error) {
-      if (FAST_FALLBACK.test(error.message ?? "")) {
-        io.log(`fast take refused, so the build claims with a fork: ${oneLine(error.message).trim()}`);
-        return { fallback: true };
-      }
-      throw error;
-    }
-    claimed = true;
-    if (typeof taken?.dir !== "string" || !/^[a-f0-9]{40,64}$/.test(taken?.base ?? "")) throw Object.assign(new Error("the fast take named no workspace or no main to build on"), { infrastructure: true });
-    workspace = taken.dir;
-    base = taken.base;
-    advance({ type: "claim" });
-    io.log(`fast mode: no fork and no write token; building in a clean clone of main at ${base.slice(0, 8)} in ${workspace}`);
-    let result = null;
-    if (taken.resumed) {
-      io.log(`resumed: an earlier run committed ${String(taken.head).slice(0, 8)} in this clone and never reported it; reporting it without the harness`);
-      advance({ type: "start" });
-    } else {
-      await io.reset(workspace);
-      if (io.stopped()) throw new Error("interrupted");
-      const preparation = await io.prepare?.(workspace);
-      // The brief is a build's: the local one, what the server holds for the
-      // task (its job brief), and what fast mode changes for the builder.
-      const context = io.jobBrief ? await io.jobBrief(project, item.id, actor) : null;
-      if (context && typeof context.text !== "string") throw new Error("the server's job brief has no text");
-      const local = briefFor({ ...item, owner: actor }, project);
-      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${local}\n${context?.text ? `${context.text}\n` : ""}\n${fastBuildSection(base)}\n${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
-      const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
-      for (const w of withheld) io.log(`${w} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
-      const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-      try {
-        const runEnv = harnessRunEnv(env, dataHome, item.id, "build", name, project, actor);
-        const refused = await io.identityRefusals(workspace, runEnv, project);
-        if (refused.length) throw Object.assign(new Error(`commit identity refused before the builder started: ${refused.join("; ")}`), { infrastructure: true });
-        advance({ type: "start" });
-        taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, runEnv, { capture: true, stream: true });
-      } finally {
-        if (dataHome) {
-          try { await io.removeDataHome(dataHome); }
-          catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
-        }
-      }
-    }
-    const limit = result && !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
-    if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
-    fastExit = failedExitOf(result);
-    const blocked = validationBlockedReport(result?.output);
-    if (blocked) throw Object.assign(new Error(blocked), { validationBlocked: true });
-    if (!result?.timedOut && io.stopped()) throw new Error("interrupted");
-    const head = taken.resumed ? taken.head : result?.timedOut ? await io.head(workspace).catch(() => base) : await io.head(workspace);
-    taskFailure = true;
-    advance(io.stopped() && !result?.timedOut ? { error: "interrupted" } : { type: "exit", code: result ? result.code : 0, timedOut: result?.timedOut, before: base, head });
-    if (state.phase === "failed") throw new Error(state.reason);
-    // The report, from the clone: its head, the main it was made at, the
-    // builder the commit's Agent line names. Nothing is pushed.
-    await io.cli(["fast", "ready", item.id, "--project", project, "--as", actor], workspace);
-    advance({ type: "finish" });
-    state = { ...state, fast: true };
-    io.log(`ready to merge: ${item.id}=${head}; the developer merges it and records the merge with atelier record-merge`);
-  } catch (error) {
-    if (error.terminalState) {
-      state = { ...state, phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
-      io.log(`task ${project}/${item.id} is ${error.terminalState === "abandoned" ? "closed" : error.terminalState} (state: ${error.terminalState}); the fast clone is kept`);
-      return state;
-    }
-    if (state.phase !== "failed") advance({ error: error.message });
-    state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(fastExit ? { harnessExit: fastExit } : {}) };
-    if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
-    if (error.providerLimit) state = { ...state, providerLimit: error.providerLimit, taskFailure: false };
-    if (!claimed && error.skipped) {
-      state = { ...state, skipped: true };
-      io.log(`skipped: ${error.message}`);
-    } else if (!claimed && error.claimRefused) {
-      state = { ...state, claimRefused: true };
-      io.log(claimRefusedLine(error.message));
-    } else if (claimed && state.head) {
-      // The commit is in the clone; the next take keeps it and reports it.
-      io.log(`claim preserved: ${String(state.head).slice(0, 8)} is committed in ${workspace} and not yet reported`);
-    } else if (claimed) {
-      let head = null;
-      try { head = workspace ? await io.head(workspace, { cleanup: true }) : base; } catch { /* Unknown commit status preserves the claim. */ }
-      if (head && head === base) {
-        const note = error.providerLimit ? releaseNote(limitNote(error.providerLimit)) : releaseNote(state.reason);
-        try { await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace ?? undefined, error.providerLimit ? { providerLimit: true } : {}); io.log("released: no new commit"); }
-        catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-      } else io.log("claim preserved: a commit exists or commit status is unknown");
-    } else if (claimAttempted) {
-      try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(state.reason)]);
-        io.log("released after the fast take failed");
-      } catch (releaseError) { io.log(`claim status unknown: release failed: ${releaseError.message}`); }
-    } else io.log("claim not released: claim or commit status is unknown");
-  } finally {
-    if (brief) await io.removeBrief(brief);
-  }
-  return state;
-}
-
-// What the brief of a fast build adds (t589): where the builder works, and
-// that the commit is the whole of its job.
-export function fastBuildSection(base) {
-  return [
-    "## Fast mode",
-    "",
-    `The project is in fast mode. This workspace is a clean clone of main at ${base.slice(0, 12)} on the runner's machine, with no fork and no remote. Build and commit here, ending the commit message with your Agent line. Do not push. The runner reports your last commit as ready to merge, and the developer merges and records it.`,
-  ].join("\n");
-}
 
 // A task's identity for the failure counts: its project, id and dispatch,
 // so dispatching it again starts the count afresh (t420), as the server's

@@ -9,7 +9,8 @@ task with exactly one holder. Never edit the project checkout directly.
    A change that depends on a platform limit or runtime behaviour local tests
    cannot reproduce names it in the task, and the project declares a remote
    smoke check run before and after deploy. In fast mode a required criteria
-   review is skipped: the build goes ahead with the criteria as written.
+   review is skipped: the build goes ahead with the criteria as written, and
+   claims with a fork like any build (the fork-less fast build was removed).
 2. Commit your changes, then run `atelier done "summary"` in that workspace.
    It pushes, runs required checks and submits only after they pass. Relay
    its final line to the developer.
@@ -40,6 +41,7 @@ after approval and passing checks, the developer runs `atelier accept ID`, then
 `atelier merge ID`. For an already accepted task, run `atelier merge ID`,
 not land. Builders and reviewers do not accept or merge their own work.
 `atelier land ID --queue` queues the landing for a runner that lists the land job and holds the registered checkout.
+The stage tick queues a land job for an accepted task, or any task in fast mode, that stays landable 5 minutes, and tells when it cannot.
 A runner takes the oldest review request it can serve; one whose reviewer no live runner offers for 15 minutes shows in `atelier stuck`, to reroute with `atelier review-request ID --reviewer H/M` or withdraw with `atelier review-withdraw ID --reason TEXT`.
 
 For each session the developer runs in the registered checkout:

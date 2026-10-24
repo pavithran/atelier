@@ -39,7 +39,7 @@ export const harnessExitOf = (result) => {
 };
 
 // The structured exit of a run that failed, or null for one that passed or
-// never ran: the one place every harness site (build, fast build, resolver,
+// never ran: the one place every harness site (build, resolver,
 // review, criteria review, prereview) gets the fact runOutcome reads.
 export const failedExitOf = (result) =>
   result && (result.timedOut || result.code !== 0) ? harnessExitOf(result) : null;
