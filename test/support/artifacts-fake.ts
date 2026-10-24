@@ -25,6 +25,7 @@ export function fakeArtifacts() {
       if (t) t.revoked = true;
       return !!t;
     },
+    log: fakeLog,
     [Symbol.dispose]() {},
   });
   const strict = <T extends object>(what: string, api: T): T => new Proxy(api, {
@@ -40,3 +41,19 @@ export function fakeArtifacts() {
   const writes = (repo: string) => [...tokens.values()].filter((t) => t.repo === repo && t.scope === "write").map((t) => t.id);
   return { artifacts, state, live, writes };
 }
+
+// The Worker's bindings with the Artifacts binding replaced by `artifacts`.
+// The real binding is left out of the copy rather than overwritten, so a spec
+// that reaches it fails on the spot instead of calling the live service
+// (vitest.config.ts runs with remoteBindings: false, so the real binding
+// throws "needs to be run remotely" on first use).
+export function bindingsWith<E extends object>(env: E, artifacts: unknown, extra: Record<string, unknown> = {}): E {
+  const copy: Record<string, unknown> = {};
+  for (const key of Object.keys(env)) if (key !== "ARTIFACTS") copy[key] = (env as Record<string, unknown>)[key];
+  return { ...copy, ...extra, ARTIFACTS: artifacts } as E;
+}
+
+// A repository's commit list as claims read it (headOf): one commit, so a
+// head read answers without a failure and a retry.
+export const FAKE_HEAD = "1".repeat(40);
+export const fakeLog = async () => [{ hash: FAKE_HEAD, parents: [] as string[] }];
