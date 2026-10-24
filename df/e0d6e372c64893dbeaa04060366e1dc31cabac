@@ -1,0 +1,67 @@
+atelier atelier/t243 "Fast mode clears plan parts already blocked for a missing criteria reviewer"
+accepted head ed191f0cd27d4cd253b21d34dc6f2ac9dcc1b8b1
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-24T15:44:38.455Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-24T15:44:41.729Z
+REVIEW approve by codex/gpt-6-astra at ed191f0cd27d4cd253b21d34dc6f2ac9dcc1b8b1, recorded by codex/gpt-6-astra
+REVIEW approve by antigravity/gemini-4-argon at ed191f0cd27d4cd253b21d34dc6f2ac9dcc1b8b1, recorded by antigravity/gemini-4-argon
+CHECKED TREE ffd0952d24edb16d40798bdfa2a0caf33f35bbcb: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-24T07:49:00.485Z pavi item.created
+2026-10-24T07:49:00.937Z pavi item.edited
+2026-10-24T07:49:00.937Z pavi criteria.revised
+2026-10-24T07:49:00.937Z pavi item.criteria_changed
+2026-10-24T07:49:14.429Z pavi criteria_review.requested
+2026-10-24T07:49:18.008Z codex/gpt-6-astra criteria_review.claimed
+2026-10-24T07:49:30.309Z codex/gpt-6-astra criteria_review.approved
+2026-10-24T13:41:07.985Z pavi item.dispatched
+2026-10-24T13:44:51.922Z claude-code/sonnet-5.5 item.claimed
+2026-10-24T13:45:24.280Z claude-code/sonnet-5.5 fork.created
+2026-10-24T14:02:38.953Z claude-code/sonnet-5.5 push.observed
+2026-10-24T14:12:13.847Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T14:12:19.092Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T14:12:20.302Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T14:20:00.429Z pavi land.merge
+2026-10-24T14:20:01.326Z pavi land.regenerate
+2026-10-24T14:20:03.045Z pavi land.push
+2026-10-24T14:20:58.803Z pavi land.check
+2026-10-24T14:20:59.263Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T14:20:59.482Z pavi land.submit
+2026-10-24T14:20:59.678Z pavi review.requested
+2026-10-24T14:21:26.503Z codex/gpt-6-astra review.claimed
+2026-10-24T14:25:55.795Z codex/gpt-6-astra review.rejected
+2026-10-24T14:26:00.486Z pavi land.review
+2026-10-24T14:26:14.102Z pavi item.released
+2026-10-24T14:26:14.102Z pavi item.dispatched
+2026-10-24T14:27:57.709Z atelier/orchestrator refresh.queued
+2026-10-24T14:30:36.300Z atelier stage.stuck
+2026-10-24T14:30:36.300Z atelier stage.told
+2026-10-24T15:27:18.970Z claude-code/sonnet-5.5 item.claimed
+2026-10-24T15:35:50.402Z claude-code/sonnet-5.5 push.observed
+2026-10-24T15:40:36.300Z atelier stage.cleared
+2026-10-24T15:44:39.366Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T15:44:41.932Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T15:44:42.709Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T15:49:49.264Z pavi land.merge
+2026-10-24T15:49:50.254Z pavi land.regenerate
+2026-10-24T15:49:52.234Z pavi land.push
+2026-10-24T15:50:42.541Z pavi land.check
+2026-10-24T15:50:43.295Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T15:50:43.619Z pavi land.submit
+2026-10-24T15:50:43.920Z pavi review.requested
+2026-10-24T15:50:49.877Z codex/gpt-6-astra review.claimed
+2026-10-24T15:52:16.585Z codex/gpt-6-astra review.approved
+2026-10-24T15:52:18.167Z pavi land.review
+2026-10-24T15:52:18.770Z pavi review.requested
+2026-10-24T15:52:33.062Z antigravity/gemini-4-argon review.claimed
+2026-10-24T15:58:21.368Z antigravity/gemini-4-argon review.approved
+2026-10-24T15:58:31.552Z pavi land.merge
+2026-10-24T15:58:32.508Z pavi land.regenerate
+2026-10-24T15:58:34.610Z pavi land.push
+2026-10-24T15:59:36.550Z pavi land.check
+2026-10-24T15:59:36.969Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T15:59:37.177Z pavi land.submit
+2026-10-24T15:59:37.329Z pavi land.review
+2026-10-24T15:59:37.630Z pavi land.lease
+2026-10-24T15:59:39.014Z pavi item.accepted
+2026-10-24T15:59:39.125Z pavi land.accept
