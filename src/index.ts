@@ -2010,7 +2010,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // GET also lists the builds runners made in fast mode and reported ready
   // (t589), which atelier fast status prints as tN=SHA.
   if (parts[2] === "mode" && parts.length === 3) {
-    if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList() });
+    if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList(), criteriaDeadlocks: await L.criteriaDeadlocks() });
     requireOwner(env, actor);
     // The switch to fast mode takes the developer's direction, `quote` with
     // the acting model (t629, projects.developer-direction.v1), or their
