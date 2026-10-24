@@ -155,12 +155,11 @@ it("two timeouts at one head stop the review on its successor, which no claim, q
   expect(entries[0].reason).toContain("override with the developer's word");
 });
 
-it("a provider limit, an interrupt and a different reason do not build a stop (t238)", async () => {
+it("a provider limit and an interrupt build no stop, and the two reasons count together (t238)", async () => {
   const name = "review-stopped-other";
   const { L, ids } = await asked(name, [GPT]);
   expect((await releaseOnce(L, ids[0], "codex usage limit until 2026-10-24T09:00:00.000Z: limit")).stopped).toBeUndefined();
   expect((await releaseOnce(L, ids[0], "interrupted")).stopped).toBeUndefined();
   expect((await releaseOnce(L, ids[0], "harness timed out")).stopped).toMatchObject({ reason: "timeout", count: 1 });
-  expect((await releaseOnce(L, ids[0], "no VERDICT line")).stopped).toMatchObject({ reason: "no-verdict", count: 1 });
-  expect((await releaseOnce(L, ids[0], "harness exited 1")).stopped).toMatchObject({ reason: "no-verdict", count: 2 });
+  expect((await releaseOnce(L, ids[0], "no VERDICT line")).stopped).toMatchObject({ reason: "no-verdict", count: 2 });
 });
