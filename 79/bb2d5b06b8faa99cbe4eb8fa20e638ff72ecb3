@@ -1,0 +1,53 @@
+atelier atelier/t188 "land hands the merge back to the developer after a transient fetch failure"
+accepted head eff2185c8560491f6e70c491eab4642399a8c9e7
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-24T13:03:04.870Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-24T13:03:08.814Z
+REVIEW approve by codex/gpt-6-astra at eff2185c8560491f6e70c491eab4642399a8c9e7, recorded by codex/gpt-6-astra
+REVIEW approve by antigravity/gemini-4-argon at eff2185c8560491f6e70c491eab4642399a8c9e7, recorded by antigravity/gemini-4-argon
+CHECKED TREE 232547dc457daae7b73734b81bc66f1c5e397865: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-21T21:50:37.988Z pavi item.created
+2026-10-21T21:50:37.988Z pavi criteria.revised
+2026-10-23T18:14:29.749Z pavi criteria_review.requested
+2026-10-23T18:22:45.929Z codex/gpt-6-astra criteria_review.claimed
+2026-10-23T18:22:56.043Z codex/gpt-6-astra criteria_review.approved
+2026-10-24T11:10:18.905Z pavi item.dispatched
+2026-10-24T11:10:30.870Z claude-code/sonnet-5.5 item.claimed
+2026-10-24T11:11:26.078Z claude-code/sonnet-5.5 fork.created
+2026-10-24T11:23:34.724Z claude-code/sonnet-5.5 push.observed
+2026-10-24T11:33:02.108Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T11:39:44.538Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T11:39:46.985Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T12:06:31.318Z claude-code/sonnet-5.5 push.observed
+2026-10-24T12:14:29.601Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T12:14:32.158Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T12:14:32.813Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T12:51:40.426Z atelier/orchestrator refresh.queued
+2026-10-24T12:53:28.901Z pavi land.merge
+2026-10-24T12:53:29.618Z pavi land.regenerate
+2026-10-24T12:53:32.406Z claude-code/sonnet-5.5 push.observed
+2026-10-24T12:53:33.271Z pavi land.push
+2026-10-24T13:03:05.683Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T13:03:09.035Z claude-code/sonnet-5.5 evidence.observed
+2026-10-24T13:03:09.743Z pavi land.check
+2026-10-24T13:03:10.403Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T13:03:10.584Z pavi land.submit
+2026-10-24T13:03:10.769Z pavi review.requested
+2026-10-24T13:03:13.918Z codex/gpt-6-astra review.claimed
+2026-10-24T13:06:26.785Z codex/gpt-6-astra review.approved
+2026-10-24T13:06:26.785Z atelier/orchestrator item.followup_filed
+2026-10-24T13:06:29.748Z pavi land.review
+2026-10-24T13:06:30.284Z pavi review.requested
+2026-10-24T13:06:44.744Z antigravity/gemini-4-argon review.claimed
+2026-10-24T13:13:43.823Z antigravity/gemini-4-argon review.approved
+2026-10-24T13:14:41.992Z pavi land.merge
+2026-10-24T13:14:43.068Z pavi land.regenerate
+2026-10-24T13:14:44.954Z pavi land.push
+2026-10-24T13:16:15.850Z pavi land.check
+2026-10-24T13:16:16.297Z claude-code/sonnet-5.5 item.submitted
+2026-10-24T13:16:16.496Z pavi land.submit
+2026-10-24T13:16:16.651Z pavi land.review
+2026-10-24T13:16:16.927Z pavi land.lease
+2026-10-24T13:16:18.532Z pavi item.accepted
+2026-10-24T13:16:18.648Z pavi land.accept
