@@ -14,7 +14,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, forkAgeText, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS } from "./rules";
+import { assertBaselineName, forkAgeText, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -1934,21 +1934,27 @@ export class Ledger extends DurableObject<Env> {
               reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
             };
             let found = findStageOverrun(item, stage, detail.head, now, clock);
-            if (stage === "queued" && item.dispatch && offers) {
-              const d = item.dispatch, head = detail.head ?? "";
-              const key = { item: item.id, stage, head };
+            // A dispatch waiting for a runner is judged whatever stage the task
+            // is at: rework and merge-main dispatches wait on tasks that keep a
+            // commit, which stageOf reports as built or later.
+            if (item.dispatch && !item.owner && item.state === "open" && offers) {
+              const d = item.dispatch, head = item.head ?? "";
+              const key = { item: item.id, stage: "queued" as TaskStage, head };
+              let wait = stage === "queued" ? found : findStageOverrun(item, "queued", head, now, clock);
               const verdict = decideReroute({
-                dispatch: d, offers, now, project, late: !!found, rerouted: rerouted.has(stageKeyOf(key)),
+                dispatch: d, offers, now, project, late: !!wait, rerouted: rerouted.has(stageKeyOf(key)),
                 refuse: (actor) => this.rerouteRefusal(item, d, actor),
               });
               if (verdict) {
                 // A dispatch the tick moves is no longer stuck: its clock starts again.
-                if (verdict.acts) { found = null; reroutes.push({ id: item.id, head, dispatch: d, verdict }); }
+                if (verdict.acts) { wait = null; reroutes.push({ id: item.id, head, dispatch: d, verdict }); }
                 else {
-                  found ??= { ...key, enteredAt: d.at, limitMs: STAGE_LIMITS_MS.queued ?? 0, overMs: 0 };
+                  wait ??= { ...key, enteredAt: d.at, limitMs: STAGE_LIMITS_MS.queued ?? 0, overMs: 0 };
                   verdicts.set(stageKeyOf(key), verdict);
                 }
               }
+              if (stage === "queued") found = wait;
+              else if (wait) findings.push(wait);
             }
             if (found) findings.push(found);
           } catch { complete = false; }

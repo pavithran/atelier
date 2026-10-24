@@ -24,8 +24,8 @@ const queued = async (key: string, to: { agent: string; model: string }) => {
   return id;
 };
 // The runner `runner` offers `agents` for `key` alone, as it asked at the time of the tick.
-const offers = (key: string, runner: string, agents: { agent: string; models: string[] }[], ms: number, kind: "home" | "cloud" = "home") =>
-  I().putRunnerOffer({ runner, kind, agents, projects: [key] }, new Date(Date.now() + ms).toISOString());
+const offers = (key: string, runner: string, agents: { agent: string; models: string[] }[], ms: number, kind: "home" | "cloud" = "home", jobs?: string[]) =>
+  I().putRunnerOffer({ runner, kind, agents, projects: [key], ...(jobs ? { jobs } : {}) }, new Date(Date.now() + ms).toISOString());
 const tick = (ms: number) => worker.scheduled({ scheduledTime: Date.now() + ms, cron: "*/5 * * * *", noRetry() {} } as ScheduledController, testEnv);
 const stage = async (key: string) => ((await L(key).events(undefined, 1000)) as unknown as { itemId: string; kind: string; data: Record<string, unknown> }[])
   .filter((e) => e.kind.startsWith("stage.")).reverse();
@@ -117,4 +117,30 @@ it("leaves a fork with a commit recorded untouched", async () => {
   await tick(2 * HOUR);
   expect(await kinds("rr-f")).toEqual([]);
   expect(await L("rr-f").forkNameFor(id)).toBeNull();
+});
+
+// A task that keeps a commit is built or later by stageOf, but its rework and
+// merge-main dispatches wait for a runner all the same.
+const withHead = async (key: string, job?: "merge-main") => {
+  const id = (await L(key).newItem("Rework", ["src/a.ts"], "owner", { accept: ["It works"] })).id;
+  await L(key).claim(id, AGENT);
+  await L(key).setFork(id, `${key}--${id}`, "a".repeat(40), AGENT);
+  await L(key).recordPush(id, AGENT, "c".repeat(40), "c".repeat(40));
+  await L(key).release(id, AGENT, "back to the queue");
+  await L(key).dispatch(id, "owner", { to: "any", agent: "codex", model: "gpt-6-astra", overlapOk: true, release: true, ...(job ? { job, head: "b".repeat(40) } : {}) });
+  const item = await L(key).item(id);
+  expect(item.head).toBeTruthy();
+  expect(item.owner).toBeNull();
+  return id;
+};
+
+it.each([["rr-g", undefined], ["rr-h", "merge-main" as const]])("reroutes a queued dispatch on a task with a head (%s)", async (key, job) => {
+  await project(key);
+  const id = await withHead(key, job);
+  await offers(key, `home:${key}`, [{ agent: "claude-code", models: ["opus-5.5"] }], 2 * MIN, "home", job ? ["build", "merge-main", "merge-main-task"] : undefined);
+  await tick(2 * MIN);
+  await tick(3 * MIN);
+  expect(await dispatchOf(key, id)).toBe("claude-code/opus-5.5");
+  expect(await kinds(key)).toEqual([[id, "stage.rerouted", "queued"]]);
+  expect((await stage(key))[0].data).toMatchObject({ head: "c".repeat(40), from: "codex/gpt-6-astra", to: "claude-code/opus-5.5" });
 });
