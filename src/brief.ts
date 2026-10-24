@@ -48,7 +48,9 @@ export function criteriaReviewLine(view: Detail["criteriaReview"] | undefined): 
   const flagged = checks.length
     ? `; checks after deploy, not verified in the builder's workspace: ${checks.map((c) => `criterion ${c.criterion} (${c.by === "owner" ? "the developer's" : "the orchestrator's"}: ${c.text})`).join("; ")}`
     : "";
-  return `${view.required ? "required before a build is dispatched or claimed; " : "not required by the project; "}${standing}${flagged}`;
+  if (view.skipped) return `required by the project; ${view.skippedReason ?? "skipped because the project is in fast mode"}${flagged}`;
+  const deadlock = view.deadlock ? `; ${view.deadlock}` : "";
+  return `${view.required ? "required before a build is dispatched or claimed; " : "not required by the project; "}${standing}${deadlock}${flagged}`;
 }
 
 export const SUMMARY_MAX = 600;
