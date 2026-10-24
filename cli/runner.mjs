@@ -2394,6 +2394,25 @@ export function missingKey(task) {
   return JSON.stringify([task.project, task.item.id, task.item.head]);
 }
 
+// A review released without a verdict twice at one head is not offered to
+// this runner again (t238). t191's review at 99df3c67 was claimed, answered,
+// released and claimed again at least four times, about 47k tokens each:
+// the failure count is keyed by request number, and every release makes the
+// request anew. Counted by task and head, as a missing merge is. A provider
+// limit is the harness's, not the review's, and a merge commit or baseline
+// that could not be read has its own count (fetchFailures), so neither
+// counts here.
+export const UNANSWERED_LIMIT = 2;
+export function unansweredAfter(count, state) {
+  if (state.phase === "reviewed") return 0;
+  if (state.phase === "failed" && state.released && !state.providerLimit && !state.missingCommit && !state.fetchFailed) return count + 1;
+  return count;
+}
+// The reason a stalled review is reported under, and the decision it needs.
+export function unansweredReason(task, count, last) {
+  return `the review of ${task.item.id} at ${String(task.item.head ?? "").slice(0, 8)} was released ${count} times without a verdict (last: ${String(last ?? "no reason").replace(/\s+/g, " ").trim().slice(0, 300)}); it needs the developer to decide: narrow the criteria, move the findings to a task, or override with the developer's word (atelier review ${task.item.id} --approve or --reject, as the developer)`;
+}
+
 // How often a runner reads the baseline's head for the reviews it keeps
 // waiting on a missing merge commit (t591): a review is claimed again once
 // the head has moved, and read no more often than this.
@@ -2441,6 +2460,19 @@ export function jobOf(task) {
 // that writes no valid verdict keeps the reply on the task and releases the
 // request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO, preclaimed = null) {
+  // A failed run that released the request, or kept its unreadable reply and
+  // released it, ended without a verdict (t238): the state says so, for the
+  // loop to count the releases at one head.
+  let released = false;
+  const state = await runReviewJob(assignment, config, name, { ...runnerIO, cli: async (argv, ...rest) => {
+    const out = await runnerIO.cli(argv, ...rest);
+    if (argv[0] === "review-release" || argv[0] === "review-unparsable") released = true;
+    return out;
+  } }, preclaimed);
+  return released && state.phase === "failed" ? { ...state, released: true } : state;
+}
+
+async function runReviewJob(assignment, config, name, runnerIO, preclaimed = null) {
   const { project, item, agent, model, actor } = assignment;
   let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO, landedCommit = null;
   const generation = () => request === undefined ? [] : ["--request", String(request)];
@@ -3107,6 +3139,14 @@ export async function settleRejection(io, ctx) {
   const result = parseVerdict(reply, ctx.criteria, { counted: true, deferred: ctx.deferred, settled: findings });
   const account = `${answered} already answered, ${count("pre-existing")} pre-existing, ${count("unverified")} unverified`;
   if (!result.ok) return { failed: `no blocking finding stood (${account}) and the reply cannot be recorded as an approval: ${result.error}` };
+  // A rejection that declares criteria unmet but names no blocking finding
+  // that stood (t238) is recorded as the rejection it is, naming the unmet
+  // criteria and the findings that did not block. Releasing the request
+  // instead had it claimed and answered the same way again and again.
+  if (result.unmet) {
+    const names = result.unmet.join(", ");
+    return { parsed: { ...result, summary: `Rejected: ${result.unmet.length === 1 ? "criterion" : "criteria"} ${names} ${result.unmet.length === 1 ? "is" : "are"} unmet, and no blocking finding stood (${account}); the follow-ups are listed as findings. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } };
+  }
   if (result.verdict === "approve") {
     return { parsed: { ...result, summary: `The reviewer rejected, but no blocking finding stood (${account}), so this is recorded as an approval with follow-ups. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } };
   }
@@ -3646,7 +3686,7 @@ export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m
 // or the failures that skip it until it is dispatched again or this process
 // ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
 // runner says these (t420).
-export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), poll = 0, nowMs = Date.now() }) {
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map(), gaveUpTasks = new Set(), missing = new Map(), fetchFailures = new Map(), backoff = new Map(), notReady = new Map(), refusedRuns = new Map(), unanswered = new Map(), poll = 0, nowMs = Date.now() }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   const preparing = notReady.get(notReadyKey(task));
@@ -3665,6 +3705,8 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   if (absent) return `Passed by: its merge commit ${absent.commit.slice(0, 8)} is not in the baseline${absent.baseline ? ` (at ${absent.baseline.slice(0, 8)})` : ""}; it is tried again once the baseline moves (publish main with atelier wrap or atelier sync) or this runner restarts.`;
   // A task the server answered task_terminal for while this runner held it
   // (t476) is not taken again by this process, whatever later polls say.
+  const stalled = unanswered.get(missingKey(task));
+  if (stalled && stalled.count >= UNANSWERED_LIMIT) return `Passed by: ${unansweredReason(task, stalled.count, stalled.last)}.`;
   const terminal = terminalTasks.get(taskKey(task));
   if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
   // A task this runner gave up (t584) is released, which changes its head and
@@ -4047,7 +4089,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   process.on("exit", killGroups);
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
-  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map();
+  const notReady = new Map(), refused = new Set(), gaveUpTasks = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map(), backoff = new Map(), refusedRuns = new Map(), unanswered = new Map();
   // Post-merge reviews whose merge commit no source held (t591), by
   // missingKey: the commit, the baseline head the job saw, and when the head
   // was last read. Each is passed by until the baseline's head moves
@@ -4564,7 +4606,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
         let ranTask = false;
-        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, poll: polls, nowMs: now() });
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks, gaveUpTasks, missing, fetchFailures, backoff, notReady, refusedRuns, unanswered, poll: polls, nowMs: now() });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
@@ -4676,6 +4718,22 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               else if (reportReviewSkip) await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
             }
           } else if (task.item.dispatch?.job === "review") fetchFailures.delete(missingKey(task));
+          // The releases without a verdict at this head (t238): the second
+          // stops the offer here and is reported once, as a review skip that
+          // names the reason and the decision it needs, which the landing
+          // waiting on the review shows the developer.
+          if (task.item.dispatch?.job === "review") {
+            const ukey = missingKey(task), before = unanswered.get(ukey)?.count ?? 0, after = unansweredAfter(before, state);
+            if (after) unanswered.set(ukey, { count: after, last: state.released ? state.reason : unanswered.get(ukey)?.last }); else unanswered.delete(ukey);
+            if (after >= UNANSWERED_LIMIT && before < UNANSWERED_LIMIT) {
+              const note = unansweredReason(task, after, state.reason);
+              io.log(`${task.project}/${task.item.id}: ${note}`);
+              // The run's own cap reports the skip when it reaches it in this
+              // same run; a second report would count the request twice.
+              const reported = state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3;
+              if (reportReviewSkip && !reported) await reportSkip(`unanswered:${ukey}`, { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note });
+            }
+          }
           if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && !missReported && !state.fetchFailed && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }

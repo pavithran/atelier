@@ -84,3 +84,29 @@ test("twenty 4000-character lines are all logged whole", () => {
   const tail = stderrTail(lines.join("\n"));
   assert.equal(tail, lines.slice(5).join("\n"));
 });
+
+// ── a review released without a verdict twice at one head (t238) ─────────────
+
+import { unansweredAfter, unansweredReason, UNANSWERED_LIMIT } from "../cli/runner.mjs";
+
+test("the second release without a verdict at one head stops the offer, naming the reason and the decision", () => {
+  const released = { phase: "failed", reason: "no blocking finding stood", taskFailure: true, released: true };
+  let count = 0;
+  count = unansweredAfter(count, released);
+  assert.equal(count, 1);
+  assert.equal(passedBy(task, ["review"], { ...none, unanswered: new Map([[JSON.stringify(["atelier", "t173", "h"]), { count, last: "x" }]]) }), null, "one release is tried again");
+  count = unansweredAfter(count, released);
+  assert.equal(count, UNANSWERED_LIMIT);
+  const why = passedBy({ ...task, item: { ...task.item, request: 9 } }, ["review"], { ...none, unanswered: new Map([[JSON.stringify(["atelier", "t173", "h"]), { count, last: "no blocking finding stood" }]]) });
+  assert.match(why, /released 2 times without a verdict/);
+  assert.match(why, /no blocking finding stood/);
+  assert.match(why, /narrow the criteria, move the findings to a task, or override with the developer's word/);
+  assert.equal(passedBy({ ...task, item: { ...task.item, head: "h2" } }, ["review"], { ...none, unanswered: new Map([[JSON.stringify(["atelier", "t173", "h"]), { count, last: "x" }]]) }), null, "a new head is reviewed");
+});
+
+test("a verdict clears the count and a provider limit adds nothing", () => {
+  assert.equal(unansweredAfter(1, { phase: "reviewed", verdict: "reject" }), 0);
+  assert.equal(unansweredAfter(1, { phase: "failed", released: true, providerLimit: { harness: "codex" } }), 1);
+  assert.equal(unansweredAfter(1, { phase: "failed", released: false }), 1);
+  assert.match(unansweredReason(task, 2, "boom"), /t173 at h was released 2 times/);
+});

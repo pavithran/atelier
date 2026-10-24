@@ -2281,3 +2281,52 @@ test("a finding the developer refuted is not raised again on a later head even w
   assert.deepEqual(findingsOf(posted(calls)).map((f) => f.text), ["A new defect in the retry."]);
   assert.ok(calls.find((c) => c.brief).brief.includes("## Findings already answered"), "and the reviewer is told it was answered");
 });
+
+// ── a rejection with unmet criteria and only pre-existing findings (t238) ────
+// t191's review at 99df3c67 answered reject with criteria 1 and 4 unmet and
+// two pre-existing findings; the runner released it and it was claimed again
+// at least four times. It is now recorded as the rejection it is.
+
+test("a rejection with an unmet criterion and only pre-existing findings is recorded as a rejection naming both, not released", async () => {
+  const reply = withCount(["VERDICT: REJECT", "SUMMARY: The criterion is not met.", blockingAt(88, "A lapsed claim is never retried."), blockingAt(300, "Drops a row."), "CRITERION 1: unmet — No test covers the change."]);
+  const { io, calls } = fixture({ verdict: reply, diff: () => HUNK });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "reviewed");
+  assert.equal(state.verdict, "reject");
+  assert.ok(!state.released);
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-release").length, 0, "the request is not released");
+  const argv = posted(calls);
+  assert.ok(argv.includes("--reject") && !argv.includes("--approve"));
+  assert.match(argv[argv.indexOf("--note") + 1], /Rejected: criterion 1 is unmet, and no blocking finding stood \(0 already answered, 2 pre-existing, 0 unverified\)/);
+  assert.deepEqual(findingsOf(argv).map((f) => [f.line, f.severity, f.label]), [[88, "follow-up", "pre-existing"], [300, "follow-up", "pre-existing"]]);
+});
+
+test("a run that releases the request without a verdict says so in its state", async () => {
+  const { io } = fixture({ verdict: "nothing readable" });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.equal(state.released, true);
+  const ok = await runReview(assignment, config, "home:studio", fixture().io);
+  assert.ok(!ok.released);
+});
+
+test("a review released without a verdict under two request numbers at one head is not claimed a third time", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, logs } = fixture({ verdict: "no verdict here" });
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const at = (request) => ({ ...assignment, item: { ...assignment.item, head: "a".repeat(40), request, dispatch: { job: "review" } } });
+  let polls = 0;
+  await runRunner(args, {
+    now: hourlyClock(), workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip() {},
+    async queue() {
+      polls++;
+      if (polls <= 4) return [at(polls)];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+  assert.ok(logs.some((l) => /released 2 times without a verdict/.test(l) && /narrow the criteria/.test(l)), logs.join("\n"));
+});

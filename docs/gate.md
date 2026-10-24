@@ -333,8 +333,13 @@ and the round is asked again.
 A rejection left with no blocking finding is recorded as an approval with the
 labelled follow-ups, and only when the reply proves every acceptance
 criterion as an approval must; otherwise the request is released with the
-reason. The review's note says how many findings were answered, pre-existing
-and unverified. A review recorded by hand (`atelier review`) is not settled:
+reason. A rejection that declares a criterion unmet but has no blocking
+finding left is recorded as a rejection, naming the unmet criteria and the
+findings that did not block, never released. A review released without a
+verdict twice at one head is not offered to that runner again: it logs the
+reason and the decision it needs (narrow the criteria, move the findings to a
+task, or override with the developer's word). The review's note says how many
+findings were answered, pre-existing and unverified. A review recorded by hand (`atelier review`) is not settled:
 its blocking findings block as before.
 
 ## Check classes
