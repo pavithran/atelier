@@ -732,10 +732,17 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
           const [offers, project] = await Promise.all([this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers(), L.project()]);
           const live = await L.liveReviewRequest(p.item, head);
           if (!live) return null;
+          if (live.stopped) return { stopped: live.stopped };
           // Only the runners that serve this project count (offersFor, t652).
           const runners = allSkipped(live.reviewer, offersFor(offers, project.name), await L.reviewSkips(p.item, live.request));
           return runners ? { runners } : null;
         });
+        // A request stopped at this head (t238) is served by no runner, so
+        // the landing says why and the decision it needs.
+        if (stuck && "stopped" in stuck) {
+          await step.do(`record the stopped review${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: [] }); return {}; });
+          throw new NonRetryableError(`${stuck.stopped}. The review request stays open and ${p.item} stays submitted`);
+        }
         if (stuck) {
           await step.do(`record the skipped review${sfx}`, RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
           throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again, which asks the review anew for the runners to serve`);
