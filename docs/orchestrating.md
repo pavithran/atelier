@@ -543,6 +543,10 @@ tail -n0 -F RUNNER-OUTPUTS... LAND-OUTPUT... | grep -E --line-buffered \
 `atelier status` lists dispatches waiting for a runner, with the reason each
 is not being taken.
 
+A stuck episode still open an hour after it was first seen reaches the
+developer in `NTFY_TOPIC` messages per project (a large batch is split into several), once per episode; a
+recurrence after it cleared is told again.
+
 Before starting an agent in a fresh workspace on another machine, run
 `npm ci` and `npm run types` there. If either fails, fix the dependency or
 configuration failure before starting the agent. A stale

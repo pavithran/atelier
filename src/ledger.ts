@@ -1,4 +1,5 @@
 import { landingOf } from "./diff.ts";
+import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
 import { dayInZone } from "./time.ts";
@@ -1830,6 +1831,7 @@ export class Ledger extends DurableObject<Env> {
   private episodeTables(): void {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS stuck_episodes (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, item TEXT NOT NULL, cause TEXT NOT NULL, episode INTEGER NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL)`);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS stuck_episodes_key ON stuck_episodes (project, item, cause, episode)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS stuck_notices (project TEXT NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (project, key))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS stuck_ticks (project TEXT PRIMARY KEY, at TEXT NOT NULL)`);
   }
 
@@ -1850,6 +1852,20 @@ export class Ledger extends DurableObject<Env> {
       for (const t of moves) this.sql.exec(`INSERT INTO stuck_episodes (project, item, cause, episode, kind, at, reason) VALUES (?, ?, ?, ?, ?, ?, ?)`, t.project, t.item, t.cause, t.episode, t.kind, t.at, t.reason);
       return moves;
     });
+  }
+
+  // The open episodes of a project that are due a notice at `now` (see
+  // src/stuck/notices.ts) and have none recorded.
+  stuckDue(project: string, now: string): Transition[] {
+    this.episodeTables();
+    const sent = new Set(this.sql.exec(`SELECT key FROM stuck_notices WHERE project = ?`, project).toArray().map((r) => r.key as string));
+    return dueNotices(this.stuckEpisodes(project), sent, Date.parse(now));
+  }
+
+  // Records that the channel accepted a notice for each of these episodes.
+  stuckNotified(project: string, episodes: readonly Transition[], at: string): void {
+    this.episodeTables();
+    for (const t of episodes) this.sql.exec(`INSERT OR IGNORE INTO stuck_notices (project, key, at) VALUES (?, ?, ?)`, project, noticeKey(t), at);
   }
 
   stuckEpisodes(project: string): Transition[] {

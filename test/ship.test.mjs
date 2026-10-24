@@ -49,10 +49,20 @@ test("Atelier's own ship file composes its deploy, the live check and the push t
   assert.deepEqual(p.problems, []);
   assert.equal(p.source, "docs/atelier/ship.json");
   assert.equal(p.class, "web");
-  assert.deepEqual(outline(p), [["commit"], ["deploy", "node scripts/ship-worker.mjs deploy [deploy]"], ["verify-delivery", "node scripts/ship-worker.mjs verify"], ["wrap"], ["push"]]);
-  assert.equal(p.steps[2].runs[0].timeoutMs, 45_000);
-  assert.deepEqual(p.steps[4].push, { remote: "github", branch: "main" });
-  assert.equal(p.steps[1].runs[0].timeoutMs, 1200_000);
+  assert.deepEqual(outline(p), [
+    ["commit"], ["typecheck", "npm run typecheck"], ["deploy", "node scripts/ship-worker.mjs deploy [deploy]"],
+    ["verify-delivery", "node scripts/ship-worker.mjs verify"], ["wrap"],
+    ["scan", "node scripts/privacy-scan.mjs --remote github --branch main --project atelier"], ["push"],
+    ["baseline", "node cli/atelier.mjs sync --project atelier"], ["studio", "node scripts/studio-ff.mjs --remote github --branch main"],
+  ]);
+  const by = Object.fromEntries(p.steps.map((s) => [s.step, s]));
+  assert.equal(by["verify-delivery"].runs[0].timeoutMs, 45_000);
+  assert.deepEqual(by.push.push, { remote: "github", branch: "main" });
+  assert.equal(by.deploy.runs[0].timeoutMs, 1200_000);
+  assert.equal(by.deploy.runs[0].retries, 1, "the deploy is retried once");
+  assert.equal(by.deploy.runs[0].ifChanged.since, "https://atelier.zone/api/version");
+  assert.ok(by.deploy.runs[0].ifChanged.paths.includes("src/**"));
+  assert.deepEqual(neededKinds(p.steps), ["deploy"], "only the deploy needs an approval");
 });
 
 test("with both formats present Atelier's ship file wins, and a malformed ControlPlane file is ignored", (t) => {
@@ -146,6 +156,7 @@ function standIn(state) {
     const send = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
     const view = (a) => ({ ...a, status: a.consumed ? "consumed" : a.withdrawn ? "withdrawn" : "active" });
     if (path === "/live") return send(state.live ?? 200, {});
+    if (path === "/version") return send(200, { commit: state.liveCommit });
     if (path === "/api/projects/demo/baseline-head") return send(200, { head: git(state.baseline, "rev-parse", "main") });
     if (path === "/api/projects/demo/actions" && req.method === "GET") return send(200, { approvals: [...state.approvals].reverse().map(view), runs: [] });
     if (path === "/api/projects/demo/actions" && req.method === "POST") {
@@ -208,7 +219,7 @@ exit \${DEPLOY_EXIT:-0}
     mkdirSync(dirname(join(checkout, path)), { recursive: true });
     writeFileSync(join(checkout, path), typeof value === "string" ? value : JSON.stringify(value));
   }
-  if (ship !== null) writeFileSync(join(checkout, "docs", "atelier", "ship.json"), JSON.stringify(ship ?? {
+  if (ship !== null) writeFileSync(join(checkout, "docs", "atelier", "ship.json"), JSON.stringify((typeof ship === "function" ? ship(url) : ship) ?? {
     schema_version: 1, kind: "atelier.ship", class: "web",
     deploy: { run: ["bin/deploy.sh"] },
     "verify-deploy": { request: `${url}/live`, status: 200 },
@@ -219,7 +230,7 @@ exit \${DEPLOY_EXIT:-0}
   const head = git(checkout, "rev-parse", "HEAD");
   const baseline = join(dir, "baseline.git");
   git(dir, "clone", "-q", "--bare", checkout, baseline);
-  Object.assign(state, { baseline });
+  Object.assign(state, { baseline, liveCommit: git(checkout, "rev-list", "--max-parents=0", "HEAD") });
   for (const kind of approve) state.approvals.push({ id: `a${state.approvals.length + 1}`, kind, commit: head, note: "", by: "owner", at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString() });
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: { demo: { path: checkout, branch: "main" } } }));
   const marker = join(dir, "deployed.txt");
@@ -468,13 +479,23 @@ test("ship --push carries no commit holding a private file to the remote", async
   assert.equal(git(f.github, "rev-parse", "main"), before, "the remote got nothing");
 });
 
+test("ship gives the scan and baseline steps the parent's Atelier configuration, and the studio step none (t235)", async (t) => {
+  const dump = (name) => ["node", "-e", `require("fs").appendFileSync(process.env.SHIP_MARKER, ${JSON.stringify(name)} + ":" + [process.env.ATELIER_TOKEN, process.env.ATELIER_SERVER, process.env.ATELIER_CONFIG_DIR].join("|") + "\\n")`];
+  const f = await fixture(t, { ship: { schema_version: 1, kind: "atelier.ship", class: "other", push: { remote: "github", branch: "main" }, scan: { run: dump("scan") }, baseline: { run: dump("baseline") }, studio: { run: dump("studio") } } });
+  const r = await f.run(["ship", "--push"]);
+  const lines = existsSync(f.marker) ? readFileSync(f.marker, "utf8").trim().split("\n") : [];
+  assert.deepEqual(lines, [`scan:test-token|${f.url}|${f.dir}`, `baseline:test-token|${f.url}|${f.dir}`, "studio:||"], r.stdout + r.stderr);
+});
+
 test("ship source binding replaces caller input without exposing Atelier credentials (t182)", () => {
   const head = "a".repeat(40);
   assert.deepEqual(stepEnv({ PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_TOKEN: "owner-secret", ATELIER_SHIP_HEAD: "spoofed" }, head), { PATH: "/bin", MY_API_TOKEN: "provider-secret", ATELIER_SHIP_HEAD: head });
 });
 
 for (const matches of [true, false]) test(`canonical ship source verification ${matches ? "passes" : "stops wrap and push on mismatch"} (t182)`, async (t) => {
-  const plan = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
+  // The deploy and verify wiring alone: the fixture has no package.json or live version, so the added steps and the deploy's condition are left out.
+  const { typecheck, scan, baseline, studio, ...canonical } = JSON.parse(readFileSync(resolve("docs/atelier/ship.json"), "utf8"));
+  const plan = { ...canonical, deploy: { ...canonical.deploy, if_changed: undefined } };
   const f = await fixture(t, { approve: ["deploy"], ship: plan, extra: { "scripts/ship-worker.mjs": readFileSync(resolve("scripts/ship-worker.mjs"), "utf8") } });
   const bin = join(f.dir, "tools"); mkdirSync(bin);
   const argsFile = join(f.dir, "deploy-args.txt");
@@ -497,4 +518,127 @@ for (const matches of [true, false]) test(`canonical ship source verification ${
     assert.ok(!f.state.runs.some(run => ["wrap", "push"].includes(run.step)));
     assert.notEqual(git(f.github, "rev-parse", "main"), f.head);
   }
+});
+
+// ── the steps beyond deploy and push: typecheck, scan, baseline, studio ──────
+
+const OK = "#!/bin/sh\necho \"step $1 ran\"\nexit 0\n";
+const FLAKY = `if [ -e "$SHIP_MARKER.once" ]; then echo "second try ok"; exit 0; fi\ntouch "$SHIP_MARKER.once"\necho "first try fails"\nexit 1\n`;
+const FAIL = "echo \"scan found a leak\"\nexit 4\n";
+const sh = (script, ...args) => ({ run: ["sh", script, ...args] });
+const FULL = (deploy) => (url) => ({
+  schema_version: 1, kind: "atelier.ship", class: "web",
+  typecheck: sh("bin/ok.sh", "typecheck"),
+  deploy: { ...deploy, if_changed: { paths: deploy.paths ?? ["bin/**"], since: `${url}/version` }, paths: undefined },
+  "verify-deploy": { request: `${url}/live`, status: 200 },
+  scan: sh("bin/ok.sh", "scan"),
+  push: { remote: "github", branch: "main" },
+  baseline: sh("bin/ok.sh", "baseline"),
+  studio: sh("bin/ok.sh", "studio"),
+});
+const STEPS_FILES = { "bin/ok.sh": OK, "bin/flaky.sh": FLAKY, "bin/fail.sh": FAIL };
+
+test("a dry run at a test revision lists every step the ship would run, in order", async (t) => {
+  const f = await fixture(t, { ship: FULL({ run: ["bin/deploy.sh"], retries: 1 }), extra: STEPS_FILES });
+  const r = await f.run(["ship", "--dry-run", "--push"]);
+  assert.equal(r.status, 0, r.stderr);
+  const steps = r.stdout.split("\n").filter((l) => /^ {2}\d\. /.test(l)).map((l) => l.slice(5, 22).trim());
+  assert.deepEqual(steps, ["commit", "typecheck", "deploy", "verify-delivery", "wrap", "scan", "push", "baseline", "studio"]);
+  assert.match(r.stdout, /3\. deploy +bin\/deploy\.sh  \[runs: 4 files under bin\/\*\* changed since [0-9a-f]{8}, the commit live\] \[deploy: no approval at this revision\] \[retried up to 1 time if it fails\]/, r.stdout);
+  assert.match(r.stdout, /6\. scan +sh bin\/ok\.sh scan\n/);
+  assert.equal(r.stdout.match(/approve /g).length, 1, "only the deploy asks for an approval");
+  assert.ok(!existsSync(f.marker) && f.writes().length === 0, "a dry run runs and records nothing");
+  const quiet = await f.run(["ship", "--dry-run"]);
+  assert.match(quiet.stdout, /6\. scan +not run without --push: sh bin\/ok\.sh scan/);
+  assert.match(quiet.stdout, /8\. baseline +not run without --push: /);
+});
+
+test("a full ship records every step, deploys with its approval, and updates the baseline and the Studio last", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: FULL({ run: ["bin/deploy.sh"], retries: 1 }), extra: STEPS_FILES });
+  const r = await f.run(["ship", "--push"]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.deepEqual(f.state.runs.map((x) => [x.step, x.kind, x.passed]), [
+    ["commit", null, true], ["typecheck", null, true], ["deploy", "deploy", true], ["verify-delivery", null, true], ["wrap", null, true],
+    ["scan", null, true], ["push", null, true], ["baseline", null, true], ["studio", null, true],
+  ]);
+  assert.equal(f.state.runs[2].approval, "a1");
+  assert.match(f.state.runs[2].note, /4 files under bin\/\*\* changed/);
+  assert.equal(git(f.github, "rev-parse", "main"), f.head);
+});
+
+test("without --push the scan, push, baseline and Studio steps do not run", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: FULL({ run: ["bin/deploy.sh"] }), extra: STEPS_FILES });
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.deepEqual(f.state.runs.map((x) => x.step), ["commit", "typecheck", "deploy", "verify-delivery", "wrap"]);
+});
+
+test("the deploy is skipped, needing no approval, when no Worker code changed since the live commit; its verify is skipped too", async (t) => {
+  const f = await fixture(t, { ship: FULL({ run: ["bin/deploy.sh"], paths: ["src/**"] }), extra: STEPS_FILES });
+  const r = await f.run(["ship", "--push"]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.ok(!existsSync(f.marker), "the deploy did not run");
+  assert.equal(f.state.requests.filter((q) => q.path === "/api/projects/demo/actions/consume").length, 0, "no approval was taken");
+  const deploy = f.state.runs.find((x) => x.step === "deploy");
+  assert.equal(deploy.passed, true);
+  assert.match(deploy.note, /^skipped: nothing under src\/\*\* changed since [0-9a-f]{8}, the commit live$/);
+  assert.match(f.state.runs.find((x) => x.step === "verify-delivery").note, /^skipped: the deploy was skipped/);
+  assert.match(r.stdout, /Shipped demo at [0-9a-f]{8}: commit, typecheck, deploy \(skipped\), verify-delivery \(skipped\), wrap, scan, push, baseline, studio ran/);
+  assert.deepEqual(f.state.runs.map((x) => x.passed), f.state.runs.map(() => true));
+});
+
+test("the deploy runs when the live commit cannot be read", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: FULL({ run: ["bin/deploy.sh"], paths: ["src/**"] }), extra: STEPS_FILES });
+  f.state.liveCommit = "0".repeat(40);
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(readFileSync(f.marker, "utf8"), "deployed\n");
+  assert.match(f.state.runs.find((x) => x.step === "deploy").note, /runs: the commit .* reports is not one this checkout holds/);
+});
+
+test("a deploy that fails once is retried once with the same approval, and both tries are recorded", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: FULL({ run: ["sh", "bin/flaky.sh"], retries: 1 }), extra: STEPS_FILES });
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const deploys = f.state.runs.filter((x) => x.step === "deploy");
+  assert.deepEqual(deploys.map((x) => [x.passed, x.approval]), [[false, "a1"], [true, "a1"]]);
+  assert.match(deploys[1].note, /retry 1/);
+  assert.equal(f.state.requests.filter((q) => q.path.endsWith("/actions/consume")).length, 1, "one approval for both tries");
+});
+
+test("a deploy that fails again after its one retry stops the ship at deploy", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: FULL({ run: ["bin/deploy.sh"], retries: 1 }), extra: STEPS_FILES });
+  const r = await f.run(["ship"], { DEPLOY_EXIT: "2" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /ship stopped at deploy: bin\/deploy\.sh exited 2\./);
+  assert.deepEqual(f.state.runs.map((x) => [x.step, x.passed]), [["commit", true], ["typecheck", true], ["deploy", false], ["deploy", false]]);
+});
+
+test("a failing type-check stops the ship before the deploy, and a failing scan before the push; each names itself", async (t) => {
+  const a = await fixture(t, { approve: ["deploy"], ship: (url) => ({ ...FULL({ run: ["bin/deploy.sh"] })(url), typecheck: sh("bin/fail.sh") }), extra: { ...STEPS_FILES, "bin/fail.sh": FAIL } });
+  const r1 = await a.run(["ship", "--push"]);
+  assert.equal(r1.status, 1);
+  assert.match(r1.stderr, /ship stopped at typecheck: sh bin\/fail\.sh exited 4\./);
+  assert.match(r1.stderr, /Not run: deploy, verify-delivery, wrap, scan, push, baseline, studio\./);
+  assert.ok(!existsSync(a.marker), "nothing deployed");
+  assert.ok(a.state.approvals.every((x) => !x.consumed), "the deploy approval was not spent");
+
+  const b = await fixture(t, { approve: ["deploy"], ship: (url) => ({ ...FULL({ run: ["bin/deploy.sh"] })(url), scan: sh("bin/fail.sh") }), extra: STEPS_FILES });
+  const r2 = await b.run(["ship", "--push"]);
+  assert.equal(r2.status, 1);
+  assert.match(r2.stderr, /ship stopped at scan: sh bin\/fail\.sh exited 4\./);
+  assert.match(r2.stderr, /Not run: push, baseline, studio\./);
+  assert.notEqual(git(b.github, "rev-parse", "main"), b.head, "nothing was pushed");
+  assert.deepEqual(b.state.runs.at(-1) && [b.state.runs.at(-1).step, b.state.runs.at(-1).passed], ["scan", false]);
+});
+
+test("the ship file's added steps are read strictly", (t) => {
+  const base = { schema_version: 1, kind: "atelier.ship", class: "web", deploy: { run: ["./d"] }, "verify-deploy": { run: ["./v"] } };
+  const problems = (extra) => plan(t, { "docs/atelier/ship.json": { ...base, ...extra } }).problems.join("\n");
+  assert.match(problems({ typecheck: [] }), /the ship order has typecheck and nothing to run for it/);
+  assert.match(problems({ deploy: { run: ["./d"], retries: 9 } }), /"retries" must be a whole number from 0 to 3/);
+  assert.match(problems({ deploy: { run: ["./d"], if_changed: { paths: [], since: "https://x.test" } } }), /"if_changed" must be/);
+  assert.match(problems({ deploy: { run: ["./d"], if_changed: { paths: ["src/**"], since: "ftp://x" } } }), /"if_changed" must be/);
+  assert.match(problems({ scan: { run: ["./s"], bogus: 1 } }), /has a field atelier ship does not read: bogus/);
+  assert.equal(problems({ scan: { run: ["./s"] }, baseline: { run: ["./b"] } }), "");
 });
