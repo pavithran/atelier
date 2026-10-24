@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { privacyScan } from "../scripts/privacy-scan.mjs";
@@ -84,8 +84,36 @@ test("the Studio fast-forward leaves a dirty or off-branch checkout alone and re
   assert.throws(() => studioFastForward({ path: "/s", remote: "github", branch: "main", run: dirty }), /uncommitted changes/);
   const off = (cmd, args) => ({ status: 0, stdout: args.includes("--show-current") ? "other\n" : "\n" });
   assert.throws(() => studioFastForward({ path: "/s", remote: "github", branch: "main", run: off }), /not on main/);
-  assert.throws(() => studioFastForward({ remote: "github", branch: "main" }), /STUDIO_CHECKOUT/);
+  assert.throws(() => studioFastForward({ remote: "github", branch: "main" }), /--checkout/);
   assert.throws(() => studioFastForward({ path: "/s", host: "-oProxyCommand=x", remote: "github", branch: "main" }), /not a host name/);
   const failing = () => ({ status: 128, stderr: "fatal: Not possible to fast-forward\n" });
   assert.throws(() => studioFastForward({ path: "/s", remote: "github", branch: "main", run: failing }), /status in the Studio checkout failed/);
+});
+
+test("the Studio fast-forward refuses a host that names this Mac, and runs over ssh for another", () => {
+  const never = () => { throw new Error("ran"); };
+  for (const host of ["localhost", "127.0.0.1", "me@mac.local", "mac"]) {
+    assert.throws(() => studioFastForward({ path: "/s", host, remote: "github", branch: "main", local: "mac.local", run: never }), /this Mac/, host);
+  }
+  const calls = [];
+  const run = (cmd, args) => { calls.push([cmd, ...args]); return { status: 0, stdout: args.includes("--show-current") ? "main\n" : "\n" }; };
+  studioFastForward({ path: "/s", host: "studio", remote: "github", branch: "main", local: "mac.local", run });
+  assert.ok(calls.every((c) => c[0] === "ssh" && c[1] === "studio"));
+});
+
+test("the Studio script takes its checkout and host from its arguments, not the environment", () => {
+  const env = { ...process.env, STUDIO_CHECKOUT: "/env/checkout", STUDIO_HOST: "env-host" };
+  const bare = spawnSync(process.execPath, ["scripts/studio-ff.mjs", "--remote", "github", "--branch", "main"], { encoding: "utf8", env });
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /Usage|--checkout/);
+  const local = spawnSync(process.execPath, ["scripts/studio-ff.mjs", "--remote", "github", "--branch", "main", "--checkout", "/s", "--host", "localhost"], { encoding: "utf8", env });
+  assert.equal(local.status, 1);
+  assert.match(local.stderr, /this Mac/);
+});
+
+test("the ship file gives the studio step its checkout and host", () => {
+  const ship = JSON.parse(readFileSync("docs/atelier/ship.json", "utf8"));
+  const argv = ship.studio.run;
+  assert.match(argv[argv.indexOf("--checkout") + 1], /^\//);
+  assert.ok(argv[argv.indexOf("--host") + 1]);
 });

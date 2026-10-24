@@ -378,7 +378,9 @@ export async function runLand(io) {
     // Through the Workflow an accepted task is not a refusal but a resume:
     // its workspace work is behind it, and the landing goes on from the
     // acceptance (the merge the Workflow waits for).
-    if (d.item.state === "accepted" && !workflow) no(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
+    // The plain landing finishes it: the accept is held, so the merge is all
+    // that is left, and it needs no workspace (t188).
+    if (d.item.state === "accepted" && !workflow) return d;
     // Inspect before queuing, but replace a workspace only while holding the lease.
     needsPreparation = await prepareRecordedWorkspace(prepare || dryRun ? io : { ...io, print: () => {} }, { dir, itemPath, detail: d, dryRun: !prepare });
     if (!prepare && needsPreparation) return d;
@@ -436,6 +438,10 @@ export async function runLand(io) {
   // and the command a stopped landing is run again with.
   const moved = { ok: movedOk, approved: null, again: `atelier land ${id}${workflow ? " --workflow" : ""}` };
 
+  if (dryRun && d0.item.state === "accepted") {
+    print(`Dry run: ${id} is accepted at ${short(d0.item.acceptedHead)}; atelier land ${id} would take the landing lease, merge it in ${p.path} (fetching again after a transient failure) and release the lease. Nothing was changed.`);
+    return;
+  }
   if (dryRun) {
     // Where the dry run would wait: behind the holder of the lease, and
     // behind the landings queued for it ahead of this one (t249).
@@ -748,6 +754,20 @@ export async function runLand(io) {
   const began = Date.now();
   try {
     for (let round = 0; ; round++) {
+      // An accepted task has only its merge left (t188): under the lease,
+      // as the merge of a fresh landing is, with the retries landStep gives it.
+      if (d0.item.state === "accepted") {
+        const { waited, took } = await takeLease();
+        startBeating();
+        await record("lease", took, { head: d0.item.acceptedHead, waited });
+        print(`${id} is accepted at ${short(d0.item.acceptedHead)}; merging it.`);
+        await renewBeforePublish();
+        guardLease();
+        const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
+        await landStep(io, record, "merged", ["merge", id], p.path, () => ({ mergeCommit: mergeHead() }));
+        print(`${id} landed: merged as ${short(mergeHead())}.`);
+        break;
+      }
       // ── Before the lease (t550) ──────────────────────────────────────
       // The merge of main, the push, the triage, the checks, the submission
       // and the review run without the landing lease, beside any other
@@ -1492,7 +1512,23 @@ export async function checkStep(io, itemPath, id, step, dir) {
 export async function landStep(io, record, kind, argv, cwd, data = {}) {
   const t = Date.now();
   const quiet = kind === "accept" ? { write() {} } : undefined;
-  const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env, out: quiet, err: quiet });
+  const run = () => (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env, out: quiet, err: quiet });
+  let r = await run();
+  // The merge step's fetch can fail on the server's side (an Artifacts 5xx)
+  // or answer a revision other than the approved one. The accept is already
+  // held and the merge resumes from its journal, so the landing runs the
+  // merge again rather than hand it back: a 5xx up to three more times, a
+  // revision mismatch once.
+  if (kind === "merged") {
+    let server = 0, mismatch = 0;
+    while (!r.passed) {
+      const text = r.output ?? "";
+      if (/fetched revision differs from the approval/.test(text) && mismatch < 1) mismatch++;
+      else if (/\b(HTTP |status |error: )?5\d\d\b/.test(text) && /fetch|Artifacts|HTTP/i.test(text) && server < 3) { server++; await (io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))))(1000 * server); }
+      else break;
+      r = await run();
+    }
+  }
   if (!r.passed) {
     await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500) });
     throw new StepError(`atelier ${argv[0]} failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);

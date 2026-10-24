@@ -22,6 +22,7 @@ import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
+import { stopped as reviewStopped, stopText } from "../src/review/stopped.ts";
 import { historySection } from "../src/review/history.ts";
 import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
@@ -2373,20 +2374,18 @@ export function orderJobs(tasks) {
 }
 
 // The key a runner's per-process failure cap uses. A build's failures count
-// against the task itself; a review's against the review it answered — its
-// head and its request number — so a new review request or a new head (a
-// later landing) starts the count fresh instead of an earlier landing's
-// failures stranding it (t353). A criteria review's count against that
+// against the task itself; a review's, post-merge or not, against its task and
+// head, never its request number (t238): every release withdraws the request
+// and makes a successor under another number, which would start the count
+// fresh on each release. A new head (a later landing) starts it fresh. A
+// pre-review counts by its request. A criteria review's count against that
 // review alone, by its request number (t438): two failed reviews of a
 // task's criteria never skip the task's build, nor the next review the
 // owner asks for after editing them, as counting them under the task did.
 export function failureKey(task) {
   const job = task.item.dispatch?.job;
-  // A merged task's post-merge review (t591, fourth review) counts by its
-  // task and head alone: each release of it makes the request anew under
-  // another number, which would start the count fresh on every poll.
-  if (job === "review" && task.item.state === "merged") return JSON.stringify([task.project, task.item.id, task.item.head]);
-  if (job === "review" || job === PREREVIEW_JOB) return JSON.stringify([task.project, task.item.id, task.item.head, task.item.request]);
+  if (job === "review") return JSON.stringify([task.project, task.item.id, task.item.head]);
+  if (job === PREREVIEW_JOB) return JSON.stringify([task.project, task.item.id, task.item.head, task.item.request]);
   if (job === "criteria-review") return JSON.stringify([task.project, task.item.id, "criteria-review", task.item.request]);
   return taskKey(task);
 }
@@ -2447,6 +2446,10 @@ export function jobOf(task) {
 // that writes no valid verdict keeps the reply on the task and releases the
 // request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO, preclaimed = null) {
+  return runReviewJob(assignment, config, name, runnerIO, preclaimed);
+}
+
+async function runReviewJob(assignment, config, name, runnerIO, preclaimed = null) {
   const { project, item, agent, model, actor } = assignment;
   let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO, landedCommit = null;
   const generation = () => request === undefined ? [] : ["--request", String(request)];
@@ -3133,6 +3136,14 @@ export async function settleRejection(io, ctx) {
   const result = parseVerdict(reply, ctx.criteria, { counted: true, deferred: ctx.deferred, settled: findings });
   const account = `${answered} already answered, ${count("pre-existing")} pre-existing, ${count("unverified")} unverified`;
   if (!result.ok) return { failed: `no blocking finding stood (${account}) and the reply cannot be recorded as an approval: ${result.error}` };
+  // A rejection that declares criteria unmet but names no blocking finding
+  // that stood (t238) is recorded as the rejection it is, naming the unmet
+  // criteria and the findings that did not block. Releasing the request
+  // instead had it claimed and answered the same way again and again.
+  if (result.unmet) {
+    const names = result.unmet.join(", ");
+    return { parsed: { ...result, summary: `Rejected: ${result.unmet.length === 1 ? "criterion" : "criteria"} ${names} ${result.unmet.length === 1 ? "is" : "are"} unmet, and no blocking finding stood (${account}); the follow-ups are listed as findings. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } };
+  }
   if (result.verdict === "approve") {
     return { parsed: { ...result, summary: `The reviewer rejected, but no blocking finding stood (${account}), so this is recorded as an approval with follow-ups. The reviewer's summary: ${parsed.summary}`.slice(0, 2000) } };
   }
@@ -3691,6 +3702,9 @@ export function passedBy(task, jobs, { refused, failures, infrastructureFailures
   if (absent) return `Passed by: its merge commit ${absent.commit.slice(0, 8)} is not in the baseline${absent.baseline ? ` (at ${absent.baseline.slice(0, 8)})` : ""}; it is tried again once the baseline moves (publish main with atelier wrap or atelier sync) or this runner restarts.`;
   // A task the server answered task_terminal for while this runner held it
   // (t476) is not taken again by this process, whatever later polls say.
+  // A review the server carries a stop on (t238) is served by no runner,
+  // this one after a restart or another: the stop is on the live request.
+  if (task.item.dispatch?.job === "review" && reviewStopped(task.item.stopped)) return `Passed by: ${stopText(task.item.id, task.item.stopped)}.`;
   const terminal = terminalTasks.get(taskKey(task));
   if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
   // A task this runner gave up (t584) is released, which changes its head and

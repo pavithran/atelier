@@ -358,13 +358,12 @@ test("CLI sync with a partial-history baseline sends no ControlPlane policy, wha
   });
 });
 
-test("CLI sync with a whole-history baseline names atelier init and sends no policy", () => {
+test("CLI sync with a whole-history baseline already at the checkout's head pushes nothing and sends no policy", () => {
   for (const [kind, files] of Object.entries(retiredFiles)) fixture((f) => {
     const result = syncCheckout(f, { fresh: false, files });
-    assert.equal(result.status, 1, kind);
-    assert.match(result.stderr, /weblog's baseline holds its whole history; atelier init pushes new commits to it/);
-    assert.doesNotMatch(result.stdout + result.stderr, /ControlPlane/, kind);
-    assert.ok(!f.calls().some((c) => c.method === "PUT" || c.method === "GET"), `${kind}: no policy read or write`);
+    assert.equal(result.status, 0, `${kind}: ${result.stderr}`);
+    assert.match(result.stdout, /baseline already holds main/, kind);
+    assert.deepEqual(f.calls().map((c) => c.method), ["POST"], `${kind}: only the baseline token was asked for, no policy read or write`);
   });
 });
 

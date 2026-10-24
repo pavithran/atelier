@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { adoptOldLanding, landingJournalFile, landingLock } from "../landing.mjs";
 import { loadPairs, savePairs, syncHistory } from "../fresh.mjs";
 import { behindRefusal, realHistory } from "../pull.mjs";
-import { guardedPush } from "../private-guard.mjs";
+import { guardedPush, remoteBases } from "../private-guard.mjs";
+import { pushHistory } from "../push-steps.mjs";
 import { OWNER, P, call, cfg, die, landingGit, landingHome, needCheckout, project, short } from "../atelier.mjs";
 
 // A baseline holding part of the history (init --history-since) does not
@@ -24,9 +25,20 @@ export default async function syncCommand() {
   const baselineHead = git(["rev-parse", "FETCH_HEAD"], { cwd });
   const behind = behindRefusal(git, cwd, { gitDir, name, fresh, branch: p.branch, baselineHead, nothing: "Nothing was sent: no commit.", command: `atelier sync --project ${name}` });
   if (behind) die(behind);
-  // A baseline with the whole history takes new commits from atelier init;
-  // sync reads no policy from the checkout (t149).
-  if (!fresh) die(`${name}'s baseline holds its whole history; atelier init pushes new commits to it`);
+  // A baseline with the whole history takes the branch as it is, pushed the
+  // way a flagless atelier init pushes it. The ship order's baseline step
+  // runs this. sync reads no policy from the checkout (t149).
+  if (!fresh) {
+    const tip = git(["rev-parse", "--verify", `refs/heads/${p.branch}^{commit}`], { cwd });
+    if (tip === baselineHead) return console.log(`${name}: the baseline already holds ${p.branch} @ ${short(tip)}.`);
+    const write = await call("POST", `${P(name)}/baseline-token`, { scope: "write" }, OWNER);
+    const bases = () => remoteBases({ git, cwd, remote: write.remote, ref: `refs/heads/${p.branch}`, opts: { token: write.token } });
+    guardedPush({ project: name, cwd, tip: `refs/heads/${p.branch}`, bases, what: `${p.branch}'s history for ${name}'s baseline`, fail: die }, (sha) => {
+      try { pushHistory(git, cwd, { remote: write.remote, token: write.token, branch: p.branch, say: console.log, head: sha }); }
+      catch (error) { die(error.message); }
+    });
+    return console.log(`${name}: baseline now holds ${p.branch} @ ${short(tip)}.`);
+  }
   if (git(["status", "--porcelain"], { cwd })) die("the registered checkout has uncommitted changes; commit or set them aside first");
   if (git(["symbolic-ref", "-q", "HEAD"], { cwd, allowFail: true }).stdout?.trim() !== `refs/heads/${p.branch}`) die(`check out ${p.branch} in ${cwd} first`);
   const landing = landingHome(gitDir);

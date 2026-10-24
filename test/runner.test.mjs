@@ -1385,11 +1385,12 @@ test("a review's failure cap is keyed by the review it answered, so a new reques
   // A build's failures still count against the task alone.
   assert.equal(failureKey(assignment), taskKey(assignment));
   assert.equal(failureKey({ ...assignment, item: { ...assignment.item, head: "b".repeat(40) } }), failureKey(assignment));
-  // A review's count on its head and request: a new head or a new request is
-  // a fresh count, so an earlier landing's two failures never strand the next.
+  // A review's count on its head, never its request (t238): a release makes
+  // the request anew, so a request number would start the count fresh. A new
+  // head is a fresh count, so an earlier landing's failures never strand the next.
   assert.equal(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "a".repeat(40), request: 1 } }));
   assert.notEqual(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "b".repeat(40), request: 1 } }));
-  assert.notEqual(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "a".repeat(40), request: 2 } }));
+  assert.equal(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "a".repeat(40), request: 2 } }));
   // The refusal key ends on a new review request too, at the same head.
   assert.notEqual(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 2 } }));
   assert.equal(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 1 } }));
