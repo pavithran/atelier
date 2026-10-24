@@ -60,3 +60,10 @@ test("harnessExitOf classifies how a run ended, apart from any reason", () => {
   assert.deepEqual(harnessExitOf({ code: 3 }), { kind: "exited", code: 3 });
   assert.equal(MAX_HARNESS_RERUNS, 3);
 });
+
+test("a signalled harness keeps the last 20 lines of the stderr it printed", () => {
+  const stderr = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+  const exit = harnessExitOf({ code: null, stderr });
+  assert.equal(exit.kind, "signalled");
+  assert.deepEqual(exit.stderr.split("\n"), Array.from({ length: 20 }, (_, i) => `line ${i + 6}`));
+});

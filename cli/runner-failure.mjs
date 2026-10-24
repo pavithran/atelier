@@ -31,8 +31,12 @@ export const stderrTail = (stderr) =>
 
 // How a harness run ended, as a structured fact set where the run ends: the
 // outcome reported to the server reads this, never the human-readable reason.
-export const harnessExitOf = (result) =>
-  result.timedOut ? { kind: "timed-out" } : result.code == null ? { kind: "signalled" } : { kind: "exited", code: result.code, ...(result.stderr ? { stderr: stderrTail(result.stderr) } : {}) };
+export const harnessExitOf = (result) => {
+  const tail = result.stderr ? { stderr: stderrTail(result.stderr) } : {};
+  if (result.timedOut) return { kind: "timed-out" };
+  // A signalled harness has no code but may have printed its diagnostics first.
+  return result.code == null ? { kind: "signalled", ...tail } : { kind: "exited", code: result.code, ...tail };
+};
 
 // The structured exit of a run that failed, or null for one that passed or
 // never ran: the one place every harness site (build, fast build, resolver,
