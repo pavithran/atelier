@@ -66,15 +66,22 @@ it("land with no --reviewer names no reviewer when no model of another family is
 it("the reviewer shown for an override is one a live runner offers, not the first of the pool", async () => {
   const id = await landable("offered-pick-c", ["fable-5.1"]);
   const pool = await index().models() as ModelEntry[];
-  expect(await ledger("offered-pick-c").availableReviewer(id, pool)).toBe("claude-code/fable-5.1");
+  expect(await ledger("offered-pick-c").availableReviewer(id, pool, await index().runnerOffers())).toBe("claude-code/fable-5.1");
   await index().putRunnerOffer({ runner: "home:offered-pick-c", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], jobs: ["build", "review"], projects: ["offered-pick-c"] }, new Date().toISOString());
   await land("offered-pick-c", id);
-  expect(await ledger("offered-pick-c").availableReviewer(id, pool)).toBe("claude-code/opus-5.5");
+  expect(await ledger("offered-pick-c").availableReviewer(id, pool, await index().runnerOffers())).toBe("claude-code/opus-5.5");
 });
 
 it("with no live runner offering any reviewer, no reviewer is shown for an override", async () => {
   const id = await landable("offered-pick-d", []);
   const pool = await index().models() as ModelEntry[];
   await land("offered-pick-d", id);
-  expect(await ledger("offered-pick-d").availableReviewer(id, pool)).toBeNull();
+  expect(await ledger("offered-pick-d").availableReviewer(id, pool, await index().runnerOffers())).toBeNull();
+});
+
+it("with the runner's offer expired, no reviewer is named for an override, though the pool has an eligible one", async () => {
+  const id = await landable("offered-pick-e", ["opus-5.5", "fable-5.1"]);
+  const pool = await index().models() as ModelEntry[];
+  await index().putRunnerOffer({ runner: "home:offered-pick-e", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5", "fable-5.1"] }], jobs: ["build", "review"], projects: ["offered-pick-e"] }, new Date(Date.now() - 24 * 3_600_000).toISOString());
+  expect(await ledger("offered-pick-e").availableReviewer(id, pool, await index().runnerOffers())).toBeNull();
 });

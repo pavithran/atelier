@@ -34,6 +34,9 @@ export const FORK_REPLACE_MS = 30 * 60_000;
 export const PREPARING = "preparing";
 // The stage name a stale review claim is keyed by; it is not a TaskStage.
 export const REVIEW_CLAIM = "review";
+// The same for the review tier's claim and its unclaimed request; neither is a TaskStage.
+export const REVIEW_TIER_CLAIM = "review-tier";
+export const REVIEW_TIER_STAGE = "checked-tier";
 export interface StageKey { item: string; stage: TaskStage; head: string }
 export interface StageFinding extends StageKey { enteredAt: string; limitMs: number; overMs: number }
 export interface StageMove extends StageKey { kind: (typeof STAGE_EVENT_KINDS)[number]; data: Record<string, unknown> }

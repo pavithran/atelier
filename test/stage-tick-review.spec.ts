@@ -121,3 +121,68 @@ it("a claim unanswered past reviewAnswerHours is released and asked again once, 
   // Told, not released again: the claim stands.
   expect(await asked(key, id)).toEqual([]);
 });
+
+// A protected task whose gate review is claimed by sonnet-5.5 and whose
+// separate tier request (askTierReview) is asked of sonnet-5.4, with sonnet-5.3
+// the tier's other model.
+const TIER_POOL = [entry("claude-code", "sonnet-5.5"), entry("claude-code", "sonnet-5.4"), entry("claude-code", "sonnet-5.3"), entry("zcode", "glm-5.3")];
+const ALL = ["sonnet-5.5", "sonnet-5.4", "sonnet-5.3"];
+async function tiered(key: string) {
+  for (const m of await I().models() as ModelEntry[]) await I().removeModel(m.id);
+  for (const m of TIER_POOL) await I().putModel(m);
+  const policy = { checks: ["npm test"], protected: ["src/**"], reviewTier: ["claude-code/sonnet-5.4", "claude-code/sonnet-5.3"] };
+  const record = { name: key, repo: `${key}--baseline`, policy, createdAt: AT };
+  await L(key).setProject(record, "owner");
+  await I().registerProject(record);
+  const { id } = await L(key).newItem("Tier me", ["src/**"], "owner", { accept: ["Works"] });
+  await L(key).claim(id, BUILDER);
+  await L(key).setFork(id, `${key}--${id}`, BASE, BUILDER);
+  await L(key).recordPush(id, BUILDER, HEAD, HEAD);
+  await L(key).addEvidence({ itemId: id, claim: "npm test", grade: "observed", passed: true, head: HEAD, changedPaths: ["src/a.ts"], by: "owner", at: AT });
+  await L(key).submit(id, BUILDER);
+  await offers(key, ALL, 0);
+  const made = await L(key).requestReview(id, "owner", SONNET, TIER_POOL, false, false, undefined, await I().runnerOffers());
+  expect(made).toMatchObject({ requested: true, reviewer: SONNET });
+  await L(key).claimReview(id, SONNET, RUNNER);
+  expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.4"]);
+  return id;
+}
+
+it("an unclaimed tier request is re-pointed once to another of the tier's models, and repeated ticks change nothing", async () => {
+  const key = "sr-tier-reroute", id = await tiered(key);
+  await offers(key, ALL, 11 * MIN);
+  await tick(11 * MIN);
+  expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.3"]);
+  expect(await kinds(key)).toEqual([["stage.rerouted", "checked-tier"]]);
+  await offers(key, ALL, 12 * MIN);
+  await tick(12 * MIN);
+  await tick(13 * MIN);
+  expect(await kinds(key)).toEqual([["stage.rerouted", "checked-tier"]]);
+  // Unclaimed another 10 minutes: stuck and told, not re-pointed again.
+  await offers(key, ALL, 22 * MIN);
+  await tick(22 * MIN);
+  expect(await kinds(key)).toEqual([["stage.rerouted", "checked-tier"], ["stage.stuck", "checked-tier"], ["stage.told", "checked-tier"]]);
+  expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.3"]);
+});
+
+it("an unclaimed tier request with no other tier model offered is stuck and told", async () => {
+  const key = "sr-tier-none", id = await tiered(key);
+  await offers(key, ["sonnet-5.5", "sonnet-5.4"], 11 * MIN);
+  await tick(11 * MIN);
+  await tick(12 * MIN);
+  expect(await kinds(key)).toEqual([["stage.stuck", "checked-tier"], ["stage.told", "checked-tier"]]);
+  expect(await asked(key, id)).toEqual(["claude-code/sonnet-5.4"]);
+});
+
+it("a stale tier claim is released and asked again once, apart from the gate's claim at the same head", async () => {
+  const key = "sr-tier-stale", id = await tiered(key);
+  await L(key).claimReview(id, "claude-code/sonnet-5.4", RUNNER);
+  await offers(key, ALL, 2.1 * HOUR);
+  await tick(2.1 * HOUR);
+  expect((await kinds(key)).sort()).toEqual([["stage.retried", "review"], ["stage.retried", "review-tier"]]);
+  expect((await asked(key, id)).sort()).toEqual(["claude-code/sonnet-5.4", SONNET]);
+  await L(key).claimReview(id, "claude-code/sonnet-5.4", RUNNER);
+  await tick(5 * HOUR);
+  await tick(5.1 * HOUR);
+  expect((await kinds(key)).filter(([k, st]) => k === "stage.told" && st === "review-tier")).toEqual([["stage.told", "review-tier"]]);
+});
