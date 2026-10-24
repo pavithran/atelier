@@ -36,11 +36,12 @@ export function unquotePath(s: string): string {
 
 // The new path of a "diff --git" line's operands, quoted or not.
 export function headerPath(rest: string): string | null {
+  // Git's b/ prefix is removed once, after unquoting: a path in the
+  // repository's own b/ directory keeps that directory.
   const quoted = /^("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*"|b\/.*)$/.exec(rest) ?? /^(a\/.*?) ("(?:[^"\\]|\\.)*")$/.exec(rest);
-  const second = quoted ? quoted[2] : /^a\/(.+?) b\/(.+)$/.exec(rest)?.[2];
-  if (!second) return null;
-  const path = unquotePath(second);
-  return path.startsWith("b/") ? path.slice(2) : path;
+  const second = quoted ? unquotePath(quoted[2]) : /^a\/.+? (b\/.+)$/.exec(rest)?.[1];
+  if (!second?.startsWith("b/") || second.length === 2) return null;
+  return second.slice(2);
 }
 
 // The limit to use: ATELIER_REVIEW_DIFF_MAX when it is a positive whole

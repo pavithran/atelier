@@ -119,3 +119,29 @@ test("a diff of only quoted filenames still reports its paths", () => {
   const diff = 'diff --git "a/\\346\\227\\245.txt" "b/\\346\\227\\245.txt"\n+x\n';
   assert.deepEqual(diffSections(diff).map((s) => s.path), ["日.txt"]);
 });
+
+// Round 3 found b/out.js listed as out.js and its generated body kept: Git's
+// b/ prefix is removed once, whatever the form of the header.
+for (const [form, header] of [
+  ["unquoted", "diff --git a/b/out.js b/b/out.js"],
+  ["quoted", 'diff --git "a/b/out.js" "b/b/out.js"'],
+  ["quoted, then b/-prefixed unquoted", 'diff --git "a/b/out.js" b/b/out.js'],
+  ["a/-prefixed unquoted, then quoted", 'diff --git a/b/out.js "b/b/out.js"'],
+]) {
+  test(`a declared generated path under b/ is matched, header ${form}`, () => {
+    const diff = `${header}\n--- a/b/out.js\n+++ b/b/out.js\n+GENERATED_CONTENT\n` + small;
+    const generated = new Set(["b/out.js"]);
+    const sections = diffSections(diff, generated);
+    assert.deepEqual(sections.map((s) => s.path), ["b/out.js", "src/a.ts"]);
+    assert.equal(sections[0].generated, true);
+    const { text, hidden } = withoutBulk(diff, generated);
+    assert.deepEqual(hidden.map((h) => h.path), ["b/out.js"]);
+    assert.ok(!text.includes("GENERATED_CONTENT"));
+    assert.ok(text.includes("diff --git a/b/out.js b/b/out.js\n(generated path"));
+  });
+}
+
+test("a plain path keeps its name and is matched as declared", () => {
+  const diff = big("dist/out.js", 20) + small;
+  assert.deepEqual(diffSections(diff, new Set(["dist/out.js"])).map((s) => [s.path, s.generated]), [["dist/out.js", true], ["src/a.ts", false]]);
+});
