@@ -109,9 +109,20 @@ test("the stop counts per task and head, for the reasons that are the review's o
   carried = stopAfter(carried, "h", stopReasonOf("harness timed out"), "harness timed out", "t2");
   assert.equal(carried.count, 2);
   assert.equal(stopAfter(carried, "h", stopReasonOf("codex usage limit until 2026-10-24T09:00:00.000Z: x"), "limit", "t3").count, 2, "a provider limit adds nothing");
-  assert.equal(stopAfter(carried, "h", stopReasonOf("harness exited 1"), "harness exited 1", "t3").count, 1, "another reason starts its own count");
+  assert.equal(stopAfter(carried, "h", stopReasonOf("harness exited 1"), "harness exited 1", "t3").count, 3, "another reason goes on with the count");
   assert.equal(stopAfter(carried, "h2", stopReasonOf("harness timed out"), "harness timed out", "t3").count, 1, "a new head starts clean");
   assert.match(stopText("t173", carried), /t173 at h stopped after 2 releases/);
+});
+
+test("alternating the two reasons at one head stops at the second release", () => {
+  const first = stopAfter(null, "h", stopReasonOf("harness timed out"), "harness timed out", "t1");
+  const second = stopAfter(first, "h", stopReasonOf("reply had no VERDICT line"), "reply had no VERDICT line", "t2");
+  assert.equal(first.count, 1);
+  assert.equal(second.count, STOP_LIMIT);
+  assert.equal(second.reason, "no-verdict", "the last reason is kept");
+  assert.match(stopText("t1", second), /ended without a verdict/);
+  const third = stopAfter(second, "h", stopReasonOf("harness timed out"), "harness timed out", "t3");
+  assert.equal(third.count, 3);
 });
 
 test("a review's failures count by task and head whatever the request number, post-merge or not", () => {

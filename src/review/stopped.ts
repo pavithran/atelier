@@ -40,12 +40,13 @@ export function parseStop(raw: unknown): ReviewStop | null {
 }
 
 // The stop a successor at `head` carries after a release for `reason`: the
-// count goes on where the earlier stop was at the same head and for the same
-// reason, and starts at one otherwise. A null reason changes nothing.
+// count goes on where the earlier stop was at the same head, whichever reason
+// it was for, and starts at one otherwise; the reason kept is the last one. A
+// null reason changes nothing.
 export function stopAfter(prev: ReviewStop | null, head: string, reason: string | null, note: string, at: string): ReviewStop | null {
   const kept = prev && prev.head === head ? prev : null;
   if (!reason) return kept;
-  const count = kept && kept.reason === reason ? kept.count + 1 : 1;
+  const count = kept ? kept.count + 1 : 1;
   return { head, reason, count, last: note.replace(/\s+/g, " ").trim().slice(0, 300), at };
 }
 
