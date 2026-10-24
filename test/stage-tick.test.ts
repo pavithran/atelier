@@ -175,3 +175,74 @@ test("an overdue tick is ahead of usage and token-expiry warnings, in status and
   assert.match(project[0], /^Stage tick last ran 16 minutes ago/);
   assert.equal(withOverdueTick("text", []), "text");
 });
+
+// t245: rerouting a queued dispatch, and replacing a stalled fork.
+import { decideReroute, forkStalled, recordedKeys, replacementFork, FORK_REPLACE_MS } from "../src/stage-tick.ts";
+import type { Dispatch, SeenOffer } from "../src/dispatch/rules.ts";
+
+const disp = (over: Partial<Dispatch> = {}): Dispatch => ({ to: "any", agent: "codex", model: "gpt-6-astra", by: "owner", at: T0, note: "", ...over });
+const offer = (runner: string, agents: SeenOffer["agents"], over: Partial<SeenOffer> = {}): SeenOffer => ({ runner, kind: "home", agents, at: T0, ...over });
+const NOW = at(5 * MIN);
+
+test("a dispatch a live runner takes, and is not late, is left alone", () => {
+  assert.equal(decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "codex", models: ["gpt-6-astra"] }])], now: NOW, project: "p", late: false, rerouted: false }), null);
+});
+
+test("a dispatch no live runner offers goes to a model one does, the same tick", () => {
+  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
+  assert.deepEqual([v?.acts, v?.from, v?.to], [true, "codex/gpt-6-astra", { agent: "claude-code", model: "opus-5.5" }]);
+});
+
+test("a late dispatch goes to another model, never the one it already has", () => {
+  const offers = [offer("home:a", [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "claude-code", models: ["opus-5.5"] }])];
+  assert.equal(decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: true, rerouted: false })?.to?.model, "opus-5.5");
+  const only = decideReroute({ dispatch: disp(), offers: [offers[0]].map((o) => ({ ...o, agents: [o.agents[0]] })), now: NOW, project: "p", late: true, rerouted: false });
+  assert.equal(only?.acts, false);
+  assert.match(only!.note, /no live runner offers another model/);
+});
+
+test("no offered model is told, naming what the live runners offer", () => {
+  const v = decideReroute({ dispatch: disp({ to: "cloud" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
+  assert.equal(v?.acts, false);
+  assert.match(v!.note, /home:a is a home runner, not a cloud one/);
+  assert.match(decideReroute({ dispatch: disp(), offers: [], now: NOW, project: "p", late: false, rerouted: false })!.note, /no runner has asked/);
+});
+
+test("a second miss never reroutes again", () => {
+  const v = decideReroute({ dispatch: disp(), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: true });
+  assert.equal(v?.acts, false);
+  assert.match(v!.note, /already rerouted once/);
+});
+
+test("the family rule that applies passes a model over", () => {
+  const offers = [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5", "sonnet-5.5"] }])];
+  const v = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: false, rerouted: false, refuse: (a) => a.endsWith("opus-5.5") ? "its family built it" : null });
+  assert.equal(v?.to?.model, "sonnet-5.5");
+  const none = decideReroute({ dispatch: disp(), offers, now: NOW, project: "p", late: false, rerouted: false, refuse: () => "its family built it" });
+  assert.equal(none?.acts, false);
+  assert.match(none!.note, /passed over: claude-code\/opus-5\.5: its family built it/);
+});
+
+test("a plan's or integrator's dispatch is told, not moved", () => {
+  const v = decideReroute({ dispatch: disp({ job: "integrate" }), offers: [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5"] }])], now: NOW, project: "p", late: false, rerouted: false });
+  assert.equal(v?.acts, false);
+});
+
+test("a fork is stalled past 30 minutes with no fork or head recorded", () => {
+  assert.equal(FORK_REPLACE_MS, 30 * MIN);
+  assert.equal(forkStalled({ since: T0 }, {}, at(30 * MIN)), false);
+  assert.equal(forkStalled({ since: T0 }, {}, at(30 * MIN + 1)), true);
+  assert.equal(forkStalled({ since: T0 }, { head: "abc" }, at(HOUR)), false);
+  assert.equal(forkStalled({ since: T0 }, { fork: "f" }, at(HOUR)), false);
+  assert.equal(forkStalled({ since: null }, {}, at(HOUR)), false);
+});
+
+test("a replacement fork has a new name each time, and keeps the old one's prefix", () => {
+  assert.equal(replacementFork("p--t1"), "p--t1-r2");
+  assert.equal(replacementFork("p--t1-r2"), "p--t1-r3");
+});
+
+test("records which keys an event kind was written for", () => {
+  const keys = recordedKeys([{ item: "t1", kind: "stage.rerouted", data: { stage: "queued", head: "" } }, { item: "t2", kind: "stage.told", data: { stage: "queued" } }], "stage.rerouted");
+  assert.deepEqual([...keys], [JSON.stringify(["t1", "queued", ""])]);
+});
