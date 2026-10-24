@@ -1556,10 +1556,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ? queued.flatMap(({ project, item, ...mark }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch?.job === "land" ? { agent: "atelier", model: "lander", actor: "atelier/lander" } : item.dispatch ? assign(item.dispatch, offer) : null;
+          // A queued landing is not the task's claim: a claimed task lands
+          // as ordinary land does, so its holder is not the lander's to match.
           // A held job is offered only as the claim it already is: the
           // assignment must name its holder, or the re-claim would be refused
           // as another's claim (claim guards the runner name; assign the actor).
-          return a && (!c.token?.runner || !["integrate", "refresh", "task-refresh", "task-resolve"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a, ...mark }] : [];
+          return a && (!c.token?.runner || !["integrate", "refresh", "task-refresh", "task-resolve"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.dispatch?.job === "land" || item.owner === a.actor) ? [{ project, item, ...a, ...mark }] : [];
         })
       : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null, busy);
     // A project that could not be read is named, so a missing task is never silent.

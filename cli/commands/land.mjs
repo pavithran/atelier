@@ -21,6 +21,7 @@ export default async function landCommand() {
     const flag = ["workflow", "release-lease", "post-merge"].find((k) => args[k] !== undefined);
     if (flag) die(`several tasks cannot be landed with --${flag}: it acts on one task; give one task, or leave --${flag} out`);
   }
+  if (args.queue !== undefined && args["dry-run"] !== undefined) die("--queue and --dry-run say two things: --queue records a landing for a runner to run, and --dry-run changes nothing; give one or the other");
   const name = project(), id = itemArg();
   // Queued for a runner that holds the registered checkout (t226): nothing
   // runs here.

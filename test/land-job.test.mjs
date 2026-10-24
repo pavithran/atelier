@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { failedStep, failureReport, runLandJob } from "../cli/land-queue.mjs";
 import { offerFrom, runRunner } from "../cli/runner.mjs";
 import { parseConfig } from "../cli/runner-config.mjs";
@@ -147,4 +148,10 @@ test("a failed landing is told once with its step, and not run again at the next
   const { logs, spawned } = await loop(t, { checkouts: ["atelier"], land: { code: 1, output: "atelier check failed (exit 1):\n1 failing" }, polls: 3 });
   assert.equal(spawned.length, 1);
   assert.equal(logs.filter((l) => l.includes("failed at check")).length, 1);
+});
+
+test("land --queue with --dry-run is refused before anything is asked of the server", () => {
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, "../cli/atelier.mjs"), "land", "t9", "--queue", "--dry-run", "--project", "atelier"], { encoding: "utf8", env: { ...process.env, ATELIER_SERVER: "http://127.0.0.1:9" } });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr + r.stdout, /--queue and --dry-run say two things/);
 });

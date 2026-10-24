@@ -9023,15 +9023,20 @@ export class Ledger extends DurableObject<Env> {
 
   // The land jobs a runner is offered (t226): the queued landings, to a
   // runner whose offer lists the job and names this project among the
-  // checkouts it holds, and to no other. A job whose task has merged or been
-  // closed is dropped here.
+  // checkouts it holds, and to no other. A job whose task has been closed, or has merged
+  // with no post-merge work left, is dropped here.
   // `names` is every name the project has had, current first.
   landJobs(offer: RunnerOffer, names: string[]): Item[] {
     if (!(offer.jobs ?? []).includes("land") || !names.some((n) => (offer.checkouts ?? []).includes(n))) return [];
     const jobs: Item[] = [];
     for (const r of this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at, item`).toArray()) {
       const item = this.item(r.item as string);
-      if (item.state === "merged" || item.state === "abandoned") { this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id); continue; }
+      // A merged task keeps its job while its post-merge run is open: the
+      // merge is recorded before the journal is cleared and the run executes,
+      // and a landing killed between them resumes from here. A failed run
+      // was reported by the landing that ran it, so it is not offered again.
+      const run = item.state === "merged" ? this.postMergeRun(item.id) : null;
+      if (item.state === "abandoned" || (item.state === "merged" && (!run || run.state === "complete" || run.state === "failed"))) { this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id); continue; }
       jobs.push({ ...item, dispatch: { to: "home", agent: "atelier", model: "lander", by: r.by as string, at: r.at as string, note: `land ${item.id}`, job: "land" } });
     }
     return jobs;
