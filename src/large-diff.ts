@@ -25,13 +25,13 @@ export function unquotePath(s: string): string {
   const body = s.slice(1, -1);
   for (let i = 0; i < body.length; i++) {
     const c = body[i];
-    if (c !== "\\") { bytes.push(...Buffer.from(c)); continue; }
+    if (c !== "\\") { bytes.push(...new TextEncoder().encode(c)); continue; }
     const oct = /^[0-7]{1,3}/.exec(body.slice(i + 1));
     if (oct) { bytes.push(parseInt(oct[0], 8) & 255); i += oct[0].length; }
     else if (body[i + 1] in esc) { bytes.push(esc[body[i + 1]]); i++; }
     else bytes.push(92);
   }
-  return Buffer.from(bytes).toString("utf8");
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 // The new path of a "diff --git" line's operands, quoted or not.
