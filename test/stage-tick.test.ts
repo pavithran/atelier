@@ -205,6 +205,12 @@ test("a dispatch held by a hold or a claim is not rerouted, late or not", () => 
   assert.equal(decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers, now: NOW, project: "p", late: true, held: true, rerouted: false }), null);
 });
 
+test("a held dispatch whose model no live runner offers moves to a cheaper offered model", () => {
+  const offers = [offer("home:a", [{ agent: "claude-code", models: ["opus-5.5", "haiku-4.5"] }])];
+  const v = decideReroute({ dispatch: disp({ agent: "claude-code", model: "sonnet-5.5" }), offers, now: NOW, project: "p", late: false, held: true, rerouted: false });
+  assert.deepEqual([v?.acts, v?.from, v?.to], [true, "claude-code/sonnet-5.5", { agent: "claude-code", model: "haiku-4.5" }]);
+});
+
 test("a busy runner still offers its model: the dispatch keeps it", () => {
   const offers = [offer("home:a", [{ agent: "claude-code", models: ["sonnet-5.5"] }, { agent: "claude-code", models: ["opus-5.5"] }])];
   const d = disp({ agent: "claude-code", model: "sonnet-5.5" });
