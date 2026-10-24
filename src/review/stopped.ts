@@ -21,12 +21,13 @@ export interface ReviewStop {
 // Releases that count towards a stop: a harness that timed out, and one that
 // ended without a verdict. A provider's usage limit is the harness's, an
 // interrupt is the runner's own, and a merge commit or baseline that could not
-// be read has its own count in the runner; none of them stops the review.
+// be read has its own count in the runner; none of them stops the review. A
+// release that gives no reason is not a runner's, which always gives one.
 export const STOP_TIMEOUT = "timeout";
 export const STOP_NO_VERDICT = "no-verdict";
 
 export function stopReasonOf(note: string): string | null {
-  if (/usage limit until/i.test(note) || /^interrupted\b/i.test(note) || /merge commit/i.test(note)) return null;
+  if (!note.trim() || /usage limit until/i.test(note) || /^interrupted\b/i.test(note) || /merge commit/i.test(note)) return null;
   return /timed out/i.test(note) ? STOP_TIMEOUT : STOP_NO_VERDICT;
 }
 
