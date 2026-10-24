@@ -417,6 +417,8 @@ A request for an admitted reviewer is refused `no_runner` while no live runner o
 
 A runner is offered the oldest review request it can serve, whatever older ones it cannot; a request whose reviewer no live runner offers for 15 minutes shows in `atelier stuck` as `review-unoffered`: reroute it with `atelier review-request ID --reviewer H/M` to a reviewer a live runner offers, or withdraw it with `atelier review-withdraw ID --reason TEXT` (t220).
 
+The stage tick reroutes a queued dispatch no live runner offers, or one left unclaimed 10 minutes, once to a model a live runner offers (`stage.rerouted`), and replaces a task fork preparing over 30 minutes with no commit recorded once; any second miss is `stage.told` (t245).
+
 To serve a review by hand, claim it as the reviewer with `atelier
 review-claim ID --as HARNESS/MODEL`. Besides its JSON, the claim prints the
 request number, the head, the criteria binding and the exact command that

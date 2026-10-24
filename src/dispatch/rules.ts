@@ -69,6 +69,10 @@ export interface Dispatch {
   // file. Set only by the owner's own dispatch (atelier dispatch ID
   // --overlap-ok); a plan's dispatches never carry it.
   overlapOk?: true;
+  // Set on a plan part's build dispatch made while fast mode skipped the
+  // criteria review (t179): the exemption outlasts fast mode, so a later
+  // tick or claim in full mode does not review the part's criteria again.
+  criteriaSkipped?: true;
 }
 
 // What a runner says it can run when it asks for work. `jobs` names every

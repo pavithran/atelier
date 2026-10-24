@@ -1,5 +1,5 @@
 import { landingOf } from "./diff.ts";
-import { findStageOverrun, openStages, reconcileStages, STAGE_EVENT_KINDS, type StageFinding } from "./stage-tick.ts";
+import { decideReroute, findStageOverrun, forkStalled, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type RerouteVerdict, type StageFinding } from "./stage-tick.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
@@ -14,7 +14,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { modelCardView, newCardRecord, type CardInput, type CardRecord, type CardView, type WithdrawalInput } from "./models/cards.ts";
 import { DurableObject } from "cloudflare:workers";
 import { gateMethods, RestartGate } from "./restart-gate.ts";
-import { assertBaselineName, ledgerRestart, parseLedgerRestart } from "./rules";
+import { assertBaselineName, forkAgeText, ledgerRestart, parseLedgerRestart, STAGE_LIMITS_MS, type TaskStage } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -1897,14 +1897,31 @@ export class Ledger extends DurableObject<Env> {
   // facts cannot be read makes the read incomplete, and an incomplete read
   // records nothing.
 
-  stageTick(now: Date): { complete: boolean; recorded: number; tasks: number } {
+  // It also acts on two stages (t245), as src/stage-tick.ts says: a queued
+  // dispatch no live runner offers, or unclaimed past its limit, is
+  // re-dispatched once to a model a live runner offers; a task fork stalled
+  // past FORK_REPLACE_MS with no commit recorded is replaced once by a fork
+  // under a new name (forkNameFor). The offers are read from the index first;
+  // when they cannot be read, no queued dispatch is judged.
+
+  async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
+    let offers: SeenOffer[] | null = null;
+    try {
+      offers = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
+      this.keepOffers(offers);
+    } catch { /* the index could not be read: no queued dispatch is judged this time */ }
     const at = now.toISOString();
     return this.ctx.storage.transactionSync(() => {
       let complete = true;
       const findings: StageFinding[] = [];
+      const verdicts = new Map<string, ActVerdict>();
+      const reroutes: { id: string; head: string; dispatch: Dispatch; verdict: RerouteVerdict }[] = [];
       let tasks = 0;
+      const rows = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE kind IN (${STAGE_EVENT_KINDS.map(() => "?").join(", ")}) ORDER BY seq`, ...STAGE_EVENT_KINDS).toArray();
+      const recorded = rows.map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
+      const rerouted = recordedKeys(recorded, "stage.rerouted");
       try {
-        const policy = this.project().policy;
+        const policy = this.project().policy, project = this.project().name;
         for (const item of this.items()) {
           if (["merged", "abandoned", "integrated", "blocked"].includes(item.state) || item.blocked || item.kind === "plan") continue;
           tasks++;
@@ -1919,17 +1936,106 @@ export class Ledger extends DurableObject<Env> {
               agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
               reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
             };
-            const found = findStageOverrun(item, stage, detail.head, now, clock);
+            let found = findStageOverrun(item, stage, detail.head, now, clock);
+            // A dispatch waiting for a runner is judged whatever stage the task
+            // is at: rework and merge-main dispatches wait on tasks that keep a
+            // commit, which stageOf reports as built or later.
+            if (item.dispatch && !item.owner && item.state === "open" && offers) {
+              const d = item.dispatch, head = item.head ?? "";
+              const key = { item: item.id, stage: "queued" as TaskStage, head };
+              let wait = stage === "queued" ? found : findStageOverrun(item, "queued", head, now, clock);
+              const verdict = decideReroute({
+                dispatch: d, offers, now, project, late: !!wait, rerouted: rerouted.has(stageKeyOf(key)),
+                refuse: (actor) => this.rerouteRefusal(item, d, actor),
+              });
+              if (verdict) {
+                // A dispatch the tick moves is no longer stuck: its clock starts again.
+                if (verdict.acts) { wait = null; reroutes.push({ id: item.id, head, dispatch: d, verdict }); }
+                else {
+                  wait ??= { ...key, enteredAt: d.at, limitMs: STAGE_LIMITS_MS.queued ?? 0, overMs: 0 };
+                  verdicts.set(stageKeyOf(key), verdict);
+                }
+              }
+              if (stage === "queued") found = wait;
+              else if (wait) findings.push(wait);
+            }
             if (found) findings.push(found);
           } catch { complete = false; }
         }
       } catch { complete = false; }
-      const rows = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE kind IN (${STAGE_EVENT_KINDS.map(() => "?").join(", ")}) ORDER BY seq`, ...STAGE_EVENT_KINDS).toArray();
-      const open = openStages(rows.map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) })));
-      const moves = reconcileStages(findings, open, complete);
+      const open = openStages(recorded);
+      const moves = reconcileStages(findings, open, complete, undefined, verdicts);
       for (const m of moves) this.log(m.item, "atelier", m.kind, m.data, at);
-      return { complete, recorded: moves.length, tasks };
+      let acted = 0;
+      if (complete) {
+        for (const r of reroutes) {
+          try { this.rerouteQueued(r.id, r.head, r.dispatch, r.verdict, at); acted++; } catch { /* the dispatch was not moved; the next tick tries again */ }
+        }
+        acted += this.replaceStalledForks(now, recorded);
+      }
+      return { complete, recorded: moves.length + acted, tasks };
     });
+  }
+
+  // Why a model may not be given a queued dispatch, or null when it may: the
+  // owner's standing for it, single-family mode, and for a review job the rule
+  // that its reviewer is of another family than every contributor.
+  private rerouteRefusal(item: Item, d: Dispatch, actor: string): string | null {
+    try {
+      const policy = this.project().policy;
+      assertSingleFamily(actor, policy, actor);
+      const review = d.job === "review" || d.job === "prereview" || d.job === "criteria-review";
+      this.assertStanding(actor, review ? "review" : "build");
+      if (review) return independenceRefusal(actor, contributorsOf(item), singleFamily(policy));
+      return null;
+    } catch (err) {
+      return (err as Error).message.slice(0, 200);
+    }
+  }
+
+  // The dispatch given to the model a live runner offers, in place of the one
+  // no live runner could take. Everything else it says (overlap override, job,
+  // head) stays; the old model is kept in the note and the events.
+  private rerouteQueued(id: string, head: string, d: Dispatch, verdict: RerouteVerdict, at: string): void {
+    const to = verdict.to!;
+    const built = this.standingDispatch({ to: d.to, agent: to.agent, model: to.model, note: `Rerouted from ${verdict.from} by the stage tick. ${d.note}`.slice(0, 500), job: d.job, head: d.head, overlapOk: d.overlapOk }, "build", "atelier", at);
+    const next: Dispatch = { ...d, ...built };
+    this.setDispatch(id, next, at);
+    this.log(id, "atelier", "item.dispatched", { to: next.to, agent: next.agent, model: next.model, note: next.note, rerouted: true, ...(next.job ? { job: next.job, head: next.head } : {}) }, at);
+    this.log(id, "atelier", "stage.rerouted", { stage: "queued", head, from: verdict.from, to: `${to.agent}/${to.model}`, note: verdict.note }, at);
+  }
+
+  // A task fork preparing past the limit with no fork or head recorded: the
+  // first stall moves the task to a fork under a new name (the next claim makes
+  // it) and clears the clock; the old repository is left as it is. A second
+  // stall is told once. Returns how many events it recorded.
+  private replaceStalledForks(now: Date, recorded: readonly { item: string; kind: string; data: Record<string, unknown> }[]): number {
+    const at = now.toISOString();
+    const rerouted = recordedKeys(recorded, "stage.rerouted"), told = recordedKeys(recorded, "stage.told");
+    let n = 0;
+    for (const [id, view] of Object.entries(this.forkPreparations())) {
+      const item = this.item(id);
+      if (!forkStalled(view, item, now)) continue;
+      const key = stageKeyOf({ item: id, stage: PREPARING as never, head: "" });
+      if (!rerouted.has(key)) {
+        const to = replacementFork(view.fork);
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, forkNameKey(id), to);
+        this.sql.exec(`DELETE FROM meta WHERE key = ?`, forkPrepKey(id));
+        this.log(id, "atelier", "stage.rerouted", { stage: PREPARING, head: "", from: view.fork, to, since: view.since, note: `${view.fork} was preparing for ${forkAgeText(view.ageMs)} with no commit recorded; the next claim makes ${to}. Atelier deleted nothing.` }, at);
+        n++;
+      } else if (!told.has(key)) {
+        this.log(id, "atelier", "stage.told", { stage: PREPARING, head: "", fork: view.fork, since: view.since, note: `${view.fork}, the replacement fork, has not become ready in ${forkAgeText(view.ageMs)} either, and the tick replaces a fork once. Check the repository in Artifacts.` }, at);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  // The name a task's next fork is made under when the tick replaced a stalled
+  // one, or null for the usual name.
+  forkNameFor(id: string): string | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, forkNameKey(id)).toArray()[0];
+    return row ? (row.value as string) : null;
   }
 
   // Each run of the tick is a tick.ran row on the index instance: its time and
@@ -2936,7 +3042,7 @@ export class Ledger extends DurableObject<Env> {
 
   private assertCriteriaReviewed(item: Item, dispatch: Dispatch | null, what: "dispatched" | "claimed"): void {
     if (!this.criteriaGate()) return;
-    if (!buildJob(dispatch)) return;
+    if (!buildJob(dispatch) || dispatch?.criteriaSkipped) return;
     const status = this.criteriaReviewStatus(item.id, new Date());
     if (status.approved) return;
     const ask = item.kind === "part"
@@ -5492,6 +5598,7 @@ export class Ledger extends DurableObject<Env> {
       next.decision = d.id;
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?)`, JSON.stringify(next));
       this.log(null, actor, "mode.fast", { reason: next.reason, decision: d.id, ...(direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : { confirmed: "page" }) }, at);
+      this.clearCriteriaBlocksForFast(at);
       return { ...next, line: modeLine(next) };
     }
     const was = current as Extract<ProjectMode, { mode: "fast" }>;
@@ -6763,7 +6870,8 @@ export class Ledger extends DurableObject<Env> {
   private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null, planHead: string | null = null): void {
     const slash = to.indexOf("/");
     const d = this.standingDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, "build", ORCHESTRATOR, at);
-    const merging = mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d;
+    const skipped = this.item(id).dispatch?.criteriaSkipped || (this.project().policy.requireCriteriaReview && this.mode().mode === "fast");
+    const merging = { ...(mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d), ...(skipped ? { criteriaSkipped: true as const } : {}) };
     this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
 
@@ -6910,7 +7018,7 @@ export class Ledger extends DurableObject<Env> {
       // A merge-main part, or one sent back after an integration conflict
       // (its dispatch names the plan's head: the runner's merge-plan job),
       // merges and keeps the gates it had; neither waits for the review.
-      const merges = mainHead !== null || conflicted.has(p.partKey!) || !!p.dispatch?.planHead;
+      const merges = mainHead !== null || conflicted.has(p.partKey!) || !!p.dispatch?.planHead || !!p.dispatch?.criteriaSkipped;
       if ((want || queued) && this.criteriaReviewHolds(p, id, approval, at, merges)) {
         if (p.dispatch) {
           this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
@@ -8414,6 +8522,25 @@ export class Ledger extends DurableObject<Env> {
     this.log(id, ORCHESTRATOR, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, at);
   }
 
+  // Fast mode skips the criteria hold (t179), so a part the tick already
+  // blocked because no reviewer could review its criteria is unblocked when
+  // the project enters it, and dispatches with the criteria as written. A
+  // part blocked for the developer's answer to a rejection stays blocked.
+  // Leaving fast mode does not block a dispatched part again.
+  private clearCriteriaBlocksForFast(at: string): void {
+    if (!this.project().policy.requireCriteriaReview) return;
+    const plans = new Set<string>();
+    for (const row of this.sql.exec(`SELECT id FROM items WHERE kind = 'part' AND state = 'blocked'`).toArray()) {
+      const item = this.item(row.id as string);
+      const block = item.blocked;
+      if (!block || block.by !== ORCHESTRATOR || !block.reason.startsWith(Ledger.CRITERIA_BLOCK) || !block.reason.includes(" cannot be reviewed:")) continue;
+      this.update(item.id, { state: block.from, blocked: null }, at);
+      this.log(item.id, ORCHESTRATOR, "item.unblocked", { reason: block.reason, to: block.from, why: `the project entered fast mode, which skips the criteria review (${CRITERIA_SKIPPED_FAST})` }, at);
+      if (item.plan) plans.add(item.plan);
+    }
+    for (const plan of plans) this.afterPlanChange(plan);
+  }
+
   // Whether the tick holds a part's dispatch for its criteria review (t438):
   // under require-criteria-review a part is dispatched only while a criteria
   // review approves its criteria as they are now. A part not approved has a
@@ -9437,6 +9564,7 @@ export class Ledger extends DurableObject<Env> {
 gateMethods(Ledger.prototype, (self) => GATES.get(self));
 
 const forkPrepKey = (id: string) => `fork-prep:${id}`;
+const forkNameKey = (id: string) => `fork-name:${id}`;
 
 function toEvent(r: Row): LedgerEvent {
   return {
