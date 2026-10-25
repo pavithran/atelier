@@ -78,6 +78,7 @@ import command_review_withdraw from "./review-withdraw.ts";
 import command_run_report from "./run-report.ts";
 import command_runner from "./runner.ts";
 import command_served from "./served.ts";
+import command_server_errors from "./server-errors.ts";
 import command_ship from "./ship.ts";
 import command_show from "./show.ts";
 import command_slots from "./slots.ts";
@@ -173,6 +174,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/run-report.ts", spec: command_run_report },
   { path: "src/usage/commands/runner.ts", spec: command_runner },
   { path: "src/usage/commands/served.ts", spec: command_served },
+  { path: "src/usage/commands/server-errors.ts", spec: command_server_errors },
   { path: "src/usage/commands/ship.ts", spec: command_ship },
   { path: "src/usage/commands/show.ts", spec: command_show },
   { path: "src/usage/commands/slots.ts", spec: command_slots },
