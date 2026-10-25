@@ -2179,9 +2179,9 @@ export class Ledger extends DurableObject<Env> {
 
   // The tick's land job for a landable task (t253): the same land_jobs row
   // `atelier land --queue` writes, made again with a fresh time when the job
-  // is queued anew, and the stage.land-queued event the next tick reads back.
+  // is queued anew (the owner's actor and quote stay on the row), and the stage.land-queued event the next tick reads back.
   private queueLandFromTick(id: string, head: string, main: string | null, verdict: LandQueueVerdict, at: string): void {
-    this.sql.exec(`INSERT OR REPLACE INTO land_jobs (item, by, at) VALUES (?, ?, ?)`, id, "atelier", at);
+    this.sql.exec(`INSERT INTO land_jobs (item, by, at) VALUES (?, ?, ?) ON CONFLICT(item) DO UPDATE SET at = excluded.at`, id, "atelier", at);
     this.log(id, "atelier", "stage.land-queued", { stage: "landable", head, main, at, reason: verdict.queue, note: verdict.note }, at);
   }
 

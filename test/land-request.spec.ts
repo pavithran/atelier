@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 
@@ -27,4 +28,18 @@ it("records the land request once with its actor and quote, and says so on a sec
   const events = (await L.events(id) as { kind: string; data: Record<string, unknown> }[]).filter((e) => e.kind === "land.requested");
   expect(events).toHaveLength(1);
   expect(events[0].data).toMatchObject({ by: "owner", quote: "land it" });
+});
+
+it("the stage tick's requeue keeps the owner's actor and quote on the land request row", async () => {
+  const name = "land-request-tick";
+  const L = ledger(name);
+  await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT }, "owner");
+  const { id } = await L.newItem("Land request tick", ["src/**"], "owner", { accept: ["Works"] });
+  await call("POST", `/projects/${name}/items/${id}/land-job`, { quote: "keep these words" });
+  const row = await runInDurableObject(L, async (instance: object) => {
+    const self = instance as unknown as { queueLandFromTick(id: string, head: string, main: string | null, verdict: unknown, at: string): void; sql: { exec(q: string, ...a: unknown[]): { toArray(): Record<string, unknown>[] } } };
+    self.queueLandFromTick(id, "abc", null, { queue: "ready", note: "n" }, "2030-01-01T00:00:00.000Z");
+    return self.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
+  });
+  expect(row).toMatchObject({ by: "owner", quote: "keep these words", at: "2030-01-01T00:00:00.000Z" });
 });

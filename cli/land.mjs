@@ -226,6 +226,13 @@ const short = (sha) => (sha ? sha.slice(0, 8) : "—");
 
 // A step that failed carries its own event data beside the failure: the files
 // a conflict stopped on, or which check failed.
+// What runLand answers when it ends with the task not landed (asked for its
+// review, left to the owner, or recorded with --no-wait). The command turns it
+// into NOT_LANDED_EXIT under the multi-task pool, which must tell it from a
+// landing; a single landing still exits 0 as before.
+export const NOT_LANDED = "not-landed";
+const hasCheckoutHere = (io) => io.checkout ?? !!io.p?.path;
+export const NOT_LANDED_EXIT = 75;
 export class StepError extends Error {
   constructor(message, data = {}) { super(message); this.data = data; }
 }
@@ -277,6 +284,7 @@ export async function runLand(io) {
   if (reviewer !== undefined && (typeof reviewer !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(reviewer))) {
     die(`--reviewer needs harness/model, such as codex/gpt-6-astra: atelier land ${id} --reviewer H/M`);
   }
+  if (noReview && !hasCheckoutHere(io)) die(`--no-review records no land request and a machine with no registered checkout can only record one; run it where ${name}'s checkout is registered`);
   if (noWait && (dryRun || noReview || wait || workflow)) die("--no-wait records the land request and returns; it cannot be given with --dry-run, --no-review, --wait or --workflow");
   if (args.quote !== undefined && (typeof args.quote !== "string" || !args.quote.trim())) die(`--quote needs the words that asked for the landing: atelier land ${id} --quote "TEXT"`);
   if (noReview && reviewer !== undefined) die("--reviewer and --no-review together say two things; name the reviewer, or give --no-review to leave the task submitted");
@@ -339,7 +347,7 @@ export async function runLand(io) {
   // recorded, and the command returns; the land job (a runner holding the
   // registered checkout, or this command run again) lands it. A machine with
   // no registered checkout does the same and then follows the job.
-  const hasCheckout = io.checkout ?? !!p?.path;
+  const hasCheckout = hasCheckoutHere(io);
   if (noWait || !hasCheckout) {
     if (!hasCheckout && (dryRun || workflow || wait)) die(io.noCheckout ?? `land needs ${name}'s registered checkout`);
     if (["merged", "abandoned"].includes(detail.item.state)) die(`${id} is ${detail.item.state}; there is nothing to land.`);
@@ -833,7 +841,7 @@ export async function runLand(io) {
         print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id} (main is already merged; run atelier land ${id} again if the head moves). The landing lease was never taken.`);
         await record("review", 0, { skipped: true });
         for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
-        return;
+        return NOT_LANDED;
       }
       await triageStillStands(io, { triaged, id, itemPath, head, retry: triageRetry(io, triage, id) });
       const reviewed = await reviewStep(io, { id, name, itemPath, reviewer, head, record });
@@ -841,7 +849,7 @@ export async function runLand(io) {
       if (reviewed === "asked") {
         print(`${id} is submitted at ${short(head)} with its review asked and its land request recorded. The landing lease was never taken: the stage tick queues the land job once the gate counts an approval, and a runner that holds ${name}'s registered checkout runs it; or run atelier land ${id} again then.`);
         for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
-        return;
+        return NOT_LANDED;
       }
 
       // The gate as accept will read it, asked before the lease: the head
@@ -966,13 +974,19 @@ async function askReview(io, { itemPath, reviewer }) {
 async function followLand(io, { detail, itemPath, noWait }) {
   const { args, id, request, print } = io;
   const reviewer = args.reviewer;
-  if (args["no-review"] === true) { print(`--no-review asks for no review; ${id} is left as it is.`); }
-  else if (detail.item.state === "submitted") await askReview(io, { itemPath, reviewer });
-  else if (detail.item.state !== "accepted") print(`${id} is ${detail.item.state}, not submitted, so no review was asked; the land job asks once the task is submitted.`);
-  await recordLandRequest(io, itemPath, id);
-  if (noWait) { print(`Not waiting (--no-wait): run atelier land ${id} again to resume; a runner that holds the registered checkout lands it once the gate counts an approval.`); return; }
+  let ask = null;
+  if (detail.item.state === "submitted") {
+    // An approval by the named reviewer already recorded at the head settles
+    // the review, as the landing's own review step does: no request is posted.
+    const held = reviewer ? recordedApproval(detail, detail.item.head, reviewer) : null;
+    if (held) print(`${held.by} already approved ${id} at ${short(detail.item.head)}, and the gate counts it: no review request was needed.`);
+    else ask = await askReview(io, { itemPath, reviewer });
+  } else if (detail.item.state !== "accepted") print(`${id} is ${detail.item.state}, not submitted, so no review was asked; the land job asks once the task is submitted.`);
+  const asked = await recordLandRequest(io, itemPath, id);
+  if (noWait) { print(`Not waiting (--no-wait): run atelier land ${id} again to resume; a runner that holds the registered checkout lands it once the gate counts an approval.`); return NOT_LANDED; }
   print(`This machine holds no registered checkout of ${io.name}; following the land job a lander takes.`);
-  const since = new Date().toISOString();
+  // Verdicts count from the ask's own time, not this machine's clock.
+  const since = ask?.at ?? asked?.at ?? new Date().toISOString();
   let said = null;
   for (let waited = 0; waited <= FOLLOW_TIMEOUT_MS; waited += POLL_MS) {
     const d = await request("GET", itemPath);

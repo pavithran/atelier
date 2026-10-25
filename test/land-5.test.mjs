@@ -18,7 +18,7 @@ async function recordedFixture(t, { reviews = [], gate } = {}) {
   f.box.regen = null;
   f.box.review.approveAfter = null;   // no runner ever answers a new request
   if (gate) f.box.gate = gate;
-  f.env = { ATELIER_LAND_POLL_MS: "30", ATELIER_LAND_REVIEW_TIMEOUT: "150" };
+  f.env = { ATELIER_LAND_POLL_MS: "30" };
   const head = f.forkHead("t1");
   f.box.evidence.t1.push({ itemId: "t1", claim: "changed paths", grade: "observed", head, passed: true, by: "codex/test", at: "2026-10-13T09:00:00.000Z", where: "runner", changedPaths: ["work.txt"] });
   for (const r of reviews) f.box.reviews.t1.push({ approve: true, head, criteria: criteriaOf({}), recordedBy: "owner", proved: false, claimed: true, note: "Recorded earlier.", at: "2026-10-13T10:00:00.000Z", ...r });
