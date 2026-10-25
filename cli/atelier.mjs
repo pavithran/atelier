@@ -49,6 +49,7 @@ import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { serverFetch } from "./server-fetch.mjs";
+import { joinMainMerges } from "./workspace-fork.mjs";
 import { lowSpeedEnv, secondsOf, serverTimeoutMs, talksToRemote, timedOut, tooSlow, withTimeout } from "./timeouts.mjs";
 import { saveWholeConfig, useConfig } from "./private-guard.mjs";
 
@@ -1123,7 +1124,7 @@ export async function claimWorkspace(name, id, as, runner) {
     git(["config", "--local", `atelier.${k}`, v], { cwd: dir });
   }
   if (was && was !== branch) console.log(`This workspace pushed to ${was}; it now pushes to ${branch}, the branch Atelier reads. Commits pushed to ${was} in the fork are not seen there: push them again with atelier push.`);
-  if (!fresh) takeForkHead(dir, id, branch);
+  if (!fresh) takeForkHead(dir, id, branch, r.baseline);
   const reads = forkBranch(dir);
   if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
   const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
@@ -1215,7 +1216,7 @@ export const count = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 // the server stands either way, and running it again after the rebase
 // finds the workspace in step. A fork branch that origin does not list is
 // left to the push to refuse (see the warning on forkBranch).
-function takeForkHead(dir, id, branch) {
+function takeForkHead(dir, id, branch, baseline) {
   const remote = `refs/remotes/origin/${branch}`;
   if (git(["rev-parse", "--verify", "--quiet", remote], { cwd: dir, allowFail: true }).status !== 0) return;
   if (holds(remote, "HEAD", dir)) return;
@@ -1225,6 +1226,12 @@ function takeForkHead(dir, id, branch) {
     const ff = git(["merge", "--ff-only", "--quiet", remote], { cwd: dir, allowFail: true });
     if (ff.status !== 0) die(`${id}'s fork holds ${n} this workspace lacks:\n${missing}\nFast-forwarding ${dir} to them failed:\n${(ff.stderr || ff.stdout).trim()}\nCommit or set aside its changes, then run atelier claim ${id} again.`);
     console.log(`This workspace was behind ${id}'s fork; it now holds the ${n} pushed there since:\n${missing}`);
+    return;
+  }
+  // Commits that only merge main (the lander's, t264) are joined, not refused.
+  if (baseline && git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token, allowFail: true }).status === 0
+    && joinMainMerges(git, dir, remote, "FETCH_HEAD")) {
+    console.log(`This workspace and ${id}'s fork had each moved on; the fork's ${n} only merge main, so they are merged here:\n${missing}`);
     return;
   }
   die(`${id}'s fork holds ${n} this workspace lacks, and this workspace holds commits the fork lacks. The fork's:\n${missing}\nPut this workspace's commits on top of them first: cd ${JSON.stringify(dir)} && git rebase ${remote}, then run atelier claim ${id} again. This workspace's commits are untouched.`);
