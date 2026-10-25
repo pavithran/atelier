@@ -17,7 +17,7 @@ const call = (method: string, path: string, body?: unknown) => worker.fetch(new 
 it("records the land request once with its actor and quote, and says so on a second ask", async () => {
   const name = "land-request";
   const L = ledger(name);
-  await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"] }, createdAt: AT }, "owner");
+  await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT }, "owner");
   const { id } = await L.newItem("Land request", ["src/**"], "owner", { accept: ["Works"] });
   const first = await call("POST", `/projects/${name}/items/${id}/land-job`, { quote: "land it" });
   expect(first.status).toBe(201);
