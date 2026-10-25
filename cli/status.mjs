@@ -37,7 +37,7 @@ export const readyOf = (mode) => (Array.isArray(mode?.ready) ? mode.ready : []);
 export function stageEntries(items, ready = [], facts = () => ({})) {
   return (items ?? [])
     .filter((i) => i.state !== "merged" && i.state !== "abandoned")
-    .map((i) => ({ id: i.id, title: i.title, ...stageOf(i, { ready: ready.find((r) => r.item === i.id) ?? null, ...facts(i) }) }));
+    .map((i) => ({ id: i.id, title: i.title, ...(i.scopeGap ? { scopeGap: i.scopeGap } : {}), ...stageOf(i, { ready: ready.find((r) => r.item === i.id) ?? null, ...facts(i) }) }));
 }
 
 // "built" or "built at a1b2c3d4 on mac-mini in /work/t1".
@@ -47,7 +47,7 @@ export function stageText({ stage, detail }) {
 }
 
 export function stageLines(entries, indent = "  ") {
-  return entries.length ? [`${indent}Stages`, ...entries.map((e) => `${indent}  ${stageText(e)}: ${e.id}  ${e.title}`)] : [];
+  return entries.length ? [`${indent}Stages`, ...entries.flatMap((e) => [`${indent}  ${stageText(e)}: ${e.id}  ${e.title}`, ...(e.scopeGap ? [`${indent}    ${e.scopeGap}`] : [])])] : [];
 }
 
 export function formatPolicyDisagreements(mismatches = []) {

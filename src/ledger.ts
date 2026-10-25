@@ -75,6 +75,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
+import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
@@ -2816,6 +2817,12 @@ export class Ledger extends DurableObject<Env> {
     return { ...toItem(row), pushActors: pushActors(events.map((r) => ({ actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string) }))) };
   }
 
+  // The scopeGap of a live item's detail, as items() sets it on each item.
+  private scopeGapOf(item: Item, reviews: Review[]): { scopeGap?: string } {
+    const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, reviews);
+    return gap ? { scopeGap: scopeGapText(item, gap) } : {};
+  }
+
   items(): Item[] {
     const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`).toArray();
     const histories = new Map<string, Parameters<typeof pushActors>[0]>();
@@ -2825,8 +2832,21 @@ export class Ledger extends DurableObject<Env> {
       history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
       histories.set(id, history);
     }
+    // A blocking finding on a file a live item's scope lacks (t270) rides on
+    // the item as scopeGap, so a list of items (status) can say so. Only an
+    // item with a gap carries it.
+    const rejections = new Map<string, Review[]>();
+    for (const row of this.sql.exec(`SELECT item_id, json FROM reviews ORDER BY id`).toArray()) {
+      const r = JSON.parse(row.json as string) as Review;
+      if (r.approve || !r.findings?.length) continue;
+      rejections.set(row.item_id as string, [...(rejections.get(row.item_id as string) ?? []), r]);
+    }
     return this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray()
-      .map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
+      .map((row) => {
+        const item = toItem(row);
+        const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
+        return { ...item, pushActors: pushActors(histories.get(row.id as string) ?? []), ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+      });
   }
 
   private runnerMeta<T>(key: string): T | null {
@@ -6267,7 +6287,7 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
-    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
+    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -6507,7 +6527,11 @@ export class Ledger extends DurableObject<Env> {
       // The project's prose standard (t675), which the runner's own brief
       // cannot know: the server holds the policy.
       const prose = proseStandardLine(this.project().policy.proseStandard);
-      const text = [...sections.map((f) => findingsSection(f)), criteria, prose].filter(Boolean).join("\n\n");
+      // A blocking finding on a file the scope lacks cannot be fixed from this
+      // workspace (t270); the brief says so and names the edit that adds it.
+      const gap = reviewScopeGap(item, this.reviewsFor(id));
+      const scopeNote = gap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, gap)}` : "";
+      const text = [...sections.map((f) => findingsSection(f)), scopeNote, criteria, prose].filter(Boolean).join("\n\n");
       // Past findings on the files in scope (t14), beside the text: the
       // runner alone can tell which of those files exist at the commit its
       // build starts from, so it filters and renders them. A field an older
@@ -6551,6 +6575,12 @@ export class Ledger extends DurableObject<Env> {
     const failed = this.evidenceFor(id).filter((e) => e.grade === "observed" && e.passed === false).at(-1) ?? null;
     const rejection = this.reviewsFor(id).filter((r) => !r.approve).at(-1) ?? null;
     const added = addedPart(record, item.partKey);
+    // A blocker on a file the part's scope lacks (t270) rides with the criteria
+    // section, which the brief carries whole, since src/plans/brief.ts has no
+    // field of its own for it.
+    const partGap = reviewScopeGap(item, this.reviewsFor(id));
+    const partScopeNote = partGap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, partGap)}` : "";
+    const partCriteria = [this.criteriaBriefSection(id), partScopeNote].filter(Boolean).join("\n\n");
     return {
       job,
       ...await buildBrief({
@@ -6567,7 +6597,7 @@ export class Ledger extends DurableObject<Env> {
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "", log: failed.log ?? null } : null,
         mergeMain: added ? { head: added.mainHead } : null,
         mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
-        criteriaReview: this.criteriaBriefSection(id) || null,
+        criteriaReview: partCriteria || null,
         proseStandard: project.policy.proseStandard ?? null,
       }),
       proseStandard: project.policy.proseStandard ?? null,
