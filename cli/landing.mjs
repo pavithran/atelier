@@ -6,6 +6,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 
 import { foldPath } from '../src/rules.ts';
 
+export const FETCH_LIMIT_MS = 5 * 60 * 1000;
+const FETCH_FIRST_WAIT_MS = 5000, FETCH_MAX_WAIT_MS = 60000;
+
 // Prepare off to the side. Neither a failed fetch nor failed configuration
 // may disturb the old repository (including its index and unfinished merge).
 export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryRun = false }) {
@@ -41,14 +44,25 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
     // Do not allow credentials embedded in a URL to reach saved config.
     if (!read.remote || /[\r\n\0]/.test(read.remote) || /:\/\/[^/]*@/.test(read.remote)) throw new Error('invalid fork remote');
     git(['init', '--quiet', staging]);
-    try {
-      git(['fetch', '--quiet', '--no-tags', read.remote, head], { cwd: staging, token: read.token });
-      const fetched = git(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { cwd: staging });
-      if (fetched !== head) throw new Error('wrong commit');
-    } catch {
-      // Git and network errors can echo authentication headers; report only
-      // the public revision, never the credential-bearing diagnostic.
-      throw new Error(`${id}'s recorded commit ${head} is unavailable; the original workspace is untouched`);
+    // Artifacts can briefly fail to serve a commit it holds (t220, t225,
+    // t226), so the fetch is retried with a growing wait for FETCH_LIMIT_MS.
+    const now = io.now ?? Date.now, sleep = io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+    const began = now();
+    for (let wait = FETCH_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, FETCH_MAX_WAIT_MS)) {
+      try {
+        git(['fetch', '--quiet', '--no-tags', read.remote, head], { cwd: staging, token: read.token });
+        const fetched = git(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { cwd: staging });
+        if (fetched !== head) throw new Error('wrong commit');
+        break;
+      } catch {
+        // Git and network errors can echo authentication headers; report only
+        // the public revision, never the credential-bearing diagnostic.
+        const elapsed = now() - began;
+        if (elapsed >= FETCH_LIMIT_MS) throw new Error(`${id}'s recorded commit ${head} is unavailable; the original workspace is untouched (retried for ${Math.round(elapsed / 1000)}s)`);
+        const pause = Math.min(wait, FETCH_LIMIT_MS - elapsed);
+        print(`${id}'s recorded commit ${head} is not available yet; retrying in ${Math.round(pause / 1000)}s (${Math.round(elapsed / 1000)}s of ${FETCH_LIMIT_MS / 1000}s used).`);
+        await sleep(pause);
+      }
     }
     const branch = read.defaultBranch ?? p.branch;
     git(['checkout', '--quiet', '-b', branch, head], { cwd: staging });
