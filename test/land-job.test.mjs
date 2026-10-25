@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { failedStep, failureReport, runLandJob } from "../cli/land-queue.mjs";
-import { offerFrom, runRunner } from "../cli/runner.mjs";
+import { offerFrom, runRunner, runnerTransport } from "../cli/runner.mjs";
 import { parseConfig } from "../cli/runner-config.mjs";
 
 // The land job (t226): a runner that lists it and holds the project's
@@ -154,4 +154,14 @@ test("land --queue with --dry-run is refused before anything is asked of the ser
   const r = spawnSync(process.execPath, [join(import.meta.dirname, "../cli/atelier.mjs"), "land", "t9", "--queue", "--dry-run", "--project", "atelier"], { encoding: "utf8", env: { ...process.env, ATELIER_SERVER: "http://127.0.0.1:9" } });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr + r.stdout, /--queue and --dry-run say two things/);
+});
+
+test("the real runner transport sends an offer that lists land and its checkouts", async () => {
+  const sent = [];
+  const fetch = async (url, init) => { sent.push({ url, init }); return Response.json({ tasks: [] }); };
+  const transport = runnerTransport({ server: "https://atelier.test", credential: "fixture", runner: "home:mac-lander", fetch });
+  const offer = { runner: "home:mac-lander", kind: "home", jobs: ["land"], agents: [], checkouts: ["atelier"] };
+  const res = await transport.send("queue", {}, { body: offer, actor: "owner" });
+  assert.equal(res.ok, true);
+  assert.deepEqual(JSON.parse(sent[0].init.body), offer);
 });
