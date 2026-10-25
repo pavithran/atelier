@@ -1,0 +1,33 @@
+atelier atelier/t268 "The handbook says how the tier review and the independent reviews of a core…"
+accepted head 079716c3b5ea244b2f49db0d7c3558f405cc2540
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-25T14:12:30.978Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-25T14:15:52.087Z
+CHECKED TREE 377d1a53f2938d885c112ca8a3a8947daea3bc71: the merge produced exactly the tree these checks passed on (npm ci --prefer-offline --no-audit --no-fund && npm test, npm run types && npm run typecheck), so a deploy gate may accept them instead of running them again
+2026-10-25T10:09:55.730Z pavi item.created
+2026-10-25T10:09:55.730Z pavi criteria.revised
+2026-10-25T13:39:51.923Z pavi criteria_review.requested
+2026-10-25T13:40:12.031Z codex/gpt-6-astra criteria_review.claimed
+2026-10-25T13:40:28.118Z codex/gpt-6-astra criteria_review.approved
+2026-10-25T13:45:26.351Z pavi item.dispatched
+2026-10-25T13:45:35.056Z claude-code/sonnet-5.5 item.claimed
+2026-10-25T13:45:51.194Z claude-code/sonnet-5.5 fork.created
+2026-10-25T13:47:15.045Z claude-code/sonnet-5.5 push.observed
+2026-10-25T14:10:36.300Z atelier stage.stuck
+2026-10-25T14:10:36.300Z atelier stage.told
+2026-10-25T14:12:31.924Z claude-code/sonnet-5.5 evidence.observed
+2026-10-25T14:15:52.644Z claude-code/sonnet-5.5 evidence.observed
+2026-10-25T14:15:53.598Z claude-code/sonnet-5.5 item.submitted
+2026-10-25T14:15:36.300Z atelier stage.cleared
+2026-10-25T14:16:31.193Z pavi land.requested
+2026-10-25T14:17:42.790Z pavi land.merge
+2026-10-25T14:17:43.744Z pavi land.regenerate
+2026-10-25T14:17:45.730Z pavi land.push
+2026-10-25T14:18:39.371Z pavi land.check
+2026-10-25T14:18:39.782Z claude-code/sonnet-5.5 item.submitted
+2026-10-25T14:18:39.946Z pavi land.submit
+2026-10-25T14:18:44.185Z pavi land.review
+2026-10-25T14:18:44.550Z pavi land.lease
+2026-10-25T14:18:46.083Z pavi item.accepted
+2026-10-25T14:18:46.191Z pavi land.accept
