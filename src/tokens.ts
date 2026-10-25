@@ -229,16 +229,16 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The poll: what the runner can run and when it started (t420), answered
   // with the tasks it may claim. GET /queue is the owner's listing, which
   // runnerRoute refuses a runner token (test/runner-routes.test.mjs).
-  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "projects", "readiness"], via: "runner", jobs: [] },
+  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "projects", "readiness", "checkouts"], via: "runner", jobs: [] },
   // The same poll asked with `why` (t420), when a poll offered nothing: the
   // server answers the listing GET gives, cut to the token's projects, each
   // waiting dispatch with why it is not being taken. The same route, the
   // same credential, a body field more: declared apart so the idle path is
   // its own authorization case.
-  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why", "projects", "readiness"], via: "runner", jobs: [] },
+  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why", "projects", "readiness", "checkouts"], via: "runner", jobs: [] },
   // A busy runner's heartbeat (t537): its offer marked as one, which renews
   // its last poll while a job runs and is offered nothing back.
-  { name: "queue-heartbeat", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "heartbeat", "projects", "readiness"], via: "runner", jobs: [] },
+  { name: "queue-heartbeat", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "heartbeat", "projects", "readiness", "checkouts"], via: "runner", jobs: [] },
   // The baseline's head, for a post-merge review the runner keeps waiting on
   // a merge commit no source held (t591).
   { name: "baseline-head", method: "GET", path: "/projects/{project}/baseline-head", credential: "runner", body: [], via: "runner", jobs: REVIEW },
