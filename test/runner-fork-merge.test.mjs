@@ -43,10 +43,17 @@ test("a merge of main with other work after it is refused whole", (t) => {
 
 test("a fork holding only a merge of main is joined; other commits are not", (t) => {
   const f = fixture(t);
+  // A commit the workspace and the fork share, which main lacks, so that
+  // merging main into the fork makes a real two-parent commit.
+  f.commit(f.ws, "shared.txt", "Shared");
+  f.run(f.lander, "remote", "add", "ws", f.ws);
+  f.run(f.lander, "fetch", "-q", "ws");
+  f.run(f.lander, "reset", "-q", "--hard", "ws/main");
   f.commit(f.ws, "work.txt", "Work");
   f.commit(f.main, "moved.txt", "Main moved");
   f.run(f.lander, "fetch", "-q", "origin");
   f.run(f.lander, "merge", "-q", "--no-edit", "origin/main");
+  assert.equal(f.run(f.lander, "rev-list", "--parents", "-n1", "HEAD").split(" ").length, 3);
   f.run(f.ws, "remote", "add", "fork", f.lander);
   f.run(f.ws, "fetch", "-q", "fork");
   f.run(f.ws, "fetch", "-q", "origin");
