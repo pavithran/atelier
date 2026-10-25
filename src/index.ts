@@ -2059,7 +2059,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const beforeParam = c.url.searchParams.get("before");
     const before = beforeParam === null ? undefined : Number(beforeParam);
     if (before !== undefined && !Number.isFinite(before)) throw new RuleError("bad_request", "before is an event number", 400);
-    const page = await L.events(undefined, limit, before);
+    const page = (await L.events(undefined, limit, before)) as unknown as LedgerEvent[];
     return json({ events: page.map(exportedEvent), next: page.length === limit ? page[page.length - 1].seq : null });
   }
   // Standing decisions (src/decisions.ts): GET lists every one with its
