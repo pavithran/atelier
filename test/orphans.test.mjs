@@ -267,6 +267,27 @@ test("a test file spinning on microtasks is ended at its file limit, and the run
   assert.ok(!alive(spinner) && !alive(sleeper));
 });
 
+// t260: test/node-pool.mjs runs every Node test file, so the per-file limit
+// does not apply to it; its limit is the run's, and a file in it keeps the
+// per-file one.
+test("a process named node-pool.mjs outlives the file limit, bounded by the run's limit; any other file does not", { timeout: 30_000 }, async (t) => {
+  const dir = scratch(t);
+  const body = "await new Promise((ok) => setTimeout(ok, 3500));\n";
+  const { NODE_TEST_CONTEXT, ...base } = process.env;
+  const guarded = (name, env) => {
+    writeFileSync(join(dir, name), body);
+    return runGroup([process.execPath, "--import", resolve("test/guard.mjs"), join(dir, name)], { env: { ...base, ATELIER_TEST_FILE_LIMIT_MS: "1500", ...env }, timeoutMs: 20_000 });
+  };
+  const pool = await guarded("node-pool.mjs", { ATELIER_TEST_TIMEOUT_MS: "60000" });
+  assert.equal(pool.status, 0, pool.stdout + pool.stderr);
+  const file = await guarded("slow.test.mjs", { ATELIER_TEST_TIMEOUT_MS: "60000" });
+  assert.notEqual(file.status, 0);
+  assert.match(file.stderr, /ran past its limit of 2 s/);
+  const bounded = await guarded("node-pool.mjs", { ATELIER_TEST_TIMEOUT_MS: "1500" });
+  assert.notEqual(bounded.status, 0);
+  assert.match(bounded.stderr, /node-pool\.mjs .* ran past its limit of 2 s/);
+});
+
 test("a child a test leaves running is ended with the file's tests, and a hung sync child is bounded", { timeout: 30_000 }, async (t) => {
   const pidFile = join(scratch(t), "pid");
   const run = guarded(t, "leak.mjs", { GUARD_PID_FILE: pidFile, ATELIER_TEST_SYNC_TIMEOUT_MS: "300" });
