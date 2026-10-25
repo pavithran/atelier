@@ -1950,7 +1950,7 @@ export class Ledger extends DurableObject<Env> {
             const ready = standingFastReady(events);
             const criteria = this.sql.exec(`SELECT COUNT(*) AS n, MAX(decidedAt) AS at FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, item.id).one();
             const agreed = (criteria.n as number) > 0 && (item.accept?.length ?? 0) > 0;
-            const { stage, detail } = stageOf(item, { events, ready, agreed, policy, evidence, reviews, owner: this.owner });
+            const { stage, detail } = stageOf(item, { events, ready, agreed, policy, evidence, reviews, owner: this.owner, fast: this.mode().mode === "fast" });
             const clock = {
               agreedAt: agreed ? (criteria.at as string | null) : null, evidence, reviews, readyAt: ready?.at ?? null,
               reviewClaimed: !!detail.head && this.openReviewClaims(item.id).some((c) => c.head === detail.head),
@@ -2594,7 +2594,7 @@ export class Ledger extends DurableObject<Env> {
       const g = record ? planGate({
         plan: current, parts: this.integrationViews(parts), integrationHead: record.integrationHead ?? null,
         policy, evidence, reviews: [...reviews, ...parts.flatMap((p) => this.reviewsFor(p.id))], owner: this.owner,
-      }) : gate(current, policy, evidence, reviews, this.owner);
+      }) : gate(current, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" });
       const siblings = item.kind === "part" && item.plan ? this.integrationViews(this.planParts(item.plan)) : [];
       const part = siblings.find((p) => p.id === item.id);
       fact.ready = g.ready && (!part || integrationBlockers(part, siblings, reviews, policy, this.owner).length === 0);
@@ -4052,7 +4052,7 @@ export class Ledger extends DurableObject<Env> {
     // A review answering a gate's request asked of a tier model gives the
     // tier review too (gateServesTier): the gate's review, top tier.
     const topTier = !tierClaim && boundClaims.some((c) => c.tier !== 1 && c.topTier === 1);
-    const fastReceiptOf = item.state === "merged" ? this.landedFastReceipt(item.id) : null;
+    const fastReceiptOf = item.state === "merged" && this.mergedFast(item.id);
     const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
     r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
@@ -4448,7 +4448,7 @@ export class Ledger extends DurableObject<Env> {
           reviews: [...reviews, ...this.planParts(id).flatMap((p) => this.reviewsFor(p.id))],
           owner: this.owner,
         })
-      : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
+      : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" });
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     // Last, once the override would otherwise go through, the owner's
     // confirmation: a forbidden override, a missing reason, nothing to
@@ -4512,7 +4512,7 @@ export class Ledger extends DurableObject<Env> {
     if (expected !== undefined) assertRevision(item, expected);
     if (criteria !== undefined) assertShownCriteria(item, criteria);
     if (item.state !== "submitted" || !item.head) throw new RuleError("not_submitted", `${id} is ${item.state}; an override is allowed only on a submitted revision`, 409);
-    const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
+    const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner, { fast: this.mode().mode === "fast" });
     if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`);
     const now = Date.now(), at = new Date(now).toISOString();
     const confirmation: OverrideConfirmation = { head: item.head, by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
@@ -5584,7 +5584,10 @@ export class Ledger extends DurableObject<Env> {
     if (!post) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
-    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
+    // A merge in fast mode (t300) lands on the checks alone; the independent
+    // review is owed after it, and `fast` marks the event so that review may
+    // be same-family and a rejection files a fix task (mergedFast).
+    this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed, ...(this.mode().mode === "fast" ? { fast: true } : {}) }, at);
     // Main is at the merge now, so the record is made for the plans in
     // flight to compare at their next tick. A plan's own merge closes it
     // first, and nothing refreshes a closed plan, so it never takes its own
@@ -6060,6 +6063,13 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected', 'review.finding', ?) ORDER BY seq`, id, SERVED).toArray().map(eventOf);
   }
 
+  // Whether the task merged in fast mode: by a receipt (landedFast) or by a
+  // merge made while the project was in fast mode (t300). Either way its
+  // review is post-merge and may come from the builder's family.
+  mergedFast(id: string): boolean {
+    return this.events(id, Number.MAX_SAFE_INTEGER).some((x) => x.kind === "item.merged" && x.data.fast === true);
+  }
+
   landedFastReceipt(id: string): FastReceipt | null {
     const e = this.events(id, Number.MAX_SAFE_INTEGER).find((x) => x.kind === "item.landed_fast");
     return e ? e.data as unknown as FastReceipt : null;
@@ -6287,7 +6297,7 @@ export class Ledger extends DurableObject<Env> {
     // `criteriaReview` is where the review of the item's acceptance criteria
     // stands (t438), with every criteria review and resolution recorded.
     const preparing = this.forkPreparations()[id];
-    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
+    return { item, ...(preparing ? { preparing } : {}), postMerge: this.postMergeRun(id), prereviews: this.prereviewsFor(id), prereviewFence: this.prereviewFence(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), liveReview: item.head ? this.liveReviewRequest(id, item.head) : null, reviewClaims: this.openReviewClaims(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner, { fast: this.mode().mode === "fast" }), mode: this.mode(), ...this.scopeGapOf(item, reviews), criteriaReview: this.criteriaReviewView(id), events: this.events(id), fastLanding: this.fastLandingEvents(id), defining: this.definingEvents(id), judgementEvents: this.judgementEvents(id) };
   }
 
   inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
@@ -6335,7 +6345,7 @@ export class Ledger extends DurableObject<Env> {
     // override, not the placeholder alone (t395), or null when none in the pool
     // qualifies, which attentionFor places under the owner's override. With no
     // pool given the reviewer is left unset: not read, never "none qualifies".
-    return [...inboxFor(p.name, items, p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p, items), ...this.prereviewEntries(p.name), ...this.gaveUpEntries(p.name, items)]
+    return [...inboxFor(p.name, items, p.policy, all, rv, new Date(now), this.owner, this.mode().mode === "fast"), ...this.planEntries(p.name, now), ...this.shipEntries(p, items), ...this.prereviewEntries(p.name), ...this.gaveUpEntries(p.name, items)]
       .map((e) => (e.kind === "assess" && pool ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
@@ -7834,7 +7844,7 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     // A named reviewer is judged even when a request already stands, so a
     // retry with a different name never silently keeps the wrong reviewer.
-    if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
+    if (wanted && reviewer === null && !(item.state === "merged" && this.mergedFast(id))) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
       if (contributed(reviewer, contributorsOf(item))) {
@@ -7844,7 +7854,7 @@ export class Ledger extends DurableObject<Env> {
       // model of the builder's family (t585); any other recorded merge is
       // audited by another family, as the gate would have asked.
       if (item.state === "merged") {
-        const family = postMergeIndependence(reviewer, contributorsOf(item), singleFamily(policy), !!this.landedFastReceipt(id));
+        const family = postMergeIndependence(reviewer, contributorsOf(item), singleFamily(policy), this.mergedFast(id));
         if (family.refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${id} after its merge: ${family.refusal}; only a task landed in fast mode takes a same-family review`, 409);
       }
       this.assertStanding(reviewer, "review", pool);

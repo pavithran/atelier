@@ -2192,3 +2192,32 @@ test("stageOf puts a standing fast_ready at built, with its head, machine and pa
   // A later merge ends it.
   assert.equal(stageOf({ ...claimed, state: "merged" }, { events: [...events, stageEv(3, "item.merged")] }).stage, "landed");
 });
+
+test("fast mode: the gate is ready on passing checks without the independent review, and full mode still asks it (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  assert.deepEqual(gate(item(), policy, [touching], []).blockers, [PROTECTED_NEED]);
+  assert.deepEqual(gate(item(), policy, [touching], [], undefined, { fast: false }).blockers, [PROTECTED_NEED]);
+  const fast = gate(item(), policy, [touching], [], undefined, { fast: true });
+  assert.equal(fast.ready, true);
+  assert.equal(fast.needsAssessor, false);
+});
+
+test("fast mode keeps every other blocker: a failed check, a secret flag and a standing rejection (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  assert.match(gate(item(), policy, [pass({ changedPaths: ["AGENTS.md"], passed: false })], [], undefined, { fast: true }).blockers.join(), /failed when observed/);
+  assert.equal(gate({ ...item(), secret: [{ file: "a.txt", line: 1, head: H1 }] } as Item, policy, [touching], [], undefined, { fast: true }).ready, false);
+  const rejection: Review = { itemId: "t1", by: "codex/gpt-5.5", head: H1, criteria: NO_CRITERIA, approve: false, note: "broken", at: T };
+  assert.equal(gate(item(), policy, [touching], [rejection], undefined, { fast: true }).ready, false);
+});
+
+test("fast mode: a task is landable on its checks alone, and full mode keeps it reviewed-less (t300)", () => {
+  const touching = pass({ changedPaths: ["AGENTS.md"] });
+  const facts = { policy, evidence: [touching], reviews: [] as Review[] };
+  assert.notEqual(stageOf(item(), facts).stage, "landable");
+  assert.equal(stageOf(item(), { ...facts, fast: true }).stage, "landable");
+});
+
+test("a post-merge review of a task merged in fast mode may share the builder's family (t300)", () => {
+  assert.equal(postMergeIndependence("claude-code/opus-5.5", ["claude-code/sonnet-5.5"], null, true).independence, SAME_FAMILY_FAST);
+  assert.ok(postMergeIndependence("claude-code/opus-5.5", ["claude-code/sonnet-5.5"], null, false).refusal);
+});

@@ -1950,7 +1950,12 @@ export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan"
 // item's own contributors are then not compared with any reviewer, and no
 // independent review, assessor or override is asked of it. Every other
 // blocker stands, a rejection at the head among them.
-export interface GateOptions { reviewHeld?: boolean }
+//
+// `fast` is the project in fast mode (t300): the gate counts the change ready
+// on its required checks at the head with no secret flag, and asks no
+// independent review before the merge; the review is owed after it
+// (postMergeOwed). A rejection standing at the head still blocks.
+export interface GateOptions { reviewHeld?: boolean; fast?: boolean }
 
 // The approvals the gate counts as a change's independent review: of the
 // reviews standing at the item's head and criteria (countingReviews, the
@@ -2015,7 +2020,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
   const need = approvalsNeeded(policy, kind, view.changedPaths);
-  if (!options.reviewHeld && need.as && need.count > 0) {
+  if (!options.reviewHeld && !options.fast && need.as && need.count > 0) {
     const kindNeeded = need.as;
     const contributors = contributorsOf(item);
     const single = singleFamily(policy);
@@ -2076,6 +2081,7 @@ export interface TaskStageFacts {
   evidence?: Evidence[];
   reviews?: Review[];
   owner?: string;
+  fast?: boolean;
 }
 export interface StageDetail { head?: string; machine?: string | null; path?: string | null; source?: "push" | "fast_ready" }
 
@@ -2090,7 +2096,7 @@ export function stageOf(item: Item, facts: TaskStageFacts = {}): { stage: TaskSt
     // An accepted task is judged as submitted: its approvals and checks still
     // stand at its head, and the tick queues its landing (t253).
     const judged = item.state === "accepted" ? { ...item, state: "submitted" as const } : item;
-    if (gate(judged, facts.policy, facts.evidence, facts.reviews, owner).ready) return at("landable", { head, source: "push" });
+    if (gate(judged, facts.policy, facts.evidence, facts.reviews, owner, { fast: facts.fast }).ready) return at("landable", { head, source: "push" });
     const view = evidenceAt(facts.policy, facts.evidence, head);
     const checked = view.changedPaths !== null && view.checks.every((c) => c.grade !== "pending" && c.passed);
     if (view.changedPaths !== null) {
@@ -2206,6 +2212,7 @@ export function inboxFor(
   reviews: Review[],
   now: Date,
   owner = DEFAULT_OWNER,
+  fast = false,
 ): InboxEntry[] {
   const out: InboxEntry[] = [];
   const live = items.filter((i) => i.state === "claimed" || i.state === "submitted");
@@ -2222,7 +2229,7 @@ export function inboxFor(
     // accepted part still asks to be merged.
     const part = item.kind === "part";
     if (item.state === "accepted") {
-      const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner);
+      const g = gate({ ...item, state: "submitted" }, policy, ev, rv, owner, { fast });
       out.push({ ...base, kind: "merge", reason: `accepted${overrode(g)}; run \`atelier merge\` in the project checkout`, weight: 90 });
       continue;
     }
@@ -2234,7 +2241,7 @@ export function inboxFor(
       continue;
     }
     if (item.state === "submitted" && !part) {
-      const g = gate(item, policy, ev, rv, owner);
+      const g = gate(item, policy, ev, rv, owner, { fast });
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
@@ -2476,8 +2483,8 @@ export const stateLabel: Record<ItemState, string> = {
 // it already ends a sentence.
 const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 
-export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER) {
-  const g = gate(item, policy, evidence, reviews, owner);
+export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER, fast = false) {
+  const g = gate(item, policy, evidence, reviews, owner, { fast });
   const view = evidenceAt(policy, evidence, item.head);
   const passed = view.checks.filter((c) => c.grade === "observed" && c.passed).length;
   const failed = view.checks.some((c) => c.grade === "observed" && !c.passed);
@@ -2488,7 +2495,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
     return { title: "Blocked", detail: `${b?.by ?? "Nobody"} blocked it: ${sentence(b?.reason ?? "no reason recorded")} It keeps its holder and workspace, and nothing moves until it is unblocked.`, action: "none", tone: "ask", passed };
   }
   if (item.state === "accepted") {
-    const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner).overridden;
+    const overridden = gate({ ...item, state: "submitted" }, policy, evidence, reviews, owner, { fast }).overridden;
     const detail = overridden
       ? `You accepted it with the independent review overridden: ${sentence(overridden.reason)} Run the revision-bound command below in your local checkout.`
       : "Approval is recorded. Run the revision-bound command below in your local checkout.";
