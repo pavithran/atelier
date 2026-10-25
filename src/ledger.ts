@@ -1,5 +1,5 @@
 import { landingOf } from "./diff.ts";
-import { costTier, decideReroute, decideReviewReroute, findStageOverrun, forkStalled, olderThan, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, REVIEW_CLAIM, REVIEW_TIER_CLAIM, REVIEW_TIER_STAGE, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type RerouteVerdict, type ReviewRerouteVerdict, type StageFinding } from "./stage-tick.ts";
+import { costTier, decideLandQueue, decideReroute, decideReviewReroute, findStageOverrun, forkStalled, landerLive, olderThan, openStages, PREPARING, reconcileStages, recordedKeys, replacementFork, REVIEW_CLAIM, REVIEW_TIER_CLAIM, REVIEW_TIER_STAGE, stageKeyOf, STAGE_EVENT_KINDS, type ActVerdict, type LandQueued, type LandQueueVerdict, type RerouteVerdict, type ReviewRerouteVerdict, type StageFinding } from "./stage-tick.ts";
 import { REPORT_DEFAULTS } from "./stuck/report.ts";
 import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
@@ -1929,6 +1929,7 @@ export class Ledger extends DurableObject<Env> {
       const verdicts = new Map<string, ActVerdict>();
       const reroutes: { id: string; head: string; dispatch: Dispatch; verdict: RerouteVerdict }[] = [];
       const repoints: { item: Item; request: number; verdict: ReviewRerouteVerdict; need: ReviewRequired | null; reasons: string[]; tier: boolean }[] = [];
+      const landings: { id: string; head: string; main: string | null; verdict: LandQueueVerdict }[] = [];
       let tasks = 0;
       const rows = this.sql.exec(`SELECT item_id, kind, data FROM events WHERE kind IN (${STAGE_EVENT_KINDS.map(() => "?").join(", ")}) ORDER BY seq`, ...STAGE_EVENT_KINDS).toArray();
       const recorded = rows.map((r) => ({ item: r.item_id as string, kind: r.kind as string, data: JSON.parse(r.data as string) as Record<string, unknown> }));
@@ -2009,6 +2010,24 @@ export class Ledger extends DurableObject<Env> {
                 if (!acts) findings.push(tierFound);
               }
             }
+            // A landable task past its limit is queued for a lander (t253).
+            if (found && stage === "landable" && detail.head) {
+              const key = stageKeyOf(found), head = detail.head;
+              if (!offers) verdicts.set(key, { acts: false, note: "the runner offers could not be read, so no landing is queued" });
+              else {
+                const live = liveOffers(offersFor(offers, project), now);
+                const names = [project, ...(this.project().formerly ?? [])];
+                const main = this.mainHead();
+                const verdict = decideLandQueue({
+                  item: item.id, accepted: item.state === "accepted" && item.acceptedHead === head, fast: this.mode().mode === "fast",
+                  lease: landing, main, now,
+                  lander: landerLive(live, names),
+                  queued: recorded.filter((e) => e.kind === "stage.land-queued" && e.item === item.id && e.data.head === head).map((e) => ({ at: String(e.data.at), main: (e.data.main as string | null) ?? null, reason: e.data.reason as LandQueued["reason"] })),
+                });
+                verdicts.set(key, verdict);
+                if (verdict.queue) landings.push({ id: item.id, head, main, verdict });
+              }
+            }
             if (found) findings.push(found);
           } catch { complete = false; }
         }
@@ -2023,6 +2042,9 @@ export class Ledger extends DurableObject<Env> {
         }
         for (const r of repoints) {
           try { this.repointReview(r.item, r.request, r.verdict, r.need, r.reasons, at, offers!, r.tier); acted++; } catch { /* the request was not moved; the next tick tries again */ }
+        }
+        for (const l of landings) {
+          try { this.queueLandFromTick(l.id, l.head, l.main, l.verdict, at); acted++; } catch { /* not queued; the next tick tries again */ }
         }
         acted += this.replaceStalledForks(now, recorded);
         acted += this.retryStaleReviewClaims(now, recorded);
@@ -2150,6 +2172,14 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     return n;
+  }
+
+  // The tick's land job for a landable task (t253): the same land_jobs row
+  // `atelier land --queue` writes, made again with a fresh time when the job
+  // is queued anew, and the stage.land-queued event the next tick reads back.
+  private queueLandFromTick(id: string, head: string, main: string | null, verdict: LandQueueVerdict, at: string): void {
+    this.sql.exec(`INSERT OR REPLACE INTO land_jobs (item, by, at) VALUES (?, ?, ?)`, id, "atelier", at);
+    this.log(id, "atelier", "stage.land-queued", { stage: "landable", head, main, at, reason: verdict.queue, note: verdict.note }, at);
   }
 
   // Why a model may not be given a queued dispatch, or null when it may: the

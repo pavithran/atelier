@@ -2087,7 +2087,10 @@ export function stageOf(item: Item, facts: TaskStageFacts = {}): { stage: TaskSt
   const head = item.head ?? ready?.commit ?? null;
   if (head && facts.policy && facts.evidence && facts.reviews && item.head) {
     const owner = facts.owner ?? DEFAULT_OWNER;
-    if (gate(item, facts.policy, facts.evidence, facts.reviews, owner).ready) return at("landable", { head, source: "push" });
+    // An accepted task is judged as submitted: its approvals and checks still
+    // stand at its head, and the tick queues its landing (t253).
+    const judged = item.state === "accepted" ? { ...item, state: "submitted" as const } : item;
+    if (gate(judged, facts.policy, facts.evidence, facts.reviews, owner).ready) return at("landable", { head, source: "push" });
     const view = evidenceAt(facts.policy, facts.evidence, head);
     const checked = view.changedPaths !== null && view.checks.every((c) => c.grade !== "pending" && c.passed);
     if (view.changedPaths !== null) {
