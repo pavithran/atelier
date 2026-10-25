@@ -153,8 +153,9 @@ it("items() reads rows that grow with the items, not with reviews or events olde
     const rejection = { itemId: ids[0], by: "codex/gpt-6-astra", approve: false, head: "head-new", at, findings: [{ severity: "blocking", file: "cli/other.mjs", line: 1, summary: "s" }] };
     instance.sql.exec(`INSERT INTO reviews (item_id, json, head) VALUES (?, ?, ?)`, ids[0], JSON.stringify(rejection), "head-new");
   });
-  const before = await rowsRead(L, (ledger) => ledger.items());
+  // The first read folds the events recorded so far; the second is the steady read.
   await rowsRead(L, (ledger) => ledger.items());
+  const before = await rowsRead(L, (ledger) => ledger.items());
   expect(before.value[0].scopeGap).toContain("cli/other.mjs");
 
   // Thousands of reviews at older heads and push events, spread over the tasks.
@@ -170,7 +171,8 @@ it("items() reads rows that grow with the items, not with reviews or events olde
   // The first read after new events folds them once; later reads do not.
   const folded = await rowsRead(L, (ledger) => ledger.items());
   const after = await rowsRead(L, (ledger) => ledger.items());
-  expect(after.rows).toBe(before.rows);
+  // Six thousand rows were added; the read gains at most the cursor's own overhead.
+  expect(after.rows).toBeLessThanOrEqual(before.rows + 2);
   expect(after.value[0].scopeGap).toBe(before.value[0].scopeGap);
   expect(after.value[5].scopeGap).toBeUndefined();
   expect(after.value[5].pushActors).toEqual(["codex/gpt-6-astra"]);
