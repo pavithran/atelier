@@ -2,12 +2,33 @@ import type { Item, ProjectPolicy } from "../rules.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
 import { latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, isInfrastructureOutcome, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
+import { buildPrecision, precisionWindow, type PrecisionRecord, type ReviewerPrecision } from "./precision.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
 import { claimants, offering, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
+
+// What ranking a reviewer reads of the records, one entry per model key: its
+// counts of good and bad outcomes (stalls and other runs among the bad) and the
+// sentence that says so, with the reviewers' precision. It is built in the
+// Worker (summarize) and sent to the ledger in place of every event, so the
+// call stays small however long the projects' histories are.
+export interface RecordSummary {
+  models: Record<string, { good: number; bad: number; line: string }>;
+  precision: { window: PrecisionRecord["window"]; models: ReviewerPrecision[] };
+}
+export interface ReviewerRecords { summary: RecordSummary }
+
+export function summarize(records: SuggestionRecords, owner: string = DEFAULT_OWNER, now = new Date()): RecordSummary {
+  const models: RecordSummary["models"] = {};
+  for (const [key, r] of buildReliability(records.sources, records.runs, owner)) models[key] = { ...outcomesOf(r), line: reliabilityLine(r) };
+  const precision = buildPrecision(records.sources, precisionWindow(now), owner);
+  return { models, precision: { window: precision.window, models: [...precision.models.values()] } };
+}
+export const precisionOfSummary = (s: RecordSummary): PrecisionRecord => ({ window: s.precision.window, models: new Map(s.precision.models.map((m) => [m.model, m])) });
+
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
 export interface SuggestionInput extends SuggestionRecords {
   item: Task;
@@ -58,12 +79,12 @@ export function stalledBuilder(entry: ModelEntry, records: SuggestionRecords): b
   return blocked;
 }
 
-export function ranked(input: SuggestionInput) {
-  const record = buildReliability(input.sources, input.runs, input.owner ?? DEFAULT_OWNER);
+export function ranked(input: { pool: readonly ModelEntry[]; owner?: string; summary?: RecordSummary } & Partial<SuggestionRecords>) {
+  const summary = input.summary ?? summarize({ sources: input.sources ?? [], runs: input.runs ?? [] }, input.owner);
   return input.pool.map((entry) => {
-    const rows = [...keysOf(entry)].flatMap((key) => record.get(key) ?? []);
-    const counts = rows.map(outcomesOf).reduce((a, b) => ({ good: a.good + b.good, bad: a.bad + b.bad }), { good: 0, bad: 0 });
-    return { entry, score: tiebreak(counts), reason: rows.length ? rows.map(reliabilityLine).join(" ") : "No recorded outcomes; neutral score." };
+    const rows = [...keysOf(entry)].flatMap((key) => (Object.hasOwn(summary.models, key) ? summary.models[key] : []));
+    const counts = rows.reduce((a, b) => ({ good: a.good + b.good, bad: a.bad + b.bad }), { good: 0, bad: 0 });
+    return { entry, score: tiebreak(counts), reason: rows.length ? rows.map((r) => r.line).join(" ") : "No recorded outcomes; neutral score." };
   }).sort((a, b) => b.score - a.score || actorOf(a.entry).localeCompare(actorOf(b.entry)));
 }
 

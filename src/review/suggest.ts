@@ -1,16 +1,20 @@
 // The ledger calls reviewer suggestion here so model ranking does not depend
 // on review execution or independence rules.
 import { RuleError } from "../rules.ts";
-import { buildPrecision, precisionWindow } from "../models/precision.ts";
 import { latestNote, noteLine } from "../models/pool.ts";
-import { frontier, ranked, sensitive, type SuggestionInput } from "../models/suggest.ts";
+import { frontier, precisionOfSummary, ranked, sensitive, summarize, type RecordSummary, type SuggestionInput } from "../models/suggest.ts";
 import type { Choice } from "../plans/route.ts";
 import { pickReviewer } from "./reviewer.ts";
 import type { Assignment } from "../models/assignments.ts";
 
 const actorOf = (m: SuggestionInput["pool"][number]) => `${m.harness}/${m.id}`;
 
-export interface ReviewerSuggestionInput extends SuggestionInput {
+// The records come as the summary the Worker built (src/models/suggest.ts) or,
+// for a caller that holds them, as the sources and runs themselves.
+export interface ReviewerSuggestionInput extends Omit<SuggestionInput, "sources" | "runs"> {
+  summary?: RecordSummary;
+  sources?: SuggestionInput["sources"];
+  runs?: SuggestionInput["runs"];
   previous?: string | null;          // the reviewer of the last rejected round, asked first
   // The review assignments bearing on this review, as the ledger decided
   // them (reviewAssigned, by reviewRolesFor): the suggestion orders by them
@@ -24,8 +28,9 @@ export interface ReviewerSuggestionInput extends SuggestionInput {
 
 export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly { actor: string; reason: string }[] = [], now = new Date()): Choice {
   const strict = input.frontierRequired === true || sensitive(input.item);
-  const ordered = ranked(input).filter(({ entry }) => !strict || frontier(entry));
-  const precision = buildPrecision(input.sources, precisionWindow(now), input.owner);
+  const summary = input.summary ?? summarize({ sources: input.sources ?? [], runs: input.runs ?? [] }, input.owner, now);
+  const ordered = ranked({ pool: input.pool, summary }).filter(({ entry }) => !strict || frontier(entry));
+  const precision = precisionOfSummary(summary);
   const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
     allowPaid: false, owner: input.owner, avoid, counted: input.counted, precision, previous: input.previous ?? null, tier: input.tier,
     offers: input.offers, destination: input.destination,
