@@ -138,3 +138,41 @@ it("a push notice finds the first task of a fork by its row, and none for an unk
   const every = await rowsRead(L, (ledger) => ledger.items().find((i: any) => i.fork === "reads-fork--shared")?.id);
   expect(probe.value).toBe(every.value);
 });
+
+it("items() reads rows that grow with the items, not with reviews or events older than each item's head", async () => {
+  const L = await project("reads-items");
+  const ids: string[] = [];
+  for (let n = 0; n < 200; n++) ids.push((await L.newItem(`Task ${n}`, ["src/**"], "owner")).id);
+  await inside(L, async (instance: any) => {
+    const at = new Date().toISOString();
+    for (const id of ids) {
+      instance.sql.exec(`UPDATE items SET head = 'head-new' WHERE id = ?`, id);
+      instance.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, ?, ?)`, id, at, "codex/gpt-6-astra", "push.observed", JSON.stringify({ head: "head-new" }));
+    }
+    // One current rejection naming a file outside the scope, on the first task.
+    const rejection = { itemId: ids[0], by: "codex/gpt-6-astra", approve: false, head: "head-new", at, findings: [{ severity: "blocking", file: "cli/other.mjs", line: 1, summary: "s" }] };
+    instance.sql.exec(`INSERT INTO reviews (item_id, json, head) VALUES (?, ?, ?)`, ids[0], JSON.stringify(rejection), "head-new");
+  });
+  const before = await rowsRead(L, (ledger) => ledger.items());
+  await rowsRead(L, (ledger) => ledger.items());
+  expect(before.value[0].scopeGap).toContain("cli/other.mjs");
+
+  // Thousands of reviews at older heads and push events, spread over the tasks.
+  await inside(L, async (instance: any) => {
+    const at = new Date().toISOString();
+    for (let n = 0; n < 3000; n++) {
+      const id = ids[n % ids.length];
+      const old = { itemId: id, by: "codex/gpt-6-astra", approve: false, head: `head-${n}`, at, findings: [{ severity: "blocking", file: "cli/old.mjs", line: 1, summary: "s" }] };
+      instance.sql.exec(`INSERT INTO reviews (item_id, json, head) VALUES (?, ?, ?)`, id, JSON.stringify(old), old.head);
+      instance.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES (?, ?, ?, ?, ?)`, id, at, "codex/gpt-6-astra", "push.observed", JSON.stringify({ head: `head-${n}` }));
+    }
+  });
+  // The first read after new events folds them once; later reads do not.
+  const folded = await rowsRead(L, (ledger) => ledger.items());
+  const after = await rowsRead(L, (ledger) => ledger.items());
+  expect(after.rows).toBe(before.rows);
+  expect(after.value[0].scopeGap).toBe(before.value[0].scopeGap);
+  expect(after.value[5].scopeGap).toBeUndefined();
+  expect(after.value[5].pushActors).toEqual(["codex/gpt-6-astra"]);
+  expect(folded.value).toEqual(after.value);
+});

@@ -884,6 +884,18 @@ export class Ledger extends DurableObject<Env> {
     // The showcase counts the whole record by kind (showcaseCounts, t578),
     // reading this index rather than every row.
     this.sql.exec(`CREATE INDEX IF NOT EXISTS events_kind ON events (kind, actor, item_id)`);
+    // items() folds only the events recorded since its last read (itemActors).
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS events_kind_seq ON events (kind, seq)`);
+    // The head a review judged, as a column, so items() reads the reviews at
+    // each item's current head and no others.
+    if (!this.sql.exec(`PRAGMA table_info(reviews)`).toArray().some((c) => c.name === "head")) {
+      this.sql.exec(`ALTER TABLE reviews ADD COLUMN head TEXT`);
+      this.sql.exec(`UPDATE reviews SET head = json_extract(json, '$.head')`);
+    }
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS reviews_item_head ON reviews (item_id, head)`);
+    // Each item's holders and push actors, folded from its events up to the
+    // sequence in meta 'item-actors-seq' (itemActors).
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS item_actors (item_id TEXT PRIMARY KEY, actors TEXT NOT NULL, holder TEXT)`);
     // The refresh queue (t462): one target per task, and each settled
     // refresh under its key (src/refresh/queue.ts).
     this.sql.exec(`CREATE TABLE IF NOT EXISTS refresh_targets (item TEXT PRIMARY KEY, json TEXT NOT NULL)`);
@@ -2823,20 +2835,65 @@ export class Ledger extends DurableObject<Env> {
     return gap ? { scopeGap: scopeGapText(item, gap) } : {};
   }
 
-  items(): Item[] {
-    const events = this.sql.exec(`SELECT item_id, actor, kind, data FROM events WHERE kind IN ('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast') ORDER BY seq`).toArray();
-    const histories = new Map<string, Parameters<typeof pushActors>[0]>();
-    for (const row of events) {
-      const id = row.item_id as string;
-      const history = histories.get(id) ?? [];
-      history.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
-      histories.set(id, history);
+  // Every item's holders and push actors, folded from the events recorded
+  // since the last call onto what that call left in item_actors: the log is
+  // read once, not on every read of the items. pushActors is a fold over
+  // events, so a stored state resumes it as a replay of its actors in order,
+  // then the holder (or a release).
+  private itemActors(): Map<string, string[]> {
+    const mark = Number(this.runnerMeta<number>("item-actors-seq") ?? 0);
+    const kinds = `('item.claimed', 'item.handoff', 'item.released', 'push.observed', 'item.refreshed', 'item.landed_fast')`;
+    const state = new Map<string, { actors: string[]; holder: string | null }>();
+    let seq = mark;
+    for (;;) {
+      const rows = this.sql.exec(`SELECT seq, item_id, actor, kind, data FROM events WHERE kind IN ${kinds} AND seq > ? ORDER BY seq LIMIT 500`, seq).toArray();
+      if (!rows.length) break;
+      const fresh = new Map<string, Parameters<typeof pushActors>[0]>();
+      for (const row of rows) {
+        const id = row.item_id as string | null;
+        seq = row.seq as number;
+        if (id === null) continue;
+        if (!state.has(id)) {
+          const stored = this.sql.exec(`SELECT actors, holder FROM item_actors WHERE item_id = ?`, id).toArray()[0];
+          state.set(id, stored ? { actors: JSON.parse(stored.actors as string), holder: (stored.holder as string | null) } : { actors: [], holder: null });
+        }
+        const list = fresh.get(id) ?? [];
+        list.push({ actor: row.actor as string, kind: row.kind as string, data: JSON.parse(row.data as string) });
+        fresh.set(id, list);
+      }
+      for (const [id, events] of fresh) {
+        const was = state.get(id)!;
+        const replay = [
+          ...was.actors.map((actor) => ({ actor, kind: "item.claimed", data: {} })),
+          was.holder ? { actor: was.holder, kind: "item.claimed", data: {} } : { actor: "", kind: "item.released", data: {} },
+        ];
+        // The holder after the events: the last claim or handoff target, or none.
+        let holder = was.holder;
+        for (const e of events) {
+          if (e.kind === "item.claimed") holder = e.actor;
+          if (e.kind === "item.handoff") holder = typeof e.data.to === "string" ? e.data.to : null;
+          if (e.kind === "item.released") holder = null;
+        }
+        const actors = pushActors([...replay, ...events]);
+        state.set(id, { actors, holder });
+        this.sql.exec(`INSERT OR REPLACE INTO item_actors (item_id, actors, holder) VALUES (?, ?, ?)`, id, JSON.stringify(actors), holder);
+      }
+      state.clear();
     }
+    if (seq !== mark) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('item-actors-seq', ?)`, JSON.stringify(seq));
+    const out = new Map<string, string[]>();
+    for (const row of this.sql.exec(`SELECT item_id, actors FROM item_actors`).toArray()) out.set(row.item_id as string, JSON.parse(row.actors as string));
+    return out;
+  }
+
+  items(): Item[] {
+    const actors = this.itemActors();
     // A blocking finding on a file a live item's scope lacks (t270) rides on
-    // the item as scopeGap, so a list of items (status) can say so. Only an
-    // item with a gap carries it.
+    // the item as scopeGap, so a list of items (status) can say so. Only the
+    // rejections at each item's current head can make one, and only those
+    // are read.
     const rejections = new Map<string, Review[]>();
-    for (const row of this.sql.exec(`SELECT item_id, json FROM reviews ORDER BY id`).toArray()) {
+    for (const row of this.sql.exec(`SELECT r.item_id, r.json FROM items i CROSS JOIN reviews r ON r.item_id = i.id AND r.head = i.head WHERE i.state NOT IN ('merged', 'abandoned') ORDER BY r.id`).toArray()) {
       const r = JSON.parse(row.json as string) as Review;
       if (r.approve || !r.findings?.length) continue;
       rejections.set(row.item_id as string, [...(rejections.get(row.item_id as string) ?? []), r]);
@@ -2845,7 +2902,7 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, pushActors: pushActors(histories.get(row.id as string) ?? []), ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, pushActors: actors.get(item.id) ?? [], ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -3836,7 +3893,7 @@ export class Ledger extends DurableObject<Env> {
           paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why,
         },
       };
-      this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, item.id, JSON.stringify(carried));
+      this.sql.exec(`INSERT INTO reviews (item_id, json, head) VALUES (?, ?, ?)`, item.id, JSON.stringify(carried), carried.head ?? null);
       this.log(item.id, ORCHESTRATOR, "review.retained", { by: r.by, from: r.head, head: newHead, source: r.at, main: facts.main, base: facts.base, taskPaths: cap(facts.task), incomingPaths: cap(facts.incoming), exempt: cap(facts.outputs), paths: { task: facts.task.length, incoming: facts.incoming.length }, reason: verdict.why }, at);
     }
     return { kept: approvals.length, why: verdict.why };
@@ -4055,7 +4112,7 @@ export class Ledger extends DurableObject<Env> {
     const fastReceiptOf = item.state === "merged" ? this.landedFastReceipt(item.id) : null;
     const fastFamily = fastReceiptOf ? postMergeIndependence(r.by, contributorsOf(item), singleFamily(policy), true).independence : null;
     r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), ...(fastFamily ? { independence: fastFamily } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
-    this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
+    this.sql.exec(`INSERT INTO reviews (item_id, json, head) VALUES (?, ?, ?)`, r.itemId, JSON.stringify(r), r.head ?? null);
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
     this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, role: this.reviewRoleOf(item), ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(r.independence ? { independence: r.independence } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
