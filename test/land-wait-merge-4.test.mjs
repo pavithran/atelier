@@ -159,8 +159,8 @@ test("--dry-run prints the steps and the refusals without changing anything", as
   assert.match(r.output, /merge main into t1's workspace/);
   assert.match(r.output, /regenerate the project's fixtures with `echo generated > gen-fixtures\.txt`/);
   assert.match(r.output, /Nothing was changed\./);
-  // The default review wait outlasts the runner's 45 minute build timeout.
-  assert.match(r.output, /for up to 60 minutes/);
+  // The review is asked for and not waited for (t264).
+  assert.doesNotMatch(r.output, /minutes;/);
   // Reads only: the lease is read, never taken, and nothing that changes
   // state was posted; the one POST is the read token the merge preview
   // reads main with.
@@ -174,7 +174,7 @@ test("--dry-run prints the steps and the refusals without changing anything", as
   // The order (t550): the checks and the review without the lease, then
   // the lease for the merge alone, with main confirmed under it.
   assert.match(r.output, /Without the landing lease \(t550\), beside any other task's landing:/);
-  assert.match(r.output, /6\. ask the server for the independent review the gate needs .*; a rejection, a failed check or a conflict ends the landing here, the lease never taken/);
+  assert.match(r.output, /6\. ask the server for the independent review the gate needs at the pushed head and record a land request, without waiting for the verdict.*; a failed check or a conflict ends the landing here, the lease never taken/);
   assert.match(r.output, /7\. take the project's landing lease for t1 \(one merge at a time in proj/);
   assert.match(r.output, /8\. confirm main is still the commit merged in step 1; if it moved, release the lease without merging and go again from step 1/);
   assert.ok(r.output.indexOf("6. ask the server") < r.output.indexOf("7. take the project's landing lease"));
