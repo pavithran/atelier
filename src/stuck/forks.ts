@@ -28,6 +28,8 @@ export function stalledForks(items: readonly Item[], events: readonly LedgerEven
     const mine = events.filter((e) => e.itemId === item.id).sort((a, b) => a.seq - b.seq);
     const told = mine.filter((e) => preparing(e, "stage.told")).pop();
     if (!told) continue;
+    // A replacement after the notice means that notice is for a fork since left.
+    if (mine.some((e) => e.seq > told.seq && preparing(e, "stage.rerouted"))) continue;
     const forks: StalledFork[] = [];
     for (const e of mine) {
       if (e.seq > told.seq || !preparing(e, "stage.rerouted")) continue;

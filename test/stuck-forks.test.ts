@@ -49,3 +49,14 @@ test("stuck lists the task with its forks, ages and the refile recovery", () => 
   assert.match(e.reason, /p--t1 \(40 min\), p--t1-r2 \(35 min\), p--t1-r3 \(35 min\)/);
   assert.match(e.recovery, /atelier new .*then atelier abandon t1 /);
 });
+
+test("an old notice for -r2 does not list the task once -r3 replaced it, until -r3 is told", () => {
+  const old = [
+    told("2026-10-24T10:50:00.000Z", "p--t1-r2", "2026-10-24T10:20:00.000Z"),
+    moved("2026-10-24T11:20:00.000Z", "p--t1-r2", "p--t1-r3", "2026-10-24T10:20:00.000Z"),
+  ];
+  assert.deepEqual(stalledForks([item()], old, NOW), []);
+  const [f] = stalledForks([item()], [...old, told("2026-10-24T11:55:00.000Z", "p--t1-r3", "2026-10-24T11:25:00.000Z")], NOW);
+  assert.equal(f.forks.at(-1)!.name, "p--t1-r3");
+  assert.equal(Math.round(f.forks.at(-1)!.ageMs / 60_000), 35);
+});

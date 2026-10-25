@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 
@@ -140,6 +140,26 @@ it("replaces a fork preparing past 30 minutes with no commit twice, under new na
   await tick(111 * MIN);
   expect(await kinds("rr-e")).toEqual([[id, "stage.rerouted", "preparing"], [id, "stage.rerouted", "preparing"], [id, "stage.told", "preparing"]]);
   expect(await L("rr-e").forkNameFor(id)).toBe(`rr-e--${id}-r3`);
+});
+
+// A task from before the second replacement: the -r2 fork was told as the last
+// one. It gets -r3, and the old notice must not hide -r3 stalling.
+it("an old told notice for the -r2 fork does not suppress the notice when -r3 stalls", async () => {
+  await project("rr-j");
+  const { id, generation } = await stalled("rr-j");
+  await tick(31 * MIN);
+  await L("rr-j").forkNotReady(id, `rr-j--${id}-r2`, AGENT, generation);
+  await runInDurableObject(L("rr-j"), (ledger: any) => {
+    ledger.log(id, "atelier", "stage.told", { stage: "preparing", head: "", fork: `rr-j--${id}-r2`, since: new Date().toISOString(), note: "old notice" }, new Date().toISOString());
+  });
+  await tick(70 * MIN);
+  await tick(71 * MIN);
+  expect(await L("rr-j").forkNameFor(id)).toBe(`rr-j--${id}-r3`);
+  await L("rr-j").forkNotReady(id, `rr-j--${id}-r3`, AGENT, generation);
+  await tick(110 * MIN);
+  await tick(111 * MIN);
+  const told = (await stage("rr-j")).filter((e) => e.kind === "stage.told");
+  expect(told.map((e) => e.data.fork)).toEqual([`rr-j--${id}-r2`, `rr-j--${id}-r3`]);
 });
 
 it("leaves a fork with a commit recorded untouched", async () => {
