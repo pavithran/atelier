@@ -268,6 +268,13 @@ test("a fork is stalled past 30 minutes with no fork or head recorded", () => {
   assert.equal(forkStalled({ since: null }, {}, at(HOUR)), false);
 });
 
+test("a recorded head that is only a main commit does not block a replacement fork", () => {
+  assert.equal(forkStalled({ since: T0 }, { head: "m1", base: "m1" }, at(HOUR)), true);
+  assert.equal(forkStalled({ since: T0 }, { head: "m2", base: "m1" }, at(HOUR), "m2"), true);
+  assert.equal(forkStalled({ since: T0 }, { head: "own", base: "m1" }, at(HOUR), "m2"), false);
+  assert.equal(forkStalled({ since: T0 }, { head: "own" }, at(HOUR), null), false);
+});
+
 test("a replacement fork has a new name each time, and keeps the old one's prefix", () => {
   assert.equal(replacementFork("p--t1"), "p--t1-r2");
   assert.equal(replacementFork("p--t1-r2"), "p--t1-r3");
