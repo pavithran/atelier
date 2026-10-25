@@ -262,6 +262,17 @@ atelier init --cross-family
 returns to the default, and that switch too is recorded with who made it
 and when. `--reset` drops the mode with the rest of the policy.
 
+## Tier review and risk reviews
+
+A project with a review tier (`atelier init --review-tier`) has a separate
+tier review asked beside the gate's review when the gate's reviewer is outside
+the tier. That holds for a change that needs none or one independent review:
+the tier approval never stands in for the independent one. When the project's
+`riskReviews` ask two or more independent reviews for a change, the gate asks
+no separate tier review. Two approvals from different families, none a
+contributor's, clear it, and a tier model's approval counts as independent
+when its family is not a contributor's (t277).
+
 ## The review bar
 
 Every review brief states the review bar, which says what a finding may block
