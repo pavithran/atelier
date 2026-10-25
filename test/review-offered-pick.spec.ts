@@ -30,10 +30,10 @@ function call(method: string, path: string, body?: unknown) {
 
 // A submitted, protected task built by the GLM model, a pool of two frontier Claude
 // models and the runner offering `offered` for the review job.
-async function landable(name: string, offered: string[]) {
+async function landable(name: string, offered: string[], offerAgeHours = 0) {
   for (const m of await index().models() as ModelEntry[]) await index().removeModel(m.id);
   for (const m of [entry("claude-code", "opus-5.5"), entry("claude-code", "fable-5.1"), entry("zcode", "glm-5.3")]) await index().putModel(m);
-  await index().putRunnerOffer({ runner: `home:${name}`, kind: "home", agents: [{ agent: "claude-code", models: offered }], jobs: ["build", "review"], projects: [name] }, new Date().toISOString());
+  await index().putRunnerOffer({ runner: `home:${name}`, kind: "home", agents: [{ agent: "claude-code", models: offered }], jobs: ["build", "review"], projects: [name] }, new Date(Date.now() - offerAgeHours * 3_600_000).toISOString());
   const L = ledger(name);
   const record = { name, repo: `${name}--baseline`, policy, createdAt: AT };
   await L.setProject(record, "owner");
@@ -84,4 +84,18 @@ it("with the runner's offer expired, no reviewer is named for an override, thoug
   const pool = await index().models() as ModelEntry[];
   await index().putRunnerOffer({ runner: "home:offered-pick-e", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5", "fable-5.1"] }], jobs: ["build", "review"], projects: ["offered-pick-e"] }, new Date(Date.now() - 24 * 3_600_000).toISOString());
   expect(await ledger("offered-pick-e").availableReviewer(id, pool, await index().runnerOffers())).toBeNull();
+});
+
+it("land with no --reviewer asks nothing when the only runner's offer has expired, though the pool has an eligible reviewer", async () => {
+  const id = await landable("offered-pick-f", ["opus-5.5", "fable-5.1"], 24);
+  const res = await land("offered-pick-f", id);
+  expect(await res.text()).not.toMatch(/"requested":true/);
+  const events = await ledger("offered-pick-f").events(id, 100) as { kind: string }[];
+  expect(events.some((e) => e.kind === "review.requested")).toBe(false);
+});
+
+it("a reviewer the developer names is still asked when no runner is live", async () => {
+  const id = await landable("offered-pick-g", ["opus-5.5", "fable-5.1"], 24);
+  const res = await call("POST", `/projects/offered-pick-g/items/${id}/review-request`, { reviewer: "claude-code/fable-5.1" });
+  expect(res.status, await res.clone().text()).toBe(200);
 });
