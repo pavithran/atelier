@@ -328,14 +328,13 @@ test("merge diffs the accepted revision from its real fork point, so the baselin
 
 const FULL = { protected: ["AGENTS.md"], eligible: ["claude"], refuseOverlap: false, checks: ["npm test"] };
 
-test("merge refuses when a contributor is no longer eligible under the stored policy", () => commandFixture(({ command, gitCalls }) => {
-  // Eligible when accepted: claude. The stored policy now names codex.
+test("merge does not refuse a contributor absent from the stored eligible list: the list is retired", () => commandFixture(({ command, gitCalls }) => {
+  // Eligible when accepted: claude. The stored policy now names codex, and the contributor is claude-code.
   const events = JSON.stringify([{ actor: "claude-code/opus-5.5", kind: "item.claimed", data: {}, at: "2026-10-06T00:00:00.000Z" }]);
   const result = command(["merge", "t1"], { TEST_EVENTS: events, TEST_FORK_POINT: "f".repeat(40) });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /its contributors are no longer eligible here: claude-code\/opus-5.5 \(eligible: codex\)\. Review the task again on its page and accept again/);
-  assert.ok(!gitCalls().some((args) => args.includes("merge")));
-  assert.match(command(["merge", "t1", "--policy-changed-ok"], { TEST_EVENTS: events, TEST_FORK_POINT: "f".repeat(40) }).stderr, /merge conflicts/);
+  assert.doesNotMatch(result.stderr, /no longer eligible/);
+  assert.match(result.stderr, /merge conflicts/);
+  assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
 }, { now: { eligible: ["codex"] }, accepted: FULL }));
 
 test("merge refuses when overlapping claims are newly refused and a live item overlaps the task's scope", () => commandFixture(({ command, calls, gitCalls }) => {

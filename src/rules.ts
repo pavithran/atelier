@@ -3383,14 +3383,6 @@ export function mergeContext(
   };
 }
 
-// Eligibility as assertEligible read the list: by the actor's harness. Only
-// the merge comparison reads it now, against an acceptance that recorded one
-// (t152: new acceptances record none, and no claim or review reads it).
-const harnessEligible = (actor: string, list: string[] | undefined) => {
-  const harness = actor.split("/")[0];
-  return !list?.length || list.some((k) => harness === k || harness.startsWith(`${k}-`));
-};
-
 export function mergePolicyDecision(before: PolicyFields, after: PolicyFields, paths: string[], allowChanged = false, context: MergeContext = {}) {
   const changes = [...policyChanges(before, after), ...shipChanges(before, after)];
   // A change among the checks alone is named as the required checks.
@@ -3407,8 +3399,6 @@ export function mergePolicyDecision(before: PolicyFields, after: PolicyFields, p
   // and no longer does under the policy as it is now.
   const reasons: string[] = [];
   if (newlyProtected.length) reasons.push(`the accepted revision touches newly protected paths: ${newlyProtected.join(", ")}`);
-  const ineligible = (context.contributors ?? []).filter((actor) => harnessEligible(actor, before.eligible) && !harnessEligible(actor, after.eligible));
-  if (ineligible.length) reasons.push(`its contributors are no longer eligible here: ${ineligible.join(", ")} (eligible: ${(after.eligible ?? []).join(", ")})`);
   const unchecked = before.checks && after.checks ? after.checks.filter((c) => !before.checks!.includes(c) && !(context.passed ?? []).includes(c)) : [];
   if (unchecked.length) reasons.push(`checks required now were not observed passing at the accepted revision: ${unchecked.map((c) => `\`${c}\``).join(", ")}`);
   if (after.refuseOverlap && !before.refuseOverlap && context.overlapping?.length) reasons.push(`overlapping claims are now refused, and its scope overlaps live ${context.overlapping.join(", ")}`);
